@@ -19,7 +19,8 @@
         "y": 0.377,
         "scaleX": 0.81
       }
-    }
+    },
+    "cutout": true
   },
   {
     "id": "marble-poseidon",
@@ -41,7 +42,8 @@
         "y": 0.388,
         "scaleX": 0.78
       }
-    }
+    },
+    "cutout": true
   },
   {
     "id": "marble-hades",
@@ -63,7 +65,8 @@
         "y": 0.39,
         "scaleX": 0.78
       }
-    }
+    },
+    "cutout": true
   },
   {
     "id": "marble-artemis",
@@ -85,7 +88,8 @@
         "y": 0.395,
         "scaleX": 0.78
       }
-    }
+    },
+    "cutout": true
   },
   {
     "id": "marble-minotaur",
@@ -107,7 +111,8 @@
         "y": 0.377,
         "scaleX": 0.68
       }
-    }
+    },
+    "cutout": true
   },
   {
     "id": "marble-faun",
@@ -129,7 +134,8 @@
         "y": 0.392,
         "scaleX": 0.77
       }
-    }
+    },
+    "cutout": true
   },
   {
     "id": "marble-athena",
@@ -151,7 +157,8 @@
         "y": 0.443,
         "scaleX": 0.8
       }
-    }
+    },
+    "cutout": true
   },
   {
     "id": "marble-hermes",
@@ -173,7 +180,8 @@
         "y": 0.43,
         "scaleX": 0.76
       }
-    }
+    },
+    "cutout": true
   },
   {
     "id": "marble-apollo",
@@ -195,7 +203,8 @@
         "y": 0.392,
         "scaleX": 0.77
       }
-    }
+    },
+    "cutout": true
   },
   {
     "id": "marble-medusa",
@@ -217,6 +226,7 @@
         "y": 0.42,
         "scaleX": 0.84
       }
-    }
+    },
+    "cutout": true
   }
 ]

@@ -3,10 +3,18 @@
 .hermes-avatar-face{position:relative;display:flex;align-items:center;justify-content:center;width:100%;height:100%;border-radius:inherit;overflow:hidden;background:inherit}
 .hermes-avatar-face>img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:inherit}
 .hermes-avatar-initial{font-size:inherit;font-weight:inherit}
+.hermes-avatar-face.has-image>.hermes-avatar-initial{visibility:hidden}
 .hermes-avatar-ring{position:absolute;inset:-4px;border-radius:inherit;pointer-events:none;opacity:0;padding:1.8px;background:conic-gradient(from 25deg,transparent 0 18%,#6ddabd 28%,#bbffe8 34%,transparent 48% 67%,#c1a5ff 82%,transparent 94%);mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);mask-composite:exclude}
 .hermes-avatar-active .hermes-avatar-ring{opacity:1;animation:hermes-orbit 3.2s linear infinite}
 .hermes-avatar-active .hermes-avatar-face{box-shadow:0 0 0 1px #91d9c333,0 0 16px #83e5c81a}
 @keyframes hermes-orbit{to{transform:rotate(360deg)}}
+/* Transparent marble busts keep their whole silhouette, including headwear. */
+.hermes-avatar.hermes-avatar-cutout{border-radius:0;background:transparent}
+.hermes-avatar-cutout .hermes-avatar-face{border-radius:0;overflow:visible;background:transparent;box-shadow:none}
+.hermes-avatar-cutout .hermes-avatar-face>img{object-fit:contain;border-radius:0}
+.hermes-avatar-cutout .hermes-avatar-ring{display:none}
+.hermes-avatar-cutout.hermes-avatar-active .hermes-avatar-face{box-shadow:none;animation:hermes-bust-glow 2.6s ease-in-out infinite}
+@keyframes hermes-bust-glow{0%,100%{filter:drop-shadow(0 0 2px #8cdfc34d)}50%{filter:drop-shadow(0 0 7px #8cdfc399)}}
 .hermes-eye{position:absolute;transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;overflow:hidden;z-index:2}
 .hermes-eye-classic{background:#f2eee5;box-shadow:inset 0 0 0 1px #16162025}
 .hermes-pupil{display:block;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:50%;height:55%;border-radius:50%;background:#17171c}
@@ -38,6 +46,8 @@
 .avatar-choice[aria-pressed=true]{border-color:#9fddc2;color:#d6f3e5;background:#20352c60;box-shadow:0 0 0 1px #a2e6c723}
 .avatar-choice-picture{display:flex;align-items:center;justify-content:center;aspect-ratio:1;border-radius:7px;overflow:hidden;background:#1b1b20;font-size:20px;font-weight:550;color:#d4d4df}
 .avatar-choice-picture img{width:100%;height:100%;object-fit:cover}
+.avatar-choice-picture.avatar-choice-cutout{background:transparent;border-radius:0;overflow:visible}
+.avatar-choice-cutout img{object-fit:contain}
 .avatar-choice-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px;padding-top:7px}
 .avatar-choice-check{position:absolute;right:2px;top:2px;display:none;align-items:center;justify-content:center;background:#b8e6ce;color:#17372b;border:2px solid #18231e;width:17px;height:17px;font-size:10px;border-radius:50%}
 .avatar-choice[aria-pressed=true] .avatar-choice-check{display:flex}
@@ -59,5 +69,5 @@
 .avatar-editor-footer .primary-button{margin:0}
 .avatar-save-note{font-size:10px;color:#9ec6ad}
 .avatar-editor button:disabled{cursor:wait;opacity:.55}
-@media(prefers-reduced-motion:reduce){.hermes-avatar-active .hermes-avatar-ring{animation:none;background:linear-gradient(125deg,#9ee0c4,#b7a6e3)}.hermes-pupil{transition:none!important}}
+@media(prefers-reduced-motion:reduce){.hermes-avatar-active .hermes-avatar-ring{animation:none;background:linear-gradient(125deg,#9ee0c4,#b7a6e3)}.hermes-avatar-cutout.hermes-avatar-active .hermes-avatar-face{animation:none;filter:drop-shadow(0 0 3px #8cdfc373)}.hermes-pupil{transition:none!important}}
 @media(max-width:700px){.avatar-gallery{grid-template-columns:repeat(4,minmax(0,1fr))}.avatar-stage{gap:16px;padding:18px 12px}.avatar-editor-preview{width:140px;height:140px}}

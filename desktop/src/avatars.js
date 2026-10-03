@@ -30,7 +30,7 @@
     const preference = override || state?.avatarPreferences?.[bot?.id] || {};
     const entry = (state?.avatarLibrary || []).find((item) => item.id === preference.selectedId);
     return { selectedId: entry?.id || 'telegram', src: entry?.dataUrl || bot?.avatar || '',
-      name: entry?.name || 'Telegram picture', eyes: normalizeEyes(preference.eyes || entry?.eyes), entry };
+      name: entry?.name || 'Telegram picture', cutout: entry?.cutout === true, eyes: normalizeEyes(preference.eyes || entry?.eyes), entry };
   }
 
   // Return a bounded direction in an ellipse. Coordinates are CSS pixels in the
@@ -89,18 +89,24 @@
   function paint(node, bot, state = currentState, override) {
     if (!node) return;
     const avatar = resolveAvatar(bot, state, override);
-    const signature = JSON.stringify([avatar.src, avatar.eyes, initial(bot)]);
+    const signature = JSON.stringify([avatar.src, avatar.cutout, avatar.eyes, initial(bot)]);
     let record = mounted.get(node);
     if (!record || record.signature !== signature || record.face.parentElement !== node) {
       const face = element('span', 'hermes-avatar-face');
       face.append(element('span', 'hermes-avatar-initial', initial(bot)));
       if (avatar.src) {
-        const image = element('img'); image.src = avatar.src; image.alt = ''; image.draggable = false;
-        image.onerror = () => { image.remove(); face.querySelectorAll('.hermes-eye').forEach((eye) => eye.remove()); };
+        const image = element('img'); image.alt = ''; image.draggable = false;
+        image.onload = () => face.classList.add('has-image');
+        image.onerror = () => {
+          image.remove(); face.classList.remove('has-image');
+          if (face.parentElement === node) node.classList.remove('hermes-avatar-cutout');
+          face.querySelectorAll('.hermes-eye').forEach((eye) => eye.remove());
+        };
+        image.src = avatar.src;
         face.append(image);
       }
       const ring = element('span', 'hermes-avatar-ring'); ring.setAttribute('aria-hidden', 'true');
-      node.classList.add('hermes-avatar'); node.replaceChildren(face, ring);
+      node.classList.add('hermes-avatar'); node.classList.toggle('hermes-avatar-cutout', avatar.cutout); node.replaceChildren(face, ring);
       record = { node, face, signature, bot, override, eyes: avatar.src ? drawEyes(face, avatar.eyes) : [], config: avatar.eyes };
       mounted.set(node, record);
     }
@@ -178,7 +184,7 @@
     const stage = element('div', 'avatar-stage'), preview = element('div', 'avatar-editor-preview');
     const previewCopy = element('div', 'avatar-preview-copy'), live = element('span', 'avatar-live-label');
     previewCopy.append(element('span', 'avatar-eyebrow', 'LIVE PREVIEW'), live,
-      element('p', 'settings-note', 'The ring and gaze move only while a live bot activity signal is present. Idle stays still.'));
+      element('p', 'settings-note', 'The glow and gaze move only while a live bot activity signal is present. Idle stays still.'));
     stage.append(preview, previewCopy); wrap.append(stage);
 
     const libraryHeading = element('div', 'avatar-library-heading');
@@ -258,7 +264,7 @@
           saved.textContent = 'Unsaved changes'; refreshDraft();
         });
         tile.dataset.avatarId = entry.id; tile.title = entry.name; tile.setAttribute('aria-label', entry.name);
-        const picture = element('span', 'avatar-choice-picture');
+        const picture = element('span', `avatar-choice-picture${entry.cutout ? ' avatar-choice-cutout' : ''}`);
         if (entry.dataUrl) { const image = element('img'); image.src = entry.dataUrl; image.alt = ''; picture.append(image); }
         else picture.textContent = initial(bot());
         const check = element('span', 'avatar-choice-check', '✓'); check.setAttribute('aria-hidden', 'true');

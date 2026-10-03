@@ -15,7 +15,7 @@ function createAvatarStore({ root, nativeImage, dialog, getWindow, getPreference
   function library() {
     if (!builtins) {
       const manifest = JSON.parse(fs.readFileSync(path.join(root, '../assets/avatars/manifest.json'), 'utf8'));
-      builtins = manifest.map(item => ({ id: item.id, name: item.name, builtIn: true,
+      builtins = manifest.map(item => ({ id: item.id, name: item.name, builtIn: true, cutout: item.cutout === true,
         dataUrl: `../assets/avatars/${path.basename(item.file)}`, eyes: normalizeEyes(item.eyes) }));
     }
     return [...builtins, ...(getPreferences().avatarLibrary || [])];
