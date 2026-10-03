@@ -7,6 +7,7 @@ const { normalizeUrl, parseRemoteUrl, requireActor, isAuthorized, sanitizeBots }
 const { createAvatarStore } = require('./avatar-store.cjs');
 const { createAgentInput } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
+const { createSitePermissions } = require('./site-permissions.cjs');
 
 app.setName('Hermes Workspace');
 if (process.env.HERMES_WORKSPACE_DATA) app.setPath('userData', path.resolve(process.env.HERMES_WORKSPACE_DATA));
@@ -22,10 +23,22 @@ let backgroundCaptureQueue = Promise.resolve();
 const avatarStore = createAvatarStore({ root: ROOT, nativeImage, dialog, getWindow: () => win, getPreferences: () => prefs });
 const agentInput = createAgentInput({ command: browserCommand, requireActor });
 const activity = createActivityTracker();
+const sitePermissions = createSitePermissions({ getPreferences: () => prefs, savePreferences,
+  canRequest: (wc) => {
+    const tab = [...tabs.values()].find(item => item.view.webContents === wc);
+    if (layout.obscured) return false;
+    return tab ? tab.id === activeTabId && tab.controller === 'human' : wc === telegramView?.webContents;
+  },
+  prompt: async (origin, permissions) => {
+    const answer = await dialog.showMessageBox(win, { type: 'question', buttons: ['Block for this site', 'Allow for this site'], defaultId: 0, cancelId: 0,
+      message: `${origin} wants ${permissions.join(' and ').toLowerCase()} access.`, detail: 'Your choice is remembered. Change it in Workspace settings → Site permissions.' });
+    return answer.response === 1;
+  }
+});
 let pointerTimer, activityTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {} };
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {} };
   try { return { ...defaults, ...JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'preferences.json'), 'utf8')) }; }
   catch { return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' }; }
 }
@@ -46,6 +59,7 @@ function getState() {
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
     activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
+    locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions,
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
 }
 function broadcast() {
@@ -127,18 +141,7 @@ function configureContents(contents, isTelegram = false) {
   const session = contents.session;
   if (configuredSessions.has(session)) return;
   configuredSessions.add(session);
-  session.setPermissionRequestHandler(async (wc, permission, callback, details) => {
-    const tab = [...tabs.values()].find((item) => item.view.webContents === wc);
-    if (tab && (tab.id !== activeTabId || tab.controller === 'agent')) return callback(false);
-    if (permission === 'fullscreen') return callback(true);
-    const allowedTypes = ['media', 'notifications', 'clipboard-read', 'geolocation'];
-    if (!allowedTypes.includes(permission)) return callback(false);
-    let host = 'This page';
-    try { host = new URL(details.requestingUrl || wc.getURL()).hostname; } catch {}
-    const answer = await dialog.showMessageBox(win, { type: 'question', buttons: ['Don’t allow', 'Allow once'], defaultId: 0,
-      message: `${host} wants ${permission === 'media' ? 'camera or microphone access' : permission}.` });
-    callback(answer.response === 1);
-  });
+  sitePermissions.install(session, isTelegram ? 'telegram' : 'browser');
   session.on('will-download', (_event, item) => {
     if (item.getState() !== 'interrupted') item.setSaveDialogOptions({ title: 'Save download' });
   });
@@ -257,9 +260,12 @@ function registerIpc() {
         savePreferences(); break;
       }
       case 'restore-bots': prefs.hidden = []; savePreferences(); break;
+      case 'set-site-permission': sitePermissions.set(value); break;
+      case 'reset-site-permissions': sitePermissions.reset(); break;
       case 'settings':
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         if (typeof value.preview === 'boolean') prefs.preview = value.preview;
+        if (['ask', 'block', 'approximate'].includes(value.locationDefault)) prefs.locationDefault = value.locationDefault;
         if (Number.isFinite(value.chatWidth)) prefs.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
         savePreferences(); applyLayout(); break;
       case 'remote-control': prefs.remoteControl = value.enabled === true; break;

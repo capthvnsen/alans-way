@@ -46,3 +46,25 @@ Proactivity controls use the native `/proactivity` commands in the Telegram chat
 Status comes from the plugin's response. There is no front-end toggle claiming
 an agent is paused or a handoff completed. VPS Watch/Control controls viewer input;
 it does not pause the agent or provide exclusive access to that desktop.
+
+## Site permissions
+
+The browser remembers allow/block choices per origin (scheme, hostname and port)
+in private app preferences, separately from Telegram. Settings → Site permissions
+can change or reset those choices. Camera and microphone grants are independent.
+The default "General area only" blocks classic/precise geolocation without a dialog;
+only Chromium's explicitly approximate permission may be granted. Sites can still
+estimate an area from IP. Availability of an approximate permission does not promise
+that every site or desktop location provider supports it. A normal geolocation call
+is never silently upgraded to precise access. Other supported permissions ask once
+and remember the answer. Reload a site after changing its permission.
+
+Inactive or agent-controlled tabs cannot use human permission grants. A navigation
+or takeover while a dialog is open cancels that request. A previously started media
+stream is not automatically stopped by editing a preference; reload or close that
+tab to end it. Unsupported permissions are denied. No browser extension installer
+or 1Password integration is shipped in this release.
+
+Run `npm run test:permissions` on a Mac to exercise actual Chromium requests,
+reload persistence, the Settings controls and agent takeover, using a temporary
+profile and local fixture without accessing the device's real location.

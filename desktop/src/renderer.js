@@ -90,7 +90,7 @@ function render(next) {
     $('presence-status').textContent = window.HermesAvatars.activityLabel(bot.activity);
     $('presence-status').classList.toggle('active', window.HermesAvatars.isActive(bot.activity));
   }
-  renderBots(); renderTabs(); renderSettingsBots();
+  renderBots(); renderTabs(); renderSettingsBots(); renderSitePermissions();
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
   $('home').classList.toggle('hidden', !!tab || state.activeTabId === 'vps');
   $('browser-toolbar').classList.toggle('hidden', state.activeTabId === 'vps');
@@ -147,6 +147,46 @@ function renderSettingsBots() {
     if (focusedId === bot.id) toggle.focus({ preventScroll: true });
   }
 }
+const permissionLabels = { geolocation: 'Precise location', 'geolocation-approximate': 'General area', notifications: 'Notifications', camera: 'Camera', microphone: 'Microphone', 'clipboard-read': 'Read clipboard' };
+function permissionChoice(selected, onChange) {
+  const select = element('select');
+  for (const [value, label] of [['block', 'Block'], ['allow', 'Allow'], ['ask', 'Use default']]) {
+    const option = element('option', '', label); option.value = value; option.selected = selected === value; select.append(option);
+  }
+  select.onchange = () => onChange(select.value); return select;
+}
+function renderSitePermissions() {
+  const list = $('site-permissions'); if (!modalOpen || !list) return;
+  const signature = JSON.stringify(state.sitePermissions);
+  if (list.dataset.signature === signature) return;
+  list.dataset.signature = signature; list.replaceChildren();
+  for (const [scope, sites] of Object.entries(state.sitePermissions || {})) {
+    for (const [origin, permissions] of Object.entries(sites)) for (const [permission, decision] of Object.entries(permissions)) {
+      if (!permissionLabels[permission]) continue;
+      const row = element('div', 'setting-row'), copy = element('span', 'visibility-copy');
+      copy.append(element('span', 'visibility-name', `${permissionLabels[permission]} · ${scope === 'telegram' ? 'Telegram' : 'Browser'}`), element('span', 'visibility-username', origin));
+      const choice = permissionChoice(decision, value => command('set-site-permission', {scope, origin, permission, decision:value}));
+      choice.setAttribute('aria-label', `${origin} ${permissionLabels[permission]}`); row.append(copy, choice); list.append(row);
+    }
+  }
+}
+function showSitePermissionSettings(body) {
+  body.append(element('h3', '', 'Site permissions'), element('p', 'settings-note', 'General area only blocks precise location and allows approximate requests where supported. Sites can also estimate your area from your IP. Camera, microphone, notifications and clipboard access ask once per site and remember your choice. Only the tab you control can request access.'));
+  const locationRow = element('div', 'setting-row'); locationRow.append(element('span', '', 'Location requests'));
+  const location = element('select'); location.setAttribute('aria-label', 'Default location access');
+  for (const [value, label] of [['approximate', 'General area only'], ['block', 'Block device location'], ['ask', 'Ask once for precise location']]) { const option = element('option', '', label); option.value = value; option.selected = state.locationDefault === value; location.append(option); }
+  location.onchange = () => command('settings', { locationDefault:location.value }); locationRow.append(location); body.append(locationRow);
+  const field = element('div', 'field'), label = element('label', '', 'Add a site permission'), input = element('input');
+  input.id = 'permission-origin'; label.htmlFor = input.id; input.placeholder = 'https://www.google.com';
+  const permission = element('select'); permission.setAttribute('aria-label', 'Site permission type');
+  for (const [value, label] of Object.entries(permissionLabels)) { const option = element('option', '', label); option.value = value; permission.append(option); }
+  const decision = permissionChoice('block', () => {}); decision.setAttribute('aria-label', 'Site permission setting');
+  const save = element('button', 'secondary-button', 'Save site permission');
+  save.onclick = async () => { const result = await command('set-site-permission', { origin:input.value.trim(), permission:permission.value, decision:decision.value }); if (result) { input.value = ''; toast('Site permission saved. Reload the site to apply it.'); } };
+  field.append(label, input, permission, decision, save); body.append(field);
+  const list = element('div'); list.id = 'site-permissions'; body.append(list); renderSitePermissions();
+  const reset = element('button', 'secondary-button', 'Reset browser permissions'); reset.onclick = () => command('reset-site-permissions'); body.append(reset, element('hr', 'section-divider'));
+}
 function showSettings() {
   openModal('Workspace settings');
   const body = $('modal-body'), field = element('div', 'field');
@@ -158,6 +198,7 @@ function showSettings() {
   const avatars = element('button', 'secondary-button', 'Customize bot avatars');
   avatars.onclick = () => showAvatarEditor(); body.append(avatars);
   body.append(element('p', 'settings-note', 'Pick a marble avatar or import your own. Eyes follow your mouse only while Telegram reports activity.'), element('hr', 'section-divider'));
+  showSitePermissionSettings(body);
   const label = element('label', '', 'VPS desktop connection'); label.htmlFor = 'remote-url';
   const input = element('input'); input.id = 'remote-url'; input.placeholder = 'https://your-server/vnc.html or wss://…'; input.value = state.remoteUrl;
   field.append(label, input, element('p', '', 'Paste your existing noVNC viewer URL. Connect through Tailscale when your server is private. The small preview starts in watch mode.'));
