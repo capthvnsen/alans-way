@@ -30,6 +30,13 @@ class ConfigTests(unittest.TestCase):
         })
         self.assertEqual(len(MAC_TOOLS), 3)
 
+    def test_offline_mac_has_bounded_native_connection_and_call_timeouts(self):
+        from hermes_companion.config import build_mcp_config
+        server = build_mcp_config("operator@private-mac", "/opt/companion/python", "/srv/approved")["mcp_servers"]["mac_companion"]
+        self.assertEqual(server["connect_timeout"], 10)
+        self.assertEqual(server["timeout"], 20)
+        self.assertIs(server["lazy"], True)
+
     def test_rejects_unsafe_host_without_echoing_it(self):
         from hermes_companion.config import build_mcp_config
 

@@ -1,0 +1,6 @@
+name: proactive-primary
+version: "0.1.0"
+description: "Event-driven reviews by one designated Hermes primary."
+author: "capthvnsen, Hermes Agent"
+provides_tools:
+  - proactive_control

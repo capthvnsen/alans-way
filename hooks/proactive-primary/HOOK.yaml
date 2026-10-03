@@ -1,0 +1,5 @@
+name: proactive-primary-gateway
+version: "0.1.0"
+description: "Arm the proactive plugin only inside the native gateway process."
+events:
+  - gateway:startup
