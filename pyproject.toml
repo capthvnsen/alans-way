@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-companion"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Cloud-first Hermes companion with private, scoped Mac tools"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -4,7 +4,7 @@
 
 An external, removable companion for people running [Hermes Agent](https://github.com/NousResearch/hermes-agent) on a Linux VPS and using a Mac locally. The VPS remains the primary conversation and execution host. The Mac exposes only explicitly scoped capabilities through a private connection.
 
-> **Alpha — not a turnkey one-bot product yet.** This release provides an installable CLI, a read-only Mac MCP server, a private SSH configuration generator, and connection verification. Automatic phone ↔ Desktop conversation routing, live approval routing, and restart-safe task admission are **not implemented**. The experimental keeper is not safe to attach to your live assistant.
+> **Alpha.** Use your existing VPS Hermes and Telegram conversation from phone or Mac. Companion adds scoped Mac tools and an optional event-driven proactivity plugin. Install the plugin and its separate startup hook using the [proactivity guide](docs/proactivity.md). Native Hermes remains the conversation and approval owner. The experimental keeper is research and should not be attached to a live assistant.
 
 ## What works in this alpha
 
@@ -14,20 +14,43 @@ An external, removable companion for people running [Hermes Agent](https://githu
 - `serve-mac`: expose exactly three read-only MCP tools from an approved directory, on macOS only.
 - `verify-mac`: use the real MCP protocol over SSH to check the Mac endpoint. An optional explicitly requested file read is bounded and reports metadata, not its contents.
 - Portable tests and Linux/macOS CI.
+- Optional `proactive-primary` plugin: durable chat preferences, pause/resume,
+  immediate read-only reviews, and bounded automatic opportunities in one
+  explicitly bound Telegram conversation. Approved task watches preserve their
+  execution host and observe native task metadata.
+- [Mac desktop app](desktop/README.md): bot-only Telegram chats, local Chromium
+  tabs with human/agent control, and a shared VPS desktop viewer. The browser MCP
+  connector lets the VPS primary drive those live Mac tabs over private SSH.
+
+## Desktop app
+
+```sh
+cd desktop
+npm ci
+npm run check
+npm start
+```
+
+Use the existing primary's Telegram chat in the app. `/proactivity` commands
+reach the installed plugin directly. The browser connector and the read-only Mac
+file endpoint have separate tool surfaces; install only the capabilities you
+want. Setup and Mac packaging are in the [desktop guide](desktop/README.md).
 
 ## Architecture
 
 ```text
-Phone messaging interface ─┐
-                          ├─> VPS Hermes — primary brain, transcript and cloud work
-Mac Hermes Desktop ───────┘        |
+Telegram on phone or Mac ──> VPS Hermes — primary brain, transcript and cloud work
+                                  |
                                   | private SSH / MCP
                                   v
                           Mac read-only companion
                           explicitly approved directory
 ```
 
-**The diagram is the target architecture, not a claim that this alpha automatically binds those chat interfaces.** Use native Hermes to configure Desktop and messaging gateways. Keep one authoritative conversation owner; two independently running Hermes processes must not concurrently write the same conversation or synchronize live session databases.
+Keep one authoritative conversation owner: the existing Telegram gateway. Use
+Telegram on the Mac as well as the phone. A separate native Hermes Desktop
+conversation is not automatically merged; independently running processes must
+not concurrently write the same session database.
 
 When the Mac is offline, the VPS can continue cloud work independently. Mac tool calls fail visibly; they are not executed on the VPS. This alpha does **not** durably queue Mac jobs for later.
 
@@ -67,7 +90,7 @@ hermes-companion mcp-config \
 
 The command prints JSON containing `mcp_servers.mac_companion`. Review it and merge that entry into the **VPS primary profile's** Hermes `config.yaml` using Hermes' documented MCP configuration workflow. Do not replace the rest of your config, edit another profile, or create a second cloud brain. JSON is also valid YAML, but merge the entry rather than paste a second competing top-level `mcp_servers` block.
 
-The generated remote command runs the **installed package**, not a hardcoded personal script. SSH is noninteractive, verifies existing host keys, and has a bounded connection timeout. Tool access is narrow and sampling is disabled.
+The generated remote command runs the **installed package**, not a hardcoded personal script. SSH is noninteractive, verifies existing host keys, and has a bounded connection timeout. Hermes connects lazily after the first successful schema discovery, with bounded connection and tool-call timeouts. Tool access is narrow and sampling is disabled.
 
 ### 4. Verify the actual route
 

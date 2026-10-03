@@ -55,9 +55,9 @@ def main():
     root = Path(__file__).resolve().parents[1]
     module = Path(hermes_companion.__file__).resolve()
     assert not module.is_relative_to(root / "src"), "Smoke check must use the installed wheel"
-    assert importlib.metadata.version("hermes-companion") == "0.1.0a1"
+    assert importlib.metadata.version("hermes-companion") == "0.1.0a2"
     version = invoke("--version")
-    assert version.returncode == 0 and version.stdout.strip() == "hermes-companion 0.1.0a1"
+    assert version.returncode == 0 and version.stdout.strip() == "hermes-companion 0.1.0a2"
     config = invoke("mcp-config", "--mac-host", "macuser@mac-private-host",
                     "--mac-python", "/opt/hermes-companion/.venv/bin/python",
                     "--workspace", "/opt/hermes-companion/approved-workspace")

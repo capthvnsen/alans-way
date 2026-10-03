@@ -27,6 +27,7 @@ EXAMPLE_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
 ))
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pem", ".key", ".patch", ".diff", ".log"}
 FORBIDDEN_IMPORTS = {"gateway", "tui_gateway", "hermes_cli", "hermes_state", "run_agent", "model_tools", "tools", "agent"}
+BINARY_ASSETS = {"desktop/assets/icon.png": b"\x89PNG\r\n\x1a\n", "desktop/assets/icon.icns": b"icns"}
 
 
 def inspect_text(path: str, text: str) -> list[dict]:
@@ -80,6 +81,11 @@ def main() -> int:
         mode = item.lstat().st_mode
         if not stat.S_ISREG(mode):
             findings.append({"file": path, "line": 0, "rule": "nonregular-file"})
+            continue
+        if path in BINARY_ASSETS:
+            blob = item.read_bytes()
+            if not blob.startswith(BINARY_ASSETS[path]) or len(blob) > 1048576:
+                findings.append({"file": path, "line": 0, "rule": "invalid-static-asset"})
             continue
         try:
             text = item.read_text(encoding="utf-8")

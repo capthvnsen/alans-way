@@ -21,7 +21,7 @@ class CLITests(unittest.TestCase):
         with patch.dict(sys.modules, {"mcp": None, "hermes_companion.mac_server": None}):
             status, out, err = self.invoke(["--version"])
         self.assertEqual(status, 0)
-        self.assertEqual(out.strip(), "hermes-companion 0.1.0a1")
+        self.assertEqual(out.strip(), "hermes-companion 0.1.0a2")
         self.assertEqual(err, "")
 
     def test_no_subcommand_shows_help_without_side_effects(self):
@@ -45,7 +45,7 @@ class CLITests(unittest.TestCase):
         result = subprocess.run([sys.executable, "-m", "hermes_companion", "--version"],
                                 capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "hermes-companion 0.1.0a1")
+        self.assertEqual(result.stdout.strip(), "hermes-companion 0.1.0a2")
         self.assertEqual(result.stderr, "")
 
     def test_bad_config_is_nonzero_and_does_not_echo_input(self):
@@ -70,7 +70,7 @@ class CLITests(unittest.TestCase):
             status, out, err = self.invoke(["doctor"])
         self.assertEqual(status, 0)
         report = json.loads(out)
-        self.assertEqual(report["component_version"], "0.1.0a1")
+        self.assertEqual(report["component_version"], "0.1.0a2")
         self.assertTrue(report["sdk_available"])
         self.assertTrue(report["ssh_available"])
         self.assertTrue(report["hermes_available"])

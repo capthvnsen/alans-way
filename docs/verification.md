@@ -1,6 +1,35 @@
 # Pre-release verification
 
-These are actual execution results against synthetic fixtures. They are not a claim that the full shared-conversation product is ready.
+These are actual execution results. Browser execution migration and independent
+native Desktop/Telegram conversation merging remain outside this release.
+
+## Companion 0.1.0a2 and shared desktop repository
+
+| Check | Observed result |
+|---|---|
+| Final installed-wheel regression on macOS | 160 tests; OK, 2 expected platform/opt-in skips |
+| Final source regression on Linux VPS | 160 tests; OK, 8 expected Darwin/opt-in skips |
+| Fresh installed-wheel Mac smoke | CLI/config/diagnostics and actual MCP initialize/list/status/read/denials passed |
+| Stock Hermes Plugin Doctor and admission validation | Real discovery, import, registration and manifest checks passed; no core override |
+| Primary-profile deployment | Existing Telegram route bound; unrelated configuration and enabled plugin entries preserved |
+| Real native-model appraisal | One structured completion returned valid silent appraisal; no event injection |
+| Existing gateway restart | Same default profile restarted while idle; Telegram connected; startup hook stamped the new gateway |
+| Durable pause | Paused state and bound route survived a subsequent gateway restart |
+| Actual Telegram command | Primary replied with effective paused state, quiet hours, limits, bound route and gateway readiness |
+| Automatic pilot | One admitted test event was claimed and ended silently; no draft or completion was claimed. Test watch cancelled; no pending/uncertain events remained |
+| Desktop source check | Six core checks and all JavaScript syntax checks passed |
+| Live background-browser MCP | Replacement typing, click, screenshot and Enter passed against a local fixture |
+| Mac packaging | Apple Silicon app built from the unified `desktop/` source |
+| Publication checks | Repository policy, staged whitespace and Gitleaks scan passed |
+
+The deployment used existing authorized private SSH access and the existing
+default Telegram primary. Specialist profiles and stock Hermes source were not
+modified. Automatic defaults remain quiet 22:00–08:00 in America/Denver, at most
+three reviews per local day and two hours between automatic reviews. Caps are
+ceilings, not quotas. Proactivity preferences and pause persist in Companion's
+own state; native Hermes owns execution and approvals.
+
+## Companion 0.1.0a1 baseline
 
 | Check | Observed result |
 |---|---|
@@ -17,7 +46,7 @@ These are actual execution results against synthetic fixtures. They are not a cl
 | Stock source preservation | Both inspected Hermes source trees had no tracked or staged changes after the checks |
 | Secret scan | Gitleaks 8.30.1 reported no leaks; repository policy scan and staged whitespace check passed |
 
-## Important qualifications
+### Baseline qualifications
 
 - SSH tests used an already authorized private route and verified host keys. They did not provision keys, start a daemon, change live Hermes config, migrate a gateway or attach a live session.
 - A raw MCP success does not certify native Hermes' approval/trust classification. The SDK annotation caveat remains in [compatibility](compatibility.md).

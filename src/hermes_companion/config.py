@@ -55,6 +55,9 @@ def build_mcp_config(mac_host: str, mac_python: str, workspace: str) -> dict:
     ])
     return {"mcp_servers": {"mac_companion": {
         "command": "ssh",
+        "connect_timeout": 10,
+        "timeout": 20,
+        "lazy": True,
         "args": [*SSH_OPTIONS, mac_host, remote_command],
         # Keep the caller's SSH agent usable through Hermes' filtered env without
         # serializing its machine-specific socket path into the generated file.

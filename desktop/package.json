@@ -1,0 +1,22 @@
+{
+  "name": "hermes-workspace",
+  "productName": "Hermes Workspace",
+  "version": "0.1.0",
+  "description": "A Telegram, local Chromium and remote desktop workspace for Hermes agents.",
+  "private": true,
+  "license": "MIT",
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check src/main.cjs && node --check src/preload.cjs && node --check src/telegram-preload.cjs && node --check src/renderer.js && node --check src/remote.js && node --check scripts/browser-mcp.cjs && node --test test/*.test.cjs",
+    "package:mac": "electron-packager . 'Hermes Workspace' --platform=darwin --arch=arm64 --no-asar --out=dist --overwrite --ignore='^/(test|dist|screenshots)(/|$)' --app-bundle-id=app.hermes.workspace --app-version=0.1.0 --icon=assets/icon.icns"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.0",
+    "@novnc/novnc": "1.7.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.5.1"
+  }
+}
