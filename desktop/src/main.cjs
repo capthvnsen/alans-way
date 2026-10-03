@@ -9,8 +9,11 @@ const { createAgentInput } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 
-app.setName('Hermes Workspace');
-if (process.env.HERMES_WORKSPACE_DATA) app.setPath('userData', path.resolve(process.env.HERMES_WORKSPACE_DATA));
+app.setName("Hermes- Alan's way");
+// Keep existing sessions and connector discovery stable when the product name changes.
+app.setPath('userData', process.env.HERMES_WORKSPACE_DATA
+  ? path.resolve(process.env.HERMES_WORKSPACE_DATA)
+  : path.join(app.getPath('appData'), 'Hermes Workspace'));
 const ROOT = __dirname;
 const TELEGRAM = 'https://web.telegram.org/a/';
 let win, backgroundWindow, telegramView, remoteView, apiServer, prefs, layout = {}, apiPort = 0;

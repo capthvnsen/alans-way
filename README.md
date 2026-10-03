@@ -1,8 +1,13 @@
-# Hermes Companion
+# Hermes- Alan's way
 
 **Cloud brain. Private Mac tools. Stock Hermes.**
 
 An external, removable companion for people running [Hermes Agent](https://github.com/NousResearch/hermes-agent) on a Linux VPS and using a Mac locally. The VPS remains the primary conversation and execution host. The Mac exposes only explicitly scoped capabilities through a private connection.
+
+The desktop and companion are one add-on named **Hermes- Alan's way**. Hermes
+source stays stock; integrations use native plugins, hooks, skills and MCP.
+The repository, `hermes-companion` CLI, connector names and existing desktop
+storage paths retain their technical names so upgrades preserve working setups.
 
 > **Alpha.** Use your existing VPS Hermes and Telegram conversation from phone or Mac. Companion adds scoped Mac tools and an optional event-driven proactivity plugin. Install the plugin and its separate startup hook using the [proactivity guide](docs/proactivity.md). Native Hermes remains the conversation and approval owner. The experimental keeper is research and should not be attached to a live assistant.
 
@@ -38,6 +43,15 @@ want. Setup and Mac packaging are in the [desktop guide](desktop/README.md).
 The [agent setup guide](docs/agent-setup.md) covers a small fleet of vanilla
 Hermes profiles, the optional workspace skill, legacy profile retirement and
 reply checks after updates.
+
+## Optional workflow packs
+
+[Oh My Hermes](https://github.com/rlaope/oh-my-hermes) is a possible optional
+planning/coding/review pack, evaluated in the [compatibility research](docs/research/oh-my-hermes-compatibility.md).
+It is not a dependency or installed by this project. A future pilot should
+target one native profile with an explicit store, preserve its existing memory
+provider and keep the companion's browser/session authority. Ordinary OMH
+setup/update can enroll child profiles; review its scope before applying it.
 
 ## Architecture
 

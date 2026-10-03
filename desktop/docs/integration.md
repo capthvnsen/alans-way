@@ -1,4 +1,4 @@
-# Hermes Companion integration boundary
+# Hermes- Alan's way integration boundary
 
 Keep stock Hermes unchanged. The companion should launch or register the browser MCP connector on the Mac through the existing private SSH route, using its bot/profile identity as `--bot-id`. Map Telegram bot IDs to Hermes profile IDs explicitly if those namespaces differ. The UI can assign a tab to either ID; they must match the connector argument.
 

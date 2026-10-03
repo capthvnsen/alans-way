@@ -1,10 +1,10 @@
-# Hermes Workspace
+# Hermes- Alan's way
 
 A free Mac desktop workspace with your Telegram bot chats on the left, real local Chromium tabs on the right, and a live VPS desktop in the corner. The dark three-pane layout follows the supplied Grok Bot reference. This is a functional first release for testing with Hermes bots.
 
 ## Use it
 
-Open **Hermes Workspace.app**. Sign in to Telegram with its normal QR or phone login if needed. No Telegram developer API credentials are required: the chat pane loads the official Telegram Web A and applies local styling.
+Open **Hermes- Alan's way**. The existing installed bundle remains at `/Applications/Hermes Workspace.app` so current connectors continue to work. Sign in to Telegram with its normal QR or phone login if needed. No Telegram developer API credentials are required: the chat pane loads the official Telegram Web A and applies local styling.
 
 - The sidebar contains verified bot conversations from your Telegram account. Drag them to sort; hover and click × to hide one. **Settings → Telegram bots** has an individual visibility switch for every discovered bot, including hidden bots. Choices save immediately and survive app restarts. Hiding a bot leaves its Telegram chat and Hermes agent intact. The + at the top opens a bot by username.
 - Click the selected bot’s portrait, or **Settings → Customize bot avatars**, to choose one of the ten marble avatars or import PNG, JPEG, or WebP pictures. Click **Save avatar** to keep the choice on this Mac. Built-in eyes are already positioned; **Adjust eye positions** calibrates an imported picture. This does not change the bot’s Telegram profile photo.
@@ -75,7 +75,7 @@ npm start
 npm run package:mac
 ```
 
-The package command builds an Apple Silicon Mac app in `dist/Hermes Workspace-darwin-arm64`. It includes a custom icon and the Node MCP connector. This is a local development build; signed/notarized public distribution is a later release step. Building and running locally does not require a paid developer account.
+The package command builds an Apple Silicon Mac app in `dist/Hermes- Alan's way-darwin-arm64`. It includes a custom icon and the Node MCP connector. This is a local development build; signed/notarized public distribution is a later release step. Building and running locally does not require a paid developer account.
 
 With the app open, `node test/browser-smoke.cjs` exercises the real MCP protocol against its own local test page. It checks typing, clicking, screenshots, popups, shared cookies, bot ownership, and stale epochs. It asks you to click Take over and Give to agent to verify the human control boundary. It sends no Telegram messages and operates no third-party forms.
 
@@ -83,11 +83,11 @@ With the app open, `node test/browser-smoke.cjs` exercises the real MCP protocol
 
 `npm run test:desktop` launches the real app with an isolated temporary profile, tests avatar selection/import/removal/persistence, and runs the real MCP background-browser test while asserting the human tab, draft, and focus remain unchanged. `npm run test:agent-input` exercises real trusted Chromium pointer and keyboard events in separate human/agent views. Neither sends Telegram messages or submits third-party forms. Unit tests cover activity expiry, cancellation, account isolation, avatar calibration, ownership, and mid-action takeover.
 
-App data lives in `~/Library/Application Support/Hermes Workspace/`. That directory holds private sessions, bot order/hiding preferences, the desktop URL, and a startup-rotated connector token. It is outside the source tree. The app restores up to twelve tab URLs after restart; live page execution state is not restored.
+App data lives in `~/Library/Application Support/Hermes Workspace/`. The product rename preserves this existing directory and bundle ID. That directory holds private sessions, bot order/hiding preferences, the desktop URL, and a startup-rotated connector token. It is outside the source tree. The app restores up to twelve tab URLs after restart; live page execution state is not restored.
 
 ## Companion integration
 
-This app lives in `desktop/` in the Hermes Companion repository. Install the
+This app lives in `desktop/` in the Hermes- Alan's way repository. Install the
 [proactivity plugin](../docs/proactivity.md) on your existing VPS primary, then
 use `/proactivity status`, `/proactivity pause`, `/proactivity resume`, or
 `/proactivity review` in its Telegram chat here. These commands reach the real

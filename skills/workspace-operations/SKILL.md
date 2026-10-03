@@ -1,6 +1,6 @@
 ---
 name: workspace-operations
-description: Use for Hermes Workspace browser tasks, Mac/VPS execution handoff, human takeover, or explicitly sharing a tab with another bot.
+description: Use for Hermes- Alan's way browser tasks, Mac/VPS execution handoff, human takeover, or explicitly sharing a tab with another bot.
 ---
 
 # Workspace operations

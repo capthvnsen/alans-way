@@ -27,7 +27,7 @@ const tools = [
 ];
 async function request(endpoint, method = 'GET', body) {
   let connection;
-  try { connection = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw new Error('Mac browser unavailable: open Hermes Workspace first.'); }
+  try { connection = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw new Error("Mac browser unavailable: open Hermes- Alan's way first."); }
   const url = new URL(connection.url);
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !connection.token) throw new Error('Invalid local browser connection file.');
   let response;

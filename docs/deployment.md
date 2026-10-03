@@ -1,4 +1,4 @@
-# Deploy Companion and Workspace to another Hermes instance
+# Deploy Hermes- Alan's way to another Hermes instance
 
 This is a manual setup today, with a stock Hermes gateway and an optional Mac
 profile. It does not require a Hermes fork. Desktop packaging currently targets
@@ -10,11 +10,11 @@ not been verified.
 2. Assign an existing or new Telegram bot through native messaging setup. Verify
    its numeric ID with `getMe` and keep a single active owner of its token. Follow
    [agent setup](agent-setup.md) for profile and connector identity rules.
-3. Install Companion using its documented configuration and native plugin/hook
+3. Install the companion using its documented configuration and native plugin/hook
    registration. Start with manual status/handoff verification before enabling
    optional proactive behavior. Each installation has its own credentials and
    device trust; do not distribute a user's app data or Hermes state directory.
-4. Install Workspace on the Mac. Sign into Telegram locally and choose the bot
+4. Install Hermes- Alan's way on the Mac. Sign into Telegram locally and choose the bot
    visibility/order in Settings. App browser logins belong to that installation.
 5. Configure a verified private SSH route from the VPS to that Mac. Launch
    `desktop/scripts/browser-mcp.cjs` on the Mac with this profile's numeric bot ID,

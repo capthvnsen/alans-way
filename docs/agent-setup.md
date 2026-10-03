@@ -1,7 +1,7 @@
 # Small fleet setup with stock Hermes
 
 Keep one VPS primary as the owner of the real Telegram conversation. The Mac
-Workspace app is a browser/tool host, not a second Telegram gateway. An
+Hermes- Alan's way app is a browser/tool host, not a second Telegram gateway. An
 optional native Mac profile can handle deliberately separate local sessions;
 it should retain its own transcript and should not poll the primary's bot
 token. Add specialists only when there is a clear independent role.
