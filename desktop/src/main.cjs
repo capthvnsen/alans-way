@@ -1,23 +1,31 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, Menu, dialog, clipboard, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, Menu, dialog, clipboard, shell, nativeTheme, screen, nativeImage } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { normalizeUrl, parseRemoteUrl, requireActor, isAuthorized, sanitizeBots } = require('./core.cjs');
+const { createAvatarStore } = require('./avatar-store.cjs');
+const { createAgentInput } = require('./agent-input.cjs');
+const { createActivityTracker } = require('./activity.cjs');
 
 app.setName('Hermes Workspace');
 if (process.env.HERMES_WORKSPACE_DATA) app.setPath('userData', path.resolve(process.env.HERMES_WORKSPACE_DATA));
 const ROOT = __dirname;
 const TELEGRAM = 'https://web.telegram.org/a/';
-let win, telegramView, remoteView, apiServer, prefs, layout = {}, apiPort = 0;
+let win, backgroundWindow, telegramView, remoteView, apiServer, prefs, layout = {}, apiPort = 0;
 let activeTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 const tabs = new Map();
 const configuredSessions = new WeakSet();
 const API_TOKEN = crypto.randomBytes(32).toString('hex');
 let isQuitting = false;
+let backgroundCaptureQueue = Promise.resolve();
+const avatarStore = createAvatarStore({ root: ROOT, nativeImage, dialog, getWindow: () => win, getPreferences: () => prefs });
+const agentInput = createAgentInput({ command: browserCommand, requireActor });
+const activity = createActivityTracker();
+let pointerTimer, activityTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, savedTabs: [] };
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {} };
   try { return { ...defaults, ...JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'preferences.json'), 'utf8')) }; }
   catch { return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' }; }
 }
@@ -31,13 +39,14 @@ function savePreferences() {
 }
 function describeTab(tab) {
   return { id: tab.id, title: tab.title || 'New tab', url: tab.view.webContents.getURL(), botId: tab.botId,
-    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots };
+    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null };
 }
 function getState() {
-  return { name: app.getName(), version: app.getVersion(), bots: prefs.bots, order: prefs.order, hidden: prefs.hidden,
+  return { name: app.getName(), version: app.getVersion(), bots: prefs.bots.map(bot => ({ ...bot, activity: activity.get(bot.id) })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
-    activeTabId, fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
+    activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
+    fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
 }
 function broadcast() {
   if (!win || win.isDestroyed() || !prefs) return;
@@ -47,18 +56,49 @@ function broadcast() {
 }
 function fit(view, rect) {
   if (!view || view.webContents.isDestroyed()) return;
-  if ([...tabs.values()].some(tab => tab.view === view && tab.capturing)) return;
-  if (!rect || rect.width < 1 || rect.height < 1 || layout.obscured) { view.setVisible(false); return; }
+  if (!rect || rect.width < 1 || rect.height < 1 || layout.obscured) { if (view.getVisible()) view.setVisible(false); return; }
   const size = win.getContentBounds();
   const x = Math.max(0, Math.round(rect.x)), y = Math.max(0, Math.round(rect.y));
-  view.setBounds({ x, y, width: Math.max(1, Math.min(Math.round(rect.width), size.width - x)), height: Math.max(1, Math.min(Math.round(rect.height), size.height - y)) });
-  view.setVisible(true);
+  const next = { x, y, width: Math.max(1, Math.min(Math.round(rect.width), size.width - x)), height: Math.max(1, Math.min(Math.round(rect.height), size.height - y)) };
+  const previous = view.getBounds();
+  if (Object.keys(next).some(key => next[key] !== previous[key])) view.setBounds(next);
+  if (!view.getVisible()) view.setVisible(true);
+}
+function backgroundHost(width = 900, height = 700) {
+  width = Math.max(900, Math.ceil(width)); height = Math.max(700, Math.ceil(height));
+  if (!backgroundWindow || backgroundWindow.isDestroyed()) {
+    // A hidden WebContentsView in the human window can acquire native focus
+    // during load and has no viewport before its first show. Keep inactive
+    // tabs visible inside a separate window that can never accept native focus.
+    backgroundWindow = new BrowserWindow({ show: false, focusable: false, frame: false, skipTaskbar: true,
+      width, height, webPreferences: { sandbox: true, backgroundThrottling: false } });
+  } else {
+    const [currentWidth, currentHeight] = backgroundWindow.getContentSize();
+    if (width > currentWidth || height > currentHeight) backgroundWindow.setContentSize(Math.max(width, currentWidth), Math.max(height, currentHeight));
+  }
+  return backgroundWindow;
 }
 function applyLayout() {
   fit(telegramView, layout.telegram);
-  for (const tab of tabs.values()) fit(tab.view, activeTabId === tab.id ? layout.browser : null);
+  for (const tab of tabs.values()) {
+    const foreground = activeTabId === tab.id && layout.browser?.width > 0 && layout.browser?.height > 0 && !layout.obscured;
+    const host = foreground ? win : backgroundHost(layout.browser?.width || 900, layout.browser?.height || 700);
+    if (tab.host !== host) {
+      tab.view.setVisible(false);
+      tab.host?.contentView.removeChildView(tab.view);
+      host.contentView.addChildView(tab.view);
+      tab.host = host;
+    }
+    if (foreground) fit(tab.view, layout.browser);
+    else {
+      const previous = tab.view.getBounds();
+      const next = { x: 0, y: 0, width: Math.max(1, Math.round(layout.browser?.width || previous.width || 900)), height: Math.max(1, Math.round(layout.browser?.height || previous.height || 700)) };
+      if (Object.keys(next).some(key => next[key] !== previous[key])) tab.view.setBounds(next);
+      if (!tab.view.getVisible()) tab.view.setVisible(true);
+    }
+  }
   fit(remoteView, activeTabId === 'vps' ? layout.browser : prefs.preview ? layout.preview : null);
-  if (remoteView) win.contentView.addChildView(remoteView);
+  if (remoteView && win.contentView.children.at(-1) !== remoteView) win.contentView.addChildView(remoteView);
 }
 function configureContents(contents, isTelegram = false) {
   contents.setWindowOpenHandler((details) => {
@@ -66,7 +106,7 @@ function configureContents(contents, isTelegram = false) {
     try { url = normalizeUrl(details.url); } catch { return { action: 'deny' }; }
     return { action: 'allow', createWindow: (options) => {
       const parent = [...tabs.values()].find((tab) => tab.view.webContents === contents);
-      const tab = createTab({ url, botId: parent?.botId || prefs.selectedBotId || 'shared', controller: parent?.controller || 'human', options, skipLoad: details.disposition !== 'background-tab' });
+      const tab = createTab({ url, botId: parent?.botId || prefs.selectedBotId || 'shared', controller: parent?.controller || 'human', options, skipLoad: details.disposition !== 'background-tab', activate: parent?.controller !== 'agent' && details.disposition !== 'background-tab' });
       return tab.view.webContents;
     } };
   });
@@ -75,6 +115,8 @@ function configureContents(contents, isTelegram = false) {
     else if (!isTelegram && !/^https?:\/\//i.test(url) && url !== 'about:blank') event.preventDefault();
   });
   contents.on('before-input-event', (event, input) => {
+    const targetTab = [...tabs.values()].find(tab => tab.view.webContents === contents);
+    if (targetTab && agentInput.isDispatching(targetTab)) return;
     if ((input.meta || input.control) && input.type === 'keyDown') {
       const key = input.key.toLowerCase();
       if (key === 'l') { event.preventDefault(); win.webContents.send('workspace:focus-address'); }
@@ -86,9 +128,9 @@ function configureContents(contents, isTelegram = false) {
   if (configuredSessions.has(session)) return;
   configuredSessions.add(session);
   session.setPermissionRequestHandler(async (wc, permission, callback, details) => {
-    if (permission === 'fullscreen') return callback(true);
     const tab = [...tabs.values()].find((item) => item.view.webContents === wc);
     if (tab && (tab.id !== activeTabId || tab.controller === 'agent')) return callback(false);
+    if (permission === 'fullscreen') return callback(true);
     const allowedTypes = ['media', 'notifications', 'clipboard-read', 'geolocation'];
     if (!allowedTypes.includes(permission)) return callback(false);
     let host = 'This page';
@@ -110,7 +152,8 @@ function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared
   view.setBackgroundColor('#0b0b0c');
   const tab = { id: crypto.randomUUID(), view, botId: String(botId).slice(0, 100), controller, epoch: 1, title: 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
   tabs.set(tab.id, tab);
-  win.contentView.addChildView(view);
+  tab.host = backgroundHost();
+  tab.host.contentView.addChildView(view);
   // Background agent tabs still need a real viewport for layout and screenshots.
   const viewport = layout.browser || { x: 0, y: 0, width: 900, height: 700 };
   view.setBounds({ x: Math.round(viewport.x), y: Math.round(viewport.y), width: Math.round(viewport.width), height: Math.round(viewport.height) });
@@ -134,7 +177,7 @@ function closeTab(id) {
   const tab = tabs.get(id);
   if (!tab) return;
   tabs.delete(id);
-  win.contentView.removeChildView(tab.view);
+  tab.host?.contentView.removeChildView(tab.view);
   tab.view.webContents.close();
   if (activeTabId === id) activeTabId = [...tabs.keys()].at(-1) || 'home';
   savePreferences(); applyLayout(); broadcast();
@@ -146,6 +189,7 @@ function changeController(id, controller) {
   if (tab.controller === 'agent' && tab.botId === 'shared' && prefs.selectedBotId) tab.botId = prefs.selectedBotId;
   tab.epoch++;
   tab.refs.clear();
+  agentInput.clear(tab).catch(() => {});
   broadcast();
   return describeTab(tab);
 }
@@ -196,11 +240,22 @@ function registerIpc() {
         const tab = tabs.get(value.id); if (!tab) throw new Error('Tab not found.');
         if (typeof value.botId === 'string' && value.botId.length > 0 && value.botId.length <= 100) tab.botId = value.botId;
         tab.allowedBots = Array.isArray(value.botIds) ? [...new Set(value.botIds.filter(id => typeof id === 'string' && id.length > 0 && id.length <= 100 && id !== tab.botId))] : [];
-        tab.epoch++; tab.refs.clear(); break;
+        tab.epoch++; tab.refs.clear(); agentInput.clear(tab).catch(() => {}); break;
       }
+      case 'import-avatars': await avatarStore.importFiles(); savePreferences(); break;
+      case 'set-bot-avatar': avatarStore.set(value); savePreferences(); break;
+      case 'remove-avatar': avatarStore.remove(value.avatarId); savePreferences(); break;
       case 'open-bot': await openBot(String(value.id)); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
-      case 'hide-bot': if (!prefs.hidden.includes(value.id)) prefs.hidden.push(value.id); savePreferences(); break;
+      case 'hide-bot':
+      case 'set-bot-visibility': {
+        const id = String(value.id);
+        if (!prefs.bots.some((bot) => bot.id === id)) throw new Error('Telegram bot not found. Sync your bot list and try again.');
+        if (command === 'set-bot-visibility' && typeof value.visible !== 'boolean') throw new Error('Choose whether to show this bot.');
+        if (command === 'set-bot-visibility' && value.visible) prefs.hidden = prefs.hidden.filter((hiddenId) => hiddenId !== id);
+        else if (!prefs.hidden.includes(id)) prefs.hidden.push(id);
+        savePreferences(); break;
+      }
       case 'restore-bots': prefs.hidden = []; savePreferences(); break;
       case 'settings':
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
@@ -233,7 +288,7 @@ function registerIpc() {
     telegramStatus = ['connected', 'login', 'locked', 'loading'].includes(value.status) ? value.status : 'loading';
     telegramDiagnostics = value.diagnostics || {};
     if (value.accountId && /^\d+$/.test(value.accountId)) {
-      if (prefs.accountId && prefs.accountId !== value.accountId) { prefs.bots = []; prefs.order = []; prefs.hidden = []; prefs.selectedBotId = ''; }
+      if (prefs.accountId && prefs.accountId !== value.accountId) { prefs.bots = []; prefs.order = []; prefs.hidden = []; prefs.selectedBotId = ''; prefs.avatarPreferences = {}; }
       prefs.accountId = value.accountId;
       const bots = sanitizeBots(value.bots);
       const merged = new Map(prefs.bots.map((bot) => [bot.id, bot]));
@@ -246,7 +301,12 @@ function registerIpc() {
       }
       savePreferences();
     }
+    activity.setContext({ accountId: prefs.accountId, bots: prefs.bots, connected: telegramStatus === 'connected' });
     broadcast();
+  });
+  ipcMain.on('telegram:activity', (event, packet) => {
+    if (event.sender !== telegramView?.webContents || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith(TELEGRAM)) return;
+    if (activity.ingest(packet)) broadcast();
   });
 }
 
@@ -264,6 +324,7 @@ async function snapshot(tab) {
       if (items.length >= 300) break;
     }
     return { title: document.title, url: location.href, text: document.body?.innerText?.slice(0, 20000) || '', elements: items,
+      viewport: { width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio },
       iframes: [...document.querySelectorAll('iframe')].map(el => ({ title: el.title, src: el.src })).slice(0, 20) };
   })()`);
   tab.refs = new Set(result.elements.map((item) => item.ref));
@@ -275,87 +336,43 @@ function browserCommand(tab, method, params) {
   return wc.debugger.sendCommand(method, params);
 }
 async function captureTab(tab) {
-  const wc = tab.view.webContents;
-  if (tab.view.getVisible()) return wc.capturePage(undefined, { stayHidden: true });
-  // A hidden native View has no capture surface. Temporarily parent it to a
-  // hidden window; capturePage can paint there without changing the user's tab.
-  const bounds = tab.view.getBounds();
-  const captureWindow = new BrowserWindow({ show: false, frame: false, skipTaskbar: true,
-    width: bounds.width, height: bounds.height, webPreferences: { sandbox: true } });
-  tab.capturing = true;
-  win.contentView.removeChildView(tab.view);
-  captureWindow.contentView.addChildView(tab.view);
-  tab.view.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
-  tab.view.setVisible(true);
-  try {
+  const capture = backgroundCaptureQueue.then(async () => {
+    const wc = tab.view.webContents;
+    if (tab.host === win) return wc.capturePage(undefined, { stayHidden: true });
+    // Hidden tabs share one host. Bring only this surface to its top while
+    // capturing; never reparent it into the human's window or change selection.
+    if (tab.host.contentView.children.at(-1) !== tab.view) tab.host.contentView.addChildView(tab.view);
     await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: true });
-    return await wc.capturePage(undefined, { stayHidden: true });
-  } finally {
-    if (!wc.isDestroyed()) {
-      await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
-      captureWindow.contentView.removeChildView(tab.view);
-      if (tabs.has(tab.id)) win.contentView.addChildView(tab.view);
+    try {
+      await wc.executeJavaScript('new Promise(resolve => { const timer = setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); })); })');
+      return await wc.capturePage(undefined, { stayHidden: true });
     }
-    tab.capturing = false;
-    captureWindow.destroy();
-    applyLayout();
-  }
+    finally { if (!wc.isDestroyed()) await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {}); }
+  });
+  backgroundCaptureQueue = capture.catch(() => {});
+  return capture;
 }
 async function performAction(tab, body, botId) {
   requireActor(tab, botId, body.epoch, true);
-  await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: true });
-  try {
-    requireActor(tab, botId, body.epoch, true);
-    return await dispatchAction(tab, body, botId);
-  } finally {
-    if (!tab.view.webContents.isDestroyed()) await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
+  if (['click', 'type', 'press', 'scroll', 'move'].includes(body.action)) {
+    const result = await agentInput.perform(tab, body, botId);
+    if (body.action !== 'move') tab.refs.clear();
+    broadcast();
+    return { ...result, tab: describeTab(tab), dispatched: true };
   }
-}
-async function dispatchAction(tab, body, botId) {
-  requireActor(tab, botId, body.epoch, true);
   const wc = tab.view.webContents;
   if (body.action === 'navigate') {
-    await wc.loadURL(normalizeUrl(body.url)); return describeTab(tab);
-  }
-  if (body.action === 'back' || body.action === 'forward' || body.action === 'reload') {
+    await agentInput.clear(tab);
+    requireActor(tab, botId, body.epoch, true);
+    await wc.loadURL(normalizeUrl(body.url));
+  } else if (['back', 'forward', 'reload'].includes(body.action)) {
+    await agentInput.clear(tab);
+    requireActor(tab, botId, body.epoch, true);
     const history = wc.navigationHistory;
     if (body.action === 'back' && history.canGoBack()) history.goBack();
     else if (body.action === 'forward' && history.canGoForward()) history.goForward();
     else if (body.action === 'reload') wc.reload();
-  } else if (body.action === 'click' || body.action === 'type') {
-    if (!tab.refs.has(body.ref)) throw Object.assign(new Error('Stale or unknown reference. Request a fresh snapshot.'), { status: 409 });
-    const point = await wc.executeJavaScript(`(() => {
-      const el = document.querySelector('[data-hermes-workspace-ref="${body.ref}"]');
-      if (!el || el.disabled) return null;
-      el.scrollIntoView({ block: 'center', inline: 'center' }); el.focus();
-      if (${body.action === 'type'}) {
-        if (typeof el.select === 'function') el.select();
-        else if (el.isContentEditable) { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
-      }
-      const r = el.getBoundingClientRect();
-      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
-    })()`);
-    if (!point) throw new Error('Element is no longer available.');
-    requireActor(tab, botId, body.epoch, true);
-    if (body.action === 'click') {
-      await Promise.all([
-        browserCommand(tab, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 }),
-        browserCommand(tab, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 }),
-      ]);
-    } else {
-      if (typeof body.text !== 'string' || body.text.length > 20000) throw new Error('Provide text up to 20,000 characters.');
-      await browserCommand(tab, 'Input.insertText', { text: body.text });
-    }
-  } else if (body.action === 'press') {
-    if (typeof body.key !== 'string' || body.key.length > 30) throw new Error('Invalid key.');
-    const modifiers = (Array.isArray(body.modifiers) ? body.modifiers : []).reduce((bits, key) => bits | ({ alt: 1, control: 2, meta: 4, shift: 8 }[key] || 0), 0);
-    const key = ({ Return: 'Enter', Esc: 'Escape', Space: ' ' })[body.key] || body.key;
-    const keyCode = ({ Enter: 13, Tab: 9, Backspace: 8, Escape: 27, Delete: 46, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Home: 36, End: 35, PageUp: 33, PageDown: 34 })[key] || (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
-    const event = { key, modifiers, windowsVirtualKeyCode: keyCode, ...(key === 'Enter' ? { text: '\r' } : key.length === 1 && !(modifiers & 7) ? { text: key } : {}) };
-    await Promise.all([browserCommand(tab, 'Input.dispatchKeyEvent', { type: 'keyDown', ...event }), browserCommand(tab, 'Input.dispatchKeyEvent', { type: 'keyUp', ...event, text: undefined })]);
-  } else if (body.action === 'scroll') {
-    await browserCommand(tab, 'Input.dispatchMouseEvent', { type: 'mouseWheel', x: 100, y: 100, deltaX: Math.max(-2000, Math.min(2000, Number(body.x) || 0)), deltaY: Math.max(-2000, Math.min(2000, Number(body.y) || 0)) });
-  } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, scroll, back, forward, reload.'), { status: 400 });
+  } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, move, scroll, back, forward, reload.'), { status: 400 });
   tab.refs.clear(); broadcast();
   return { tab: describeTab(tab), dispatched: true };
 }
@@ -373,7 +390,7 @@ function startApi() {
     try {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'scroll', 'control-epochs'], tabCount: tabs.size });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await telegramView.webContents.executeJavaScript(`(() => ({
           styled: document.body.classList.contains('hw-chat'),
@@ -381,14 +398,16 @@ function startApi() {
           middleClasses: document.querySelector('#MiddleColumn')?.className || '',
           middleChildren: [...(document.querySelector('#MiddleColumn')?.children || [])].map(el => ({ tag: el.tagName, id: el.id, className: String(el.className), background: getComputedStyle(el).backgroundImage, display: getComputedStyle(el).display })),
         }))()`).catch(() => ({}));
-        return send(200, { telegram: { status: telegramStatus, ...telegramDiagnostics, appearance }, remote: remoteStatus,
+        const activityStates = prefs.bots.map(bot => activity.get(bot.id).state);
+        return send(200, { telegram: { status: telegramStatus, ...telegramDiagnostics, appearance,
+          activity: { available: activityStates.some(state => state !== 'unknown'), activeBots: activityStates.filter(state => state === 'active').length } }, remote: remoteStatus,
           window: { visible: win.isVisible(), focused: win.isFocused() } });
       }
       if (url.pathname === '/v1/tabs' && req.method === 'GET') return send(200, { tabs: [...tabs.values()].filter((tab) => !botId || tab.botId === botId || tab.allowedBots.includes(botId)).map(describeTab) });
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
         const body = await readJson(req);
-        return send(201, describeTab(createTab({ url: body.url, botId, controller: 'agent', activate: body.background !== true })));
+        return send(201, describeTab(createTab({ url: body.url, botId, controller: 'agent', activate: body.background === false })));
       }
       const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions))?$/.exec(url.pathname);
       const tab = match && tabs.get(match[1]);
@@ -397,9 +416,14 @@ function startApi() {
       if (req.method === 'GET' && !match[2]) return send(200, describeTab(tab));
       if (req.method === 'GET' && match[2] === 'snapshot') return send(200, await snapshot(tab));
       if (req.method === 'GET' && match[2] === 'screenshot') {
-        const capture = tab.queue.then(() => captureTab(tab));
+        const capture = tab.queue.then(async () => {
+          const shot = await captureTab(tab);
+          const viewport = await tab.view.webContents.executeJavaScript('({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })');
+          return { shot, viewport };
+        });
         tab.queue = capture.catch(() => {});
-        const shot = await capture; return send(200, { mimeType: 'image/png', base64: shot.toPNG().toString('base64'), tab: describeTab(tab) });
+        const { shot, viewport } = await capture;
+        return send(200, { mimeType: 'image/png', base64: shot.toPNG().toString('base64'), viewport, tab: describeTab(tab) });
       }
       if (req.method === 'POST' && match[2] === 'actions') {
         const body = await readJson(req);
@@ -427,7 +451,9 @@ function createWindow() {
   telegramView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'telegram-preload.cjs'), partition: 'persist:telegram', contextIsolation: true, nodeIntegration: false, sandbox: true } });
   telegramView.setBackgroundColor('#09090a');
   configureContents(telegramView.webContents, true);
-  telegramView.webContents.on('did-fail-load', (_e, code, _desc, _url, main) => { if (main && code !== -3) { telegramStatus = 'offline'; broadcast(); } });
+  telegramView.webContents.on('did-start-loading', () => { activity.clear(); broadcast(); });
+  telegramView.webContents.on('render-process-gone', () => { telegramStatus = 'offline'; activity.clear(); broadcast(); });
+  telegramView.webContents.on('did-fail-load', (_e, code, _desc, _url, main) => { if (main && code !== -3) { telegramStatus = 'offline'; activity.clear(); broadcast(); } });
   win.contentView.addChildView(telegramView);
   remoteView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   remoteView.setBackgroundColor('#101011');
@@ -450,12 +476,23 @@ function createWindow() {
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] },
   ]));
   startApi();
+  // Read the real pointer position, even over native child views or another app.
+  // This never installs a global input hook or moves the system cursor.
+  pointerTimer = setInterval(() => {
+    if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return;
+    const point = screen.getCursorScreenPoint(), bounds = win.getContentBounds();
+    const zoom = win.webContents.getZoomFactor();
+    win.webContents.send('workspace:pointer', { x: (point.x - bounds.x) / zoom, y: (point.y - bounds.y) / zoom });
+  }, 50);
+  pointerTimer.unref();
+  activityTimer = setInterval(() => { if (activity.expire()) broadcast(); }, 500);
+  activityTimer.unref();
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(() => { app.setAccessibilitySupportEnabled(true); prefs = readPreferences(); prefs.remoteControl = false; fs.mkdirSync(app.getPath('userData'), { recursive: true }); createWindow(); });
   app.on('second-instance', () => { win?.show(); win?.focus(); });
   app.on('activate', () => { win?.show(); win?.focus(); });
-  app.on('before-quit', () => { isQuitting = true; savePreferences(); apiServer?.close(); });
+  app.on('before-quit', () => { isQuitting = true; clearInterval(pointerTimer); clearInterval(activityTimer); savePreferences(); apiServer?.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

@@ -6,7 +6,9 @@ A free Mac desktop workspace with your Telegram bot chats on the left, real loca
 
 Open **Hermes Workspace.app**. Sign in to Telegram with its normal QR or phone login if needed. No Telegram developer API credentials are required: the chat pane loads the official Telegram Web A and applies local styling.
 
-- The sidebar contains verified bot conversations from your Telegram account. Drag them to sort; hover and click × to hide one. Settings restores hidden bots. The + at the top opens a bot by username.
+- The sidebar contains verified bot conversations from your Telegram account. Drag them to sort; hover and click × to hide one. **Settings → Telegram bots** has an individual visibility switch for every discovered bot, including hidden bots. Choices save immediately and survive app restarts. Hiding a bot leaves its Telegram chat and Hermes agent intact. The + at the top opens a bot by username.
+- Click the selected bot’s portrait, or **Settings → Customize bot avatars**, to choose one of the ten marble avatars or import PNG, JPEG, or WebP pictures. Click **Save avatar** to keep the choice on this Mac. Built-in eyes are already positioned; **Adjust eye positions** calibrates an imported picture. This does not change the bot’s Telegram profile photo.
+- A mint/lilac orbit and eyes following the real mouse appear only while Telegram reports a live chat action from that bot. Idle portraits stay still. **Activity unavailable** means the observer cannot currently verify activity. Reduced Motion keeps the indicator static.
 - The + beside browser tabs opens a Chromium tab on your Mac. ⌘L focuses its address; ⌘T opens a tab; ⌘W closes a local tab. Drag the divider to resize the chat pane.
 - Paste an existing noVNC viewer URL into Settings. Keep Tailscale connected for a private VPS. The small desktop starts in Watch mode. Click its picture or ↗ to expand it into the VPS tab; ⛶ fills the workspace.
 - **Watch / Control** enables mouse and keyboard input to the existing VPS desktop. This first release uses one shared desktop. Control does not pause or lock out Hermes agents on that desktop.
@@ -50,7 +52,15 @@ mcp_servers:
 
 Use a different `--bot-id` for each bot. Keep existing Hermes settings and server entries. Restart or reload MCP through the workflow supported by your installed Hermes version. This project does not modify Hermes source or apply changes to running bot profiles.
 
-The six tools are `workspace_browser_status`, `workspace_browser_tabs`, `workspace_browser_open`, `workspace_browser_snapshot`, `workspace_browser_screenshot`, and `workspace_browser_action`. Actions need the current tab epoch. Use fresh snapshot refs after each action. Opening a tab with `background: true` preserves the user's selected tab. The Mac must be awake and the app running; there is no silent fallback to a different computer.
+The six tools are `workspace_browser_status`, `workspace_browser_tabs`, `workspace_browser_open`, `workspace_browser_snapshot`, `workspace_browser_screenshot`, and `workspace_browser_action`. Actions need the current tab epoch. Use fresh snapshot refs after each action. Bot tabs open in the background by default; pass `background: false` only to explicitly select one. The Mac must be awake and the app running; there is no silent fallback to a different computer.
+
+`workspace_browser_action` is the bot’s separate input command. `move` and `click` accept a snapshot ref or viewport `x,y`; `type` replaces text at a fresh ref; `press` sends keys to that tab; `scroll` uses `x,y` as deltas. A green **Agent** pointer marks dispatched input in the page. These commands use Chromium’s tab-specific input protocol and never move the system mouse, paste into another app, or activate the bot’s window. Agent keyboard shortcuts cannot trigger workspace shortcuts. **Take over** revokes queued input; an action already delivered to Chromium cannot be recalled.
+
+## What the activity indicator verifies
+
+The observer passively reads Telegram Web A’s API Worker `updateChatTypingStatus` events, derived from Telegram’s real [typing/chat-action updates](https://core.telegram.org/constructor/updateUserTyping). The chat and actor must both identify a discovered private bot. New messages, outgoing prompts, unread counts, and cached previews never start the animation. A fresh action lasts at most six seconds, and explicit cancellation stops it immediately. Availability heartbeats keep the observer connection known; they never extend an action. Account changes, disconnection, and a missing adapter clear activity.
+
+This verifies Telegram-reported activity, not backend computation: a bot must emit chat actions while it works. Idle means there is no current Telegram activity signal, not proof its process has stopped. The adapter follows the [Web A worker envelope](https://github.com/Ajaxy/telegram-tt/blob/master/src/api/gramjs/worker/connector.ts) and [typing update mapping](https://github.com/Ajaxy/telegram-tt/blob/master/src/api/gramjs/updates/mtpUpdateHandler.ts); upstream changes may require an adapter update. No Hermes source patch or bot token is needed.
 
 The connector reads the current private connection file on the Mac, so no token needs to be pasted into Hermes configuration. The HTTP service listens only on `127.0.0.1:9464`, rejects browser-origin requests, and authenticates its native connector. Bot IDs guard against accidental crossover within this trusted connector; they are not independent authentication credentials.
 
@@ -59,6 +69,8 @@ The connector reads the current private connection file on the Mac, so no token 
 ```sh
 npm ci
 npm run check
+npm run test:desktop
+npm run test:agent-input
 npm start
 npm run package:mac
 ```
@@ -67,7 +79,9 @@ The package command builds an Apple Silicon Mac app in `dist/Hermes Workspace-da
 
 With the app open, `node test/browser-smoke.cjs` exercises the real MCP protocol against its own local test page. It checks typing, clicking, screenshots, popups, shared cookies, bot ownership, and stale epochs. It asks you to click Take over and Give to agent to verify the human control boundary. It sends no Telegram messages and operates no third-party forms.
 
-`node test/background-browser.cjs` verifies replacement typing, clicks and screenshots in a background tab without selecting it. Agent input uses Chromium's per-tab input protocol, so it can operate while the app is in the background. Hidden-tab screenshots paint in a temporary hidden window and return the same live tab to its original window.
+`node test/background-browser.cjs` verifies replacement typing, clicks and screenshots in a background tab without selecting it. Agent input uses Chromium's per-tab input protocol, so it can operate while the app is in the background. Background tabs render inside a separate hidden, nonfocusable window. Screenshots capture their existing surfaces without reparenting them into the human’s window.
+
+`npm run test:desktop` launches the real app with an isolated temporary profile, tests avatar selection/import/removal/persistence, and runs the real MCP background-browser test while asserting the human tab, draft, and focus remain unchanged. `npm run test:agent-input` exercises real trusted Chromium pointer and keyboard events in separate human/agent views. Neither sends Telegram messages or submits third-party forms. Unit tests cover activity expiry, cancellation, account isolation, avatar calibration, ownership, and mid-action takeover.
 
 App data lives in `~/Library/Application Support/Hermes Workspace/`. That directory holds private sessions, bot order/hiding preferences, the desktop URL, and a startup-rotated connector token. It is outside the source tree. The app restores up to twelve tab URLs after restart; live page execution state is not restored.
 
@@ -82,6 +96,8 @@ browser MCP entry above on the same primary to let it use the local tabs.
 [The integration contract](docs/integration.md) describes the browser interface.
 
 The current browser handoff is control of the **same live Mac tab** from the VPS connector or the human UI. Moving execution to a new browser on the VPS, merging Mac/VPS login changes, and restoring arbitrary live page state require the later companion integration. Separate per-bot VPS desktops are also a later step.
+
+For a small fleet of stock Hermes profiles, use the [agent setup guide](../docs/agent-setup.md). It covers workspace routing, recoverable retirement of legacy profiles, and verifying real replies after Hermes updates.
 
 ## Implementation and licenses
 

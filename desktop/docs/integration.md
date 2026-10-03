@@ -19,7 +19,9 @@ All requests use bearer authentication and `X-Hermes-Bot`. The current protocol 
 | Input/navigation | `POST /v1/tabs/:id/actions` with current `epoch` |
 | Close assigned agent tab | `DELETE /v1/tabs/:id` with `X-Control-Epoch` |
 
-Allowed actions: navigate, click, type, press, scroll, back, forward, reload. Click/type use refs from a fresh snapshot. Snapshots cover the top document; nested frame interaction, accessibility-tree traversal, file uploads, hover, and drag are not implemented in this first connector. A screenshot can show frame content but does not add frame action support.
+Allowed actions: navigate, move, click, type, press, scroll, back, forward, reload. Move/click accept a fresh snapshot ref or viewport x,y; type requires a fresh ref; press optionally accepts a ref. Scroll x,y are deltas. Move provides real pointer hover. Snapshots cover the top document; nested frame reference traversal, file uploads, and drag are not implemented. A screenshot can show frame content and coordinate input targets the tab viewport.
+
+Agent tabs open in the background unless explicitly requested otherwise. Input travels through the tab’s Chromium DevTools target, with a decorative Agent cursor at dispatched coordinates. It does not use OS input, the clipboard, native window activation, or the human’s keyboard focus. Agent page popups preserve the selected human tab. Application menu shortcuts are suppressed during agent key dispatch.
 
 A tab has `id`, `botId`, `allowedBots`, `controller`, and `epoch`. A bot can read its assigned or explicitly granted tabs. Mutation requires agent control and the current epoch. Take over, return control, assignment, and grant changes increment the epoch. Queued actions recheck it before dispatch. An input already sent to Chromium cannot be recalled. Human pointer input does not automatically change ownership: use Take over before intervening.
 

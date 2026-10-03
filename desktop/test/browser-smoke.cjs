@@ -57,7 +57,7 @@ async function eventually(fn, predicate) {
   const popupTab = popup.tabs.find(item => item.url.endsWith('/popup')); created.push(popupTab.id);
   await eventually(() => tool('workspace_browser_snapshot', { tabId: popupTab.id }), value => value.text.includes('Popup connected'));
   console.log('PASS: MCP connection, snapshot, typing, click, screenshot, shared cookies, popup, bot ownership and stale epoch.');
-  console.log('Click “Take over” on the selected Workspace popup test tab. Then press Enter here.');
+  console.log('Select the Workspace popup test tab, then click “Take over”. Agent popups intentionally preserve your selected tab. Press Enter here afterward.');
   rl = readline.createInterface({ input: process.stdin, output: process.stdout }); await rl.question('');
   let result = await api(`/v1/tabs/${popupTab.id}/actions`, 'POST', { action: 'reload', epoch: popupTab.epoch });
   assert.equal(result.status, 409); assert.equal(result.data.error, 'human_has_control');

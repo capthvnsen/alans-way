@@ -7,4 +7,5 @@ contextBridge.exposeInMainWorld('workspace', {
   onFocusAddress: (callback) => { ipcRenderer.on('workspace:focus-address', callback); },
   onSettings: (callback) => { ipcRenderer.on('workspace:settings', callback); },
   onFocusWorkspace: (callback) => { ipcRenderer.on('workspace:focus-workspace', callback); },
+  onPointer: (callback) => { ipcRenderer.on('workspace:pointer', (_event, point) => callback(point)); },
 });

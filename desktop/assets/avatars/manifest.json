@@ -1,0 +1,222 @@
+[
+  {
+    "id": "marble-zeus",
+    "name": "Zeus",
+    "file": "zeus.png",
+    "source": "ChatGPT Image Oct 3, 2026, 03_29_03 PM-1.png",
+    "eyes": {
+      "enabled": true,
+      "style": "obsidian",
+      "radius": 0.021,
+      "aspect": 1.85,
+      "left": {
+        "x": 0.472,
+        "y": 0.374,
+        "scaleX": 1
+      },
+      "right": {
+        "x": 0.607,
+        "y": 0.377,
+        "scaleX": 0.81
+      }
+    }
+  },
+  {
+    "id": "marble-poseidon",
+    "name": "Poseidon",
+    "file": "poseidon.png",
+    "source": "ChatGPT Image Oct 3, 2026, 03_29_08 PM-2.png",
+    "eyes": {
+      "enabled": true,
+      "style": "obsidian",
+      "radius": 0.0205,
+      "aspect": 1.94,
+      "left": {
+        "x": 0.477,
+        "y": 0.383,
+        "scaleX": 1
+      },
+      "right": {
+        "x": 0.61,
+        "y": 0.388,
+        "scaleX": 0.78
+      }
+    }
+  },
+  {
+    "id": "marble-hades",
+    "name": "Hades",
+    "file": "hades.png",
+    "source": "ChatGPT Image Oct 3, 2026, 03_29_10 PM-3.png",
+    "eyes": {
+      "enabled": true,
+      "style": "obsidian",
+      "radius": 0.0205,
+      "aspect": 1.81,
+      "left": {
+        "x": 0.475,
+        "y": 0.386,
+        "scaleX": 1
+      },
+      "right": {
+        "x": 0.605,
+        "y": 0.39,
+        "scaleX": 0.78
+      }
+    }
+  },
+  {
+    "id": "marble-artemis",
+    "name": "Artemis",
+    "file": "artemis.png",
+    "source": "ChatGPT Image Oct 3, 2026, 03_29_15 PM-4.png",
+    "eyes": {
+      "enabled": true,
+      "style": "obsidian",
+      "radius": 0.021,
+      "aspect": 1.82,
+      "left": {
+        "x": 0.478,
+        "y": 0.391,
+        "scaleX": 1
+      },
+      "right": {
+        "x": 0.61,
+        "y": 0.395,
+        "scaleX": 0.78
+      }
+    }
+  },
+  {
+    "id": "marble-minotaur",
+    "name": "Minotaur",
+    "file": "minotaur.png",
+    "source": "ChatGPT Image Oct 3, 2026, 03_29_16 PM-5.png",
+    "eyes": {
+      "enabled": true,
+      "style": "obsidian",
+      "radius": 0.02,
+      "aspect": 1.9,
+      "left": {
+        "x": 0.465,
+        "y": 0.372,
+        "scaleX": 1
+      },
+      "right": {
+        "x": 0.626,
+        "y": 0.377,
+        "scaleX": 0.68
+      }
+    }
+  },
+  {
+    "id": "marble-faun",
+    "name": "Faun",
+    "file": "faun.png",
+    "source": "ChatGPT Image Oct 3, 2026, 03_29_19 PM-6.png",
+    "eyes": {
+      "enabled": true,
+      "style": "obsidian",
+      "radius": 0.021,
+      "aspect": 1.83,
+      "left": {
+        "x": 0.479,
+        "y": 0.386,
+        "scaleX": 1
+      },
+      "right": {
+        "x": 0.612,
+        "y": 0.392,
+        "scaleX": 0.77
+      }
+    }
+  },
+  {
+    "id": "marble-athena",
+    "name": "Athena",
+    "file": "athena.png",
+    "source": "ChatGPT Image Oct 3, 2026, 03_29_32 PM-1.png",
+    "eyes": {
+      "enabled": true,
+      "style": "obsidian",
+      "radius": 0.021,
+      "aspect": 1.93,
+      "left": {
+        "x": 0.458,
+        "y": 0.44,
+        "scaleX": 1
+      },
+      "right": {
+        "x": 0.597,
+        "y": 0.443,
+        "scaleX": 0.8
+      }
+    }
+  },
+  {
+    "id": "marble-hermes",
+    "name": "Hermes",
+    "file": "hermes.png",
+    "source": "ChatGPT Image Oct 3, 2026, 03_29_34 PM-2.png",
+    "eyes": {
+      "enabled": true,
+      "style": "obsidian",
+      "radius": 0.021,
+      "aspect": 1.83,
+      "left": {
+        "x": 0.482,
+        "y": 0.425,
+        "scaleX": 1
+      },
+      "right": {
+        "x": 0.612,
+        "y": 0.43,
+        "scaleX": 0.76
+      }
+    }
+  },
+  {
+    "id": "marble-apollo",
+    "name": "Apollo",
+    "file": "apollo.png",
+    "source": "ChatGPT Image Oct 3, 2026, 03_29_35 PM-3.png",
+    "eyes": {
+      "enabled": true,
+      "style": "obsidian",
+      "radius": 0.0215,
+      "aspect": 1.83,
+      "left": {
+        "x": 0.479,
+        "y": 0.387,
+        "scaleX": 1
+      },
+      "right": {
+        "x": 0.613,
+        "y": 0.392,
+        "scaleX": 0.77
+      }
+    }
+  },
+  {
+    "id": "marble-medusa",
+    "name": "Medusa",
+    "file": "medusa.png",
+    "source": "ChatGPT Image Oct 3, 2026, 03_29_36 PM-4.png",
+    "eyes": {
+      "enabled": true,
+      "style": "obsidian",
+      "radius": 0.0215,
+      "aspect": 1.88,
+      "left": {
+        "x": 0.461,
+        "y": 0.418,
+        "scaleX": 1
+      },
+      "right": {
+        "x": 0.6,
+        "y": 0.42,
+        "scaleX": 0.84
+      }
+    }
+  }
+]

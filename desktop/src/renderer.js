@@ -1,5 +1,5 @@
 const api = window.workspace;
-let state, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer;
+let state, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '';
 const $ = (id) => document.getElementById(id);
 function element(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; }
 function toast(message) { $('toast').textContent = message; $('toast').classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.add('hidden'), 5000); }
@@ -15,13 +15,22 @@ function colorFor(value) {
 function renderBots() {
   const search = $('bot-search').value.toLowerCase();
   const bots = orderedBots().filter((bot) => `${bot.name} ${bot.username}`.toLowerCase().includes(search));
-  const list = $('bot-list'); list.replaceChildren();
+  const list = $('bot-list');
+  const signature = JSON.stringify([bots.map(({ activity, ...bot }) => bot), state.selectedBotId]);
+  if (signature === botListSignature) {
+    for (const row of list.children) {
+      const bot = bots.find(item => item.id === row.dataset.botId);
+      if (bot) { window.HermesAvatars.paint(row.querySelector('.avatar'), bot, state); renderBotActivity(row, bot); }
+    }
+    $('bridge-dot').classList.toggle('offline', !state.api.ready);
+    return;
+  }
+  botListSignature = signature; list.replaceChildren();
   for (const bot of bots) {
     const row = element('div', `bot-row${state.selectedBotId === bot.id ? ' selected' : ''}`);
     row.setAttribute('role', 'button'); row.setAttribute('tabindex', '0'); row.setAttribute('aria-label', `Open ${bot.name}`); row.draggable = true; row.dataset.botId = bot.id;
-    const avatar = element('span', 'avatar', bot.name.split(/\s+/).map((word) => word[0]).slice(0, 2).join('').toUpperCase()); avatar.style.backgroundColor = colorFor(bot.id);
-    if (bot.avatar) { const img = element('img'); img.src = bot.avatar; img.alt = ''; avatar.replaceChildren(img); }
-    const copy = element('span', 'bot-copy'); copy.append(element('div', 'bot-name', bot.name), element('div', 'bot-preview', bot.preview || (bot.username ? `@${bot.username}` : 'Telegram bot')));
+    const avatar = element('span', 'avatar'); window.HermesAvatars.paint(avatar, bot, state);
+    const copy = element('span', 'bot-copy'); copy.append(element('div', 'bot-name', bot.name), element('div', 'bot-preview', bot.preview || (bot.username ? `@${bot.username}` : 'Telegram bot')), element('div', 'bot-activity'));
     const hide = element('button', 'bot-hide', '×'); hide.title = `Hide ${bot.name}`; hide.setAttribute('aria-label', hide.title);
     hide.onclick = (event) => { event.stopPropagation(); command('hide-bot', { id: bot.id }); };
     row.append(avatar, copy); if (bot.unread) row.append(element('span', 'unread')); row.append(hide);
@@ -36,13 +45,20 @@ function renderBots() {
       const ids = orderedBots(true).map((item) => item.id), from = ids.indexOf(draggingBot), to = ids.indexOf(bot.id);
       if (from >= 0 && to >= 0) { ids.splice(from, 1); ids.splice(to, 0, draggingBot); command('sort-bots', { ids }); }
     };
-    list.append(row);
+    renderBotActivity(row, bot); list.append(row);
   }
   $('bot-count').textContent = orderedBots().length;
   $('empty-bots').classList.toggle('hidden', state.bots.length > 0);
   $('empty-bots').querySelector('p').textContent = state.telegramStatus === 'connected' ? 'Finding your Telegram bot chats…' : 'Sign in to Telegram to load your bot chats here.';
   $('restore-bots').classList.toggle('hidden', !state.hidden.length);
   $('bridge-dot').classList.toggle('offline', !state.api.ready);
+}
+function renderBotActivity(row, bot) {
+  const status = row.querySelector('.bot-activity'), activity = bot.activity;
+  const active = activity?.state === 'active' && (!activity.expiresAt || activity.expiresAt > Date.now());
+  status.textContent = active ? activity.label || 'Telegram activity' : activity?.state === 'idle' ? 'Idle' : 'Activity unavailable';
+  status.classList.toggle('active', active);
+  status.title = activity?.detail || 'Live Telegram chat actions. No activity signal does not prove a bot has stopped working.';
 }
 function renderTabs() {
   const container = $('tabs'); container.replaceChildren();
@@ -61,13 +77,20 @@ function renderTabs() {
 }
 function render(next) {
   state = next;
+  window.HermesAvatars.update(state);
   const bot = state.bots.find((item) => item.id === state.selectedBotId);
   document.documentElement.style.setProperty('--chat-width', `${state.chatWidth}px`);
   $('chat-title').textContent = bot?.name || 'Telegram';
-  $('chat-avatar').textContent = bot ? bot.name[0].toUpperCase() : '◔';
-  $('chat-avatar').style.backgroundColor = bot ? colorFor(bot.id) : '#e7e7e9';
-  if (bot?.avatar) { const img = element('img'); img.src = bot.avatar; img.alt = ''; $('chat-avatar').replaceChildren(img); }
-  renderBots(); renderTabs();
+  window.HermesAvatars.paint($('chat-avatar'), bot || { id: '', name: 'Telegram' }, state);
+  $('chat-avatar').title = bot ? `Customize ${bot.name} avatar` : 'Select a bot to customize its avatar';
+  $('agent-presence').classList.toggle('hidden', !bot);
+  if (bot) {
+    window.HermesAvatars.paint($('presence-avatar'), bot, state);
+    $('presence-name').textContent = bot.name;
+    $('presence-status').textContent = window.HermesAvatars.activityLabel(bot.activity);
+    $('presence-status').classList.toggle('active', window.HermesAvatars.isActive(bot.activity));
+  }
+  renderBots(); renderTabs(); renderSettingsBots();
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
   $('home').classList.toggle('hidden', !!tab || state.activeTabId === 'vps');
   $('browser-toolbar').classList.toggle('hidden', state.activeTabId === 'vps');
@@ -98,9 +121,43 @@ function openModal(title) {
   modalOpen = true; $('modal-title').textContent = title; $('modal-body').replaceChildren(); $('modal').classList.remove('hidden'); scheduleLayout();
 }
 function closeModal() { modalOpen = false; $('modal').classList.add('hidden'); scheduleLayout(); }
+function renderSettingsBots() {
+  const list = $('settings-bots');
+  if (!modalOpen || !list) return;
+  const bots = orderedBots(true);
+  const signature = JSON.stringify(bots.map(bot => [bot.id, bot.name, bot.username, !state.hidden.includes(bot.id)]));
+  if (list.dataset.signature === signature) return;
+  const focusedId = document.activeElement?.dataset.botId;
+  list.dataset.signature = signature; list.replaceChildren();
+  if (!bots.length) list.append(element('p', 'settings-note', 'Sign in to Telegram and sync to find your bot chats.'));
+  for (const bot of bots) {
+    const row = element('label', 'bot-visibility'), toggle = element('input');
+    toggle.type = 'checkbox'; toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-label', `Show ${bot.name}`);
+    toggle.dataset.botId = bot.id; toggle.checked = !state.hidden.includes(bot.id);
+    const copy = element('span', 'visibility-copy');
+    copy.append(element('span', 'visibility-name', bot.name));
+    if (bot.username) copy.append(element('span', 'visibility-username', `@${bot.username}`));
+    toggle.onchange = async () => {
+      const visible = toggle.checked; toggle.disabled = true;
+      const result = await command('set-bot-visibility', { id: bot.id, visible });
+      if (result) render(result);
+      else { toggle.checked = !state.hidden.includes(bot.id); toggle.disabled = false; }
+    };
+    row.append(copy, toggle); list.append(row);
+    if (focusedId === bot.id) toggle.focus({ preventScroll: true });
+  }
+}
 function showSettings() {
   openModal('Workspace settings');
   const body = $('modal-body'), field = element('div', 'field');
+  body.append(element('h3', '', 'Telegram bots'));
+  body.append(element('p', 'settings-note', 'Choose which bots appear in your sidebar. Changes save immediately. Drag visible bots in the sidebar to sort them.'));
+  const bots = element('div', 'settings-bots'); bots.id = 'settings-bots';
+  body.append(bots); renderSettingsBots();
+  body.append(element('p', 'settings-note', 'Hiding a bot only changes this app. Its Telegram chat, messages and Hermes agent stay available.'), element('hr', 'section-divider'));
+  const avatars = element('button', 'secondary-button', 'Customize bot avatars');
+  avatars.onclick = () => showAvatarEditor(); body.append(avatars);
+  body.append(element('p', 'settings-note', 'Pick a marble avatar or import your own. Eyes follow your mouse only while Telegram reports activity.'), element('hr', 'section-divider'));
   const label = element('label', '', 'VPS desktop connection'); label.htmlFor = 'remote-url';
   const input = element('input'); input.id = 'remote-url'; input.placeholder = 'https://your-server/vnc.html or wss://…'; input.value = state.remoteUrl;
   field.append(label, input, element('p', '', 'Paste your existing noVNC viewer URL. Connect through Tailscale when your server is private. The small preview starts in watch mode.'));
@@ -117,6 +174,11 @@ function showSettings() {
   const sync = element('button', 'secondary-button', 'Sync Telegram bots'); sync.onclick = () => { command('sync-telegram'); toast('Reading Telegram’s bot chat list…'); };
   const restore = element('button', 'secondary-button', 'Restore hidden bots'); restore.onclick = () => { command('restore-bots'); toast('Hidden bots restored.'); };
   body.append(sync, restore, element('p', 'settings-note', 'Bot discovery reads Telegram Web A’s local cache. Newly opened bot chats appear after Telegram saves them. Your Telegram session and browser logins stay on this Mac.'));
+}
+function showAvatarEditor(botId = state.selectedBotId || orderedBots()[0]?.id) {
+  if (!botId) return toast('Open a Telegram bot before customizing its avatar.');
+  openModal('Bot appearance');
+  window.HermesAvatars.mountEditor($('modal-body'), { botId, command, onState: render, toast });
 }
 function showAddBot() {
   openModal('Open a Telegram bot');
@@ -150,6 +212,9 @@ $('bot-search').oninput = renderBots;
 $('add-bot').onclick = showAddBot;
 $('restore-bots').onclick = () => command('restore-bots');
 $('settings-button').onclick = showSettings;
+$('presence-avatar').onclick = () => showAvatarEditor();
+$('chat-avatar').onclick = () => showAvatarEditor();
+$('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };
 $('computer-button').onclick = () => command('activate', { id: 'vps' });
 $('home-vps').onclick = () => command('activate', { id: 'vps' });
 $('new-tab').onclick = async () => { await command('create-tab'); $('address').focus(); };
@@ -173,6 +238,7 @@ $('splitter').onpointerdown = (event) => {
   $('splitter').addEventListener('pointermove', handleMove); $('splitter').addEventListener('pointerup', end);
 };
 api.onState(render);
+api.onPointer?.(point => window.HermesAvatars.receivePointer(point));
 api.onFocusAddress(() => { $('address').focus(); $('address').select(); });
 api.onSettings?.(showSettings);
 api.onFocusWorkspace?.(() => { focusMode = !focusMode; $('shell').classList.toggle('focus-workspace', focusMode); scheduleLayout(); });
