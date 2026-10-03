@@ -35,6 +35,9 @@ Use the existing primary's Telegram chat in the app. `/proactivity` commands
 reach the installed plugin directly. The browser connector and the read-only Mac
 file endpoint have separate tool surfaces; install only the capabilities you
 want. Setup and Mac packaging are in the [desktop guide](desktop/README.md).
+The [agent setup guide](docs/agent-setup.md) covers a small fleet of vanilla
+Hermes profiles, the optional workspace skill, legacy profile retirement and
+reply checks after updates.
 
 ## Architecture
 
