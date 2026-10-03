@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-companion"
+version = "0.1.0a1"
+description = "Cloud-first Hermes companion with private, scoped Mac tools"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "hermes-companion contributors"}]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: POSIX :: Linux",
+]
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp==2.0.0"]
+
+[project.scripts]
+hermes-companion = "hermes_companion.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/capthvnsen/hermes-companion"
+Issues = "https://github.com/capthvnsen/hermes-companion/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]

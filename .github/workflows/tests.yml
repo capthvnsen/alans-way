@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build and install wheel in a fresh environment
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+          python -m venv "$RUNNER_TEMP/companion-venv"
+          "$RUNNER_TEMP/companion-venv/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/companion-venv/bin/python" -m pip install 'mcp==2.0.0'
+          python -c 'import os; from pathlib import Path; p = Path(os.environ["GITHUB_PATH"]); p.open("a").write(os.environ["RUNNER_TEMP"] + "/companion-venv/bin\n")'
+      - name: Exercise installed CLI and real local protocol
+        run: python scripts/smoke_installed.py
+      - name: Test installed package
+        run: python -m unittest discover -s tests -v
+      - name: Publication safety checks
+        run: python scripts/check_publication.py
