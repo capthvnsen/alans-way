@@ -28,6 +28,17 @@ EXAMPLE_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pem", ".key", ".patch", ".diff", ".log"}
 FORBIDDEN_IMPORTS = {"gateway", "tui_gateway", "hermes_cli", "hermes_state", "run_agent", "model_tools", "tools", "agent"}
 BINARY_ASSETS = {"desktop/assets/icon.png": b"\x89PNG\r\n\x1a\n", "desktop/assets/icon.icns": b"icns"}
+AVATAR_ASSETS = frozenset(f"desktop/assets/avatars/{name}.png" for name in (
+    "apollo", "artemis", "athena", "faun", "hades", "hermes", "medusa",
+    "minotaur", "poseidon", "zeus",
+))
+BINARY_ASSETS.update({name: b"\x89PNG\r\n\x1a\n" for name in AVATAR_ASSETS})
+
+
+def valid_binary_asset(path: str, blob: bytes) -> bool:
+    signature = BINARY_ASSETS.get(path)
+    limit = 2097152 if path in AVATAR_ASSETS else 1048576
+    return bool(signature and blob.startswith(signature) and len(blob) <= limit)
 
 
 def inspect_text(path: str, text: str) -> list[dict]:
@@ -84,7 +95,7 @@ def main() -> int:
             continue
         if path in BINARY_ASSETS:
             blob = item.read_bytes()
-            if not blob.startswith(BINARY_ASSETS[path]) or len(blob) > 1048576:
+            if not valid_binary_asset(path, blob):
                 findings.append({"file": path, "line": 0, "rule": "invalid-static-asset"})
             continue
         try:

@@ -1,4 +1,4 @@
-"""Publication policy regression tests use synthetic text only."""
+"""Publication policy regression tests use synthetic text and asset bytes."""
 import importlib.util
 from pathlib import Path
 import unittest
@@ -7,11 +7,23 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check_publication.py
 
 
 class PublicationTests(unittest.TestCase):
-    def scan(self, path, text):
+    def module(self):
         spec = importlib.util.spec_from_file_location("publication_check", SCRIPT)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return module.inspect_text(path, text)
+        return module
+
+    def scan(self, path, text):
+        return self.module().inspect_text(path, text)
+
+    def test_only_named_small_png_assets_can_bypass_text_scanning(self):
+        module = self.module()
+        png = b"\x89PNG\r\n\x1a\n"
+        self.assertTrue(module.valid_binary_asset("desktop/assets/avatars/hermes.png", png + bytes(1100000)))
+        self.assertFalse(module.valid_binary_asset("desktop/assets/avatars/hermes.png", b"not an image"))
+        self.assertFalse(module.valid_binary_asset("desktop/assets/avatars/hermes.png", png + bytes(2097152)))
+        self.assertFalse(module.valid_binary_asset("desktop/assets/avatars/unknown.png", png))
+        self.assertFalse(module.valid_binary_asset("runtime.png", png))
 
     def test_generic_examples_and_documentation_are_allowed(self):
         self.assertEqual(self.scan("README.md", "macuser@mac-private-host /opt/hermes-companion/approved-workspace"), [])
