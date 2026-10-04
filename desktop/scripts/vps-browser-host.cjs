@@ -7,7 +7,7 @@ const fs = require('node:fs'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
-const { normalizeUrl, requireActor, isAuthorized } = require('../src/core.cjs');
+const { normalizeUrl, requireActor, requireAgentRead, isAuthorized } = require('../src/core.cjs');
 const { createAgentInput, tintScript, botAccent } = require('../src/agent-input.cjs');
 const { snapshotExpression, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
 const root =
@@ -21,6 +21,12 @@ function write(file, data) {
   fs.renameSync(file + '.tmp', file);
 }
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
+const overseerBots = new Set(
+  String(process.env.HERMES_OVERSEER_BOT_IDS || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id && id.length <= 100),
+);
 async function read(req) {
   let size = 0;
   const chunks = [];
@@ -101,7 +107,8 @@ async function serve() {
     return persistQueue;
   }
   const input = createAgentInput({
-    requireActor,
+    requireActor: (tab, botId, epoch, mutate) =>
+      requireActor(tab, botId, epoch, mutate, overseerBots.has(botId)),
     command: (tab, method, params) => tab.view.webContents.command(method, params),
     botName: (id) => botNames.get(id) || 'Agent',
   });
@@ -243,7 +250,8 @@ async function serve() {
     try {
       const url = new URL(req.url, 'http://127.0.0.1'),
         botId = String(req.headers['x-hermes-bot'] || ''),
-        human = req.headers['x-hermes-human'] === '1';
+        human = req.headers['x-hermes-human'] === '1',
+        overseer = overseerBots.has(botId);
       try {
         const botName = decodeURIComponent(String(req.headers['x-hermes-bot-name'] || '')).slice(0, 80);
         if (botId && botName) botNames.set(botId, botName);
@@ -261,7 +269,7 @@ async function serve() {
       if (url.pathname === '/v1/tabs' && req.method === 'GET')
         return send(200, {
           tabs: [...tabs.values()]
-            .filter((t) => human || t.botId === botId || (t.allowedBots ?? []).includes(botId))
+            .filter((t) => human || overseer || t.botId === botId || (t.allowedBots ?? []).includes(botId))
             .map(describe),
         });
       if (url.pathname === '/v1/tabs' && req.method === 'POST')
@@ -272,10 +280,11 @@ async function serve() {
           ),
         tab = m && tabs.get(m[1]);
       if (!tab) throw fail('VPS tab not found.', 404);
-      if (!human) { requireActor(tab, botId); tab.lastAgentActivity = Date.now(); }
+      if (!human) { requireActor(tab, botId, undefined, false, overseer); tab.lastAgentActivity = Date.now(); }
       const wc = tab.view.webContents;
       if (req.method === 'GET' && !m[2]) return send(200, describe(tab));
       if (req.method === 'GET' && m[2] === 'snapshot') {
+        if (!human) requireAgentRead(tab);
         const data = await wc.executeJavaScript(snapshotExpression(++tab.generation));
         tab.refs = new Set(data.elements.map((e) => e.ref));
         tab.url = data.url;
@@ -283,6 +292,7 @@ async function serve() {
         return send(200, { ...data, tab: describe(tab) });
       }
       if (req.method === 'GET' && m[2] === 'screenshot') {
+        if (!human) requireAgentRead(tab);
         const capture = tab.queue.then(async () => ({
           shot: await wc.command('Page.captureScreenshot', { format: 'png', fromSurface: true }),
           viewport: await wc.executeJavaScript(
@@ -296,11 +306,11 @@ async function serve() {
       if (req.method === 'POST' && m[2] === 'actions') {
         const body = await read(req);
         const action = tab.queue.then(async () => {
-          requireActor(tab, botId, body.epoch, true);
+          requireActor(tab, botId, body.epoch, true, overseer);
           if (['click', 'type', 'press', 'move', 'scroll'].includes(body.action)) await input.perform(tab, body, botId);
           else if (body.action === 'navigate') {
             await input.clear(tab);
-            requireActor(tab, botId, body.epoch, true);
+            requireActor(tab, botId, body.epoch, true, overseer);
             await wc.command('Page.navigate', { url: normalizeUrl(body.url) });
             await loaded(tab, normalizeUrl(body.url));
           } else if (body.action === 'reload') await wc.command('Page.reload');
@@ -316,7 +326,7 @@ async function serve() {
         tab.queue = action.catch(() => {});
         return send(200, await action);
       }
-      if ((human || botId === tab.botId) && req.method === 'POST' && m[2] === 'control') {
+      if ((human || overseer || botId === tab.botId) && req.method === 'POST' && m[2] === 'control') {
         const body = await read(req);
         tab.controller = body.controller === 'agent' ? 'agent' : 'human';
         if (tab.controller === 'agent') tab.agentSince = Date.now();
@@ -392,7 +402,7 @@ async function serve() {
         return send(200, { ...result, tab: describe(tab) });
       }
       if (req.method === 'DELETE' && !m[2]) {
-        if (!human) requireActor(tab, botId, Number(req.headers['x-control-epoch']), true);
+        if (!human) requireActor(tab, botId, Number(req.headers['x-control-epoch']), true, overseer);
         tab.epoch++;
         await input.clear(tab);
         await cdp.send('Target.closeTarget', { targetId: tab.targetId });

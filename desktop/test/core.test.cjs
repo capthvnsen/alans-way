@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, parseRemoteUrl, requireActor, isAuthorized, sanitizeBots } = require('../src/core.cjs');
+const { normalizeUrl, parseRemoteUrl, requireActor, requireAgentRead, isAuthorized, sanitizeBots } = require('../src/core.cjs');
 
 test('browser URLs reject executable and credential-bearing schemes', () => {
   for (const value of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,test', 'https://user:password@example.com']) assert.throws(() => normalizeUrl(value));
@@ -25,6 +25,18 @@ test('a bot cannot accidentally drive another bot tab or stale human takeover', 
 });
 test('explicit crossover grant permits a second bot', () => {
   requireActor({ botId: 'research', controller: 'agent', epoch: 1, allowedBots: ['content'] }, 'content', 1, true);
+});
+test('an overseer bypasses ownership but not the control and epoch gates', () => {
+  const tab = { botId: 'research', controller: 'agent', epoch: 4, allowedBots: [] };
+  requireActor(tab, 'overseer', 4, true, true);
+  assert.throws(() => requireActor(tab, 'overseer', 3, true, true), /stale_control_epoch/);
+  tab.controller = 'human'; tab.epoch++;
+  assert.throws(() => requireActor(tab, 'overseer', 5, true, true), /human_has_control/);
+  assert.throws(() => requireActor(tab, '', 5, true, true), /X-Hermes-Bot/);
+});
+test('human-controlled tabs reject bot page reads', () => {
+  assert.throws(() => requireAgentRead({ controller: 'human' }), /human control/);
+  requireAgentRead({ controller: 'agent' });
 });
 test('API authentication rejects missing, truncated and different tokens', () => {
   assert.equal(isAuthorized('Bearer paired-secret', 'paired-secret'), true);

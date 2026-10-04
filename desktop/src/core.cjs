@@ -33,13 +33,17 @@ function parseRemoteUrl(value) {
   return url.href;
 }
 
-function requireActor(tab, botId, epoch, mutate = false) {
+function requireActor(tab, botId, epoch, mutate = false, overseer = false) {
   if (!botId || typeof botId !== 'string' || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
-  if (tab.botId !== botId && !(tab.allowedBots || []).includes(botId)) {
+  if (!overseer && tab.botId !== botId && !(tab.allowedBots || []).includes(botId)) {
     throw Object.assign(new Error('This tab belongs to a different bot.'), { status: 403 });
   }
   if (mutate && tab.controller !== 'agent') throw Object.assign(new Error('human_has_control'), { status: 409 });
   if (mutate && epoch !== tab.epoch) throw Object.assign(new Error('stale_control_epoch: read the tab state and retry after a fresh snapshot.'), { status: 409 });
+}
+
+function requireAgentRead(tab) {
+  if (tab.controller === 'human') throw Object.assign(new Error('Tab is under human control.'), { status: 409 });
 }
 
 function isAuthorized(header, token) {
@@ -60,4 +64,4 @@ function sanitizeBots(value) {
   }));
 }
 
-module.exports = { normalizeUrl, parseRemoteUrl, requireActor, isAuthorized, sanitizeBots };
+module.exports = { normalizeUrl, parseRemoteUrl, requireActor, requireAgentRead, isAuthorized, sanitizeBots };

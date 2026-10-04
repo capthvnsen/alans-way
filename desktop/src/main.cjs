@@ -4,7 +4,7 @@ const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
-const { normalizeUrl, parseRemoteUrl, requireActor, isAuthorized, sanitizeBots } = require('./core.cjs');
+const { normalizeUrl, parseRemoteUrl, requireActor, requireAgentRead, isAuthorized, sanitizeBots } = require('./core.cjs');
 const { createAvatarStore } = require('./avatar-store.cjs');
 const { createAgentInput, tintScript, botAccent } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -35,7 +35,8 @@ const API_TOKEN = crypto.randomBytes(32).toString('hex');
 let isQuitting = false;
 let backgroundCaptureQueue = Promise.resolve();
 const avatarStore = createAvatarStore({ root: ROOT, nativeImage, dialog, getWindow: () => win, getPreferences: () => prefs });
-const agentInput = createAgentInput({ command: browserCommand, requireActor,
+const agentInput = createAgentInput({ command: browserCommand,
+  requireActor: (tab, botId, epoch, mutate) => requireActor(tab, botId, epoch, mutate, isOverseer(botId)),
   botName: (id) => nameForBot(id) || 'Agent', onBusy: () => broadcast() });
 const activity = createActivityTracker();
 const sitePermissions = createSitePermissions({ getPreferences: () => prefs, savePreferences,
@@ -53,7 +54,8 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
 let pointerTimer, activityTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, previewPos: null, showBots: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [] };
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, previewPos: null, showBots: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [],
+    overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   try { return { ...defaults, ...JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'preferences.json'), 'utf8')) }; }
   catch { return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' }; }
 }
@@ -78,6 +80,7 @@ async function refreshVpsTabs() {
   finally { vpsRefreshBusy = false; broadcast(); }
 }
 const nameForBot = (id) => prefs?.bots.find((bot) => bot.id === id)?.name || '';
+const isOverseer = (botId) => Array.isArray(prefs?.overseerBots) && prefs.overseerBots.includes(botId);
 async function remoteRequest(id, operation, body, { human = true, botId = prefs.selectedBotId || 'shared' } = {}) {
   const result = await vpsBrowser.request(`/v1/tabs/${id}${operation ? '/' + operation : ''}`, body === undefined ? 'GET' : 'POST', body, {human, botId, botName: nameForBot(botId)});
   const tab = result.tab || (result.id ? result : null); if (tab) vpsTabs.set(tab.id, tab);
@@ -588,7 +591,8 @@ async function captureTab(tab) {
   return capture;
 }
 async function performAction(tab, body, botId) {
-  requireActor(tab, botId, body.epoch, true);
+  const overseer = isOverseer(botId);
+  requireActor(tab, botId, body.epoch, true, overseer);
   if (['click', 'type', 'press', 'scroll', 'move'].includes(body.action)) {
     const result = await agentInput.perform(tab, body, botId);
     if (body.action !== 'move') tab.refs.clear();
@@ -598,11 +602,11 @@ async function performAction(tab, body, botId) {
   const wc = tab.view.webContents;
   if (body.action === 'navigate') {
     await agentInput.clear(tab);
-    requireActor(tab, botId, body.epoch, true);
+    requireActor(tab, botId, body.epoch, true, overseer);
     await wc.loadURL(normalizeUrl(body.url));
   } else if (['back', 'forward', 'reload'].includes(body.action)) {
     await agentInput.clear(tab);
-    requireActor(tab, botId, body.epoch, true);
+    requireActor(tab, botId, body.epoch, true, overseer);
     const history = wc.navigationHistory;
     if (body.action === 'back' && history.canGoBack()) history.goBack();
     else if (body.action === 'forward' && history.canGoForward()) history.goForward();
@@ -625,6 +629,7 @@ function startApi() {
     try {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
+      const overseer = isOverseer(botId);
       if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', hosts:{mac:'connected',vps:vpsBrowserStatus}, capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await telegramView.webContents.executeJavaScript(`(() => ({
@@ -641,7 +646,7 @@ function startApi() {
       if (url.pathname === '/v1/tabs' && req.method === 'GET') {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
         if(prefs.vpsBrowser?.sshHost)await refreshVpsTabs();
-        return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage).map(describeTab).concat([...vpsTabs.values()]).filter((tab) => tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
+        return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage).map(describeTab).concat([...vpsTabs.values()]).filter((tab) => overseer || tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
       }
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
@@ -657,11 +662,11 @@ function startApi() {
         const remote=result.tab || (result.id?result:null);if(remote)vpsTabs.set(remote.id,remote);if(req.method==='DELETE')vpsTabs.delete(match[1]);broadcast();return send(200,result);
       }
       if (!tab || tab.extensionPage) return send(404, { error: 'Tab not found.' });
-      requireActor(tab, botId);
+      requireActor(tab, botId, undefined, false, overseer);
       tab.lastAgentActivity = Date.now();
       if (req.method === 'GET' && !match[2]) return send(200, describeTab(tab));
-      if (req.method === 'GET' && match[2] === 'snapshot') return send(200, await snapshot(tab));
-      if (req.method === 'GET' && match[2] === 'screenshot') {
+      if (req.method === 'GET' && match[2] === 'snapshot') { requireAgentRead(tab); return send(200, await snapshot(tab)); }
+      if (req.method === 'GET' && match[2] === 'screenshot') { requireAgentRead(tab);
         const capture = tab.queue.then(async () => {
           const shot = await captureTab(tab);
           const viewport = await tab.view.webContents.executeJavaScript('({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })');
@@ -679,10 +684,10 @@ function startApi() {
       }
       if (req.method === 'POST' && match[2] === 'control') {
         const body = await readJson(req);
-        if (botId !== tab.botId) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
+        if (botId !== tab.botId && !overseer) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
         return send(200, changeController(tab.id, body.controller));
       }
-      if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true); closeTab(tab.id); return send(200, { closed: true }); }
+      if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true, overseer); closeTab(tab.id); return send(200, { closed: true }); }
       return send(405, { error: 'Method not supported.' });
     } catch (error) { send(error.status || 400, { error: error.message }); }
   });

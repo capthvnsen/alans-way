@@ -10,6 +10,7 @@ const { spawn } = require('node:child_process');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-integration-'));
 process.env.HERMES_WORKSPACE_DATA = profile;
 process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
+process.env.HERMES_OVERSEER_BOTS = 'overseer-bot';
 fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ bots: [{ id: '123', name: 'Avatar test fixture', isBot: true }], selectedBotId: '123', preview: false }));
 require('../src/main.cjs');
 const waitFor = async (read, predicate, timeout = 12000) => {
@@ -102,9 +103,13 @@ app.whenReady().then(async () => {
     assert.ok(current === focus || (current === undefined && !win.isFocused()), `Native focus changed inside the workspace (${focus} -> ${current}).`);
   };
   const connection = JSON.parse(fs.readFileSync(path.join(profile, 'connection.json')));
-  const api = async (route, method = 'GET', body) => {
-    const response = await fetch(new URL(route, connection.url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'capture-regression', 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
-    const data = await response.json(); assert.ok(response.ok, data.error); return data;
+  const apiRaw = async (route, method = 'GET', body, actor = 'capture-regression') => {
+    const response = await fetch(new URL(route, connection.url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': actor, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    return { status: response.status, data: await response.json() };
+  };
+  const api = async (route, method = 'GET', body, actor) => {
+    const { status, data } = await apiRaw(route, method, body, actor);
+    assert.ok(status < 300, data.error); return data;
   };
   const colored = [];
   for (const color of ['red', 'blue']) {
@@ -139,11 +144,37 @@ app.whenReady().then(async () => {
   // The owning bot can release and retake control; another bot cannot.
   const released = await api(`/v1/tabs/${colored[0].id}/control`, 'POST', { controller: 'human' });
   assert.equal(released.controller, 'human', 'Owner release returns human control.');
-  const foreign = await fetch(new URL(`/v1/tabs/${colored[0].id}/control`, connection.url), { method: 'POST', headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'not-the-owner', 'Content-Type': 'application/json' }, body: JSON.stringify({ controller: 'agent' }) });
+  const foreign = await apiRaw(`/v1/tabs/${colored[0].id}/control`, 'POST', { controller: 'agent' }, 'not-the-owner');
   assert.equal(foreign.status, 403, 'A different bot cannot change control.');
   const retaken = await api(`/v1/tabs/${colored[0].id}/control`, 'POST', { controller: 'agent' });
   assert.equal(retaken.controller, 'agent', 'Owner can retake its own tab.');
   console.log('PASS: owner-only tab control release and retake.');
+  // The configured overseer sees every tab and may seize or release any of
+  // them; human-controlled tabs stay unreadable to all bot actors.
+  const overseerTabs = await api('/v1/tabs', 'GET', undefined, 'overseer-bot');
+  assert.ok(overseerTabs.tabs.some(tab => tab.id === human.id), 'Overseer sees the human-owned tab.');
+  assert.ok(overseerTabs.tabs.some(tab => tab.botId === 'capture-regression'), 'Overseer sees other bots\' tabs.');
+  const ownTabs = await api('/v1/tabs');
+  assert.ok(ownTabs.tabs.every(tab => tab.botId === 'capture-regression' || (tab.allowedBots ?? []).includes('capture-regression')), 'A regular bot is limited to its own tabs.');
+  // human.id belongs to fixture bot 123 under human control: metadata stays
+  // visible but page content is sealed for owner and overseer alike.
+  assert.equal((await apiRaw(`/v1/tabs/${human.id}`, 'GET', undefined, 'overseer-bot')).status, 200, 'Tab metadata stays visible to the overseer.');
+  for (const actor of ['123', 'overseer-bot']) {
+    for (const read of ['snapshot', 'screenshot']) {
+      const blocked = await apiRaw(`/v1/tabs/${human.id}/${read}`, 'GET', undefined, actor);
+      assert.equal(blocked.status, 409, `${actor} ${read} on a human tab`);
+      assert.equal(blocked.data.error, 'Tab is under human control.');
+    }
+  }
+  // A stranger cannot release; the overseer can, then reads after taking over.
+  assert.equal((await apiRaw(`/v1/tabs/${colored[1].id}/control`, 'POST', { controller: 'human' }, 'not-the-owner')).status, 403);
+  const releasedByOverseer = await api(`/v1/tabs/${colored[1].id}/control`, 'POST', { controller: 'human' }, 'overseer-bot');
+  assert.equal(releasedByOverseer.controller, 'human', 'Overseer released another bot\'s tab.');
+  assert.equal((await apiRaw(`/v1/tabs/${colored[1].id}/snapshot`, 'GET', undefined, 'overseer-bot')).status, 409, 'A released tab is sealed until control is taken.');
+  const seized = await api(`/v1/tabs/${colored[1].id}/control`, 'POST', { controller: 'agent' }, 'overseer-bot');
+  assert.equal(seized.controller, 'agent');
+  assert.equal((await api(`/v1/tabs/${colored[1].id}/snapshot`, 'GET', undefined, 'overseer-bot')).title, 'blue', 'Overseer reads once it holds control.');
+  console.log('PASS: overseer lists all tabs, releases/retakes another bot\'s tab, and human-controlled tabs reject bot reads.');
   await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, 'background-browser.cjs')], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', HERMES_WORKSPACE_CONNECTION: path.join(profile, 'connection.json') }, stdio: ['ignore', 'pipe', 'pipe'],

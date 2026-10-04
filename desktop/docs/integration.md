@@ -11,20 +11,22 @@ All requests use bearer authentication and `X-Hermes-Bot`. The current protocol 
 | Operation | Interface |
 | --- | --- |
 | Availability | `GET /v1/status` |
-| Assigned tabs | `GET /v1/tabs` |
+| Assigned tabs (every tab for an overseer) | `GET /v1/tabs` |
 | New tab | `POST /v1/tabs` with `url` and optional `background` |
 | Tab state | `GET /v1/tabs/:id` |
 | Text and element refs | `GET /v1/tabs/:id/snapshot` |
 | PNG screenshot | `GET /v1/tabs/:id/screenshot` |
 | Input/navigation | `POST /v1/tabs/:id/actions` with current `epoch` |
 | Close assigned agent tab | `DELETE /v1/tabs/:id` with `X-Control-Epoch` |
-| Release or retake an owned tab | `POST /v1/tabs/:id/control` with `controller` (owning bot only) |
+| Release or retake a tab | `POST /v1/tabs/:id/control` with `controller` (owning bot or overseer) |
 
 Allowed actions: navigate, move, click, type, press, scroll, back, forward, reload. Move/click accept a fresh snapshot ref or viewport x,y; type requires a fresh ref; press optionally accepts a ref. Scroll x,y are deltas. Move provides real pointer hover. Snapshots cover the top document; nested frame reference traversal, file uploads, and drag are not implemented. A screenshot can show frame content and coordinate input targets the tab viewport.
 
 Agent tabs open in the background unless explicitly requested otherwise. Input travels through the tab’s Chromium DevTools target, with a decorative Agent cursor at dispatched coordinates. It does not use OS input, the clipboard, native window activation, or the human’s keyboard focus. Agent page popups preserve the selected human tab. Application menu shortcuts are suppressed during agent key dispatch.
 
 A tab has `id`, `host`, `session`, `botId`, `allowedBots`, `controller`, and `epoch`. A bot can read its assigned or explicitly granted tabs. Mutation requires agent control and the current epoch. Take over, return control, assignment, and grant changes increment the epoch. Queued actions recheck it before dispatch. An input already sent to Chromium cannot be recalled. Human pointer input does not automatically change ownership: use Take over before intervening.
+
+While `controller` is `human`, page content is sealed to bots: `snapshot` and `screenshot` fail with `409 Tab is under human control.` for every bot actor, overseers included. `GET /v1/tabs/:id` metadata stays readable so agents can still see the tab exists and who holds it. The human takeover boundary covers visibility, not just mutation. The trusted human path — `X-Hermes-Human` on the VPS host, the app itself on Mac — is unaffected.
 
 Agent control also expires on its own. Every authorized tab request (snapshot,
 screenshot, action, control change) refreshes the tab's agent activity clock; a
@@ -35,6 +37,16 @@ does not leave tabs held forever. A bot that is still genuinely working can
 retake its own tab with `POST /v1/tabs/:id/control`, and a finished bot should
 release the same way instead of waiting out the clock.
 
+A designated overseer bot can supervise the whole workspace. On the Mac
+connector list its bot ID in the `overseerBots` preference, seeded at load from
+`HERMES_OVERSEER_BOTS` (comma-separated) when the preference is unset; on the
+VPS host set `HERMES_OVERSEER_BOT_IDS` the same way. An overseer's
+`GET /v1/tabs` returns every tab regardless of ownership, and its reads,
+actions and `control` posts are permitted on any tab — that is the point: an
+orchestrator can release or retake a runaway agent's tab. Ownership is the only
+gate it bypasses; the human read gate, control and epoch checks still apply,
+so it intervenes by changing control first.
+
 The Mac API lists assigned tabs across configured hosts. `POST /v1/tabs` accepts
 `host: mac | vps` (default Mac). VPS tab operations relay through the configured
 SSH alias to the private VPS broker. The native VPS MCP connector uses
@@ -42,7 +54,9 @@ SSH alias to the private VPS broker. The native VPS MCP connector uses
 and accepts only VPS opens; it remains available when the Mac is offline.
 Its Chromium/CDP endpoints stay on loopback. See [VPS setup](vps-browser.md).
 Browser IDs are trusted routing identities, not a security boundary against
-an agent with the host user's shell access. The same is true of the
+an agent with the host user's shell access. Overseer IDs share that model:
+anyone holding `connection.json` can assert an overseer bot ID, so keep the
+list short. The same is true of the
 `X-Hermes-Human` flag on the VPS broker: anyone holding `connection.json`
 can assert it to reach `control`, `grant`, `human-actions`, and `checkpoint`
 on any tab, including human-controlled ones (a checkpoint can carry form
