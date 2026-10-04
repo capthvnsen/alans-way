@@ -52,6 +52,7 @@ if (typeof electron === 'string') {
     assert.equal(await tabWc.executeJavaScript(`document.getElementById('hermes-workspace-agent-cursor').dataset.action`), 'click');
     const described = (await state()).tabs.find(item => item.id === created.id);
     assert.equal(described.agentCursor.name, 'Atlas fixture', 'cursor carries the driving bot name');
+    assert.equal(described.agentCursor.c.hue, require('../src/agent-input.cjs').botAccent('123').hue, 'cursor carries the bot accent');
     assert.equal(typeof described.agentBusy, 'boolean');
     step('share-page'); await assert.rejects(invoke('share-page'), /Telegram|chat|message box/i, 'no Telegram composer means a visible error, not silence');
     step('control human'); await invoke('control', { id: created.id, controller: 'human' });

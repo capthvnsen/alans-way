@@ -27,8 +27,12 @@ function cursorScript(cursor) {
       host.setAttribute('aria-hidden', 'true');
       host.style.cssText = 'all:initial!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;z-index:2147483647!important;pointer-events:none!important;user-select:none!important;';
       const root = host.attachShadow({ mode: 'closed' });
-      root.innerHTML = '<style>:host{pointer-events:none;transition:transform .28s cubic-bezier(.3,.9,.4,1)}svg{overflow:visible;filter:drop-shadow(0 2px 3px #0008)}span{position:absolute;left:19px;top:20px;padding:4px 7px;border:1px solid #a0fff4;border-radius:7px;background:#073b37;color:#d9fff8;font:600 11px/1.2 system-ui;white-space:nowrap;box-shadow:0 2px 8px #0004}.ring{fill:none;stroke:#69f5d4;stroke-width:2;opacity:0}:host([data-action="click"]) .ring{animation:tap .48s ease-out}@keyframes tap{from{r:3;opacity:.9}to{r:23;opacity:0}}@media(prefers-reduced-motion:reduce){.ring{animation:none!important}:host{transition:none!important}}</style><svg width="19" height="25" viewBox="0 0 19 25"><circle class="ring" cx="1" cy="1" r="3"/><path d="M1 1v19l5-5 4 9 4-2-4-8h7Z" fill="#69f5d4" stroke="#06332c" stroke-width="1.5" stroke-linejoin="round"/></svg><span></span>';
+      root.innerHTML = '<style>:host{pointer-events:none;transition:transform .28s cubic-bezier(.3,.9,.4,1)}svg{overflow:visible;filter:drop-shadow(0 2px 3px #0008)}span{position:absolute;left:19px;top:20px;padding:4px 7px;border:1px solid var(--ab,#a0fff4);border-radius:7px;background:var(--alb,#073b37);color:var(--alf,#d9fff8);font:600 11px/1.2 system-ui;white-space:nowrap;box-shadow:0 2px 8px #0004}.ring{fill:none;stroke:var(--am,#69f5d4);stroke-width:2;opacity:0}:host([data-action="click"]) .ring{animation:tap .48s ease-out}@keyframes tap{from{r:3;opacity:.9}to{r:23;opacity:0}}@media(prefers-reduced-motion:reduce){.ring{animation:none!important}:host{transition:none!important}}</style><svg width="19" height="25" viewBox="0 0 19 25"><circle class="ring" cx="1" cy="1" r="3"/><path d="M1 1v19l5-5 4 9 4-2-4-8h7Z" fill="var(--am,#69f5d4)" stroke="var(--as,#06332c)" stroke-width="1.5" stroke-linejoin="round"/></svg><span></span>';
       document.documentElement.appendChild(host);
+    }
+    if (value.c) {
+      host.style.setProperty('--am', value.c.main); host.style.setProperty('--as', value.c.stroke);
+      host.style.setProperty('--alb', value.c.labelBg); host.style.setProperty('--alf', value.c.labelFg); host.style.setProperty('--ab', value.c.border);
     }
     // The element highlight rides the same injection: ref actions flash their
     // target in blue while the cursor travels to it, then the outline fades.
@@ -68,6 +72,16 @@ function tintScript(on) {
     host.attachShadow({ mode: 'closed' }).innerHTML = '<style>div{position:fixed;inset:0;pointer-events:none;box-shadow:inset 0 0 0 3px rgba(105,245,212,.32),inset 0 -140px 160px -110px rgba(105,245,212,.14);border-radius:2px}</style><div></div>';
     document.documentElement.appendChild(host);
   })()`;
+}
+
+// Each bot gets a stable accent hue so a shared desktop shows which agent owns
+// the moving cursor. 'shared' and unnamed actors keep the default teal.
+function botAccent(botId) {
+  const id = String(botId || '');
+  let h = 5381;
+  for (const ch of id) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
+  const hue = id && id !== 'shared' ? h % 360 : 168;
+  return { hue, main: `hsl(${hue},85%,63%)`, stroke: `hsl(${hue},65%,24%)`, labelBg: `hsl(${hue},55%,16%)`, labelFg: `hsl(${hue},85%,88%)`, border: `hsl(${hue},95%,72%)` };
 }
 
 function createAgentInput({ command, requireActor, botName = () => 'Agent', onBusy = () => {} }) {
@@ -112,7 +126,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     }
     async function cursor(point, action, hl) {
       check();
-      tab.agentCursor = { ...point, action, name: botName(botId), hl: hl || null, updatedAt: Date.now() };
+      tab.agentCursor = { ...point, action, name: botName(botId), c: botAccent(botId), hl: hl || null, updatedAt: Date.now() };
       // The overlay is decoration, never evidence that an action succeeded.
       // A navigation can destroy its context after real input was delivered.
       await wc.executeJavaScript(cursorScript(tab.agentCursor)).catch(() => {});
@@ -198,4 +212,4 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   return { perform, clear, isDispatching };
 }
 
-module.exports = { createAgentInput, tintScript, INPUT_ACTIONS, keyboardEvent };
+module.exports = { createAgentInput, tintScript, botAccent, INPUT_ACTIONS, keyboardEvent };

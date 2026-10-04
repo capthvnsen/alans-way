@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createAgentInput, keyboardEvent } = require('../src/agent-input.cjs');
+const { createAgentInput, keyboardEvent, botAccent } = require('../src/agent-input.cjs');
 const { requireActor } = require('../src/core.cjs');
 
 function fixture() {
@@ -96,6 +96,20 @@ test('input failure always disables focus emulation and restores shortcut handli
   assert.equal(f.calls.at(-1).enabled, false);
   assert.deepEqual(f.shortcuts, [true, false]);
   assert.equal(f.agent.isDispatching(f.tab), false);
+});
+
+test('each bot gets a stable accent and busy callbacks bracket dispatch', async () => {
+  assert.equal(botAccent('shared').hue, 168);
+  assert.equal(botAccent('').hue, 168);
+  assert.deepEqual(botAccent('123'), botAccent('123'));
+  assert.ok(botAccent('123').hue >= 0 && botAccent('123').hue < 360);
+  assert.ok(botAccent('123').main.startsWith('hsl('));
+  const f = fixture(), busy = [];
+  const agent = createAgentInput({ requireActor, command: async (_t, method, params) => { f.calls.push({ method, ...params }); return {}; }, botName: () => 'Test Bot', onBusy: (_t, on) => busy.push(on) });
+  await agent.perform(f.tab, { epoch: 1, action: 'move', x: 10, y: 20 }, 'bot');
+  assert.deepEqual(busy, [true, false]);
+  assert.equal(f.tab.agentCursor.name, 'Test Bot');
+  assert.equal(f.tab.agentCursor.c.hue, botAccent('bot').hue);
 });
 
 test('clearing cancels a pending action and removes the separate cursor', async () => {

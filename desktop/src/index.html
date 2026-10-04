@@ -35,7 +35,11 @@
           <div class="home-bottom"><span class="status-dot"></span><span>Local Chromium. Your own computer.</span></div>
         </div>
       </div>
-      <div id="remote-preview-slot" class="remote-preview-slot"></div>
+      <div id="remote-preview-slot" class="remote-preview-slot">
+        <div id="preview-chrome" class="preview-chrome" title="Drag to move the VM preview"><span class="preview-grip">⋮⋮</span><span id="preview-label">VPS desktop</span><button id="preview-expand" class="icon-button" title="Expand virtual desktop" aria-label="Expand virtual desktop">⤢</button><button id="preview-hide" class="icon-button" title="Hide VM preview" aria-label="Hide VM preview">×</button></div>
+        <div id="preview-screen" class="preview-screen"></div>
+      </div>
+      <button id="preview-chip" class="preview-chip hidden" title="Show VM preview">▣ VPS</button>
       <footer class="workspace-footer"><span id="workspace-status">Ready</span><span id="connection-status">Browser connector starting…</span></footer>
     </section>
   </div>

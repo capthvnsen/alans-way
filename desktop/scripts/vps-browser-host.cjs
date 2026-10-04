@@ -8,7 +8,7 @@ const fs = require('node:fs'),
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
 const { normalizeUrl, requireActor, isAuthorized } = require('../src/core.cjs');
-const { createAgentInput } = require('../src/agent-input.cjs');
+const { createAgentInput, tintScript } = require('../src/agent-input.cjs');
 const { snapshotExpression, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
 const root =
   process.env.HERMES_VPS_BROWSER_DATA || path.join(os.homedir(), '.local', 'share', 'hermes-alans-way', 'browser');
@@ -39,6 +39,7 @@ async function request(input) {
     headers: {
       Authorization: 'Bearer ' + c.token,
       'X-Hermes-Bot': String(input.botId || ''),
+      'X-Hermes-Bot-Name': encodeURIComponent(String(input.botName || '').slice(0, 80)),
       'X-Hermes-Human': input.human ? '1' : '0',
       'X-Control-Epoch': String(input.epoch || ''),
       'Content-Type': 'application/json',
@@ -72,6 +73,9 @@ async function serve() {
     if (!cdp) throw new Error('Configured VPS Chromium did not become available.');
   }
   const tabs = new Map();
+  // The Mac shell forwards each bot's display name so the in-page agent cursor
+  // reads "Scout" instead of a generic "Agent" inside the streamed desktop.
+  const botNames = new Map();
   let persistQueue = Promise.resolve();
   const describe = (t) => ({
     id: t.id,
@@ -86,6 +90,7 @@ async function serve() {
     session: 'shared-vps',
     loading: false,
     agentCursor: t.agentCursor || null,
+    agentBusy: input.isDispatching(t),
     handoff: t.handoff || null,
   });
   function persist() {
@@ -96,6 +101,7 @@ async function serve() {
   const input = createAgentInput({
     requireActor,
     command: (tab, method, params) => tab.view.webContents.command(method, params),
+    botName: (id) => botNames.get(id) || 'Agent',
   });
   async function attach(data) {
     const wc = await cdp.page(data.targetId);
@@ -144,6 +150,7 @@ async function serve() {
       await tab.view.webContents.command('Page.enable');
       await tab.view.webContents.command('Page.navigate', { url });
       await loaded(tab, url);
+      if (tab.controller === 'agent') await tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
       await persist();
       return tab;
     } catch (e) {
@@ -169,9 +176,11 @@ async function serve() {
       const info = event.params.targetInfo;
       const tab = [...tabs.values()].find((t) => t.targetId === info.targetId);
       if (tab) {
+        const moved = info.url !== tab.url;
         tab.url = info.url;
         tab.title = info.title;
         tab.refs.clear();
+        if (moved && tab.controller === 'agent') tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
         persist().catch(() => {});
       }
     }
@@ -215,6 +224,10 @@ async function serve() {
       const url = new URL(req.url, 'http://127.0.0.1'),
         botId = String(req.headers['x-hermes-bot'] || ''),
         human = req.headers['x-hermes-human'] === '1';
+      try {
+        const botName = decodeURIComponent(String(req.headers['x-hermes-bot-name'] || '')).slice(0, 80);
+        if (botId && botName) botNames.set(botId, botName);
+      } catch {}
       if (url.pathname === '/v1/status')
         return send(200, {
           name: 'Hermes VPS browser',
@@ -289,6 +302,7 @@ async function serve() {
         tab.epoch++;
         tab.refs.clear();
         await input.clear(tab);
+        await wc.executeJavaScript(tintScript(tab.controller === 'agent')).catch(() => {});
         await persist();
         return send(200, describe(tab));
       }

@@ -166,6 +166,9 @@ function render(next) {
   $('home').classList.toggle('hidden', !!tab || state.activeTabId === 'vps');
   $('browser-toolbar').classList.toggle('hidden', state.activeTabId === 'vps');
   $('remote-preview-slot').classList.toggle('hidden', !state.preview || remote);
+  $('preview-chip').classList.toggle('hidden', state.preview || remote);
+  $('preview-label').textContent = state.remoteStatus === 'connected' ? 'VPS desktop' : `VPS · ${state.remoteStatus}`;
+  positionPreview();
   $('agent-workspace-name').textContent=bot?.name || 'Your tabs';
   $('all-agent-tabs').textContent=state.allAgentTabs?'All tabs':'Agent tabs';
   $('all-agent-tabs').title=state.allAgentTabs?'Show this agent’s tabs':'Show every agent’s tabs';
@@ -193,7 +196,40 @@ function rect(id) {
 }
 function scheduleLayout() {
   cancelAnimationFrame(resizeFrame);
-  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('remote-preview-slot'), obscured: modalOpen }));
+  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: modalOpen }));
+}
+// The mini VM window is anchored bottom-right until dragged; its saved offset
+// is relative to the workspace pane and clamped so it can never get lost.
+let previewDragging = false;
+function positionPreview() {
+  const slot = $('remote-preview-slot'), pos = state?.previewPos;
+  if (previewDragging) return;
+  if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) { slot.style.left = ''; slot.style.top = ''; slot.style.right = ''; slot.style.bottom = ''; return; }
+  const pane = slot.parentElement.getBoundingClientRect();
+  const x = Math.max(0, Math.min(pos.x, pane.width - slot.offsetWidth));
+  const y = Math.max(0, Math.min(pos.y, pane.height - slot.offsetHeight));
+  slot.style.left = `${x}px`; slot.style.top = `${y}px`; slot.style.right = 'auto'; slot.style.bottom = 'auto';
+}
+function wirePreviewDrag() {
+  const chrome = $('preview-chrome'), slot = $('remote-preview-slot');
+  let drag = null;
+  chrome.addEventListener('pointerdown', (event) => {
+    if (event.target.closest('button')) return;
+    previewDragging = true;
+    const paneBox = slot.parentElement.getBoundingClientRect(), slotBox = slot.getBoundingClientRect();
+    drag = { dx: event.clientX - slotBox.left, dy: event.clientY - slotBox.top, pane: paneBox };
+    chrome.setPointerCapture(event.pointerId);
+  });
+  chrome.addEventListener('pointermove', (event) => {
+    if (!drag) return;
+    const x = Math.max(0, Math.min(event.clientX - drag.pane.left - drag.dx, drag.pane.width - slot.offsetWidth));
+    const y = Math.max(0, Math.min(event.clientY - drag.pane.top - drag.dy, drag.pane.height - slot.offsetHeight));
+    slot.style.left = `${x}px`; slot.style.top = `${y}px`; slot.style.right = 'auto'; slot.style.bottom = 'auto';
+    drag.pos = { x: Math.round(x), y: Math.round(y) };
+    scheduleLayout();
+  });
+  const end = () => { if (drag?.pos) command('preview-move', drag.pos).catch(() => {}); drag = null; previewDragging = false; };
+  chrome.addEventListener('pointerup', end); chrome.addEventListener('pointercancel', end);
 }
 function openModal(title) {
   modalOpen = true; $('modal-title').textContent = title; $('modal-body').replaceChildren(); $('modal').classList.remove('hidden'); scheduleLayout();
@@ -338,6 +374,10 @@ $('presence-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };
 $('vm-toggle').onclick = () => command('toggle-vps-view');
+$('preview-expand').onclick = () => command('toggle-vps-view');
+$('preview-hide').onclick = () => command('settings', { preview: false });
+$('preview-chip').onclick = () => command('settings', { preview: true });
+wirePreviewDrag();
 $('extensions-button').onclick = showExtensions;
 $('new-tab').onclick = async () => { await command('create-tab'); $('address').focus(); };
 $('all-agent-tabs').onclick=()=>command('settings',{allAgentTabs:!state.allAgentTabs});
@@ -365,5 +405,5 @@ api.onFocusAddress(() => { $('address').focus(); $('address').select(); });
 api.onSettings?.(showSettings);
 api.onFocusWorkspace?.(() => { focusMode = !focusMode; $('shell').classList.toggle('focus-workspace', focusMode); scheduleLayout(); });
 new ResizeObserver(scheduleLayout).observe($('shell'));
-window.addEventListener('resize', scheduleLayout);
+window.addEventListener('resize', () => { positionPreview(); scheduleLayout(); });
 api.getState().then(render).catch((error) => toast(error.message));

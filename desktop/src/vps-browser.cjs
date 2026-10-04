@@ -1,7 +1,7 @@
 const { spawn } = require('node:child_process');
 const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
 function createVpsBrowser({ getConfig }) {
-  async function request(route, method = 'GET', body, { botId = '', human = false, epoch } = {}) {
+  async function request(route, method = 'GET', body, { botId = '', botName = '', human = false, epoch } = {}) {
     const cfg = getConfig();
     if (!cfg?.sshHost || !cfg.scriptPath) throw new Error('Configure the VPS browser connection in Settings.');
     if (
@@ -49,7 +49,7 @@ function createVpsBrowser({ getConfig }) {
           finish(e);
         }
       });
-      child.stdin.end(JSON.stringify({ path: route, method, body, botId, human, epoch }));
+      child.stdin.end(JSON.stringify({ path: route, method, body, botId, botName, human, epoch }));
     });
   }
   return { request };

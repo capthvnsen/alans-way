@@ -35,7 +35,7 @@ let isQuitting = false;
 let backgroundCaptureQueue = Promise.resolve();
 const avatarStore = createAvatarStore({ root: ROOT, nativeImage, dialog, getWindow: () => win, getPreferences: () => prefs });
 const agentInput = createAgentInput({ command: browserCommand, requireActor,
-  botName: (id) => prefs?.bots.find((bot) => bot.id === id)?.name || 'Agent', onBusy: () => broadcast() });
+  botName: (id) => nameForBot(id) || 'Agent', onBusy: () => broadcast() });
 const activity = createActivityTracker();
 const sitePermissions = createSitePermissions({ getPreferences: () => prefs, savePreferences,
   canRequest: (wc) => {
@@ -52,7 +52,7 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
 let pointerTimer, activityTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, showBots: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, allAgentTabs: false, agentLastTabs: {}, handoffs: [] };
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, previewPos: null, showBots: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, allAgentTabs: false, agentLastTabs: {}, handoffs: [] };
   try { return { ...defaults, ...JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'preferences.json'), 'utf8')) }; }
   catch { return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' }; }
 }
@@ -76,8 +76,9 @@ async function refreshVpsTabs() {
   catch { vpsBrowserStatus = 'disconnected'; }
   finally { vpsRefreshBusy = false; broadcast(); }
 }
+const nameForBot = (id) => prefs?.bots.find((bot) => bot.id === id)?.name || '';
 async function remoteRequest(id, operation, body, { human = true, botId = prefs.selectedBotId || 'shared' } = {}) {
-  const result = await vpsBrowser.request(`/v1/tabs/${id}${operation ? '/' + operation : ''}`, body === undefined ? 'GET' : 'POST', body, {human, botId});
+  const result = await vpsBrowser.request(`/v1/tabs/${id}${operation ? '/' + operation : ''}`, body === undefined ? 'GET' : 'POST', body, {human, botId, botName: nameForBot(botId)});
   const tab = result.tab || (result.id ? result : null); if (tab) vpsTabs.set(tab.id, tab);
   broadcast(); return result;
 }
@@ -97,7 +98,7 @@ function selectAgent(id) {
 }
 function getState() {
   return { name: app.getName(), version: app.getVersion(), bots: prefs.bots.map(bot => ({ ...bot, activity: activity.get(bot.id) })), order: prefs.order, hidden: prefs.hidden,
-    selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, showBots: prefs.showBots, remoteUrl: prefs.remoteUrl,
+    selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, allAgentTabs: prefs.allAgentTabs, handoffs: prefs.handoffs,
     activeTabId, browserContentsId: tabs.get(activeTabId)?.view.webContents.id || null, browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
@@ -400,6 +401,12 @@ function registerIpc() {
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) prefs.locationDefault = value.locationDefault;
         if (Number.isFinite(value.chatWidth)) prefs.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
         savePreferences(); applyLayout(); break;
+      case 'preview-move': {
+        // The mini VM window floats anywhere inside the workspace pane.
+        const x = Number(value.x), y = Number(value.y);
+        if (Number.isFinite(x) && Number.isFinite(y)) { prefs.previewPos = { x: Math.round(x), y: Math.round(y) }; savePreferences(); }
+        break;
+      }
       case 'remote-control': prefs.remoteControl = value.enabled === true; break;
       case 'remote-status': remoteStatus = String(value.status).slice(0, 50); break;
       case 'remote-paste': if (!prefs.remoteControl || remoteStatus!=='connected') throw new Error('Take control of the connected VPS desktop first.'); return clipboard.readText().slice(0,20000);
@@ -565,14 +572,14 @@ function startApi() {
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
         const body = await readJson(req);
-        if(body.host==='vps'){const result=await vpsBrowser.request('/v1/tabs','POST',body,{botId});vpsTabs.set(result.id,result);broadcast();return send(201,result);}
+        if(body.host==='vps'){const result=await vpsBrowser.request('/v1/tabs','POST',body,{botId,botName:nameForBot(botId)});vpsTabs.set(result.id,result);broadcast();return send(201,result);}
         if(body.host!==undefined&&body.host!=='mac')throw new Error('Choose mac or vps explicitly.');
         return send(201, describeTab(createTab({ url: body.url, botId, controller: 'agent', activate: body.background === false })));
       }
       const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions))?$/.exec(url.pathname);
       const tab = match && tabs.get(match[1]);
       if(match&&!tab&&prefs.vpsBrowser?.sshHost){
-        const result=await vpsBrowser.request(url.pathname,req.method,req.method==='POST'?await readJson(req):undefined,{botId,epoch:Number(req.headers['x-control-epoch'])});
+        const result=await vpsBrowser.request(url.pathname,req.method,req.method==='POST'?await readJson(req):undefined,{botId,botName:nameForBot(botId),epoch:Number(req.headers['x-control-epoch'])});
         const remote=result.tab || (result.id?result:null);if(remote)vpsTabs.set(remote.id,remote);if(req.method==='DELETE')vpsTabs.delete(match[1]);broadcast();return send(200,result);
       }
       if (!tab || tab.extensionPage) return send(404, { error: 'Tab not found.' });
