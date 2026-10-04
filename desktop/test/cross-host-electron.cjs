@@ -162,7 +162,6 @@ app
       assert.equal(workspace.activeTabId, 'home');
       assert.ok(workspace.tabs.every(tab => tab.host === 'mac'));
       assert.ok(!workspace.tabs.some(tab => tab.id === second.id));
-      await invoke('settings', { allAgentTabs: true });
       await invoke('open-bot', { id: '123' });
       assert.equal((await evaluate('window.workspace.getState()')).activeTabId, roundtrip.destinationTabId);
       console.log('PASS: shared live VPS cookies, separate agent tool ownership, and local-only app workspaces.');

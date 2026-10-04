@@ -8,7 +8,7 @@ const fs = require('node:fs'),
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
 const { normalizeUrl, requireActor, isAuthorized } = require('../src/core.cjs');
-const { createAgentInput, tintScript } = require('../src/agent-input.cjs');
+const { createAgentInput, tintScript, botAccent } = require('../src/agent-input.cjs');
 const { snapshotExpression, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
 const root =
   process.env.HERMES_VPS_BROWSER_DATA || path.join(os.homedir(), '.local', 'share', 'hermes-alans-way', 'browser');
@@ -84,6 +84,8 @@ async function serve() {
     url: t.url,
     botId: t.botId,
     allowedBots: t.allowedBots ?? [],
+    favicon: t.favicon || '',
+    agentHue: botAccent(t.botId).hue,
     controller: t.controller,
     epoch: t.epoch,
     host: 'vps',
@@ -120,6 +122,20 @@ async function serve() {
     if (e.code !== 'ENOENT') throw e;
   }
   await persist();
+  const agentIdleMs = Math.max(1, Number(process.env.HERMES_AGENT_IDLE_MINUTES) || 15) * 60000;
+  setInterval(() => {
+    const now = Date.now();
+    for (const t of tabs.values()) {
+      if (t.controller !== 'agent') continue;
+      if (now - Math.max(t.agentSince || 0, t.lastAgentActivity || 0) <= agentIdleMs) continue;
+      t.controller = 'human';
+      t.epoch++;
+      t.refs.clear();
+      input.clear(t).catch(() => {});
+      t.view.webContents.executeJavaScript(tintScript(false)).catch(() => {});
+      persist();
+    }
+  }, 30000).unref();
   cdp.socket.addEventListener('close', () => {
     process.stderr.write('Chromium disconnected; restarting the broker through its service.\n');
     process.exit(1);
@@ -144,6 +160,7 @@ async function serve() {
       allowedBots: [],
       controller: human ? 'human' : 'agent',
       epoch: 1,
+      agentSince: human ? undefined : Date.now(),
     });
     await persist();
     try {
@@ -165,6 +182,9 @@ async function serve() {
       if ((s && s.url !== 'about:blank' && s.ready === 'complete') || (s && url === 'about:blank')) {
         tab.url = s.url;
         tab.title = s.title;
+        tab.favicon = await tab.view.webContents
+          .executeJavaScript("document.querySelector('link[rel~=icon]')?.href || ''")
+          .catch(() => '');
         return;
       }
       await new Promise((r) => setTimeout(r, 100));
@@ -252,7 +272,7 @@ async function serve() {
           ),
         tab = m && tabs.get(m[1]);
       if (!tab) throw fail('VPS tab not found.', 404);
-      if (!human) requireActor(tab, botId);
+      if (!human) { requireActor(tab, botId); tab.lastAgentActivity = Date.now(); }
       const wc = tab.view.webContents;
       if (req.method === 'GET' && !m[2]) return send(200, describe(tab));
       if (req.method === 'GET' && m[2] === 'snapshot') {
@@ -296,9 +316,10 @@ async function serve() {
         tab.queue = action.catch(() => {});
         return send(200, await action);
       }
-      if (human && req.method === 'POST' && m[2] === 'control') {
+      if ((human || botId === tab.botId) && req.method === 'POST' && m[2] === 'control') {
         const body = await read(req);
         tab.controller = body.controller === 'agent' ? 'agent' : 'human';
+        if (tab.controller === 'agent') tab.agentSince = Date.now();
         tab.epoch++;
         tab.refs.clear();
         await input.clear(tab);

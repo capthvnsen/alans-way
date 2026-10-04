@@ -46,6 +46,11 @@
 
 /* Agent-driven tabs carry a live badge; the page frame tints while controlled. */
 .tab.agent{color:#8fd8c5}
+.tab-icon{display:flex;align-items:center;flex-shrink:0}
+.tab-favicon{width:14px;height:14px;border-radius:3px}
+.tab-agent-cursor svg{width:11px;height:15px;fill:hsl(var(--h,168),85%,63%);stroke:hsl(var(--h,168),65%,24%);stroke-width:1.5;filter:drop-shadow(0 0 3px hsl(var(--h,168),85%,63%)) drop-shadow(0 0 7px hsl(var(--h,168),85%,63%))}
+.tab.busy .tab-agent-cursor svg{animation:agent-cursor-glow 1.1s ease-in-out infinite}
+@keyframes agent-cursor-glow{0%,100%{filter:drop-shadow(0 0 3px hsl(var(--h,168),85%,63%))}50%{filter:drop-shadow(0 0 8px hsl(var(--h,168),95%,72%)) drop-shadow(0 0 14px hsl(var(--h,168),85%,63%))}}
 .agent-dot{width:6px;height:6px;border-radius:50%;background:#69f5d4;flex-shrink:0;opacity:.7}
 .tab.busy .agent-dot{animation:agent-busy 1.1s ease-in-out infinite}
 @keyframes agent-busy{50%{opacity:.25;transform:scale(1.5)}}

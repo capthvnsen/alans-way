@@ -136,6 +136,14 @@ app.whenReady().then(async () => {
   assert.equal((await evaluate('window.workspace.getState()')).activeTabId, human.id, 'Agent popup leaves the human tab selected.');
   assertHumanFocus();
   console.log('PASS: real agent click popup opens in background without taking native focus.');
+  // The owning bot can release and retake control; another bot cannot.
+  const released = await api(`/v1/tabs/${colored[0].id}/control`, 'POST', { controller: 'human' });
+  assert.equal(released.controller, 'human', 'Owner release returns human control.');
+  const foreign = await fetch(new URL(`/v1/tabs/${colored[0].id}/control`, connection.url), { method: 'POST', headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'not-the-owner', 'Content-Type': 'application/json' }, body: JSON.stringify({ controller: 'agent' }) });
+  assert.equal(foreign.status, 403, 'A different bot cannot change control.');
+  const retaken = await api(`/v1/tabs/${colored[0].id}/control`, 'POST', { controller: 'agent' });
+  assert.equal(retaken.controller, 'agent', 'Owner can retake its own tab.');
+  console.log('PASS: owner-only tab control release and retake.');
   await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, 'background-browser.cjs')], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', HERMES_WORKSPACE_CONNECTION: path.join(profile, 'connection.json') }, stdio: ['ignore', 'pipe', 'pipe'],

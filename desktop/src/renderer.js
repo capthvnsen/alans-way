@@ -60,14 +60,23 @@ function renderBotActivity(row, bot) {
   status.classList.toggle('active', active);
   status.title = activity?.detail || 'Live Telegram chat actions. No activity signal does not prove a bot has stopped working.';
 }
+function tabIcon(tab) {
+  const icon = element('span', 'tab-icon');
+  if (tab.controller === 'agent') {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 19 25');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', 'M1 1v19l5-5 4 9 4-2-4-8h7Z'); svg.append(path);
+    icon.append(svg); icon.classList.add('tab-agent-cursor'); icon.style.setProperty('--h', String(tab.agentHue ?? 168)); return icon;
+  }
+  if (tab.favicon) { const img = element('img', 'tab-favicon'); img.src = tab.favicon; img.alt = ''; img.onerror = () => { img.replaceWith(tab.symbol || '◈'); }; icon.append(img); return icon; }
+  icon.textContent = tab.symbol; return icon;
+}
 function renderTabs() {
   const container = $('tabs'); container.replaceChildren();
-  const visible=state.tabs.filter(tab=>state.allAgentTabs || !state.selectedBotId || tab.botId===state.selectedBotId || (tab.allowedBots ?? []).includes(state.selectedBotId) || tab.id===state.browserTabId);
-  const entries = [{ id: 'home', title: 'Start', symbol: '◔' }, ...visible.map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : '◈' }))];
+  const entries = [{ id: 'home', title: 'Start', symbol: '◔' }, ...state.tabs.map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : '◈' }))];
   for (const tab of entries) {
     const selected = state.browserTabId === tab.id;
     const node = element('div', `tab${selected ? ' active' : ''}`); node.setAttribute('role', 'tab'); node.setAttribute('aria-selected', selected ? 'true' : 'false'); node.tabIndex = 0;
-    node.append(element('span', 'tab-icon', tab.symbol), element('span', 'tab-title', tab.title || 'New tab'));
+    node.append(tabIcon(tab), element('span', 'tab-title', tab.title || 'New tab'));
     if (tab.controller === 'agent') { node.classList.add('agent'); node.append(element('span', 'agent-dot')); }
     if (tab.agentBusy) node.classList.add('busy');
     if(tab.host)node.title=`${tab.host==='vps'?'VPS':'Mac'} · ${state.bots.find(bot=>bot.id===tab.botId)?.name || tab.botId}${tab.controller === 'agent' ? ' · agent-controlled' : ''}`;
@@ -134,9 +143,8 @@ function showExtensions() {
   const browse = element('button', 'primary-button', 'Browse Chrome Web Store'); browse.onclick = async () => { closeModal(); await command('browse-extensions'); }; body.append(browse);
   const list = element('div'); list.id = 'extension-list'; body.append(list);
   const add = element('button', 'secondary-button', 'Add unpacked extension'); add.onclick = async () => { add.disabled = true; const result = await command('add-extension'); if (result) { render(result); toast('Extension list updated. Reload existing pages to apply content scripts.'); } add.disabled = false; };
-  body.append(add, element('hr', 'section-divider'), element('h3', '', '1Password'));
-  body.append(element('p', 'settings-note', 'Install 1Password from the Web Store and sign in inside its extension. Unlocking through the Mac app or Touch ID requires separate browser approval and code signing.'));
-  const password = element('button', 'secondary-button', 'Open 1Password for Mac'); password.onclick = () => command('open-1password'); body.append(password);
+  body.append(add, element('hr', 'section-divider'), element('h3', '', 'Sign-in and passwords'));
+  body.append(element('p', 'settings-note', 'This browser is Chromium, not Chrome — Google sync and Chrome’s built-in password manager are not included. For passwords and passkeys, install your manager’s extension from the Web Store and sign in inside it.'));
   renderExtensions();
 }
 function render(next) {
@@ -169,9 +177,7 @@ function render(next) {
   $('preview-chip').classList.toggle('hidden', state.preview || remote);
   $('preview-label').textContent = state.remoteStatus === 'connected' ? 'VPS desktop' : `VPS · ${state.remoteStatus}`;
   positionPreview();
-  $('agent-workspace-name').textContent=bot?.name || 'Your tabs';
-  $('all-agent-tabs').textContent=state.allAgentTabs?'All tabs':'Agent tabs';
-  $('all-agent-tabs').title=state.allAgentTabs?'Show this agent’s tabs':'Show every agent’s tabs';
+  $('agent-workspace-name').textContent=state.selectedBotId?`${bot?.name || 'Agent'} — all tabs`:'All tabs';
   $('control-button').textContent = tab?.controller === 'agent' ? 'Take over' : 'Give to agent';
   $('control-button').classList.toggle('agent', tab?.controller === 'agent');
   $('control-button').disabled = !tab || tab.extensionPage;
@@ -318,6 +324,22 @@ function showSitePermissionSettings(body) {
   const list = element('div'); list.id = 'site-permissions'; body.append(list); renderSitePermissions();
   const reset = element('button', 'secondary-button', 'Reset browser permissions'); reset.onclick = () => command('reset-site-permissions'); body.append(reset, element('hr', 'section-divider'));
 }
+async function showCookieSettings(body) {
+  body.append(element('h3', '', 'Cookies and site data'), element('p', 'settings-note', 'Shared by all local browser tabs. Clearing a site signs you out of it.'));
+  const list = element('div'); list.id = 'cookie-list';
+  const refresh = async () => {
+    const items = await command('list-cookies');
+    list.replaceChildren(...(Array.isArray(items) && items.length ? items.map((item) => {
+      const row = element('div', 'setting-row');
+      row.append(element('span', '', `${item.domain} · ${item.count} ${item.count === 1 ? 'cookie' : 'cookies'}`));
+      const clear = element('button', 'secondary-button', 'Clear'); clear.onclick = async () => { await command('clear-cookies', { domain: item.domain }); refresh(); };
+      row.append(clear); return row;
+    }) : [element('p', 'settings-note', 'No cookies stored.')]));
+  };
+  const clearAll = element('button', 'secondary-button', 'Clear all cookies'); clearAll.onclick = async () => { await command('clear-cookies'); refresh(); };
+  body.append(list, clearAll, element('hr', 'section-divider'));
+  await refresh();
+}
 function showSettings() {
   openModal('Workspace settings');
   const body = $('modal-body'), field = element('div', 'field');
@@ -332,6 +354,7 @@ function showSettings() {
   avatars.onclick = () => showAvatarEditor(); body.append(avatars);
   body.append(element('p', 'settings-note', 'Pick a marble avatar or import your own. Eyes follow your mouse only while Telegram reports activity.'), element('hr', 'section-divider'));
   showSitePermissionSettings(body);
+  showCookieSettings(body);
   const label = element('label', '', 'VPS desktop connection'); label.htmlFor = 'remote-url';
   const input = element('input'); input.id = 'remote-url'; input.placeholder = 'https://your-server/vnc.html or wss://…'; input.value = state.remoteUrl;
   field.append(label, input, element('p', '', 'Paste your existing noVNC viewer URL. Connect through Tailscale when your server is private. The small preview starts in watch mode.'));
@@ -408,7 +431,6 @@ $('preview-chip').onclick = () => command('settings', { preview: true });
 wirePreviewDrag();
 $('extensions-button').onclick = showExtensions;
 $('new-tab').onclick = async () => { await command('create-tab'); $('address').focus(); };
-$('all-agent-tabs').onclick=()=>command('settings',{allAgentTabs:!state.allAgentTabs});
 function submitUrl(event, inputId) { event.preventDefault(); const url = $(inputId).value.trim(); if (!url) return; if (state.tabs.some((tab) => tab.id === state.activeTabId)) command('navigate', { id: state.activeTabId, url }); else command('create-tab', { url }); }
 $('address-form').onsubmit = (event) => submitUrl(event, 'address');
 $('home-search').onsubmit = (event) => submitUrl(event, 'home-address');

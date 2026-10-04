@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { normalizeUrl, parseRemoteUrl, requireActor, isAuthorized, sanitizeBots } = require('./core.cjs');
 const { createAvatarStore } = require('./avatar-store.cjs');
-const { createAgentInput, tintScript } = require('./agent-input.cjs');
+const { createAgentInput, tintScript, botAccent } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { snapshotExpression, checkpointExpression, restoreExpression } = require('./browser-page.cjs');
@@ -53,7 +53,7 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
 let pointerTimer, activityTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, previewPos: null, showBots: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, allAgentTabs: false, agentLastTabs: {}, handoffs: [] };
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, previewPos: null, showBots: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [] };
   try { return { ...defaults, ...JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'preferences.json'), 'utf8')) }; }
   catch { return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' }; }
 }
@@ -66,7 +66,7 @@ function savePreferences() {
   fs.renameSync(`${file}.tmp`, file);
 }
 function describeTab(tab) {
-  return { id: tab.id, title: tab.title || 'New tab', url: tab.view.webContents.getURL(), botId: tab.botId,
+  return { id: tab.id, title: tab.title || 'New tab', url: tab.view.webContents.getURL(), botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
     controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
 }
 function isVpsTab(id) { return vpsTabs.has(id); }
@@ -101,7 +101,7 @@ function getState() {
   return { name: app.getName(), version: app.getVersion(), bots: prefs.bots.map(bot => ({ ...bot, activity: activity.get(bot.id) })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
-    vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, allAgentTabs: prefs.allAgentTabs, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
+    vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
     activeTabId, browserContentsId: tabs.get(activeTabId)?.view.webContents.id || null, browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [],
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
@@ -228,6 +228,7 @@ function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
   view.webContents.on('did-stop-loading', () => { tab.loading = false; savePreferences(); broadcast(); });
   view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.generation++; if (tab.controller === 'agent') view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); broadcast(); });
+  view.webContents.on('page-favicon-updated', (event, favicons) => { tab.favicon = favicons[0] || ''; broadcast(); });
   view.webContents.on('did-navigate-in-page', () => { tab.refs.clear(); tab.generation++; broadcast(); });
   view.webContents.on('did-fail-load', (_e, code, description, _url, isMainFrame) => {
     if (isMainFrame && code !== -3) { tab.error = description; tab.loading = false; broadcast(); }
@@ -255,6 +256,7 @@ function changeController(id, controller) {
   if (!tab) throw new Error('Tab not found.');
   if (tab.extensionPage && controller === 'agent') throw new Error('Extension account pages stay under your control.');
   tab.controller = controller === 'agent' ? 'agent' : 'human';
+  if (tab.controller === 'agent') tab.agentSince = Date.now();
   if (tab.controller === 'agent' && tab.botId === 'shared' && prefs.selectedBotId) tab.botId = prefs.selectedBotId;
   tab.view.webContents.executeJavaScript(tintScript(tab.controller === 'agent')).catch(() => {});
   tab.epoch++;
@@ -377,10 +379,23 @@ function registerIpc() {
       case 'remove-extension': extensionPopup?.destroy(); await extensionStore.remove(value.key); break;
       case 'open-extension': await openExtension(value.key, value.anchor); break;
       case 'browse-extensions': createTab({ url: 'https://chromewebstore.google.com/category/extensions' }); break;
-      case 'open-1password': {
-        const error = await shell.openPath('/Applications/1Password.app');
-        if (error) throw new Error('1Password for Mac was not found in Applications. Install the Mac app to use this shortcut.');
-        break;
+      case 'list-cookies': {
+        const groups = new Map();
+        for (const c of await session.fromPartition('persist:browser').cookies.get({})) {
+          const d = (c.domain || '').replace(/^\./, '');
+          groups.set(d, (groups.get(d) || 0) + 1);
+        }
+        return [...groups.entries()].map(([domain, count]) => ({ domain, count })).sort((a, b) => b.count - a.count);
+      }
+      case 'clear-cookies': {
+        const domain = String(value?.domain || '');
+        const jar = session.fromPartition('persist:browser').cookies;
+        for (const c of await jar.get({})) {
+          const d = (c.domain || '').replace(/^\./, '');
+          if (domain && d !== domain && !d.endsWith(`.${domain}`)) continue;
+          await jar.remove(`${c.secure ? 'https' : 'http'}://${d}${c.path || '/'}`, c.name).catch(() => {});
+        }
+        broadcast(); break;
       }
       case 'open-bot': await openBot(String(value.id)); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
@@ -398,7 +413,7 @@ function registerIpc() {
       case 'reset-site-permissions': sitePermissions.reset(); break;
       case 'settings':
         if (value.vpsBrowser && typeof value.vpsBrowser === 'object') { prefs.vpsBrowser={sshHost:String(value.vpsBrowser.sshHost || '').trim(),scriptPath:String(value.vpsBrowser.scriptPath || '').trim(),sudo:value.vpsBrowser.sudo===true}; vpsBrowserStatus='connecting'; refreshVpsTabs(); }
-        if (typeof value.allAgentTabs === 'boolean') prefs.allAgentTabs=value.allAgentTabs;
+        if (Number.isFinite(value.agentIdleMinutes)) prefs.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         if (typeof value.preview === 'boolean') prefs.preview = value.preview;
         if (typeof value.showBots === 'boolean') prefs.showBots = value.showBots;
@@ -620,9 +635,9 @@ function startApi() {
         const body = await readJson(req);
         if(body.host==='vps'){const result=await vpsBrowser.request('/v1/tabs','POST',body,{botId,botName:nameForBot(botId)});vpsTabs.set(result.id,result);broadcast();return send(201,result);}
         if(body.host!==undefined&&body.host!=='mac')throw new Error('Choose mac or vps explicitly.');
-        return send(201, describeTab(createTab({ url: body.url, botId, controller: 'agent', activate: body.background === false })));
+        { const created = createTab({ url: body.url, botId, controller: 'agent', activate: body.background === false }); created.agentSince = Date.now(); return send(201, describeTab(created)); }
       }
-      const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions))?$/.exec(url.pathname);
+      const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions|control))?$/.exec(url.pathname);
       const tab = match && tabs.get(match[1]);
       if(match&&!tab&&prefs.vpsBrowser?.sshHost){
         const result=await vpsBrowser.request(url.pathname,req.method,req.method==='POST'?await readJson(req):undefined,{botId,botName:nameForBot(botId),epoch:Number(req.headers['x-control-epoch'])});
@@ -630,6 +645,7 @@ function startApi() {
       }
       if (!tab || tab.extensionPage) return send(404, { error: 'Tab not found.' });
       requireActor(tab, botId);
+      tab.lastAgentActivity = Date.now();
       if (req.method === 'GET' && !match[2]) return send(200, describeTab(tab));
       if (req.method === 'GET' && match[2] === 'snapshot') return send(200, await snapshot(tab));
       if (req.method === 'GET' && match[2] === 'screenshot') {
@@ -647,6 +663,11 @@ function startApi() {
         const action = tab.queue.then(() => performAction(tab, body, botId));
         tab.queue = action.catch(() => {});
         return send(200, await action);
+      }
+      if (req.method === 'POST' && match[2] === 'control') {
+        const body = await readJson(req);
+        if (botId !== tab.botId) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
+        return send(200, changeController(tab.id, body.controller));
       }
       if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true); closeTab(tab.id); return send(200, { closed: true }); }
       return send(405, { error: 'Method not supported.' });
@@ -710,6 +731,13 @@ function createWindow() {
   pointerTimer.unref();
   activityTimer = setInterval(() => { if (activity.expire()) broadcast(); }, 500);
   activityTimer.unref();
+  setInterval(() => {
+    const idleMs = Math.max(1, prefs.agentIdleMinutes || 15) * 60000, now = Date.now();
+    for (const tab of tabs.values()) {
+      if (tab.controller !== 'agent' || tab.extensionPage) continue;
+      if (now - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) > idleMs) changeController(tab.id, 'human');
+    }
+  }, 30000).unref();
   vpsTimer=setInterval(refreshVpsTabs,5000);vpsTimer.unref();refreshVpsTabs();
 }
 if (!app.requestSingleInstanceLock()) app.quit();

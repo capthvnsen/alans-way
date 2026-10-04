@@ -18,12 +18,22 @@ All requests use bearer authentication and `X-Hermes-Bot`. The current protocol 
 | PNG screenshot | `GET /v1/tabs/:id/screenshot` |
 | Input/navigation | `POST /v1/tabs/:id/actions` with current `epoch` |
 | Close assigned agent tab | `DELETE /v1/tabs/:id` with `X-Control-Epoch` |
+| Release or retake an owned tab | `POST /v1/tabs/:id/control` with `controller` (owning bot only) |
 
 Allowed actions: navigate, move, click, type, press, scroll, back, forward, reload. Move/click accept a fresh snapshot ref or viewport x,y; type requires a fresh ref; press optionally accepts a ref. Scroll x,y are deltas. Move provides real pointer hover. Snapshots cover the top document; nested frame reference traversal, file uploads, and drag are not implemented. A screenshot can show frame content and coordinate input targets the tab viewport.
 
 Agent tabs open in the background unless explicitly requested otherwise. Input travels through the tab’s Chromium DevTools target, with a decorative Agent cursor at dispatched coordinates. It does not use OS input, the clipboard, native window activation, or the human’s keyboard focus. Agent page popups preserve the selected human tab. Application menu shortcuts are suppressed during agent key dispatch.
 
 A tab has `id`, `host`, `session`, `botId`, `allowedBots`, `controller`, and `epoch`. A bot can read its assigned or explicitly granted tabs. Mutation requires agent control and the current epoch. Take over, return control, assignment, and grant changes increment the epoch. Queued actions recheck it before dispatch. An input already sent to Chromium cannot be recalled. Human pointer input does not automatically change ownership: use Take over before intervening.
+
+Agent control also expires on its own. Every authorized tab request (snapshot,
+screenshot, action, control change) refreshes the tab's agent activity clock; a
+tab under agent control with no agent contact for `agentIdleMinutes` (default
+15, Mac setting; `HERMES_AGENT_IDLE_MINUTES` on the VPS host) automatically
+returns to human control with an incremented epoch — work finished or stalled
+does not leave tabs held forever. A bot that is still genuinely working can
+retake its own tab with `POST /v1/tabs/:id/control`, and a finished bot should
+release the same way instead of waiting out the clock.
 
 The Mac API lists assigned tabs across configured hosts. `POST /v1/tabs` accepts
 `host: mac | vps` (default Mac). VPS tab operations relay through the configured
