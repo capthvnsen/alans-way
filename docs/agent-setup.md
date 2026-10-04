@@ -8,11 +8,11 @@ token. Add specialists only when there is a clear independent role.
 
 ## Workspace behavior
 
-Install `skills/workspace-operations/` in the primary's native skills directory
-using the skill installation mechanism supported by that Hermes release. A
-short pointer in the profile's user-managed `SOUL.md` can direct browser and
-handoff requests to it. The skill describes capabilities actually available
-in this release, including human takeover and the limits of execution handoff.
+Install the [Alan's Way agent plugin](https://github.com/capthvnsen/alans-way-agents)
+on the gateway host — its bundled `workspace-operations` skill covers browser
+and handoff behavior for this release, including human takeover and the limits
+of execution handoff. A short pointer in the profile's user-managed `SOUL.md`
+can direct browser and handoff requests to it.
 It does not add tools or broaden an approval policy.
 
 Configure the browser connectors following the [desktop guide](../desktop/README.md)
