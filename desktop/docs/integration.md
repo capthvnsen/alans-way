@@ -40,7 +40,7 @@ On `human_has_control`, wait for an explicit release. On `stale_control_epoch`, 
 
 Control handoff keeps the same live tab on its execution host. For a Mac tab, the VPS agent drives the Mac through MCP, retaining that tab's cookies, uploads, JavaScript state, and open dialogs. It remains dependent on the Mac being awake.
 
-The native UI's **Continue on VPS / Mac** creates a checkpoint with source
+The backend cross-host handoff helper creates a checkpoint with source
 host/tab, URL/title, scroll position, a bounded task note and optional matching
 text fields. Both source and destination stay human-controlled. Destination
 `tab.handoff` records source/destination IDs, note, `verification`, and restored/
@@ -50,6 +50,11 @@ URL produces `review_required` and restores no drafts. Passwords and fields
 identified as credentials, codes or payment details are excluded. Arbitrary
 field classification is imperfect, so transferring text drafts is opt-in.
 Cookies, files, JavaScript memory and open dialogs are not migrated.
+
+The Mac UI displays only local browser tabs and one VPS desktop viewer.
+Individual VPS tabs, VPS tab creation, and cross-host handoff controls are
+not exposed in the app. The checkpoint/restore plumbing is retained for
+the later Companion integration and its opt-in integration test.
 
 Live login changes are shared within each host's single browser profile.
 Mac/VPS authentication remains independent. The broker creates separate VPS
@@ -67,10 +72,11 @@ remain separate modules. They use the same existing VPS primary and Telegram
 conversation. CI checks the Python package and desktop code independently.
 
 Proactivity controls use the native `/proactivity` commands in the Telegram chat.
-Status comes from the plugin's response. VPS **Take control** on a selected
-managed tab revokes that tab's agent input before enabling the viewer. The
-generic VPS desktop control does not pause desktop automation. **Stop control**
-only disables viewer input; **Give to agent** releases browser input separately.
+Status comes from the plugin's response. VPS **Take control** enables input
+through the desktop picture; **Stop control** disables it. These viewer
+controls do not pause browser or desktop agents. Coordinate shared desktop
+work separately. Local **Take over / Give to agent** still enforces browser
+control for Mac tabs.
 
 ## Site permissions
 

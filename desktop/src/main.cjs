@@ -78,17 +78,18 @@ async function remoteRequest(id, operation, body, { human = true, botId = prefs.
 function selectAgent(id) {
   const old = prefs.selectedBotId;
   if (old === id) return;
-  if (tabs.has(activeTabId) || vpsTabs.has(activeTabId)) prefs.agentLastTabs[old] = activeTabId;
+  const viewingVps = activeTabId === 'vps';
+  if (tabs.has(activeTabId)) prefs.agentLastTabs[old] = activeTabId;
   prefs.selectedBotId = id;
   prefs.remoteControl = false;
-  const own = [...tabs.values(), ...vpsTabs.values()].filter(tab => tab.botId === id || tab.allowedBots.includes(id));
-  activeTabId = own.some(tab => tab.id === prefs.agentLastTabs[id]) ? prefs.agentLastTabs[id] : own.at(-1)?.id || 'home';
+  const own = [...tabs.values()].filter(tab => tab.botId === id || tab.allowedBots.includes(id));
+  activeTabId = viewingVps ? 'vps' : own.some(tab => tab.id === prefs.agentLastTabs[id]) ? prefs.agentLastTabs[id] : own.at(-1)?.id || 'home';
   applyLayout();
 }
 function getState() {
   return { name: app.getName(), version: app.getVersion(), bots: prefs.bots.map(bot => ({ ...bot, activity: activity.get(bot.id) })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, remoteUrl: prefs.remoteUrl,
-    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab).concat([...vpsTabs.values()]),
+    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, allAgentTabs: prefs.allAgentTabs, handoffs: prefs.handoffs,
     activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions,
@@ -143,7 +144,7 @@ function applyLayout() {
       if (!tab.view.getVisible()) tab.view.setVisible(true);
     }
   }
-  fit(remoteView, activeTabId === 'vps' || isVpsTab(activeTabId) ? layout.browser : prefs.preview ? layout.preview : null);
+  fit(remoteView, activeTabId === 'vps' ? layout.browser : prefs.preview ? layout.preview : null);
   if (remoteView && win.contentView.children.at(-1) !== remoteView) win.contentView.addChildView(remoteView);
 }
 function configureContents(contents, isTelegram = false) {
@@ -258,13 +259,15 @@ function registerIpc() {
     trustSender(event);
     switch (command) {
       case 'create-tab': return describeTab(createTab({ url: value.url || 'about:blank' }));
-      case 'create-vps-tab': {
-        const tab = await vpsBrowser.request('/v1/tabs','POST',{url:value.url || 'about:blank'},{botId:prefs.selectedBotId || 'shared',human:true});
-        vpsTabs.set(tab.id,tab); prefs.remoteControl=false; activeTabId=tab.id; await remoteRequest(tab.id,'activate',{}); applyLayout(); broadcast(); return tab;
-      }
       case 'close-tab':
         if (isVpsTab(value.id)) { if(activeTabId===value.id)prefs.remoteControl=false; await vpsBrowser.request(`/v1/tabs/${value.id}`,'DELETE',undefined,{human:true}); vpsTabs.delete(value.id); if(activeTabId===value.id)activeTabId='home'; applyLayout(); } else closeTab(value.id); break;
-      case 'activate': if(activeTabId!==value.id)prefs.remoteControl=false; activeTabId = tabs.has(value.id) || isVpsTab(value.id) || ['home', 'vps'].includes(value.id) ? value.id : 'home'; if (isVpsTab(activeTabId)) await remoteRequest(activeTabId,'activate',{}); applyLayout(); break;
+      case 'activate': {
+        const id=isVpsTab(value.id)?'vps':value.id;
+        if(activeTabId!==id)prefs.remoteControl=false;
+        activeTabId=tabs.has(id)||['home','vps'].includes(id)?id:'home';
+        if(isVpsTab(value.id))await remoteRequest(value.id,'activate',{});
+        applyLayout();break;
+      }
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
         const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); await tab.view.webContents.loadURL(normalizeUrl(value.url)).catch(() => {}); } break;
@@ -392,7 +395,7 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   const record={...handoff,destinationTabId:target.id,verification:result.verification,restoredDrafts:result.restored,skippedDrafts:result.skipped};
   if(destination==='mac')target.handoff=record;
   else {target.handoff=record;vpsTabs.set(target.id,target);}
-  prefs.remoteControl=false; prefs.handoffs=[record,...prefs.handoffs].slice(0,20);activeTabId=target.id;
+  prefs.remoteControl=false; prefs.handoffs=[record,...prefs.handoffs].slice(0,20);activeTabId=destination==='vps'?'vps':target.id;
   if(destination==='vps')await remoteRequest(target.id,'activate',{});
   savePreferences();applyLayout();broadcast();return record;
 }

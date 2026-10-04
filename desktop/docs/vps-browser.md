@@ -121,22 +121,22 @@ visibly. Retain the existing SSH-to-Mac `workspace_browser` entry for local
 work. Install the repository's `workspace-operations` skill in the profile's
 native user skills directory for host selection and takeover instructions.
 
-In Mac **Settings → VPS browser**, enter a saved SSH host alias, the absolute
-`vps-browser-host.cjs` path and whether that existing SSH user needs passwordless
-sudo to reach the desktop user's broker. Known host keys and noninteractive
-SSH must already work. The current sudo option targets the root-owned setup;
-for a normal desktop user, connect as that user without sudo. Configure the
-noVNC viewer URL separately. The Mac invokes the broker's bounded `request`
-command over SSH; its private token remains on the VPS.
+The Mac app needs only **Settings → VPS desktop connection** and a reachable
+noVNC viewer URL for watching/control. It does not list or create VPS browser
+tabs. Configure native VPS tools in Hermes as above; the broker's private token
+remains on the VPS. Existing private `vpsBrowser` preferences can still supply
+SSH routing to the optional Mac connector/backend handoff path; its settings
+are no longer exposed in the UI.
 
 ## Verify and recover
 
-Check native status reports `host: vps`. Open a disposable tab, take a fresh
-snapshot, type/click only its fixture and inspect the resulting page. Verify
-another bot cannot list/read that tab; explicitly grant access through ⇄ when
-collaboration is wanted. Test **Take control** followed by **Give to agent**
-and fresh epochs. Test ↗ **Continue on Mac / VPS** with an unsigned text draft,
-including a destination login redirect. Handoff details are in
+Check native status reports `host: vps`. Open a disposable tab through the
+agent connector, take a fresh snapshot, type/click only its fixture and inspect
+the resulting page. Verify another bot cannot list/read that tab. Explicit
+cross-bot grants and recovery of human-controlled VPS targets require an
+authorized broker controller; the Mac's local ⇄ dialog manages local tabs only.
+Test desktop **Take control / Stop control** independently. Backend handoff
+details and its destination review requirement are in
 [the integration contract](integration.md#browser-task-handoff).
 
 `npm run test:cross-host` is an opt-in integration test. It requires

@@ -158,15 +158,14 @@ app
       assert.ok(secondSnap.text.includes('shared_fixture=live-shared'));
       assert.ok(!(await api('/v1/tabs', 'GET', undefined, '456')).data.tabs.some((t) => t.id === cookieTab.id));
       await invoke('open-bot', { id: '456' });
-      await until(
-        () => evaluate('document.getElementById("tabs").innerText'),
-        (s) => s.includes('Browser handoff fixture'),
-      );
-      assert.equal((await evaluate('window.workspace.getState()')).activeTabId, second.id);
+      const workspace = await evaluate('window.workspace.getState()');
+      assert.equal(workspace.activeTabId, 'home');
+      assert.ok(workspace.tabs.every(tab => tab.host === 'mac'));
+      assert.ok(!workspace.tabs.some(tab => tab.id === second.id));
       await invoke('settings', { allAgentTabs: true });
       await invoke('open-bot', { id: '123' });
       assert.equal((await evaluate('window.workspace.getState()')).activeTabId, roundtrip.destinationTabId);
-      console.log('PASS: shared live VPS cookies, separate agent tab lists/control, and remembered agent workspaces.');
+      console.log('PASS: shared live VPS cookies, separate agent tool ownership, and local-only app workspaces.');
       await macWc.executeJavaScript(`document.cookie='mac_ready=1;path=/'`);
       await invoke('navigate', { id: mac.id, url: fixture + '/needs-login' });
       await until(

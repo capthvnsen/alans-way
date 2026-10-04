@@ -47,22 +47,23 @@ Control handoff of a Mac tab keeps that same live tab, login and page state on
 the Mac. The VPS agent can drive it through the private connector while the
 Mac is available; the human can take over in Workspace.
 
-Workspace's ↗ browser handoff creates a new tab on the other host and keeps
-both tabs under human control. A destination snapshot may contain `tab.handoff`:
-read its task note, source/destination IDs, verification and draft counts.
-Wait for **Give to agent**, then read a fresh snapshot and verify the intended
-page and login before continuing the recorded task. `review_required` means
-the destination changed URL or needs login; resolve that with the human.
-The handoff carries URL, scroll and optional matching text drafts. Passwords,
-cookies, uploads and in-memory application state stay on the source host.
-Keep Chromium profiles with their running browser.
+The app supplies local Mac tabs and a single VPS desktop viewer. Cross-host
+handoff controls are not exposed in its UI. Use an installed Companion handoff
+capability only when it advertises support. Backend checkpoints may contain a
+task note, source/destination IDs, verification and draft counts. Read that
+context, wait for authorized agent control, and verify the destination page
+and login before continuing. `review_required` means the page needs human
+review. Passwords, cookies, uploads and in-memory state stay on the source
+host. Keep Chromium profiles with their running browser.
 
-The viewer is one shared desktop. **Take control** on a selected managed VPS
-tab revokes its browser agent input before enabling human input. **Stop control**
-returns to Watch; **Give to agent** explicitly releases the tab. The generic
-VPS computer view enables mouse input without pausing desktop automation.
-Coordinate other desktop work before using that shared view. Separate desktop
-streams and automatic Mac/VPS login propagation remain additional work.
+The viewer is one shared desktop. **Take control** enables the human's mouse
+and keyboard; **Stop control** returns to Watch. These viewer controls do not
+pause browser or desktop agents. Coordinate work in the same window with the
+human. Mac **Take over / Give to agent** enforces local tab control separately.
+For a VPS tab reporting `human_has_control`, wait for an authorized broker
+controller to release it rather than treating the viewer switch as permission.
+Separate desktop streams and automatic Mac/VPS login propagation remain
+additional work.
 
 ## Preserve vanilla Hermes
 
