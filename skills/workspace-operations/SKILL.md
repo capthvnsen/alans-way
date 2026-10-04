@@ -1,6 +1,6 @@
 ---
 name: workspace-operations
-description: Use for Hermes- Alan's way browser tasks, Mac/VPS execution handoff, human takeover, or explicitly sharing a tab with another bot.
+description: Use for Hermes- Alan's way browser tasks, VPS window control, Mac/VPS execution handoff, human takeover, or explicitly sharing a tab with another bot.
 ---
 
 # Workspace operations
@@ -16,6 +16,9 @@ with status and assigned tabs. Confirm the reported host and tab ownership.
 For VPS desktop work, use the configured VPS computer tools and verify the
 desktop identity. A connection failure means that host is unavailable; report
 it or continue only work already authorized on another host.
+
+For VPS window input, incomplete accessibility trees, or screenshots returned
+as `MEDIA:` paths, read [VPS desktop operations](references/vps-desktop.md).
 
 ## Operate a browser tab
 
