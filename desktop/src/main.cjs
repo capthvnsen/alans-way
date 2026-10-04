@@ -11,7 +11,9 @@ const { createSitePermissions } = require('./site-permissions.cjs');
 const { snapshotExpression, checkpointExpression, restoreExpression } = require('./browser-page.cjs');
 const { createVpsBrowser } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
+const { ElectronChromeExtensions } = require('electron-chrome-extensions');
 
+app.enableSandbox();
 app.setName("Hermes- Alan's way");
 // Keep existing sessions and connector discovery stable when the product name changes.
 app.setPath('userData', process.env.HERMES_WORKSPACE_DATA
@@ -20,7 +22,8 @@ app.setPath('userData', process.env.HERMES_WORKSPACE_DATA
 const ROOT = __dirname;
 const TELEGRAM = 'https://web.telegram.org/a/';
 let win, backgroundWindow, telegramView, remoteView, apiServer, prefs, layout = {}, apiPort = 0;
-let extensionStore, extensionPopup, extensionPopupTabId;
+let extensionStore, extensionHost, extensionPopup, extensionPopupTabId, extensionActiveContentsId;
+let registeringExtensionTab = false;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 const tabs = new Map();
 const vpsTabs = new Map();
@@ -54,7 +57,7 @@ function readPreferences() {
 }
 function savePreferences() {
   if (!prefs) return;
-  prefs.savedTabs = [...tabs.values()].map((tab) => ({ url: tab.view.webContents.getURL(), botId: tab.botId }));
+  if (win && !win.isDestroyed()) prefs.savedTabs = [...tabs.values()].filter(tab => !tab.extensionPage).map((tab) => ({ url: tab.view.webContents.getURL(), botId: tab.botId }));
   fs.mkdirSync(app.getPath('userData'), { recursive: true });
   const file = path.join(app.getPath('userData'), 'preferences.json');
   fs.writeFileSync(`${file}.tmp`, JSON.stringify(prefs, null, 2), { mode: 0o600 });
@@ -62,7 +65,7 @@ function savePreferences() {
 }
 function describeTab(tab) {
   return { id: tab.id, title: tab.title || 'New tab', url: tab.view.webContents.getURL(), botId: tab.botId,
-    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
+    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, extensionPage: tab.extensionPage === true, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
 }
 function isVpsTab(id) { return vpsTabs.has(id); }
 async function refreshVpsTabs() {
@@ -96,7 +99,7 @@ function getState() {
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, allAgentTabs: prefs.allAgentTabs, handoffs: prefs.handoffs,
-    activeTabId, browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
+    activeTabId, browserContentsId: tabs.get(activeTabId)?.view.webContents.id || null, browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [],
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
 }
@@ -131,7 +134,9 @@ function backgroundHost(width = 900, height = 700) {
   return backgroundWindow;
 }
 function applyLayout() {
-  if (extensionPopup && extensionPopupTabId !== activeTabId) extensionPopup.close();
+  if (extensionPopup && extensionPopupTabId !== activeTabId) extensionPopup.destroy();
+  const active = tabs.get(activeTabId)?.view.webContents;
+  if (active && active.id !== extensionActiveContentsId) { extensionActiveContentsId = active.id; extensionHost?.selectTab(active); }
   fit(telegramView, layout.telegram);
   for (const tab of tabs.values()) {
     const foreground = activeTabId === tab.id && layout.browser?.width > 0 && layout.browser?.height > 0 && !layout.obscured;
@@ -156,16 +161,20 @@ function applyLayout() {
 function configureContents(contents, isTelegram = false) {
   contents.setWindowOpenHandler((details) => {
     let url;
-    try { url = normalizeUrl(details.url); } catch { return { action: 'deny' }; }
+    const extensionPage = !isTelegram && isExtensionUrl(details.url);
+    try { url = extensionPage ? details.url : normalizeUrl(details.url); } catch { return { action: 'deny' }; }
     return { action: 'allow', createWindow: (options) => {
       const parent = [...tabs.values()].find((tab) => tab.view.webContents === contents);
-      const tab = createTab({ url, botId: parent?.botId || prefs.selectedBotId || 'shared', controller: parent?.controller || 'human', options, skipLoad: details.disposition !== 'background-tab', activate: parent?.controller !== 'agent' && details.disposition !== 'background-tab' });
+      const tab = createTab({ url, extensionPage, botId: parent?.botId || prefs.selectedBotId || 'shared', controller: extensionPage ? 'human' : parent?.controller || 'human', options, skipLoad: details.disposition !== 'background-tab', activate: parent?.controller !== 'agent' && details.disposition !== 'background-tab' });
       return tab.view.webContents;
     } };
   });
   contents.on('will-navigate', (event, url) => {
     if (isTelegram && !url.startsWith(TELEGRAM)) { event.preventDefault(); try { createTab({ url }); } catch {} }
-    else if (!isTelegram && !/^https?:\/\//i.test(url) && url !== 'about:blank') event.preventDefault();
+    else if (!isTelegram && !/^https?:\/\//i.test(url) && url !== 'about:blank') {
+      if (!isExtensionUrl(url)) event.preventDefault();
+      else { const tab = [...tabs.values()].find(item => item.view.webContents === contents); if (tab) { tab.extensionPage = true; changeController(tab.id, 'human'); } }
+    }
   });
   contents.on('before-input-event', (event, input) => {
     const targetTab = [...tabs.values()].find(tab => tab.view.webContents === contents);
@@ -185,14 +194,17 @@ function configureContents(contents, isTelegram = false) {
     if (item.getState() !== 'interrupted') item.setSaveDialogOptions({ title: 'Save download' });
   });
 }
-function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared', controller = 'human', options, skipLoad = false, activate = true } = {}) {
+function isExtensionUrl(value) {
+  try { const url = new URL(value); return url.protocol === 'chrome-extension:' && !url.username && !url.password && !!session.fromPartition('persist:browser').extensions.getExtension(url.hostname); } catch { return false; }
+}
+function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared', controller = 'human', options, skipLoad = false, activate = true, extensionPage = false } = {}) {
   if (tabs.size >= 40) throw new Error('Close a tab before opening another.');
-  const targetUrl = normalizeUrl(url);
+  const targetUrl = extensionPage && isExtensionUrl(url) ? url : normalizeUrl(url);
   const view = new WebContentsView({ ...(options?.webContents ? { webContents: options.webContents } : {}),
     webPreferences: { ...options?.webPreferences, preload: undefined, partition: 'persist:browser', contextIsolation: true, nodeIntegration: false, sandbox: true,
       webSecurity: true, backgroundThrottling: false } });
   view.setBackgroundColor('#0b0b0c');
-  const tab = { id: crypto.randomUUID(), view, botId: String(botId).slice(0, 100), controller, epoch: 1, title: 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
+  const tab = { id: crypto.randomUUID(), view, botId: String(botId).slice(0, 100), controller, extensionPage, epoch: 1, title: 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
   tabs.set(tab.id, tab);
   tab.host = backgroundHost();
   tab.host.contentView.addChildView(view);
@@ -200,6 +212,15 @@ function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared
   const viewport = layout.browser || { x: 0, y: 0, width: 900, height: 700 };
   view.setBounds({ x: Math.round(viewport.x), y: Math.round(viewport.y), width: Math.round(viewport.width), height: Math.round(viewport.height) });
   configureContents(view.webContents);
+  // The library selects newly registered tabs. Registration must not reparent
+  // or focus a background agent view in the human window.
+  registeringExtensionTab = true;
+  try { extensionHost?.addTab(view.webContents, win); } finally { registeringExtensionTab = false; }
+  extensionActiveContentsId = undefined;
+  view.webContents.on('context-menu', (_event, params) => {
+    const items = extensionHost?.getContextMenuItems(view.webContents, params) || [];
+    if (items.length && tab.id === activeTabId && tab.controller === 'human') Menu.buildFromTemplate(items).popup({ window: win });
+  });
   view.webContents.on('page-title-updated', (_event, title) => { tab.title = title; broadcast(); });
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
   view.webContents.on('did-stop-loading', () => { tab.loading = false; savePreferences(); broadcast(); });
@@ -219,6 +240,7 @@ function closeTab(id) {
   const tab = tabs.get(id);
   if (!tab) return;
   tabs.delete(id);
+  extensionHost?.removeTab(tab.view.webContents);
   if (browserReturnTabId === id) browserReturnTabId = [...tabs.keys()].at(-1) || 'home';
   tab.host?.contentView.removeChildView(tab.view);
   tab.view.webContents.close();
@@ -228,6 +250,7 @@ function closeTab(id) {
 function changeController(id, controller) {
   const tab = tabs.get(id);
   if (!tab) throw new Error('Tab not found.');
+  if (tab.extensionPage && controller === 'agent') throw new Error('Extension account pages stay under your control.');
   tab.controller = controller === 'agent' ? 'agent' : 'human';
   if (tab.controller === 'agent' && tab.botId === 'shared' && prefs.selectedBotId) tab.botId = prefs.selectedBotId;
   tab.epoch++;
@@ -238,31 +261,16 @@ function changeController(id, controller) {
 }
 async function openExtension(key, anchor) {
   if (activeTabId === 'vps') throw new Error('Extensions are available in local browser tabs.');
-  const details = extensionStore.popup(key), targetId = activeTabId, tab = tabs.get(targetId);
+  const item = extensionStore.list().find(item => item.key === key && item.loaded);
+  if (!item) throw new Error('Enable this extension before opening it.');
+  if (!tabs.has(activeTabId)) createTab({});
+  const targetId = activeTabId, tab = tabs.get(targetId);
   // An extension popup may fill the page. Invalidate new agent actions first.
   if (tab) { changeController(tab.id, 'human'); await tab.queue; }
   if (activeTabId !== targetId || (tab && !tabs.has(tab.id))) throw new Error('The selected tab changed. Open the extension again on the intended tab.');
-  extensionPopup?.close();
-  const bounds = win.getContentBounds(), zoom = win.webContents.getZoomFactor();
-  const width = 420, height = Math.min(540, bounds.height - 50);
-  const right = Number.isFinite(anchor?.x) ? anchor.x * zoom : bounds.width - 12;
-  const bottom = Number.isFinite(anchor?.y) ? anchor.y * zoom : 140;
-  const popup = new BrowserWindow({ parent: win, title: details.name, width, height,
-    x: bounds.x + Math.max(0, Math.min(right - width, bounds.width - width)),
-    y: bounds.y + Math.max(0, Math.min(bottom, bounds.height - height)),
-    frame: false, show: false, resizable: false, minimizable: false, maximizable: false, backgroundColor: '#17171b',
-    webPreferences: { session: session.fromPartition('persist:browser'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
-  extensionPopup = popup; extensionPopupTabId = activeTabId;
-  const openLink = url => { try { createTab({ url, controller: 'human' }); popup.close(); } catch {} };
-  popup.webContents.setWindowOpenHandler(({ url }) => { openLink(url); return { action: 'deny' }; });
-  popup.webContents.on('will-navigate', (event, url) => { if (!url.startsWith(details.origin)) { event.preventDefault(); openLink(url); } });
-  popup.webContents.on('before-input-event', (event, input) => {
-    if (input.type === 'keyDown' && (input.key === 'Escape' || ((input.meta || input.control) && input.key.toLowerCase() === 'w'))) { event.preventDefault(); popup.close(); }
-  });
-  popup.on('blur', () => popup.close());
-  popup.on('closed', () => { if (extensionPopup === popup) extensionPopup = undefined; });
-  try { await popup.loadURL(details.url); if (!popup.isDestroyed()) popup.show(); }
-  catch (error) { if (!popup.isDestroyed()) popup.close(); throw error; }
+  const details = { eventType: 'click', extensionId: item.id, tabId: tab.view.webContents.id, alignment: 'bottom right',
+    anchorRect: { x: Number.isFinite(anchor?.x) ? anchor.x - 28 : win.getContentBounds().width - 90, y: Number.isFinite(anchor?.y) ? anchor.y - 28 : 100, width: 28, height: 28 } };
+  await win.webContents.executeJavaScript(`window.browserAction.activate('persist:browser', ${JSON.stringify(details)})`);
 }
 function trustSender(event) {
   const trusted = [win?.webContents, remoteView?.webContents];
@@ -326,6 +334,7 @@ function registerIpc() {
       case 'grant-tab': {
         if (isVpsTab(value.id)) { await remoteRequest(value.id,'grant',value); break; }
         const tab = tabs.get(value.id); if (!tab) throw new Error('Tab not found.');
+        if (tab.extensionPage) throw new Error('Extension account pages stay under your control.');
         if (typeof value.botId === 'string' && value.botId.length > 0 && value.botId.length <= 100) tab.botId = value.botId;
         tab.allowedBots = Array.isArray(value.botIds) ? [...new Set(value.botIds.filter(id => typeof id === 'string' && id.length > 0 && id.length <= 100 && id !== tab.botId))] : [];
         tab.epoch++; tab.refs.clear(); agentInput.clear(tab).catch(() => {}); break;
@@ -335,9 +344,10 @@ function registerIpc() {
       case 'remove-avatar': avatarStore.remove(value.avatarId); savePreferences(); break;
       case 'add-extension': await extensionStore.importFolder(); break;
       case 'pin-extension': extensionStore.pin(value.key, value.pinned); break;
-      case 'enable-extension': extensionPopup?.close(); await extensionStore.setEnabled(value.key, value.enabled); break;
-      case 'remove-extension': extensionPopup?.close(); extensionStore.remove(value.key); break;
+      case 'enable-extension': extensionPopup?.destroy(); await extensionStore.setEnabled(value.key, value.enabled); break;
+      case 'remove-extension': extensionPopup?.destroy(); await extensionStore.remove(value.key); break;
       case 'open-extension': await openExtension(value.key, value.anchor); break;
+      case 'browse-extensions': createTab({ url: 'https://chromewebstore.google.com/category/extensions' }); break;
       case 'open-1password': {
         const error = await shell.openPath('/Applications/1Password.app');
         if (error) throw new Error('1Password for Mac was not found in Applications. Install the Mac app to use this shortcut.');
@@ -525,7 +535,7 @@ function startApi() {
       }
       if (url.pathname === '/v1/tabs' && req.method === 'GET') {
         if(prefs.vpsBrowser?.sshHost)await refreshVpsTabs();
-        return send(200, { tabs: [...tabs.values()].map(describeTab).concat([...vpsTabs.values()]).filter((tab) => !botId || tab.botId === botId || tab.allowedBots.includes(botId)) });
+        return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage).map(describeTab).concat([...vpsTabs.values()]).filter((tab) => !botId || tab.botId === botId || tab.allowedBots.includes(botId)) });
       }
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
@@ -540,7 +550,7 @@ function startApi() {
         const result=await vpsBrowser.request(url.pathname,req.method,req.method==='POST'?await readJson(req):undefined,{botId,epoch:Number(req.headers['x-control-epoch'])});
         const remote=result.tab || (result.id?result:null);if(remote)vpsTabs.set(remote.id,remote);if(req.method==='DELETE')vpsTabs.delete(match[1]);broadcast();return send(200,result);
       }
-      if (!tab) return send(404, { error: 'Tab not found.' });
+      if (!tab || tab.extensionPage) return send(404, { error: 'Tab not found.' });
       requireActor(tab, botId);
       if (req.method === 'GET' && !match[2]) return send(200, describeTab(tab));
       if (req.method === 'GET' && match[2] === 'snapshot') return send(200, await snapshot(tab));
@@ -576,7 +586,7 @@ function createWindow() {
   nativeTheme.themeSource = 'dark';
   win = new BrowserWindow({ width: 1550, height: 980, minWidth: 1120, minHeight: 680, backgroundColor: '#09090a', title: app.getName(),
     titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 },
-    webPreferences: { preload: path.join(ROOT, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+    webPreferences: { preload: path.join(ROOT, 'preload.bundle.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   telegramView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'telegram-preload.cjs'), partition: 'persist:telegram', contextIsolation: true, nodeIntegration: false, sandbox: true } });
   telegramView.setBackgroundColor('#09090a');
   configureContents(telegramView.webContents, true);
@@ -584,7 +594,7 @@ function createWindow() {
   telegramView.webContents.on('render-process-gone', () => { telegramStatus = 'offline'; activity.clear(); broadcast(); });
   telegramView.webContents.on('did-fail-load', (_e, code, _desc, _url, main) => { if (main && code !== -3) { telegramStatus = 'offline'; activity.clear(); broadcast(); } });
   win.contentView.addChildView(telegramView);
-  remoteView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  remoteView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'preload.bundle.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   remoteView.setBackgroundColor('#101011');
   remoteView.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   remoteView.webContents.on('will-navigate', (event) => event.preventDefault());
@@ -604,7 +614,7 @@ function createWindow() {
   win.on('close', (event) => { if (!isQuitting) { event.preventDefault(); win.hide(); } });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
-    { label: 'File', submenu: [{ label: 'New Browser Tab', accelerator: 'CmdOrCtrl+T', click: () => createTab({}) }, { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => extensionPopup?.isFocused() ? extensionPopup.close() : closeTab(activeTabId) }] },
+    { label: 'File', submenu: [{ label: 'New Browser Tab', accelerator: 'CmdOrCtrl+T', click: () => createTab({}) }, { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(activeTabId) }] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { label: 'View', submenu: [{ label: 'Reload Page', accelerator: 'CmdOrCtrl+R', click: () => tabs.get(activeTabId)?.view.webContents.reload() }, { role: 'togglefullscreen' }, { label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }] },
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] },
@@ -628,8 +638,33 @@ else {
   app.whenReady().then(async () => {
     app.setAccessibilitySupportEnabled(true); prefs = readPreferences(); prefs.remoteControl = false;
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
-    extensionStore = createExtensionStore({ root: app.getPath('userData'), session: session.fromPartition('persist:browser'), dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences });
-    await extensionStore.restore(); createWindow();
+    const browserSession = session.fromPartition('persist:browser');
+    extensionHost = new ElectronChromeExtensions({ license: 'GPL-3.0', session: browserSession,
+      createTab: async details => { const tab = createTab({ url: details.url || 'about:blank', activate: details.active !== false, extensionPage: isExtensionUrl(details.url) }); return [tab.view.webContents, win]; },
+      selectTab: wc => { if (isQuitting || registeringExtensionTab) return; const tab = [...tabs.values()].find(item => item.view.webContents === wc); if (tab) { activeTabId = tab.id; prefs.remoteControl = false; applyLayout(); broadcast(); } else BrowserWindow.fromWebContents(wc)?.show(); },
+      removeTab: (wc, window) => { if (isQuitting) return; const tab = [...tabs.values()].find(item => item.view.webContents === wc); if (tab) closeTab(tab.id); else if (window !== win && window !== backgroundWindow && !window?.isDestroyed()) window?.close(); },
+      createWindow: async details => {
+        const popup = new BrowserWindow({ parent: win, width: details.width || 640, height: details.height || 720, webPreferences: { session: browserSession, sandbox: true, contextIsolation: true, nodeIntegration: false } });
+        extensionHost.addTab(popup.webContents, popup); configureContents(popup.webContents);
+        const url = Array.isArray(details.url) ? details.url[0] : details.url || 'about:blank';
+        await popup.loadURL(isExtensionUrl(url) ? url : normalizeUrl(url)); return popup;
+      },
+      removeWindow: window => { if (window.isDestroyed()) return; if (window === win) throw new Error('The workspace window cannot be closed by an extension.'); window.close(); },
+      requestPermissions: async (extension, permissions) => {
+        if (!win?.isFocused() || activeTabId === 'vps') return false;
+        const answer = await dialog.showMessageBox(win, { type: 'question', message: `${extension.name} requests additional access`, detail: [...(permissions.permissions || []), ...(permissions.origins || [])].join('\n'), buttons: ['Block', 'Allow'], defaultId: 0, cancelId: 0 });
+        return answer.response === 1;
+      } });
+    for (const type of ['frame', 'service-worker']) browserSession.registerPreloadScript({ id: `hermes-extension-namespace-${type}`, type, filePath: path.join(ROOT, 'extension-namespace-preload.cjs') });
+    ElectronChromeExtensions.handleCRXProtocol(session.defaultSession);
+    extensionHost.on('browser-action-popup-created', popup => {
+      extensionPopup = popup; extensionPopupTabId = activeTabId;
+      popup.browserWindow?.once('closed', () => { if (extensionPopup === popup) extensionPopup = undefined; });
+      popup.browserWindow?.webContents.setWindowOpenHandler(({ url }) => { createTab({ url, extensionPage: isExtensionUrl(url) }); return { action: 'deny' }; });
+    });
+    extensionStore = createExtensionStore({ root: app.getPath('userData'), session: browserSession, dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences, onChanged: broadcast,
+      canInstall: frame => [...tabs.values()].some(tab => tab.id === activeTabId && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
+    await extensionStore.installStore(); createWindow(); await extensionStore.restore(); broadcast();
   });
   app.on('second-instance', () => { win?.show(); win?.focus(); });
   app.on('activate', () => { win?.show(); win?.focus(); });

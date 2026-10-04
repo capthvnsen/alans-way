@@ -101,26 +101,34 @@ profile and local fixture without accessing the device's real location.
 
 ## Browser extensions
 
-The address-bar puzzle button opens the local extension manager. It imports
-unpacked Chrome extension code into private app data, loads it into the persistent
-`persist:browser` session and remembers enable/pin choices across restarts. It
-does not import Chrome cookies, extension storage or password vaults. Extensions
-apply to this shared local session, including agents' local tabs; they are not
-loaded into Telegram or the VPS desktop. Review requested access when adding one.
+The address-bar puzzle button opens the local extension manager and Chrome Web
+Store. Store installation uses `electron-chrome-web-store` in `persist:browser`,
+with a native permission confirmation before downloading/loading code. It retains
+Google's extension ID and checks loaded store extensions for updates. Disabled
+extensions stay disabled on restart. The manager also imports unpacked code into
+private app data and remembers enable/pin choices. It does not import Chrome
+cookies, extension storage or password vaults. Extensions apply to all local tabs
+sharing this session, including agents' tabs; Telegram and the VPS use separate
+sessions. Review requested access when installing one.
 
-Pinned icons open manifest-defined `action.default_popup` or
-`browser_action.default_popup` pages in sandboxed windows without the workspace
-preload or agent connector. Opening a popup takes over the current local tab
-before displaying it. Content scripts use Electron's built-in extension support.
-Extensions do not have their own Hermes agent identities or obey per-tab bot
-assignments; they are trusted browser code with their declared permissions.
+`electron-chrome-extensions` supplies actual browser actions, dynamic popups,
+click handlers, tabs/windows APIs and a native messaging bridge. The sandboxed
+workspace preload is bundled by `npm run build:preload`; popup windows do not
+receive the workspace preload or agent connector. Opening an action takes over
+the selected local tab and invalidates pending agent epochs. Extension account
+and settings tabs stay under human control and are omitted from the agent API.
+Extensions themselves are trusted browser code with their declared permissions;
+per-bot assignment does not restrict an installed extension's browser access.
 
-This is partial compatibility, not a full Chrome extension host: dynamic action
-APIs, Chrome Web Store installation, automatic extension updates and native
-messaging are unavailable. In particular, 1Password browser autofill and desktop
-unlock integration are not configured. The Mac-app shortcut only opens 1Password;
-the workspace does not read its vault. See [Electron's supported APIs](https://www.electronjs.org/docs/latest/api/extensions)
-and [1Password's additional-browser requirements](https://support.1password.com/additional-browsers/).
+This remains partial Chrome compatibility. For example, keyboard commands,
+tab capture and some permission/settings APIs are incomplete. 1Password's
+standalone setup must be completed by the user; do not infer successful vault
+unlock or autofill from installation alone. Mac-app unlock/Touch ID requires
+supported code signing and browser approval in 1Password. No browser identity
+or signing check is bypassed. See [API coverage](https://github.com/samuelmaddock/electron-browser-shell/blob/master/packages/electron-chrome-extensions/README.md)
+and [1Password browser requirements](https://support.1password.com/additional-browsers/).
 
-Run `npm run test:extensions` to exercise a harmless extension in an isolated
-profile, including content scripts, a real popup, pin/enable persistence and removal.
+Run `npm run test:extensions` for the generated MV3 fixture and
+`npm run test:web-store` for the real public 1Password package. Each uses an
+isolated profile; the latter requires network access and uses no account.
+The desktop distribution is GPL-3.0-or-later; the Python addon stays MIT.

@@ -174,4 +174,4 @@ See [the acceptance gates](docs/continuity.md) before calling the full system se
 
 ## License and affiliation
 
-MIT. Independent community project; not an official Nous Research product and not affiliated with other commercial assistants. No private research workspace, user-specific configuration, or Hermes source fork is included.
+The Python Hermes Companion add-on is MIT licensed under [LICENSE](LICENSE). The desktop app is distributed under [GPL-3.0-or-later](desktop/LICENSE), with [dependency notices](desktop/NOTICE.md). Independent community project; not an official Nous Research product and not affiliated with other commercial assistants. No private research workspace, user-specific configuration, or Hermes source fork is included.

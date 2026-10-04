@@ -1,4 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const { injectBrowserAction } = require('electron-chrome-extensions/browser-action');
+if (location.protocol === 'file:' && location.pathname.endsWith('/index.html')) injectBrowserAction();
 contextBridge.exposeInMainWorld('workspace', {
   getState: () => ipcRenderer.invoke('workspace:get'),
   command: (name, value) => ipcRenderer.invoke('workspace:command', name, value),

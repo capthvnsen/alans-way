@@ -5,3 +5,4 @@ screenshots/
 *.log
 .env
 connection.json
+src/preload.bundle.cjs

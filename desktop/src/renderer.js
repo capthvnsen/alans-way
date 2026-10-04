@@ -78,7 +78,6 @@ function renderTabs() {
     container.append(node);
   }
 }
-let extensionSignature = '';
 function extensionIcon(item) {
   if (!item.icon) return element('span', 'extension-letter', item.name.slice(0, 1));
   const image = element('img'); image.src = item.icon; image.alt = ''; return image;
@@ -89,26 +88,33 @@ function openExtension(item, button) {
 }
 function renderExtensions() {
   const items = state.extensions || [], signature = JSON.stringify(items);
-  if (extensionSignature !== signature) {
-    extensionSignature = signature; $('pinned-extensions').replaceChildren();
-    for (const item of items.filter(item => item.pinned && item.loaded && item.enabled)) {
-      const button = element('button', 'icon-button extension-button'); button.title = item.name;
-      button.setAttribute('aria-label', `Open ${item.name} extension`); button.append(extensionIcon(item));
-      button.onclick = () => item.hasPopup ? openExtension(item, button) : showExtensions();
-      $('pinned-extensions').append(button);
-    }
+  let actions = $('native-extension-actions');
+  if (!actions) {
+    actions = element('browser-action-list'); actions.id = 'native-extension-actions'; actions.setAttribute('partition', 'persist:browser'); actions.setAttribute('alignment', 'bottom right'); $('pinned-extensions').append(actions);
+    actions.addEventListener('click', event => {
+      const button = event.composedPath().find(node => node.tagName === 'BUTTON'), item = state.extensions.find(item => item.id === button?.id);
+      if (item) { event.preventDefault(); event.stopImmediatePropagation(); openExtension(item, button); }
+    }, true);
+    actions.addEventListener('contextmenu', event => { event.preventDefault(); event.stopImmediatePropagation(); showExtensions(); }, true);
+  }
+  actions.setAttribute('tab', String(state.browserContentsId || -1));
+  if (actions.shadowRoot) {
+    let style = actions.shadowRoot.querySelector('#pin-filter');
+    if (!style) { style = element('style'); style.id = 'pin-filter'; actions.shadowRoot.append(style); }
+    const pinned = items.filter(item => item.pinned && item.loaded && item.enabled && /^[a-p]{32}$/.test(item.id));
+    style.textContent = `.action${pinned.map(item => `:not([id="${item.id}"])`).join('')}{display:none!important}`;
   }
   const list = $('extension-list'); if (!modalOpen || !list || list.dataset.signature === signature) return;
   const focused = document.activeElement?.getAttribute('aria-label');
   list.dataset.signature = signature; list.replaceChildren();
-  if (!items.length) list.append(element('p', 'settings-note', 'No extensions added yet. Add an unpacked extension folder, then pin it beside the address bar.'));
+  if (!items.length) list.append(element('p', 'settings-note', 'No extensions added yet. Browse the Chrome Web Store to add one.'));
   for (const item of items) {
     const row = element('div', 'extension-row'), icon = element('span', 'extension-manager-icon'), copy = element('div', 'visibility-copy'); icon.append(extensionIcon(item));
     const name = element('button', 'visibility-name extension-name', item.name); name.setAttribute('aria-label', `Open ${item.name}`);
-    name.disabled = !item.loaded || !item.hasPopup || state.activeTabId === 'vps'; name.onclick = () => openExtension(item, $('extensions-button'));
+    name.disabled = !item.loaded || state.activeTabId === 'vps'; name.onclick = () => openExtension(item, $('extensions-button'));
     copy.append(name, element('span', 'visibility-username', `${item.version} · ${item.error ? 'Could not load' : !item.enabled ? 'Disabled' : item.hasPopup ? 'Popup available' : 'Runs on matching pages'}`));
     if (item.error) copy.append(element('p', 'settings-note', item.error));
-    if (item.nativeMessaging) copy.append(element('p', 'settings-note', 'Connection to desktop apps is unavailable here.'));
+    if (item.nativeMessaging) copy.append(element('p', 'settings-note', 'Desktop app connection may require signed-browser approval in that app.'));
     const actions = element('div', 'extension-row-actions'), enabled = element('input'); enabled.type = 'checkbox'; enabled.checked = item.enabled;
     enabled.setAttribute('role', 'switch'); enabled.setAttribute('aria-label', `Enable ${item.name}`);
     enabled.onchange = async () => { enabled.disabled = true; const result = await command('enable-extension', { key: item.key, enabled: enabled.checked }); if (result) render(result); else { enabled.disabled = false; enabled.checked = item.enabled; } };
@@ -122,11 +128,12 @@ function renderExtensions() {
 function showExtensions() {
   openModal('Extensions');
   const body = $('modal-body');
-  body.append(element('p', 'settings-note', 'Extensions run in your local Mac tabs. Compatible unpacked extensions can be added here; direct Chrome Web Store installation is not available.'));
+  body.append(element('p', 'settings-note', 'Install extensions from the Chrome Web Store, then pin them beside the address bar. They run in your local Mac tabs.'));
+  const browse = element('button', 'primary-button', 'Browse Chrome Web Store'); browse.onclick = async () => { closeModal(); await command('browse-extensions'); }; body.append(browse);
   const list = element('div'); list.id = 'extension-list'; body.append(list);
-  const add = element('button', 'primary-button', 'Add extension folder'); add.onclick = async () => { add.disabled = true; const result = await command('add-extension'); if (result) { render(result); toast('Extension list updated. Reload existing pages to apply content scripts.'); } add.disabled = false; };
+  const add = element('button', 'secondary-button', 'Add unpacked extension'); add.onclick = async () => { add.disabled = true; const result = await command('add-extension'); if (result) { render(result); toast('Extension list updated. Reload existing pages to apply content scripts.'); } add.disabled = false; };
   body.append(add, element('hr', 'section-divider'), element('h3', '', '1Password'));
-  body.append(element('p', 'settings-note', '1Password browser autofill and its connection to the Mac app are not configured. You can open 1Password for Mac to copy a login.'));
+  body.append(element('p', 'settings-note', 'Install 1Password from the Web Store and sign in inside its extension. Unlocking through the Mac app or Touch ID requires separate browser approval and code signing.'));
   const password = element('button', 'secondary-button', 'Open 1Password for Mac'); password.onclick = () => command('open-1password'); body.append(password);
   renderExtensions();
 }
@@ -159,8 +166,9 @@ function render(next) {
   $('all-agent-tabs').title=state.allAgentTabs?'Show this agent’s tabs':'Show every agent’s tabs';
   $('control-button').textContent = tab?.controller === 'agent' ? 'Take over' : 'Give to agent';
   $('control-button').classList.toggle('agent', tab?.controller === 'agent');
-  $('control-button').disabled = !tab;
-  $('tab-access').disabled = !tab;
+  $('control-button').disabled = !tab || tab.extensionPage;
+  $('tab-access').disabled = !tab || tab.extensionPage;
+  if (tab?.extensionPage) $('control-button').textContent = 'You';
   $('control-button').title = tab ? `Browser runs on ${tab.host==='vps'?'the VPS':'your Mac'} · ${tab.controller === 'agent' ? 'Agent' : 'You'} control it` : 'Open a browser tab first';
   if (document.activeElement !== $('address')) $('address').value = tab?.url === 'about:blank' ? '' : tab?.url || '';
   $('local-label').textContent = remote ? 'ON YOUR VPS' : 'ON YOUR MAC';
