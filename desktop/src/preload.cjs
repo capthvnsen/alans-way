@@ -11,4 +11,6 @@ contextBridge.exposeInMainWorld('workspace', {
   onFocusWorkspace: (callback) => { ipcRenderer.on('workspace:focus-workspace', callback); },
   onPointer: (callback) => { ipcRenderer.on('workspace:pointer', (_event, point) => callback(point)); },
   onRemoteShortcut: (callback) => { ipcRenderer.on('workspace:remote-shortcut', (_event, value) => callback(value)); },
+  onPreviewNudge: (callback) => { ipcRenderer.on('workspace:preview-nudge', (_event, value) => callback(value)); },
+  onPreviewDrop: (callback) => { ipcRenderer.on('workspace:preview-drop', callback); },
 });

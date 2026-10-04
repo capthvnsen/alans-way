@@ -231,6 +231,23 @@ function wirePreviewDrag() {
   const end = () => { if (drag?.pos) command('preview-move', drag.pos).catch(() => {}); drag = null; previewDragging = false; };
   chrome.addEventListener('pointerup', end); chrome.addEventListener('pointercancel', end);
 }
+// A drag started inside the streamed picture lands here as deltas — the slot
+// moves live and the drop point persists exactly like a chrome-strip drag.
+let previewLivePos = null;
+api.onPreviewNudge?.(({ dx, dy }) => {
+  if (!state?.preview || state.activeTabId === 'vps') return;
+  const slot = $('remote-preview-slot'), pane = slot.parentElement.getBoundingClientRect(), box = slot.getBoundingClientRect();
+  const x = Math.max(0, Math.min(box.left - pane.left + dx, pane.width - slot.offsetWidth));
+  const y = Math.max(0, Math.min(box.top - pane.top + dy, pane.height - slot.offsetHeight));
+  slot.style.left = `${x}px`; slot.style.top = `${y}px`; slot.style.right = 'auto'; slot.style.bottom = 'auto';
+  previewLivePos = { x: Math.round(x), y: Math.round(y) };
+  previewDragging = true;
+  scheduleLayout();
+});
+api.onPreviewDrop?.(() => {
+  if (previewLivePos) command('preview-move', previewLivePos).catch(() => {});
+  previewLivePos = null; previewDragging = false;
+});
 function openModal(title) {
   modalOpen = true; $('modal-title').textContent = title; $('modal-body').replaceChildren(); $('modal').classList.remove('hidden'); scheduleLayout();
 }

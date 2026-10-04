@@ -276,10 +276,12 @@ async function openExtension(key, anchor) {
   await win.webContents.executeJavaScript(`window.browserAction.activate('persist:browser', ${JSON.stringify(details)})`);
 }
 function trustSender(event) {
-  const trusted = [win?.webContents, remoteView?.webContents];
-  if (!trusted.includes(event.sender) || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith('file:')) {
-    throw new Error('Untrusted workspace request.');
-  }
+  // Reading .webContents or .getURL() on a torn-down view throws; a destroyed
+  // sender is simply untrusted.
+  try {
+    const trusted = [win?.webContents, remoteView?.webContents];
+    if (!trusted.includes(event.sender) || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith('file:')) throw new Error('untrusted');
+  } catch { throw new Error('Untrusted workspace request.'); }
 }
 async function openBot(id) {
   if (!prefs.bots.some((bot) => bot.id === id)) throw new Error('Select a verified Telegram bot.');
@@ -407,6 +409,14 @@ function registerIpc() {
         if (Number.isFinite(x) && Number.isFinite(y)) { prefs.previewPos = { x: Math.round(x), y: Math.round(y) }; savePreferences(); }
         break;
       }
+      case 'preview-nudge': {
+        // The streamed desktop's own surface forwards drag deltas — the window
+        // renderer owns the slot's position, so relay rather than duplicating.
+        const dx = Number(value?.dx), dy = Number(value?.dy);
+        if (Number.isFinite(dx) && Number.isFinite(dy) && win && !win.isDestroyed()) win.webContents.send('workspace:preview-nudge', { dx, dy });
+        break;
+      }
+      case 'preview-drop': if (win && !win.isDestroyed()) win.webContents.send('workspace:preview-drop'); break;
       case 'remote-control': prefs.remoteControl = value.enabled === true; break;
       case 'remote-status': remoteStatus = String(value.status).slice(0, 50); break;
       case 'remote-paste': if (!prefs.remoteControl || remoteStatus!=='connected') throw new Error('Take control of the connected VPS desktop first.'); return clipboard.readText().slice(0,20000);
