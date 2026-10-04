@@ -51,8 +51,6 @@ function render(next) {
   $('control').title = state.remoteControl ? 'Return to watch mode' : 'Enable your mouse and keyboard · desktop agents may still be active';
   $('remote-hint').textContent = state.remoteControl ? 'You control this view · click, drag, scroll and type' : 'Watching · click Take control to use your mouse and keyboard';
   $('paste').disabled=!connected || !state.remoteControl;
-  $('expand').textContent = state.activeTabId === 'vps' ? '↙' : '↗';
-  $('expand').title = state.activeTabId === 'vps' ? 'Return to the browser workspace' : 'Expand into a workspace tab';
 }
 $('control').onclick = async () => {
   try {
@@ -65,7 +63,5 @@ api.onRemoteShortcut?.(({key,shift})=>shortcut(key,shift));
 $('paste').onclick=async()=>{try{const text=await api.command('remote-paste');rfb.clipboardPasteFrom(text);shortcut('v');}catch(error){$('remote-hint').textContent=error.message;}};
 $('screen').onclick = () => { if (!state.remoteControl && state.activeTabId !== 'vps') api.command('activate', { id: 'vps' }); };
 $('credentials').onsubmit = (event) => { event.preventDefault(); rfb?.sendCredentials({ password: $('vnc-password').value }); $('vnc-password').value = ''; $('credentials').classList.add('hidden'); };
-$('expand').onclick = () => api.command('activate', { id: state.activeTabId === 'vps' ? state.tabs.at(-1)?.id || 'home' : 'vps' });
-$('focus').onclick = async () => { await api.command('activate', { id: 'vps' }); api.command('focus-workspace'); };
 $('configure').onclick = () => { if (currentUrl && $('configure').textContent === 'Reconnect') connect(currentUrl); else api.command('open-settings'); };
 api.onState(render); api.getState().then((next) => { render(next); if (!currentUrl) showEmpty('Your agent’s computer', 'Connect your VPS to see its desktop here.', 'Connect VPS'); });

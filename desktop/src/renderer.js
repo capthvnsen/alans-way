@@ -62,15 +62,16 @@ function renderBotActivity(row, bot) {
 }
 function renderTabs() {
   const container = $('tabs'); container.replaceChildren();
-  const visible=state.tabs.filter(tab=>state.allAgentTabs || !state.selectedBotId || tab.botId===state.selectedBotId || tab.allowedBots.includes(state.selectedBotId) || tab.id===state.activeTabId);
-  const entries = [{ id: 'home', title: 'Start', symbol: '◔' }, ...visible.map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : tab.host==='vps'?'▣':'◈' })), { id: 'vps', title: 'VPS desktop', symbol: '▣' }];
+  const visible=state.tabs.filter(tab=>state.allAgentTabs || !state.selectedBotId || tab.botId===state.selectedBotId || tab.allowedBots.includes(state.selectedBotId) || tab.id===state.browserTabId);
+  const entries = [{ id: 'home', title: 'Start', symbol: '◔' }, ...visible.map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : '◈' }))];
   for (const tab of entries) {
-    const node = element('div', `tab${state.activeTabId === tab.id ? ' active' : ''}`); node.setAttribute('role', 'tab'); node.setAttribute('aria-selected', state.activeTabId === tab.id ? 'true' : 'false'); node.tabIndex = 0;
+    const selected = state.browserTabId === tab.id;
+    const node = element('div', `tab${selected ? ' active' : ''}`); node.setAttribute('role', 'tab'); node.setAttribute('aria-selected', selected ? 'true' : 'false'); node.tabIndex = 0;
     node.append(element('span', 'tab-icon', tab.symbol), element('span', 'tab-title', tab.title || 'New tab'));
     if(tab.host)node.title=`${tab.host==='vps'?'VPS':'Mac'} · ${state.bots.find(bot=>bot.id===tab.botId)?.name || tab.botId}`;
     node.onclick = () => command('activate', { id: tab.id });
     node.onkeydown = (event) => { if (event.key === 'Enter') command('activate', { id: tab.id }); };
-    if (tab.id !== 'home' && tab.id !== 'vps') {
+    if (tab.id !== 'home') {
       const close = element('button', 'tab-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
       close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id }); }; node.append(close);
     }
@@ -95,6 +96,9 @@ function render(next) {
   renderBots(); renderTabs(); renderSettingsBots(); renderSitePermissions();
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
   const remote = state.activeTabId==='vps';
+  $('vm-toggle').title = remote ? 'Return to browser' : 'Expand virtual desktop';
+  $('vm-toggle').setAttribute('aria-label', $('vm-toggle').title);
+  $('vm-toggle').setAttribute('aria-pressed', String(remote));
   $('home').classList.toggle('hidden', !!tab || state.activeTabId === 'vps');
   $('browser-toolbar').classList.toggle('hidden', state.activeTabId === 'vps');
   $('remote-preview-slot').classList.toggle('hidden', !state.preview || remote);
@@ -262,12 +266,9 @@ $('settings-button').onclick = showSettings;
 $('presence-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };
-$('computer-button').onclick = () => command('activate', { id: 'vps' });
-$('home-vps').onclick = () => command('activate', { id: 'vps' });
+$('vm-toggle').onclick = () => command('toggle-vps-view');
 $('new-tab').onclick = async () => { await command('create-tab'); $('address').focus(); };
 $('all-agent-tabs').onclick=()=>command('settings',{allAgentTabs:!state.allAgentTabs});
-$('preview-toggle').onclick = () => command('settings', { preview: !state.preview });
-$('focus-toggle').onclick = () => { focusMode = !focusMode; $('shell').classList.toggle('focus-workspace', focusMode); scheduleLayout(); };
 function submitUrl(event, inputId) { event.preventDefault(); const url = $(inputId).value.trim(); if (!url) return; if (state.tabs.some((tab) => tab.id === state.activeTabId)) command('navigate', { id: state.activeTabId, url }); else command('create-tab', { url }); }
 $('address-form').onsubmit = (event) => submitUrl(event, 'address');
 $('home-search').onsubmit = (event) => submitUrl(event, 'home-address');

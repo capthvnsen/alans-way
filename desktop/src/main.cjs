@@ -19,7 +19,7 @@ app.setPath('userData', process.env.HERMES_WORKSPACE_DATA
 const ROOT = __dirname;
 const TELEGRAM = 'https://web.telegram.org/a/';
 let win, backgroundWindow, telegramView, remoteView, apiServer, prefs, layout = {}, apiPort = 0;
-let activeTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
+let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 const tabs = new Map();
 const vpsTabs = new Map();
 let vpsBrowserStatus = 'unconfigured', vpsRefreshBusy = false, vpsTimer;
@@ -79,11 +79,14 @@ function selectAgent(id) {
   const old = prefs.selectedBotId;
   if (old === id) return;
   const viewingVps = activeTabId === 'vps';
-  if (tabs.has(activeTabId)) prefs.agentLastTabs[old] = activeTabId;
+  const localId = viewingVps ? browserReturnTabId : activeTabId;
+  if (tabs.has(localId)) prefs.agentLastTabs[old] = localId;
   prefs.selectedBotId = id;
   prefs.remoteControl = false;
   const own = [...tabs.values()].filter(tab => tab.botId === id || tab.allowedBots.includes(id));
-  activeTabId = viewingVps ? 'vps' : own.some(tab => tab.id === prefs.agentLastTabs[id]) ? prefs.agentLastTabs[id] : own.at(-1)?.id || 'home';
+  const nextLocal = own.some(tab => tab.id === prefs.agentLastTabs[id]) ? prefs.agentLastTabs[id] : own.at(-1)?.id || 'home';
+  browserReturnTabId = nextLocal;
+  activeTabId = viewingVps ? 'vps' : nextLocal;
   applyLayout();
 }
 function getState() {
@@ -91,7 +94,7 @@ function getState() {
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, allAgentTabs: prefs.allAgentTabs, handoffs: prefs.handoffs,
-    activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
+    activeTabId, browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions,
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
 }
@@ -213,6 +216,7 @@ function closeTab(id) {
   const tab = tabs.get(id);
   if (!tab) return;
   tabs.delete(id);
+  if (browserReturnTabId === id) browserReturnTabId = [...tabs.keys()].at(-1) || 'home';
   tab.host?.contentView.removeChildView(tab.view);
   tab.view.webContents.close();
   if (activeTabId === id) activeTabId = [...tabs.keys()].at(-1) || 'home';
@@ -263,10 +267,16 @@ function registerIpc() {
         if (isVpsTab(value.id)) { if(activeTabId===value.id)prefs.remoteControl=false; await vpsBrowser.request(`/v1/tabs/${value.id}`,'DELETE',undefined,{human:true}); vpsTabs.delete(value.id); if(activeTabId===value.id)activeTabId='home'; applyLayout(); } else closeTab(value.id); break;
       case 'activate': {
         const id=isVpsTab(value.id)?'vps':value.id;
+        if(id==='vps'&&activeTabId!=='vps')browserReturnTabId=activeTabId;
         if(activeTabId!==id)prefs.remoteControl=false;
         activeTabId=tabs.has(id)||['home','vps'].includes(id)?id:'home';
         if(isVpsTab(value.id))await remoteRequest(value.id,'activate',{});
         applyLayout();break;
+      }
+      case 'toggle-vps-view': {
+        if(activeTabId==='vps')activeTabId=tabs.has(browserReturnTabId)?browserReturnTabId:'home';
+        else {browserReturnTabId=activeTabId;activeTabId='vps';}
+        prefs.remoteControl=false;applyLayout();break;
       }
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }

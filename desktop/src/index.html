@@ -17,13 +17,13 @@
       <div class="side-bottom"><button id="settings-button" class="settings-button"><span class="settings-glyph">⚙</span><span>Settings</span><span id="bridge-dot" class="status-dot"></span></button><button id="restore-bots" class="text-button hidden">Restore hidden bots</button><span class="side-footnote">TELEGRAM · MAC · VPS</span></div>
     </aside>
     <section class="chat-pane">
-      <header class="chat-header drag"><div id="chat-pill" class="chat-pill"><span id="chat-avatar" class="small-avatar no-drag" role="button" tabindex="0" aria-label="Customize bot avatar">◔</span><span id="chat-title">Telegram</span></div><button id="computer-button" class="icon-button no-drag" title="Open VPS computer"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button></header>
+      <header class="chat-header drag"><div id="chat-pill" class="chat-pill"><span id="chat-avatar" class="small-avatar no-drag" role="button" tabindex="0" aria-label="Customize bot avatar">◔</span><span id="chat-title">Telegram</span></div></header>
       <div id="telegram-slot" class="telegram-slot"><div class="loading-label">Connecting to Telegram…</div></div>
       <div id="telegram-note" class="chat-note">Sign in with your Telegram account. Your bots appear on the left.</div>
     </section>
     <div id="splitter" class="splitter" role="separator" aria-label="Resize chat" aria-orientation="vertical"></div>
     <section class="workspace-pane">
-      <header class="workspace-header drag"><div class="workspace-label">WORKSPACE <span id="local-label">ON YOUR MAC</span></div><div class="workspace-actions no-drag"><button id="preview-toggle" class="icon-button" title="Show or hide VPS preview"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><rect x="12" y="12" width="7" height="6" rx="1"/></svg></button><button id="focus-toggle" class="icon-button" title="Expand workspace"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></button></div></header>
+      <header class="workspace-header drag"><div class="workspace-label">WORKSPACE <span id="local-label">ON YOUR MAC</span></div><div class="workspace-actions no-drag"><button id="vm-toggle" class="icon-button" title="Expand virtual desktop" aria-label="Expand virtual desktop" aria-pressed="false"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 10V8h3M14 8h3v3M17 14v2h-3M10 16H7v-2"/></svg></button></div></header>
       <div class="agent-browser-row"><span id="agent-workspace-name">Your tabs</span><button id="all-agent-tabs" title="Show every agent’s tabs">Agent tabs</button></div>
       <div class="tab-bar"><div id="tabs" class="tabs"></div><button id="new-tab" class="icon-button new-tab" title="New local browser tab (⌘T)">＋</button></div>
       <div id="browser-toolbar" class="browser-toolbar"><button id="back" class="icon-button" title="Back">←</button><button id="forward" class="icon-button" title="Forward">→</button><button id="reload" class="icon-button" title="Reload">↻</button><form id="address-form"><span class="address-symbol">⌕</span><input id="address" placeholder="Search or enter a URL" autocomplete="off" spellcheck="false" aria-label="Browser address"></form><button id="tab-access" class="icon-button" title="Manage bot access to this tab" aria-label="Manage bot access to this tab">⇄</button><button id="control-button" class="control-button">You</button></div>
@@ -31,7 +31,7 @@
         <div id="home" class="home">
           <div class="home-symbol"><span></span><span></span></div><h1>A place to get things done.</h1><p>Talk to your agents. Browse on your Mac.<br>Keep their computer in view.</p>
           <form id="home-search" class="home-search"><span>⌕</span><input id="home-address" placeholder="Search or enter a URL" aria-label="Open a browser page"><button type="submit" aria-label="Go">↗</button></form>
-          <div class="quick-links"><button data-url="https://www.google.com">Google <span>↗</span></button><button data-url="https://github.com">GitHub <span>↗</span></button><button id="home-vps">VPS computer <span>↗</span></button></div>
+          <div class="quick-links"><button data-url="https://www.google.com">Google <span>↗</span></button><button data-url="https://github.com">GitHub <span>↗</span></button></div>
           <div class="home-bottom"><span class="status-dot"></span><span>Local Chromium. Your own computer.</span></div>
         </div>
       </div>
