@@ -142,6 +142,9 @@ function render(next) {
   window.HermesAvatars.update(state);
   const bot = state.bots.find((item) => item.id === state.selectedBotId);
   document.documentElement.style.setProperty('--chat-width', `${state.chatWidth}px`);
+  $('shell').classList.toggle('bots-hidden', state.showBots === false);
+  $('bots-toggle').setAttribute('aria-pressed', String(state.showBots !== false));
+  $('bots-toggle').title = state.showBots === false ? 'Show agent list' : 'Hide agent list';
   $('chat-title').textContent = bot?.name || 'Telegram';
   window.HermesAvatars.paint($('chat-avatar'), bot || { id: '', name: 'Telegram' }, state);
   $('chat-avatar').title = bot ? `Customize ${bot.name} avatar` : 'Select a bot to customize its avatar';
@@ -325,6 +328,7 @@ $('bot-search').oninput = renderBots;
 $('add-bot').onclick = showAddBot;
 $('restore-bots').onclick = () => command('restore-bots');
 $('settings-button').onclick = showSettings;
+$('bots-toggle').onclick = () => command('settings', { showBots: state.showBots === false });
 $('presence-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };

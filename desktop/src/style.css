@@ -31,3 +31,7 @@
 #native-extension-actions::part(action) { width: 28px; height: 28px; border-radius: 6px; background: transparent; border: 0; }
 #native-extension-actions::part(action):hover { background: #29292d; }
 #native-extension-actions::part(badge) { font-size: 9px; border-radius: 3px; }
+
+/* Agent list collapse: the chat pane keeps its width, the workspace grows. */
+#shell.bots-hidden{grid-template-columns:var(--chat-width) 5px minmax(350px,1fr)}
+.bots-hidden>.sidebar{display:none}

@@ -51,7 +51,7 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
 let pointerTimer, activityTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, allAgentTabs: false, agentLastTabs: {}, handoffs: [] };
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, showBots: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, allAgentTabs: false, agentLastTabs: {}, handoffs: [] };
   try { return { ...defaults, ...JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'preferences.json'), 'utf8')) }; }
   catch { return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' }; }
 }
@@ -96,7 +96,7 @@ function selectAgent(id) {
 }
 function getState() {
   return { name: app.getName(), version: app.getVersion(), bots: prefs.bots.map(bot => ({ ...bot, activity: activity.get(bot.id) })), order: prefs.order, hidden: prefs.hidden,
-    selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, remoteUrl: prefs.remoteUrl,
+    selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, showBots: prefs.showBots, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, allAgentTabs: prefs.allAgentTabs, handoffs: prefs.handoffs,
     activeTabId, browserContentsId: tabs.get(activeTabId)?.view.webContents.id || null, browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
@@ -372,6 +372,7 @@ function registerIpc() {
         if (typeof value.allAgentTabs === 'boolean') prefs.allAgentTabs=value.allAgentTabs;
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         if (typeof value.preview === 'boolean') prefs.preview = value.preview;
+        if (typeof value.showBots === 'boolean') prefs.showBots = value.showBots;
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) prefs.locationDefault = value.locationDefault;
         if (Number.isFinite(value.chatWidth)) prefs.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
         savePreferences(); applyLayout(); break;
