@@ -68,7 +68,9 @@ function renderTabs() {
     const selected = state.browserTabId === tab.id;
     const node = element('div', `tab${selected ? ' active' : ''}`); node.setAttribute('role', 'tab'); node.setAttribute('aria-selected', selected ? 'true' : 'false'); node.tabIndex = 0;
     node.append(element('span', 'tab-icon', tab.symbol), element('span', 'tab-title', tab.title || 'New tab'));
-    if(tab.host)node.title=`${tab.host==='vps'?'VPS':'Mac'} · ${state.bots.find(bot=>bot.id===tab.botId)?.name || tab.botId}`;
+    if (tab.controller === 'agent') { node.classList.add('agent'); node.append(element('span', 'agent-dot')); }
+    if (tab.agentBusy) node.classList.add('busy');
+    if(tab.host)node.title=`${tab.host==='vps'?'VPS':'Mac'} · ${state.bots.find(bot=>bot.id===tab.botId)?.name || tab.botId}${tab.controller === 'agent' ? ' · agent-controlled' : ''}`;
     node.onclick = () => command('activate', { id: tab.id });
     node.onkeydown = (event) => { if (event.key === 'Enter') command('activate', { id: tab.id }); };
     if (tab.id !== 'home') {
@@ -171,11 +173,14 @@ function render(next) {
   $('control-button').classList.toggle('agent', tab?.controller === 'agent');
   $('control-button').disabled = !tab || tab.extensionPage;
   $('tab-access').disabled = !tab || tab.extensionPage;
+  $('ask-bot').disabled = !tab || !/^https?:\/\//.test(tab?.url || '');
+  $('browser-slot').classList.toggle('agent-live', !!tab && tab.controller === 'agent');
   if (tab?.extensionPage) $('control-button').textContent = 'You';
   $('control-button').title = tab ? `Browser runs on ${tab.host==='vps'?'the VPS':'your Mac'} · ${tab.controller === 'agent' ? 'Agent' : 'You'} control it` : 'Open a browser tab first';
   if (document.activeElement !== $('address')) $('address').value = tab?.url === 'about:blank' ? '' : tab?.url || '';
   $('local-label').textContent = remote ? 'ON YOUR VPS' : 'ON YOUR MAC';
-  $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? 'Agent' : 'You'} in control · ${tab.host==='vps'?'VPS':'Mac'}${tab.handoff?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `VPS · ${state.remoteStatus}` : 'Ready';
+  const agentName = tab ? state.bots.find(bot => bot.id === tab.botId)?.name || 'Agent' : '';
+  $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? `${agentName}${tab.agentBusy ? ' is working' : ' is browsing'}` : 'You'} in control${tab.controller === 'agent' ? ' · Take over anytime' : ''} · ${tab.host==='vps'?'VPS':'Mac'}${tab.handoff?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `VPS · ${state.remoteStatus}` : 'Ready';
   $('connection-status').textContent = state.api.ready ? 'Browser connector ready' : state.api.error ? 'Browser connector unavailable' : 'Browser connector starting…';
   const notes = { login: 'Sign in with your Telegram account. Your bots appear on the left.', connected: 'Your Telegram account · bot chats only', locked: 'Unlock Telegram to load your bot chats.', offline: 'Telegram is offline. Check your connection, then sync in Settings.', loading: 'Connecting to Telegram…' };
   $('telegram-note').textContent = notes[state.telegramStatus] || notes.loading;
@@ -342,6 +347,7 @@ $('home-search').onsubmit = (event) => submitUrl(event, 'home-address');
 document.querySelectorAll('[data-url]').forEach((button) => { button.onclick = () => command('create-tab', { url: button.dataset.url }); });
 for (const action of ['back', 'forward', 'reload']) $(action).onclick = () => command('history', { id: state.activeTabId, action });
 $('control-button').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: tab.controller === 'agent' ? 'human' : 'agent' }); };
+$('ask-bot').onclick = () => command('share-page');
 $('tab-access').onclick = showTabAccess;
 $('modal-close').onclick = closeModal;
 $('modal').onclick = (event) => { if (event.target === $('modal')) closeModal(); };

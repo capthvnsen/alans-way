@@ -5,7 +5,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { normalizeUrl, parseRemoteUrl, requireActor, isAuthorized, sanitizeBots } = require('./core.cjs');
 const { createAvatarStore } = require('./avatar-store.cjs');
-const { createAgentInput } = require('./agent-input.cjs');
+const { createAgentInput, tintScript } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { snapshotExpression, checkpointExpression, restoreExpression } = require('./browser-page.cjs');
@@ -34,7 +34,8 @@ const API_TOKEN = crypto.randomBytes(32).toString('hex');
 let isQuitting = false;
 let backgroundCaptureQueue = Promise.resolve();
 const avatarStore = createAvatarStore({ root: ROOT, nativeImage, dialog, getWindow: () => win, getPreferences: () => prefs });
-const agentInput = createAgentInput({ command: browserCommand, requireActor });
+const agentInput = createAgentInput({ command: browserCommand, requireActor,
+  botName: (id) => prefs?.bots.find((bot) => bot.id === id)?.name || 'Agent', onBusy: () => broadcast() });
 const activity = createActivityTracker();
 const sitePermissions = createSitePermissions({ getPreferences: () => prefs, savePreferences,
   canRequest: (wc) => {
@@ -65,7 +66,7 @@ function savePreferences() {
 }
 function describeTab(tab) {
   return { id: tab.id, title: tab.title || 'New tab', url: tab.view.webContents.getURL(), botId: tab.botId,
-    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, extensionPage: tab.extensionPage === true, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
+    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
 }
 function isVpsTab(id) { return vpsTabs.has(id); }
 async function refreshVpsTabs() {
@@ -224,7 +225,7 @@ function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared
   view.webContents.on('page-title-updated', (_event, title) => { tab.title = title; broadcast(); });
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
   view.webContents.on('did-stop-loading', () => { tab.loading = false; savePreferences(); broadcast(); });
-  view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.generation++; broadcast(); });
+  view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.generation++; if (tab.controller === 'agent') view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); broadcast(); });
   view.webContents.on('did-navigate-in-page', () => { tab.refs.clear(); tab.generation++; broadcast(); });
   view.webContents.on('did-fail-load', (_e, code, description, _url, isMainFrame) => {
     if (isMainFrame && code !== -3) { tab.error = description; tab.loading = false; broadcast(); }
@@ -253,6 +254,7 @@ function changeController(id, controller) {
   if (tab.extensionPage && controller === 'agent') throw new Error('Extension account pages stay under your control.');
   tab.controller = controller === 'agent' ? 'agent' : 'human';
   if (tab.controller === 'agent' && tab.botId === 'shared' && prefs.selectedBotId) tab.botId = prefs.selectedBotId;
+  tab.view.webContents.executeJavaScript(tintScript(tab.controller === 'agent')).catch(() => {});
   tab.epoch++;
   tab.refs.clear();
   agentInput.clear(tab).catch(() => {});
@@ -330,6 +332,28 @@ function registerIpc() {
         if (value.action === 'reload') tab.view.webContents.reload(); break;
       }
       case 'control': if(isVpsTab(value.id)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller});}return changeController(value.id, value.controller);
+      case 'share-page': {
+        const tab = tabs.get(activeTabId);
+        const url = tab ? tab.view.webContents.getURL() : '';
+        if (!tab || !/^https?:\/\//i.test(url)) throw new Error('Open a web page first.');
+        const title = (tab.view.webContents.getTitle() || url).slice(0, 300);
+        if (!telegramView || telegramView.webContents.isDestroyed()) throw new Error('Telegram is not loaded.');
+        const tg = telegramView.webContents;
+        if (tg.isLoading()) throw new Error('Telegram is still loading — try again in a moment.');
+        // A stopped or never-committed page can leave executeJavaScript pending
+        // forever; bound the probe so the button reports instead of hanging.
+        const focused = await Promise.race([
+          tg.executeJavaScript(`(() => {
+            const el = document.querySelector('#editable-message-text') || document.querySelector('.Composer [contenteditable="true"], #MiddleColumn [contenteditable="true"]');
+            if (!el) return false; el.focus(); return el === document.activeElement || el.contains(document.activeElement);
+          })()`).catch(() => false),
+          new Promise(resolve => setTimeout(() => resolve(false), 3000)),
+        ]);
+        if (!focused) throw new Error('Open a bot chat in Telegram first — no message box is available.');
+        if (!tg.debugger.isAttached()) tg.debugger.attach('1.3');
+        await tg.debugger.sendCommand('Input.insertText', { text: `${title}\n${url}\n` });
+        break;
+      }
       case 'handoff': return handoffTab(value);
       case 'grant-tab': {
         if (isVpsTab(value.id)) { await remoteRequest(value.id,'grant',value); break; }

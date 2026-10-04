@@ -21,21 +21,56 @@ function cursorScript(cursor) {
   return `(() => {
     const id = ${JSON.stringify(CURSOR_ID)}, value = ${JSON.stringify(cursor)};
     let host = document.getElementById(id);
-    if (!value) { host?.remove(); return; }
+    if (!value) { host?.remove(); document.getElementById(id + '-hl')?.remove(); return; }
     if (!host) {
       host = document.createElement('div'); host.id = id;
       host.setAttribute('aria-hidden', 'true');
       host.style.cssText = 'all:initial!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;z-index:2147483647!important;pointer-events:none!important;user-select:none!important;';
       const root = host.attachShadow({ mode: 'closed' });
-      root.innerHTML = '<style>:host{pointer-events:none}svg{overflow:visible;filter:drop-shadow(0 2px 3px #0008)}span{position:absolute;left:19px;top:20px;padding:4px 7px;border:1px solid #a0fff4;border-radius:7px;background:#073b37;color:#d9fff8;font:600 11px/1.2 system-ui;white-space:nowrap;box-shadow:0 2px 8px #0004}.ring{fill:none;stroke:#69f5d4;stroke-width:2;opacity:0}:host([data-action="click"]) .ring{animation:tap .48s ease-out}@keyframes tap{from{r:3;opacity:.9}to{r:23;opacity:0}}@media(prefers-reduced-motion:reduce){.ring{animation:none!important}}</style><svg width="19" height="25" viewBox="0 0 19 25"><circle class="ring" cx="1" cy="1" r="3"/><path d="M1 1v19l5-5 4 9 4-2-4-8h7Z" fill="#69f5d4" stroke="#06332c" stroke-width="1.5" stroke-linejoin="round"/></svg><span>Agent</span>';
+      root.innerHTML = '<style>:host{pointer-events:none;transition:transform .28s cubic-bezier(.3,.9,.4,1)}svg{overflow:visible;filter:drop-shadow(0 2px 3px #0008)}span{position:absolute;left:19px;top:20px;padding:4px 7px;border:1px solid #a0fff4;border-radius:7px;background:#073b37;color:#d9fff8;font:600 11px/1.2 system-ui;white-space:nowrap;box-shadow:0 2px 8px #0004}.ring{fill:none;stroke:#69f5d4;stroke-width:2;opacity:0}:host([data-action="click"]) .ring{animation:tap .48s ease-out}@keyframes tap{from{r:3;opacity:.9}to{r:23;opacity:0}}@media(prefers-reduced-motion:reduce){.ring{animation:none!important}:host{transition:none!important}}</style><svg width="19" height="25" viewBox="0 0 19 25"><circle class="ring" cx="1" cy="1" r="3"/><path d="M1 1v19l5-5 4 9 4-2-4-8h7Z" fill="#69f5d4" stroke="#06332c" stroke-width="1.5" stroke-linejoin="round"/></svg><span></span>';
       document.documentElement.appendChild(host);
+    }
+    // The element highlight rides the same injection: ref actions flash their
+    // target in blue while the cursor travels to it, then the outline fades.
+    let box = document.getElementById(id + '-hl');
+    if (!box) {
+      box = document.createElement('div'); box.id = id + '-hl';
+      box.setAttribute('aria-hidden', 'true');
+      box.style.cssText = 'all:initial!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;z-index:2147483646!important;pointer-events:none!important;user-select:none!important;';
+      box.attachShadow({ mode: 'closed' }).innerHTML = '<style>div{position:fixed;pointer-events:none;border:2px solid #6f9fff;border-radius:9px;background:#3b82f612;box-shadow:0 0 0 3px #3b82f628,inset 0 0 22px #3b82f61f;opacity:0;transition:opacity .18s ease,left .22s ease,top .22s ease,width .22s ease,height .22s ease}div.on{opacity:1}@media(prefers-reduced-motion:reduce){div{transition:opacity .18s ease!important}}</style><div></div>';
+      document.documentElement.appendChild(box);
     }
     host.style.setProperty('transform', 'translate(' + value.x + 'px,' + value.y + 'px)', 'important');
     host.setAttribute('data-action', value.action);
+    host.shadowRoot.querySelector('span').textContent = value.name || 'Agent';
+    const outline = box.shadowRoot.querySelector('div');
+    if (value.hl) {
+      outline.style.left = value.hl.x + 'px'; outline.style.top = value.hl.y + 'px';
+      outline.style.width = value.hl.width + 'px'; outline.style.height = value.hl.height + 'px';
+      outline.classList.add('on');
+      clearTimeout(box._hlTimer); box._hlTimer = setTimeout(() => outline.classList.remove('on'), 1600);
+    }
   })()`;
 }
 
-function createAgentInput({ command, requireActor }) {
+// A static inset frame marks a page while an agent holds control. It is
+// re-injected after navigation because a new document destroys the overlay.
+function tintScript(on) {
+  return `(() => {
+    const on = ${JSON.stringify(!!on)};
+    const id = ${JSON.stringify(CURSOR_ID)} + '-tint';
+    let host = document.getElementById(id);
+    if (!on) { host?.remove(); return; }
+    if (host) return;
+    host = document.createElement('div'); host.id = id;
+    host.setAttribute('aria-hidden', 'true');
+    host.style.cssText = 'all:initial!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;z-index:2147483645!important;pointer-events:none!important;user-select:none!important;';
+    host.attachShadow({ mode: 'closed' }).innerHTML = '<style>div{position:fixed;inset:0;pointer-events:none;box-shadow:inset 0 0 0 3px rgba(105,245,212,.32),inset 0 -140px 160px -110px rgba(105,245,212,.14);border-radius:2px}</style><div></div>';
+    document.documentElement.appendChild(host);
+  })()`;
+}
+
+function createAgentInput({ command, requireActor, botName = () => 'Agent', onBusy = () => {} }) {
   const states = new WeakMap();
   function state(tab) {
     if (!states.has(tab)) states.set(tab, { active: 0, revision: 0 });
@@ -75,15 +110,16 @@ function createAgentInput({ command, requireActor }) {
       await send('Input.dispatchKeyEvent', { type: 'keyUp', ...released });
       keyDown = null;
     }
-    async function cursor(point, action) {
+    async function cursor(point, action, hl) {
       check();
-      tab.agentCursor = { ...point, action, updatedAt: Date.now() };
+      tab.agentCursor = { ...point, action, name: botName(botId), hl: hl || null, updatedAt: Date.now() };
       // The overlay is decoration, never evidence that an action succeeded.
       // A navigation can destroy its context after real input was delivered.
       await wc.executeJavaScript(cursorScript(tab.agentCursor)).catch(() => {});
       check();
     }
     own.active++;
+    if (own.active === 1) onBusy(tab, true);
     wc.setIgnoreMenuShortcuts(true);
     try {
       await send('Emulation.setFocusEmulationEnabled', { enabled: true });
@@ -107,7 +143,7 @@ function createAgentInput({ command, requireActor }) {
               else { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
             }
           }
-          return { x: Math.round(x), y: Math.round(y) };
+          return { x: Math.round(x), y: Math.round(y), hl: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) } };
         })()`);
         check();
         if (!point) throw fail('Element is unavailable, covered, or cannot accept this input. Request a fresh snapshot.');
@@ -117,25 +153,27 @@ function createAgentInput({ command, requireActor }) {
         if (body.x < 0 || body.y < 0 || body.x >= viewport.width || body.y >= viewport.height) throw fail('Pointer coordinates must be inside the tab viewport.');
         point = { x: body.x, y: body.y };
       }
+      const hl = point?.hl || null;
+      if (point) delete point.hl;
       if (body.action === 'move' || body.action === 'click') {
         await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point, button: 'none', buttons: 0 });
-        await cursor(point, 'move');
+        await cursor(point, 'move', hl);
         if (body.action === 'click') {
           mouseDown = point;
           await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
           await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 });
           mouseDown = null;
-          await cursor(point, 'click');
+          await cursor(point, 'click', hl);
         }
       } else if (body.action === 'type') {
         // insertText is actual Chromium input (including input/beforeinput).
         // The selection belongs to the agent tab, never the human's focused tab.
         if (body.text) await send('Input.insertText', { text: body.text });
         else await keys(keyboardEvent({ key: 'Backspace' }));
-        await cursor(point, 'type');
+        await cursor(point, 'type', hl);
       } else if (body.action === 'press') {
         await keys(keyEvent);
-        if (point || tab.agentCursor) await cursor(point || { x: tab.agentCursor.x, y: tab.agentCursor.y }, 'press');
+        if (point || tab.agentCursor) await cursor(point || { x: tab.agentCursor.x, y: tab.agentCursor.y }, 'press', hl);
       } else if (body.action === 'scroll') {
         const viewport = await wc.executeJavaScript('({ width: innerWidth, height: innerHeight })');
         check();
@@ -154,9 +192,10 @@ function createAgentInput({ command, requireActor }) {
         wc.setIgnoreMenuShortcuts(false);
       }
       own.active--;
+      if (!own.active) onBusy(tab, false);
     }
   }
   return { perform, clear, isDispatching };
 }
 
-module.exports = { createAgentInput, INPUT_ACTIONS, keyboardEvent };
+module.exports = { createAgentInput, tintScript, INPUT_ACTIONS, keyboardEvent };
