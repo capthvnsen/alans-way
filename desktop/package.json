@@ -1,19 +1,20 @@
 {
   "name": "hermes-workspace",
   "productName": "Hermes- Alan's way",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "A Telegram, local Chromium and remote desktop workspace for Hermes agents.",
   "private": true,
   "license": "MIT",
   "main": "src/main.cjs",
   "scripts": {
     "start": "electron .",
-    "check": "node --check src/cdp.cjs && node --check src/browser-page.cjs && node --check src/vps-browser.cjs && node --check scripts/vps-browser-host.cjs && node --check scripts/vps-chromium-host.cjs && node --check src/main.cjs && node --check src/preload.cjs && node --check src/telegram-preload.cjs && node --check src/renderer.js && node --check src/avatars.js && node --check src/activity.cjs && node --check src/avatar-store.cjs && node --check src/agent-input.cjs && node --check src/site-permissions.cjs && node --check src/remote.js && node --check scripts/browser-mcp.cjs && node --test test/*.test.cjs",
-    "package:mac": "electron-packager . \"Hermes- Alan's way\" --platform=darwin --arch=arm64 --no-asar --out=dist --overwrite --ignore='^/(test|dist|screenshots)(/|$)' --app-bundle-id=app.hermes.workspace --app-version=0.1.7 --icon=assets/icon.icns",
+    "check": "node --check src/cdp.cjs && node --check src/browser-page.cjs && node --check src/vps-browser.cjs && node --check scripts/vps-browser-host.cjs && node --check scripts/vps-chromium-host.cjs && node --check src/extension-store.cjs && node --check src/main.cjs && node --check src/preload.cjs && node --check src/telegram-preload.cjs && node --check src/renderer.js && node --check src/avatars.js && node --check src/activity.cjs && node --check src/avatar-store.cjs && node --check src/agent-input.cjs && node --check src/site-permissions.cjs && node --check src/remote.js && node --check scripts/browser-mcp.cjs && node --test test/*.test.cjs",
+    "package:mac": "electron-packager . \"Hermes- Alan's way\" --platform=darwin --arch=arm64 --no-asar --out=dist --overwrite --ignore='^/(test|dist|screenshots)(/|$)' --app-bundle-id=app.hermes.workspace --app-version=0.1.8 --icon=assets/icon.icns",
     "test:desktop": "electron test/workspace-integration.cjs",
     "test:agent-input": "electron test/agent-input-electron.cjs",
     "test:permissions": "electron test/site-permissions-electron.cjs",
-    "test:cross-host": "electron test/cross-host-electron.cjs"
+    "test:cross-host": "electron test/cross-host-electron.cjs",
+    "test:extensions": "node test/extensions-electron.cjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",

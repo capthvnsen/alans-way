@@ -78,6 +78,58 @@ function renderTabs() {
     container.append(node);
   }
 }
+let extensionSignature = '';
+function extensionIcon(item) {
+  if (!item.icon) return element('span', 'extension-letter', item.name.slice(0, 1));
+  const image = element('img'); image.src = item.icon; image.alt = ''; return image;
+}
+function openExtension(item, button) {
+  const box = button.getBoundingClientRect();
+  closeModal(); command('open-extension', { key: item.key, anchor: { x: box.right, y: box.bottom + 6 } });
+}
+function renderExtensions() {
+  const items = state.extensions || [], signature = JSON.stringify(items);
+  if (extensionSignature !== signature) {
+    extensionSignature = signature; $('pinned-extensions').replaceChildren();
+    for (const item of items.filter(item => item.pinned && item.loaded && item.enabled)) {
+      const button = element('button', 'icon-button extension-button'); button.title = item.name;
+      button.setAttribute('aria-label', `Open ${item.name} extension`); button.append(extensionIcon(item));
+      button.onclick = () => item.hasPopup ? openExtension(item, button) : showExtensions();
+      $('pinned-extensions').append(button);
+    }
+  }
+  const list = $('extension-list'); if (!modalOpen || !list || list.dataset.signature === signature) return;
+  const focused = document.activeElement?.getAttribute('aria-label');
+  list.dataset.signature = signature; list.replaceChildren();
+  if (!items.length) list.append(element('p', 'settings-note', 'No extensions added yet. Add an unpacked extension folder, then pin it beside the address bar.'));
+  for (const item of items) {
+    const row = element('div', 'extension-row'), icon = element('span', 'extension-manager-icon'), copy = element('div', 'visibility-copy'); icon.append(extensionIcon(item));
+    const name = element('button', 'visibility-name extension-name', item.name); name.setAttribute('aria-label', `Open ${item.name}`);
+    name.disabled = !item.loaded || !item.hasPopup || state.activeTabId === 'vps'; name.onclick = () => openExtension(item, $('extensions-button'));
+    copy.append(name, element('span', 'visibility-username', `${item.version} · ${item.error ? 'Could not load' : !item.enabled ? 'Disabled' : item.hasPopup ? 'Popup available' : 'Runs on matching pages'}`));
+    if (item.error) copy.append(element('p', 'settings-note', item.error));
+    if (item.nativeMessaging) copy.append(element('p', 'settings-note', 'Connection to desktop apps is unavailable here.'));
+    const actions = element('div', 'extension-row-actions'), enabled = element('input'); enabled.type = 'checkbox'; enabled.checked = item.enabled;
+    enabled.setAttribute('role', 'switch'); enabled.setAttribute('aria-label', `Enable ${item.name}`);
+    enabled.onchange = async () => { enabled.disabled = true; const result = await command('enable-extension', { key: item.key, enabled: enabled.checked }); if (result) render(result); else { enabled.disabled = false; enabled.checked = item.enabled; } };
+    const pin = element('button', 'secondary-button', item.pinned ? 'Unpin' : 'Pin'); pin.setAttribute('aria-label', `${item.pinned ? 'Unpin' : 'Pin'} ${item.name}`);
+    pin.onclick = () => command('pin-extension', { key: item.key, pinned: !item.pinned });
+    const remove = element('button', 'text-button', 'Remove'); remove.setAttribute('aria-label', `Remove ${item.name}`); remove.onclick = () => command('remove-extension', { key: item.key });
+    actions.append(enabled, pin, remove); row.append(icon, copy, actions); list.append(row);
+  }
+  if (focused) [...list.querySelectorAll('[aria-label]')].find(node => node.getAttribute('aria-label') === focused)?.focus({ preventScroll: true });
+}
+function showExtensions() {
+  openModal('Extensions');
+  const body = $('modal-body');
+  body.append(element('p', 'settings-note', 'Extensions run in your local Mac tabs. Compatible unpacked extensions can be added here; direct Chrome Web Store installation is not available.'));
+  const list = element('div'); list.id = 'extension-list'; body.append(list);
+  const add = element('button', 'primary-button', 'Add extension folder'); add.onclick = async () => { add.disabled = true; const result = await command('add-extension'); if (result) { render(result); toast('Extension list updated. Reload existing pages to apply content scripts.'); } add.disabled = false; };
+  body.append(add, element('hr', 'section-divider'), element('h3', '', '1Password'));
+  body.append(element('p', 'settings-note', '1Password browser autofill and its connection to the Mac app are not configured. You can open 1Password for Mac to copy a login.'));
+  const password = element('button', 'secondary-button', 'Open 1Password for Mac'); password.onclick = () => command('open-1password'); body.append(password);
+  renderExtensions();
+}
 function render(next) {
   state = next;
   window.HermesAvatars.update(state);
@@ -93,7 +145,7 @@ function render(next) {
     $('presence-status').textContent = window.HermesAvatars.activityLabel(bot.activity);
     $('presence-status').classList.toggle('active', window.HermesAvatars.isActive(bot.activity));
   }
-  renderBots(); renderTabs(); renderSettingsBots(); renderSitePermissions();
+  renderBots(); renderTabs(); renderSettingsBots(); renderSitePermissions(); renderExtensions();
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
   const remote = state.activeTabId==='vps';
   $('vm-toggle').title = remote ? 'Return to browser' : 'Expand virtual desktop';
@@ -200,6 +252,8 @@ function showSitePermissionSettings(body) {
 function showSettings() {
   openModal('Workspace settings');
   const body = $('modal-body'), field = element('div', 'field');
+  const extensions = element('button', 'secondary-button', 'Manage browser extensions'); extensions.onclick = showExtensions;
+  body.append(extensions, element('hr', 'section-divider'));
   body.append(element('h3', '', 'Telegram bots'));
   body.append(element('p', 'settings-note', 'Choose which bots appear in your sidebar. Changes save immediately. Drag visible bots in the sidebar to sort them.'));
   const bots = element('div', 'settings-bots'); bots.id = 'settings-bots';
@@ -267,6 +321,7 @@ $('presence-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };
 $('vm-toggle').onclick = () => command('toggle-vps-view');
+$('extensions-button').onclick = showExtensions;
 $('new-tab').onclick = async () => { await command('create-tab'); $('address').focus(); };
 $('all-agent-tabs').onclick=()=>command('settings',{allAgentTabs:!state.allAgentTabs});
 function submitUrl(event, inputId) { event.preventDefault(); const url = $(inputId).value.trim(); if (!url) return; if (state.tabs.some((tab) => tab.id === state.activeTabId)) command('navigate', { id: state.activeTabId, url }); else command('create-tab', { url }); }

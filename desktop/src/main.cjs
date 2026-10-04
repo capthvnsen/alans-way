@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, Menu, dialog, clipboard, shell, nativeTheme, screen, nativeImage } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, Menu, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
@@ -10,6 +10,7 @@ const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { snapshotExpression, checkpointExpression, restoreExpression } = require('./browser-page.cjs');
 const { createVpsBrowser } = require('./vps-browser.cjs');
+const { createExtensionStore } = require('./extension-store.cjs');
 
 app.setName("Hermes- Alan's way");
 // Keep existing sessions and connector discovery stable when the product name changes.
@@ -19,6 +20,7 @@ app.setPath('userData', process.env.HERMES_WORKSPACE_DATA
 const ROOT = __dirname;
 const TELEGRAM = 'https://web.telegram.org/a/';
 let win, backgroundWindow, telegramView, remoteView, apiServer, prefs, layout = {}, apiPort = 0;
+let extensionStore, extensionPopup, extensionPopupTabId;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 const tabs = new Map();
 const vpsTabs = new Map();
@@ -46,7 +48,7 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
 let pointerTimer, activityTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, vpsBrowser: {}, allAgentTabs: false, agentLastTabs: {}, handoffs: [] };
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, allAgentTabs: false, agentLastTabs: {}, handoffs: [] };
   try { return { ...defaults, ...JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'preferences.json'), 'utf8')) }; }
   catch { return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' }; }
 }
@@ -95,7 +97,7 @@ function getState() {
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, allAgentTabs: prefs.allAgentTabs, handoffs: prefs.handoffs,
     activeTabId, browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
-    locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions,
+    locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [],
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
 }
 function broadcast() {
@@ -129,6 +131,7 @@ function backgroundHost(width = 900, height = 700) {
   return backgroundWindow;
 }
 function applyLayout() {
+  if (extensionPopup && extensionPopupTabId !== activeTabId) extensionPopup.close();
   fit(telegramView, layout.telegram);
   for (const tab of tabs.values()) {
     const foreground = activeTabId === tab.id && layout.browser?.width > 0 && layout.browser?.height > 0 && !layout.obscured;
@@ -233,6 +236,34 @@ function changeController(id, controller) {
   broadcast();
   return describeTab(tab);
 }
+async function openExtension(key, anchor) {
+  if (activeTabId === 'vps') throw new Error('Extensions are available in local browser tabs.');
+  const details = extensionStore.popup(key), targetId = activeTabId, tab = tabs.get(targetId);
+  // An extension popup may fill the page. Invalidate new agent actions first.
+  if (tab) { changeController(tab.id, 'human'); await tab.queue; }
+  if (activeTabId !== targetId || (tab && !tabs.has(tab.id))) throw new Error('The selected tab changed. Open the extension again on the intended tab.');
+  extensionPopup?.close();
+  const bounds = win.getContentBounds(), zoom = win.webContents.getZoomFactor();
+  const width = 420, height = Math.min(540, bounds.height - 50);
+  const right = Number.isFinite(anchor?.x) ? anchor.x * zoom : bounds.width - 12;
+  const bottom = Number.isFinite(anchor?.y) ? anchor.y * zoom : 140;
+  const popup = new BrowserWindow({ parent: win, title: details.name, width, height,
+    x: bounds.x + Math.max(0, Math.min(right - width, bounds.width - width)),
+    y: bounds.y + Math.max(0, Math.min(bottom, bounds.height - height)),
+    frame: false, show: false, resizable: false, minimizable: false, maximizable: false, backgroundColor: '#17171b',
+    webPreferences: { session: session.fromPartition('persist:browser'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  extensionPopup = popup; extensionPopupTabId = activeTabId;
+  const openLink = url => { try { createTab({ url, controller: 'human' }); popup.close(); } catch {} };
+  popup.webContents.setWindowOpenHandler(({ url }) => { openLink(url); return { action: 'deny' }; });
+  popup.webContents.on('will-navigate', (event, url) => { if (!url.startsWith(details.origin)) { event.preventDefault(); openLink(url); } });
+  popup.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && (input.key === 'Escape' || ((input.meta || input.control) && input.key.toLowerCase() === 'w'))) { event.preventDefault(); popup.close(); }
+  });
+  popup.on('blur', () => popup.close());
+  popup.on('closed', () => { if (extensionPopup === popup) extensionPopup = undefined; });
+  try { await popup.loadURL(details.url); if (!popup.isDestroyed()) popup.show(); }
+  catch (error) { if (!popup.isDestroyed()) popup.close(); throw error; }
+}
 function trustSender(event) {
   const trusted = [win?.webContents, remoteView?.webContents];
   if (!trusted.includes(event.sender) || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith('file:')) {
@@ -302,6 +333,16 @@ function registerIpc() {
       case 'import-avatars': await avatarStore.importFiles(); savePreferences(); break;
       case 'set-bot-avatar': avatarStore.set(value); savePreferences(); break;
       case 'remove-avatar': avatarStore.remove(value.avatarId); savePreferences(); break;
+      case 'add-extension': await extensionStore.importFolder(); break;
+      case 'pin-extension': extensionStore.pin(value.key, value.pinned); break;
+      case 'enable-extension': extensionPopup?.close(); await extensionStore.setEnabled(value.key, value.enabled); break;
+      case 'remove-extension': extensionPopup?.close(); extensionStore.remove(value.key); break;
+      case 'open-extension': await openExtension(value.key, value.anchor); break;
+      case 'open-1password': {
+        const error = await shell.openPath('/Applications/1Password.app');
+        if (error) throw new Error('1Password for Mac was not found in Applications. Install the Mac app to use this shortcut.');
+        break;
+      }
       case 'open-bot': await openBot(String(value.id)); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
       case 'hide-bot':
@@ -563,7 +604,7 @@ function createWindow() {
   win.on('close', (event) => { if (!isQuitting) { event.preventDefault(); win.hide(); } });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
-    { label: 'File', submenu: [{ label: 'New Browser Tab', accelerator: 'CmdOrCtrl+T', click: () => createTab({}) }, { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => closeTab(activeTabId) }] },
+    { label: 'File', submenu: [{ label: 'New Browser Tab', accelerator: 'CmdOrCtrl+T', click: () => createTab({}) }, { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => extensionPopup?.isFocused() ? extensionPopup.close() : closeTab(activeTabId) }] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { label: 'View', submenu: [{ label: 'Reload Page', accelerator: 'CmdOrCtrl+R', click: () => tabs.get(activeTabId)?.view.webContents.reload() }, { role: 'togglefullscreen' }, { label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }] },
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] },
@@ -584,7 +625,12 @@ function createWindow() {
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.whenReady().then(() => { app.setAccessibilitySupportEnabled(true); prefs = readPreferences(); prefs.remoteControl = false; fs.mkdirSync(app.getPath('userData'), { recursive: true }); createWindow(); });
+  app.whenReady().then(async () => {
+    app.setAccessibilitySupportEnabled(true); prefs = readPreferences(); prefs.remoteControl = false;
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    extensionStore = createExtensionStore({ root: app.getPath('userData'), session: session.fromPartition('persist:browser'), dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences });
+    await extensionStore.restore(); createWindow();
+  });
   app.on('second-instance', () => { win?.show(); win?.focus(); });
   app.on('activate', () => { win?.show(); win?.focus(); });
   app.on('before-quit', () => { isQuitting = true; clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(vpsTimer); savePreferences(); apiServer?.close(); });

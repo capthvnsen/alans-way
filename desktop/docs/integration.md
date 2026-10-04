@@ -93,9 +93,34 @@ and remember the answer. Reload a site after changing its permission.
 Inactive or agent-controlled tabs cannot use human permission grants. A navigation
 or takeover while a dialog is open cancels that request. A previously started media
 stream is not automatically stopped by editing a preference; reload or close that
-tab to end it. Unsupported permissions are denied. No browser extension installer
-or 1Password integration is shipped in this release.
+tab to end it. Unsupported permissions are denied.
 
 Run `npm run test:permissions` on a Mac to exercise actual Chromium requests,
 reload persistence, the Settings controls and agent takeover, using a temporary
 profile and local fixture without accessing the device's real location.
+
+## Browser extensions
+
+The address-bar puzzle button opens the local extension manager. It imports
+unpacked Chrome extension code into private app data, loads it into the persistent
+`persist:browser` session and remembers enable/pin choices across restarts. It
+does not import Chrome cookies, extension storage or password vaults. Extensions
+apply to this shared local session, including agents' local tabs; they are not
+loaded into Telegram or the VPS desktop. Review requested access when adding one.
+
+Pinned icons open manifest-defined `action.default_popup` or
+`browser_action.default_popup` pages in sandboxed windows without the workspace
+preload or agent connector. Opening a popup takes over the current local tab
+before displaying it. Content scripts use Electron's built-in extension support.
+Extensions do not have their own Hermes agent identities or obey per-tab bot
+assignments; they are trusted browser code with their declared permissions.
+
+This is partial compatibility, not a full Chrome extension host: dynamic action
+APIs, Chrome Web Store installation, automatic extension updates and native
+messaging are unavailable. In particular, 1Password browser autofill and desktop
+unlock integration are not configured. The Mac-app shortcut only opens 1Password;
+the workspace does not read its vault. See [Electron's supported APIs](https://www.electronjs.org/docs/latest/api/extensions)
+and [1Password's additional-browser requirements](https://support.1password.com/additional-browsers/).
+
+Run `npm run test:extensions` to exercise a harmless extension in an isolated
+profile, including content scripts, a real popup, pin/enable persistence and removal.
