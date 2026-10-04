@@ -343,21 +343,34 @@ function registerIpc() {
         const url = tab ? tab.view.webContents.getURL() : '';
         if (!tab || !/^https?:\/\//i.test(url)) throw new Error('Open a web page first.');
         const title = (tab.view.webContents.getTitle() || url).slice(0, 300);
+        if (!prefs.selectedBotId) throw new Error('Select a bot in the sidebar first — that is who the page goes to.');
         if (!telegramView || telegramView.webContents.isDestroyed()) throw new Error('Telegram is not loaded.');
         const tg = telegramView.webContents;
+        const chatHash = new RegExp(`#${prefs.selectedBotId.replace(/\W/g, '')}(?:_|/|$)`);
+        if (!chatHash.test(tg.getURL())) await openBot(prefs.selectedBotId);
         if (tg.isLoading()) throw new Error('Telegram is still loading — try again in a moment.');
-        // A stopped or never-committed page can leave executeJavaScript pending
-        // forever; bound the probe so the button reports instead of hanging.
-        const focused = await Promise.race([
-          tg.executeJavaScript(`(() => {
-            const el = document.querySelector('#editable-message-text') || document.querySelector('.Composer [contenteditable="true"], #MiddleColumn [contenteditable="true"]');
-            if (!el) return false; el.focus(); return el === document.activeElement || el.contains(document.activeElement);
-          })()`).catch(() => false),
-          new Promise(resolve => setTimeout(() => resolve(false), 3000)),
-        ]);
-        if (!focused) throw new Error('Open a bot chat in Telegram first — no message box is available.');
+        let point = null;
+        for (let i = 0; i < 16 && !point; i++) {
+          // A stopped or never-committed page can leave executeJavaScript pending
+          // forever; bound the probe so the button reports instead of hanging.
+          point = await Promise.race([
+            tg.executeJavaScript(`(() => {
+              const el = document.querySelector('#editable-message-text') || document.querySelector('.Composer [contenteditable="true"], #MiddleColumn [contenteditable="true"]');
+              if (!el || !el.offsetParent) return null;
+              const r = el.getBoundingClientRect();
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+            })()`).catch(() => null),
+            new Promise(resolve => setTimeout(() => resolve(null), 3000)),
+          ]);
+          if (!point) await new Promise(resolve => setTimeout(resolve, 250));
+        }
+        if (!point) throw new Error('The bot chat opened but no message box appeared.');
         if (!tg.debugger.isAttached()) tg.debugger.attach('1.3');
-        try { await tg.debugger.sendCommand('Input.insertText', { text: `${title}\n${url}\n` }); }
+        try {
+          await tg.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
+          await tg.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
+          await tg.debugger.sendCommand('Input.insertText', { text: `${title}\n${url}\n` });
+        }
         finally { tg.debugger.detach(); }
         break;
       }

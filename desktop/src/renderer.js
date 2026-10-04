@@ -181,8 +181,7 @@ function render(next) {
   $('control-button').textContent = tab?.controller === 'agent' ? 'Take over' : 'Give to agent';
   $('control-button').classList.toggle('agent', tab?.controller === 'agent');
   $('control-button').disabled = !tab || tab.extensionPage;
-  $('tab-access').disabled = !tab || tab.extensionPage;
-  $('ask-bot').disabled = !tab || !/^https?:\/\//.test(tab?.url || '');
+  const askBot = $('ask-bot'); askBot.disabled = !tab || !/^https?:\/\//.test(tab?.url || ''); askBot.title = tab ? `Share ${tab.title || 'this page'} with ${bot?.name || 'the selected bot'}` : 'Discuss this page with your agent';
   $('browser-slot').classList.toggle('agent-live', !!tab && tab.controller === 'agent');
   if (tab?.extensionPage) $('control-button').textContent = 'You';
   $('control-button').title = tab ? `Browser runs on ${tab.host==='vps'?'the VPS':'your Mac'} · ${tab.controller === 'agent' ? 'Agent' : 'You'} control it` : 'Open a browser tab first';
@@ -397,24 +396,6 @@ function showAddBot() {
   form.append(field, submit); form.onsubmit = async (event) => { event.preventDefault(); const result = await command('open-username', { username: input.value.trim() }); if (result) closeModal(); };
   $('modal-body').append(form); input.focus();
 }
-function showTabAccess() {
-  const tab = state.tabs.find(item => item.id === state.activeTabId); if (!tab) return;
-  openModal('Browser tab access');
-  const body = $('modal-body'), field = element('div', 'field');
-  const label = element('label', '', 'Assigned bot ID'); label.htmlFor = 'tab-bot-id';
-  const owner = element('input'); owner.id = 'tab-bot-id'; owner.value = tab.botId;
-  field.append(label, owner, element('p', '', 'Use this ID with --bot-id in the browser connector. Each connector normally sees only its own tabs.'));
-  body.append(field, element('h3', '', 'Allow another bot to share this tab'));
-  const choices = [];
-  for (const bot of orderedBots()) {
-    if (bot.id === tab.botId) continue;
-    const row = element('label', 'access-choice'), checkbox = element('input'); checkbox.type = 'checkbox'; checkbox.checked = (tab.allowedBots ?? []).includes(bot.id);
-    choices.push({ id: bot.id, checkbox }); row.append(checkbox, element('span', '', bot.name)); body.append(row);
-  }
-  const save = element('button', 'primary-button', 'Save access');
-  save.onclick = async () => { if (!owner.value.trim()) return toast('Enter a bot ID.'); const result = await command('grant-tab', { id: tab.id, botId: owner.value.trim(), botIds: choices.filter(item => item.checkbox.checked).map(item => item.id) }); if (result) closeModal(); };
-  body.append(element('p', 'settings-note', 'Shared tabs use the same page and control state. Grants apply to this browser tab. The general VPS desktop viewer remains shared.'), save);
-}
 $('search-toggle').onclick = () => { $('bot-search').classList.toggle('hidden'); if (!$('bot-search').classList.contains('hidden')) $('bot-search').focus(); else { $('bot-search').value = ''; renderBots(); } };
 $('bot-search').oninput = renderBots;
 $('add-bot').onclick = showAddBot;
@@ -438,7 +419,7 @@ document.querySelectorAll('[data-url]').forEach((button) => { button.onclick = (
 for (const action of ['back', 'forward', 'reload']) $(action).onclick = () => command('history', { id: state.activeTabId, action });
 $('control-button').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: tab.controller === 'agent' ? 'human' : 'agent' }); };
 $('ask-bot').onclick = () => command('share-page');
-$('tab-access').onclick = showTabAccess;
+
 $('modal-close').onclick = closeModal;
 $('modal').onclick = (event) => { if (event.target === $('modal')) closeModal(); };
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && modalOpen) closeModal(); });
