@@ -23,17 +23,41 @@ Allowed actions: navigate, move, click, type, press, scroll, back, forward, relo
 
 Agent tabs open in the background unless explicitly requested otherwise. Input travels through the tab’s Chromium DevTools target, with a decorative Agent cursor at dispatched coordinates. It does not use OS input, the clipboard, native window activation, or the human’s keyboard focus. Agent page popups preserve the selected human tab. Application menu shortcuts are suppressed during agent key dispatch.
 
-A tab has `id`, `botId`, `allowedBots`, `controller`, and `epoch`. A bot can read its assigned or explicitly granted tabs. Mutation requires agent control and the current epoch. Take over, return control, assignment, and grant changes increment the epoch. Queued actions recheck it before dispatch. An input already sent to Chromium cannot be recalled. Human pointer input does not automatically change ownership: use Take over before intervening.
+A tab has `id`, `host`, `session`, `botId`, `allowedBots`, `controller`, and `epoch`. A bot can read its assigned or explicitly granted tabs. Mutation requires agent control and the current epoch. Take over, return control, assignment, and grant changes increment the epoch. Queued actions recheck it before dispatch. An input already sent to Chromium cannot be recalled. Human pointer input does not automatically change ownership: use Take over before intervening.
+
+The Mac API lists assigned tabs across configured hosts. `POST /v1/tabs` accepts
+`host: mac | vps` (default Mac). VPS tab operations relay through the configured
+SSH alias to the private VPS broker. The native VPS MCP connector uses
+`browser-mcp.cjs --connection /private/browser/connection.json --bot-id ID`
+and accepts only VPS opens; it remains available when the Mac is offline.
+Its Chromium/CDP endpoints stay on loopback. See [VPS setup](vps-browser.md).
+Browser IDs are trusted routing identities, not a security boundary against
+an agent with the host user's shell access.
 
 On `human_has_control`, wait for an explicit release. On `stale_control_epoch`, inspect current state and take a fresh snapshot before deciding whether to proceed. A timed-out form submission is uncertain; inspect the page rather than automatically repeat it. The UI must be the authority for tab access grants and human control.
 
 ## Browser task handoff
 
-Control handoff keeps the same live tab on its execution host. For a Mac tab, the VPS agent drives the Mac through MCP, retaining that tab's cookies, uploads, JavaScript state, and open dialogs. It remains dependent on the Mac being awake. This first app exposes the Mac side of that path.
+Control handoff keeps the same live tab on its execution host. For a Mac tab, the VPS agent drives the Mac through MCP, retaining that tab's cookies, uploads, JavaScript state, and open dialogs. It remains dependent on the Mac being awake.
 
-A separate **move execution** operation should create a checkpoint containing task identity, source host/tab, destination host, URL, bounded agent context, and the verified last action. Reopen on the destination browser and verify it before admitting more actions. Do not claim an arbitrary tab's DOM, in-memory JavaScript, or authentication sessions migrate perfectly. Do not copy browser profile directories between running Chromium processes.
+The native UI's **Continue on VPS / Mac** creates a checkpoint with source
+host/tab, URL/title, scroll position, a bounded task note and optional matching
+text fields. Both source and destination stay human-controlled. Destination
+`tab.handoff` records source/destination IDs, note, `verification`, and restored/
+skipped draft counts. `verification: ready` means the URL matched; it is not
+proof that the page's authentication or business state matches. A redirected
+URL produces `review_required` and restores no drafts. Passwords and fields
+identified as credentials, codes or payment details are excluded. Arbitrary
+field classification is imperfect, so transferring text drafts is opt-in.
+Cookies, files, JavaScript memory and open dialogs are not migrated.
 
-Live Mac/VPS login propagation and separate VPS desktop streams need a dedicated design and tests. The current shared Mac browser profile supplies live cookie sharing only among this app's local tabs. All existing VPS desktops remain unchanged.
+Live login changes are shared within each host's single browser profile.
+Mac/VPS authentication remains independent. The broker creates separate VPS
+windows and agent-owned tab targets on one desktop. All desktop agents and the
+human still see that shared desktop stream. Broker restart reattaches live
+managed targets under human control with incremented epochs; browser exit
+loses those live targets. Automatic agent resumption after a cross-host
+handoff is not yet connected to the companion's task event system.
 
 ## Shared repository
 
@@ -43,9 +67,10 @@ remain separate modules. They use the same existing VPS primary and Telegram
 conversation. CI checks the Python package and desktop code independently.
 
 Proactivity controls use the native `/proactivity` commands in the Telegram chat.
-Status comes from the plugin's response. There is no front-end toggle claiming
-an agent is paused or a handoff completed. VPS Watch/Control controls viewer input;
-it does not pause the agent or provide exclusive access to that desktop.
+Status comes from the plugin's response. VPS **Take control** on a selected
+managed tab revokes that tab's agent input before enabling the viewer. The
+generic VPS desktop control does not pause desktop automation. **Stop control**
+only disables viewer input; **Give to agent** releases browser input separately.
 
 ## Site permissions
 

@@ -23,9 +23,10 @@ storage paths retain their technical names so upgrades preserve working setups.
   immediate read-only reviews, and bounded automatic opportunities in one
   explicitly bound Telegram conversation. Approved task watches preserve their
   execution host and observe native task metadata.
-- [Mac desktop app](desktop/README.md): bot-only Telegram chats, local Chromium
-  tabs with human/agent control, and a shared VPS desktop viewer. The browser MCP
-  connector lets the VPS primary drive those live Mac tabs over private SSH.
+- [Mac desktop app](desktop/README.md): bot-only Telegram chats, agent-owned Mac
+  and VPS Chromium tabs, human takeover, and a controllable VPS desktop viewer.
+  Browser MCP tools run on each host; an explicit browser handoff carries the
+  URL, task note and optional text drafts between computers for human review.
 
 ## Desktop app
 

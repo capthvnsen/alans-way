@@ -24,14 +24,14 @@ function connect(value) {
   showEmpty('Connecting…', 'Opening your VPS desktop through its existing viewer.', 'Connection settings'); status('connecting');
   try {
     rfb = new RFB($('screen'), toSocket(value));
-    rfb.scaleViewport = true; rfb.resizeSession = false; rfb.viewOnly = !state?.remoteControl; rfb.background = '#070708';
+    rfb.scaleViewport = true; rfb.resizeSession = false; rfb.focusOnClick = true; rfb.viewOnly = !state?.remoteControl; rfb.background = '#070708';
     rfb.addEventListener('connect', () => {
       if (version !== connectionVersion) return;
       connected = true; $('remote-empty').classList.add('hidden'); $('connection-dot').classList.add('connected'); status('connected'); render(state);
     });
     rfb.addEventListener('disconnect', () => {
       if (version !== connectionVersion) return;
-      connected = false; $('connection-dot').classList.remove('connected'); showEmpty('Desktop disconnected', 'Check Tailscale and your desktop viewer, then reconnect.'); status('disconnected');
+      connected = false; api.command('remote-control',{enabled:false}).catch(()=>{}); $('connection-dot').classList.remove('connected'); showEmpty('Desktop disconnected', 'Check Tailscale and your desktop viewer, then reconnect.'); status('disconnected');
     });
     rfb.addEventListener('credentialsrequired', () => {
       $('credentials').classList.remove('hidden'); $('vnc-password').focus();
@@ -43,18 +43,30 @@ function render(next) {
   if (!next) return;
   state = next;
   if (state.remoteUrl !== currentUrl) connect(state.remoteUrl);
-  if (rfb) rfb.viewOnly = !state.remoteControl;
-  $('control').textContent = state.remoteControl ? 'Control' : 'Watch'; $('control').classList.toggle('controlling', state.remoteControl);
+  if (rfb) { rfb.viewOnly = !state.remoteControl; if(!state.remoteControl)rfb.blur(); }
+  $('control').textContent = state.remoteControl ? 'Stop control' : 'Take control'; $('control').classList.toggle('controlling', state.remoteControl);
+  $('control').setAttribute('aria-pressed',String(state.remoteControl));
   $('control').disabled = !connected;
-  $('control').title = state.remoteControl ? 'Stop sending input to the shared VPS desktop' : 'Enable input · Hermes agents may still use this shared desktop';
-  $('remote-hint').textContent = state.remoteControl ? 'Input enabled · shared VPS desktop' : state.activeTabId === 'vps' ? 'Watching · Control enables mouse and keyboard' : 'Watching · click ↗ to expand';
+  const tab=state.tabs.find(t=>t.id===state.activeTabId && t.host==='vps');
+  $('remote-name').textContent=tab?'VPS · '+(tab.title || 'Browser'):'VPS computer';
+  $('control').title = state.remoteControl ? 'Return to watch mode' : tab ? 'Take this browser tab from its agent, then enable your mouse and keyboard' : 'Enable your mouse and keyboard · desktop agents may still be active';
+  $('remote-hint').textContent = state.remoteControl ? 'You control this view · click, drag, scroll and type' : 'Watching · click Take control to use your mouse and keyboard';
+  $('paste').disabled=!connected || !state.remoteControl;
   $('expand').textContent = state.activeTabId === 'vps' ? '↙' : '↗';
   $('expand').title = state.activeTabId === 'vps' ? 'Return to the browser workspace' : 'Expand into a workspace tab';
 }
-$('control').onclick = () => api.command('remote-control', { enabled: !state.remoteControl });
+$('control').onclick = async () => {
+  try {
+    if(!state.remoteControl){const tab=state.tabs.find(t=>t.id===state.activeTabId&&t.host==='vps');if(tab)await api.command('control',{id:tab.id,controller:'human'});await api.command('remote-control',{enabled:true});rfb?.focus();}
+    else await api.command('remote-control',{enabled:false});
+  }catch(error){$('remote-hint').textContent=error.message;}
+};
+function shortcut(key,shift=false){if(!connected || !state.remoteControl)return;rfb.focus();rfb.sendKey(0xffe3,'ControlLeft',true);if(shift)rfb.sendKey(0xffe1,'ShiftLeft',true);rfb.sendKey(key.charCodeAt(0),'Key'+key.toUpperCase());if(shift)rfb.sendKey(0xffe1,'ShiftLeft',false);rfb.sendKey(0xffe3,'ControlLeft',false);}
+api.onRemoteShortcut?.(({key,shift})=>shortcut(key,shift));
+$('paste').onclick=async()=>{try{const text=await api.command('remote-paste');rfb.clipboardPasteFrom(text);shortcut('v');}catch(error){$('remote-hint').textContent=error.message;}};
 $('screen').onclick = () => { if (!state.remoteControl && state.activeTabId !== 'vps') api.command('activate', { id: 'vps' }); };
 $('credentials').onsubmit = (event) => { event.preventDefault(); rfb?.sendCredentials({ password: $('vnc-password').value }); $('vnc-password').value = ''; $('credentials').classList.add('hidden'); };
 $('expand').onclick = () => api.command('activate', { id: state.activeTabId === 'vps' ? state.tabs.at(-1)?.id || 'home' : 'vps' });
-$('focus').onclick = async () => { await api.command('activate', { id: 'vps' }); api.command('focus-workspace'); };
+$('focus').onclick = async () => { const tab=state.tabs.find(t=>t.id===state.activeTabId&&t.host==='vps');await api.command('activate', { id: tab?.id || 'vps' }); api.command('focus-workspace'); };
 $('configure').onclick = () => { if (currentUrl && $('configure').textContent === 'Reconnect') connect(currentUrl); else api.command('open-settings'); };
 api.onState(render); api.getState().then((next) => { render(next); if (!currentUrl) showEmpty('Your agent’s computer', 'Connect your VPS to see its desktop here.', 'Connect VPS'); });

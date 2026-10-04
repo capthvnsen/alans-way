@@ -15,7 +15,8 @@ handoff requests to it. The skill describes capabilities actually available
 in this release, including human takeover and the limits of execution handoff.
 It does not add tools or broaden an approval policy.
 
-Configure the browser connector following the [desktop guide](../desktop/README.md).
+Configure the browser connectors following the [desktop guide](../desktop/README.md)
+and [native VPS browser guide](../desktop/docs/vps-browser.md).
 Each independent bot uses its own `--bot-id`, matching its assigned tabs. Use
 the existing verified private SSH route for VPS-to-Mac tools. Preserve bounded
 timeouts and lazy connection where supported, so an offline Mac does not
@@ -23,8 +24,9 @@ prevent the VPS gateway from starting.
 
 The VPS's files and installed software remain shared. Each profile keeps its
 own identity, memory and conversation history. This release supplies one shared
-VPS desktop. Separate desktops and live login sharing across Mac and VPS
-browsers remain additional work.
+VPS desktop with separate agent-owned browser tabs/windows. All bots share
+sign-ins within each host's browser profile. Separate desktop streams and
+login propagation between Mac and VPS remain additional work.
 
 ## Retire legacy profiles recoverably
 

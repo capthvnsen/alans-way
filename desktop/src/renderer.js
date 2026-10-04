@@ -62,10 +62,12 @@ function renderBotActivity(row, bot) {
 }
 function renderTabs() {
   const container = $('tabs'); container.replaceChildren();
-  const entries = [{ id: 'home', title: 'Start', symbol: '◔' }, ...state.tabs.map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : '◈' })), { id: 'vps', title: 'VPS computer', symbol: '▣' }];
+  const visible=state.tabs.filter(tab=>state.allAgentTabs || !state.selectedBotId || tab.botId===state.selectedBotId || tab.allowedBots.includes(state.selectedBotId) || tab.id===state.activeTabId);
+  const entries = [{ id: 'home', title: 'Start', symbol: '◔' }, ...visible.map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : tab.host==='vps'?'▣':'◈' })), { id: 'vps', title: 'VPS desktop', symbol: '▣' }];
   for (const tab of entries) {
     const node = element('div', `tab${state.activeTabId === tab.id ? ' active' : ''}`); node.setAttribute('role', 'tab'); node.setAttribute('aria-selected', state.activeTabId === tab.id ? 'true' : 'false'); node.tabIndex = 0;
     node.append(element('span', 'tab-icon', tab.symbol), element('span', 'tab-title', tab.title || 'New tab'));
+    if(tab.host)node.title=`${tab.host==='vps'?'VPS':'Mac'} · ${state.bots.find(bot=>bot.id===tab.botId)?.name || tab.botId}`;
     node.onclick = () => command('activate', { id: tab.id });
     node.onkeydown = (event) => { if (event.key === 'Enter') command('activate', { id: tab.id }); };
     if (tab.id !== 'home' && tab.id !== 'vps') {
@@ -92,17 +94,23 @@ function render(next) {
   }
   renderBots(); renderTabs(); renderSettingsBots(); renderSitePermissions();
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
+  const remote = state.activeTabId==='vps' || tab?.host==='vps';
   $('home').classList.toggle('hidden', !!tab || state.activeTabId === 'vps');
   $('browser-toolbar').classList.toggle('hidden', state.activeTabId === 'vps');
-  $('remote-preview-slot').classList.toggle('hidden', !state.preview || state.activeTabId === 'vps');
+  $('remote-preview-slot').classList.toggle('hidden', !state.preview || remote);
+  $('agent-workspace-name').textContent=bot?.name || 'Your tabs';
+  $('all-agent-tabs').textContent=state.allAgentTabs?'All tabs':'Agent tabs';
+  $('all-agent-tabs').title=state.allAgentTabs?'Show this agent’s tabs':'Show every agent’s tabs';
+  $('new-vps-tab').disabled=state.vpsBrowserStatus!=='connected';
+  $('handoff-tab').disabled=!tab;
   $('control-button').textContent = tab?.controller === 'agent' ? 'Take over' : 'Give to agent';
   $('control-button').classList.toggle('agent', tab?.controller === 'agent');
   $('control-button').disabled = !tab;
   $('tab-access').disabled = !tab;
-  $('control-button').title = tab ? `Browser runs on your Mac · ${tab.controller === 'agent' ? 'Agent' : 'You'} control it` : 'Open a browser tab first';
+  $('control-button').title = tab ? `Browser runs on ${tab.host==='vps'?'the VPS':'your Mac'} · ${tab.controller === 'agent' ? 'Agent' : 'You'} control it` : 'Open a browser tab first';
   if (document.activeElement !== $('address')) $('address').value = tab?.url === 'about:blank' ? '' : tab?.url || '';
-  $('local-label').textContent = state.activeTabId === 'vps' ? 'ON YOUR VPS' : 'ON YOUR MAC';
-  $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? 'Agent' : 'You'} in control · Mac` : state.activeTabId === 'vps' ? `VPS · ${state.remoteStatus}` : 'Ready';
+  $('local-label').textContent = remote ? 'ON YOUR VPS' : 'ON YOUR MAC';
+  $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? 'Agent' : 'You'} in control · ${tab.host==='vps'?'VPS':'Mac'}${tab.handoff?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `VPS · ${state.remoteStatus}` : 'Ready';
   $('connection-status').textContent = state.api.ready ? 'Browser connector ready' : state.api.error ? 'Browser connector unavailable' : 'Browser connector starting…';
   const notes = { login: 'Sign in with your Telegram account. Your bots appear on the left.', connected: 'Your Telegram account · bot chats only', locked: 'Unlock Telegram to load your bot chats.', offline: 'Telegram is offline. Check your connection, then sync in Settings.', loading: 'Connecting to Telegram…' };
   $('telegram-note').textContent = notes[state.telegramStatus] || notes.loading;
@@ -199,6 +207,13 @@ function showSettings() {
   avatars.onclick = () => showAvatarEditor(); body.append(avatars);
   body.append(element('p', 'settings-note', 'Pick a marble avatar or import your own. Eyes follow your mouse only while Telegram reports activity.'), element('hr', 'section-divider'));
   showSitePermissionSettings(body);
+  body.append(element('h3','','Agent browsers'),element('p','settings-note','Each agent has its own tabs and control on both computers. Agents share sign-ins within each computer’s browser. Mac and VPS sign-ins remain separate.'));
+  const browserField=element('div','field');
+  const hostLabel=element('label','','VPS browser SSH host'),host=element('input');host.id='vps-browser-host';hostLabel.htmlFor=host.id;host.placeholder='your saved SSH host';host.value=state.vpsBrowser?.sshHost || '';
+  const pathLabel=element('label','','VPS browser host script'),script=element('input');script.id='vps-browser-script';pathLabel.htmlFor=script.id;script.placeholder='/opt/hermes-alans-way/desktop/scripts/vps-browser-host.cjs';script.value=state.vpsBrowser?.scriptPath || '';
+  const sudoRow=element('label','access-choice'),sudo=element('input');sudo.type='checkbox';sudo.checked=state.vpsBrowser?.sudo===true;sudoRow.append(sudo,element('span','','Use the existing sudo access for this host'));
+  browserField.append(hostLabel,host,pathLabel,script,sudoRow,element('p','settings-note',`VPS browser: ${state.vpsBrowserStatus}. This connection uses your existing SSH access and the add-on browser host.`));body.append(browserField);
+  const browserSave=element('button','secondary-button','Save VPS browser connection');browserSave.onclick=async()=>{const result=await command('settings',{vpsBrowser:{sshHost:host.value,scriptPath:script.value,sudo:sudo.checked}});if(result)toast('VPS browser connection saved.');};body.append(browserSave,element('hr','section-divider'));
   const label = element('label', '', 'VPS desktop connection'); label.htmlFor = 'remote-url';
   const input = element('input'); input.id = 'remote-url'; input.placeholder = 'https://your-server/vnc.html or wss://…'; input.value = state.remoteUrl;
   field.append(label, input, element('p', '', 'Paste your existing noVNC viewer URL. Connect through Tailscale when your server is private. The small preview starts in watch mode.'));
@@ -246,7 +261,18 @@ function showTabAccess() {
   }
   const save = element('button', 'primary-button', 'Save access');
   save.onclick = async () => { if (!owner.value.trim()) return toast('Enter a bot ID.'); const result = await command('grant-tab', { id: tab.id, botId: owner.value.trim(), botIds: choices.filter(item => item.checkbox.checked).map(item => item.id) }); if (result) closeModal(); };
-  body.append(element('p', 'settings-note', 'Shared tabs use the same page and control state. These grants apply to this local tab. They do not change VPS desktop access.'), save);
+  body.append(element('p', 'settings-note', 'Shared tabs use the same page and control state. Grants apply to this browser tab. The general VPS desktop viewer remains shared.'), save);
+}
+function showHandoff(){
+  const tab=state.tabs.find(t=>t.id===state.activeTabId);if(!tab)return;
+  const destination=tab.host==='vps'?'mac':'vps',label=destination==='vps'?'VPS':'Mac';
+  openModal(`Continue on ${label}`);
+  const body=$('modal-body');body.append(element('p','settings-note',`Open this page on your ${label} for the same agent. Both tabs will stay under your control until you review the destination and give it to the agent. Browser sign-ins, uploads and running page memory stay on their original computer.`));
+  const field=element('div','field'),noteLabel=element('label','','What should continue?'),note=element('textarea');note.id='handoff-note';noteLabel.htmlFor=note.id;note.placeholder='Task, last confirmed step, and what to do next';note.maxLength=4000;field.append(noteLabel,note);body.append(field);
+  const row=element('label','access-choice'),drafts=element('input');drafts.type='checkbox';row.append(drafts,element('span','','Carry matching text drafts to the destination'));body.append(row);
+  const submit=element('button','primary-button',`Open on ${label}`);submit.disabled=destination==='vps'&&state.vpsBrowserStatus!=='connected';
+  submit.onclick=async()=>{submit.disabled=true;submit.textContent='Opening…';const result=await command('handoff',{id:tab.id,destination,includeDrafts:drafts.checked,note:note.value});if(result){closeModal();toast(`Opened on ${label}. ${result.restoredDrafts} text draft(s) restored${result.skippedDrafts?`, ${result.skippedDrafts} need review`:''}. Review the page, then Give to agent.`);}else{submit.disabled=false;submit.textContent=`Open on ${label}`;}};
+  body.append(submit);
 }
 $('search-toggle').onclick = () => { $('bot-search').classList.toggle('hidden'); if (!$('bot-search').classList.contains('hidden')) $('bot-search').focus(); else { $('bot-search').value = ''; renderBots(); } };
 $('bot-search').oninput = renderBots;
@@ -259,6 +285,9 @@ $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key
 $('computer-button').onclick = () => command('activate', { id: 'vps' });
 $('home-vps').onclick = () => command('activate', { id: 'vps' });
 $('new-tab').onclick = async () => { await command('create-tab'); $('address').focus(); };
+$('new-vps-tab').onclick=()=>command('create-vps-tab');
+$('all-agent-tabs').onclick=()=>command('settings',{allAgentTabs:!state.allAgentTabs});
+$('handoff-tab').onclick=showHandoff;
 $('preview-toggle').onclick = () => command('settings', { preview: !state.preview });
 $('focus-toggle').onclick = () => { focusMode = !focusMode; $('shell').classList.toggle('focus-workspace', focusMode); scheduleLayout(); };
 function submitUrl(event, inputId) { event.preventDefault(); const url = $(inputId).value.trim(); if (!url) return; if (state.tabs.some((tab) => tab.id === state.activeTabId)) command('navigate', { id: state.activeTabId, url }); else command('create-tab', { url }); }

@@ -26,11 +26,15 @@ not been verified.
    reachable viewer URL in Workspace settings. A headless automation browser has
    no visible window; launch the GUI browser in the same display the VNC server
    shares. Snap Chromium needs a profile path allowed by its package confinement.
-7. Verify a Telegram request and reply; the Mac connector's status, assigned tab
-   and a bounded action; and VPS Watch/Control with a local fixture. Watch/Control
-   enables viewer input and does not pause agents. This release has one shared
-   VPS desktop. Mac/VPS authentication and arbitrary live page state do not
-   automatically migrate between different browser profiles.
+7. For managed cloud browser sessions, install the separate Chromium supervisor,
+   tab broker and native MCP connector using the [VPS browser guide](../desktop/docs/vps-browser.md).
+   Give each profile its own matching Telegram ID. The browser profile shares
+   live logins; the broker restricts normal tools to assigned/granted tabs.
+8. Verify a Telegram request and reply; bounded Mac and VPS tab actions; human
+   **Take control**; and cross-host browser handoff with a fixture. This release
+   has one shared VPS desktop. Mac/VPS authentication and arbitrary live page
+   state remain host-specific. A managed tab takeover blocks its browser
+   connector; generic desktop automation is coordinated separately.
 
 With Hermes, SSH and noVNC already working, deployment is mostly configuration.
 A fresh headless VPS also needs desktop provisioning, display/service lifecycle

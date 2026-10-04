@@ -1,5 +1,10 @@
 # VPS desktop operations
 
+For managed Chromium tabs, use `workspace_vps_browser` snapshots and tab-specific
+input. That path enforces tab ownership/control epochs and works independently
+of the desktop driver's accessibility support. These instructions apply to
+other VPS desktop applications and unmanaged windows.
+
 1. Verify the configured computer tool's host, display, window ID and PID.
    Target the user's intended window explicitly. Discover the installed tool's
    schema before selecting window/desktop modality or delivery parameters.
@@ -18,10 +23,10 @@
    effect, so this does not establish reliable autonomous window control.
    Explicit desktop-scoped actions can move the real pointer.
    Separate cursors do not isolate application state, fields, or browser logins.
-5. Check the resulting application state after input. Watch/Control in the Mac
-   viewer enables human input without pausing Hermes. Coordinate work in the
-   same window with the human; a VPS viewer switch is not the local browser's
-   enforced Take over control boundary.
+5. Check the resulting application state after input. The generic VPS computer
+   viewer enables human input without pausing these desktop tools. Coordinate
+   work in the same window with the human. Managed browser tabs have a separate
+   enforced control boundary through the browser broker.
 
 The tested Cua Driver 0.28.2 returned `tool_output_invalid` from the optional
 `get_agent_cursor_state` getter because its window cursor position was null

@@ -8,6 +8,8 @@ const { createAvatarStore } = require('./avatar-store.cjs');
 const { createAgentInput } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
+const { snapshotExpression, checkpointExpression, restoreExpression } = require('./browser-page.cjs');
+const { createVpsBrowser } = require('./vps-browser.cjs');
 
 app.setName("Hermes- Alan's way");
 // Keep existing sessions and connector discovery stable when the product name changes.
@@ -19,6 +21,9 @@ const TELEGRAM = 'https://web.telegram.org/a/';
 let win, backgroundWindow, telegramView, remoteView, apiServer, prefs, layout = {}, apiPort = 0;
 let activeTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 const tabs = new Map();
+const vpsTabs = new Map();
+let vpsBrowserStatus = 'unconfigured', vpsRefreshBusy = false, vpsTimer;
+const vpsBrowser = createVpsBrowser({ getConfig: () => prefs?.vpsBrowser });
 const configuredSessions = new WeakSet();
 const API_TOKEN = crypto.randomBytes(32).toString('hex');
 let isQuitting = false;
@@ -41,7 +46,7 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
 let pointerTimer, activityTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {} };
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, vpsBrowser: {}, allAgentTabs: false, agentLastTabs: {}, handoffs: [] };
   try { return { ...defaults, ...JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'preferences.json'), 'utf8')) }; }
   catch { return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' }; }
 }
@@ -55,12 +60,36 @@ function savePreferences() {
 }
 function describeTab(tab) {
   return { id: tab.id, title: tab.title || 'New tab', url: tab.view.webContents.getURL(), botId: tab.botId,
-    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null };
+    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
+}
+function isVpsTab(id) { return vpsTabs.has(id); }
+async function refreshVpsTabs() {
+  if (!prefs?.vpsBrowser?.sshHost || vpsRefreshBusy) return;
+  vpsRefreshBusy = true;
+  try { const wasVps=vpsTabs.has(activeTabId); const data = await vpsBrowser.request('/v1/tabs', 'GET', undefined, { human: true }); vpsTabs.clear(); data.tabs.forEach(tab => vpsTabs.set(tab.id, tab)); if(wasVps&&!vpsTabs.has(activeTabId)){prefs.remoteControl=false;activeTabId='home';applyLayout();} vpsBrowserStatus = 'connected'; }
+  catch { vpsBrowserStatus = 'disconnected'; }
+  finally { vpsRefreshBusy = false; broadcast(); }
+}
+async function remoteRequest(id, operation, body, { human = true, botId = prefs.selectedBotId || 'shared' } = {}) {
+  const result = await vpsBrowser.request(`/v1/tabs/${id}${operation ? '/' + operation : ''}`, body === undefined ? 'GET' : 'POST', body, {human, botId});
+  const tab = result.tab || (result.id ? result : null); if (tab) vpsTabs.set(tab.id, tab);
+  broadcast(); return result;
+}
+function selectAgent(id) {
+  const old = prefs.selectedBotId;
+  if (old === id) return;
+  if (tabs.has(activeTabId) || vpsTabs.has(activeTabId)) prefs.agentLastTabs[old] = activeTabId;
+  prefs.selectedBotId = id;
+  prefs.remoteControl = false;
+  const own = [...tabs.values(), ...vpsTabs.values()].filter(tab => tab.botId === id || tab.allowedBots.includes(id));
+  activeTabId = own.some(tab => tab.id === prefs.agentLastTabs[id]) ? prefs.agentLastTabs[id] : own.at(-1)?.id || 'home';
+  applyLayout();
 }
 function getState() {
   return { name: app.getName(), version: app.getVersion(), bots: prefs.bots.map(bot => ({ ...bot, activity: activity.get(bot.id) })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, remoteUrl: prefs.remoteUrl,
-    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
+    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab).concat([...vpsTabs.values()]),
+    vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, allAgentTabs: prefs.allAgentTabs, handoffs: prefs.handoffs,
     activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions,
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
@@ -114,7 +143,7 @@ function applyLayout() {
       if (!tab.view.getVisible()) tab.view.setVisible(true);
     }
   }
-  fit(remoteView, activeTabId === 'vps' ? layout.browser : prefs.preview ? layout.preview : null);
+  fit(remoteView, activeTabId === 'vps' || isVpsTab(activeTabId) ? layout.browser : prefs.preview ? layout.preview : null);
   if (remoteView && win.contentView.children.at(-1) !== remoteView) win.contentView.addChildView(remoteView);
 }
 function configureContents(contents, isTelegram = false) {
@@ -173,13 +202,13 @@ function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared
     if (isMainFrame && code !== -3) { tab.error = description; tab.loading = false; broadcast(); }
   });
   view.webContents.on('render-process-gone', () => { tab.error = 'This page stopped. Reload to reconnect.'; broadcast(); });
-  if (activate) activeTabId = tab.id;
+  if (activate) { prefs.remoteControl = false; activeTabId = tab.id; }
   applyLayout(); broadcast();
   if (!skipLoad) view.webContents.loadURL(targetUrl).catch(() => {});
   return tab;
 }
 function closeTab(id) {
-  if (id === 'home' || id === 'vps') { activeTabId = 'home'; applyLayout(); broadcast(); return; }
+  if (id === 'home' || id === 'vps') { prefs.remoteControl=false; activeTabId = 'home'; applyLayout(); broadcast(); return; }
   const tab = tabs.get(id);
   if (!tab) return;
   tabs.delete(id);
@@ -207,7 +236,7 @@ function trustSender(event) {
 }
 async function openBot(id) {
   if (!prefs.bots.some((bot) => bot.id === id)) throw new Error('Select a verified Telegram bot.');
-  prefs.selectedBotId = id;
+  selectAgent(id);
   savePreferences(); broadcast();
   const selected = await telegramView.webContents.executeJavaScript(`(() => {
     const link = [...document.querySelectorAll('#LeftColumn a[href]')].find(el => el.hash?.slice(1).split('_')[0] === '${id}');
@@ -229,20 +258,29 @@ function registerIpc() {
     trustSender(event);
     switch (command) {
       case 'create-tab': return describeTab(createTab({ url: value.url || 'about:blank' }));
-      case 'close-tab': closeTab(value.id); break;
-      case 'activate': activeTabId = tabs.has(value.id) || ['home', 'vps'].includes(value.id) ? value.id : 'home'; applyLayout(); break;
+      case 'create-vps-tab': {
+        const tab = await vpsBrowser.request('/v1/tabs','POST',{url:value.url || 'about:blank'},{botId:prefs.selectedBotId || 'shared',human:true});
+        vpsTabs.set(tab.id,tab); prefs.remoteControl=false; activeTabId=tab.id; await remoteRequest(tab.id,'activate',{}); applyLayout(); broadcast(); return tab;
+      }
+      case 'close-tab':
+        if (isVpsTab(value.id)) { if(activeTabId===value.id)prefs.remoteControl=false; await vpsBrowser.request(`/v1/tabs/${value.id}`,'DELETE',undefined,{human:true}); vpsTabs.delete(value.id); if(activeTabId===value.id)activeTabId='home'; applyLayout(); } else closeTab(value.id); break;
+      case 'activate': if(activeTabId!==value.id)prefs.remoteControl=false; activeTabId = tabs.has(value.id) || isVpsTab(value.id) || ['home', 'vps'].includes(value.id) ? value.id : 'home'; if (isVpsTab(activeTabId)) await remoteRequest(activeTabId,'activate',{}); applyLayout(); break;
       case 'navigate': {
+        if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
         const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); await tab.view.webContents.loadURL(normalizeUrl(value.url)).catch(() => {}); } break;
       }
       case 'history': {
+        if (isVpsTab(value.id)) { await remoteRequest(value.id,'control',{controller:'human'}); await remoteRequest(value.id,'human-actions',{action:value.action}); break; }
         const tab = tabs.get(value.id); if (!tab) break;
         changeController(tab.id, 'human'); const history = tab.view.webContents.navigationHistory;
         if (value.action === 'back' && history.canGoBack()) history.goBack();
         if (value.action === 'forward' && history.canGoForward()) history.goForward();
         if (value.action === 'reload') tab.view.webContents.reload(); break;
       }
-      case 'control': return changeController(value.id, value.controller);
+      case 'control': if(isVpsTab(value.id)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller});}return changeController(value.id, value.controller);
+      case 'handoff': return handoffTab(value);
       case 'grant-tab': {
+        if (isVpsTab(value.id)) { await remoteRequest(value.id,'grant',value); break; }
         const tab = tabs.get(value.id); if (!tab) throw new Error('Tab not found.');
         if (typeof value.botId === 'string' && value.botId.length > 0 && value.botId.length <= 100) tab.botId = value.botId;
         tab.allowedBots = Array.isArray(value.botIds) ? [...new Set(value.botIds.filter(id => typeof id === 'string' && id.length > 0 && id.length <= 100 && id !== tab.botId))] : [];
@@ -266,6 +304,8 @@ function registerIpc() {
       case 'set-site-permission': sitePermissions.set(value); break;
       case 'reset-site-permissions': sitePermissions.reset(); break;
       case 'settings':
+        if (value.vpsBrowser && typeof value.vpsBrowser === 'object') { prefs.vpsBrowser={sshHost:String(value.vpsBrowser.sshHost || '').trim(),scriptPath:String(value.vpsBrowser.scriptPath || '').trim(),sudo:value.vpsBrowser.sudo===true}; vpsBrowserStatus='connecting'; refreshVpsTabs(); }
+        if (typeof value.allAgentTabs === 'boolean') prefs.allAgentTabs=value.allAgentTabs;
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         if (typeof value.preview === 'boolean') prefs.preview = value.preview;
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) prefs.locationDefault = value.locationDefault;
@@ -273,6 +313,7 @@ function registerIpc() {
         savePreferences(); applyLayout(); break;
       case 'remote-control': prefs.remoteControl = value.enabled === true; break;
       case 'remote-status': remoteStatus = String(value.status).slice(0, 50); break;
+      case 'remote-paste': if (!prefs.remoteControl || remoteStatus!=='connected') throw new Error('Take control of the connected VPS desktop first.'); return clipboard.readText().slice(0,20000);
       case 'fullscreen': win.setFullScreen(!win.isFullScreen()); break;
       case 'open-settings': win.webContents.send('workspace:settings'); break;
       case 'focus-workspace': win.webContents.send('workspace:focus-workspace'); break;
@@ -303,7 +344,7 @@ function registerIpc() {
       const merged = new Map(prefs.bots.map((bot) => [bot.id, bot]));
       bots.forEach((bot) => merged.set(bot.id, bot));
       prefs.bots = [...merged.values()];
-      if (value.selectedId && prefs.bots.some((bot) => bot.id === value.selectedId)) prefs.selectedBotId = value.selectedId;
+      if (value.selectedId && prefs.bots.some((bot) => bot.id === value.selectedId)) selectAgent(value.selectedId);
       if (!prefs.selectedBotId && prefs.bots.length && telegramStatus === 'connected') {
         const bot = prefs.bots.find((item) => !prefs.hidden.includes(item.id));
         if (bot) openBot(bot.id).catch(() => {});
@@ -321,23 +362,39 @@ function registerIpc() {
 
 async function snapshot(tab) {
   const generation = ++tab.generation;
-  const result = await tab.view.webContents.executeJavaScript(`(() => {
-    const items = [];
-    const nodes = document.querySelectorAll('a[href], button, input:not([type="hidden"]), textarea, select, [role="button"], [role="link"], [contenteditable="true"]');
-    for (const el of nodes) {
-      const rect = el.getBoundingClientRect(), style = getComputedStyle(el);
-      if (!rect.width || !rect.height || style.visibility === 'hidden' || style.display === 'none') continue;
-      const ref = 's${generation}-' + (items.length + 1);
-      el.setAttribute('data-hermes-workspace-ref', ref);
-      items.push({ ref, role: el.getAttribute('role') || el.tagName.toLowerCase(), name: (el.getAttribute('aria-label') || el.labels?.[0]?.innerText || el.innerText || el.placeholder || el.title || '').trim().slice(0, 200), type: el.type || '', value: el.type === 'password' ? '[password]' : String(el.value || '').slice(0, 200), href: el.href || '', disabled: !!el.disabled });
-      if (items.length >= 300) break;
-    }
-    return { title: document.title, url: location.href, text: document.body?.innerText?.slice(0, 20000) || '', elements: items,
-      viewport: { width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio },
-      iframes: [...document.querySelectorAll('iframe')].map(el => ({ title: el.title, src: el.src })).slice(0, 20) };
-  })()`);
+  const result = await tab.view.webContents.executeJavaScript(snapshotExpression(generation));
   tab.refs = new Set(result.elements.map((item) => item.ref));
   return { ...result, tab: describeTab(tab) };
+}
+async function navigateVps(id,url) {
+  await remoteRequest(id,'control',{controller:'human'});
+  await remoteRequest(id,'human-actions',{action:'navigate',url:normalizeUrl(url)});
+}
+async function handoffTab({id,destination,includeDrafts=false,note=''}) {
+  const source=tabs.get(id) || vpsTabs.get(id); if(!source)throw new Error('Source tab not found.');
+  const sourceHost=tabs.has(id)?'mac':'vps';
+  if(!['mac','vps'].includes(destination)||destination===sourceHost)throw new Error('Choose the other computer.');
+  if(sourceHost==='mac') { changeController(id,'human'); await source.queue; }
+  else await remoteRequest(id,'control',{controller:'human'});
+  const checkpoint=sourceHost==='mac'?await source.view.webContents.executeJavaScript(checkpointExpression(includeDrafts)):await remoteRequest(id,'checkpoint',{includeDrafts});
+  if(!/^https?:\/\//.test(checkpoint.url))throw new Error('Open a web page before handing it off.');
+  const handoff={id:crypto.randomUUID(),sourceHost,sourceTabId:id,destinationHost:destination,createdAt:Date.now(),note:String(note).slice(0,4000),phase:'review_required'};
+  let target,result;
+  if(destination==='vps') {
+    target=await vpsBrowser.request('/v1/tabs','POST',{url:checkpoint.url},{botId:source.botId,human:true});vpsTabs.set(target.id,target);
+    result=await remoteRequest(target.id,'restore',{checkpoint,handoff});target=result.tab;
+  } else {
+    target=createTab({url:checkpoint.url,botId:source.botId,controller:'human',activate:false});target.handoff=handoff;
+    for(let n=0;n<100;n++){if(!target.view.webContents.isLoading()&&target.view.webContents.getURL()!=='about:blank')break;await new Promise(r=>setTimeout(r,100));}
+    if(target.view.webContents.isLoading())throw new Error('Mac destination is still loading. Inspect its new tab before retrying.');
+    result=await target.view.webContents.executeJavaScript(restoreExpression(checkpoint));
+  }
+  const record={...handoff,destinationTabId:target.id,verification:result.verification,restoredDrafts:result.restored,skippedDrafts:result.skipped};
+  if(destination==='mac')target.handoff=record;
+  else {target.handoff=record;vpsTabs.set(target.id,target);}
+  prefs.remoteControl=false; prefs.handoffs=[record,...prefs.handoffs].slice(0,20);activeTabId=target.id;
+  if(destination==='vps')await remoteRequest(target.id,'activate',{});
+  savePreferences();applyLayout();broadcast();return record;
 }
 function browserCommand(tab, method, params) {
   const wc = tab.view.webContents;
@@ -399,7 +456,7 @@ function startApi() {
     try {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', hosts:{mac:'connected',vps:vpsBrowserStatus}, capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await telegramView.webContents.executeJavaScript(`(() => ({
           styled: document.body.classList.contains('hw-chat'),
@@ -412,14 +469,23 @@ function startApi() {
           activity: { available: activityStates.some(state => state !== 'unknown'), activeBots: activityStates.filter(state => state === 'active').length } }, remote: remoteStatus,
           window: { visible: win.isVisible(), focused: win.isFocused() } });
       }
-      if (url.pathname === '/v1/tabs' && req.method === 'GET') return send(200, { tabs: [...tabs.values()].filter((tab) => !botId || tab.botId === botId || tab.allowedBots.includes(botId)).map(describeTab) });
+      if (url.pathname === '/v1/tabs' && req.method === 'GET') {
+        if(prefs.vpsBrowser?.sshHost)await refreshVpsTabs();
+        return send(200, { tabs: [...tabs.values()].map(describeTab).concat([...vpsTabs.values()]).filter((tab) => !botId || tab.botId === botId || tab.allowedBots.includes(botId)) });
+      }
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
         const body = await readJson(req);
+        if(body.host==='vps'){const result=await vpsBrowser.request('/v1/tabs','POST',body,{botId});vpsTabs.set(result.id,result);broadcast();return send(201,result);}
+        if(body.host!==undefined&&body.host!=='mac')throw new Error('Choose mac or vps explicitly.');
         return send(201, describeTab(createTab({ url: body.url, botId, controller: 'agent', activate: body.background === false })));
       }
       const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions))?$/.exec(url.pathname);
       const tab = match && tabs.get(match[1]);
+      if(match&&!tab&&prefs.vpsBrowser?.sshHost){
+        const result=await vpsBrowser.request(url.pathname,req.method,req.method==='POST'?await readJson(req):undefined,{botId,epoch:Number(req.headers['x-control-epoch'])});
+        const remote=result.tab || (result.id?result:null);if(remote)vpsTabs.set(remote.id,remote);if(req.method==='DELETE')vpsTabs.delete(match[1]);broadcast();return send(200,result);
+      }
       if (!tab) return send(404, { error: 'Tab not found.' });
       requireActor(tab, botId);
       if (req.method === 'GET' && !match[2]) return send(200, describeTab(tab));
@@ -446,7 +512,7 @@ function startApi() {
   });
   apiServer.requestTimeout = 30000;
   apiServer.on('error', (error) => { apiError = error.message; broadcast(); });
-  apiServer.listen(Number(process.env.HERMES_WORKSPACE_PORT) || 9464, '127.0.0.1', () => {
+  apiServer.listen(process.env.HERMES_WORKSPACE_PORT === undefined ? 9464 : Number(process.env.HERMES_WORKSPACE_PORT), '127.0.0.1', () => {
     apiPort = apiServer.address().port;
     fs.writeFileSync(path.join(app.getPath('userData'), 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${apiPort}`, token: API_TOKEN, protocol: 1 }, null, 2), { mode: 0o600 });
     broadcast();
@@ -468,6 +534,11 @@ function createWindow() {
   remoteView.setBackgroundColor('#101011');
   remoteView.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   remoteView.webContents.on('will-navigate', (event) => event.preventDefault());
+  remoteView.webContents.on('before-input-event',(event,input)=>{
+    if(prefs.remoteControl && remoteStatus==='connected' && input.meta && input.type==='keyDown' && /^[altrwf]$/i.test(input.key)){
+      event.preventDefault();remoteView.webContents.send('workspace:remote-shortcut',{key:input.key.toLowerCase(),shift:input.shift});
+    }
+  });
   win.contentView.addChildView(remoteView);
   registerIpc();
   win.loadFile(path.join(ROOT, 'index.html'));
@@ -496,12 +567,13 @@ function createWindow() {
   pointerTimer.unref();
   activityTimer = setInterval(() => { if (activity.expire()) broadcast(); }, 500);
   activityTimer.unref();
+  vpsTimer=setInterval(refreshVpsTabs,5000);vpsTimer.unref();refreshVpsTabs();
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(() => { app.setAccessibilitySupportEnabled(true); prefs = readPreferences(); prefs.remoteControl = false; fs.mkdirSync(app.getPath('userData'), { recursive: true }); createWindow(); });
   app.on('second-instance', () => { win?.show(); win?.focus(); });
   app.on('activate', () => { win?.show(); win?.focus(); });
-  app.on('before-quit', () => { isQuitting = true; clearInterval(pointerTimer); clearInterval(activityTimer); savePreferences(); apiServer?.close(); });
+  app.on('before-quit', () => { isQuitting = true; clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(vpsTimer); savePreferences(); apiServer?.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }
