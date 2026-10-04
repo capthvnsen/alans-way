@@ -49,6 +49,7 @@ function createVpsBrowser({ getConfig }) {
           finish(e);
         }
       });
+      child.stdin.on('error', () => {}); // ssh may exit before reading the request — the close handler reports the real error
       child.stdin.end(JSON.stringify({ path: route, method, body, botId, botName, human, epoch }));
     });
   }

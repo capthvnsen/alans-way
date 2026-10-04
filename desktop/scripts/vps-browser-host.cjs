@@ -83,7 +83,7 @@ async function serve() {
     title: t.title,
     url: t.url,
     botId: t.botId,
-    allowedBots: t.allowedBots,
+    allowedBots: t.allowedBots ?? [],
     controller: t.controller,
     epoch: t.epoch,
     host: 'vps',
@@ -241,7 +241,7 @@ async function serve() {
       if (url.pathname === '/v1/tabs' && req.method === 'GET')
         return send(200, {
           tabs: [...tabs.values()]
-            .filter((t) => human || t.botId === botId || t.allowedBots.includes(botId))
+            .filter((t) => human || t.botId === botId || (t.allowedBots ?? []).includes(botId))
             .map(describe),
         });
       if (url.pathname === '/v1/tabs' && req.method === 'POST')

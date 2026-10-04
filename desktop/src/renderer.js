@@ -62,7 +62,7 @@ function renderBotActivity(row, bot) {
 }
 function renderTabs() {
   const container = $('tabs'); container.replaceChildren();
-  const visible=state.tabs.filter(tab=>state.allAgentTabs || !state.selectedBotId || tab.botId===state.selectedBotId || tab.allowedBots.includes(state.selectedBotId) || tab.id===state.browserTabId);
+  const visible=state.tabs.filter(tab=>state.allAgentTabs || !state.selectedBotId || tab.botId===state.selectedBotId || (tab.allowedBots ?? []).includes(state.selectedBotId) || tab.id===state.browserTabId);
   const entries = [{ id: 'home', title: 'Start', symbol: '◔' }, ...visible.map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : '◈' }))];
   for (const tab of entries) {
     const selected = state.browserTabId === tab.id;
@@ -343,6 +343,17 @@ function showSettings() {
   body.append(element('p', 'settings-note', state.api.ready ? `Ready at ${state.api.url}. Your add-on can pair with this local connection to operate assigned tabs.` : state.api.error || 'Starting…'));
   const copy = element('button', 'secondary-button', 'Copy connection'); copy.onclick = async () => { await command('copy-connection'); toast('Connection URL and private token copied. Share only with your own agent connector.'); };
   const folder = element('button', 'secondary-button', 'Open app data'); folder.onclick = () => command('show-data'); body.append(copy, folder);
+  body.append(element('h3', '', 'Agent setup'));
+  body.append(element('p', 'settings-note', 'Connect your Hermes agents on a VPS to this Mac. Enter how the VPS reaches this Mac over ssh (Tailscale name or IP), then copy the generated setup commands.'));
+  const sshField = element('div', 'field'), sshLabel = element('label', '', 'This Mac’s SSH address (as your VPS reaches it)'); sshLabel.htmlFor = 'mac-ssh-host';
+  const sshInput = element('input'); sshInput.id = 'mac-ssh-host'; sshInput.placeholder = 'you@mymac or mymac.tailnet-name'; sshInput.value = state.macSshHost || ''; sshInput.autocomplete = 'off';
+  sshField.append(sshLabel, sshInput);
+  const sshSave = element('button', 'secondary-button', 'Save'); sshSave.onclick = async () => { await command('settings', { macSshHost: sshInput.value.trim() }); toast('Mac SSH address saved.'); };
+  const agentSetup = element('button', 'secondary-button', 'Copy agent setup'); agentSetup.onclick = async () => { const ok = await command('agent-setup', { botId: state.selectedBotId }); if (ok !== false) toast('Setup commands copied — paste them on your VPS.'); };
+  const agentTest = element('button', 'secondary-button', 'Test agent path'); const agentResult = element('p', 'settings-note', '');
+  agentTest.onclick = async () => { agentTest.disabled = true; agentResult.textContent = 'Checking VPS → Mac ssh path…'; const result = await command('test-agent-path'); agentTest.disabled = false; agentResult.textContent = result && typeof result === 'object' ? `${result.ok ? '✓' : '✗'} ${result.detail}` : '✗ Path check failed.'; };
+  body.append(sshField, element('div', 'setting-row'), sshSave, agentSetup, agentTest, agentResult);
+  body.append(element('p', 'settings-note', 'The setup installs the Alan’s Way agent plugin on your gateway host and wires this Mac’s browser connector for the selected bot. Run once per bot.'));
   body.append(element('p', 'settings-note', 'Taking over a local tab blocks new agent actions on that tab. VPS control currently uses your existing shared desktop; it does not pause your Hermes bots.'));
   body.append(element('hr', 'section-divider'));
   const sync = element('button', 'secondary-button', 'Sync Telegram bots'); sync.onclick = () => { command('sync-telegram'); toast('Reading Telegram’s bot chat list…'); };
@@ -374,7 +385,7 @@ function showTabAccess() {
   const choices = [];
   for (const bot of orderedBots()) {
     if (bot.id === tab.botId) continue;
-    const row = element('label', 'access-choice'), checkbox = element('input'); checkbox.type = 'checkbox'; checkbox.checked = tab.allowedBots.includes(bot.id);
+    const row = element('label', 'access-choice'), checkbox = element('input'); checkbox.type = 'checkbox'; checkbox.checked = (tab.allowedBots ?? []).includes(bot.id);
     choices.push({ id: bot.id, checkbox }); row.append(checkbox, element('span', '', bot.name)); body.append(row);
   }
   const save = element('button', 'primary-button', 'Save access');

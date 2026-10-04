@@ -6,7 +6,8 @@ class CDP {
     this.pending = new Map();
     this.listeners = new Set();
     socket.addEventListener('message', (event) => {
-      const m = JSON.parse(String(event.data));
+      let m;
+      try { m = JSON.parse(String(event.data)); } catch { return; }
       if (m.id) {
         const p = this.pending.get(m.id);
         if (!p) return;

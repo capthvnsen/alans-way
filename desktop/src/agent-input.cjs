@@ -191,7 +191,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       } else if (body.action === 'scroll') {
         const viewport = await wc.executeJavaScript('({ width: innerWidth, height: innerHeight })');
         check();
-        point = { x: Math.min(tab.agentCursor?.x ?? 100, viewport.width - 1), y: Math.min(tab.agentCursor?.y ?? 100, viewport.height - 1) };
+        point = { x: Math.max(0, Math.min(tab.agentCursor?.x ?? 100, viewport.width - 1)), y: Math.max(0, Math.min(tab.agentCursor?.y ?? 100, viewport.height - 1)) };
         await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: Math.max(-2000, Math.min(2000, body.x || 0)), deltaY: Math.max(-2000, Math.min(2000, body.y || 0)) });
         await cursor(point, 'scroll');
       }

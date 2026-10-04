@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
+const { spawn } = require('node:child_process');
 const { normalizeUrl, parseRemoteUrl, requireActor, isAuthorized, sanitizeBots } = require('./core.cjs');
 const { createAvatarStore } = require('./avatar-store.cjs');
 const { createAgentInput, tintScript } = require('./agent-input.cjs');
@@ -90,7 +91,7 @@ function selectAgent(id) {
   if (tabs.has(localId)) prefs.agentLastTabs[old] = localId;
   prefs.selectedBotId = id;
   prefs.remoteControl = false;
-  const own = [...tabs.values()].filter(tab => tab.botId === id || tab.allowedBots.includes(id));
+  const own = [...tabs.values()].filter(tab => tab.botId === id || (tab.allowedBots ?? []).includes(id));
   const nextLocal = own.some(tab => tab.id === prefs.agentLastTabs[id]) ? prefs.agentLastTabs[id] : own.at(-1)?.id || 'home';
   browserReturnTabId = nextLocal;
   activeTabId = viewingVps ? 'vps' : nextLocal;
@@ -100,7 +101,7 @@ function getState() {
   return { name: app.getName(), version: app.getVersion(), bots: prefs.bots.map(bot => ({ ...bot, activity: activity.get(bot.id) })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
-    vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, allAgentTabs: prefs.allAgentTabs, handoffs: prefs.handoffs,
+    vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, allAgentTabs: prefs.allAgentTabs, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
     activeTabId, browserContentsId: tabs.get(activeTabId)?.view.webContents.id || null, browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [],
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
@@ -354,7 +355,8 @@ function registerIpc() {
         ]);
         if (!focused) throw new Error('Open a bot chat in Telegram first — no message box is available.');
         if (!tg.debugger.isAttached()) tg.debugger.attach('1.3');
-        await tg.debugger.sendCommand('Input.insertText', { text: `${title}\n${url}\n` });
+        try { await tg.debugger.sendCommand('Input.insertText', { text: `${title}\n${url}\n` }); }
+        finally { tg.debugger.detach(); }
         break;
       }
       case 'handoff': return handoffTab(value);
@@ -400,6 +402,7 @@ function registerIpc() {
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         if (typeof value.preview === 'boolean') prefs.preview = value.preview;
         if (typeof value.showBots === 'boolean') prefs.showBots = value.showBots;
+        if (typeof value.macSshHost === 'string') prefs.macSshHost = value.macSshHost.slice(0, 200).trim();
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) prefs.locationDefault = value.locationDefault;
         if (Number.isFinite(value.chatWidth)) prefs.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
         savePreferences(); applyLayout(); break;
@@ -424,6 +427,38 @@ function registerIpc() {
       case 'open-settings': win.webContents.send('workspace:settings'); break;
       case 'focus-workspace': win.webContents.send('workspace:focus-workspace'); break;
       case 'copy-connection': clipboard.writeText(JSON.stringify({ url: `http://127.0.0.1:${apiPort}`, token: API_TOKEN }, null, 2)); break;
+      case 'agent-setup': {
+        const botId = String(value?.botId || prefs.selectedBotId || '').replace(/[^0-9A-Za-z_-]/g, '');
+        if (!botId) throw new Error('Select a bot first — its ID goes in the agent config.');
+        const bot = prefs.bots.find(item => item.id === botId);
+        const macSsh = (prefs.macSshHost || '').trim();
+        clipboard.writeText([
+          "# Alan's Way agent setup — run on the host that runs your Hermes gateway",
+          'git clone https://github.com/capthvnsen/alans-way-agents && cd alans-way-agents',
+          'hermes plugins install ./proactive-primary',
+          'cp -r hooks/proactive-primary ~/.hermes/hooks/',
+          `./setup-workspace.sh --bot-id "${botId}"${bot ? ` --bot-name "${bot.name.replace(/"/g, '')}"` : ''}${macSsh ? ` --mac-ssh "${macSsh}"` : ''} --config ~/.hermes/config.yaml`,
+          '# then restart your gateway',
+        ].join('\n'));
+        break;
+      }
+      case 'test-agent-path': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        const mac = (prefs.macSshHost || '').trim();
+        if (!host) throw new Error('Save a VPS browser SSH host first.');
+        if (!mac) throw new Error('Enter this Mac’s SSH address as your VPS reaches it.');
+        return new Promise((resolve) => {
+          const child = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host,
+            `ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=yes ${mac.replace(/[\\"']/g, '')} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
+          let out = '';
+          child.stdout.on('data', chunk => { out += chunk; });
+          child.stderr.on('data', chunk => { out += chunk; });
+          child.on('error', () => resolve({ ok: false, detail: 'Could not start ssh — check local ssh access.' }));
+          child.on('close', code => resolve(out.includes('AGENT_PATH_OK')
+            ? { ok: true, detail: 'VPS reaches this Mac over ssh — agents can route here.' }
+            : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
+        });
+      }
       case 'show-data': shell.openPath(app.getPath('userData')); break;
       case 'sync-telegram': telegramView.webContents.reload(); break;
       case 'open-username': {
@@ -492,7 +527,7 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   } else {
     target=createTab({url:checkpoint.url,botId:source.botId,controller:'human',activate:false});target.handoff=handoff;
     for(let n=0;n<100;n++){if(!target.view.webContents.isLoading()&&target.view.webContents.getURL()!=='about:blank')break;await new Promise(r=>setTimeout(r,100));}
-    if(target.view.webContents.isLoading())throw new Error('Mac destination is still loading. Inspect its new tab before retrying.');
+    if(target.view.webContents.isLoading()){try{closeTab(target.id)}catch{}throw new Error('Mac destination is still loading. Its tab was closed — retry the handoff.');}
     result=await target.view.webContents.executeJavaScript(restoreExpression(checkpoint));
   }
   const record={...handoff,destinationTabId:target.id,verification:result.verification,restoredDrafts:result.restored,skippedDrafts:result.skipped};
@@ -576,8 +611,9 @@ function startApi() {
           window: { visible: win.isVisible(), focused: win.isFocused() } });
       }
       if (url.pathname === '/v1/tabs' && req.method === 'GET') {
+        if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
         if(prefs.vpsBrowser?.sshHost)await refreshVpsTabs();
-        return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage).map(describeTab).concat([...vpsTabs.values()]).filter((tab) => !botId || tab.botId === botId || tab.allowedBots.includes(botId)) });
+        return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage).map(describeTab).concat([...vpsTabs.values()]).filter((tab) => tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
       }
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
@@ -618,7 +654,8 @@ function startApi() {
   });
   apiServer.requestTimeout = 30000;
   apiServer.on('error', (error) => { apiError = error.message; broadcast(); });
-  apiServer.listen(process.env.HERMES_WORKSPACE_PORT === undefined ? 9464 : Number(process.env.HERMES_WORKSPACE_PORT), '127.0.0.1', () => {
+  const envPort = Number(process.env.HERMES_WORKSPACE_PORT);
+  apiServer.listen(Number.isInteger(envPort) && envPort > 0 && envPort < 65536 ? envPort : 9464, '127.0.0.1', () => {
     apiPort = apiServer.address().port;
     fs.writeFileSync(path.join(app.getPath('userData'), 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${apiPort}`, token: API_TOKEN, protocol: 1 }, null, 2), { mode: 0o600 });
     broadcast();

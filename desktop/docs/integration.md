@@ -32,7 +32,15 @@ SSH alias to the private VPS broker. The native VPS MCP connector uses
 and accepts only VPS opens; it remains available when the Mac is offline.
 Its Chromium/CDP endpoints stay on loopback. See [VPS setup](vps-browser.md).
 Browser IDs are trusted routing identities, not a security boundary against
-an agent with the host user's shell access.
+an agent with the host user's shell access. The same is true of the
+`X-Hermes-Human` flag on the VPS broker: anyone holding `connection.json`
+can assert it to reach `control`, `grant`, `human-actions`, and `checkpoint`
+on any tab, including human-controlled ones (a checkpoint can carry form
+drafts). Per-tab ownership and control epochs are cooperative policy for
+agents — protection against accidental cross-bot interference and stale
+actions — not a cryptographic boundary between mutually distrusting callers
+that already share the bearer token. Keep `connection.json` at mode 0600 and
+rotate the token (restart the app/host) to revoke.
 
 On `human_has_control`, wait for an explicit release. On `stale_control_epoch`, inspect current state and take a fresh snapshot before deciding whether to proceed. A timed-out form submission is uncertain; inspect the page rather than automatically repeat it. The UI must be the authority for tab access grants and human control.
 

@@ -9,8 +9,10 @@ const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontext
 const index = process.argv.indexOf('--bot-id');
 const botId = index >= 0 ? process.argv[index + 1] : '';
 if (!botId || botId.length > 100 || /[\r\n]/.test(botId)) {
-  process.stderr.write('Usage: node browser-mcp.cjs --bot-id YOUR_BOT_ID\n'); process.exit(1);
+  process.stderr.write('Usage: node browser-mcp.cjs --bot-id YOUR_BOT_ID [--bot-name DISPLAY_NAME]\n'); process.exit(1);
 }
+const nameIndex = process.argv.indexOf('--bot-name');
+const botName = encodeURIComponent(String((nameIndex >= 0 ? process.argv[nameIndex + 1] : '') || process.env.HERMES_BOT_NAME || '').slice(0, 80));
 const connectionIndex=process.argv.indexOf('--connection');
 const file = (connectionIndex>=0?process.argv[connectionIndex+1]:undefined) || process.env.HERMES_WORKSPACE_CONNECTION || path.join(os.homedir(), 'Library', 'Application Support', 'Hermes Workspace', 'connection.json');
 const objectSchema = (properties = {}, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -33,7 +35,7 @@ async function request(endpoint, method = 'GET', body) {
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !connection.token) throw new Error('Invalid local browser connection file.');
   let response;
   try {
-    response = await fetch(new URL(endpoint, url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': botId, 'Content-Type': 'application/json' },
+    response = await fetch(new URL(endpoint, url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': botId, ...(botName ? { 'X-Hermes-Bot-Name': botName } : {}), 'Content-Type': 'application/json' },
       ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(25000) });
   } catch { throw new Error('Configured browser unavailable or timed out. Inspect existing task state before retrying an action.'); }
   const data = await response.json(); if (!response.ok) throw new Error(data.error || `Browser request failed (${response.status}).`); return data;
