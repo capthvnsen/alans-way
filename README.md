@@ -63,13 +63,32 @@ To package a double-clickable app: `npm run package:mac` (see the [desktop guide
 
 ## Connect your agents
 
-In the app: **Settings → Agent setup**.
+In the app: **Settings → Agent setup** — the checklist shows what's already done.
 
-1. Enter this Mac's SSH address (how your VPS reaches it — Tailscale name or IP).
-2. Click **Test agent path** — the app verifies VPS → Mac SSH end-to-end.
-3. Click **Copy agent setup** — run the pasted commands on your VPS once per bot.
+1. Fill in both SSH addresses (your VPS, and how the VPS reaches this Mac — Tailscale name or IP).
+2. Click **Copy setup command** and paste it in a terminal on the VPS — one bootstrap installs the plugin, wires the browser, restarts the gateway, and offers to bind your primary bot. (Never configured Telegram on Hermes? The bootstrap walks you through the QR-code setup.)
+3. Click **Test agent path** — the app verifies VPS → Mac SSH end-to-end.
 
 That's it. The bot gets a `workspace_browser` tool that opens tabs you can watch.
+
+**Or let an agent do it.** If a Hermes agent already has a terminal on your VPS, paste it this prompt — it sets up Tailscale between the machines if needed, runs the same bootstrap, and reports back:
+
+```text
+Set up Alan's Way on this machine and connect it to my Mac.
+1. If Tailscale isn't installed or connected here, install it
+   (tailscaled + `tailscale up`). Tell me this machine's tailnet name/IP.
+   My Mac's SSH address is: <your-mac-tailscale>
+2. git clone https://github.com/capthvnsen/alans-way-agents
+3. Run: ./alans-way-agents/setup.sh --bot-id <your-telegram-bot-id> \
+     --mac-ssh '<your-mac-tailscale>' --restart
+   Answer its prompts; if it asks to bind a primary route, pick the bot
+   matching this chat.
+4. Then run ./alans-way-agents/setup.sh --verify and report the summary.
+   If the VPS needs a desktop/VNC stack, tell me the exact apt commands —
+   don't install it yourself.
+```
+
+The same prompt lives in [docs/setup-prompt.md](https://github.com/capthvnsen/alans-way-agents/blob/main/docs/setup-prompt.md), and the plugin's `workspace-setup` skill teaches installed agents the playbook.
 
 ## Upgrading
 
