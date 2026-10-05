@@ -64,6 +64,9 @@ a private network address the VPS can reach (Tailscale recommended).
 
 Then collect `MAC_SSH` = `<mac-user>@<mac-tailscale-name>`. Get the user with
 `whoami` on the Mac and the name with `tailscale status --self` (first line).
+Also collect `MAC_TZ`, the human's timezone for the bot's quiet hours:
+`readlink /etc/localtime | sed 's#.*zoneinfo/##'` on the Mac (for example
+`Europe/Berlin`).
 
 On the VPS, install a key and record the Mac's host key (the browser tools
 connect with `BatchMode=yes` and `StrictHostKeyChecking=yes`):
@@ -93,7 +96,7 @@ On the VPS:
 
 ```sh
 git clone https://github.com/capthvnsen/alans-way-agents ~/alans-way-agents || git -C ~/alans-way-agents pull
-~/alans-way-agents/setup.sh --bot-id <BOT_ID> --mac-ssh "$MAC_SSH" --restart
+~/alans-way-agents/setup.sh --bot-id <BOT_ID> --mac-ssh "$MAC_SSH" --timezone "$MAC_TZ" --restart
 ```
 
 The script is safe to re-run. It installs the plugin and gateway hook, clones
@@ -106,7 +109,11 @@ primary bot. Answer its prompts:
   in the terminal with Telegram to create or link the bot."
 - "Bind a primary route?" — pick the bot this setup is for. If it says there
   are no Telegram DM sessions yet, ask the human to send the bot one message,
-  then run `~/alans-way-agents/setup.sh --bind`.
+  then run `~/alans-way-agents/setup.sh --bind --timezone "$MAC_TZ"`.
+- "Turn proactive messages on now?" — do not answer this yourself.
+  **Human step — ask them:** "Should your bot be allowed to message you first,
+  with check-ins and follow-ups (at most a few a day, never 22:00–08:00)?" Answer
+  with their choice. If they say no, they can send `/proactivity resume` later.
 
 If it prints `no Xvfb/x11vnc detected`, the cloud browser has no display yet.
 Do not install a desktop stack on your own. **Human step — tell them:** the
@@ -132,7 +139,7 @@ human.
    Expect a tab with the bot's named cursor to appear on the right and the bot
    to reply "Example Domain".
 3. **Human step — tell them:** "Send `/proactivity status` to the bot." Expect
-   it to report the route as bound.
+   it to report the route as bound, and on if they chose proactive messages.
 
 Report to the human: what passed, every warning, and anything you skipped.
 
