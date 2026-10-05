@@ -76,7 +76,7 @@ function isVpsTab(id) { return vpsTabs.has(id); }
 async function refreshVpsTabs() {
   if (!prefs?.vpsBrowser?.sshHost || vpsRefreshBusy) return;
   vpsRefreshBusy = true;
-  try { const wasVps=vpsTabs.has(activeTabId); const data = await vpsBrowser.request('/v1/tabs', 'GET', undefined, { human: true }); vpsTabs.clear(); data.tabs.forEach(tab => vpsTabs.set(tab.id, tab)); if(wasVps&&!vpsTabs.has(activeTabId)){prefs.remoteControl=false;activeTabId='home';applyLayout();} vpsBrowserStatus = 'connected'; }
+  try { const wasVps=vpsTabs.has(activeTabId); const data = await vpsBrowser.request('/v1/tabs', 'GET', undefined, { human: true }); vpsTabs.clear(); data.tabs.forEach(tab => { vpsTabs.set(tab.id, tab); resolveFavicon(tab, [tab.favicon]).catch(() => {}); }); if(wasVps&&!vpsTabs.has(activeTabId)){prefs.remoteControl=false;activeTabId='home';applyLayout();} vpsBrowserStatus = 'connected'; }
   catch { vpsBrowserStatus = 'disconnected'; }
   finally { vpsRefreshBusy = false; broadcast(); }
 }
@@ -217,6 +217,24 @@ function configureContents(contents, isTelegram = false) {
 function isExtensionUrl(value) {
   try { const url = new URL(value); return url.protocol === 'chrome-extension:' && !url.username && !url.password && !!session.fromPartition('persist:browser').extensions.getExtension(url.hostname); } catch { return false; }
 }
+const faviconCache = new Map();
+async function resolveFavicon(tab, favicons) {
+  const seq = (tab.faviconSeq = (tab.faviconSeq || 0) + 1);
+  const apply = (value) => { if (tab.faviconSeq === seq && value !== tab.favicon) { tab.favicon = value; broadcast(); } };
+  const url = favicons.find((item) => /^https?:\/\//i.test(item));
+  if (!url) return apply(favicons.find((item) => item && item !== 'data:,') || '');
+  if (faviconCache.has(url)) return apply(faviconCache.get(url));
+  try {
+    const response = await session.fromPartition('persist:browser').fetch(url);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (!response.ok || !buffer.length || buffer.length > 262144) return apply('');
+    const mime = response.headers.get('content-type')?.split(';')[0]?.trim() || (url.endsWith('.ico') ? 'image/x-icon' : 'image/png');
+    const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`;
+    if (faviconCache.size > 300) faviconCache.clear();
+    faviconCache.set(url, dataUrl);
+    apply(dataUrl);
+  } catch { apply(''); }
+}
 function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared', controller = 'human', options, skipLoad = false, activate = true, extensionPage = false } = {}) {
   if (tabs.size >= 40) throw new Error('Close a tab before opening another.');
   const targetUrl = extensionPage && isExtensionUrl(url) ? url : normalizeUrl(url);
@@ -246,7 +264,7 @@ function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
   view.webContents.on('did-stop-loading', () => { tab.loading = false; savePreferences(); broadcast(); });
   view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.generation++; if (tab.controller === 'agent') view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); broadcast(); });
-  view.webContents.on('page-favicon-updated', (event, favicons) => { tab.favicon = favicons[0] || ''; broadcast(); });
+  view.webContents.on('page-favicon-updated', (event, favicons) => { resolveFavicon(tab, favicons).catch(() => {}); });
   view.webContents.on('did-navigate-in-page', () => { tab.refs.clear(); tab.generation++; broadcast(); });
   view.webContents.on('did-fail-load', (_e, code, description, _url, isMainFrame) => {
     if (isMainFrame && code !== -3) { tab.error = description; tab.loading = false; broadcast(); }
