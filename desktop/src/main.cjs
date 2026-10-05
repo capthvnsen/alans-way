@@ -303,7 +303,8 @@ function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared
   view.webContents.on('render-process-gone', () => { tab.error = 'This page stopped. Reload to reconnect.'; broadcast(); });
   // Pages can close themselves (OAuth popups end with window.close()); once the
   // webContents is gone the tab is a zombie — route it through normal cleanup.
-  view.webContents.on('destroyed', () => { if (tabs.has(tab.id)) closeTab(tab.id); });
+  // During teardown the hosts are already gone and cleanup only throws.
+  view.webContents.on('destroyed', () => { if (!isQuitting && tabs.has(tab.id)) closeTab(tab.id); });
   if (activate) { prefs.remoteControl = false; activeTabId = tab.id; }
   applyLayout(); broadcast();
   if (!skipLoad) view.webContents.loadURL(targetUrl).catch(() => {});
