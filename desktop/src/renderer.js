@@ -113,7 +113,7 @@ function renderExtensions() {
   const items = state.extensions || [], signature = JSON.stringify(items);
   let actions = $('native-extension-actions');
   if (!actions) {
-    actions = element('browser-action-list'); actions.id = 'native-extension-actions'; actions.setAttribute('partition', 'persist:browser'); actions.setAttribute('alignment', 'bottom right'); $('pinned-extensions').append(actions);
+    actions = element('browser-action-list'); actions.id = 'native-extension-actions'; actions.setAttribute('partition', 'persist:browser'); actions.setAttribute('alignment', 'bottom'); $('pinned-extensions').append(actions);
     actions.addEventListener('click', event => {
       const button = event.composedPath().find(node => node.tagName === 'BUTTON'), item = state.extensions.find(item => item.id === button?.id);
       if (item) { event.preventDefault(); event.stopImmediatePropagation(); openExtension(item, button); }

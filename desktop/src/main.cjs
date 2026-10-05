@@ -327,7 +327,7 @@ async function openExtension(key, anchor) {
   // An extension popup may fill the page. Invalidate new agent actions first.
   if (tab) { changeController(tab.id, 'human'); await tab.queue; }
   if (activeTabId !== targetId || (tab && !tabs.has(tab.id))) throw new Error('The selected tab changed. Open the extension again on the intended tab.');
-  const details = { eventType: 'click', extensionId: item.id, tabId: tab.view.webContents.id, alignment: 'bottom right',
+  const details = { eventType: 'click', extensionId: item.id, tabId: tab.view.webContents.id, alignment: 'bottom',
     anchorRect: { x: Number.isFinite(anchor?.x) ? anchor.x - 28 : win.getContentBounds().width - 90, y: Number.isFinite(anchor?.y) ? anchor.y - 28 : 100, width: 28, height: 28 } };
   await win.webContents.executeJavaScript(`window.browserAction.activate('persist:browser', ${JSON.stringify(details)})`);
 }
@@ -709,8 +709,6 @@ function startApi() {
         const appearance = await telegramView.webContents.executeJavaScript(`(() => ({
           styled: document.body.classList.contains('hw-chat'),
           composerCount: document.querySelectorAll('.Composer').length,
-          composerRect: (() => { const r = document.querySelector('#MiddleColumn .Composer, .Composer')?.getBoundingClientRect(); return r ? Math.round(r.width) + 'x' + Math.round(r.height) : ''; })(),
-          typingDom: [...document.querySelectorAll('#MiddleColumn [class*="yping"], #MiddleColumn .user-status, #MiddleColumn .status, #MiddleColumn .info')].slice(0, 8).map(el => el.outerHTML.slice(0, 300)),
           middleClasses: document.querySelector('#MiddleColumn')?.className || '',
           middleChildren: [...(document.querySelector('#MiddleColumn')?.children || [])].map(el => ({ tag: el.tagName, id: el.id, className: String(el.className), background: getComputedStyle(el).backgroundImage, display: getComputedStyle(el).display })),
         }))()`).catch(() => ({}));
