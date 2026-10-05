@@ -227,13 +227,24 @@ async function serve() {
     if (body.action === 'wait') {
       const selector = String(body.selector || '').slice(0, 2000);
       const text = String(body.text || '').slice(0, 2000);
+      const urlPart = String(body.url || '').slice(0, 2000);
+      const visible = body.visible === true;
       const timeout = Math.min(Math.max(Number(body.timeout) || 10000, 100), 30000);
-      if (!selector && !text) throw fail('wait needs a selector or text to wait for.');
+      if (!selector && !text && !urlPart) throw fail('wait needs a selector, text, or url to wait for.');
       const code = `new Promise((resolve) => {
-        const sel = ${JSON.stringify(selector)}, txt = ${JSON.stringify(text)};
+        const sel = ${JSON.stringify(selector)}, txt = ${JSON.stringify(text)}, urlP = ${JSON.stringify(urlPart)}, vis = ${visible};
         const deadline = Date.now() + ${timeout};
         const check = () => {
-          if (sel && !document.querySelector(sel)) return false;
+          if (urlP && !location.href.includes(urlP)) return false;
+          if (sel) {
+            const el = document.querySelector(sel);
+            if (!el) return false;
+            if (vis) {
+              const r = el.getBoundingClientRect();
+              if (!r.width || !r.height) return false;
+              if (el.checkVisibility && !el.checkVisibility({ checkVisibilityCSS: true })) return false;
+            }
+          }
           if (txt && !(document.body && document.body.innerText.includes(txt))) return false;
           return true;
         };
@@ -250,7 +261,7 @@ async function serve() {
         wc.executeJavaScript(code),
         new Promise((_, reject) => setTimeout(() => reject(fail('wait host timed out.', 408)), timeout + 5000)),
       ]);
-      if (!value || !value.found) throw fail(`wait timed out after ${value ? value.waited : timeout}ms for ${selector ? `selector ${JSON.stringify(selector)}` : `text ${JSON.stringify(text.slice(0, 80))}`}. Snapshot the page to see its current state.`, 408);
+      if (!value || !value.found) throw fail(`wait timed out after ${value ? value.waited : timeout}ms for ${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`, 408);
       return { waited: value.waited, dispatched: true };
     }
     if (['click', 'type', 'press', 'move', 'scroll'].includes(body.action)) await input.perform(tab, body, botId);

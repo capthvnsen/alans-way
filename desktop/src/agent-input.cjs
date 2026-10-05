@@ -141,26 +141,32 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         point = await wc.executeJavaScript(`(() => {
           let el = null;
           try { el = document.querySelector(${JSON.stringify(body.ref ? `[data-hermes-workspace-ref="${body.ref}"]` : body.selector)}); } catch {}
-          if (!el || el.disabled || el.closest('[inert]')) return null;
+          if (!el || el.disabled || el.closest('[inert]')) return { fail: 'missing or disabled' };
           el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
           const r = el.getBoundingClientRect();
-          const x = Math.max(0, r.left) + (Math.min(innerWidth, r.right) - Math.max(0, r.left)) / 2;
-          const y = Math.max(0, r.top) + (Math.min(innerHeight, r.bottom) - Math.max(0, r.top)) / 2;
-          if (!r.width || !r.height || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return null;
-          const hit = document.elementFromPoint(x, y);
-          if (!hit || (hit !== el && !el.contains(hit))) return null;
+          const l = Math.max(0, r.left), t = Math.max(0, r.top), rr = Math.min(innerWidth, r.right), b = Math.min(innerHeight, r.bottom);
+          const w = rr - l, h = b - t;
+          if (!r.width || !r.height || w <= 0 || h <= 0) return { fail: 'no visible area' };
+          let point = null, coveredBy = '';
+          for (const [fx, fy] of [[.5,.5],[.5,.25],[.5,.75],[.25,.5],[.75,.5],[.2,.2],[.8,.2],[.2,.8],[.8,.8]]) {
+            const x = Math.round(l + w * fx), y = Math.round(t + h * fy);
+            const hit = document.elementFromPoint(x, y);
+            if (hit && (hit === el || el.contains(hit))) { point = { x, y }; break; }
+            if (hit && !coveredBy && !el.contains(hit)) coveredBy = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/)[0] : '');
+          }
+          if (!point) return { fail: coveredBy ? 'covered by ' + coveredBy : 'no clickable point' };
           if (${body.action === 'type' || body.action === 'press'}) {
-            if (${body.action === 'type'} && !(el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(el.type)) || el.readOnly) return null;
+            if (${body.action === 'type'} && !(el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(el.type)) || el.readOnly) return { fail: 'element cannot accept text' };
             el.focus({ preventScroll: true });
             if (${body.action === 'type'}) {
               if (typeof el.select === 'function') el.select();
               else { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
             }
           }
-          return { x: Math.round(x), y: Math.round(y), hl: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) } };
+          return { ...point, hl: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) } };
         })()`);
         check();
-        if (!point) throw fail('Element is unavailable, covered, or cannot accept this input. Request a fresh snapshot.');
+        if (!point || point.fail) throw fail(`Element is ${point ? point.fail : 'unavailable'} — request a fresh snapshot or use a different selector.`);
       } else if (body.action === 'move' || body.action === 'click') {
         const viewport = await wc.executeJavaScript('({ width: innerWidth, height: innerHeight })');
         check();

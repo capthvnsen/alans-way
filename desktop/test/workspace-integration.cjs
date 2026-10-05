@@ -231,6 +231,24 @@ app.whenReady().then(async () => {
   ] }, 'overseer-bot');
   assert.equal(typed.results[1].value, 'via selector', 'type by selector produces real field input.');
   console.log('PASS: selector-targeted typing inside a self-contained batch.');
+  // wait honors a visibility requirement and a url condition; clicks hit a
+  // covered element through an alternate point and name the blocker when it
+  // cannot be clicked at all.
+  await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: `document.body.insertAdjacentHTML('beforeend','<div id=hid style="display:none;width:10px;height:10px"></div><button id=cov onclick="window.__n=(window.__n||0)+1" style="position:fixed;left:80px;top:80px;width:140px;height:60px;z-index:1">x</button><div id=blk style="position:fixed;left:120px;top:90px;width:60px;height:40px;z-index:9;background:#000"></div>')`, epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.equal((await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', selector: '#hid', visible: true, timeout: 400, epoch: seizedTab.epoch }, 'overseer-bot')).status, 408, 'visible wait rejects a display:none element.');
+  const visibleWait = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'batch', epoch: seizedTab.epoch, steps: [
+    { action: 'eval', code: "setTimeout(() => document.getElementById('hid').style.display='block', 300), 1" },
+    { action: 'wait', selector: '#hid', visible: true, timeout: 5000 },
+  ] }, 'overseer-bot');
+  assert.ok(visibleWait.results[1].waited >= 250, `wait observed the element becoming visible (${visibleWait.results[1].waited}ms).`);
+  const urlWait = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', url: '/blue', timeout: 3000, epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.ok(urlWait.waited < 1000, 'url wait resolves on the current location.');
+  const covered = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'click', selector: '#cov', epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.equal(covered.dispatched, true, 'Click lands on an uncovered point of a partially covered element.');
+  assert.equal((await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: 'window.__n', epoch: seizedTab.epoch }, 'overseer-bot')).value, 1, 'The covered-button click registered.');
+  const blocked = await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'click', selector: '#nonexistent', epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.equal(blocked.status, 400, 'A missing element reports a named failure.');
+  console.log('PASS: wait visible/url conditions and covered-element clicks via alternate points.');
   // The designated primary bot pins to the top of the sidebar with a PRIMARY
   // badge; with no explicit pick the overseer bot is the primary.
   state = await invoke('settings', { primaryBotId: '123' });
