@@ -23,18 +23,34 @@ function isActivityAvailable() {
 function publishActivityAvailability() { sendActivity(isActivityAvailable() ? 'ready' : 'unavailable'); }
 
 // "Working" indicator: a soft green glow orbiting the text-box border of the
-// open bot chat. Typing actions come straight from the worker stream; browser
-// work is pushed from the main process on workspace:bot-activity.
-const typingActivity = new Map();
+// open bot chat. The typing signal tracks Telegram's own .typing-status
+// element in the chat header — it exists exactly while Telegram's native
+// typing animation does. Local agent-tab work arrives separately on
+// workspace:bot-activity, since it emits no chat action.
 let workActivity = {};
-const TYPING_TTL_MS = 8000;
+let middleObserver, middleObserved;
+function nativeTyping() { return !!document.querySelector('#MiddleColumn .typing-status'); }
+function watchTypingStatus() {
+  const column = document.getElementById('MiddleColumn');
+  if (!column) return;
+  if (middleObserver) {
+    if (middleObserved === column) return;
+    middleObserver.disconnect();
+  }
+  let was = nativeTyping();
+  middleObserver = new MutationObserver(() => {
+    const is = nativeTyping();
+    if (is !== was) { was = is; renderAgentBubble(); }
+  });
+  middleObserver.observe(column, { childList: true, subtree: true });
+  middleObserved = column;
+}
 function renderAgentBubble() {
   const chatId = location.hash.slice(1).split('_')[0] || '';
-  const now = Date.now();
-  for (const [id, at] of typingActivity) if (at + TYPING_TTL_MS <= now) typingActivity.delete(id);
-  const live = typingActivity.has(chatId) || Object.hasOwn(workActivity, chatId);
+  const typing = nativeTyping();
+  const working = Object.hasOwn(workActivity, chatId);
   let ring = document.querySelector('.hw-work-ring');
-  if (!chatId || !live || !activityConnected) { ring?.remove(); return; }
+  if (!chatId || (!typing && !working) || !activityConnected) { ring?.remove(); return; }
   const composer = document.querySelector('#MiddleColumn .Composer, .Composer');
   if (!composer) { ring?.remove(); return; }
   if (!ring) {
@@ -47,7 +63,7 @@ function renderAgentBubble() {
   ring.style.top = `${Math.round(rect.top - 5)}px`;
   ring.style.width = `${Math.round(rect.width + 10)}px`;
   ring.style.height = `${Math.round(rect.height + 10)}px`;
-  ring.title = typingActivity.has(chatId) ? 'Bot is typing in Telegram' : 'Bot is working in a workspace tab';
+  ring.title = typing ? 'Bot is typing in Telegram' : 'Bot is working in a workspace tab';
 }
 function receiveTelegramActivity(update) {
   if (!update || typeof update !== 'object') return;
@@ -67,7 +83,6 @@ function receiveTelegramActivity(update) {
       if (!isActivityAvailable() || !/^\d{1,20}$/.test(update.botId) || update.actorId !== update.botId ||
         (update.action !== 'cancel' && !telegramActions.has(update.action))) return;
       sendActivity('action', { botId: update.botId, actorId: update.actorId, action: update.action });
-      if (update.action === 'cancel') typingActivity.delete(update.botId); else typingActivity.set(update.botId, Date.now());
       renderAgentBubble();
       return;
     default: return;
@@ -230,10 +245,11 @@ async function sync() {
       const row = link.closest('.Chat, .ListItem') || link;
       row.style.display = botIds.has(id) ? '' : 'none';
     });
+    watchTypingStatus();
     const packet = { status, accountId: cached?.currentUserId ? String(cached.currentUserId) : '', bots, selectedId: selectedBot ? selectedId : '',
       diagnostics: { userCount: Object.keys(users).length, botCount: Object.values(users).filter(user => user?.isBot === true || user?.type === 'userTypeBot' || user?.type === 'bot').length, chatCount: Object.keys(chats).length,
         chatNodes: links.length, storeKeys: cached ? Object.keys(cached) : [], lastIds: bots.map(bot => [bot.id, chats[bot.id]?.lastMessageId || 0]), dbDiag,
-        agentBubble: !!document.querySelector('.hw-work-ring'), workBots: Object.keys(workActivity), openChat: location.hash.slice(1).split('_')[0] || '',
+        agentBubble: !!document.querySelector('.hw-work-ring'), nativeTyping: nativeTyping(), workBots: Object.keys(workActivity), openChat: location.hash.slice(1).split('_')[0] || '',
         userFields: Object.keys(Object.values(users)[0] || {}), usersFields: Object.keys(cached?.users || {}), chatsFields: Object.keys(cached?.chats || {}) } };
     const signature = JSON.stringify(packet);
     if (signature !== previous) { previous = signature; ipcRenderer.send('telegram:catalog', packet); }

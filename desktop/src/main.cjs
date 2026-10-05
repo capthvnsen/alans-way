@@ -709,6 +709,8 @@ function startApi() {
         const appearance = await telegramView.webContents.executeJavaScript(`(() => ({
           styled: document.body.classList.contains('hw-chat'),
           composerCount: document.querySelectorAll('.Composer').length,
+          composerRect: (() => { const r = document.querySelector('#MiddleColumn .Composer, .Composer')?.getBoundingClientRect(); return r ? Math.round(r.width) + 'x' + Math.round(r.height) : ''; })(),
+          typingDom: [...document.querySelectorAll('#MiddleColumn [class*="yping"], #MiddleColumn .user-status, #MiddleColumn .status, #MiddleColumn .info')].slice(0, 8).map(el => el.outerHTML.slice(0, 300)),
           middleClasses: document.querySelector('#MiddleColumn')?.className || '',
           middleChildren: [...(document.querySelector('#MiddleColumn')?.children || [])].map(el => ({ tag: el.tagName, id: el.id, className: String(el.className), background: getComputedStyle(el).backgroundImage, display: getComputedStyle(el).display })),
         }))()`).catch(() => ({}));
