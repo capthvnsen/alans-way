@@ -1,9 +1,12 @@
+const crypto = require('node:crypto');
+
 function snapshotExpression(generation, opts = {}) {
   const int = (value, min, max, fallback) => Number.isInteger(value) ? Math.max(min, Math.min(max, value)) : fallback;
   const maxChars = int(opts.maxChars, 0, 20000, 6000);
   const maxElements = int(opts.maxElements, 0, 300, 150);
   const maxScan = int(opts.maxScan, 1, 50000, 2000);
   const textMs = int(opts.textMs, 5, 2000, 60);
+  const keep = int(opts.keep, 0, Number.MAX_SAFE_INTEGER, -1);
   return `(() => {
     const items = [];
     const deadline = performance.now() + ${textMs};
@@ -18,7 +21,9 @@ function snapshotExpression(generation, opts = {}) {
         : (s => s.visibility === 'hidden' || s.display === 'none')(getComputedStyle(el))) continue;
       const r = el.getBoundingClientRect();
       if (!r.width || !r.height) continue;
-      const ref = 's${generation}-' + (items.length + 1); el.setAttribute('data-hermes-workspace-ref',ref);
+      const ref = 's${generation}-' + (items.length + 1);
+      const kept = (el.getAttribute('data-hermes-workspace-ref') || '').split(' ').filter(token => token.startsWith('s${keep}-'));
+      el.setAttribute('data-hermes-workspace-ref', [...kept, ref].join(' '));
       items.push({ref,role:el.getAttribute('role') || el.tagName.toLowerCase(),name:(el.getAttribute('aria-label') || el.labels?.[0]?.innerText || el.innerText || el.placeholder || el.title || '').trim().slice(0,200),type:el.type || '',value:el.type === 'password' ? '[password]' : String(el.value || '').slice(0,200),href:el.href || '',disabled:!!el.disabled});
     }
     // body.innerText pays a full-document render pass regardless of the slice;
@@ -40,6 +45,23 @@ function snapshotExpression(generation, opts = {}) {
     } else textCut = ${maxChars} <= 0 && !!document.body?.textContent?.trim();
     return {title:document.title,url:location.href,text,elements:items,truncated:{text:textCut,elements:scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:el.title,src:el.src})).slice(0,20)};
   })()`;
+}
+
+function snapshotHash(data) {
+  const hash = crypto.createHash('sha1');
+  for (const part of [data.url, data.title, data.text]) hash.update(part || '').update('\0');
+  return hash.update(JSON.stringify(data.elements.map(({ ref, ...rest }) => rest))).digest('hex');
+}
+// An unchanged reply carries no elements, so the agent keeps acting on refs
+// from its last full snapshot (`base`); the page keeps those tokens too.
+function settleSnapshot(tab, data, generation, since) {
+  const hash = snapshotHash(data), previous = tab.snapshotStamp;
+  const unchanged = !!previous && since !== undefined && previous.generation === since && previous.hash === hash;
+  const base = unchanged ? previous.base : generation;
+  tab.snapshotStamp = { generation, hash, base };
+  tab.refs = new Set(data.elements.map((item) => item.ref));
+  if (unchanged) for (let index = 1; index <= data.elements.length; index++) tab.refs.add(`s${base}-${index}`);
+  return unchanged ? { unchanged: true, generation } : { ...data, generation };
 }
 
 function checkpointExpression(includeDrafts) {
@@ -79,4 +101,4 @@ function restoreExpression(checkpoint) {
     return {verification:restored === c.drafts.length ? 'ready' : 'review_required',restored,skipped:c.drafts.length-restored};
   })()`;
 }
-module.exports = { snapshotExpression, checkpointExpression, restoreExpression };
+module.exports = { snapshotExpression, settleSnapshot, checkpointExpression, restoreExpression };

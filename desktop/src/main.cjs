@@ -10,7 +10,7 @@ const { createAvatarStore } = require('./avatar-store.cjs');
 const { createAgentInput, tintScript, botAccent } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
-const { snapshotExpression, checkpointExpression, restoreExpression } = require('./browser-page.cjs');
+const { snapshotExpression, settleSnapshot, checkpointExpression, restoreExpression } = require('./browser-page.cjs');
 const { createVpsBrowser } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { ElectronChromeExtensions } = require('electron-chrome-extensions');
@@ -662,30 +662,18 @@ const intParam = (url, key, min, max) => {
   if (!Number.isInteger(value)) throw Object.assign(new Error(`${key} must be an integer.`), { status: 400 });
   return Math.max(min, Math.min(max, value));
 };
-function snapshotHash(result) {
-  const hash = crypto.createHash('sha1');
-  hash.update(result.url || ''); hash.update('\0'); hash.update(result.title || ''); hash.update('\0');
-  hash.update(result.text || ''); hash.update('\0');
-  hash.update(JSON.stringify(result.elements.map(({ ref, ...rest }) => rest)));
-  return hash.digest('hex');
-}
 async function snapshot(tab, opts = {}) {
   const work = tab.queue.then(async () => {
     const generation = ++tab.generation;
+    let timer;
     // A wedged renderer leaves executeJavaScript pending forever; bound it so
     // a snapshot can never outlive the connector's own timeout.
     const result = await Promise.race([
-      tab.view.webContents.executeJavaScript(snapshotExpression(generation, opts)),
-      new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000)),
-    ]);
+      tab.view.webContents.executeJavaScript(snapshotExpression(generation, { ...opts, keep: tab.snapshotStamp?.base })),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000); }),
+    ]).finally(() => clearTimeout(timer));
     if (!result || !Array.isArray(result.elements)) throw Object.assign(new Error('Snapshot returned no page data.'), { status: 503 });
-    tab.refs = new Set(result.elements.map((item) => item.ref));
-    const hash = snapshotHash(result);
-    const previous = tab.snapshotStamp;
-    tab.snapshotStamp = { generation, hash };
-    if (previous && opts.since !== undefined && previous.generation === opts.since && previous.hash === hash)
-      return { unchanged: true, generation, tab: describeTab(tab) };
-    return { ...result, generation, tab: describeTab(tab) };
+    return { ...settleSnapshot(tab, result, generation, opts.since), tab: describeTab(tab) };
   });
   tab.queue = work.catch(() => {});
   return work;

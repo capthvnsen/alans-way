@@ -217,7 +217,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       if (body.ref || body.selector) {
         point = await wc.executeJavaScript(`(() => {
           let el = null;
-          try { el = document.querySelector(${JSON.stringify(body.ref ? `[data-hermes-workspace-ref="${body.ref}"]` : body.selector)}); } catch {}
+          try { el = document.querySelector(${JSON.stringify(body.ref ? `[data-hermes-workspace-ref~="${body.ref}"]` : body.selector)}); } catch {}
           if (!el || el.disabled || el.closest('[inert]')) return { fail: 'missing or disabled' };
           el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
           const r = el.getBoundingClientRect();
