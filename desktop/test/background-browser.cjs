@@ -35,7 +35,7 @@ async function poll(predicate) {
   await tool('workspace_browser_action', { tabId: tab.id, epoch: tab.epoch, action: 'click', ref: snap.elements.find(el => el.name === 'Confirm test').ref });
   snap = await poll(s => s.text.includes('Confirmed: Background input works'));
   let screenshot = false, screenshotError = '';
-  try { const shot = await tool('workspace_browser_screenshot', { tabId: tab.id }); screenshot = shot.mimeType === 'image/png' && Buffer.from(shot.data, 'base64').length > 1000; }
+  try { const shot = await tool('workspace_browser_screenshot', { tabId: tab.id, format: 'png' }); screenshot = shot.mimeType === 'image/png' && Buffer.from(shot.data, 'base64').length > 1000; }
   catch (error) { screenshotError = error.message; }
   const verdict = { replacementTyping: typed === 'Background input works', click: snap.text.includes('Confirmed: Background input works'), screenshot, screenshotError };
   console.log(JSON.stringify(verdict));

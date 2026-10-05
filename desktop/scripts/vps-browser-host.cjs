@@ -21,6 +21,13 @@ function write(file, data) {
   fs.renameSync(file + '.tmp', file);
 }
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
+const intParam = (url, key, min, max) => {
+  const raw = url.searchParams.get(key);
+  if (raw === null) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value)) throw fail(`${key} must be an integer.`);
+  return Math.max(min, Math.min(max, value));
+};
 const overseerBots = new Set(
   String(process.env.HERMES_OVERSEER_BOT_IDS || '')
     .split(',')
@@ -404,23 +411,62 @@ async function serve() {
       if (!human) tab.lastAgentActivity = Date.now();
       if (req.method === 'GET' && m[2] === 'snapshot') {
         if (!human) requireAgentRead(tab);
-        const data = await wc.executeJavaScript(snapshotExpression(++tab.generation));
-        tab.refs = new Set(data.elements.map((e) => e.ref));
-        tab.url = data.url;
-        tab.title = data.title;
-        return send(200, { ...data, tab: describe(tab) });
+        const opts = {
+          maxChars: intParam(url, 'maxChars', 0, 20000),
+          maxElements: intParam(url, 'maxElements', 0, 300),
+          since: intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER),
+        };
+        const work = tab.queue.then(async () => {
+          const generation = ++tab.generation;
+          const data = await Promise.race([
+            wc.executeJavaScript(snapshotExpression(generation, opts)),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(fail('Snapshot timed out after 10s. The page may be unresponsive.', 503)), 10000)),
+          ]);
+          if (!data || !Array.isArray(data.elements)) throw fail('Snapshot returned no page data.', 503);
+          tab.refs = new Set(data.elements.map((e) => e.ref));
+          tab.url = data.url;
+          tab.title = data.title;
+          const hash = crypto
+            .createHash('sha1')
+            .update(data.url || '')
+            .update('\0')
+            .update(data.title || '')
+            .update('\0')
+            .update(data.text || '')
+            .update('\0')
+            .update(JSON.stringify(data.elements.map(({ ref, ...rest }) => rest)))
+            .digest('hex');
+          const previous = tab.snapshotStamp;
+          tab.snapshotStamp = { generation, hash };
+          if (previous && opts.since !== undefined && previous.generation === opts.since && previous.hash === hash)
+            return { unchanged: true, generation, tab: describe(tab) };
+          return { ...data, generation, tab: describe(tab) };
+        });
+        tab.queue = work.catch(() => {});
+        return send(200, await work);
       }
       if (req.method === 'GET' && m[2] === 'screenshot') {
         if (!human) requireAgentRead(tab);
-        const capture = tab.queue.then(async () => ({
-          shot: await wc.command('Page.captureScreenshot', { format: 'png', fromSurface: true }),
-          viewport: await wc.executeJavaScript(
+        const format = url.searchParams.get('format') ?? 'jpeg';
+        if (!['jpeg', 'png', 'webp'].includes(format)) throw fail('format must be jpeg, png, or webp.');
+        const quality = intParam(url, 'quality', 1, 100) ?? 70;
+        const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 1280;
+        const capture = tab.queue.then(async () => {
+          const viewport = await wc.executeJavaScript(
             '({width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio})',
-          ),
-        }));
+          );
+          // No resize post-capture here: clip.scale is the downscale knob,
+          // keeping the emitted image at maxWidth pixels when it would exceed it.
+          const dsf = viewport.deviceScaleFactor || 1;
+          const scale = viewport.width * dsf > maxWidth ? Math.max(0.01, maxWidth / viewport.width) : dsf;
+          const params = { format, fromSurface: true, clip: { x: 0, y: 0, width: viewport.width, height: viewport.height, scale } };
+          if (format !== 'png') params.quality = quality;
+          return { shot: await wc.command('Page.captureScreenshot', params), viewport };
+        });
         tab.queue = capture.catch(() => {});
         const { shot, viewport } = await capture;
-        return send(200, { base64: shot.data, mimeType: 'image/png', viewport, tab: describe(tab) });
+        return send(200, { base64: shot.data, mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], viewport, tab: describe(tab) });
       }
       if (req.method === 'POST' && m[2] === 'actions') {
         const body = await read(req);

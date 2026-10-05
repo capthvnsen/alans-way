@@ -35,7 +35,9 @@ test('pointer and keyboard dispatch only to the assigned tab, in order, with a s
   ]);
   assert.equal(f.tab.agentCursor.action, 'click');
   assert.ok(f.scripts.some(code => code.includes('pointer-events:none')));
-  assert.deepEqual(f.calls.filter(call => call.method === 'Emulation.setFocusEmulationEnabled').map(call => call.enabled), [true, false]);
+  // Focus emulation is enabled once and held for the tab's agent lifetime —
+  // a successful action no longer toggles it off.
+  assert.deepEqual(f.calls.filter(call => call.method === 'Emulation.setFocusEmulationEnabled').map(call => call.enabled), [true]);
   assert.deepEqual(f.shortcuts, [true, false]);
   assert.equal(f.agent.isDispatching(f.tab), false);
 });
@@ -57,6 +59,9 @@ test('cursor motion is deterministic, eased, bounded and lands exactly on the ta
   assert.deepEqual(pointer.slice(-2).map(({ type, x, y }) => ({ type, x, y })), [
     { type: 'mousePressed', x: 610, y: 410 }, { type: 'mouseReleased', x: 610, y: 410 },
   ]);
+  // The visible glide is one injected rAF tween, not an eval per pointer step.
+  assert.equal(f.scripts.filter(code => code.includes('"path":[')).length, 1, 'exactly one injection carries the tween path');
+  assert.equal(f.scripts.length, 3, 'viewport probe + one glide injection + one landing update');
 });
 
 test('control changes cancel interpolated motion before another event is dispatched', async () => {
@@ -115,6 +120,18 @@ test('keyboard modifiers are validated and Enter char appears only on key down',
   await f.perform({ action: 'press', key: 'Enter' });
   const events = f.calls.filter(call => call.method === 'Input.dispatchKeyEvent');
   assert.equal(events[0].text, '\r'); assert.equal(events[1].text, undefined);
+});
+
+test('focus emulation is held across actions and released once on clear', async () => {
+  const f = fixture();
+  await f.perform({ action: 'move', x: 10, y: 20 });
+  await f.perform({ action: 'move', x: 30, y: 40 });
+  const focusCalls = () => f.calls.filter(call => call.method === 'Emulation.setFocusEmulationEnabled').map(call => call.enabled);
+  assert.deepEqual(focusCalls(), [true], 'the hold is not retoggled per action');
+  await f.agent.clear(f.tab);
+  assert.deepEqual(focusCalls(), [true, false], 'clear releases the hold once');
+  await f.perform({ action: 'move', x: 50, y: 60 });
+  assert.deepEqual(focusCalls(), [true, false, true], 'the next action reacquires it lazily');
 });
 
 test('input failure always disables focus emulation and restores shortcut handling', async () => {

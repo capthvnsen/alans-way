@@ -22,12 +22,14 @@ function cursorScript(cursor) {
     const id = ${JSON.stringify(CURSOR_ID)}, value = ${JSON.stringify(cursor)};
     let host = document.getElementById(id);
     if (!value) { host?.remove(); document.getElementById(id + '-hl')?.remove(); return; }
+    if (host && !host._root) { host.remove(); host = null; }
     if (!host) {
       host = document.createElement('div'); host.id = id;
       host.setAttribute('aria-hidden', 'true');
       host.style.cssText = 'all:initial!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;z-index:2147483647!important;pointer-events:none!important;user-select:none!important;';
-      const root = host.attachShadow({ mode: 'closed' });
-      root.innerHTML = '<style>:host{pointer-events:none;transition:transform .28s cubic-bezier(.3,.9,.4,1)}svg{overflow:visible;filter:drop-shadow(0 0 5px var(--am,#69f5d4)) drop-shadow(0 0 14px var(--am,#69f5d4)) drop-shadow(0 2px 3px #0008)}span{position:absolute;left:19px;top:20px;padding:4px 7px;border:1px solid var(--ab,#a0fff4);border-radius:7px;background:var(--alb,#073b37);color:var(--alf,#d9fff8);font:600 11px/1.2 system-ui;white-space:nowrap;box-shadow:0 2px 8px #0004}.ring{fill:none;stroke:var(--am,#69f5d4);stroke-width:2;opacity:0}:host([data-action="click"]) .ring{animation:tap .48s ease-out}@keyframes tap{from{r:3;opacity:.9}to{r:23;opacity:0}}@media(prefers-reduced-motion:reduce){.ring{animation:none!important}:host{transition:none!important}}</style><svg width="19" height="25" viewBox="0 0 19 25"><circle class="ring" cx="1" cy="1" r="3"/><path d="M1 1v19l5-5 4 9 4-2-4-8h7Z" fill="var(--am,#69f5d4)" stroke="var(--as,#06332c)" stroke-width="1.5" stroke-linejoin="round"/></svg><span></span>';
+      // Closed roots read null through .shadowRoot — keep our own reference.
+      host._root = host.attachShadow({ mode: 'closed' });
+      host._root.innerHTML = '<style>:host{pointer-events:none;transition:transform .28s cubic-bezier(.3,.9,.4,1)}svg{overflow:visible;filter:drop-shadow(0 0 5px var(--am,#69f5d4)) drop-shadow(0 0 14px var(--am,#69f5d4)) drop-shadow(0 2px 3px #0008)}span{position:absolute;left:19px;top:20px;padding:4px 7px;border:1px solid var(--ab,#a0fff4);border-radius:7px;background:var(--alb,#073b37);color:var(--alf,#d9fff8);font:600 11px/1.2 system-ui;white-space:nowrap;box-shadow:0 2px 8px #0004}.ring{fill:none;stroke:var(--am,#69f5d4);stroke-width:2;opacity:0}:host([data-action="click"]) .ring{animation:tap .48s ease-out}@keyframes tap{from{r:3;opacity:.9}to{r:23;opacity:0}}@media(prefers-reduced-motion:reduce){.ring{animation:none!important}:host{transition:none!important}}</style><svg width="19" height="25" viewBox="0 0 19 25"><circle class="ring" cx="1" cy="1" r="3"/><path d="M1 1v19l5-5 4 9 4-2-4-8h7Z" fill="var(--am,#69f5d4)" stroke="var(--as,#06332c)" stroke-width="1.5" stroke-linejoin="round"/></svg><span></span>';
       document.documentElement.appendChild(host);
     }
     if (value.c) {
@@ -37,23 +39,58 @@ function cursorScript(cursor) {
     // The element highlight rides the same injection: ref actions flash their
     // target in blue while the cursor travels to it, then the outline fades.
     let box = document.getElementById(id + '-hl');
+    if (box && !box._root) { box.remove(); box = null; }
     if (!box) {
       box = document.createElement('div'); box.id = id + '-hl';
       box.setAttribute('aria-hidden', 'true');
       box.style.cssText = 'all:initial!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;z-index:2147483646!important;pointer-events:none!important;user-select:none!important;';
-      box.attachShadow({ mode: 'closed' }).innerHTML = '<style>div{position:fixed;pointer-events:none;border:2px solid #6f9fff;border-radius:9px;background:#3b82f612;box-shadow:0 0 0 3px #3b82f628,inset 0 0 22px #3b82f61f;opacity:0;transition:opacity .18s ease,left .22s ease,top .22s ease,width .22s ease,height .22s ease}div.on{opacity:1}@media(prefers-reduced-motion:reduce){div{transition:opacity .18s ease!important}}</style><div></div>';
+      box._root = box.attachShadow({ mode: 'closed' });
+      box._root.innerHTML = '<style>div{position:fixed;pointer-events:none;border:2px solid #6f9fff;border-radius:9px;background:#3b82f612;box-shadow:0 0 0 3px #3b82f628,inset 0 0 22px #3b82f61f;opacity:0;transition:opacity .18s ease,left .22s ease,top .22s ease,width .22s ease,height .22s ease}div.on{opacity:1}@media(prefers-reduced-motion:reduce){div{transition:opacity .18s ease!important}}</style><div></div>';
       document.documentElement.appendChild(box);
     }
-    host.style.setProperty('transform', 'translate(' + value.x + 'px,' + value.y + 'px)', 'important');
     host.setAttribute('data-action', value.action);
-    host.shadowRoot.querySelector('span').textContent = value.name || 'Agent';
-    const outline = box.shadowRoot.querySelector('div');
+    host._root.querySelector('span').textContent = value.name || 'Agent';
+    const outline = box._root.querySelector('div');
     if (value.hl) {
       outline.style.left = value.hl.x + 'px'; outline.style.top = value.hl.y + 'px';
       outline.style.width = value.hl.width + 'px'; outline.style.height = value.hl.height + 'px';
       outline.classList.add('on');
       clearTimeout(box._hlTimer); box._hlTimer = setTimeout(() => outline.classList.remove('on'), 1600);
     }
+    // A passed path tweens the overlay on local rAF while the real pointer
+    // stream dispatches separately — per-step evals multiplied renderer
+    // round-trips by path length for identical visuals. The returned promise
+    // resolves when the glide lands, so callers can order a follow-up click.
+    const pts = value.path;
+    cancelAnimationFrame(host._raf); clearTimeout(host._glideTimer);
+    host._glideResolve?.(); host._glideResolve = null;
+    if (pts && pts.length > 1) {
+      host.style.setProperty('transition', 'none');
+      host.style.setProperty('transform', 'translate(' + pts[0].x + 'px,' + pts[0].y + 'px)', 'important');
+      const start = performance.now(), last = pts[pts.length - 1];
+      return new Promise(resolve => {
+        const land = () => {
+          clearTimeout(host._glideTimer); host._glideResolve = null;
+          host.style.setProperty('transform', 'translate(' + last.x + 'px,' + last.y + 'px)', 'important');
+          host.style.removeProperty('transition'); resolve();
+        };
+        // Hidden tabs never fire rAF; the timer still lands the overlay on the
+        // pointer so a later captureTab screenshot shows the right position.
+        host._glideTimer = setTimeout(land, pts.length * 16 + 100);
+        host._glideResolve = resolve;
+        const tick = () => {
+          if (!host.isConnected) return land();
+          const i = Math.min((performance.now() - start) / 16, pts.length - 1), i0 = Math.floor(i), f = i - i0;
+          const a = pts[i0], b = pts[Math.min(i0 + 1, pts.length - 1)];
+          host.style.setProperty('transform', 'translate(' + Math.round(a.x + (b.x - a.x) * f) + 'px,' + Math.round(a.y + (b.y - a.y) * f) + 'px)', 'important');
+          if (i < pts.length - 1) host._raf = requestAnimationFrame(tick);
+          else land();
+        };
+        host._raf = requestAnimationFrame(tick);
+      });
+    }
+    host.style.removeProperty('transition');
+    host.style.setProperty('transform', 'translate(' + value.x + 'px,' + value.y + 'px)', 'important');
   })()`;
 }
 
@@ -106,7 +143,15 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   async function clear(tab) {
     state(tab).revision++;
     tab.agentCursor = null;
-    if (!tab.view.webContents.isDestroyed()) await tab.view.webContents.executeJavaScript(cursorScript(null)).catch(() => {});
+    const wc = tab.view.webContents;
+    if (wc.isDestroyed()) { tab.focusEmulation = false; return; }
+    // Focus emulation is held per tab across actions, so clear() is the
+    // teardown that actually releases it.
+    if (tab.focusEmulation) {
+      tab.focusEmulation = false;
+      await command(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
+    }
+    await wc.executeJavaScript(cursorScript(null)).catch(() => {});
   }
   function isDispatching(tab) { return !!tab && (states.get(tab)?.active || 0) > 0; }
 
@@ -148,17 +193,26 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     }
     async function moveCursor(point, hl) {
       const path = cursorPath(tab.agentCursor, point);
+      check();
+      // The overlay glide is one injection animating the same path on rAF;
+      // the dispatched stream below keeps its own 16ms pacing without evals.
+      const glide = wc.executeJavaScript(cursorScript({ ...point, action: 'move', name: botName(botId), c: botAccent(botId), hl: hl || null, path: path.length > 1 ? path : null })).catch(() => {});
       for (const next of path) {
         if (path.length > 1) { await delay(16); check(); }
         await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...next, button: 'none', buttons: 0 });
-        await cursor(next, 'move', hl);
+        tab.agentCursor = { ...next, action: 'move', name: botName(botId), c: botAccent(botId), hl: hl || null, updatedAt: Date.now() };
       }
+      // A stalled frame must not hang the action — bound the tail wait.
+      await Promise.race([glide, delay(path.length * 16 + 150)]);
     }
     own.active++;
     if (own.active === 1) onBusy(tab, true);
     wc.setIgnoreMenuShortcuts(true);
+    let succeeded = false;
     try {
-      await send('Emulation.setFocusEmulationEnabled', { enabled: true });
+      // Focus emulation persists for the tab's agent lifetime; toggling it per
+      // action was two CDP round-trips on every dispatch.
+      if (!tab.focusEmulation) { tab.focusEmulation = true; await send('Emulation.setFocusEmulationEnabled', { enabled: true }); }
       let point;
       if (body.ref || body.selector) {
         point = await wc.executeJavaScript(`(() => {
@@ -223,6 +277,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: Math.max(-2000, Math.min(2000, body.x || 0)), deltaY: Math.max(-2000, Math.min(2000, body.y || 0)) });
         await cursor(point, 'scroll');
       }
+      succeeded = true;
       return { dispatched: true, input: 'tab-cdp', cursor: tab.agentCursor || null };
     } finally {
       if (!wc.isDestroyed()) {
@@ -230,7 +285,9 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         // old target. No native input or synthetic retry is used for cleanup.
         if (mouseDown) await command(tab, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: -1, y: -1, button: 'left', buttons: 0, clickCount: 0 }).catch(() => {});
         if (keyDown) { const { text, ...released } = keyDown; await command(tab, 'Input.dispatchKeyEvent', { type: 'keyUp', ...released }).catch(() => {}); }
-        await command(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
+        // Failures release the per-tab focus hold; success leaves it on until
+        // clear() runs on teardown or a control change.
+        if (!succeeded && tab.focusEmulation) { tab.focusEmulation = false; await command(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {}); }
         wc.setIgnoreMenuShortcuts(false);
       }
       own.active--;

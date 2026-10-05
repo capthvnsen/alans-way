@@ -634,11 +634,40 @@ function registerIpc() {
   });
 }
 
-async function snapshot(tab) {
-  const generation = ++tab.generation;
-  const result = await tab.view.webContents.executeJavaScript(snapshotExpression(generation));
-  tab.refs = new Set(result.elements.map((item) => item.ref));
-  return { ...result, tab: describeTab(tab) };
+const intParam = (url, key, min, max) => {
+  const raw = url.searchParams.get(key);
+  if (raw === null) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value)) throw Object.assign(new Error(`${key} must be an integer.`), { status: 400 });
+  return Math.max(min, Math.min(max, value));
+};
+function snapshotHash(result) {
+  const hash = crypto.createHash('sha1');
+  hash.update(result.url || ''); hash.update('\0'); hash.update(result.title || ''); hash.update('\0');
+  hash.update(result.text || ''); hash.update('\0');
+  hash.update(JSON.stringify(result.elements.map(({ ref, ...rest }) => rest)));
+  return hash.digest('hex');
+}
+async function snapshot(tab, opts = {}) {
+  const work = tab.queue.then(async () => {
+    const generation = ++tab.generation;
+    // A wedged renderer leaves executeJavaScript pending forever; bound it so
+    // a snapshot can never outlive the connector's own timeout.
+    const result = await Promise.race([
+      tab.view.webContents.executeJavaScript(snapshotExpression(generation, opts)),
+      new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000)),
+    ]);
+    if (!result || !Array.isArray(result.elements)) throw Object.assign(new Error('Snapshot returned no page data.'), { status: 503 });
+    tab.refs = new Set(result.elements.map((item) => item.ref));
+    const hash = snapshotHash(result);
+    const previous = tab.snapshotStamp;
+    tab.snapshotStamp = { generation, hash };
+    if (previous && opts.since !== undefined && previous.generation === opts.since && previous.hash === hash)
+      return { unchanged: true, generation, tab: describeTab(tab) };
+    return { ...result, generation, tab: describeTab(tab) };
+  });
+  tab.queue = work.catch(() => {});
+  return work;
 }
 async function navigateVps(id,url) {
   await remoteRequest(id,'control',{controller:'human'});
@@ -675,19 +704,34 @@ function browserCommand(tab, method, params) {
   if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
   return wc.debugger.sendCommand(method, params);
 }
-async function captureTab(tab) {
+async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = {}) {
   const capture = backgroundCaptureQueue.then(async () => {
     const wc = tab.view.webContents;
-    if (tab.host === win) return wc.capturePage(undefined, { stayHidden: true });
+    const encode = async () => {
+      if (format === 'webp') {
+        // nativeImage has no webp encoder; the compositor does, and clip.scale
+        // downscales at capture instead of a full-size decode then resize.
+        const size = await wc.executeJavaScript('({ width: innerWidth, height: innerHeight, dsf: devicePixelRatio })');
+        const scale = maxWidth && size.width * size.dsf > maxWidth ? Math.max(0.01, maxWidth / size.width) : size.dsf;
+        const shot = await browserCommand(tab, 'Page.captureScreenshot', { format: 'webp', quality, fromSurface: true, clip: { x: 0, y: 0, width: size.width, height: size.height, scale } });
+        return shot.data;
+      }
+      let image = await wc.capturePage(undefined, { stayHidden: true });
+      if (maxWidth && image.getSize().width > maxWidth) image = image.resize({ width: maxWidth });
+      return (format === 'jpeg' ? image.toJPEG(quality) : image.toPNG()).toString('base64');
+    };
+    if (tab.host === win) return encode();
     // Hidden tabs share one host. Bring only this surface to its top while
     // capturing; never reparent it into the human's window or change selection.
     if (tab.host.contentView.children.at(-1) !== tab.view) tab.host.contentView.addChildView(tab.view);
-    await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: true });
+    // Agent input keeps its own per-tab focus hold — don't steal or release it.
+    const heldFocus = tab.focusEmulation === true;
+    if (!heldFocus) await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: true });
     try {
       await wc.executeJavaScript('new Promise(resolve => { const timer = setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); })); })');
-      return await wc.capturePage(undefined, { stayHidden: true });
+      return await encode();
     }
-    finally { if (!wc.isDestroyed()) await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {}); }
+    finally { if (!heldFocus && !wc.isDestroyed()) await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {}); }
   });
   backgroundCaptureQueue = capture.catch(() => {});
   return capture;
@@ -808,7 +852,16 @@ async function performAction(tab, body, botId, depth = 0) {
   if (body.action === 'navigate') {
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
-    await wc.loadURL(pageUrl(body.url));
+    const target = pageUrl(body.url);
+    // loadURL resolves only at did-finish-load — far past the connector's own
+    // abort. Cap the wait at commit+settle; the caller reads `loading` and can
+    // snapshot to follow a still-loading page.
+    const outcome = await Promise.race([
+      wc.loadURL(target).then(() => 'loaded', (error) => ({ error })),
+      new Promise(resolve => setTimeout(() => resolve('loading'), 12000)),
+    ]);
+    if (outcome === 'loading') { tab.refs.clear(); broadcast(); return { loading: true, url: target, tab: describeTab(tab), dispatched: true }; }
+    if (outcome !== 'loaded') throw outcome.error;
   } else if (['back', 'forward', 'reload'].includes(body.action)) {
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
@@ -850,7 +903,9 @@ function startApi() {
       }
       if (url.pathname === '/v1/tabs' && req.method === 'GET') {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
-        if(prefs.vpsBrowser?.sshHost)await refreshVpsTabs();
+        // The 5s timer already keeps vpsTabs warm; a blocking SSH refresh here
+        // cost seconds on a read-only list call. Serve the cache, refresh async.
+        if(prefs.vpsBrowser?.sshHost)refreshVpsTabs();
         return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage).map(describeTab).concat([...vpsTabs.values()]).filter((tab) => overseer || tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
       }
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
@@ -858,7 +913,20 @@ function startApi() {
         const body = await readJson(req);
         if(body.host==='vps'){const result=await vpsBrowser.request('/v1/tabs','POST',body,{botId,botName:nameForBot(botId)});vpsTabs.set(result.id,result);broadcast();return send(201,result);}
         if(body.host!==undefined&&body.host!=='mac')throw new Error('Choose mac or vps explicitly.');
-        { const created = createTab({ url: body.url, botId, controller: 'agent', activate: body.background === false }); created.agentSince = Date.now(); return send(201, describeTab(created)); }
+        { const created = createTab({ url: body.url, botId, controller: 'agent', activate: body.background === false }); created.agentSince = Date.now();
+          // Answer after commit (not full load): the first snapshot or eval then
+          // sees the real document instead of racing about:blank. Cap the wait
+          // so a slow site still returns promptly — `loading` reports the rest.
+          if (/^https?:\/\//i.test(pageUrl(body.url))) {
+            const wc = created.view.webContents;
+            await new Promise(resolve => {
+              const done = () => { clearTimeout(timer); wc.removeListener('did-navigate', done).removeListener('did-fail-load', failed).removeListener('destroyed', done); resolve(); };
+              const failed = (_e, _c, _d, _u, main) => { if (main) done(); };
+              const timer = setTimeout(done, 1500);
+              wc.once('did-navigate', done); wc.on('did-fail-load', failed); wc.once('destroyed', done);
+            });
+          }
+          return send(201, describeTab(created)); }
       }
       const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions|control))?$/.exec(url.pathname);
       const tab = match && tabs.get(match[1]);
@@ -872,16 +940,22 @@ function startApi() {
       requireActor(tab, botId, undefined, false, overseer || (tab.botId === 'shared' && prefs.bots.some((bot) => bot.id === botId)));
       if (req.method === 'GET' && !match[2]) return send(200, describeTab(tab));
       tab.lastAgentActivity = Date.now();
-      if (req.method === 'GET' && match[2] === 'snapshot') { requireAgentRead(tab); return send(200, await snapshot(tab)); }
+      if (req.method === 'GET' && match[2] === 'snapshot') { requireAgentRead(tab);
+        return send(200, await snapshot(tab, { maxChars: intParam(url, 'maxChars', 0, 20000), maxElements: intParam(url, 'maxElements', 0, 300), since: intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER) }));
+      }
       if (req.method === 'GET' && match[2] === 'screenshot') { requireAgentRead(tab);
+        const format = url.searchParams.get('format') ?? 'jpeg';
+        if (!['jpeg', 'png', 'webp'].includes(format)) throw Object.assign(new Error('format must be jpeg, png, or webp.'), { status: 400 });
+        const quality = intParam(url, 'quality', 1, 100) ?? 70;
+        const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 1280;
         const capture = tab.queue.then(async () => {
-          const shot = await captureTab(tab);
+          const base64 = await captureTab(tab, { format, quality, maxWidth });
           const viewport = await tab.view.webContents.executeJavaScript('({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })');
-          return { shot, viewport };
+          return { base64, viewport };
         });
         tab.queue = capture.catch(() => {});
-        const { shot, viewport } = await capture;
-        return send(200, { mimeType: 'image/png', base64: shot.toPNG().toString('base64'), viewport, tab: describeTab(tab) });
+        const { base64, viewport } = await capture;
+        return send(200, { mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], base64, viewport, tab: describeTab(tab) });
       }
       if (req.method === 'POST' && match[2] === 'actions') {
         const body = await readJson(req);

@@ -199,6 +199,33 @@ test('bots cannot read a human-controlled tab until control is taken', async () 
   assert.equal((await api(`/v1/tabs/${held.id}/snapshot`, 'GET', undefined, { bot: 'overseer-1' })).status, 200);
 });
 
+test('snapshot bounds, since-dedupe and screenshot format params round-trip', async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: 'http://bounds.example/' })).data;
+  const first = await api(`/v1/tabs/${tab.id}/snapshot?maxChars=100&maxElements=10`);
+  assert.equal(first.status, 200);
+  assert.equal(first.data.text, 'stub page text');
+  assert.ok(Number.isInteger(first.data.generation), 'snapshot reports its generation');
+  const repeat = await api(`/v1/tabs/${tab.id}/snapshot?since=${first.data.generation}`);
+  assert.equal(repeat.status, 200);
+  assert.equal(repeat.data.unchanged, true, 'identical content with the last generation dedupes');
+  assert.ok(repeat.data.generation > first.data.generation, 'dedupe still advances generation');
+  assert.equal(repeat.data.text, undefined, 'an unchanged snapshot carries no payload');
+  const chained = await api(`/v1/tabs/${tab.id}/snapshot?since=${repeat.data.generation}`);
+  assert.equal(chained.data.unchanged, true, 'dedupe chains across consecutive generations');
+  const nav = await api(`/v1/tabs/${tab.id}/actions`, 'POST',
+    { action: 'navigate', url: 'http://bounds.example/moved', epoch: tab.epoch });
+  assert.equal(nav.status, 200);
+  const moved = await api(`/v1/tabs/${tab.id}/snapshot?since=${chained.data.generation}`);
+  assert.notEqual(moved.data.unchanged, true, 'a url change breaks the hash and returns a full snapshot');
+  assert.equal(moved.data.url, 'http://bounds.example/moved');
+  const jpeg = await api(`/v1/tabs/${tab.id}/screenshot?format=jpeg&quality=50&maxWidth=400`);
+  assert.equal(jpeg.status, 200);
+  assert.equal(jpeg.data.mimeType, 'image/jpeg');
+  assert.equal((await api(`/v1/tabs/${tab.id}/screenshot?format=png`)).data.mimeType, 'image/png');
+  assert.equal((await api(`/v1/tabs/${tab.id}/screenshot?format=tiff`)).status, 400, 'unknown formats are rejected');
+  assert.equal((await api(`/v1/tabs/${tab.id}/snapshot?maxChars=abc`)).status, 400, 'non-integer bounds are rejected');
+});
+
 test('an overseer releases and retakes another bot tab; a stranger cannot', async () => {
   const runaway = (await api('/v1/tabs', 'POST', { url: 'http://runaway.example/' }, { bot: 'bot-a' })).data;
   assert.equal(runaway.controller, 'agent');

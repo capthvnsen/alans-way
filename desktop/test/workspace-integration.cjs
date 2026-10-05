@@ -117,9 +117,18 @@ app.whenReady().then(async () => {
     colored.push(tab);
     await waitFor(() => api(`/v1/tabs/${tab.id}/snapshot`), snap => snap.title === color);
   }
+  // Bounded snapshots report their caps, generation, and dedupe on since.
+  const bounded = await api(`/v1/tabs/${colored[0].id}/snapshot?maxChars=2000&maxElements=50`);
+  assert.ok(Number.isInteger(bounded.generation) && bounded.elements.length <= 50 && bounded.truncated, 'snapshot reports generation and truncated flags');
+  const deduped = await api(`/v1/tabs/${colored[0].id}/snapshot?since=${bounded.generation}`);
+  assert.equal(deduped.unchanged, true, 'since=<last generation> dedupes an unchanged snapshot');
+  assert.ok(deduped.generation > bounded.generation);
+  assert.equal((await apiRaw(`/v1/tabs/${colored[0].id}/snapshot?maxElements=abc`, 'GET', undefined, 'overseer-bot')).status, 400, 'non-integer bounds are rejected');
+  const jpeg = await api(`/v1/tabs/${colored[0].id}/screenshot`);
+  assert.equal(jpeg.mimeType, 'image/jpeg', 'screenshots default to jpeg');
   // Both inactive views occupy the same hidden host. Capturing the first must
   // still return its own pixels and the complete viewport, not the top view.
-  const image = nativeImage.createFromBuffer(Buffer.from((await api(`/v1/tabs/${colored[0].id}/screenshot`)).base64, 'base64'));
+  const image = nativeImage.createFromBuffer(Buffer.from((await api(`/v1/tabs/${colored[0].id}/screenshot?format=png&maxWidth=10000`)).base64, 'base64'));
   const redWc = webContents.getAllWebContents().find(item => item.getURL().endsWith('/red'));
   const viewport = await redWc.executeJavaScript('({width:innerWidth,height:innerHeight,scale:devicePixelRatio})');
   assert.deepEqual(image.getSize(), { width: Math.round(viewport.width * viewport.scale), height: Math.round(viewport.height * viewport.scale) });

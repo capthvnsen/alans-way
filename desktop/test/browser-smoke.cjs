@@ -45,7 +45,7 @@ async function eventually(fn, predicate) {
   const button = snap.elements.find(el => el.name === 'Check input');
   await tool('workspace_browser_action', { tabId: tab.id, epoch: tab.epoch, action: 'click', ref: button.ref });
   snap = await eventually(() => tool('workspace_browser_snapshot', { tabId: tab.id }), value => value.text.includes('Confirmed: Local Chromium works'));
-  const screenshot = await tool('workspace_browser_screenshot', { tabId: tab.id });
+  const screenshot = await tool('workspace_browser_screenshot', { tabId: tab.id, format: 'png' });
   assert.equal(screenshot.mimeType, 'image/png'); assert.ok(Buffer.from(screenshot.data, 'base64').length > 1000);
   assert.equal((await api(`/v1/tabs/${tab.id}/snapshot`, 'GET', undefined, 'another-bot')).status, 403);
   assert.equal((await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'reload', epoch: tab.epoch + 99 })).status, 409);
