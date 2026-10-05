@@ -33,7 +33,7 @@ function renderBots() {
     const avatar = element('span', 'avatar'); window.HermesAvatars.paint(avatar, bot, state);
     const copy = element('span', 'bot-copy');
     const nameLine = element('div', 'bot-name', bot.name);
-    if (state.primaryBotId === bot.id) nameLine.append(element('span', 'lead-badge', 'LEAD'));
+    if (state.primaryBotId === bot.id) nameLine.append(element('span', 'primary-badge', 'PRIMARY'));
     copy.append(nameLine, element('div', 'bot-preview', bot.preview || (bot.username ? `@${bot.username}` : 'Telegram bot')), element('div', 'bot-activity'));
     const hide = element('button', 'bot-hide', '×'); hide.title = `Hide ${bot.name}`; hide.setAttribute('aria-label', hide.title);
     hide.onclick = (event) => { event.stopPropagation(); command('hide-bot', { id: bot.id }); };
@@ -379,12 +379,12 @@ function showSettings() {
   const agentTest = element('button', 'secondary-button', 'Test agent path'); const agentResult = element('p', 'settings-note', '');
   agentTest.onclick = async () => { agentTest.disabled = true; agentResult.textContent = 'Checking VPS → Mac ssh path…'; const result = await command('test-agent-path'); agentTest.disabled = false; agentResult.textContent = result && typeof result === 'object' ? `${result.ok ? '✓' : '✗'} ${result.detail}` : '✗ Path check failed.'; };
   body.append(sshField, element('div', 'setting-row'), sshSave, agentSetup, agentTest, agentResult);
-  const primaryField = element('div', 'field'), primaryLabel = element('label', '', 'Lead bot'); primaryLabel.htmlFor = 'primary-bot';
+  const primaryField = element('div', 'field'), primaryLabel = element('label', '', 'Primary bot'); primaryLabel.htmlFor = 'primary-bot';
   const primarySelect = element('select'); primarySelect.id = 'primary-bot';
   const none = element('option', '', 'None (defaults to the overseer bot)'); none.value = ''; primarySelect.append(none);
   for (const bot of state.bots) { const option = element('option', '', `${bot.name}${bot.username ? ` @${bot.username}` : ''}`); option.value = bot.id; primarySelect.append(option); }
   primarySelect.value = state.primaryBotPref || '';
-  primarySelect.onchange = async () => { await command('settings', { primaryBotId: primarySelect.value }); toast(primarySelect.value ? 'Lead bot pinned at the top of the sidebar.' : 'Lead bot cleared.'); };
+  primarySelect.onchange = async () => { await command('settings', { primaryBotId: primarySelect.value }); toast(primarySelect.value ? 'Primary bot pinned at the top of the sidebar.' : 'Primary bot cleared.'); };
   primaryField.append(primaryLabel, primarySelect); body.append(primaryField);
   body.append(element('p', 'settings-note', 'The setup installs the Alan’s Way agent plugin on your gateway host and wires this Mac’s browser connector for the selected bot. Run once per bot.'));
   body.append(element('p', 'settings-note', 'Taking over a local tab blocks new agent actions on that tab. VPS control currently uses your existing shared desktop; it does not pause your Hermes bots.'));

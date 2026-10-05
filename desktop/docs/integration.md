@@ -47,10 +47,10 @@ orchestrator can release or retake a runaway agent's tab. Ownership is the only
 gate it bypasses; the human read gate, control and epoch checks still apply,
 so it intervenes by changing control first.
 
-The overseer is treated as the workspace's lead bot in the sidebar: it pins to
-the top of the bot list with a LEAD badge. Pick a different one with the
-`primaryBotId` preference (Settings → Lead bot); clearing it falls back to the
-first overseer.
+The overseer is treated as the workspace's primary bot in the sidebar: it pins to
+the top of the bot list with a PRIMARY badge. Pick a different one with the
+`primaryBotId` preference (Settings → Primary bot); clearing it falls back to
+the first overseer.
 
 The Mac API lists assigned tabs across configured hosts. `POST /v1/tabs` accepts
 `host: mac | vps` (default Mac). VPS tab operations relay through the configured
