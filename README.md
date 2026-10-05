@@ -48,7 +48,9 @@ The app works without the plugin (manual tab sharing), and the plugin falls back
 
 ## Install the app
 
-Requires macOS and Node 20+:
+**Setting this up with an AI agent?** Point it at [docs/setup-for-agents.md](docs/setup-for-agents.md) — one page covering the Mac app, the VPS and the Hermes plugin, with a check after every stage and the exact steps that need you.
+
+Requires an Apple Silicon Mac and Node 20+:
 
 ```sh
 git clone https://github.com/capthvnsen/alans-way
@@ -92,7 +94,7 @@ The same prompt lives in [docs/setup-prompt.md](https://github.com/capthvnsen/al
 
 ## Upgrading
 
-Fresh installs and upgrades follow the same path: pull the repo, `cd desktop && npm ci`, restart the app. On the VPS, update the plugin checkout and restart the gateway through Hermes' normal lifecycle — a running gateway keeps old code until restarted. Then send one Telegram message and watch a bounded browser action to confirm both ends still work. See [deployment](docs/deployment.md) and [agent setup](docs/agent-setup.md) for details.
+Fresh installs and upgrades follow the same path: pull the repo, `cd desktop && npm ci`, restart the app. On the VPS, update the plugin checkout and restart the gateway through Hermes' normal lifecycle — a running gateway keeps old code until restarted. Then send one Telegram message and watch a bounded browser action to confirm both ends still work. See [deployment](docs/deployment.md) and the [multi-profile fleet guide](docs/agent-setup.md) for details.
 
 ## Honest boundaries
 
@@ -113,7 +115,7 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[mcp]'
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Design docs live in [`docs/`](docs/) — [agent setup](docs/agent-setup.md), [security model](docs/mac-security.md), [integration](desktop/docs/integration.md).
+Design docs live in [`docs/`](docs/) — [setup for agents](docs/setup-for-agents.md), [multi-profile fleets](docs/agent-setup.md), [security model](docs/mac-security.md), [integration](desktop/docs/integration.md).
 
 ## License
 
