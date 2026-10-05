@@ -73,20 +73,25 @@ app.whenReady().then(async () => {
   const caps = await evaluate('["search-toggle","add-bot","sort-bots","bot-count"].map(id => { const r = document.getElementById(id).getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; })');
   assert.ok(caps.every(size => size.w === caps[0].w && size.h === caps[0].h), `Caption controls share one size: ${JSON.stringify(caps)}`);
   assert.equal(await evaluate('document.getElementById("settings-button").closest(".agent-presence")?.id'), 'agent-presence', 'The settings gear lives inside the bot tile.');
-  const chipHidden = await evaluate('document.getElementById("browser-chip").classList.contains("hidden")');
-  assert.equal(chipHidden, true, 'The restore chip stays hidden while the browser shows.');
 
   await invoke('settings', { showBrowser: false });
   await waitFor(() => evaluate('document.getElementById("shell").classList.contains("browser-hidden")'), Boolean);
   assert.equal((await evaluate('window.workspace.getState()')).showBrowser, false);
-  const paneVisible = await evaluate('document.querySelector(".workspace-pane").offsetParent !== null');
-  assert.equal(paneVisible, false, 'Hiding the browser removes the workspace pane.');
-  assert.equal(await evaluate('document.getElementById("browser-chip").classList.contains("hidden")'), false, 'The restore chip appears.');
-  assert.equal(await evaluate('document.querySelector(".chat-pane").offsetParent !== null'), true, 'The chat pane stays visible while the browser is hidden.');
+  assert.equal(await evaluate('document.querySelector(".workspace-pane").getBoundingClientRect().width'), 0, 'Hiding the browser collapses the workspace pane.');
+  assert.ok(await evaluate('document.getElementById("browser-collapse").getBoundingClientRect().width > 0'), 'The collapse button stays pinned when hidden.');
+  assert.ok(await evaluate('document.getElementById("vm-toggle").getBoundingClientRect().width > 0'), 'The VM button stays pinned when hidden.');
+  assert.ok(await evaluate('document.querySelector(".chat-pane").getBoundingClientRect().width > innerWidth - 320'), 'The chat pane expands into the freed space.');
 
-  await evaluate('document.getElementById("browser-chip").click()');
+  // Collapsing the bot list while the browser is hidden must not break the grid.
+  await invoke('settings', { showBots: false });
+  await waitFor(() => evaluate('document.getElementById("shell").classList.contains("bots-hidden")'), Boolean);
+  assert.ok(await evaluate('document.querySelector(".chat-pane").getBoundingClientRect().width > innerWidth - 100'), 'Both collapses together leave chat full-width.');
+  assert.ok(await evaluate('document.getElementById("browser-collapse").getBoundingClientRect().width > 0'), 'Pinned controls survive the combined collapse.');
+  await invoke('settings', { showBots: true });
+
+  await evaluate('document.getElementById("browser-collapse").click()');
   await waitFor(() => evaluate('!document.getElementById("shell").classList.contains("browser-hidden")'), Boolean);
-  assert.equal((await evaluate('window.workspace.getState()')).showBrowser, true, 'The chip restores the browser pane.');
+  assert.equal((await evaluate('window.workspace.getState()')).showBrowser, true, 'The pinned button restores the browser pane.');
 
   console.log('PASS: new tabs open on the Hermes backdrop, no Start chip, empty state keeps the image, workspace chrome is compact.');
   server.close(); app.quit();

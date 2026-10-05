@@ -188,7 +188,8 @@ function render(next) {
   $('vm-toggle').setAttribute('aria-label', $('vm-toggle').title);
   $('vm-toggle').setAttribute('aria-pressed', String(remote));
   $('shell').classList.toggle('browser-hidden', state.showBrowser === false);
-  $('browser-chip').classList.toggle('hidden', state.showBrowser !== false);
+  $('browser-collapse').title = state.showBrowser === false ? 'Show browser pane' : 'Hide browser pane';
+  $('browser-collapse').setAttribute('aria-label', $('browser-collapse').title);
   $('browser-collapse').setAttribute('aria-pressed', String(state.showBrowser === false));
   $('home').classList.toggle('hidden', !!tab || state.activeTabId === 'vps');
   $('browser-toolbar').classList.toggle('hidden', state.activeTabId === 'vps');
@@ -226,7 +227,7 @@ let previewDragging = false;
 function positionPreview() {
   const slot = $('remote-preview-slot'), pos = state?.previewPos;
   if (previewDragging) return;
-  if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) { slot.style.left = ''; slot.style.top = ''; slot.style.right = ''; slot.style.bottom = ''; return; }
+  if (state?.showBrowser === false || !pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) { slot.style.left = ''; slot.style.top = ''; slot.style.right = ''; slot.style.bottom = ''; return; }
   const pane = slot.parentElement.getBoundingClientRect();
   const x = Math.max(0, Math.min(pos.x, pane.width - slot.offsetWidth));
   const y = Math.max(0, Math.min(pos.y, pane.height - slot.offsetHeight));
@@ -236,7 +237,7 @@ function wirePreviewDrag() {
   const chrome = $('preview-chrome'), slot = $('remote-preview-slot');
   let drag = null;
   chrome.addEventListener('pointerdown', (event) => {
-    if (event.target.closest('button')) return;
+    if (event.target.closest('button') || state?.showBrowser === false) return;
     previewDragging = true;
     const paneBox = slot.parentElement.getBoundingClientRect(), slotBox = slot.getBoundingClientRect();
     drag = { dx: event.clientX - slotBox.left, dy: event.clientY - slotBox.top, pane: paneBox };
@@ -257,7 +258,7 @@ function wirePreviewDrag() {
 // moves live and the drop point persists exactly like a chrome-strip drag.
 let previewLivePos = null;
 api.onPreviewNudge?.(({ dx, dy }) => {
-  if (!state?.preview || state.activeTabId === 'vps') return;
+  if (!state?.preview || state.activeTabId === 'vps' || state?.showBrowser === false) return;
   const slot = $('remote-preview-slot'), pane = slot.parentElement.getBoundingClientRect(), box = slot.getBoundingClientRect();
   const x = Math.max(0, Math.min(box.left - pane.left + dx, pane.width - slot.offsetWidth));
   const y = Math.max(0, Math.min(box.top - pane.top + dy, pane.height - slot.offsetHeight));
@@ -429,8 +430,7 @@ $('bot-search').oninput = renderBots;
 $('add-bot').onclick = showAddBot;
 $('settings-button').onclick = showSettings;
 $('settings-fallback').onclick = showSettings;
-$('browser-collapse').onclick = () => { if (focusMode) { focusMode = false; $('shell').classList.remove('focus-workspace'); } command('settings', { showBrowser: false }); };
-$('browser-chip').onclick = () => command('settings', { showBrowser: true });
+$('browser-collapse').onclick = () => { if (focusMode) { focusMode = false; $('shell').classList.remove('focus-workspace'); } command('settings', { showBrowser: state?.showBrowser === false }); };
 $('bots-toggle').onclick = () => command('settings', { showBots: state.showBots === false });
 $('sort-bots').onclick = (event) => {
   event.stopPropagation();
@@ -455,7 +455,7 @@ document.addEventListener('click', (event) => {
 $('presence-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };
-$('vm-toggle').onclick = () => command('toggle-vps-view');
+$('vm-toggle').onclick = () => { if (state?.showBrowser === false) command('settings', { showBrowser: true }); command('toggle-vps-view'); };
 $('preview-expand').onclick = () => command('toggle-vps-view');
 $('preview-hide').onclick = () => command('settings', { preview: false });
 $('preview-chip').onclick = () => command('settings', { preview: true });
