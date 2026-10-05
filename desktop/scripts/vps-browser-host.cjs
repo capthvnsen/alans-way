@@ -224,6 +224,35 @@ async function serve() {
       if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
       return { value, dispatched: true };
     }
+    if (body.action === 'wait') {
+      const selector = String(body.selector || '').slice(0, 2000);
+      const text = String(body.text || '').slice(0, 2000);
+      const timeout = Math.min(Math.max(Number(body.timeout) || 10000, 100), 30000);
+      if (!selector && !text) throw fail('wait needs a selector or text to wait for.');
+      const code = `new Promise((resolve) => {
+        const sel = ${JSON.stringify(selector)}, txt = ${JSON.stringify(text)};
+        const deadline = Date.now() + ${timeout};
+        const check = () => {
+          if (sel && !document.querySelector(sel)) return false;
+          if (txt && !(document.body && document.body.innerText.includes(txt))) return false;
+          return true;
+        };
+        const t0 = Date.now();
+        let mo, poll;
+        const done = (found) => { clearInterval(poll); if (mo) mo.disconnect(); resolve({ found, waited: Date.now() - t0 }); };
+        if (check()) return done(true);
+        mo = new MutationObserver(() => { if (check()) done(true); });
+        mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
+        poll = setInterval(() => { if (check() || Date.now() > deadline) done(check()); }, 100);
+        setTimeout(() => done(check()), ${timeout});
+      })`;
+      const value = await Promise.race([
+        wc.executeJavaScript(code),
+        new Promise((_, reject) => setTimeout(() => reject(fail('wait host timed out.', 408)), timeout + 5000)),
+      ]);
+      if (!value || !value.found) throw fail(`wait timed out after ${value ? value.waited : timeout}ms for ${selector ? `selector ${JSON.stringify(selector)}` : `text ${JSON.stringify(text.slice(0, 80))}`}. Snapshot the page to see its current state.`, 408);
+      return { waited: value.waited, dispatched: true };
+    }
     if (['click', 'type', 'press', 'move', 'scroll'].includes(body.action)) await input.perform(tab, body, botId);
     else if (body.action === 'navigate') {
       await input.clear(tab);

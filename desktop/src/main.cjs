@@ -693,6 +693,35 @@ async function performAction(tab, body, botId, depth = 0) {
     if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
     return { value, tab: describeTab(tab), dispatched: true };
   }
+  if (body.action === 'wait') {
+    const selector = String(body.selector || '').slice(0, 2000);
+    const text = String(body.text || '').slice(0, 2000);
+    const timeout = Math.min(Math.max(Number(body.timeout) || 10000, 100), 30000);
+    if (!selector && !text) throw Object.assign(new Error('wait needs a selector or text to wait for.'), { status: 400 });
+    const code = `new Promise((resolve) => {
+      const sel = ${JSON.stringify(selector)}, txt = ${JSON.stringify(text)};
+      const deadline = Date.now() + ${timeout};
+      const check = () => {
+        if (sel && !document.querySelector(sel)) return false;
+        if (txt && !(document.body && document.body.innerText.includes(txt))) return false;
+        return true;
+      };
+      const t0 = Date.now();
+      let mo, poll;
+      const done = (found) => { clearInterval(poll); if (mo) mo.disconnect(); resolve({ found, waited: Date.now() - t0 }); };
+      if (check()) return done(true);
+      mo = new MutationObserver(() => { if (check()) done(true); });
+      mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
+      poll = setInterval(() => { if (check() || Date.now() > deadline) done(check()); }, 100);
+      setTimeout(() => done(check()), ${timeout});
+    })`;
+    const value = await Promise.race([
+      tab.view.webContents.executeJavaScript(code, true),
+      new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('wait host timed out.'), { status: 408 })), timeout + 5000)),
+    ]);
+    if (!value || !value.found) throw Object.assign(new Error(`wait timed out after ${value ? value.waited : timeout}ms for ${selector ? `selector ${JSON.stringify(selector)}` : `text ${JSON.stringify(text.slice(0, 80))}`}. Snapshot the page to see its current state.`), { status: 408 });
+    return { waited: value.waited, tab: describeTab(tab), dispatched: true };
+  }
   if (['click', 'type', 'press', 'scroll', 'move'].includes(body.action)) {
     const result = await agentInput.perform(tab, body, botId);
     if (body.action !== 'move') tab.refs.clear();
@@ -711,7 +740,7 @@ async function performAction(tab, body, botId, depth = 0) {
     if (body.action === 'back' && history.canGoBack()) history.goBack();
     else if (body.action === 'forward' && history.canGoForward()) history.goForward();
     else if (body.action === 'reload') wc.reload();
-  } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, move, scroll, back, forward, reload, batch, eval.'), { status: 400 });
+  } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, move, scroll, back, forward, reload, batch, eval, wait.'), { status: 400 });
   tab.refs.clear(); broadcast();
   return { tab: describeTab(tab), dispatched: true };
 }
@@ -730,7 +759,7 @@ function startApi() {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
       const overseer = isOverseer(botId);
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', hosts:{mac:'connected',vps:vpsBrowserStatus}, capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'batch', 'eval', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', hosts:{mac:'connected',vps:vpsBrowserStatus}, capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'batch', 'eval', 'wait', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await telegramView.webContents.executeJavaScript(`(() => ({
           styled: document.body.classList.contains('hw-chat'),

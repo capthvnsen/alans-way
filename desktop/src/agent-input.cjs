@@ -107,8 +107,9 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     if (body.action === 'type' && (typeof body.text !== 'string' || body.text.length > 20000)) throw fail('Provide text up to 20,000 characters.');
     const keyEvent = body.action === 'press' ? keyboardEvent(body) : null;
     if (body.ref !== undefined && (typeof body.ref !== 'string' || !/^s\d+-\d+$/.test(body.ref) || !tab.refs.has(body.ref))) throw fail('Stale or unknown reference. Request a fresh snapshot.', 409);
-    if (body.action === 'type' && !body.ref) throw fail('Typing requires a fresh element reference.');
-    if (['move', 'click'].includes(body.action) && !body.ref && (!Number.isFinite(body.x) || !Number.isFinite(body.y))) throw fail('Provide a fresh element reference or viewport x and y coordinates.');
+    if (body.selector !== undefined && (typeof body.selector !== 'string' || !body.selector || body.selector.length > 2000)) throw fail('Provide a CSS selector up to 2,000 characters.');
+    if (body.action === 'type' && !body.ref && !body.selector) throw fail('Typing requires an element reference or selector.');
+    if (['move', 'click'].includes(body.action) && !body.ref && !body.selector && (!Number.isFinite(body.x) || !Number.isFinite(body.y))) throw fail('Provide a fresh element reference, selector, or viewport x and y coordinates.');
     if (body.action === 'scroll' && [body.x, body.y].some(value => value !== undefined && !Number.isFinite(value))) throw fail('Scroll deltas must be finite numbers.');
 
     // The API owner serializes perform() with screenshots and navigation in
@@ -136,9 +137,10 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     try {
       await send('Emulation.setFocusEmulationEnabled', { enabled: true });
       let point;
-      if (body.ref) {
+      if (body.ref || body.selector) {
         point = await wc.executeJavaScript(`(() => {
-          const el = document.querySelector(${JSON.stringify(`[data-hermes-workspace-ref="${body.ref}"]`)});
+          let el = null;
+          try { el = document.querySelector(${JSON.stringify(body.ref ? `[data-hermes-workspace-ref="${body.ref}"]` : body.selector)}); } catch {}
           if (!el || el.disabled || el.closest('[inert]')) return null;
           el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
           const r = el.getBoundingClientRect();

@@ -208,6 +208,29 @@ app.whenReady().then(async () => {
   assert.equal(partial.results.length, 2, 'Batch stops at the first failing step.');
   assert.ok(partial.results[1].error, 'The failing step reports its error.');
   console.log('PASS: batch sequencing, eval page JS, epoch gate, and stop-on-error.');
+  // wait resolves instantly on an existing selector, blocks until a delayed
+  // element appears, and times out as a 408 step error inside a batch.
+  const instant = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', selector: 'button', epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.ok(instant.waited < 1000, 'wait returns immediately when the selector already exists.');
+  await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: "setTimeout(() => { const el = document.createElement('div'); el.id = 'late-el'; document.body.appendChild(el); }, 400)", epoch: seizedTab.epoch }, 'overseer-bot');
+  const delayed = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', selector: '#late-el', timeout: 5000, epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.ok(delayed.waited >= 300 && delayed.waited < 5000, `wait blocked until the element appeared (${delayed.waited}ms).`);
+  const timedOut = await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', selector: '#never-exists', timeout: 400, epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.equal(timedOut.status, 408, 'wait reports a timeout as 408.');
+  const batchWithWait = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'batch', epoch: seizedTab.epoch, steps: [
+    { action: 'wait', selector: 'button' }, { action: 'eval', code: 'document.title' },
+  ] }, 'overseer-bot');
+  assert.equal(batchWithWait.results.length, 2, 'wait composes inside batch.');
+  console.log('PASS: wait instant-resolution, delayed-element blocking, 408 timeout, and batch composition.');
+  // selector targets input actions at dispatch time — self-contained batches
+  // without minting snapshot refs first.
+  await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: "document.body.insertAdjacentHTML('beforeend','<input id=sel-in>')", epoch: seizedTab.epoch }, 'overseer-bot');
+  const typed = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'batch', epoch: seizedTab.epoch, steps: [
+    { action: 'type', selector: '#sel-in', text: 'via selector' },
+    { action: 'eval', code: "document.getElementById('sel-in').value" },
+  ] }, 'overseer-bot');
+  assert.equal(typed.results[1].value, 'via selector', 'type by selector produces real field input.');
+  console.log('PASS: selector-targeted typing inside a self-contained batch.');
   // The designated primary bot pins to the top of the sidebar with a PRIMARY
   // badge; with no explicit pick the overseer bot is the primary.
   state = await invoke('settings', { primaryBotId: '123' });
