@@ -102,7 +102,7 @@ function selectAgent(id) {
   applyLayout();
 }
 function getState() {
-  return { name: app.getName(), version: app.getVersion(), bots: prefs.bots.map(bot => ({ ...bot, activity: activity.get(bot.id) })), order: prefs.order, hidden: prefs.hidden,
+  return { name: app.getName(), version: app.getVersion(), bots: prefs.bots.map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
@@ -112,11 +112,23 @@ function getState() {
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [],
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
 }
+let lastBotWorkSignature = '';
 function broadcast() {
   if (!win || win.isDestroyed() || !prefs) return;
   const state = getState();
   win.webContents.send('workspace:state', state);
   if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:state', state);
+  // Bots with agent tabs that are dispatching, navigating, or recently acted
+  // count as working — the Telegram preload draws the typing-style bubble.
+  const working = {};
+  for (const tab of tabs.values()) {
+    if (tab.controller === 'agent' && (agentInput.isDispatching(tab) || tab.loading || Date.now() - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) < 15000)) working[tab.botId] = botAccent(tab.botId).hue;
+  }
+  const signature = JSON.stringify(working);
+  if (signature !== lastBotWorkSignature && telegramView && !telegramView.webContents.isDestroyed()) {
+    lastBotWorkSignature = signature;
+    telegramView.webContents.send('workspace:bot-activity', working);
+  }
 }
 function fit(view, rect) {
   if (!view || view.webContents.isDestroyed()) return;
@@ -713,7 +725,9 @@ function startApi() {
         const remote=result.tab || (result.id?result:null);if(remote)vpsTabs.set(remote.id,remote);if(req.method==='DELETE')vpsTabs.delete(match[1]);broadcast();return send(200,result);
       }
       if (!tab || tab.extensionPage) return send(404, { error: 'Tab not found.' });
-      requireActor(tab, botId, undefined, false, overseer);
+      // Shared tabs are claimable by any known bot via POST control; the
+      // per-endpoint gates still fence reads/actions until it is claimed.
+      requireActor(tab, botId, undefined, false, overseer || (tab.botId === 'shared' && prefs.bots.some((bot) => bot.id === botId)));
       if (req.method === 'GET' && !match[2]) return send(200, describeTab(tab));
       tab.lastAgentActivity = Date.now();
       if (req.method === 'GET' && match[2] === 'snapshot') { requireAgentRead(tab); return send(200, await snapshot(tab)); }
@@ -735,7 +749,10 @@ function startApi() {
       }
       if (req.method === 'POST' && match[2] === 'control') {
         const body = await readJson(req);
-        if (botId !== tab.botId && !overseer) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
+        const granted = (tab.allowedBots || []).includes(botId)
+          || (tab.botId === 'shared' && prefs.bots.some((bot) => bot.id === botId));
+        if (botId !== tab.botId && !overseer && !granted) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
+        if (tab.botId === 'shared' && body.controller === 'agent') tab.botId = botId;
         return send(200, changeController(tab.id, body.controller));
       }
       if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true, overseer); closeTab(tab.id); return send(200, { closed: true }); }
@@ -759,7 +776,7 @@ function createWindow() {
   telegramView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'telegram-preload.bundle.cjs'), partition: 'persist:telegram', contextIsolation: true, nodeIntegration: false, sandbox: true } });
   telegramView.setBackgroundColor('#09090a');
   configureContents(telegramView.webContents, true);
-  telegramView.webContents.on('did-start-loading', () => { activity.clear(); broadcast(); });
+  telegramView.webContents.on('did-start-loading', () => { lastBotWorkSignature = ''; activity.clear(); broadcast(); });
   telegramView.webContents.on('render-process-gone', () => { telegramStatus = 'offline'; activity.clear(); broadcast(); });
   telegramView.webContents.on('did-fail-load', (_e, code, _desc, _url, main) => { if (main && code !== -3) { telegramStatus = 'offline'; activity.clear(); broadcast(); } });
   win.contentView.addChildView(telegramView);

@@ -11,7 +11,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-integrat
 process.env.HERMES_WORKSPACE_DATA = profile;
 process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
 process.env.HERMES_OVERSEER_BOTS = 'overseer-bot';
-fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ bots: [{ id: '123', name: 'Avatar test fixture', isBot: true }], selectedBotId: '123', preview: false }));
+fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ bots: [{ id: '123', name: 'Avatar test fixture', isBot: true }, { id: '456', name: 'Second fixture bot', isBot: true }], selectedBotId: '123', preview: false }));
 require('../src/main.cjs');
 const waitFor = async (read, predicate, timeout = 12000) => {
   const deadline = Date.now() + timeout;
@@ -175,6 +175,20 @@ app.whenReady().then(async () => {
   assert.equal(seized.controller, 'agent');
   assert.equal((await api(`/v1/tabs/${colored[1].id}/snapshot`, 'GET', undefined, 'overseer-bot')).title, 'blue', 'Overseer reads once it holds control.');
   console.log('PASS: overseer lists all tabs, releases/retakes another bot\'s tab, and human-controlled tabs reject bot reads.');
+  // Agents take over work at any time: a known bot claims a shared tab and a
+  // granted bot seizes a human-controlled tab it was shared with.
+  const sharedTab = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/red`, background: true }, 'shared');
+  assert.equal(sharedTab.botId, 'shared');
+  assert.equal((await apiRaw(`/v1/tabs/${sharedTab.id}/control`, 'POST', { controller: 'agent' }, 'not-the-owner')).status, 403, 'An unknown bot cannot claim a shared tab.');
+  const claimed = await api(`/v1/tabs/${sharedTab.id}/control`, 'POST', { controller: 'agent' }, '456');
+  assert.equal(claimed.controller, 'agent', 'A known bot claims a shared tab.');
+  assert.equal((await api(`/v1/tabs/${sharedTab.id}`, 'GET', undefined, '456')).botId, '456', 'Claiming assigns the tab to that bot.');
+  await api(`/v1/tabs/${colored[0].id}/control`, 'POST', { controller: 'human' });
+  await invoke('grant-tab', { id: colored[0].id, botIds: ['456'] });
+  const seizedByGrantee = await api(`/v1/tabs/${colored[0].id}/control`, 'POST', { controller: 'agent' }, '456');
+  assert.equal(seizedByGrantee.controller, 'agent', 'A granted bot takes over a human-controlled tab.');
+  assert.equal((await api(`/v1/tabs/${colored[0].id}`, 'GET', undefined, '456')).botId, 'capture-regression', 'Grantee control does not transfer ownership.');
+  console.log('PASS: shared-tab claim by a known bot and granted-bot takeover of a human tab.');
   // The designated primary bot pins to the top of the sidebar with a PRIMARY
   // badge; with no explicit pick the overseer bot is the primary.
   state = await invoke('settings', { primaryBotId: '123' });

@@ -60,7 +60,15 @@ function renderBots() {
 function renderBotActivity(row, bot) {
   const status = row.querySelector('.bot-activity'), activity = bot.activity;
   const active = activity?.state === 'active' && (!activity.expiresAt || activity.expiresAt > Date.now());
-  status.textContent = active ? activity.label || 'Telegram activity' : activity?.state === 'idle' ? 'Idle' : 'Activity unavailable';
+  status.replaceChildren();
+  if (active) {
+    const dots = element('span', 'hw-dots');
+    dots.append(element('i'), element('i'), element('i'));
+    if (bot.hue !== undefined) dots.style.setProperty('--h', String(bot.hue));
+    status.append(dots, document.createTextNode(activity.label || 'Telegram activity'));
+  } else {
+    status.textContent = activity?.state === 'idle' ? 'Idle' : 'Activity unavailable';
+  }
   status.classList.toggle('active', active);
   status.title = activity?.detail || 'Live Telegram chat actions. No activity signal does not prove a bot has stopped working.';
 }

@@ -1,5 +1,6 @@
 const { ipcRenderer, contextBridge } = require('electron');
 const { firstLink, scanLinks } = require('./link-share.cjs');
+const { botAccent } = require('./agent-input.cjs');
 
 // Read only the API worker's actual chat-action updates. Do not infer work from
 // outgoing messages, previews, unread counts, or the persisted Telegram cache.
@@ -21,6 +22,35 @@ function isActivityAvailable() {
     (!activityRuntimeAccount || activityRuntimeAccount === activityAccountId);
 }
 function publishActivityAvailability() { sendActivity(isActivityAvailable() ? 'ready' : 'unavailable'); }
+
+// "Working" indicator: an iMessage-style bubble pinned above the composer of
+// the open bot chat. Typing actions come straight from the worker stream;
+// browser work is pushed from the main process on workspace:bot-activity.
+const typingActivity = new Map();
+let workActivity = {};
+const TYPING_TTL_MS = 8000;
+function renderAgentBubble() {
+  const chatId = location.hash.slice(1).split('_')[0] || '';
+  const now = Date.now();
+  for (const [id, at] of typingActivity) if (at + TYPING_TTL_MS <= now) typingActivity.delete(id);
+  const typing = typingActivity.has(chatId), working = Object.hasOwn(workActivity, chatId);
+  let bubble = document.querySelector('.hw-agent-bubble');
+  if (!chatId || (!typing && !working) || !activityConnected) { bubble?.remove(); return; }
+  const composer = document.querySelector('#MiddleColumn .Composer, .Composer');
+  if (!composer) { bubble?.remove(); return; }
+  if (!bubble) {
+    bubble = document.createElement('div');
+    bubble.className = 'hw-agent-bubble';
+    bubble.innerHTML = '<i></i><i></i><i></i>';
+    document.body.append(bubble);
+  }
+  const rect = composer.getBoundingClientRect();
+  bubble.style.left = `${Math.round(rect.left + 14)}px`;
+  bubble.style.top = `${Math.round(rect.top - 46)}px`;
+  bubble.style.setProperty('--h', String(working ? workActivity[chatId] : botAccent(chatId).hue));
+  bubble.title = typing ? 'Bot is typing in Telegram' : 'Bot is working in a workspace tab';
+  bubble.classList.toggle('typing', typing);
+}
 function receiveTelegramActivity(update) {
   if (!update || typeof update !== 'object') return;
   switch (update.type) {
@@ -39,6 +69,8 @@ function receiveTelegramActivity(update) {
       if (!isActivityAvailable() || !/^\d{1,20}$/.test(update.botId) || update.actorId !== update.botId ||
         (update.action !== 'cancel' && !telegramActions.has(update.action))) return;
       sendActivity('action', { botId: update.botId, actorId: update.actorId, action: update.action });
+      if (update.action === 'cancel') typingActivity.delete(update.botId); else typingActivity.set(update.botId, Date.now());
+      renderAgentBubble();
       return;
     default: return;
   }
@@ -129,6 +161,11 @@ const CSS = `
   body.hw-chat .message-list-item { max-width: 100% !important; }
   body.hw-chat .Composer { width: calc(100% - 24px) !important; max-width: none !important; margin: 0 12px 10px !important; }
   #auth-qr-form, #auth-phone-number-form { max-width: calc(100vw - 38px) !important; }
+  .hw-agent-bubble { position: fixed; z-index: 60; display: flex; gap: 5px; align-items: center; padding: 10px 14px 10px 12px; border-radius: 18px 18px 18px 6px; background: #1c1c1e; border: 1px solid hsl(var(--h,168), 45%, 32%); box-shadow: 0 2px 10px rgba(0,0,0,.45), 0 0 12px hsla(var(--h,168), 80%, 55%, .18); pointer-events: none; }
+  .hw-agent-bubble i { width: 7px; height: 7px; border-radius: 50%; background: hsl(var(--h,168), 80%, 62%); opacity: .35; animation: hwWingBeat 1.5s infinite; }
+  .hw-agent-bubble i:nth-child(2) { animation-delay: .18s; }
+  .hw-agent-bubble i:nth-child(3) { animation-delay: .36s; }
+  @keyframes hwWingBeat { 0%, 55%, 100% { transform: translateY(0) scale(1); opacity: .35; } 18% { transform: translateY(-5px) scale(1.3); opacity: 1; } 34% { transform: translateY(1px) scale(.92); opacity: .7; } }
 `;
 let busy = false, db, previous = '', timer, dbDiag = 'init';
 function readDatabase() {
@@ -197,10 +234,12 @@ async function sync() {
     const packet = { status, accountId: cached?.currentUserId ? String(cached.currentUserId) : '', bots, selectedId: selectedBot ? selectedId : '',
       diagnostics: { userCount: Object.keys(users).length, botCount: Object.values(users).filter(user => user?.isBot === true || user?.type === 'userTypeBot' || user?.type === 'bot').length, chatCount: Object.keys(chats).length,
         chatNodes: links.length, storeKeys: cached ? Object.keys(cached) : [], lastIds: bots.map(bot => [bot.id, chats[bot.id]?.lastMessageId || 0]), dbDiag,
+        agentBubble: !!document.querySelector('.hw-agent-bubble'), workBots: Object.keys(workActivity), openChat: location.hash.slice(1).split('_')[0] || '',
         userFields: Object.keys(Object.values(users)[0] || {}), usersFields: Object.keys(cached?.users || {}), chatsFields: Object.keys(cached?.chats || {}) } };
     const signature = JSON.stringify(packet);
     if (signature !== previous) { previous = signature; ipcRenderer.send('telegram:catalog', packet); }
     publishActivityAvailability();
+    renderAgentBubble();
   } catch {} finally { busy = false; }
 }
 window.addEventListener('DOMContentLoaded', () => {
@@ -208,6 +247,7 @@ window.addEventListener('DOMContentLoaded', () => {
   sync(); timer = setInterval(sync, 2500);
 });
 ipcRenderer.on('telegram:sync', sync);
+ipcRenderer.on('workspace:bot-activity', (_event, working) => { workActivity = working && typeof working === 'object' ? working : {}; renderAgentBubble(); });
 window.addEventListener('offline', publishActivityAvailability);
 window.addEventListener('online', publishActivityAvailability);
 window.addEventListener('beforeunload', () => { sendActivity('unavailable'); clearInterval(timer); db?.close(); });
