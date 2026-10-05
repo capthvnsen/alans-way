@@ -80,16 +80,12 @@ the Mac, append the VPS's `~/.ssh/id_ed25519.pub` to the Mac's
 **Check, from the VPS:**
 
 ```sh
-ssh -o BatchMode=yes "$MAC_SSH" 'command -v node && echo MAC_OK'
+ssh -o BatchMode=yes "$MAC_SSH" 'test -x /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp && echo MAC_OK'
 ```
 
-Expect a node path and `MAC_OK`. If `MAC_OK` prints but no node path, the
-non-interactive SSH shell cannot find Node (common with Homebrew). Fix it on
-the Mac, then re-run the check:
-
-```sh
-echo 'export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"' >> ~/.zshenv
-```
+Expect `MAC_OK`. The VPS runs the browser connector with the app's own
+runtime, so the Mac needs no Node on its SSH PATH. If nothing prints, the app
+is not in `/Applications` — repeat stage 1.
 
 ## Stage 3 — VPS: Hermes plugin and cloud browser
 
@@ -152,7 +148,7 @@ desktop connection** in the app.
 |---|---|
 | Stage 1 check: `Cannot find module …connection.json` | The app is not running or never started its API. Open it and retry. |
 | `Host key verification failed` | The Mac's host key is not in the VPS's `known_hosts`. Re-run the `ssh-copy-id -o StrictHostKeyChecking=accept-new` line. |
-| `node: command not found` over SSH | Add Homebrew to `~/.zshenv` on the Mac (stage 2). |
+| Verify says `workspace_browser timeout …s is below 120s` | Long browser actions get cut off. Re-run stage 3 setup, or set `timeout: 120` on the block and restart the gateway. |
 | Bot opens tabs on the VPS while the Mac is awake | The Mac app is closed, or SSH from the VPS fails. Re-run the stage 2 check. |
 | Browser tool errors right after setup | The gateway is still running old code. `hermes gateway restart`. |
 | `handoff_review_required` | A page moved between computers needs the human to check it, for example a login. Ask them. |
