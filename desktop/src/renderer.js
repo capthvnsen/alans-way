@@ -5,8 +5,14 @@ function element(tag, className, text) { const el = document.createElement(tag);
 function toast(message) { $('toast').textContent = message; $('toast').classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.add('hidden'), 5000); }
 async function command(name, value = {}) { try { return await api.command(name, value); } catch (error) { toast(error.message); } }
 function orderedBots(includeHidden = false) {
-  const order = new Map(state.order.map((id, index) => [id, index]));
-  const bots = state.bots.filter((bot) => includeHidden || !state.hidden.includes(bot.id)).sort((a, b) => (order.get(a.id) ?? 10000) - (order.get(b.id) ?? 10000));
+  const bots = state.bots.filter((bot) => includeHidden || !state.hidden.includes(bot.id));
+  const mode = state.botSort || 'manual';
+  if (mode === 'recent') bots.sort((a, b) => (b.lastId || 0) - (a.lastId || 0));
+  else if (mode === 'alpha') bots.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+  else {
+    const order = new Map(state.order.map((id, index) => [id, index]));
+    bots.sort((a, b) => (order.get(a.id) ?? 10000) - (order.get(b.id) ?? 10000));
+  }
   return bots.sort((a, b) => Number(b.id === state.primaryBotId) - Number(a.id === state.primaryBotId));
 }
 function colorFor(value) {
@@ -17,7 +23,7 @@ function renderBots() {
   const search = $('bot-search').value.toLowerCase();
   const bots = orderedBots().filter((bot) => `${bot.name} ${bot.username}`.toLowerCase().includes(search));
   const list = $('bot-list');
-  const signature = JSON.stringify([bots.map(({ activity, ...bot }) => bot), state.selectedBotId, state.primaryBotId]);
+  const signature = JSON.stringify([bots.map(({ activity, ...bot }) => bot), state.selectedBotId, state.primaryBotId, state.botSort]);
   if (signature === botListSignature) {
     for (const row of list.children) {
       const bot = bots.find(item => item.id === row.dataset.botId);
@@ -29,7 +35,7 @@ function renderBots() {
   botListSignature = signature; list.replaceChildren();
   for (const bot of bots) {
     const row = element('div', `bot-row${state.selectedBotId === bot.id ? ' selected' : ''}${state.primaryBotId === bot.id ? ' primary' : ''}`);
-    row.setAttribute('role', 'button'); row.setAttribute('tabindex', '0'); row.setAttribute('aria-label', `Open ${bot.name}`); row.draggable = true; row.dataset.botId = bot.id;
+    row.setAttribute('role', 'button'); row.setAttribute('tabindex', '0'); row.setAttribute('aria-label', `Open ${bot.name}`); row.draggable = (state.botSort || 'manual') === 'manual'; row.dataset.botId = bot.id;
     const avatar = element('span', 'avatar'); window.HermesAvatars.paint(avatar, bot, state);
     const copy = element('span', 'bot-copy');
     const nameLine = element('div', 'bot-name', bot.name);
@@ -52,6 +58,7 @@ function renderBots() {
     renderBotActivity(row, bot); list.append(row);
   }
   $('bot-count').textContent = orderedBots().length;
+  $('sort-bots').classList.toggle('active', (state.botSort || 'manual') !== 'manual');
   $('empty-bots').classList.toggle('hidden', state.bots.length > 0);
   $('empty-bots').querySelector('p').textContent = state.telegramStatus === 'connected' ? 'Finding your Telegram bot chats…' : 'Sign in to Telegram to load your bot chats here.';
   $('restore-bots').classList.toggle('hidden', !state.hidden.length);
@@ -426,6 +433,26 @@ $('add-bot').onclick = showAddBot;
 $('restore-bots').onclick = () => command('restore-bots');
 $('settings-button').onclick = showSettings;
 $('bots-toggle').onclick = () => command('settings', { showBots: state.showBots === false });
+$('sort-bots').onclick = (event) => {
+  event.stopPropagation();
+  const menu = $('sort-menu'), open = menu.classList.contains('hidden');
+  menu.classList.toggle('hidden', !open);
+  $('sort-bots').setAttribute('aria-expanded', String(open));
+  if (open) menu.querySelectorAll('button').forEach((button) => {
+    const active = button.dataset.sort === (state.botSort || 'manual');
+    button.classList.toggle('selected', active);
+    button.setAttribute('aria-checked', String(active));
+    if (!button.querySelector('.sort-check')) button.prepend(element('span', 'sort-check', '✓'));
+  });
+};
+$('sort-menu').onclick = (event) => {
+  const button = event.target.closest('button[data-sort]');
+  if (button) command('bot-sort', { mode: button.dataset.sort });
+  $('sort-menu').classList.add('hidden'); $('sort-bots').setAttribute('aria-expanded', 'false');
+};
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('#sort-menu') && !event.target.closest('#sort-bots')) { $('sort-menu').classList.add('hidden'); $('sort-bots').setAttribute('aria-expanded', 'false'); }
+});
 $('presence-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };

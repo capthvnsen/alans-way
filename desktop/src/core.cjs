@@ -60,6 +60,7 @@ function sanitizeBots(value) {
     username: String(bot.username || '').replace(/[^\w]/g, '').slice(0, 40),
     preview: String(bot.preview || '').slice(0, 120),
     unread: Math.max(0, Math.min(9999, Number(bot.unread) || 0)),
+    lastId: Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Number(bot.lastId) || 0)),
     avatar: typeof bot.avatar === 'string' && /^data:image\/(png|jpeg|webp);base64,/.test(bot.avatar) && bot.avatar.length < 150000 ? bot.avatar : '',
   }));
 }
