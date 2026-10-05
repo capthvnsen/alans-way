@@ -113,22 +113,27 @@ function getState() {
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
 }
 let lastBotWorkSignature = '';
+// Bots with agent tabs that are dispatching, navigating, or recently acted
+// count as working — the Telegram preload draws the composer orbit glow.
+function computeBotWork() {
+  const working = {};
+  for (const tab of tabs.values()) {
+    if (tab.controller === 'agent' && (agentInput.isDispatching(tab) || tab.loading || Date.now() - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) < 15000)) working[tab.botId] = botAccent(tab.botId).hue;
+  }
+  return working;
+}
+function sendBotWork() {
+  const working = computeBotWork();
+  lastBotWorkSignature = JSON.stringify(working);
+  if (telegramView && !telegramView.webContents.isDestroyed()) telegramView.webContents.send('workspace:bot-activity', working);
+}
 function broadcast() {
   if (!win || win.isDestroyed() || !prefs) return;
   const state = getState();
   win.webContents.send('workspace:state', state);
   if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:state', state);
-  // Bots with agent tabs that are dispatching, navigating, or recently acted
-  // count as working — the Telegram preload draws the typing-style bubble.
-  const working = {};
-  for (const tab of tabs.values()) {
-    if (tab.controller === 'agent' && (agentInput.isDispatching(tab) || tab.loading || Date.now() - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) < 15000)) working[tab.botId] = botAccent(tab.botId).hue;
-  }
-  const signature = JSON.stringify(working);
-  if (signature !== lastBotWorkSignature && telegramView && !telegramView.webContents.isDestroyed()) {
-    lastBotWorkSignature = signature;
-    telegramView.webContents.send('workspace:bot-activity', working);
-  }
+  const signature = JSON.stringify(computeBotWork());
+  if (signature !== lastBotWorkSignature) sendBotWork();
 }
 function fit(view, rect) {
   if (!view || view.webContents.isDestroyed()) return;
@@ -576,6 +581,12 @@ function registerIpc() {
   ipcMain.on('telegram:activity', (event, packet) => {
     if (event.sender !== telegramView?.webContents || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith(TELEGRAM)) return;
     if (activity.ingest(packet)) broadcast();
+  });
+  // The preload pulls the work map after attaching its listener so a send that
+  // raced a reload can never wedge the signature dedup.
+  ipcMain.on('workspace:bot-activity-pull', (event) => {
+    if (event.sender !== telegramView?.webContents || event.senderFrame !== event.sender.mainFrame) return;
+    sendBotWork();
   });
   const linkOpenedAt = new Map();
   ipcMain.on('telegram:link', (event, value) => {

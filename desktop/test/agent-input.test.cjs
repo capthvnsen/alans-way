@@ -98,11 +98,11 @@ test('input failure always disables focus emulation and restores shortcut handli
   assert.equal(f.agent.isDispatching(f.tab), false);
 });
 
-test('each bot gets a stable accent and busy callbacks bracket dispatch', async () => {
-  assert.equal(botAccent('shared').hue, 168);
-  assert.equal(botAccent('').hue, 168);
-  assert.deepEqual(botAccent('123'), botAccent('123'));
-  assert.ok(botAccent('123').hue >= 0 && botAccent('123').hue < 360);
+test('agent accent is the shared green and busy callbacks bracket dispatch', async () => {
+  assert.equal(botAccent('shared').hue, 152);
+  assert.equal(botAccent('').hue, 152);
+  assert.equal(botAccent('123').hue, 152);
+  assert.deepEqual(botAccent('123'), botAccent('999'), 'Every bot shares the one agent green.');
   assert.ok(botAccent('123').main.startsWith('hsl('));
   const f = fixture(), busy = [];
   const agent = createAgentInput({ requireActor, command: async (_t, method, params) => { f.calls.push({ method, ...params }); return {}; }, botName: () => 'Test Bot', onBusy: (_t, on) => busy.push(on) });

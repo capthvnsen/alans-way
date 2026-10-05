@@ -69,19 +69,17 @@ function tintScript(on) {
     host = document.createElement('div'); host.id = id;
     host.setAttribute('aria-hidden', 'true');
     host.style.cssText = 'all:initial!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;z-index:2147483645!important;pointer-events:none!important;user-select:none!important;';
-    host.attachShadow({ mode: 'closed' }).innerHTML = '<style>div{position:fixed;inset:0;pointer-events:none;box-shadow:inset 0 0 0 3px rgba(105,245,212,.32),inset 0 -140px 160px -110px rgba(105,245,212,.14);border-radius:2px}</style><div></div>';
+    host.attachShadow({ mode: 'closed' }).innerHTML = '<style>div{position:fixed;inset:0;pointer-events:none;box-shadow:inset 0 0 0 3px rgba(168,233,204,.34),inset 0 -140px 160px -110px rgba(168,233,204,.15);border-radius:2px}</style><div></div>';
     document.documentElement.appendChild(host);
   })()`;
 }
 
-// Each bot gets a stable accent hue so a shared desktop shows which agent owns
-// the moving cursor. 'shared' and unnamed actors keep the default teal.
-function botAccent(botId) {
-  const id = String(botId || '');
-  let h = 5381;
-  for (const ch of id) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
-  const hue = id && id !== 'shared' ? h % 360 : 168;
-  return { hue, main: `hsl(${hue},85%,63%)`, stroke: `hsl(${hue},65%,24%)`, labelBg: `hsl(${hue},55%,16%)`, labelFg: `hsl(${hue},85%,88%)`, border: `hsl(${hue},95%,72%)` };
+// One agent accent so the cursor, page tint, control state and work glow all
+// read as the same avatar-glow green everywhere an agent is working.
+const AGENT_HUE = 152;
+function botAccent(_botId) {
+  const hue = AGENT_HUE;
+  return { hue, main: `hsl(${hue},75%,62%)`, stroke: `hsl(${hue},60%,26%)`, labelBg: `hsl(${hue},48%,15%)`, labelFg: '#a8e9cc', border: '#a8e9cc' };
 }
 
 function createAgentInput({ command, requireActor, botName = () => 'Agent', onBusy = () => {} }) {
