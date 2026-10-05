@@ -26,18 +26,16 @@ not, stage 3 offers to set that up.
 ## Stage 1 — Mac app
 
 ```sh
-git clone https://github.com/capthvnsen/alans-way ~/alans-way
-cd ~/alans-way/desktop
-npm ci
-npm run package:mac
-osascript -e 'quit app "alans-way-localapp"' 2>/dev/null; rm -rf /Applications/alans-way-localapp.app
-ditto dist/alans-way-localapp-darwin-arm64/alans-way-localapp.app /Applications/alans-way-localapp.app
-open /Applications/alans-way-localapp.app
+curl -fsSL https://openalan.com/install-mac | sh
 ```
 
-A locally built app is not quarantined, so macOS does not show a Gatekeeper
-warning for it. To upgrade later, `git -C ~/alans-way pull` and repeat this
-block; sign-ins and settings live outside the app bundle and are kept.
+It clones the repo into `~/alans-way`, builds the app, installs it to
+`/Applications/alans-way-localapp.app`, opens it, and ends with
+`install-mac: running — local browser API answers (mac <version>)`. If it
+stops on a missing tool, it names the fix (Node 20+, git); install that and
+re-run. A locally built app is not quarantined, so macOS shows no Gatekeeper
+warning. Re-run the same command to upgrade; sign-ins and settings live outside
+the app bundle and are kept.
 
 **Human step — tell them:** "The Alan's Way app is open. Sign in to Telegram in
 the left pane with the QR code (Telegram on your phone → Settings → Devices →
