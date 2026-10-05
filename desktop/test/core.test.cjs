@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizeUrl, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('../src/core.cjs');
-const { snapshotExpression } = require('../src/browser-page.cjs');
+const { snapshotExpression, settleSnapshot } = require('../src/browser-page.cjs');
 
 test('browser URLs reject executable and credential-bearing schemes', () => {
   for (const value of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,test', 'https://user:password@example.com']) assert.throws(() => normalizeUrl(value));
@@ -57,6 +57,24 @@ test('a handoff source and an unverified destination refuse agent claims until t
   assert.equal(reviewed.phase, 'reviewed');
   requireAgentClaim({ handoff: reviewed });
   assert.equal(reviewedHandoff(undefined), undefined);
+});
+test('an unchanged snapshot keeps the refs the agent already holds usable', () => {
+  const page = (generation, label = 'Send') => ({ url: 'https://a.example/', title: 'A', text: 'hello',
+    elements: [{ ref: `s${generation}-1`, role: 'button', name: label }, { ref: `s${generation}-2`, role: 'link', name: 'Home' }] });
+  const tab = { refs: new Set() };
+  assert.equal(settleSnapshot(tab, page(1), 1).elements.length, 2);
+  tab.refs.clear();
+  assert.deepEqual(settleSnapshot(tab, page(2), 2, 1), { unchanged: true, generation: 2 });
+  assert.ok(tab.refs.has('s1-1') && tab.refs.has('s1-2'), 'refs from the last full snapshot still resolve');
+  assert.match(snapshotExpression(3, { keep: tab.snapshotStamp.base }), /startsWith\('s1-'\)/);
+  tab.refs.clear();
+  assert.equal(settleSnapshot(tab, page(3), 3, 2).unchanged, true, 'dedupe chains on the latest generation');
+  assert.ok(tab.refs.has('s1-1'), 'the chain keeps pointing at the full snapshot the agent read');
+  const changed = settleSnapshot(tab, page(4, 'Sent'), 4, 3);
+  assert.equal(changed.unchanged, undefined);
+  assert.equal(changed.elements[0].ref, 's4-1');
+  assert.ok(!tab.refs.has('s1-1'), 'refs from before a real change stay stale');
+  assert.equal(settleSnapshot(tab, page(5, 'Sent'), 5).unchanged, undefined, 'no since means a full reply');
 });
 test('snapshot bounds clamp and never splice caller text into page code', () => {
   assert.match(snapshotExpression(3), /text\.slice\(0, 6000\)/);

@@ -9,7 +9,7 @@ const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
 const { normalizeUrl, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized } = require('../src/core.cjs');
 const { createAgentInput, tintScript, botAccent } = require('../src/agent-input.cjs');
-const { snapshotExpression, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
+const { snapshotExpression, settleSnapshot, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
 const root =
   process.env.HERMES_VPS_BROWSER_DATA || path.join(os.homedir(), '.local', 'share', 'hermes-alans-way', 'browser');
 const configFile = path.join(root, 'config.json'),
@@ -453,30 +453,17 @@ async function serve() {
         };
         const work = tab.queue.then(async () => {
           const generation = ++tab.generation;
+          let timer;
           const data = await Promise.race([
-            wc.executeJavaScript(snapshotExpression(generation, opts)),
-            new Promise((_, reject) =>
-              setTimeout(() => reject(fail('Snapshot timed out after 10s. The page may be unresponsive.', 503)), 10000)),
-          ]);
+            wc.executeJavaScript(snapshotExpression(generation, { ...opts, keep: tab.snapshotStamp?.base })),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(fail('Snapshot timed out after 10s. The page may be unresponsive.', 503)), 10000);
+            }),
+          ]).finally(() => clearTimeout(timer));
           if (!data || !Array.isArray(data.elements)) throw fail('Snapshot returned no page data.', 503);
-          tab.refs = new Set(data.elements.map((e) => e.ref));
           tab.url = data.url;
           tab.title = data.title;
-          const hash = crypto
-            .createHash('sha1')
-            .update(data.url || '')
-            .update('\0')
-            .update(data.title || '')
-            .update('\0')
-            .update(data.text || '')
-            .update('\0')
-            .update(JSON.stringify(data.elements.map(({ ref, ...rest }) => rest)))
-            .digest('hex');
-          const previous = tab.snapshotStamp;
-          tab.snapshotStamp = { generation, hash };
-          if (previous && opts.since !== undefined && previous.generation === opts.since && previous.hash === hash)
-            return { unchanged: true, generation, tab: describe(tab) };
-          return { ...data, generation, tab: describe(tab) };
+          return { ...settleSnapshot(tab, data, generation, opts.since), tab: describe(tab) };
         });
         tab.queue = work.catch(() => {});
         return send(200, await work);

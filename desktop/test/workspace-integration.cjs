@@ -123,6 +123,13 @@ app.whenReady().then(async () => {
   const deduped = await api(`/v1/tabs/${colored[0].id}/snapshot?since=${bounded.generation}`);
   assert.equal(deduped.unchanged, true, 'since=<last generation> dedupes an unchanged snapshot');
   assert.ok(deduped.generation > bounded.generation);
+  // An action clears refs; an unchanged reply must not strand the ones the agent holds.
+  const heldRef = bounded.elements.find(item => item.name === 'Open fixture popup').ref;
+  await api(`/v1/tabs/${colored[0].id}/actions`, 'POST', { action: 'scroll', x: 0, y: 0, epoch: colored[0].epoch });
+  const afterAction = await api(`/v1/tabs/${colored[0].id}/snapshot?since=${deduped.generation}`);
+  assert.equal(afterAction.unchanged, true);
+  const reused = await apiRaw(`/v1/tabs/${colored[0].id}/actions`, 'POST', { action: 'move', ref: heldRef, epoch: colored[0].epoch });
+  assert.equal(reused.status, 200, 'a ref from the last full snapshot still works after an unchanged reply');
   assert.equal((await apiRaw(`/v1/tabs/${colored[0].id}/snapshot?maxElements=abc`, 'GET', undefined, 'overseer-bot')).status, 400, 'non-integer bounds are rejected');
   const jpeg = await api(`/v1/tabs/${colored[0].id}/screenshot`);
   assert.equal(jpeg.mimeType, 'image/jpeg', 'screenshots default to jpeg');
