@@ -73,7 +73,7 @@ function savePreferences() {
 function describeTab(tab) {
   const url = tab.view.webContents.getURL();
   return { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
-    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
+    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
 }
 function isVpsTab(id) { return vpsTabs.has(id); }
 async function refreshVpsTabs() {
@@ -678,6 +678,7 @@ async function captureTab(tab) {
 async function performAction(tab, body, botId, depth = 0) {
   const overseer = isOverseer(botId);
   requireActor(tab, botId, body.epoch, true, overseer);
+  const wc = tab.view.webContents;
   if (body.action === 'batch') {
     if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
     const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
@@ -709,9 +710,9 @@ async function performAction(tab, body, botId, depth = 0) {
     const visible = body.visible === true;
     const timeout = Math.min(Math.max(Number(body.timeout) || 10000, 100), 30000);
     if (!selector && !text && !urlPart) throw Object.assign(new Error('wait needs a selector, text, or url to wait for.'), { status: 400 });
-    const code = `new Promise((resolve) => {
+    const waitCode = (ms) => `new Promise((resolve) => {
       const sel = ${JSON.stringify(selector)}, txt = ${JSON.stringify(text)}, urlP = ${JSON.stringify(urlPart)}, vis = ${visible};
-      const deadline = Date.now() + ${timeout};
+      const deadline = Date.now() + ${ms};
       const check = () => {
         if (urlP && !location.href.includes(urlP)) return false;
         if (sel) {
@@ -733,14 +734,53 @@ async function performAction(tab, body, botId, depth = 0) {
       mo = new MutationObserver(() => { if (check()) done(true); });
       mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
       poll = setInterval(() => { if (check() || Date.now() > deadline) done(check()); }, 100);
-      setTimeout(() => done(check()), ${timeout});
+      setTimeout(() => done(check()), ${ms});
     })`;
-    const value = await Promise.race([
-      tab.view.webContents.executeJavaScript(code, true),
-      new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('wait host timed out.'), { status: 408 })), timeout + 5000)),
-    ]);
-    if (!value || !value.found) throw Object.assign(new Error(`wait timed out after ${value ? value.waited : timeout}ms for ${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`), { status: 408 });
+    const hostStart = Date.now();
+    let value = null;
+    while (Date.now() - hostStart < timeout + 1000) {
+      const remaining = Math.max(400, timeout - (Date.now() - hostStart));
+      const attempt = await Promise.race([
+        wc.executeJavaScript(waitCode(remaining), true).catch(() => ({ navRetry: true })),
+        new Promise((r) => setTimeout(() => r({ navRetry: true }), remaining + 1500)),
+      ]);
+      if (attempt && !attempt.navRetry) { value = attempt; break; }
+      if (urlPart && wc.getURL().includes(urlPart)) { value = { found: true, waited: Date.now() - hostStart }; break; }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!value || !value.found) throw Object.assign(new Error(`wait timed out after ${value ? value.waited : Date.now() - hostStart}ms for ${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`), { status: 408 });
     return { waited: value.waited, tab: describeTab(tab), dispatched: true };
+  }
+  if (body.action === 'viewport') {
+    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    if (body.clear === true) {
+      await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
+      delete tab.viewport;
+      return { viewport: null, tab: describeTab(tab), dispatched: true };
+    }
+    const width = Math.round(Number(body.width)), height = Math.round(Number(body.height));
+    const scale = Math.min(Math.max(Number(body.scale) || 1, 0.1), 5);
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 100 || width > 7680 || height < 100 || height > 4320)
+      throw Object.assign(new Error('viewport needs width 100-7680 and height 100-4320, or clear:true.'), { status: 400 });
+    await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
+    tab.viewport = { width, height, scale };
+    broadcast();
+    return { viewport: tab.viewport, tab: describeTab(tab), dispatched: true };
+  }
+  if (body.action === 'cdp') {
+    const method = String(body.method || '');
+    if (!/^(Page|Runtime|Input|Emulation|Network|DOM|DOMSnapshot|Accessibility|CSS|Log|Fetch|Storage)\.[a-zA-Z]+$/.test(method))
+      throw Object.assign(new Error('Unsupported CDP method. Allowed domains: Page, Runtime, Input, Emulation, Network, DOM, DOMSnapshot, Accessibility, CSS, Log, Fetch, Storage.'), { status: 400 });
+    const params = body.params && typeof body.params === 'object' ? body.params : {};
+    if (JSON.stringify(params).length > 64000) throw Object.assign(new Error('cdp params too large (max 64KB).'), { status: 400 });
+    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    let value = await Promise.race([
+      wc.debugger.sendCommand(method, params),
+      new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('cdp timed out after 20s.'), { status: 408 })), 20000)),
+    ]);
+    const cdpSerialized = typeof value === 'string' ? value : JSON.stringify(value);
+    if (cdpSerialized && cdpSerialized.length > 48000) value = cdpSerialized.slice(0, 48000) + '…[truncated]';
+    return { value, tab: describeTab(tab), dispatched: true };
   }
   if (['click', 'type', 'press', 'scroll', 'move'].includes(body.action)) {
     const result = await agentInput.perform(tab, body, botId);
@@ -748,7 +788,6 @@ async function performAction(tab, body, botId, depth = 0) {
     broadcast();
     return { ...result, tab: describeTab(tab), dispatched: true };
   }
-  const wc = tab.view.webContents;
   if (body.action === 'navigate') {
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
@@ -760,7 +799,7 @@ async function performAction(tab, body, botId, depth = 0) {
     if (body.action === 'back' && history.canGoBack()) history.goBack();
     else if (body.action === 'forward' && history.canGoForward()) history.goForward();
     else if (body.action === 'reload') wc.reload();
-  } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, move, scroll, back, forward, reload, batch, eval, wait.'), { status: 400 });
+  } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, move, scroll, back, forward, reload, batch, eval, wait, viewport, cdp.'), { status: 400 });
   tab.refs.clear(); broadcast();
   return { tab: describeTab(tab), dispatched: true };
 }
@@ -779,7 +818,7 @@ function startApi() {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
       const overseer = isOverseer(botId);
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', hosts:{mac:'connected',vps:vpsBrowserStatus}, capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'batch', 'eval', 'wait', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', hosts:{mac:'connected',vps:vpsBrowserStatus}, capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'batch', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await telegramView.webContents.executeJavaScript(`(() => ({
           styled: document.body.classList.contains('hw-chat'),

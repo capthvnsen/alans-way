@@ -97,6 +97,7 @@ async function serve() {
     host: 'vps',
     session: 'shared-vps',
     loading: false,
+    viewport: t.viewport || null,
     agentCursor: t.agentCursor || null,
     agentBusy: input.isDispatching(t),
     handoff: t.handoff || null,
@@ -231,9 +232,9 @@ async function serve() {
       const visible = body.visible === true;
       const timeout = Math.min(Math.max(Number(body.timeout) || 10000, 100), 30000);
       if (!selector && !text && !urlPart) throw fail('wait needs a selector, text, or url to wait for.');
-      const code = `new Promise((resolve) => {
+      const waitCode = (ms) => `new Promise((resolve) => {
         const sel = ${JSON.stringify(selector)}, txt = ${JSON.stringify(text)}, urlP = ${JSON.stringify(urlPart)}, vis = ${visible};
-        const deadline = Date.now() + ${timeout};
+        const deadline = Date.now() + ${ms};
         const check = () => {
           if (urlP && !location.href.includes(urlP)) return false;
           if (sel) {
@@ -255,14 +256,50 @@ async function serve() {
         mo = new MutationObserver(() => { if (check()) done(true); });
         mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
         poll = setInterval(() => { if (check() || Date.now() > deadline) done(check()); }, 100);
-        setTimeout(() => done(check()), ${timeout});
+        setTimeout(() => done(check()), ${ms});
       })`;
-      const value = await Promise.race([
-        wc.executeJavaScript(code),
-        new Promise((_, reject) => setTimeout(() => reject(fail('wait host timed out.', 408)), timeout + 5000)),
-      ]);
-      if (!value || !value.found) throw fail(`wait timed out after ${value ? value.waited : timeout}ms for ${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`, 408);
+      const hostStart = Date.now();
+      let value = null;
+      while (Date.now() - hostStart < timeout + 1000) {
+        const remaining = Math.max(400, timeout - (Date.now() - hostStart));
+        const attempt = await Promise.race([
+          wc.executeJavaScript(waitCode(remaining)).catch(() => ({ navRetry: true })),
+          new Promise((r) => setTimeout(() => r({ navRetry: true }), remaining + 1500)),
+        ]);
+        if (attempt && !attempt.navRetry) { value = attempt; break; }
+        if (urlPart && tab.url.includes(urlPart)) { value = { found: true, waited: Date.now() - hostStart }; break; }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      if (!value || !value.found) throw fail(`wait timed out after ${value ? value.waited : Date.now() - hostStart}ms for ${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`, 408);
       return { waited: value.waited, dispatched: true };
+    }
+    if (body.action === 'viewport') {
+      if (body.clear === true) {
+        await wc.command('Emulation.clearDeviceMetricsOverride');
+        delete tab.viewport;
+        return { viewport: null, dispatched: true };
+      }
+      const width = Math.round(Number(body.width)), height = Math.round(Number(body.height));
+      const scale = Math.min(Math.max(Number(body.scale) || 1, 0.1), 5);
+      if (!Number.isInteger(width) || !Number.isInteger(height) || width < 100 || width > 7680 || height < 100 || height > 4320)
+        throw fail('viewport needs width 100-7680 and height 100-4320, or clear:true.');
+      await wc.command('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
+      tab.viewport = { width, height, scale };
+      return { viewport: tab.viewport, dispatched: true };
+    }
+    if (body.action === 'cdp') {
+      const method = String(body.method || '');
+      if (!/^(Page|Runtime|Input|Emulation|Network|DOM|DOMSnapshot|Accessibility|CSS|Log|Fetch|Storage)\.[a-zA-Z]+$/.test(method))
+        throw fail('Unsupported CDP method. Allowed domains: Page, Runtime, Input, Emulation, Network, DOM, DOMSnapshot, Accessibility, CSS, Log, Fetch, Storage.');
+      const params = body.params && typeof body.params === 'object' ? body.params : {};
+      if (JSON.stringify(params).length > 64000) throw fail('cdp params too large (max 64KB).');
+      let value = await Promise.race([
+        wc.command(method, params),
+        new Promise((_, reject) => setTimeout(() => reject(fail('cdp timed out after 20s.', 408)), 20000)),
+      ]);
+      const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+      if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
+      return { value, dispatched: true };
     }
     if (['click', 'type', 'press', 'move', 'scroll'].includes(body.action)) await input.perform(tab, body, botId);
     else if (body.action === 'navigate') {

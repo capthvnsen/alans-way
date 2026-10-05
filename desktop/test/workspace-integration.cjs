@@ -249,6 +249,18 @@ app.whenReady().then(async () => {
   const blocked = await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'click', selector: '#nonexistent', epoch: seizedTab.epoch }, 'overseer-bot');
   assert.equal(blocked.status, 400, 'A missing element reports a named failure.');
   console.log('PASS: wait visible/url conditions and covered-element clicks via alternate points.');
+  // viewport overrides the tab layout size for breakpoint-sensitive pages;
+  // cdp exposes raw DevTools commands inside the same epoch gate.
+  const resized = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'viewport', width: 1440, height: 900, epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.deepEqual(resized.viewport, { width: 1440, height: 900, scale: 1 });
+  const measured = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: '({w:innerWidth,h:innerHeight})', epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.deepEqual(measured.value, { w: 1440, h: 900 }, 'viewport override changes the page layout size.');
+  const cleared = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'viewport', clear: true, epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.equal(cleared.viewport, null, 'clear removes the viewport override.');
+  const cdpResult = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'cdp', method: 'Runtime.evaluate', params: { expression: '21*2', returnByValue: true }, epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.equal(cdpResult.value.result.value, 42, 'cdp Runtime.evaluate returns the result.');
+  assert.equal((await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'cdp', method: 'Target.createTarget', params: {}, epoch: seizedTab.epoch }, 'overseer-bot')).status, 400, 'cdp rejects out-of-scope domains.');
+  console.log('PASS: viewport override, clear, raw cdp command, and domain allowlist.');
   // The designated primary bot pins to the top of the sidebar with a PRIMARY
   // badge; with no explicit pick the overseer bot is the primary.
   state = await invoke('settings', { primaryBotId: '123' });
