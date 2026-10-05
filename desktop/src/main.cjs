@@ -28,6 +28,7 @@ let registeringExtensionTab = false;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 const tabs = new Map();
 const vpsTabs = new Map();
+const recentLinkTabs = new Map();
 let vpsBrowserStatus = 'unconfigured', vpsRefreshBusy = false, vpsTimer;
 const vpsBrowser = createVpsBrowser({ getConfig: () => prefs?.vpsBrowser });
 const configuredSessions = new WeakSet();
@@ -106,6 +107,7 @@ function getState() {
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
+    autoOpenLinks: prefs.autoOpenLinks !== false,
     activeTabId, browserContentsId: tabs.get(activeTabId)?.view.webContents.id || null, browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [],
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
@@ -170,6 +172,15 @@ function configureContents(contents, isTelegram = false) {
     let url;
     const extensionPage = !isTelegram && isExtensionUrl(details.url);
     try { url = extensionPage ? details.url : normalizeUrl(details.url); } catch { return { action: 'deny' }; }
+    if (isTelegram) {
+      // Telegram window-opens message links for previews too; if the chat-link
+      // scanner just opened this URL, reuse that tab instead of duplicating.
+      const opened = recentLinkTabs.get(url);
+      if (opened && Date.now() - opened.at < 15000 && tabs.has(opened.tabId)) {
+        if (details.disposition !== 'background-tab') { activeTabId = opened.tabId; broadcast(); }
+        return { action: 'deny' };
+      }
+    }
     return { action: 'allow', createWindow: (options) => {
       const parent = [...tabs.values()].find((tab) => tab.view.webContents === contents);
       const tab = createTab({ url, extensionPage, botId: parent?.botId || prefs.selectedBotId || 'shared', controller: extensionPage ? 'human' : parent?.controller || 'human', options, skipLoad: details.disposition !== 'background-tab', activate: parent?.controller !== 'agent' && details.disposition !== 'background-tab' });
@@ -212,6 +223,7 @@ function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared
       webSecurity: true, backgroundThrottling: false } });
   view.setBackgroundColor('#0b0b0c');
   const tab = { id: crypto.randomUUID(), view, botId: String(botId).slice(0, 100), controller, extensionPage, epoch: 1, title: 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
+  if (controller === 'agent') tab.agentSince = Date.now();
   tabs.set(tab.id, tab);
   tab.host = backgroundHost();
   tab.host.contentView.addChildView(view);
@@ -435,6 +447,7 @@ function registerIpc() {
         if (typeof value.preview === 'boolean') prefs.preview = value.preview;
         if (typeof value.showBots === 'boolean') prefs.showBots = value.showBots;
         if (typeof value.macSshHost === 'string') prefs.macSshHost = value.macSshHost.slice(0, 200).trim();
+        if (typeof value.autoOpenLinks === 'boolean') prefs.autoOpenLinks = value.autoOpenLinks;
         if (typeof value.primaryBotId === 'string') prefs.primaryBotId = prefs.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : prefs.primaryBotId;
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) prefs.locationDefault = value.locationDefault;
         if (Number.isFinite(value.chatWidth)) prefs.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
@@ -531,6 +544,22 @@ function registerIpc() {
   ipcMain.on('telegram:activity', (event, packet) => {
     if (event.sender !== telegramView?.webContents || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith(TELEGRAM)) return;
     if (activity.ingest(packet)) broadcast();
+  });
+  const linkOpenedAt = new Map();
+  ipcMain.on('telegram:link', (event, value) => {
+    if (event.sender !== telegramView?.webContents || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith(TELEGRAM)) return;
+    if (prefs.autoOpenLinks === false) return;
+    const chatId = String(value?.chatId || ''), url = String(value?.url || '').slice(0, 2048);
+    if (!prefs.bots.some((bot) => bot.id === chatId) || !/^https?:\/\//i.test(url)) return;
+    const now = Date.now();
+    if (now - (linkOpenedAt.get(chatId) || 0) < 3000) return;
+    linkOpenedAt.set(chatId, now);
+    try {
+      const normalized = normalizeUrl(url);
+      const tab = createTab({ url: normalized, botId: chatId, controller: 'agent', activate: value.outgoing === true });
+      recentLinkTabs.set(normalized, { tabId: tab.id, at: now });
+      if (recentLinkTabs.size > 50) recentLinkTabs.clear();
+    } catch {}
   });
 }
 
@@ -707,7 +736,7 @@ function createWindow() {
   win = new BrowserWindow({ width: 1550, height: 980, minWidth: 1120, minHeight: 680, backgroundColor: '#09090a', title: app.getName(),
     titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 },
     webPreferences: { preload: path.join(ROOT, 'preload.bundle.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
-  telegramView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'telegram-preload.cjs'), partition: 'persist:telegram', contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  telegramView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'telegram-preload.bundle.cjs'), partition: 'persist:telegram', contextIsolation: true, nodeIntegration: false, sandbox: true } });
   telegramView.setBackgroundColor('#09090a');
   configureContents(telegramView.webContents, true);
   telegramView.webContents.on('did-start-loading', () => { activity.clear(); broadcast(); });

@@ -1,10 +1,12 @@
 const { ipcRenderer, contextBridge } = require('electron');
+const { firstLink, scanLinks } = require('./link-share.cjs');
 
 // Read only the API worker's actual chat-action updates. Do not infer work from
 // outgoing messages, previews, unread counts, or the persisted Telegram cache.
 // Upstream: src/api/gramjs/worker/connector.ts and updates/mtpUpdateHandler.ts
 // https://github.com/Ajaxy/telegram-tt
 let activityAccountId = '', activityConnected = false, activitySequence = 0;
+const seenLinks = new Map(), sentLinkIds = new Set();
 let activityWorkerReady = false, activityNetworkReady = true, activityRuntimeAccount = '';
 const telegramActions = new Set(['typing', 'recordVideo', 'uploadVideo', 'recordAudio', 'uploadAudio', 'uploadPhoto',
   'uploadFile', 'chooseLocation', 'chooseContact', 'playingGame', 'recordRound', 'uploadRound', 'chooseSticker', 'watchingAnimations']);
@@ -128,21 +130,23 @@ const CSS = `
   body.hw-chat .Composer { width: calc(100% - 24px) !important; max-width: none !important; margin: 0 12px 10px !important; }
   #auth-qr-form, #auth-phone-number-form { max-width: calc(100vw - 38px) !important; }
 `;
-let busy = false, db, previous = '', timer;
+let busy = false, db, previous = '', timer, dbDiag = 'init';
 function readDatabase() {
   return new Promise((resolve) => {
     if (db) return read(db);
     const request = indexedDB.open('tt-data');
     // The wrapper never creates or upgrades Telegram's database.
-    request.onupgradeneeded = () => { request.transaction.abort(); resolve(null); };
-    request.onerror = () => resolve(null);
+    request.onupgradeneeded = () => { request.transaction.abort(); dbDiag = 'upgradeneeded'; resolve(null); };
+    request.onerror = () => { dbDiag = 'open-error'; resolve(null); };
+    request.onblocked = () => { dbDiag = 'open-blocked'; };
     request.onsuccess = () => { db = request.result; db.onversionchange = () => { db.close(); db = null; }; read(db); };
     function read(database) {
-      if (!database.objectStoreNames.contains('store')) return resolve(null);
+      if (!database.objectStoreNames.contains('store')) { dbDiag = `no-store:${[...database.objectStoreNames].join('|')}`; return resolve(null); }
       const slot = new URL(location.href).searchParams.get('account');
       const key = slot && slot !== '1' ? `tt-global-state_${slot}` : 'tt-global-state';
       const get = database.transaction('store', 'readonly').objectStore('store').get(key);
-      get.onsuccess = () => resolve(get.result || null); get.onerror = () => resolve(null);
+      get.onsuccess = () => { dbDiag = get.result ? 'ok' : `empty:${key}`; resolve(get.result || null); };
+      get.onerror = () => { dbDiag = 'get-error'; resolve(null); };
     }
   });
 }
@@ -168,6 +172,9 @@ async function sync() {
       const row = link?.closest('.Chat, .ListItem') || link;
       const lastId = chat.lastMessageId || cached.chats?.lastMessageIds?.all?.[user.id];
       const last = cached.messages?.byChatId?.[user.id]?.byId?.[lastId];
+      if (status === 'connected') scanLinks({ userId: user.id, byId: cached.messages?.byChatId?.[user.id]?.byId,
+        lastId, currentUserId: cached?.currentUserId, seen: seenLinks, sent: sentLinkIds,
+        send: (value) => ipcRenderer.send('telegram:link', value) });
       let avatar = '';
       const image = row?.querySelector('.Avatar img, .avatar img, img');
       if (image?.complete && image.naturalWidth) {
@@ -189,7 +196,7 @@ async function sync() {
     });
     const packet = { status, accountId: cached?.currentUserId ? String(cached.currentUserId) : '', bots, selectedId: selectedBot ? selectedId : '',
       diagnostics: { userCount: Object.keys(users).length, botCount: Object.values(users).filter(user => user?.isBot === true || user?.type === 'userTypeBot' || user?.type === 'bot').length, chatCount: Object.keys(chats).length,
-        chatNodes: links.length,
+        chatNodes: links.length, storeKeys: cached ? Object.keys(cached) : [], lastIds: bots.map(bot => [bot.id, chats[bot.id]?.lastMessageId || 0]), dbDiag,
         userFields: Object.keys(Object.values(users)[0] || {}), usersFields: Object.keys(cached?.users || {}), chatsFields: Object.keys(cached?.chats || {}) } };
     const signature = JSON.stringify(packet);
     if (signature !== previous) { previous = signature; ipcRenderer.send('telegram:catalog', packet); }

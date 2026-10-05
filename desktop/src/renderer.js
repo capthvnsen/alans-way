@@ -386,6 +386,11 @@ function showSettings() {
   primarySelect.value = state.primaryBotPref || '';
   primarySelect.onchange = async () => { await command('settings', { primaryBotId: primarySelect.value }); toast(primarySelect.value ? 'Primary bot pinned at the top of the sidebar.' : 'Primary bot cleared.'); };
   primaryField.append(primaryLabel, primarySelect); body.append(primaryField);
+  const linkRow = element('div', 'setting-row'); linkRow.append(element('span', '', 'Open links sent in bot chats as tabs'));
+  const linkToggle = element('button', 'secondary-button', state.autoOpenLinks ? 'On' : 'Off');
+  linkToggle.onclick = async () => { const next = !state.autoOpenLinks; await command('settings', { autoOpenLinks: next }); state.autoOpenLinks = next; linkToggle.textContent = next ? 'On' : 'Off'; };
+  linkRow.append(linkToggle); body.append(linkRow);
+  body.append(element('p', 'settings-note', 'A link sent by you or a bot opens a local tab assigned to that bot, so both of you can see it. If the Mac is unreachable, the bot opens its own copy on the VPS desktop instead.'));
   body.append(element('p', 'settings-note', 'The setup installs the Alan’s Way agent plugin on your gateway host and wires this Mac’s browser connector for the selected bot. Run once per bot.'));
   body.append(element('p', 'settings-note', 'Taking over a local tab blocks new agent actions on that tab. VPS control currently uses your existing shared desktop; it does not pause your Hermes bots.'));
   body.append(element('hr', 'section-divider'));

@@ -6,3 +6,5 @@ screenshots/
 .env
 connection.json
 src/preload.bundle.cjs
+
+src/telegram-preload.bundle.cjs
