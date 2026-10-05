@@ -50,18 +50,17 @@ The app works without the plugin (manual tab sharing), and the plugin falls back
 
 **Setting this up with an AI agent?** Point it at [docs/setup-for-agents.md](docs/setup-for-agents.md) — one page covering the Mac app, the VPS and the Hermes plugin, with a check after every stage and the exact steps that need you.
 
-Requires an Apple Silicon Mac and Node 20+:
+Requires an Apple Silicon Mac with git and Node 20+. One command builds the app,
+installs it to `/Applications` and opens it; re-run it to upgrade:
 
 ```sh
-git clone https://github.com/capthvnsen/alans-way
-cd alans-way/desktop
-npm ci
-npm start
+curl -fsSL https://openalan.com/install-mac | sh
 ```
 
 Sign into Telegram inside the app, and your existing bots appear in the sidebar.
 
-To package a double-clickable app: `npm run package:mac` (see the [desktop guide](desktop/README.md)).
+For development, run from source instead: `cd desktop && npm ci && npm start`
+(see the [desktop guide](desktop/README.md)).
 
 ## Connect your agents
 
