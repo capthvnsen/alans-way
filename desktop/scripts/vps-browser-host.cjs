@@ -7,7 +7,7 @@ const fs = require('node:fs'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
-const { normalizeUrl, requireActor, requireAgentRead, isAuthorized } = require('../src/core.cjs');
+const { normalizeUrl, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized } = require('../src/core.cjs');
 const { createAgentInput, tintScript, botAccent } = require('../src/agent-input.cjs');
 const { snapshotExpression, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
 const root =
@@ -28,6 +28,9 @@ const intParam = (url, key, min, max) => {
   if (!Number.isInteger(value)) throw fail(`${key} must be an integer.`);
   return Math.max(min, Math.min(max, value));
 };
+// Must stay below the request timeouts for /actions in request() and the
+// Mac's SSH proxy, allowing a final 30s wait step to finish.
+const BATCH_BUDGET_MS = 50000;
 const overseerBots = new Set(
   String(process.env.HERMES_OVERSEER_BOT_IDS || '')
     .split(',')
@@ -58,7 +61,7 @@ async function request(input) {
       'Content-Type': 'application/json',
     },
     ...(input.body ? { body: JSON.stringify(input.body) } : {}),
-    signal: AbortSignal.timeout(25000),
+    signal: AbortSignal.timeout(/\/actions$/.test(input.path) ? 84000 : 25000),
   });
   const data = await response.json();
   return { status: response.status, data };
@@ -141,7 +144,7 @@ async function serve() {
   setInterval(() => {
     const now = Date.now();
     for (const t of tabs.values()) {
-      if (t.controller !== 'agent') continue;
+      if (t.controller !== 'agent' || t.pendingActions > 0 || input.isDispatching(t)) continue;
       if (now - Math.max(t.agentSince || 0, t.lastAgentActivity || 0) <= agentIdleMs) continue;
       t.controller = 'human';
       t.epoch++;
@@ -206,6 +209,38 @@ async function serve() {
     }
     throw fail('VPS page is still loading. Inspect it before continuing.', 504);
   }
+  // Reload and history entries resolve on dispatch, not on load. Subscribe
+  // before triggering so a cached or same-document navigation is not missed.
+  async function settle(tab, trigger) {
+    const wc = tab.view.webContents;
+    await wc.command('Page.enable').catch(() => {});
+    let listener, timer;
+    const settled = new Promise((resolve) => {
+      listener = (m) => {
+        if (m.sessionId !== wc.sessionId) return;
+        if (m.method === 'Page.loadEventFired' || m.method === 'Page.navigatedWithinDocument' ||
+          (m.method === 'Page.frameNavigated' && m.params?.type === 'BackForwardCacheRestore')) resolve();
+      };
+      cdp.listeners.add(listener);
+      timer = setTimeout(resolve, 15000);
+    });
+    try {
+      await trigger();
+      await settled;
+    } finally {
+      clearTimeout(timer);
+      cdp.listeners.delete(listener);
+    }
+    const s = await wc.executeJavaScript('({url:location.href,title:document.title})').catch(() => null);
+    if (s) Object.assign(tab, s);
+  }
+  async function history(tab, action) {
+    const wc = tab.view.webContents;
+    if (action === 'reload') return settle(tab, () => wc.command('Page.reload'));
+    const h = await wc.command('Page.getNavigationHistory');
+    const e = h.entries[h.currentIndex + (action === 'back' ? -1 : 1)];
+    if (e) await settle(tab, () => wc.command('Page.navigateToHistoryEntry', { entryId: e.id }));
+  }
   async function vpsPerform(tab, body, botId, overseer, depth = 0) {
     const wc = tab.view.webContents;
     requireActor(tab, botId, body.epoch, true, overseer);
@@ -213,9 +248,10 @@ async function serve() {
       if (depth > 0) throw fail('Batches cannot nest.');
       const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
       if (!steps.length) throw fail('batch needs a non-empty steps array (max 25).');
-      const results = [];
+      const results = [], started = Date.now();
       for (const step of steps) {
         if (!step || typeof step !== 'object') { results.push({ error: 'Invalid step.' }); break; }
+        if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
         try { results.push(await vpsPerform(tab, { ...step, epoch: body.epoch }, botId, overseer, 1)); }
         catch (error) { results.push({ error: error.message }); break; }
       }
@@ -314,11 +350,10 @@ async function serve() {
       requireActor(tab, botId, body.epoch, true, overseer);
       await wc.command('Page.navigate', { url: normalizeUrl(body.url) });
       await loaded(tab, normalizeUrl(body.url));
-    } else if (body.action === 'reload') await wc.command('Page.reload');
-    else if (['back', 'forward'].includes(body.action)) {
-      const h = await wc.command('Page.getNavigationHistory');
-      const e = h.entries[h.currentIndex + (body.action === 'back' ? -1 : 1)];
-      if (e) await wc.command('Page.navigateToHistoryEntry', { entryId: e.id });
+    } else if (['back', 'forward', 'reload'].includes(body.action)) {
+      await input.clear(tab);
+      requireActor(tab, botId, body.epoch, true, overseer);
+      await history(tab, body.action);
     } else throw fail('Unsupported VPS action.');
     if (body.action !== 'move') tab.refs.clear();
     return { dispatched: true };
@@ -470,16 +505,31 @@ async function serve() {
       }
       if (req.method === 'POST' && m[2] === 'actions') {
         const body = await read(req);
+        tab.pendingActions = (tab.pendingActions || 0) + 1;
         const action = tab.queue.then(async () => {
           const result = await vpsPerform(tab, body, botId, overseer);
           await persist();
           return { ...result, tab: describe(tab) };
+        }).finally(() => {
+          tab.pendingActions--;
+          if (!human) tab.lastAgentActivity = Date.now();
         });
         tab.queue = action.catch(() => {});
         return send(200, await action);
       }
       if ((human || overseer || botId === tab.botId) && req.method === 'POST' && m[2] === 'control') {
         const body = await read(req);
+        if (!human && body.controller === 'agent') { requireAgentClaim(tab); tab.handoff = reviewedHandoff(tab.handoff); }
+        if (human && body.handoff?.phase === 'handed_off')
+          tab.handoff = {
+            id: String(body.handoff.id || '').slice(0, 100),
+            phase: 'handed_off',
+            sourceHost: 'vps',
+            destinationHost: body.handoff.destinationHost === 'mac' ? 'mac' : 'vps',
+            destinationTabId: String(body.handoff.destinationTabId || '').slice(0, 100),
+            createdAt: Number(body.handoff.createdAt) || Date.now(),
+          };
+        else if (human && body.controller === 'agent') tab.handoff = reviewedHandoff(tab.handoff);
         tab.controller = body.controller === 'agent' ? 'agent' : 'human';
         if (tab.controller === 'agent') tab.agentSince = Date.now();
         tab.epoch++;
@@ -503,12 +553,8 @@ async function serve() {
             const target = normalizeUrl(body.url);
             await wc.command('Page.navigate', { url: target });
             await loaded(tab, target);
-          } else if (body.action === 'reload') await wc.command('Page.reload');
-          else if (['back', 'forward'].includes(body.action)) {
-            const h = await wc.command('Page.getNavigationHistory');
-            const e = h.entries[h.currentIndex + (body.action === 'back' ? -1 : 1)];
-            if (e) await wc.command('Page.navigateToHistoryEntry', { entryId: e.id });
-          } else throw fail('Unsupported human browser navigation.');
+          } else if (['back', 'forward', 'reload'].includes(body.action)) await history(tab, body.action);
+          else throw fail('Unsupported human browser navigation.');
           tab.refs.clear();
           await persist();
           return { tab: describe(tab) };

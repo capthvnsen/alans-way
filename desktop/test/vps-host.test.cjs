@@ -70,7 +70,8 @@ function stubEvaluate(pages, sessionId, expression) {
       elements: [{ ref: 's1-1', role: 'button', name: 'Stub button', type: '', value: '', href: '', disabled: false }],
       viewport: { width: 900, height: 700, deviceScaleFactor: 1 }, iframes: [] };
   if (expression.includes('drafts.push')) return { url: page.url, title: page.title, scroll: { x: 0, y: 0 }, drafts: [] };
-  if (expression.includes('c.drafts')) return { verification: 'ready', restored: 0, skipped: 0 };
+  if (expression.includes('c.drafts'))
+    return { verification: expression.includes('needs-review.example') ? 'review_required' : 'ready', restored: 0, skipped: 0 };
   if (expression.includes('link[rel~=icon]')) return '';
   if (expression.includes('innerWidth')) return { width: 900, height: 700, deviceScaleFactor: 1 };
   return null;
@@ -118,6 +119,8 @@ function createStubCdp() {
         if (frame.opcode !== 1) continue;
         const message = JSON.parse(frame.payload.toString());
         if (message.id) socket.write(wsFrame(JSON.stringify({ id: message.id, result: dispatch(message) })));
+        if (message.method === 'Page.reload')
+          setTimeout(() => socket.write(wsFrame(JSON.stringify({ method: 'Page.loadEventFired', sessionId: message.sessionId, params: {} }))), 300);
       }
     });
   });
@@ -246,4 +249,44 @@ test('an overseer releases and retakes another bot tab; a stranger cannot', asyn
   const foreign = await api(`/v1/tabs/${runaway.id}/actions`, 'POST',
     { action: 'reload', epoch: retaken.data.epoch + 1 }, { bot: 'bot-b' });
   assert.equal(foreign.status, 403, 'a stranger bot still cannot act');
+});
+
+test('reload answers only after the page load event arrives', async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: 'http://reload.example/' })).data;
+  const started = Date.now();
+  const reload = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'reload', epoch: tab.epoch });
+  assert.equal(reload.status, 200);
+  assert.ok(Date.now() - started >= 280, 'the action waited for Page.loadEventFired');
+});
+
+test('handed-off tabs refuse agent claims until the human gives them over', async () => {
+  const source = (await api('/v1/tabs', 'POST', { url: 'http://source.example/' }, { human: true })).data;
+  const retired = await api(`/v1/tabs/${source.id}/control`, 'POST',
+    { controller: 'human', handoff: { id: 'h1', phase: 'handed_off', destinationHost: 'mac', destinationTabId: 'mac-tab' } }, { human: true });
+  assert.equal(retired.data.handoff.phase, 'handed_off');
+  const blocked = await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'agent' });
+  assert.equal(blocked.status, 409);
+  assert.match(blocked.data.error, /handoff_source.*mac tab mac-tab/);
+  assert.equal((await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'agent' }, { bot: 'overseer-1' })).status, 409,
+    'an overseer cannot reopen a handed-off source either');
+  const given = await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'agent' }, { human: true });
+  assert.equal(given.data.handoff.phase, 'reviewed');
+  assert.equal(given.data.controller, 'agent');
+  await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'human' }, { human: true });
+  assert.equal((await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'agent' })).status, 200);
+
+  const restore = async (url) => {
+    const tab = (await api('/v1/tabs', 'POST', { url }, { human: true })).data;
+    const checkpoint = { url, title: '', scroll: { x: 0, y: 0 }, drafts: [] };
+    await api(`/v1/tabs/${tab.id}/restore`, 'POST', { checkpoint, handoff: { id: tab.id, phase: 'review_required' } }, { human: true });
+    return tab;
+  };
+  const unverified = await restore('http://needs-review.example/');
+  const waiting = await api(`/v1/tabs/${unverified.id}/control`, 'POST', { controller: 'agent' });
+  assert.equal(waiting.status, 409);
+  assert.match(waiting.data.error, /handoff_review_required/);
+  await api(`/v1/tabs/${unverified.id}/control`, 'POST', { controller: 'agent' }, { human: true });
+  const verified = await restore('http://destination.example/');
+  assert.equal((await api(`/v1/tabs/${verified.id}/control`, 'POST', { controller: 'agent' })).status, 200,
+    'a verified destination continues without a human step');
 });

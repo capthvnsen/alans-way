@@ -34,7 +34,7 @@ AVATAR_ASSETS = frozenset(f"desktop/assets/avatars/{name}.png" for name in (
     "minotaur", "poseidon", "zeus",
 ))
 BINARY_ASSETS.update({name: b"\x89PNG\r\n\x1a\n" for name in AVATAR_ASSETS})
-BINARY_LIMITS = {"desktop/src/newtab-backdrop.png": 4194304}
+BINARY_LIMITS = {"desktop/src/newtab-backdrop.png": 4194304, "desktop/assets/icon.icns": 2097152}
 
 
 def valid_binary_asset(path: str, blob: bytes) -> bool:

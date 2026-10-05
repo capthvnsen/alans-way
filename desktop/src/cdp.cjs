@@ -73,6 +73,7 @@ class CDP {
     const { sessionId } = await this.send('Target.attachToTarget', { targetId, flatten: true });
     const command = (method, params) => this.send(method, params, sessionId);
     return {
+      sessionId,
       command,
       executeJavaScript: async (expression) => {
         const r = await command('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
