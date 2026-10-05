@@ -27,8 +27,8 @@ function publishActivityAvailability() { sendActivity(isActivityAvailable() ? 'r
 // element in the chat header — it exists exactly while Telegram's native
 // typing animation does. Local agent-tab work arrives separately on
 // workspace:bot-activity, since it emits no chat action.
-let workActivity = {};
-let middleObserver, middleObserved;
+let workActivity = {}, botChatIds = new Set();
+let middleObserver, middleObserved, composerObserver, composerObserved;
 function nativeTyping() { return !!document.querySelector('#MiddleColumn .typing-status'); }
 function watchTypingStatus() {
   const column = document.getElementById('MiddleColumn');
@@ -45,14 +45,24 @@ function watchTypingStatus() {
   middleObserver.observe(column, { childList: true, subtree: true });
   middleObserved = column;
 }
+function clearRing() {
+  document.querySelector('.hw-work-ring')?.remove();
+  if (composerObserved) { composerObserver?.disconnect(); composerObserved = null; }
+}
 function renderAgentBubble() {
   const chatId = location.hash.slice(1).split('_')[0] || '';
-  const typing = nativeTyping();
+  const typing = nativeTyping() && botChatIds.has(chatId);
   const working = Object.hasOwn(workActivity, chatId);
-  let ring = document.querySelector('.hw-work-ring');
-  if (!chatId || (!typing && !working) || !activityConnected) { ring?.remove(); return; }
+  if (!chatId || (!typing && !working)) { clearRing(); return; }
   const composer = document.querySelector('#MiddleColumn .Composer, .Composer');
-  if (!composer) { ring?.remove(); return; }
+  if (!composer) { clearRing(); return; }
+  if (composerObserved !== composer) {
+    composerObserver?.disconnect();
+    composerObserver = new ResizeObserver(() => renderAgentBubble());
+    composerObserver.observe(composer);
+    composerObserved = composer;
+  }
+  let ring = document.querySelector('.hw-work-ring');
   if (!ring) {
     ring = document.createElement('div');
     ring.className = 'hw-work-ring';
@@ -239,11 +249,11 @@ async function sync() {
     const selectedBot = bots.some((bot) => bot.id === selectedId);
     document.body.classList.toggle('hw-chat', status === 'connected');
     // Keep the native list filtered too, when visible during initial sync.
-    const botIds = new Set(bots.map((bot) => bot.id));
+    botChatIds = new Set(bots.map((bot) => bot.id));
     links.forEach((link) => {
       const id = link.hash?.slice(1).split('_')[0];
       const row = link.closest('.Chat, .ListItem') || link;
-      row.style.display = botIds.has(id) ? '' : 'none';
+      row.style.display = botChatIds.has(id) ? '' : 'none';
     });
     watchTypingStatus();
     const packet = { status, accountId: cached?.currentUserId ? String(cached.currentUserId) : '', bots, selectedId: selectedBot ? selectedId : '',
@@ -264,6 +274,7 @@ window.addEventListener('DOMContentLoaded', () => {
 ipcRenderer.on('telegram:sync', sync);
 ipcRenderer.on('workspace:bot-activity', (_event, working) => { workActivity = working && typeof working === 'object' ? working : {}; renderAgentBubble(); });
 ipcRenderer.send('workspace:bot-activity-pull');
+window.addEventListener('hashchange', renderAgentBubble);
 window.addEventListener('offline', publishActivityAvailability);
 window.addEventListener('online', publishActivityAvailability);
 window.addEventListener('beforeunload', () => { sendActivity('unavailable'); clearInterval(timer); db?.close(); });

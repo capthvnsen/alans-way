@@ -57,7 +57,7 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
 let pointerTimer, activityTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, previewPos: null, showBots: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [],
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   try { return { ...defaults, ...JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'preferences.json'), 'utf8')) }; }
   catch { return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' }; }
@@ -106,7 +106,7 @@ function selectAgent(id) {
 }
 function getState() {
   return { name: app.getName(), version: app.getVersion(), bots: prefs.bots.map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
-    selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, remoteUrl: prefs.remoteUrl,
+    selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
@@ -123,6 +123,9 @@ function computeBotWork() {
   const working = {};
   for (const tab of tabs.values()) {
     if (tab.controller === 'agent' && (agentInput.isDispatching(tab) || tab.loading || Date.now() - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) < 15000)) working[tab.botId] = botAccent(tab.botId).hue;
+  }
+  for (const tab of vpsTabs.values()) {
+    if (tab.controller === 'agent' && tab.agentBusy) working[tab.botId] = botAccent(tab.botId).hue;
   }
   return working;
 }
@@ -485,7 +488,6 @@ function registerIpc() {
         else if (!prefs.hidden.includes(id)) prefs.hidden.push(id);
         savePreferences(); break;
       }
-      case 'restore-bots': prefs.hidden = []; savePreferences(); break;
       case 'set-site-permission': sitePermissions.set(value); break;
       case 'reset-site-permissions': sitePermissions.reset(); break;
       case 'settings':
@@ -494,6 +496,7 @@ function registerIpc() {
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         if (typeof value.preview === 'boolean') prefs.preview = value.preview;
         if (typeof value.showBots === 'boolean') prefs.showBots = value.showBots;
+        if (typeof value.showBrowser === 'boolean') prefs.showBrowser = value.showBrowser;
         if (typeof value.macSshHost === 'string') prefs.macSshHost = value.macSshHost.slice(0, 200).trim();
         if (typeof value.autoOpenLinks === 'boolean') prefs.autoOpenLinks = value.autoOpenLinks;
         if (typeof value.primaryBotId === 'string') prefs.primaryBotId = prefs.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : prefs.primaryBotId;
@@ -940,7 +943,7 @@ function createWindow() {
     win.webContents.send('workspace:pointer', { x: (point.x - bounds.x) / zoom, y: (point.y - bounds.y) / zoom });
   }, 50);
   pointerTimer.unref();
-  activityTimer = setInterval(() => { if (activity.expire()) broadcast(); }, 500);
+  activityTimer = setInterval(() => { if (activity.expire() || JSON.stringify(computeBotWork()) !== lastBotWorkSignature) broadcast(); }, 500);
   activityTimer.unref();
   setInterval(() => {
     const idleMs = Math.max(1, prefs.agentIdleMinutes || 15) * 60000, now = Date.now();

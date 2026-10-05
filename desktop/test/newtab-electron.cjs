@@ -64,6 +64,30 @@ app.whenReady().then(async () => {
   state = await evaluate('window.workspace.getState()');
   assert.equal(state.activeTabId, 'home', 'Closing the last tab returns to the empty backdrop state.');
   assert.equal(await evaluate('document.querySelectorAll("#tabs .tab").length'), 0);
-  console.log('PASS: new tabs open on the Hermes backdrop, no Start chip, empty state keeps the image.');
+
+  // Workspace chrome: compact header, equal-size caption controls, no removed labels.
+  assert.equal(await evaluate('document.querySelectorAll(".workspace-header, .agent-browser-row, #restore-bots, .side-footnote, .workspace-label").length'), 0, 'Removed labels and the restore control are gone.');
+  assert.ok(await evaluate('!!document.getElementById("browser-collapse") && !!document.getElementById("vm-toggle")'), 'Collapse and VM buttons exist.');
+  assert.equal(await evaluate('document.getElementById("browser-collapse").parentElement.className'), 'pane-actions', 'Collapse sits beside VM in the tab bar actions.');
+  assert.equal(await evaluate('document.getElementById("vm-toggle").parentElement.className'), 'pane-actions');
+  const caps = await evaluate('["search-toggle","add-bot","sort-bots","bot-count"].map(id => { const r = document.getElementById(id).getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; })');
+  assert.ok(caps.every(size => size.w === caps[0].w && size.h === caps[0].h), `Caption controls share one size: ${JSON.stringify(caps)}`);
+  assert.equal(await evaluate('document.getElementById("settings-button").closest(".agent-presence")?.id'), 'agent-presence', 'The settings gear lives inside the bot tile.');
+  const chipHidden = await evaluate('document.getElementById("browser-chip").classList.contains("hidden")');
+  assert.equal(chipHidden, true, 'The restore chip stays hidden while the browser shows.');
+
+  await invoke('settings', { showBrowser: false });
+  await waitFor(() => evaluate('document.getElementById("shell").classList.contains("browser-hidden")'), Boolean);
+  assert.equal((await evaluate('window.workspace.getState()')).showBrowser, false);
+  const paneVisible = await evaluate('document.querySelector(".workspace-pane").offsetParent !== null');
+  assert.equal(paneVisible, false, 'Hiding the browser removes the workspace pane.');
+  assert.equal(await evaluate('document.getElementById("browser-chip").classList.contains("hidden")'), false, 'The restore chip appears.');
+  assert.equal(await evaluate('document.querySelector(".chat-pane").offsetParent !== null'), true, 'The chat pane stays visible while the browser is hidden.');
+
+  await evaluate('document.getElementById("browser-chip").click()');
+  await waitFor(() => evaluate('!document.getElementById("shell").classList.contains("browser-hidden")'), Boolean);
+  assert.equal((await evaluate('window.workspace.getState()')).showBrowser, true, 'The chip restores the browser pane.');
+
+  console.log('PASS: new tabs open on the Hermes backdrop, no Start chip, empty state keeps the image, workspace chrome is compact.');
   server.close(); app.quit();
 }).catch(error => { console.error(error.stack); server?.close(); app.exit(1); });

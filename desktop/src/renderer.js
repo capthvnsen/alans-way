@@ -29,7 +29,7 @@ function renderBots() {
       const bot = bots.find(item => item.id === row.dataset.botId);
       if (bot) { window.HermesAvatars.paint(row.querySelector('.avatar'), bot, state); renderBotActivity(row, bot); }
     }
-    $('bridge-dot').classList.toggle('offline', !state.api.ready);
+    document.querySelectorAll('.bridge-dot').forEach((dot) => dot.classList.toggle('offline', !state.api.ready));
     return;
   }
   botListSignature = signature; list.replaceChildren();
@@ -61,8 +61,7 @@ function renderBots() {
   $('sort-bots').classList.toggle('active', (state.botSort || 'manual') !== 'manual');
   $('empty-bots').classList.toggle('hidden', state.bots.length > 0);
   $('empty-bots').querySelector('p').textContent = state.telegramStatus === 'connected' ? 'Finding your Telegram bot chats…' : 'Sign in to Telegram to load your bot chats here.';
-  $('restore-bots').classList.toggle('hidden', !state.hidden.length);
-  $('bridge-dot').classList.toggle('offline', !state.api.ready);
+  document.querySelectorAll('.bridge-dot').forEach((dot) => dot.classList.toggle('offline', !state.api.ready));
 }
 function renderBotActivity(row, bot) {
   const status = row.querySelector('.bot-activity'), activity = bot.activity;
@@ -188,13 +187,15 @@ function render(next) {
   $('vm-toggle').title = remote ? 'Return to browser' : 'Expand virtual desktop';
   $('vm-toggle').setAttribute('aria-label', $('vm-toggle').title);
   $('vm-toggle').setAttribute('aria-pressed', String(remote));
+  $('shell').classList.toggle('browser-hidden', state.showBrowser === false);
+  $('browser-chip').classList.toggle('hidden', state.showBrowser !== false);
+  $('browser-collapse').setAttribute('aria-pressed', String(state.showBrowser === false));
   $('home').classList.toggle('hidden', !!tab || state.activeTabId === 'vps');
   $('browser-toolbar').classList.toggle('hidden', state.activeTabId === 'vps');
   $('remote-preview-slot').classList.toggle('hidden', !state.preview || remote);
   $('preview-chip').classList.toggle('hidden', state.preview || remote);
   $('preview-label').textContent = state.remoteStatus === 'connected' ? 'VPS desktop' : `VPS · ${state.remoteStatus}`;
   positionPreview();
-  $('agent-workspace-name').textContent=state.selectedBotId?`${bot?.name || 'Agent'} — all tabs`:'All tabs';
   $('control-button').textContent = tab?.controller === 'agent' ? 'Take over' : 'Give to agent';
   $('control-button').classList.toggle('agent', tab?.controller === 'agent');
   $('control-button').disabled = !tab || tab.extensionPage;
@@ -203,7 +204,6 @@ function render(next) {
   if (tab?.extensionPage) $('control-button').textContent = 'You';
   $('control-button').title = tab ? `Browser runs on ${tab.host==='vps'?'the VPS':'your Mac'} · ${tab.controller === 'agent' ? 'Agent' : 'You'} control it` : 'Open a browser tab first';
   if (document.activeElement !== $('address')) $('address').value = tab?.internal ? '' : tab?.url || '';
-  $('local-label').textContent = remote ? 'ON YOUR VPS' : 'ON YOUR MAC';
   const agentName = tab ? state.bots.find(bot => bot.id === tab.botId)?.name || 'Agent' : '';
   $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? `${agentName}${tab.agentBusy ? ' is working' : ' is browsing'}` : 'You'} in control${tab.controller === 'agent' ? ' · Take over anytime' : ''} · ${tab.host==='vps'?'VPS':'Mac'}${tab.handoff?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `VPS · ${state.remoteStatus}` : 'Ready';
   $('connection-status').textContent = state.api.ready ? 'Browser connector ready' : state.api.error ? 'Browser connector unavailable' : 'Browser connector starting…';
@@ -408,8 +408,7 @@ function showSettings() {
   body.append(element('p', 'settings-note', 'Taking over a local tab blocks new agent actions on that tab. VPS control currently uses your existing shared desktop; it does not pause your Hermes bots.'));
   body.append(element('hr', 'section-divider'));
   const sync = element('button', 'secondary-button', 'Sync Telegram bots'); sync.onclick = () => { command('sync-telegram'); toast('Reading Telegram’s bot chat list…'); };
-  const restore = element('button', 'secondary-button', 'Restore hidden bots'); restore.onclick = () => { command('restore-bots'); toast('Hidden bots restored.'); };
-  body.append(sync, restore, element('p', 'settings-note', 'Bot discovery reads Telegram Web A’s local cache. Newly opened bot chats appear after Telegram saves them. Your Telegram session and browser logins stay on this Mac.'));
+  body.append(sync, element('p', 'settings-note', 'Bot discovery reads Telegram Web A’s local cache. Newly opened bot chats appear after Telegram saves them. Your Telegram session and browser logins stay on this Mac.'));
 }
 function showAvatarEditor(botId = state.selectedBotId || orderedBots()[0]?.id) {
   if (!botId) return toast('Open a Telegram bot before customizing its avatar.');
@@ -428,8 +427,10 @@ function showAddBot() {
 $('search-toggle').onclick = () => { $('bot-search').classList.toggle('hidden'); if (!$('bot-search').classList.contains('hidden')) $('bot-search').focus(); else { $('bot-search').value = ''; renderBots(); } };
 $('bot-search').oninput = renderBots;
 $('add-bot').onclick = showAddBot;
-$('restore-bots').onclick = () => command('restore-bots');
 $('settings-button').onclick = showSettings;
+$('settings-fallback').onclick = showSettings;
+$('browser-collapse').onclick = () => { if (focusMode) { focusMode = false; $('shell').classList.remove('focus-workspace'); } command('settings', { showBrowser: false }); };
+$('browser-chip').onclick = () => command('settings', { showBrowser: true });
 $('bots-toggle').onclick = () => command('settings', { showBots: state.showBots === false });
 $('sort-bots').onclick = (event) => {
   event.stopPropagation();
@@ -483,7 +484,7 @@ api.onState(render);
 api.onPointer?.(point => window.HermesAvatars.receivePointer(point));
 api.onFocusAddress(() => { $('address').focus(); $('address').select(); });
 api.onSettings?.(showSettings);
-api.onFocusWorkspace?.(() => { focusMode = !focusMode; $('shell').classList.toggle('focus-workspace', focusMode); scheduleLayout(); });
+api.onFocusWorkspace?.(() => { if (state?.showBrowser === false) return; focusMode = !focusMode; $('shell').classList.toggle('focus-workspace', focusMode); scheduleLayout(); });
 new ResizeObserver(scheduleLayout).observe($('shell'));
 window.addEventListener('resize', () => { positionPreview(); scheduleLayout(); });
 api.getState().then(render).catch((error) => toast(error.message));
