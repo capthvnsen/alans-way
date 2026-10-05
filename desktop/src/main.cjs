@@ -64,14 +64,15 @@ function readPreferences() {
 }
 function savePreferences() {
   if (!prefs) return;
-  if (win && !win.isDestroyed()) prefs.savedTabs = [...tabs.values()].filter(tab => !tab.extensionPage).map((tab) => ({ url: tab.view.webContents.getURL(), botId: tab.botId }));
+  if (win && !win.isDestroyed()) prefs.savedTabs = [...tabs.values()].filter(tab => !tab.extensionPage && tab.view?.webContents && !tab.view.webContents.isDestroyed()).map((tab) => ({ url: tab.view.webContents.getURL(), botId: tab.botId }));
   fs.mkdirSync(app.getPath('userData'), { recursive: true });
   const file = path.join(app.getPath('userData'), 'preferences.json');
   fs.writeFileSync(`${file}.tmp`, JSON.stringify(prefs, null, 2), { mode: 0o600 });
   fs.renameSync(`${file}.tmp`, file);
 }
 function describeTab(tab) {
-  const url = tab.view.webContents.getURL();
+  const wc = tab.view?.webContents;
+  const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
   return { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
     controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
 }
@@ -300,6 +301,9 @@ function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared
     if (isMainFrame && code !== -3) { tab.error = description; tab.loading = false; broadcast(); }
   });
   view.webContents.on('render-process-gone', () => { tab.error = 'This page stopped. Reload to reconnect.'; broadcast(); });
+  // Pages can close themselves (OAuth popups end with window.close()); once the
+  // webContents is gone the tab is a zombie — route it through normal cleanup.
+  view.webContents.on('destroyed', () => { if (tabs.has(tab.id)) closeTab(tab.id); });
   if (activate) { prefs.remoteControl = false; activeTabId = tab.id; }
   applyLayout(); broadcast();
   if (!skipLoad) view.webContents.loadURL(targetUrl).catch(() => {});
@@ -310,10 +314,10 @@ function closeTab(id) {
   const tab = tabs.get(id);
   if (!tab) return;
   tabs.delete(id);
-  extensionHost?.removeTab(tab.view.webContents);
+  if (tab.view.webContents) extensionHost?.removeTab(tab.view.webContents);
   if (browserReturnTabId === id) browserReturnTabId = [...tabs.keys()].at(-1) || 'home';
   tab.host?.contentView.removeChildView(tab.view);
-  tab.view.webContents.close();
+  tab.view.webContents?.close();
   if (activeTabId === id) activeTabId = [...tabs.keys()].at(-1) || 'home';
   savePreferences(); applyLayout(); broadcast();
 }

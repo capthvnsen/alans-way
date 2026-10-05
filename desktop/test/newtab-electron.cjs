@@ -93,6 +93,16 @@ app.whenReady().then(async () => {
   await waitFor(() => evaluate('!document.getElementById("shell").classList.contains("browser-hidden")'), Boolean);
   assert.equal((await evaluate('window.workspace.getState()')).showBrowser, true, 'The pinned button restores the browser pane.');
 
+  // A page that closes itself (OAuth popups end with window.close()) must drop
+  // its tab instead of leaving a zombie that crashes the next savePreferences.
+  const doomed = await invoke('create-tab');
+  const doomedWc = await waitFor(() => webContents.getAllWebContents().find(item => item !== wc && item.getURL().endsWith('/newtab.html')), Boolean);
+  doomedWc.destroy();
+  state = await waitFor(() => evaluate('window.workspace.getState()'), s => s.tabs.every(t => t.id !== doomed.id));
+  assert.equal(state.activeTabId, 'home', 'A self-closed page drops its tab cleanly.');
+  const saved = JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8'));
+  assert.equal(saved.savedTabs.length, 0, 'Destroyed tabs are not persisted.');
+
   console.log('PASS: new tabs open on the Hermes backdrop, no Start chip, empty state keeps the image, workspace chrome is compact.');
   server.close(); app.quit();
 }).catch(error => { console.error(error.stack); server?.close(); app.exit(1); });
