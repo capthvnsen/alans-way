@@ -9,6 +9,8 @@ import stat
 from contextlib import contextmanager
 from pathlib import Path
 
+from . import __version__
+
 MAX_FILE_BYTES = 65536
 MAX_PATH_CHARS = 1024
 SENSITIVE_NAMES = (
@@ -161,7 +163,7 @@ def build_server(workspace):
         raise RuntimeError('Mac MCP requires the optional hermes-companion[mcp] extra') from None
 
     executor = MacExecutor(workspace)
-    server = MCPServer('hermes-companion-mac', version='0.1.0a1', log_level='ERROR')
+    server = MCPServer('hermes-companion-mac', version=__version__, log_level='ERROR')
     annotations = ToolAnnotations(read_only_hint=True, destructive_hint=False,
                                   idempotent_hint=True, open_world_hint=False)
 

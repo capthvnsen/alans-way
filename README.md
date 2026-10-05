@@ -25,8 +25,7 @@ A desktop app for people running [Hermes Agent](https://github.com/NousResearch/
 - **Agents get their own browser, not yours.** Bot tabs are separate Chromium views — your mouse, keyboard, clipboard, and other apps are never touched.
 - **Grab the wheel anytime.** "Take over" a tab and every queued agent action on it is cancelled instantly.
 - **A window into the VPS.** A mini preview of your server's desktop floats in the corner. Drag it anywhere, hide it, or click to take control.
-- **Move work between machines.** Hand a tab from Mac to VPS (or back) and it lands with scroll position and form drafts intact — parked for review before the agent continues.
-- **Shut your laptop, keep working.** With the [agent plugin](https://github.com/capthvnsen/alans-way-agents), bot tasks automatically route to the VPS browser when the Mac is unreachable — no silent weirdness, it fails visibly either way.
+- **Shut your laptop, keep working.** With the [agent plugin](https://github.com/capthvnsen/alans-way-agents), *new* browser work routes to the VPS when the Mac is unreachable. An in-flight Mac action fails visibly; its live tab stays on the Mac and can be inspected or resumed after reconnecting. Work already running on the VPS continues. (Backend checkpoint/restore plumbing exists, but the app exposes no cross-host handoff button yet.)
 - **Explicit permissions.** Bots only see tabs you own or grant. Extension account pages are human-only. Nothing is shared unless you share it.
 
 ## The two repos
@@ -37,6 +36,15 @@ A desktop app for people running [Hermes Agent](https://github.com/NousResearch/
 | [alans-way-agents](https://github.com/capthvnsen/alans-way-agents) | The plugin: proactivity, workspace skill, auto-routing | Your Hermes gateway (VPS) |
 
 The app works without the plugin (manual tab sharing), and the plugin falls back to VPS-only browsing when the app isn't running.
+
+## How the pieces fit
+
+- **Telegram stays stock.** Your existing Hermes gateway on the VPS keeps owning the bot conversation end to end. This app embeds the official Telegram Web client so you can chat and watch — it is not a second gateway and never polls the bot token.
+- **Mac browser.** The app's own Chromium tabs are the bots' window into your Mac, driven per-tab through Chromium's debugger by a loopback-only connector.
+- **VPS browser.** A separate managed Chromium on the server handles cloud work and is the fallback for *new* tasks when the Mac is asleep. It does not absorb in-flight Mac tabs — those block and resume.
+- **VPS desktop preview.** Optional, and it needs a VNC server plus a noVNC (WebSocket) viewer you already run on the VPS — the app only embeds the viewer URL you paste in. Its **Take control** mode is the one place your input is forwarded to the remote desktop.
+- **Plugin proactivity is read/research/draft by default.** The optional primary bot reviews its own work and drafts suggestions on a bounded budget; consequential actions (external messages, purchases, credential or permission changes, production changes, destructive operations) always require your approval.
+- **No bundled account connections.** Email, calendar, Notion and similar tools exist only if you install and authorize them separately in Hermes — nothing here provisions them.
 
 ## Install the app
 
@@ -51,7 +59,7 @@ npm start
 
 Sign into Telegram inside the app, and your existing bots appear in the sidebar.
 
-To package a double-clickable app: `npm run package` (see the [desktop guide](desktop/README.md)).
+To package a double-clickable app: `npm run package:mac` (see the [desktop guide](desktop/README.md)).
 
 ## Connect your agents
 
@@ -62,6 +70,10 @@ In the app: **Settings → Agent setup**.
 3. Click **Copy agent setup** — run the pasted commands on your VPS once per bot.
 
 That's it. The bot gets a `workspace_browser` tool that opens tabs you can watch.
+
+## Upgrading
+
+Fresh installs and upgrades follow the same path: pull the repo, `cd desktop && npm ci`, restart the app. On the VPS, update the plugin checkout and restart the gateway through Hermes' normal lifecycle — a running gateway keeps old code until restarted. Then send one Telegram message and watch a bounded browser action to confirm both ends still work. See [deployment](docs/deployment.md) and [agent setup](docs/agent-setup.md) for details.
 
 ## Honest boundaries
 

@@ -11,6 +11,8 @@ import tempfile
 import unittest
 
 SOURCE = str(Path(__file__).resolve().parents[1] / 'src')
+sys.path.insert(0, SOURCE)
+from hermes_companion import __version__
 try:
     SDK_VERIFIED = importlib.metadata.version('mcp') == '2.0.0'
 except importlib.metadata.PackageNotFoundError:
@@ -66,6 +68,7 @@ class MacProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_initialize_list_and_mac_status(self):
         async with self.session() as (session, initialized):
             self.assertEqual(initialized.server_info.name, 'hermes-companion-mac')
+            self.assertEqual(initialized.server_info.version, __version__)
             tools = (await session.list_tools()).tools
             self.assertEqual({tool.name for tool in tools},
                              {'mac_device_status', 'mac_workspace_read_file', 'mac_workspace_list'})

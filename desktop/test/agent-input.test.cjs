@@ -1,9 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createAgentInput, keyboardEvent, botAccent } = require('../src/agent-input.cjs');
+const { createAgentInput, keyboardEvent, botAccent, cursorPath } = require('../src/agent-input.cjs');
 const { requireActor } = require('../src/core.cjs');
 
-function fixture() {
+function fixture(options = {}) {
   const calls = [], scripts = [], shortcuts = [];
   let hook = async () => {};
   const tab = { botId: 'bot', controller: 'agent', epoch: 1, refs: new Set(['s1-1']), view: { webContents: {
@@ -13,7 +13,7 @@ function fixture() {
     focus: () => { throw new Error('Native focus must never be used.'); },
     sendInputEvent: () => { throw new Error('Native input must never be used.'); },
   } } };
-  const agent = createAgentInput({ requireActor, command: async (_tab, method, params) => { assert.equal(_tab, tab); calls.push({ method, ...params }); await hook(method, params); return {}; } });
+  const agent = createAgentInput({ requireActor, delay: options.delay || (async () => {}), command: async (_tab, method, params) => { assert.equal(_tab, tab); calls.push({ method, ...params }); await hook(method, params); return {}; } });
   return { tab, agent, calls, scripts, shortcuts, hook: callback => { hook = callback; }, perform: body => agent.perform(tab, { epoch: 1, ...body }, 'bot') };
 }
 
@@ -38,6 +38,34 @@ test('pointer and keyboard dispatch only to the assigned tab, in order, with a s
   assert.deepEqual(f.calls.filter(call => call.method === 'Emulation.setFocusEmulationEnabled').map(call => call.enabled), [true, false]);
   assert.deepEqual(f.shortcuts, [true, false]);
   assert.equal(f.agent.isDispatching(f.tab), false);
+});
+
+test('cursor motion is deterministic, eased, bounded and lands exactly on the target', async () => {
+  const short = cursorPath({ x: 10, y: 10 }, { x: 14, y: 12 });
+  const path = cursorPath({ x: 10, y: 10 }, { x: 610, y: 410 });
+  assert.deepEqual(path, cursorPath({ x: 10, y: 10 }, { x: 610, y: 410 }));
+  assert.ok(short.length >= 2);
+  assert.ok(path.length <= Math.ceil(420 / 16));
+  assert.deepEqual(path.at(-1), { x: 610, y: 410 });
+  assert.notDeepEqual(path[Math.floor(path.length / 2)], { x: 310, y: 210 });
+
+  const f = fixture();
+  f.tab.agentCursor = { x: 10, y: 10 };
+  await f.perform({ action: 'click', x: 610, y: 410 });
+  const pointer = f.calls.filter(call => call.method === 'Input.dispatchMouseEvent');
+  assert.ok(pointer.filter(call => call.type === 'mouseMoved').length > 2);
+  assert.deepEqual(pointer.slice(-2).map(({ type, x, y }) => ({ type, x, y })), [
+    { type: 'mousePressed', x: 610, y: 410 }, { type: 'mouseReleased', x: 610, y: 410 },
+  ]);
+});
+
+test('control changes cancel interpolated motion before another event is dispatched', async () => {
+  let delays = 0;
+  const f = fixture({ delay: async () => { if (++delays === 2) f.tab.epoch++; } });
+  f.tab.agentCursor = { x: 10, y: 10 };
+  await assert.rejects(f.perform({ action: 'click', x: 700, y: 500 }), /stale_control_epoch/);
+  assert.equal(f.calls.filter(call => call.type === 'mouseMoved').length, 1);
+  assert.equal(f.calls.some(call => call.type === 'mousePressed'), false);
 });
 
 test('stale epoch, ownership and malformed targets fail before input or focus emulation', async () => {

@@ -82,7 +82,22 @@ function botAccent(_botId) {
   return { hue, main: `hsl(${hue},75%,62%)`, stroke: `hsl(${hue},60%,26%)`, labelBg: `hsl(${hue},48%,15%)`, labelFg: '#a8e9cc', border: '#a8e9cc' };
 }
 
-function createAgentInput({ command, requireActor, botName = () => 'Agent', onBusy = () => {} }) {
+function cursorPath(from, to) {
+  if (!from || from.x === to.x && from.y === to.y) return [to];
+  const dx = to.x - from.x, dy = to.y - from.y, distance = Math.hypot(dx, dy);
+  const duration = Math.max(80, Math.min(420, 55 + distance * .65));
+  const steps = Math.max(2, Math.ceil(duration / 16));
+  const bend = Math.min(18, distance * .04) * ((Math.round(from.x + from.y + to.x + to.y) & 1) ? 1 : -1);
+  return Array.from({ length: steps }, (_, index) => {
+    const t = (index + 1) / steps;
+    const eased = t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    const arc = Math.sin(Math.PI * eased) * bend;
+    return { x: index === steps - 1 ? to.x : Math.round(from.x + dx * eased - dy / distance * arc),
+      y: index === steps - 1 ? to.y : Math.round(from.y + dy * eased + dx / distance * arc) };
+  });
+}
+
+function createAgentInput({ command, requireActor, botName = () => 'Agent', onBusy = () => {}, delay = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   const states = new WeakMap();
   function state(tab) {
     if (!states.has(tab)) states.set(tab, { active: 0, revision: 0 });
@@ -131,6 +146,14 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       await wc.executeJavaScript(cursorScript(tab.agentCursor)).catch(() => {});
       check();
     }
+    async function moveCursor(point, hl) {
+      const path = cursorPath(tab.agentCursor, point);
+      for (const next of path) {
+        if (path.length > 1) { await delay(16); check(); }
+        await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...next, button: 'none', buttons: 0 });
+        await cursor(next, 'move', hl);
+      }
+    }
     own.active++;
     if (own.active === 1) onBusy(tab, true);
     wc.setIgnoreMenuShortcuts(true);
@@ -176,8 +199,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       const hl = point?.hl || null;
       if (point) delete point.hl;
       if (body.action === 'move' || body.action === 'click') {
-        await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point, button: 'none', buttons: 0 });
-        await cursor(point, 'move', hl);
+        await moveCursor(point, hl);
         if (body.action === 'click') {
           mouseDown = point;
           await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
@@ -218,4 +240,4 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   return { perform, clear, isDispatching };
 }
 
-module.exports = { createAgentInput, tintScript, botAccent, INPUT_ACTIONS, keyboardEvent };
+module.exports = { createAgentInput, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent };

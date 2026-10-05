@@ -27,8 +27,8 @@ mcp = ["mcp==2.0.0"]
 hermes-companion = "hermes_companion.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/capthvnsen/hermes-companion"
-Issues = "https://github.com/capthvnsen/hermes-companion/issues"
+Homepage = "https://github.com/capthvnsen/alans-way"
+Issues = "https://github.com/capthvnsen/alans-way/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

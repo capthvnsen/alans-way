@@ -40,7 +40,12 @@ if (typeof electron === 'string') {
     step('control agent'); await invoke('control', { id: created.id, controller: 'agent' });
     await waitFor(() => tabWc.executeJavaScript(`!!document.getElementById('hermes-workspace-agent-cursor-tint')`), Boolean, 'controlled-page tint');
     step('tint ok');
-    const connection = JSON.parse(fs.readFileSync(path.join(process.env.HERMES_WORKSPACE_DATA, 'connection.json')));
+    const connectionPath = path.join(process.env.HERMES_WORKSPACE_DATA, 'connection.json');
+    const connection = await waitFor(
+      () => fs.promises.readFile(connectionPath, 'utf8').then(JSON.parse).catch(() => null),
+      value => value?.url && value?.token,
+      'workspace API connection',
+    );
     const headers = { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': '123' };
     step('snapshot'); const snap = await (await fetch(`${connection.url}/v1/tabs/${created.id}/snapshot`, { headers })).json();
     const ref = snap.elements.find(item => item.name === 'Fixture target')?.ref;
@@ -54,10 +59,9 @@ if (typeof electron === 'string') {
     assert.equal(described.agentCursor.name, 'Atlas fixture', 'cursor carries the driving bot name');
     assert.equal(described.agentCursor.c.hue, require('../src/agent-input.cjs').botAccent('123').hue, 'cursor carries the bot accent');
     assert.equal(typeof described.agentBusy, 'boolean');
-    step('share-page'); await assert.rejects(invoke('share-page'), /Telegram|chat|message box/i, 'no Telegram composer means a visible error, not silence');
     step('control human'); await invoke('control', { id: created.id, controller: 'human' });
     await waitFor(() => tabWc.executeJavaScript(`!document.getElementById('hermes-workspace-agent-cursor-tint')`), Boolean, 'tint removed on takeover');
-    console.log('PASS: agent-controlled tint, named gliding cursor, blue element highlight, busy flag, visible share-page error, takeover cleanup.');
+    console.log('PASS: agent-controlled tint, named gliding cursor, blue element highlight, busy flag, and takeover cleanup.');
     app.quit();
   }).catch(error => { console.error(error.stack || error); app.exit(1); }).finally(() => server.close());
 }

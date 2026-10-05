@@ -890,7 +890,7 @@ function startApi() {
   apiServer.requestTimeout = 30000;
   apiServer.on('error', (error) => { apiError = error.message; broadcast(); });
   const envPort = Number(process.env.HERMES_WORKSPACE_PORT);
-  apiServer.listen(Number.isInteger(envPort) && envPort > 0 && envPort < 65536 ? envPort : 9464, '127.0.0.1', () => {
+  apiServer.listen(Number.isInteger(envPort) && envPort >= 0 && envPort < 65536 ? envPort : 9464, '127.0.0.1', () => {
     apiPort = apiServer.address().port;
     fs.writeFileSync(path.join(app.getPath('userData'), 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${apiPort}`, token: API_TOKEN, protocol: 1 }, null, 2), { mode: 0o600 });
     broadcast();

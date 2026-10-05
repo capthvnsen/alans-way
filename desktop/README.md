@@ -4,7 +4,7 @@ A free Mac desktop workspace with your Telegram bot chats on the left, real loca
 
 ## Use it
 
-Open **Hermes- Alan's way**. The existing installed bundle remains at `/Applications/Hermes Workspace.app` so current connectors continue to work. Sign in to Telegram with its normal QR or phone login if needed. No Telegram developer API credentials are required: the chat pane loads the official Telegram Web A and applies local styling.
+Open **Hermes- Alan's way**. The packaged bundle is `Hermes- Alan's way.app`; installs that still carry the older `Hermes Workspace.app` name keep working — update the connector paths below to match whichever bundle is installed. Sign in to Telegram with its normal QR or phone login if needed. No Telegram developer API credentials are required: the chat pane loads the official Telegram Web A and applies local styling.
 
 - The sidebar contains verified bot conversations from your Telegram account. Drag them to sort; hover and click × to hide one. The panel button at the top of the chat collapses or restores the whole agent list, and remembers your choice. **Settings → Telegram bots** has an individual visibility switch for every discovered bot, including hidden bots. Choices save immediately and survive app restarts. Hiding a bot leaves its Telegram chat and Hermes agent intact. The + at the top opens a bot by username.
 - Click the selected bot’s portrait, or **Settings → Customize bot avatars**, to choose one of the ten marble avatars or import PNG, JPEG, or WebP pictures. Click **Save avatar** to keep the choice on this Mac. Built-in eyes are already positioned; **Adjust eye positions** calibrates an imported picture. This does not change the bot’s Telegram profile photo.
@@ -12,7 +12,7 @@ Open **Hermes- Alan's way**. The existing installed bundle remains at `/Applicat
 - The + beside browser tabs opens a Chromium tab on your Mac. ⌘L focuses its address; ⌘T opens a tab; ⌘W closes a local tab. Drag the divider to resize the chat pane. The speech button beside the address bar drops the current page's title and link into the selected bot's Telegram draft — the agent can then inspect that tab with its browser tools.
 - The puzzle button beside the address bar opens **Extensions → Browse Chrome Web Store**. Install an extension from its store page, review its requested access, and pin its icon beside the address bar. Enable, unpin or remove extensions in the manager, also available through Settings. Unpacked folders remain supported. Installations and enable/pin choices survive app restarts; store extensions receive automatic update checks.
 - The extension host adds browser actions, dynamic popups, tabs/windows APIs and a native messaging bridge to Electron. Compatibility remains extension-dependent. For 1Password, sign in inside the extension. Mac-app unlock and Touch ID require a properly signed browser and approval in 1Password; this local build does not promise that integration. See [extension compatibility research](docs/extensions-research.md).
-- Links sent in a bot's chat — by you or the bot — open automatically as a local tab assigned to that bot, so both of you see the same page. Your own sends focus the new tab; bot sends open in the background. Disable in Settings. If the Mac is unreachable the bot opens its own copy on the VPS desktop instead.
+- Links sent in a bot's chat — by you or the bot — open automatically as a local tab assigned to that bot, so both of you see the same page. Your own sends focus the new tab; bot sends open in the background. Disable in Settings. If the Mac is unreachable the bot opens a fresh copy of the page on the VPS desktop instead — the Mac tab itself is not moved or migrated.
 - **Agent tabs** shows the selected bot's local Mac tabs; switch to **All tabs** to inspect all local tabs. Switching bots remembers each bot's selected local tab during the session. VPS Chrome tabs appear only inside the desktop picture, where Chrome supplies its own tab controls.
 - Paste an existing noVNC viewer URL into Settings. Keep Tailscale connected for a private VPS. The small desktop floats over the workspace in Watch mode — drag its title strip anywhere, use ⤢ to expand it full size or × to hide it, and click the corner chip to bring it back. The workspace header button also expands the virtual desktop to fill the browser area; click it again to return to your previous local tab. The tab row contains local browser tabs only. Agent work on the VPS shows the driving bot's named, colored cursor and page tint inside the streamed picture.
 - **Take control** enables mouse, drag, scroll and keyboard input to the VPS desktop. **Stop control** returns to Watch. The viewer is independent of the browser tab bar and does not pause desktop or browser agents. The **Paste** button sends the Mac clipboard only when explicitly clicked in control mode.
@@ -25,7 +25,7 @@ Local tabs share this app's browser profile, so cookies and login changes are sh
 Node 18+ is needed for the MCP connector; the desktop app itself includes its runtime. The connector is included in the installed app at:
 
 ```text
-/Applications/Hermes Workspace.app/Contents/Resources/app/scripts/browser-mcp.cjs
+/Applications/Hermes- Alan's way.app/Contents/Resources/app/scripts/browser-mcp.cjs
 ```
 
 For a Hermes process running on the Mac, merge this server entry into that profile's existing `mcp_servers` configuration. Replace the Node path and bot ID. The ⇄ dialog shows the ID of the assigned bot.
@@ -35,7 +35,7 @@ mcp_servers:
   workspace_browser:
     command: /absolute/path/to/node
     args:
-      - /Applications/Hermes Workspace.app/Contents/Resources/app/scripts/browser-mcp.cjs
+      - /Applications/Hermes- Alan's way.app/Contents/Resources/app/scripts/browser-mcp.cjs
       - --bot-id
       - YOUR_BOT_ID
 ```
@@ -51,7 +51,7 @@ mcp_servers:
       - -o
       - BatchMode=yes
       - YOUR_MAC_SSH_HOST
-      - "'/absolute/path/to/node' '/Applications/Hermes Workspace.app/Contents/Resources/app/scripts/browser-mcp.cjs' --bot-id YOUR_BOT_ID"
+      - "'/absolute/path/to/node' '/Applications/Hermes- Alan's way.app/Contents/Resources/app/scripts/browser-mcp.cjs' --bot-id YOUR_BOT_ID"
 ```
 
 Use a different `--bot-id` for each bot. Keep existing Hermes settings and server entries. Restart or reload MCP through the workflow supported by your installed Hermes version. This project does not modify Hermes source or apply changes to running bot profiles.
@@ -96,7 +96,7 @@ App data lives in `~/Library/Application Support/Hermes Workspace/`. The product
 ## Companion integration
 
 This app lives in `desktop/` in the Hermes- Alan's way repository. Install the
-[proactivity plugin](../docs/proactivity.md) on your existing VPS primary, then
+[proactivity plugin](https://github.com/capthvnsen/alans-way-agents/blob/main/docs/proactivity.md) on your existing VPS primary, then
 use `/proactivity status`, `/proactivity pause`, `/proactivity resume`, or
 `/proactivity review` in its Telegram chat here. These commands reach the real
 plugin; the UI does not maintain a second proactivity state. Configure the

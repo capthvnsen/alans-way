@@ -32,10 +32,12 @@ not been verified.
    Give each profile its own matching Telegram ID. The browser profile shares
    live logins; the broker restricts normal tools to assigned/granted tabs.
 8. Verify a Telegram request and reply; bounded Mac and VPS tab actions; human
-   **Take control**; and cross-host browser handoff with a fixture. This release
-   has one shared VPS desktop. Mac/VPS authentication and arbitrary live page
-   state remain host-specific. A managed tab takeover blocks its browser
-   connector; generic desktop automation is coordinated separately.
+   **Take control**; and, if used, the backend cross-host handoff checkpoint
+   with a fixture (the app exposes no handoff button; live tabs are not
+   migrated). This release has one shared VPS desktop. Mac/VPS authentication
+   and arbitrary live page state remain host-specific. A managed tab takeover
+   blocks its browser connector; generic desktop automation is coordinated
+   separately.
 
 With Hermes, SSH and noVNC already working, deployment is mostly configuration.
 A fresh headless VPS also needs desktop provisioning, display/service lifecycle
