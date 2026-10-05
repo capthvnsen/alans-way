@@ -85,7 +85,7 @@ app.whenReady().then(async () => {
   assert.ok(gaze.active && gaze.idle && gaze.neutral, 'Idle avatars stop and return to neutral pupils.');
   console.log('PASS: fixture-driven live avatar gaze and immediate idle reset in the real renderer.');
 
-  server = http.createServer((req, res) => res.end(req.url === '/red' || req.url === '/blue' ? `<style>html{background:${req.url.slice(1)}}</style><title>${req.url.slice(1)}</title><button onclick="window.open('/popup')">Open fixture popup</button>` : '<!doctype html><title>Human focus fixture</title><input id="human" aria-label="Human input" value="Keep my draft"><script>human.focus()</script>'));
+  server = http.createServer((req, res) => res.end(req.url === '/blocks' ? '<title>blocks</title><h1>Order 42</h1><ul><li>Apples <b>3</b></li><li>Pears 5</li></ul><table><tr><td>Total</td><td>8</td></tr></table><p>Due <i>today</i></p>' : req.url === '/red' || req.url === '/blue' ? `<style>html{background:${req.url.slice(1)}}</style><title>${req.url.slice(1)}</title><button onclick="window.open('/popup')">Open fixture popup</button>` : '<!doctype html><title>Human focus fixture</title><input id="human" aria-label="Human input" value="Keep my draft"><script>human.focus()</script>'));
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const human = await invoke('create-tab', { url: `http://127.0.0.1:${server.address().port}` });
   const humanWc = await waitFor(() => webContents.getAllWebContents().find(item => item.getURL() === `http://127.0.0.1:${server.address().port}/` && item !== wc), Boolean);
@@ -117,6 +117,10 @@ app.whenReady().then(async () => {
     colored.push(tab);
     await waitFor(() => api(`/v1/tabs/${tab.id}/snapshot`), snap => snap.title === color);
   }
+  const blocks = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/blocks` });
+  const blockSnap = await waitFor(() => api(`/v1/tabs/${blocks.id}/snapshot`), snap => snap.title === 'blocks');
+  assert.equal(blockSnap.text, 'Order 42\nApples 3\nPears 5\nTotal 8\nDue today', 'snapshot text keeps one line per block and inline text on its line');
+  await fetch(new URL(`/v1/tabs/${blocks.id}`, connection.url), { method: 'DELETE', headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'capture-regression', 'X-Control-Epoch': String(blocks.epoch) } });
   // Bounded snapshots report their caps, generation, and dedupe on since.
   const bounded = await api(`/v1/tabs/${colored[0].id}/snapshot?maxChars=2000&maxElements=50`);
   assert.ok(Number.isInteger(bounded.generation) && bounded.elements.length <= 50 && bounded.truncated, 'snapshot reports generation and truncated flags');

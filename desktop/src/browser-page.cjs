@@ -6,10 +6,13 @@ function snapshotExpression(generation, opts = {}) {
   const maxElements = int(opts.maxElements, 0, 300, 150);
   const maxScan = int(opts.maxScan, 1, 50000, 2000);
   const textMs = int(opts.textMs, 5, 2000, 60);
+  // Controls matter more than prose: a heavy app page must still list its
+  // buttons, so the scan gets a wider budget than the text walk.
+  const elementMs = int(opts.elementMs, 5, 2000, 200);
   const keep = int(opts.keep, 0, Number.MAX_SAFE_INTEGER, -1);
   return `(() => {
     const items = [];
-    const deadline = performance.now() + ${textMs};
+    const deadline = performance.now() + ${elementMs};
     const candidates = document.querySelectorAll('a[href],button,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[contenteditable="true"]');
     let scanned = 0;
     for (const el of candidates) {
@@ -32,13 +35,20 @@ function snapshotExpression(generation, opts = {}) {
     if (${maxChars} > 0 && document.body) {
       const textDeadline = performance.now() + ${textMs};
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      let node;
+      // Tag names stand in for computed display so lists, rows and headings
+      // keep their line breaks without a style read per text node.
+      const blockTag = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|BODY|CAPTION|DD|DETAILS|DIALOG|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H[1-6]|HEADER|HR|LEGEND|LI|MAIN|NAV|OL|P|PRE|SECTION|SUMMARY|TABLE|TR|UL)$/;
+      let node, lastBlock = null;
       while ((node = walker.nextNode())) {
         const p = node.parentElement;
         if (!p || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(p.tagName)) continue;
         if (p.checkVisibility && !p.checkVisibility({ checkVisibilityCSS: true })) continue;
         const chunk = node.nodeValue.replace(/\\s+/g, ' ').trim();
-        if (chunk) text += (text ? ' ' : '') + chunk;
+        if (!chunk) continue;
+        let block = p;
+        while (block.parentElement && !blockTag.test(block.tagName)) block = block.parentElement;
+        text += (text ? (block === lastBlock ? ' ' : '\\n') : '') + chunk;
+        lastBlock = block;
         if (text.length >= ${maxChars} || performance.now() > textDeadline) { textCut = true; break; }
       }
       text = text.slice(0, ${maxChars});
