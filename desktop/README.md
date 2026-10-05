@@ -1,10 +1,10 @@
-# Hermes- Alan's way
+# Open Alan
 
 A free Mac desktop workspace with your Telegram bot chats on the left, real local Chromium tabs on the right, and a live VPS desktop in the corner. The dark three-pane layout follows the supplied Grok Bot reference. This is a functional first release for testing with Hermes bots.
 
 ## Use it
 
-Open **Hermes- Alan's way**. The packaged bundle is `Hermes- Alan's way.app`; installs that still carry the older `Hermes Workspace.app` name keep working — update the connector paths below to match whichever bundle is installed. Sign in to Telegram with its normal QR or phone login if needed. No Telegram developer API credentials are required: the chat pane loads the official Telegram Web A and applies local styling.
+Open **Open Alan**. The packaged bundle is `Open Alan.app`; installs that still carry the older `Hermes Workspace.app` name keep working — update the connector paths below to match whichever bundle is installed. Sign in to Telegram with its normal QR or phone login if needed. No Telegram developer API credentials are required: the chat pane loads the official Telegram Web A and applies local styling.
 
 - The sidebar contains verified bot conversations from your Telegram account. Drag them to sort; hover and click × to hide one. The panel button at the top of the chat collapses or restores the whole agent list, and remembers your choice. **Settings → Telegram bots** has an individual visibility switch for every discovered bot, including hidden bots. Choices save immediately and survive app restarts. Hiding a bot leaves its Telegram chat and Hermes agent intact. The + at the top opens a bot by username.
 - Click the selected bot’s portrait, or **Settings → Customize bot avatars**, to choose one of the ten marble avatars or import PNG, JPEG, or WebP pictures. Click **Save avatar** to keep the choice on this Mac. Built-in eyes are already positioned; **Adjust eye positions** calibrates an imported picture. This does not change the bot’s Telegram profile photo.
@@ -25,7 +25,7 @@ Local tabs share this app's browser profile, so cookies and login changes are sh
 Node 18+ is needed for the MCP connector; the desktop app itself includes its runtime. The connector is included in the installed app at:
 
 ```text
-/Applications/Hermes- Alan's way.app/Contents/Resources/app/scripts/browser-mcp.cjs
+/Applications/Open Alan.app/Contents/Resources/app/scripts/browser-mcp.cjs
 ```
 
 For a Hermes process running on the Mac, merge this server entry into that profile's existing `mcp_servers` configuration. Replace the Node path and bot ID. The ⇄ dialog shows the ID of the assigned bot.
@@ -35,7 +35,7 @@ mcp_servers:
   workspace_browser:
     command: /absolute/path/to/node
     args:
-      - /Applications/Hermes- Alan's way.app/Contents/Resources/app/scripts/browser-mcp.cjs
+      - /Applications/Open Alan.app/Contents/Resources/app/scripts/browser-mcp.cjs
       - --bot-id
       - YOUR_BOT_ID
 ```
@@ -51,7 +51,7 @@ mcp_servers:
       - -o
       - BatchMode=yes
       - YOUR_MAC_SSH_HOST
-      - "'/absolute/path/to/node' '/Applications/Hermes- Alan's way.app/Contents/Resources/app/scripts/browser-mcp.cjs' --bot-id YOUR_BOT_ID"
+      - "'/absolute/path/to/node' '/Applications/Open Alan.app/Contents/Resources/app/scripts/browser-mcp.cjs' --bot-id YOUR_BOT_ID"
 ```
 
 Use a different `--bot-id` for each bot. Keep existing Hermes settings and server entries. Restart or reload MCP through the workflow supported by your installed Hermes version. This project does not modify Hermes source or apply changes to running bot profiles.
@@ -81,7 +81,7 @@ npm start
 npm run package:mac
 ```
 
-The package command builds an Apple Silicon Mac app in `dist/Hermes- Alan's way-darwin-arm64`. It includes a custom icon and the Node MCP connector. This is a local development build; signed/notarized public distribution is a later release step. Building and running locally does not require a paid developer account.
+The package command builds an Apple Silicon Mac app in `dist/Open Alan-darwin-arm64`. It includes a custom icon and the Node MCP connector. This is a local development build; signed/notarized public distribution is a later release step. Building and running locally does not require a paid developer account.
 
 With the app open, `node test/browser-smoke.cjs` exercises the real MCP protocol against its own local test page. It checks typing, clicking, screenshots, popups, shared cookies, bot ownership, and stale epochs. It asks you to click Take over and Give to agent to verify the human control boundary. It sends no Telegram messages and operates no third-party forms.
 
@@ -91,11 +91,11 @@ With the app open, `node test/browser-smoke.cjs` exercises the real MCP protocol
 
 `npm run test:extensions` exercises a harmless MV3 extension in a temporary profile: module worker APIs, selected-tab context, content scripts, sandboxed popups, human takeover, enable/pin persistence, restart and removal. `npm run test:web-store` is a network integration test of the actual public 1Password Web Store install, rendered extension screen, restart and removal. It uses a disposable profile and no account or vault.
 
-App data lives in `~/Library/Application Support/Hermes Workspace/`. The product rename preserves this existing directory and bundle ID. That directory holds private sessions, bot order/hiding preferences, the desktop URL, and a startup-rotated connector token. It is outside the source tree. The app restores up to twelve tab URLs after restart; live page execution state is not restored.
+App data lives in `~/Library/Application Support/Hermes Workspace/`. The product rename to Open Alan preserves this existing directory; the bundle ID is now `app.openalan`. That directory holds private sessions, bot order/hiding preferences, the desktop URL, and a startup-rotated connector token. It is outside the source tree. The app restores up to twelve tab URLs after restart; live page execution state is not restored.
 
 ## Companion integration
 
-This app lives in `desktop/` in the Hermes- Alan's way repository. The
+This app lives in `desktop/` in the Open Alan repository. The
 [agents repo](https://github.com/capthvnsen/alans-way-agents) owns the VPS
 side — `setup.sh` there is a one-command bootstrap that installs the plugin,
 wires the browser connector, restarts the gateway, and binds the primary

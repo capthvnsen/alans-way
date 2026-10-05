@@ -16,7 +16,7 @@ const { createExtensionStore } = require('./extension-store.cjs');
 const { ElectronChromeExtensions } = require('electron-chrome-extensions');
 
 app.enableSandbox();
-app.setName("Hermes- Alan's way");
+app.setName("Open Alan");
 // Keep existing sessions and connector discovery stable when the product name changes.
 app.setPath('userData', process.env.HERMES_WORKSPACE_DATA
   ? path.resolve(process.env.HERMES_WORKSPACE_DATA)

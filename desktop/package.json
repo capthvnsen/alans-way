@@ -1,6 +1,6 @@
 {
   "name": "hermes-workspace",
-  "productName": "Hermes- Alan's way",
+  "productName": "Open Alan",
   "version": "0.2.0",
   "description": "A Telegram, local Chromium and remote desktop workspace for Hermes agents.",
   "private": true,
@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "check": "node --check src/cdp.cjs && node --check src/browser-page.cjs && node --check src/vps-browser.cjs && node --check scripts/vps-browser-host.cjs && node --check scripts/vps-chromium-host.cjs && node --check src/extension-namespace-preload.cjs && node --check scripts/build-preload.cjs && node --check src/extension-store.cjs && node --check src/main.cjs && node --check src/preload.cjs && node --check src/telegram-preload.cjs && node --check src/renderer.js && node --check src/avatars.js && node --check src/link-share.cjs && node --check src/activity.cjs && node --check src/avatar-store.cjs && node --check src/agent-input.cjs && node --check src/site-permissions.cjs && node --check src/remote.js && node --check scripts/browser-mcp.cjs && node --test test/*.test.cjs",
-    "package:mac": "electron-packager . \"Hermes- Alan's way\" --platform=darwin --arch=arm64 --no-asar --out=dist --overwrite --ignore='^/(test|dist|screenshots)(/|$)' --app-bundle-id=app.hermes.workspace --app-version=0.2.0 --icon assets/icon",
+    "package:mac": "electron-packager . \"Open Alan\" --platform=darwin --arch=arm64 --no-asar --out=dist --overwrite --ignore='^/(test|dist|screenshots)(/|$)' --app-bundle-id=app.openalan --app-version=0.2.0 --icon assets/icon",
     "test:desktop": "electron test/workspace-integration.cjs",
     "test:agent-input": "electron test/agent-input-electron.cjs",
     "test:permissions": "electron test/site-permissions-electron.cjs",
