@@ -5,7 +5,7 @@ const { pathToFileURL } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
-const { normalizeUrl, parseRemoteUrl, requireActor, requireAgentRead, isAuthorized, sanitizeBots } = require('./core.cjs');
+const { normalizeUrl, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('./core.cjs');
 const { createAvatarStore } = require('./avatar-store.cjs');
 const { createAgentInput, tintScript, botAccent } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -35,6 +35,9 @@ let vpsBrowserStatus = 'unconfigured', vpsRefreshBusy = false, vpsTimer;
 const vpsBrowser = createVpsBrowser({ getConfig: () => prefs?.vpsBrowser });
 const configuredSessions = new WeakSet();
 const API_TOKEN = crypto.randomBytes(32).toString('hex');
+// Connectors allow 90s for action requests; a batch stops starting new steps
+// early enough that its last step (wait caps at 30s) still answers in time.
+const BATCH_BUDGET_MS = 50000;
 let isQuitting = false;
 let backgroundCaptureQueue = Promise.resolve();
 const avatarStore = createAvatarStore({ root: ROOT, nativeImage, dialog, getWindow: () => win, getPreferences: () => prefs });
@@ -54,21 +57,31 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
     return answer.response === 1;
   }
 });
-let pointerTimer, activityTimer;
+let pointerTimer, activityTimer, idleTimer;
 
 function readPreferences() {
   const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
-  try { return { ...defaults, ...JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'preferences.json'), 'utf8')) }; }
-  catch { return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' }; }
+  const file = path.join(app.getPath('userData'), 'preferences.json');
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' }; }
+  try { return { ...defaults, ...JSON.parse(text) }; }
+  catch {
+    // Keep the unreadable file: the next save would otherwise erase every bot,
+    // permission and extension record with defaults.
+    try { fs.renameSync(file, `${file}.corrupt-${Date.now()}`); } catch {}
+    return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' };
+  }
+}
+function writePrivateJson(file, data) {
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(data, null, 2), { mode: 0o600 });
+  fs.renameSync(`${file}.tmp`, file);
 }
 function savePreferences() {
   if (!prefs) return;
   if (win && !win.isDestroyed()) prefs.savedTabs = [...tabs.values()].filter(tab => !tab.extensionPage && tab.view?.webContents && !tab.view.webContents.isDestroyed()).map((tab) => ({ url: tab.view.webContents.getURL(), botId: tab.botId }));
   fs.mkdirSync(app.getPath('userData'), { recursive: true });
-  const file = path.join(app.getPath('userData'), 'preferences.json');
-  fs.writeFileSync(`${file}.tmp`, JSON.stringify(prefs, null, 2), { mode: 0o600 });
-  fs.renameSync(`${file}.tmp`, file);
+  writePrivateJson(path.join(app.getPath('userData'), 'preferences.json'), prefs);
 }
 function describeTab(tab) {
   const wc = tab.view?.webContents;
@@ -408,7 +421,12 @@ function registerIpc() {
         if (value.action === 'forward' && history.canGoForward()) history.goForward();
         if (value.action === 'reload') tab.view.webContents.reload(); break;
       }
-      case 'control': if(isVpsTab(value.id)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller});}return changeController(value.id, value.controller);
+      case 'control': {
+        if(isVpsTab(value.id)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller});}
+        const tab = tabs.get(value.id);
+        if (tab && value.controller === 'agent') tab.handoff = reviewedHandoff(tab.handoff);
+        return changeController(value.id, value.controller);
+      }
       case 'share-page': {
         const tab = tabs.get(activeTabId);
         const url = tab ? tab.view.webContents.getURL() : '';
@@ -496,13 +514,14 @@ function registerIpc() {
       case 'set-site-permission': sitePermissions.set(value); break;
       case 'reset-site-permissions': sitePermissions.reset(); break;
       case 'settings':
+        if (typeof value.macSshHost === 'string' && value.macSshHost.trim() && !isSshTarget(value.macSshHost.trim())) throw new Error('Enter the Mac SSH address as user@host or host, with no spaces or symbols.');
         if (value.vpsBrowser && typeof value.vpsBrowser === 'object') { prefs.vpsBrowser={sshHost:String(value.vpsBrowser.sshHost || '').trim(),scriptPath:String(value.vpsBrowser.scriptPath || '').trim(),sudo:value.vpsBrowser.sudo===true}; vpsBrowserStatus='connecting'; refreshVpsTabs(); }
         if (Number.isFinite(value.agentIdleMinutes)) prefs.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         if (typeof value.preview === 'boolean') prefs.preview = value.preview;
         if (typeof value.showBots === 'boolean') prefs.showBots = value.showBots;
         if (typeof value.showBrowser === 'boolean') prefs.showBrowser = value.showBrowser;
-        if (typeof value.macSshHost === 'string') prefs.macSshHost = value.macSshHost.slice(0, 200).trim();
+        if (typeof value.macSshHost === 'string') prefs.macSshHost = value.macSshHost.trim();
         if (typeof value.autoOpenLinks === 'boolean') prefs.autoOpenLinks = value.autoOpenLinks;
         if (typeof value.primaryBotId === 'string') prefs.primaryBotId = prefs.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : prefs.primaryBotId;
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) prefs.locationDefault = value.locationDefault;
@@ -559,9 +578,10 @@ function registerIpc() {
         const mac = (prefs.macSshHost || '').trim();
         if (!host) throw new Error('Save a VPS browser SSH host first.');
         if (!mac) throw new Error('Enter this Mac’s SSH address as your VPS reaches it.');
+        if (!isSshTarget(mac)) throw new Error('The saved Mac SSH address is invalid. Re-enter it as user@host or host.');
         return new Promise((resolve) => {
           const child = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host,
-            `ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=yes ${mac.replace(/[\\"']/g, '')} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
+            `ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=yes ${mac} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
           let out = '';
           child.stdout.on('data', chunk => { out += chunk; });
           child.stderr.on('data', chunk => { out += chunk; });
@@ -696,9 +716,23 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   const record={...handoff,destinationTabId:target.id,verification:result.verification,restoredDrafts:result.restored,skippedDrafts:result.skipped};
   if(destination==='mac')target.handoff=record;
   else {target.handoff=record;vpsTabs.set(target.id,target);}
+  const retired={id:record.id,phase:'handed_off',sourceHost,destinationHost:destination,destinationTabId:target.id,createdAt:record.createdAt};
+  if(sourceHost==='mac')source.handoff=retired;
+  else record.sourceRetired=await remoteRequest(id,'control',{controller:'human',handoff:retired}).then(()=>true,()=>false);
   prefs.remoteControl=false; prefs.handoffs=[record,...prefs.handoffs].slice(0,20);activeTabId=destination==='vps'?'vps':target.id;
   if(destination==='vps')await remoteRequest(target.id,'activate',{});
   savePreferences();applyLayout();broadcast();return record;
+}
+// History navigation has no promise. Listeners go on before the trigger so a
+// fast (cached or same-document) navigation cannot finish unobserved.
+function settleNavigation(wc, trigger, timeout = 15000) {
+  return new Promise((resolve) => {
+    const events = ['did-stop-loading', 'did-navigate-in-page', 'destroyed'];
+    const done = () => { clearTimeout(timer); for (const name of events) wc.off(name, done); resolve(); };
+    const timer = setTimeout(done, timeout);
+    for (const name of events) wc.on(name, done);
+    try { trigger(); } catch { done(); }
+  });
 }
 function browserCommand(tab, method, params) {
   const wc = tab.view.webContents;
@@ -745,9 +779,10 @@ async function performAction(tab, body, botId, depth = 0) {
     if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
     const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
     if (!steps.length) throw Object.assign(new Error('batch needs a non-empty steps array (max 25).'), { status: 400 });
-    const results = [];
+    const results = [], started = Date.now();
     for (const step of steps) {
       if (!step || typeof step !== 'object') { results.push({ error: 'Invalid step.' }); break; }
+      if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
       try { results.push(await performAction(tab, { ...step, epoch: body.epoch }, botId, 1)); }
       catch (error) { results.push({ error: error.message }); break; }
     }
@@ -867,9 +902,10 @@ async function performAction(tab, body, botId, depth = 0) {
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
     const history = wc.navigationHistory;
-    if (body.action === 'back' && history.canGoBack()) history.goBack();
-    else if (body.action === 'forward' && history.canGoForward()) history.goForward();
-    else if (body.action === 'reload') wc.reload();
+    const go = body.action === 'back' ? history.canGoBack() && (() => history.goBack())
+      : body.action === 'forward' ? history.canGoForward() && (() => history.goForward())
+      : () => wc.reload();
+    if (go) await settleNavigation(wc, go);
   } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, move, scroll, back, forward, reload, batch, eval, wait, viewport, cdp.'), { status: 400 });
   tab.refs.clear(); broadcast();
   return { tab: describeTab(tab), dispatched: true };
@@ -932,7 +968,7 @@ function startApi() {
       const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions|control))?$/.exec(url.pathname);
       const tab = match && tabs.get(match[1]);
       if(match&&!tab&&prefs.vpsBrowser?.sshHost){
-        const result=await vpsBrowser.request(url.pathname,req.method,req.method==='POST'?await readJson(req):undefined,{botId,botName:nameForBot(botId),epoch:Number(req.headers['x-control-epoch'])});
+        const result=await vpsBrowser.request(url.pathname+url.search,req.method,req.method==='POST'?await readJson(req):undefined,{botId,botName:nameForBot(botId),epoch:Number(req.headers['x-control-epoch'])});
         const remote=result.tab || (result.id?result:null);if(remote)vpsTabs.set(remote.id,remote);if(req.method==='DELETE')vpsTabs.delete(match[1]);broadcast();return send(200,result);
       }
       if (!tab || tab.extensionPage) return send(404, { error: 'Tab not found.' });
@@ -960,7 +996,9 @@ function startApi() {
       }
       if (req.method === 'POST' && match[2] === 'actions') {
         const body = await readJson(req);
-        const action = tab.queue.then(() => performAction(tab, body, botId));
+        tab.pendingActions = (tab.pendingActions || 0) + 1;
+        const action = tab.queue.then(() => performAction(tab, body, botId))
+          .finally(() => { tab.pendingActions--; tab.lastAgentActivity = Date.now(); });
         tab.queue = action.catch(() => {});
         return send(200, await action);
       }
@@ -969,6 +1007,7 @@ function startApi() {
         const granted = (tab.allowedBots || []).includes(botId)
           || (tab.botId === 'shared' && prefs.bots.some((bot) => bot.id === botId));
         if (botId !== tab.botId && !overseer && !granted) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
+        if (body.controller === 'agent') { requireAgentClaim(tab); tab.handoff = reviewedHandoff(tab.handoff); }
         if (tab.botId === 'shared' && body.controller === 'agent') tab.botId = botId;
         return send(200, changeController(tab.id, body.controller));
       }
@@ -981,7 +1020,7 @@ function startApi() {
   const envPort = Number(process.env.HERMES_WORKSPACE_PORT);
   apiServer.listen(Number.isInteger(envPort) && envPort >= 0 && envPort < 65536 ? envPort : 9464, '127.0.0.1', () => {
     apiPort = apiServer.address().port;
-    fs.writeFileSync(path.join(app.getPath('userData'), 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${apiPort}`, token: API_TOKEN, protocol: 1 }, null, 2), { mode: 0o600 });
+    writePrivateJson(path.join(app.getPath('userData'), 'connection.json'), { url: `http://127.0.0.1:${apiPort}`, token: API_TOKEN, protocol: 1 });
     broadcast();
   });
 }
@@ -1019,7 +1058,7 @@ function createWindow() {
     { label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
     { label: 'File', submenu: [{ label: 'New Browser Tab', accelerator: 'CmdOrCtrl+T', click: () => createTab({}) }, { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(activeTabId) }] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: 'CmdOrCtrl+R', click: () => tabs.get(activeTabId)?.view.webContents.reload() }, { role: 'togglefullscreen' }, { label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }] },
+    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: 'CmdOrCtrl+R', click: () => tabs.get(activeTabId)?.view.webContents.reload() }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] },
   ]));
   startApi();
@@ -1034,10 +1073,10 @@ function createWindow() {
   pointerTimer.unref();
   activityTimer = setInterval(() => { if (activity.expire() || JSON.stringify(computeBotWork()) !== lastBotWorkSignature) broadcast(); }, 500);
   activityTimer.unref();
-  setInterval(() => {
-    const idleMs = Math.max(1, prefs.agentIdleMinutes || 15) * 60000, now = Date.now();
+  idleTimer = setInterval(() => {
+    const idleMs = Math.max(1, Number(process.env.HERMES_AGENT_IDLE_MINUTES) || prefs.agentIdleMinutes || 15) * 60000, now = Date.now();
     for (const tab of tabs.values()) {
-      if (tab.controller !== 'agent' || tab.extensionPage) continue;
+      if (tab.controller !== 'agent' || tab.extensionPage || tab.pendingActions > 0 || agentInput.isDispatching(tab)) continue;
       if (now - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) > idleMs) changeController(tab.id, 'human');
     }
   }, 30000).unref();
@@ -1047,6 +1086,7 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(async () => {
     app.setAccessibilitySupportEnabled(true); prefs = readPreferences(); prefs.remoteControl = false;
+    try { parseRemoteUrl(prefs.remoteUrl); } catch { prefs.remoteUrl = ''; }
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
     const browserSession = session.fromPartition('persist:browser');
     extensionHost = new ElectronChromeExtensions({ license: 'GPL-3.0', session: browserSession,
@@ -1078,6 +1118,6 @@ else {
   });
   app.on('second-instance', () => { win?.show(); win?.focus(); });
   app.on('activate', () => { win?.show(); win?.focus(); });
-  app.on('before-quit', () => { isQuitting = true; clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(vpsTimer); savePreferences(); apiServer?.close(); });
+  app.on('before-quit', () => { isQuitting = true; clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(vpsTimer); savePreferences(); apiServer?.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

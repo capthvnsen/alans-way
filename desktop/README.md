@@ -22,7 +22,7 @@ Local tabs share this app's browser profile, so cookies and login changes are sh
 
 ## Give Hermes the local browser tools
 
-Node 18+ is needed for the MCP connector; the desktop app itself includes its runtime. The connector is included in the installed app at:
+Node 20+ is needed for the MCP connector; the desktop app itself includes its runtime. The connector is included in the installed app at:
 
 ```text
 /Applications/alans-way-localapp.app/Contents/Resources/app/scripts/browser-mcp.cjs

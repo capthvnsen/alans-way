@@ -33,6 +33,12 @@ function parseRemoteUrl(value) {
   return url.href;
 }
 
+// Saved SSH addresses are interpolated into a remote shell command, so only
+// [user@]host (or an ~/.ssh/config alias) is accepted.
+function isSshTarget(value) {
+  return typeof value === 'string' && value.length <= 200 && /^(?:[A-Za-z0-9][A-Za-z0-9._-]*@)?[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value);
+}
+
 function requireActor(tab, botId, epoch, mutate = false, overseer = false) {
   if (!botId || typeof botId !== 'string' || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
   if (!overseer && tab.botId !== botId && !(tab.allowedBots || []).includes(botId)) {
@@ -40,6 +46,20 @@ function requireActor(tab, botId, epoch, mutate = false, overseer = false) {
   }
   if (mutate && tab.controller !== 'agent') throw Object.assign(new Error('human_has_control'), { status: 409 });
   if (mutate && epoch !== tab.epoch) throw Object.assign(new Error('stale_control_epoch: read the tab state and retry after a fresh snapshot.'), { status: 409 });
+}
+
+// A handoff source stays human-only so the task has one live copy, and a
+// destination that did not verify (login redirect, lost drafts) waits for the
+// human. Humans clear either by giving the tab to an agent themselves.
+function requireAgentClaim(tab) {
+  const h = tab.handoff;
+  if (h && (h.phase === 'handed_off' || (h.phase === 'review_required' && h.verification !== 'ready')))
+    throw Object.assign(new Error(h.phase === 'handed_off'
+      ? `handoff_source: this task moved to the ${h.destinationHost || 'other'} tab ${h.destinationTabId || ''}. Continue there; only the human can reopen this tab for agents.`
+      : 'handoff_review_required: the handed-off page needs the human to check it (for example a login) before an agent can take control.'), { status: 409 });
+}
+function reviewedHandoff(handoff) {
+  return handoff && handoff.phase !== 'reviewed' ? { ...handoff, phase: 'reviewed', reviewedAt: Date.now() } : handoff;
 }
 
 function requireAgentRead(tab) {
@@ -65,4 +85,4 @@ function sanitizeBots(value) {
   }));
 }
 
-module.exports = { normalizeUrl, parseRemoteUrl, requireActor, requireAgentRead, isAuthorized, sanitizeBots };
+module.exports = { normalizeUrl, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots };

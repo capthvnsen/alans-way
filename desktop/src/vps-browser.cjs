@@ -29,7 +29,7 @@ function createVpsBrowser({ getConfig }) {
       const timer = setTimeout(() => {
         child.kill();
         finish(new Error('VPS browser timed out. Inspect the task before retrying.'));
-      }, 30000);
+      }, route.endsWith('/actions') ? 87000 : 30000);
       child.stdout.on('data', (chunk) => {
         size += chunk.length;
         if (size > 12000000) {

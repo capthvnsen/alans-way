@@ -122,7 +122,7 @@ function botAccent(_botId) {
 function cursorPath(from, to) {
   if (!from || from.x === to.x && from.y === to.y) return [to];
   const dx = to.x - from.x, dy = to.y - from.y, distance = Math.hypot(dx, dy);
-  const duration = Math.max(80, Math.min(420, 55 + distance * .65));
+  const duration = Math.max(60, Math.min(200, 40 + distance * .3));
   const steps = Math.max(2, Math.ceil(duration / 16));
   const bend = Math.min(18, distance * .04) * ((Math.round(from.x + from.y + to.x + to.y) & 1) ? 1 : -1);
   return Array.from({ length: steps }, (_, index) => {

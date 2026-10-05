@@ -10,7 +10,9 @@ noVNC connection. It is one shared desktop, not separate desktop streams.
 
 Use Node 22+ on the VPS, a working X11 desktop/VNC viewer, and an installed GUI
 Chromium. Install this repository in a stable directory and run
-`npm ci --omit=dev --ignore-scripts` in `desktop/`. Keep Hermes' Python environment
+`npm ci --omit=dev --ignore-scripts` in `desktop/`. The examples below assume
+`git clone https://github.com/capthvnsen/alans-way /opt/hermes-alans-way/browser`
+(the plugin's `setup.sh` uses the same path when run as root). Keep Hermes' Python environment
 and dependencies separate. Use a dedicated browser profile; existing browser
 windows/profiles need not be altered.
 
@@ -111,8 +113,11 @@ mcp_servers:
       - /home/user/.local/share/hermes-alans-way/browser/connection.json
     lazy: true
     connect_timeout: 10
-    timeout: 30
+    timeout: 100
 ```
+
+Keep `timeout` above 90 seconds: a `batch` action may run for up to about 80
+seconds before it answers, and the connector waits 90 seconds for actions.
 
 Run the connector as a user allowed to read that private connection file.
 Use Hermes' supported gateway/MCP reload workflow, then verify a full agent
