@@ -175,6 +175,15 @@ app.whenReady().then(async () => {
   assert.equal(seized.controller, 'agent');
   assert.equal((await api(`/v1/tabs/${colored[1].id}/snapshot`, 'GET', undefined, 'overseer-bot')).title, 'blue', 'Overseer reads once it holds control.');
   console.log('PASS: overseer lists all tabs, releases/retakes another bot\'s tab, and human-controlled tabs reject bot reads.');
+  // The designated lead bot pins to the top of the sidebar with a LEAD
+  // badge; with no explicit pick the overseer bot is the lead.
+  state = await invoke('settings', { primaryBotId: '123' });
+  assert.equal(state.primaryBotId, '123');
+  await waitFor(() => evaluate('document.querySelector("#bot-list .bot-row.primary .lead-badge")?.textContent'), value => value === 'LEAD');
+  assert.equal(await evaluate('document.querySelector("#bot-list .bot-row")?.dataset.botId'), '123', 'Lead bot pins to the top of the sidebar.');
+  state = await invoke('settings', { primaryBotId: '' });
+  assert.equal(state.primaryBotId, 'overseer-bot', 'With no explicit pick the overseer bot is the lead.');
+  console.log('PASS: lead bot pins to the top with a LEAD badge, defaulting to the overseer.');
   await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, 'background-browser.cjs')], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', HERMES_WORKSPACE_CONNECTION: path.join(profile, 'connection.json') }, stdio: ['ignore', 'pipe', 'pipe'],

@@ -6,7 +6,8 @@ function toast(message) { $('toast').textContent = message; $('toast').classList
 async function command(name, value = {}) { try { return await api.command(name, value); } catch (error) { toast(error.message); } }
 function orderedBots(includeHidden = false) {
   const order = new Map(state.order.map((id, index) => [id, index]));
-  return state.bots.filter((bot) => includeHidden || !state.hidden.includes(bot.id)).sort((a, b) => (order.get(a.id) ?? 10000) - (order.get(b.id) ?? 10000));
+  const bots = state.bots.filter((bot) => includeHidden || !state.hidden.includes(bot.id)).sort((a, b) => (order.get(a.id) ?? 10000) - (order.get(b.id) ?? 10000));
+  return bots.sort((a, b) => Number(b.id === state.primaryBotId) - Number(a.id === state.primaryBotId));
 }
 function colorFor(value) {
   const colors = ['#e6e6eb', '#00ba83', '#e9428b', '#f18b31', '#9673e1', '#22b9b7', '#689be4'];
@@ -16,7 +17,7 @@ function renderBots() {
   const search = $('bot-search').value.toLowerCase();
   const bots = orderedBots().filter((bot) => `${bot.name} ${bot.username}`.toLowerCase().includes(search));
   const list = $('bot-list');
-  const signature = JSON.stringify([bots.map(({ activity, ...bot }) => bot), state.selectedBotId]);
+  const signature = JSON.stringify([bots.map(({ activity, ...bot }) => bot), state.selectedBotId, state.primaryBotId]);
   if (signature === botListSignature) {
     for (const row of list.children) {
       const bot = bots.find(item => item.id === row.dataset.botId);
@@ -27,10 +28,13 @@ function renderBots() {
   }
   botListSignature = signature; list.replaceChildren();
   for (const bot of bots) {
-    const row = element('div', `bot-row${state.selectedBotId === bot.id ? ' selected' : ''}`);
+    const row = element('div', `bot-row${state.selectedBotId === bot.id ? ' selected' : ''}${state.primaryBotId === bot.id ? ' primary' : ''}`);
     row.setAttribute('role', 'button'); row.setAttribute('tabindex', '0'); row.setAttribute('aria-label', `Open ${bot.name}`); row.draggable = true; row.dataset.botId = bot.id;
     const avatar = element('span', 'avatar'); window.HermesAvatars.paint(avatar, bot, state);
-    const copy = element('span', 'bot-copy'); copy.append(element('div', 'bot-name', bot.name), element('div', 'bot-preview', bot.preview || (bot.username ? `@${bot.username}` : 'Telegram bot')), element('div', 'bot-activity'));
+    const copy = element('span', 'bot-copy');
+    const nameLine = element('div', 'bot-name', bot.name);
+    if (state.primaryBotId === bot.id) nameLine.append(element('span', 'lead-badge', 'LEAD'));
+    copy.append(nameLine, element('div', 'bot-preview', bot.preview || (bot.username ? `@${bot.username}` : 'Telegram bot')), element('div', 'bot-activity'));
     const hide = element('button', 'bot-hide', '×'); hide.title = `Hide ${bot.name}`; hide.setAttribute('aria-label', hide.title);
     hide.onclick = (event) => { event.stopPropagation(); command('hide-bot', { id: bot.id }); };
     row.append(avatar, copy); if (bot.unread) row.append(element('span', 'unread')); row.append(hide);
@@ -38,7 +42,7 @@ function renderBots() {
     row.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); command('open-bot', { id: bot.id }); } };
     row.ondragstart = (event) => { draggingBot = bot.id; row.classList.add('dragging'); event.dataTransfer.setData('text/plain', bot.id); event.dataTransfer.effectAllowed = 'move'; };
     row.ondragend = () => { draggingBot = ''; row.classList.remove('dragging'); document.querySelectorAll('.drop-target').forEach((el) => el.classList.remove('drop-target')); };
-    row.ondragover = (event) => { if (draggingBot && draggingBot !== bot.id) { event.preventDefault(); row.classList.add('drop-target'); } };
+    row.ondragover = (event) => { if (draggingBot && draggingBot !== bot.id && bot.id !== state.primaryBotId) { event.preventDefault(); row.classList.add('drop-target'); } };
     row.ondragleave = () => row.classList.remove('drop-target');
     row.ondrop = (event) => {
       event.preventDefault(); row.classList.remove('drop-target');
@@ -375,6 +379,13 @@ function showSettings() {
   const agentTest = element('button', 'secondary-button', 'Test agent path'); const agentResult = element('p', 'settings-note', '');
   agentTest.onclick = async () => { agentTest.disabled = true; agentResult.textContent = 'Checking VPS → Mac ssh path…'; const result = await command('test-agent-path'); agentTest.disabled = false; agentResult.textContent = result && typeof result === 'object' ? `${result.ok ? '✓' : '✗'} ${result.detail}` : '✗ Path check failed.'; };
   body.append(sshField, element('div', 'setting-row'), sshSave, agentSetup, agentTest, agentResult);
+  const primaryField = element('div', 'field'), primaryLabel = element('label', '', 'Lead bot'); primaryLabel.htmlFor = 'primary-bot';
+  const primarySelect = element('select'); primarySelect.id = 'primary-bot';
+  const none = element('option', '', 'None (defaults to the overseer bot)'); none.value = ''; primarySelect.append(none);
+  for (const bot of state.bots) { const option = element('option', '', `${bot.name}${bot.username ? ` @${bot.username}` : ''}`); option.value = bot.id; primarySelect.append(option); }
+  primarySelect.value = state.primaryBotPref || '';
+  primarySelect.onchange = async () => { await command('settings', { primaryBotId: primarySelect.value }); toast(primarySelect.value ? 'Lead bot pinned at the top of the sidebar.' : 'Lead bot cleared.'); };
+  primaryField.append(primaryLabel, primarySelect); body.append(primaryField);
   body.append(element('p', 'settings-note', 'The setup installs the Alan’s Way agent plugin on your gateway host and wires this Mac’s browser connector for the selected bot. Run once per bot.'));
   body.append(element('p', 'settings-note', 'Taking over a local tab blocks new agent actions on that tab. VPS control currently uses your existing shared desktop; it does not pause your Hermes bots.'));
   body.append(element('hr', 'section-divider'));

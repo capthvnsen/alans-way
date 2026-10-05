@@ -56,3 +56,5 @@
 @keyframes agent-busy{50%{opacity:.25;transform:scale(1.5)}}
 .browser-slot.agent-live{border-color:#2d4a44;box-shadow:0 0 0 1px #69f5d41f}
 @media(prefers-reduced-motion:reduce){.tab.busy .agent-dot{animation:none}}
+.lead-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:5px;background:#67a8ff22;border:1px solid #67a8ff55;color:#8fb8f5;font-size:8.5px;font-weight:700;letter-spacing:.9px;vertical-align:1px}
+.bot-row.primary{box-shadow:inset 2px 0 0 #67a8ff}
