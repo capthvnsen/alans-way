@@ -198,6 +198,47 @@ async function serve() {
     }
     throw fail('VPS page is still loading. Inspect it before continuing.', 504);
   }
+  async function vpsPerform(tab, body, botId, overseer, depth = 0) {
+    const wc = tab.view.webContents;
+    requireActor(tab, botId, body.epoch, true, overseer);
+    if (body.action === 'batch') {
+      if (depth > 0) throw fail('Batches cannot nest.');
+      const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
+      if (!steps.length) throw fail('batch needs a non-empty steps array (max 25).');
+      const results = [];
+      for (const step of steps) {
+        if (!step || typeof step !== 'object') { results.push({ error: 'Invalid step.' }); break; }
+        try { results.push(await vpsPerform(tab, { ...step, epoch: body.epoch }, botId, overseer, 1)); }
+        catch (error) { results.push({ error: error.message }); break; }
+      }
+      return { results, dispatched: true };
+    }
+    if (body.action === 'eval') {
+      const code = String(body.code || '');
+      if (!code || code.length > 16384) throw fail('eval needs a code string (max 16KB).');
+      let value = await Promise.race([
+        wc.executeJavaScript(code),
+        new Promise((_, reject) => setTimeout(() => reject(fail('eval timed out after 15s.', 408)), 15000)),
+      ]);
+      const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+      if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
+      return { value, dispatched: true };
+    }
+    if (['click', 'type', 'press', 'move', 'scroll'].includes(body.action)) await input.perform(tab, body, botId);
+    else if (body.action === 'navigate') {
+      await input.clear(tab);
+      requireActor(tab, botId, body.epoch, true, overseer);
+      await wc.command('Page.navigate', { url: normalizeUrl(body.url) });
+      await loaded(tab, normalizeUrl(body.url));
+    } else if (body.action === 'reload') await wc.command('Page.reload');
+    else if (['back', 'forward'].includes(body.action)) {
+      const h = await wc.command('Page.getNavigationHistory');
+      const e = h.entries[h.currentIndex + (body.action === 'back' ? -1 : 1)];
+      if (e) await wc.command('Page.navigateToHistoryEntry', { entryId: e.id });
+    } else throw fail('Unsupported VPS action.');
+    if (body.action !== 'move') tab.refs.clear();
+    return { dispatched: true };
+  }
   cdp.listeners.add((event) => {
     if (event.method === 'Target.targetInfoChanged') {
       const info = event.params.targetInfo;
@@ -307,22 +348,9 @@ async function serve() {
       if (req.method === 'POST' && m[2] === 'actions') {
         const body = await read(req);
         const action = tab.queue.then(async () => {
-          requireActor(tab, botId, body.epoch, true, overseer);
-          if (['click', 'type', 'press', 'move', 'scroll'].includes(body.action)) await input.perform(tab, body, botId);
-          else if (body.action === 'navigate') {
-            await input.clear(tab);
-            requireActor(tab, botId, body.epoch, true, overseer);
-            await wc.command('Page.navigate', { url: normalizeUrl(body.url) });
-            await loaded(tab, normalizeUrl(body.url));
-          } else if (body.action === 'reload') await wc.command('Page.reload');
-          else if (['back', 'forward'].includes(body.action)) {
-            const h = await wc.command('Page.getNavigationHistory');
-            const e = h.entries[h.currentIndex + (body.action === 'back' ? -1 : 1)];
-            if (e) await wc.command('Page.navigateToHistoryEntry', { entryId: e.id });
-          } else throw fail('Unsupported VPS action.');
-          if (body.action !== 'move') tab.refs.clear();
+          const result = await vpsPerform(tab, body, botId, overseer);
           await persist();
-          return { dispatched: true, tab: describe(tab) };
+          return { ...result, tab: describe(tab) };
         });
         tab.queue = action.catch(() => {});
         return send(200, await action);

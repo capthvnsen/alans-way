@@ -666,9 +666,33 @@ async function captureTab(tab) {
   backgroundCaptureQueue = capture.catch(() => {});
   return capture;
 }
-async function performAction(tab, body, botId) {
+async function performAction(tab, body, botId, depth = 0) {
   const overseer = isOverseer(botId);
   requireActor(tab, botId, body.epoch, true, overseer);
+  if (body.action === 'batch') {
+    if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
+    const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
+    if (!steps.length) throw Object.assign(new Error('batch needs a non-empty steps array (max 25).'), { status: 400 });
+    const results = [];
+    for (const step of steps) {
+      if (!step || typeof step !== 'object') { results.push({ error: 'Invalid step.' }); break; }
+      try { results.push(await performAction(tab, { ...step, epoch: body.epoch }, botId, 1)); }
+      catch (error) { results.push({ error: error.message }); break; }
+    }
+    return { results, tab: describeTab(tab), dispatched: true };
+  }
+  if (body.action === 'eval') {
+    const code = String(body.code || '');
+    if (!code || code.length > 16384) throw Object.assign(new Error('eval needs a code string (max 16KB).'), { status: 400 });
+    const wc = tab.view.webContents;
+    let value = await Promise.race([
+      wc.executeJavaScript(code, true),
+      new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('eval timed out after 15s.'), { status: 408 })), 15000)),
+    ]);
+    const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+    if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
+    return { value, tab: describeTab(tab), dispatched: true };
+  }
   if (['click', 'type', 'press', 'scroll', 'move'].includes(body.action)) {
     const result = await agentInput.perform(tab, body, botId);
     if (body.action !== 'move') tab.refs.clear();
@@ -687,7 +711,7 @@ async function performAction(tab, body, botId) {
     if (body.action === 'back' && history.canGoBack()) history.goBack();
     else if (body.action === 'forward' && history.canGoForward()) history.goForward();
     else if (body.action === 'reload') wc.reload();
-  } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, move, scroll, back, forward, reload.'), { status: 400 });
+  } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, move, scroll, back, forward, reload, batch, eval.'), { status: 400 });
   tab.refs.clear(); broadcast();
   return { tab: describeTab(tab), dispatched: true };
 }
@@ -706,7 +730,7 @@ function startApi() {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
       const overseer = isOverseer(botId);
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', hosts:{mac:'connected',vps:vpsBrowserStatus}, capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', hosts:{mac:'connected',vps:vpsBrowserStatus}, capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'batch', 'eval', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await telegramView.webContents.executeJavaScript(`(() => ({
           styled: document.body.classList.contains('hw-chat'),

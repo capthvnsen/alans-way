@@ -189,6 +189,25 @@ app.whenReady().then(async () => {
   assert.equal(seizedByGrantee.controller, 'agent', 'A granted bot takes over a human-controlled tab.');
   assert.equal((await api(`/v1/tabs/${colored[0].id}`, 'GET', undefined, '456')).botId, 'capture-regression', 'Grantee control does not transfer ownership.');
   console.log('PASS: shared-tab claim by a known bot and granted-bot takeover of a human tab.');
+  // batch runs a multi-step sequence in one request and eval executes page JS;
+  // both honor the same controller/epoch gate as single actions.
+  const seizedTab = await api(`/v1/tabs/${colored[1].id}`, 'GET', undefined, 'overseer-bot');
+  const batched = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'batch', epoch: seizedTab.epoch, steps: [
+    { action: 'eval', code: 'document.title' },
+    { action: 'scroll', x: 0, y: 120 },
+    { action: 'press', key: 'Tab' },
+  ] }, 'overseer-bot');
+  assert.equal(batched.results.length, 3, 'Batch returns one result per step.');
+  assert.equal(batched.results[0].value, 'blue', 'eval inside batch returns the page result.');
+  const evaluated = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: 'document.title + "!"', epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.equal(evaluated.value, 'blue!', 'eval returns a JSON value.');
+  assert.equal((await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: '1', epoch: 999999 }, 'overseer-bot')).status, 409, 'eval rejects a stale epoch.');
+  const partial = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'batch', epoch: seizedTab.epoch, steps: [
+    { action: 'eval', code: '1' }, { action: 'bogus' }, { action: 'eval', code: '2' },
+  ] }, 'overseer-bot');
+  assert.equal(partial.results.length, 2, 'Batch stops at the first failing step.');
+  assert.ok(partial.results[1].error, 'The failing step reports its error.');
+  console.log('PASS: batch sequencing, eval page JS, epoch gate, and stop-on-error.');
   // The designated primary bot pins to the top of the sidebar with a PRIMARY
   // badge; with no explicit pick the overseer bot is the primary.
   state = await invoke('settings', { primaryBotId: '123' });
