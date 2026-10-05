@@ -1,6 +1,6 @@
 // Fixture site for cross-host-electron.cjs. Serve it on an address both the
 // Mac and the VPS can reach, then pass that origin as HERMES_CROSS_HOST_FIXTURE:
-//   node test/cross-host-fixture.cjs 100.64.0.1 8044
+//   node test/cross-host-fixture.cjs <mac-tailnet-address> 8044
 const http = require('node:http');
 const [host = '127.0.0.1', port = '8044'] = process.argv.slice(2);
 const escape = (value) => String(value).replace(/[&<>"]/g, (ch) => `&#${ch.charCodeAt(0)};`);
