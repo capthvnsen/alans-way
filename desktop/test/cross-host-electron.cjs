@@ -97,27 +97,22 @@ app
       own.push(handoff.destinationTabId);
       assert.equal(handoff.verification, 'ready');
       assert.equal(handoff.restoredDrafts, 1);
-      let snap = (await api(`/v1/tabs/${handoff.destinationTabId}/snapshot`)).data;
-      assert.equal(snap.elements.find((e) => e.name === 'Task draft').value, 'MAC-DRAFT');
-      assert.equal(snap.tab.controller, 'human');
-      assert.equal(snap.tab.host, 'vps');
-      assert.equal(snap.tab.handoff.note, 'Continue the fixture; no submission yet.');
+      assert.equal((await api(`/v1/tabs/${handoff.destinationTabId}/snapshot`)).status, 409, 'the human holds the handed-off page');
       assert.equal(
-        (
-          await api(`/v1/tabs/${handoff.destinationTabId}/actions`, 'POST', {
-            action: 'click',
-            ref: snap.elements.find((e) => e.name === 'Confirm once').ref,
-            epoch: snap.tab.epoch,
-          })
-        ).status,
+        (await api(`/v1/tabs/${handoff.destinationTabId}/actions`, 'POST', { action: 'click', selector: 'button', epoch: 1 })).status,
         409,
       );
       assert.equal((await api(`/v1/tabs/${handoff.destinationTabId}/snapshot`, 'GET', undefined, '456')).status, 403);
-      console.log(
-        'PASS: actual Mac -> VPS URL/text-draft handoff, task context, destination review gate, and cross-agent denial.',
-      );
       let remote = await invoke('control', { id: handoff.destinationTabId, controller: 'agent' });
-      snap = (await api(`/v1/tabs/${remote.id}/snapshot`)).data;
+      let snap = (await api(`/v1/tabs/${remote.id}/snapshot`)).data;
+      assert.equal(snap.elements.find((e) => e.name === 'Task draft').value, 'MAC-DRAFT');
+      assert.equal(snap.tab.host, 'vps');
+      assert.equal(snap.tab.handoff.note, 'Continue the fixture; no submission yet.');
+      const source = (await api(`/v1/tabs/${mac.id}/control`, 'POST', { controller: 'agent' })).data;
+      assert.match(source.error, /^handoff_source:/, 'the Mac source refuses agent claims once the task moved');
+      console.log(
+        'PASS: actual Mac -> VPS URL/text-draft handoff, task context, destination review gate, source retirement, and cross-agent denial.',
+      );
       assert.equal(
         (
           await api(`/v1/tabs/${remote.id}/actions`, 'POST', {
@@ -176,10 +171,13 @@ app
       own.push(redirect.destinationTabId);
       assert.equal(redirect.verification, 'review_required');
       assert.equal(redirect.restoredDrafts, 0);
-      const login = (await api(`/v1/tabs/${redirect.destinationTabId}/snapshot`)).data;
+      const login = (await api('/v1/tabs')).data.tabs.find((t) => t.id === redirect.destinationTabId);
       assert.ok(login.url.endsWith('/login'));
-      assert.equal(login.tab.controller, 'human');
-      console.log('PASS: destination login redirect is not given drafts or agent control.');
+      assert.equal(login.controller, 'human');
+      assert.equal((await api(`/v1/tabs/${login.id}/snapshot`)).status, 409);
+      const claim = (await api(`/v1/tabs/${login.id}/control`, 'POST', { controller: 'agent' })).data;
+      assert.match(claim.error, /^handoff_review_required:/, 'an unverified page needs the human before an agent claims it');
+      console.log('PASS: destination login redirect is not given drafts or agent control, even on an agent claim.');
     } finally {
       for (const id of own) await invoke('close-tab', { id }).catch(() => {});
     }
