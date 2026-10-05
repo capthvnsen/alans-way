@@ -27,17 +27,19 @@ EXAMPLE_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
 ))
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pem", ".key", ".patch", ".diff", ".log"}
 FORBIDDEN_IMPORTS = {"gateway", "tui_gateway", "hermes_cli", "hermes_state", "run_agent", "model_tools", "tools", "agent"}
-BINARY_ASSETS = {"desktop/assets/icon.png": b"\x89PNG\r\n\x1a\n", "desktop/assets/icon.icns": b"icns"}
+BINARY_ASSETS = {"desktop/assets/icon.png": b"\x89PNG\r\n\x1a\n", "desktop/assets/icon.icns": b"icns",
+                 "desktop/src/newtab-backdrop.png": b"\x89PNG\r\n\x1a\n"}
 AVATAR_ASSETS = frozenset(f"desktop/assets/avatars/{name}.png" for name in (
     "apollo", "artemis", "athena", "faun", "hades", "hermes", "medusa",
     "minotaur", "poseidon", "zeus",
 ))
 BINARY_ASSETS.update({name: b"\x89PNG\r\n\x1a\n" for name in AVATAR_ASSETS})
+BINARY_LIMITS = {"desktop/src/newtab-backdrop.png": 4194304}
 
 
 def valid_binary_asset(path: str, blob: bytes) -> bool:
     signature = BINARY_ASSETS.get(path)
-    limit = 2097152 if path in AVATAR_ASSETS else 1048576
+    limit = BINARY_LIMITS.get(path, 2097152 if path in AVATAR_ASSETS else 1048576)
     return bool(signature and blob.startswith(signature) and len(blob) <= limit)
 
 

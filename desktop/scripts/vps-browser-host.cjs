@@ -80,7 +80,7 @@ async function serve() {
   }
   const tabs = new Map();
   // The Mac shell forwards each bot's display name so the in-page agent cursor
-  // reads "Scout" instead of a generic "Agent" inside the streamed desktop.
+  // shows it instead of a generic "Agent" inside the streamed desktop.
   const botNames = new Map();
   let persistQueue = Promise.resolve();
   const describe = (t) => ({
