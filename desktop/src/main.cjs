@@ -173,13 +173,15 @@ function configureContents(contents, isTelegram = false) {
     const extensionPage = !isTelegram && isExtensionUrl(details.url);
     try { url = extensionPage ? details.url : normalizeUrl(details.url); } catch { return { action: 'deny' }; }
     if (isTelegram) {
-      // Telegram window-opens message links for previews too; if the chat-link
-      // scanner just opened this URL, reuse that tab instead of duplicating.
+      // Guest windows inherit the persist:telegram session, which the extension
+      // host rejects — open Telegram links in our own browser-session tab.
       const opened = recentLinkTabs.get(url);
       if (opened && Date.now() - opened.at < 15000 && tabs.has(opened.tabId)) {
         if (details.disposition !== 'background-tab') { activeTabId = opened.tabId; broadcast(); }
-        return { action: 'deny' };
+      } else {
+        try { createTab({ url }); } catch {}
       }
+      return { action: 'deny' };
     }
     return { action: 'allow', createWindow: (options) => {
       const parent = [...tabs.values()].find((tab) => tab.view.webContents === contents);
