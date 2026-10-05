@@ -95,10 +95,16 @@ App data lives in `~/Library/Application Support/Hermes Workspace/`. The product
 
 ## Companion integration
 
-This app lives in `desktop/` in the Hermes- Alan's way repository. Install the
-[proactivity plugin](https://github.com/capthvnsen/alans-way-agents/blob/main/docs/proactivity.md) on your existing VPS primary, then
-use `/proactivity status`, `/proactivity pause`, `/proactivity resume`, or
-`/proactivity review` in its Telegram chat here. These commands reach the real
+This app lives in `desktop/` in the Hermes- Alan's way repository. The
+[agents repo](https://github.com/capthvnsen/alans-way-agents) owns the VPS
+side — `setup.sh` there is a one-command bootstrap that installs the plugin,
+wires the browser connector, restarts the gateway, and binds the primary
+route (including the path for a Hermes that has never configured Telegram).
+Settings → Agent setup shows a live checklist and copies a pre-filled
+bootstrap command or agent prompt for your setup.
+
+Use `/proactivity status`, `/proactivity pause`, `/proactivity resume`, or
+`/proactivity review` in the primary's Telegram chat here. These commands reach the real
 plugin; the UI does not maintain a second proactivity state. Configure the
 browser MCP entry above on the same primary to let it use the local tabs.
 [The integration contract](docs/integration.md) describes the browser interface.

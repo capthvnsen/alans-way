@@ -384,15 +384,29 @@ function showSettings() {
   const copy = element('button', 'secondary-button', 'Copy connection'); copy.onclick = async () => { await command('copy-connection'); toast('Connection URL and private token copied. Share only with your own agent connector.'); };
   const folder = element('button', 'secondary-button', 'Open app data'); folder.onclick = () => command('show-data'); body.append(copy, folder);
   body.append(element('h3', '', 'Agent setup'));
-  body.append(element('p', 'settings-note', 'Connect your Hermes agents on a VPS to this Mac. Enter how the VPS reaches this Mac over ssh (Tailscale name or IP), then copy the generated setup commands.'));
+  const checklist = element('div', 'checklist');
+  const checks = [
+    [state.telegramStatus === 'connected', 'Signed in to Telegram'],
+    [state.bots.length > 0, state.bots.length ? `${state.bots.length} bot${state.bots.length === 1 ? '' : 's'} discovered` : 'No bots discovered yet'],
+    [!!(state.vpsBrowser?.sshHost), 'VPS SSH address saved'],
+    [!!state.macSshHost, 'This Mac’s SSH address saved'],
+    [state.api.ready, 'Browser connector ready'],
+  ];
+  for (const [done, label] of checks) checklist.append(element('p', `check-item${done ? ' done' : ''}`, `${done ? '✓' : '○'} ${label}`));
+  body.append(checklist);
+  body.append(element('p', 'settings-note', 'Connect your Hermes agents on a VPS to this Mac. Fill in both SSH addresses, run the setup on your VPS, then test the agent path.'));
+  const vpsField = element('div', 'field'), vpsLabel = element('label', '', 'VPS SSH address (where your Hermes gateway runs)'); vpsLabel.htmlFor = 'vps-ssh-host';
+  const vpsInput = element('input'); vpsInput.id = 'vps-ssh-host'; vpsInput.placeholder = 'you@your-vps'; vpsInput.value = state.vpsBrowser?.sshHost || ''; vpsInput.autocomplete = 'off';
+  vpsField.append(vpsLabel, vpsInput);
   const sshField = element('div', 'field'), sshLabel = element('label', '', 'This Mac’s SSH address (as your VPS reaches it)'); sshLabel.htmlFor = 'mac-ssh-host';
   const sshInput = element('input'); sshInput.id = 'mac-ssh-host'; sshInput.placeholder = 'you@mymac or mymac.tailnet-name'; sshInput.value = state.macSshHost || ''; sshInput.autocomplete = 'off';
   sshField.append(sshLabel, sshInput);
-  const sshSave = element('button', 'secondary-button', 'Save'); sshSave.onclick = async () => { await command('settings', { macSshHost: sshInput.value.trim() }); toast('Mac SSH address saved.'); };
-  const agentSetup = element('button', 'secondary-button', 'Copy agent setup'); agentSetup.onclick = async () => { const ok = await command('agent-setup', { botId: state.selectedBotId }); if (ok !== false) toast('Setup commands copied — paste them on your VPS.'); };
+  const sshSave = element('button', 'secondary-button', 'Save addresses'); sshSave.onclick = async () => { await command('settings', { macSshHost: sshInput.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vpsInput.value.trim() } }); toast('SSH addresses saved.'); };
+  const agentSetup = element('button', 'secondary-button', 'Copy setup command'); agentSetup.onclick = async () => { const ok = await command('agent-setup', { botId: state.selectedBotId }); if (ok !== false) toast('Bootstrap command copied — paste it in a terminal on your VPS.'); };
+  const agentPrompt = element('button', 'secondary-button', 'Copy setup prompt'); agentPrompt.onclick = async () => { const ok = await command('agent-prompt', { botId: state.selectedBotId }); if (ok !== false) toast('Setup prompt copied — paste it to a Hermes agent that has a terminal on your VPS.'); };
   const agentTest = element('button', 'secondary-button', 'Test agent path'); const agentResult = element('p', 'settings-note', '');
   agentTest.onclick = async () => { agentTest.disabled = true; agentResult.textContent = 'Checking VPS → Mac ssh path…'; const result = await command('test-agent-path'); agentTest.disabled = false; agentResult.textContent = result && typeof result === 'object' ? `${result.ok ? '✓' : '✗'} ${result.detail}` : '✗ Path check failed.'; };
-  body.append(sshField, element('div', 'setting-row'), sshSave, agentSetup, agentTest, agentResult);
+  body.append(vpsField, sshField, element('div', 'setting-row'), sshSave, agentSetup, agentPrompt, agentTest, agentResult);
   const primaryField = element('div', 'field'), primaryLabel = element('label', '', 'Primary bot'); primaryLabel.htmlFor = 'primary-bot';
   const primarySelect = element('select'); primarySelect.id = 'primary-bot';
   const none = element('option', '', 'None (defaults to the overseer bot)'); none.value = ''; primarySelect.append(none);

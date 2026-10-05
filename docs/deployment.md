@@ -41,9 +41,10 @@ not been verified.
 
 With Hermes, SSH and noVNC already working, deployment is mostly configuration.
 A fresh headless VPS also needs desktop provisioning, display/service lifecycle
-and browser setup. A reusable installer still needs host/profile selection,
-identity validation, private credential entry, connection checks and an update
-workflow; the current installation is not one-click onboarding.
+and browser setup. The agents repo's `setup.sh` bootstrap covers the Hermes
+side — plugin, hook, connector config, browser host units, gateway restart,
+and primary-route binding — and prints guided steps for the display/VNC stack
+it can't safely automate.
 
 Chrome extensions are a separate browser capability. The current Electron app
 ships no extension installer or pinning bar. Electron supports a subset of

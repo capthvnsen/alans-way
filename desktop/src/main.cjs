@@ -529,14 +529,24 @@ function registerIpc() {
         if (!botId) throw new Error('Select a bot first — its ID goes in the agent config.');
         const bot = prefs.bots.find(item => item.id === botId);
         const macSsh = (prefs.macSshHost || '').trim();
+        const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
         clipboard.writeText([
-          "# Alan's Way agent setup — run on the host that runs your Hermes gateway",
-          'git clone https://github.com/capthvnsen/alans-way-agents && cd alans-way-agents',
-          'hermes plugins install ./proactive-primary',
-          'cp -r hooks/proactive-primary ~/.hermes/hooks/',
-          `./setup-workspace.sh --bot-id "${botId}"${bot ? ` --bot-name "${bot.name.replace(/"/g, '')}"` : ''}${macSsh ? ` --mac-ssh "${macSsh}"` : ''} --config ~/.hermes/config.yaml`,
-          '# then restart your gateway',
+          "# Alan's Way setup — paste into a terminal on the host running your Hermes gateway",
+          `curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/setup.sh | bash -s -- --bot-id ${q(botId)}${bot ? ` --bot-name ${q(bot.name.replace(/'/g, ''))}` : ''}${macSsh ? ` --mac-ssh ${q(macSsh)}` : ''} --restart`,
+          '# The bootstrap installs the plugin + hook, configures the browser connector,',
+          '# offers to bind the primary route, restarts the gateway, and verifies itself.',
         ].join('\n'));
+        break;
+      }
+      case 'agent-prompt': {
+        const botId = String(value?.botId || prefs.selectedBotId || '').replace(/[^0-9A-Za-z_-]/g, '');
+        const macSsh = (prefs.macSshHost || '').trim();
+        clipboard.writeText(`Set up Alan's Way on this machine and connect it to my Mac.
+1. If Tailscale isn't installed or connected here, install it (tailscaled + \`tailscale up\`). Tell me this machine's tailnet name/IP when done. My Mac's SSH address is: ${macSsh || '<my-mac-tailscale>'}.
+2. Fetch the bootstrap: git clone https://github.com/capthvnsen/alans-way-agents (or \`git -C alans-way-agents pull\` if already cloned).
+3. Run: ./alans-way-agents/setup.sh --bot-id '${botId || '<telegram-bot-id>'}' --mac-ssh '${macSsh || '<my-mac-tailscale>'}' --restart — answer its prompts; if it asks to bind a primary route, pick the bot matching this chat.
+4. Report: plugin status, whether the browser host started, the workspace_browser block location, and anything it flagged. Then run ./alans-way-agents/setup.sh --verify and paste me the summary.
+5. If the VPS needs a desktop/VNC stack for the browser host and none exists, tell me the exact apt commands it printed — don't install the display stack on your own.`);
         break;
       }
       case 'test-agent-path': {
