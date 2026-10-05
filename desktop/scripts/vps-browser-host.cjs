@@ -280,9 +280,10 @@ async function serve() {
           ),
         tab = m && tabs.get(m[1]);
       if (!tab) throw fail('VPS tab not found.', 404);
-      if (!human) { requireActor(tab, botId, undefined, false, overseer); tab.lastAgentActivity = Date.now(); }
+      if (!human) requireActor(tab, botId, undefined, false, overseer);
       const wc = tab.view.webContents;
       if (req.method === 'GET' && !m[2]) return send(200, describe(tab));
+      if (!human) tab.lastAgentActivity = Date.now();
       if (req.method === 'GET' && m[2] === 'snapshot') {
         if (!human) requireAgentRead(tab);
         const data = await wc.executeJavaScript(snapshotExpression(++tab.generation));

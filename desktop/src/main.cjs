@@ -663,8 +663,8 @@ function startApi() {
       }
       if (!tab || tab.extensionPage) return send(404, { error: 'Tab not found.' });
       requireActor(tab, botId, undefined, false, overseer);
-      tab.lastAgentActivity = Date.now();
       if (req.method === 'GET' && !match[2]) return send(200, describeTab(tab));
+      tab.lastAgentActivity = Date.now();
       if (req.method === 'GET' && match[2] === 'snapshot') { requireAgentRead(tab); return send(200, await snapshot(tab)); }
       if (req.method === 'GET' && match[2] === 'screenshot') { requireAgentRead(tab);
         const capture = tab.queue.then(async () => {
