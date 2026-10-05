@@ -91,7 +91,7 @@ function tabIcon(tab) {
 }
 function renderTabs() {
   const container = $('tabs'); container.replaceChildren();
-  const entries = [{ id: 'home', title: 'Start', symbol: '◔' }, ...state.tabs.map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : '◈' }))];
+  const entries = state.tabs.map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : '◈' }));
   for (const tab of entries) {
     const selected = state.browserTabId === tab.id;
     const node = element('div', `tab${selected ? ' active' : ''}`); node.setAttribute('role', 'tab'); node.setAttribute('aria-selected', selected ? 'true' : 'false'); node.tabIndex = 0;
@@ -101,10 +101,8 @@ function renderTabs() {
     if(tab.host)node.title=`${tab.host==='vps'?'VPS':'Mac'} · ${state.bots.find(bot=>bot.id===tab.botId)?.name || tab.botId}${tab.controller === 'agent' ? ' · agent-controlled' : ''}`;
     node.onclick = () => command('activate', { id: tab.id });
     node.onkeydown = (event) => { if (event.key === 'Enter') command('activate', { id: tab.id }); };
-    if (tab.id !== 'home') {
-      const close = element('button', 'tab-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
-      close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id }); }; node.append(close);
-    }
+    const close = element('button', 'tab-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
+    close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id }); }; node.append(close);
     container.append(node);
   }
 }
@@ -204,7 +202,7 @@ function render(next) {
   $('browser-slot').classList.toggle('agent-live', !!tab && tab.controller === 'agent');
   if (tab?.extensionPage) $('control-button').textContent = 'You';
   $('control-button').title = tab ? `Browser runs on ${tab.host==='vps'?'the VPS':'your Mac'} · ${tab.controller === 'agent' ? 'Agent' : 'You'} control it` : 'Open a browser tab first';
-  if (document.activeElement !== $('address')) $('address').value = tab?.url === 'about:blank' ? '' : tab?.url || '';
+  if (document.activeElement !== $('address')) $('address').value = tab?.internal ? '' : tab?.url || '';
   $('local-label').textContent = remote ? 'ON YOUR VPS' : 'ON YOUR MAC';
   const agentName = tab ? state.bots.find(bot => bot.id === tab.botId)?.name || 'Agent' : '';
   $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? `${agentName}${tab.agentBusy ? ' is working' : ' is browsing'}` : 'You'} in control${tab.controller === 'agent' ? ' · Take over anytime' : ''} · ${tab.host==='vps'?'VPS':'Mac'}${tab.handoff?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `VPS · ${state.remoteStatus}` : 'Ready';

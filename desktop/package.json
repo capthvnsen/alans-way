@@ -17,6 +17,7 @@
     "test:extensions": "node test/extensions-electron.cjs",
     "test:agent-visual": "node test/agent-visual-electron.cjs",
     "test:preview-drag": "node test/preview-drag-electron.cjs",
+    "test:newtab": "electron test/newtab-electron.cjs",
     "build:preload": "node scripts/build-preload.cjs",
     "prestart": "npm run build:preload",
     "prepackage:mac": "npm run build:preload",
@@ -28,7 +29,8 @@
     "test:web-store": "node test/web-store-electron.cjs",
     "pretest:web-store": "npm run build:preload",
     "pretest:agent-visual": "npm run build:preload",
-    "pretest:preview-drag": "npm run build:preload"
+    "pretest:preview-drag": "npm run build:preload",
+    "pretest:newtab": "npm run build:preload"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",

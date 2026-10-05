@@ -1,6 +1,7 @@
 const { app, BrowserWindow, WebContentsView, ipcMain, Menu, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
@@ -21,6 +22,7 @@ app.setPath('userData', process.env.HERMES_WORKSPACE_DATA
   ? path.resolve(process.env.HERMES_WORKSPACE_DATA)
   : path.join(app.getPath('appData'), 'Hermes Workspace'));
 const ROOT = __dirname;
+const NEWTAB_URL = pathToFileURL(path.join(ROOT, 'newtab.html')).href;
 const TELEGRAM = 'https://web.telegram.org/a/';
 let win, backgroundWindow, telegramView, remoteView, apiServer, prefs, layout = {}, apiPort = 0;
 let extensionStore, extensionHost, extensionPopup, extensionPopupTabId, extensionActiveContentsId;
@@ -69,7 +71,8 @@ function savePreferences() {
   fs.renameSync(`${file}.tmp`, file);
 }
 function describeTab(tab) {
-  return { id: tab.id, title: tab.title || 'New tab', url: tab.view.webContents.getURL(), botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
+  const url = tab.view.webContents.getURL();
+  return { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
     controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
 }
 function isVpsTab(id) { return vpsTabs.has(id); }
@@ -235,6 +238,12 @@ function configureContents(contents, isTelegram = false) {
 function isExtensionUrl(value) {
   try { const url = new URL(value); return url.protocol === 'chrome-extension:' && !url.username && !url.password && !!session.fromPartition('persist:browser').extensions.getExtension(url.hostname); } catch { return false; }
 }
+// Blank pages show the bundled backdrop instead of an empty dark document.
+function pageUrl(url, extensionPage = false) {
+  if (url === 'about:blank' || url === NEWTAB_URL) return NEWTAB_URL;
+  if (extensionPage && isExtensionUrl(url)) return url;
+  return normalizeUrl(url);
+}
 const faviconCache = new Map();
 async function resolveFavicon(tab, favicons) {
   const seq = (tab.faviconSeq = (tab.faviconSeq || 0) + 1);
@@ -255,7 +264,7 @@ async function resolveFavicon(tab, favicons) {
 }
 function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared', controller = 'human', options, skipLoad = false, activate = true, extensionPage = false } = {}) {
   if (tabs.size >= 40) throw new Error('Close a tab before opening another.');
-  const targetUrl = extensionPage && isExtensionUrl(url) ? url : normalizeUrl(url);
+  const targetUrl = pageUrl(url, extensionPage);
   const view = new WebContentsView({ ...(options?.webContents ? { webContents: options.webContents } : {}),
     webPreferences: { ...options?.webPreferences, preload: undefined, partition: 'persist:browser', contextIsolation: true, nodeIntegration: false, sandbox: true,
       webSecurity: true, backgroundThrottling: false } });
@@ -381,7 +390,7 @@ function registerIpc() {
       }
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
-        const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); await tab.view.webContents.loadURL(normalizeUrl(value.url)).catch(() => {}); } break;
+        const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); await tab.view.webContents.loadURL(pageUrl(value.url)).catch(() => {}); } break;
       }
       case 'history': {
         if (isVpsTab(value.id)) { await remoteRequest(value.id,'control',{controller:'human'}); await remoteRequest(value.id,'human-actions',{action:value.action}); break; }
@@ -743,7 +752,7 @@ async function performAction(tab, body, botId, depth = 0) {
   if (body.action === 'navigate') {
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
-    await wc.loadURL(normalizeUrl(body.url));
+    await wc.loadURL(pageUrl(body.url));
   } else if (['back', 'forward', 'reload'].includes(body.action)) {
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
