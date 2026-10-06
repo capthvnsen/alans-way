@@ -196,4 +196,10 @@ function needsContinuedEpoch(message, method) {
   return method !== 'GET' && method !== 'DELETE' && /stale_control_epoch/i.test(String(message || ''));
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch };
+// The VPS browser host stays on the script it loaded. A replaced file should
+// restart only while nothing is in flight, so a click is not cut off.
+function hostShouldReload(mtime, started, inFlight) {
+  return inFlight === 0 && Number(mtime) > Number(started);
+}
+
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload };

@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload } = require('../src/core.cjs');
 const { snapshotExpression, settleSnapshot, readControls } = require('../src/browser-page.cjs');
 const { locateElement } = require('../src/agent-input.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
@@ -239,6 +239,11 @@ test('a missing Mac tab is carried onto the continued VPS tab', () => {
   assert.equal(needsContinuedEpoch('stale_control_epoch: read the tab state and retry after a fresh snapshot.', 'POST'), true);
   assert.equal(needsContinuedEpoch('stale_control_epoch', 'GET'), false);
   assert.equal(needsContinuedEpoch('tab not found', 'POST'), false);
+  assert.equal(hostShouldReload(20, 10, 0), true);
+  assert.equal(hostShouldReload(20, 10, 1), false);
+  assert.equal(hostShouldReload(10, 10, 0), false);
+  const host = require('node:fs').readFileSync(require('node:path').join(__dirname, '../scripts/vps-browser-host.cjs'), 'utf8');
+  assert.match(host, /script replaced — exiting so the service loads it/);
 });
 test('only positively identified direct bot IDs enter the catalog', () => {
   const bots = sanitizeBots([{ id: '123', isBot: true, name: 'Agent' }, { id: '456', name: 'Human' }, { id: '-100123', isBot: true }, { id: '789', isBot: false }]);
