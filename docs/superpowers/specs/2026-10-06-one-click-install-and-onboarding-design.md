@@ -17,8 +17,32 @@ Decided with Alex:
 - "Virtual agent" means a Hermes agent on a Linux VPS or macOS VM, the same
   target `docs/setup-prompt.md` already serves.
 
-Out of scope: code signing, Linux desktop control, Intel Macs, auto-update,
-renaming the app bundle.
+- The download is always the newest release.
+- The app updates itself: automatically on Windows, with one in-app "Update
+  now" click on Mac.
+- The agent side updates through a second evergreen prompt that the user sends
+  their bot. There is no timer-based auto-update on the server.
+
+Out of scope: code signing, Linux desktop control, Intel Macs, renaming the
+app bundle, unattended server updates.
+
+## What runs where
+
+- **The person's computer:** the app. On Mac it also includes the
+  computer-control helper.
+- **The VM:** Hermes, the alans-way plugin and its hook, and a pinned
+  checkout of this repo's `desktop/` scripts. These provide:
+  - `browser-mcp.cjs`, the tool the bot calls;
+  - the `hermes-alans-way-chromium` and `hermes-alans-way-browser` services;
+  - `mac-watch`.
+
+  The VM also needs Node 22, git, python3, sshd with keys, and Tailscale.
+  The display stack (Xvfb, x11vnc, websockify) is optional and only serves
+  the corner preview. The plugin's `setup.sh` installs all of this. The setup
+  prompt drives Tailscale and the keys.
+- **Connector copy:** `setup.sh` also copies a newer "connector" onto the
+  computer under `Hermes Workspace/connector`. It runs `npm ci` and `swiftc`
+  there.
 
 ## 1. Release pipeline (this repo)
 
@@ -42,6 +66,16 @@ renaming the app bundle.
   `OpenAlan-windows-setup.exe`.
 - Version comes from `package.json`. CI sets it from the tag before building.
   Remove the hard-coded `0.2.1` from the scripts.
+- **Ship the Mac computer-control helper prebuilt.** Today `computer.cjs`
+  compiles `scripts/mac-computer.swift` with `swiftc` on first use, which a
+  downloaded-app user (no Xcode tools) can't do. It would also modify the
+  signed bundle. CI compiles `scripts/mac-computer` before packaging, and the
+  app uses the bundled binary.
+- **No Node or Xcode tools on the computer.** The plugin's `setup.sh` runs
+  `npm ci` and `swiftc` on the computer for the connector copy. Make sure a
+  computer without them falls back cleanly to the app's bundled connector.
+  The plan must check the code path for this. The change may land in
+  alans-way-agents.
 - `package:mac` and `package:win` keep their names, so `install-mac.sh` and
   `install-windows.ps1` (the build-from-source path) still work. Check what
   those scripts expect in `dist/` and keep that output path working, or
@@ -56,7 +90,13 @@ renaming the app bundle.
     only. This is for testing without publishing.
 - Jobs: `macos-latest` builds the dmg and `windows-latest` builds the exe.
   Each runs `npm ci`, then `npm run check`, then the build.
-- Permissions: `contents: write` on the release job only.
+- **Publish draft-first**, so "latest" never points at a release without
+  files. The build jobs upload into a draft release. A final job runs after
+  both succeed and publishes the draft. If either build fails, nothing is
+  published.
+- Upload electron-builder's update metadata alongside the installers:
+  `latest.yml` for Windows, and a SHA-512 checksum for the Mac dmg.
+- Permissions: `contents: write` on the release jobs only.
 
 Stable download URLs:
 `https://github.com/capthvnsen/alans-way/releases/latest/download/OpenAlan-mac.dmg`
@@ -133,7 +173,68 @@ Same edit in `docs/setup-for-agents.md` where it describes installing.
 
 Add the new module to `npm run check`.
 
-## 3. openalan.com (`~/Projects/openalan`, capthvnsen/openalan.com)
+## 3. Updates
+
+**App, Windows.** Use `electron-updater` with the GitHub provider:
+
+- check on launch and every 6 hours;
+- download in the background;
+- install on quit.
+- A small "Update ready, restart to apply" note appears in the header.
+
+**App, Mac.** Squirrel.Mac requires a Developer ID signature, so it can't be
+used yet. Add a small `desktop/src/mac-update.cjs`:
+
+1. On launch and every 6 hours, read the latest release from the GitHub API.
+   If its version is newer than `app.getVersion()`, show "Update available →
+   Update now".
+2. Update now:
+   - download `OpenAlan-mac.dmg` with Node https (the file gets no quarantine
+     flag, so no repeat "Open Anyway");
+   - check its SHA-512 against the release's checksum;
+   - `hdiutil attach`, and confirm the bundle id is `app.alans-way.localapp`;
+   - `ditto` it over the running app's bundle path;
+   - `hdiutil detach`, then `app.relaunch()` and `app.exit()`.
+3. On any failure, show the reason and an "Open download page" button that
+   goes to `/download/mac`. That includes a bundle path that isn't writable.
+   Never leave a half-replaced bundle: copy to a temporary name next to the
+   bundle, then rename.
+
+When signing arrives, switch Mac to `electron-updater` and delete this
+module.
+
+**Agent side.** Add a second evergreen prompt, shaped like the setup prompt:
+
+- `buildAgentPrompt` gains a `kind: 'setup' | 'update'`. The update prompt
+  reads: "Update Open Alan on this server. Fetch
+  https://openalan.com/agent-update and follow the text block in it
+  exactly," plus the same facts (OS, app version).
+- New doc `docs/update-for-agents.md`, served at `/agent-update`. It tells
+  the agent to:
+  1. `git -C ~/alans-way-agents pull --ff-only`;
+  2. re-run `setup.sh --non-interactive` with the same values it was set up
+     with (the doc says where to read them back from; the plan confirms that
+     setup.sh can be re-run this way);
+  3. `setup.sh --verify`;
+  4. restart the gateway, with the same "send me a message in a minute"
+     handling as setup;
+  5. report the old and new versions.
+
+  Re-running setup also refreshes the connector copy on the computer.
+- In the app, a "Copy agent update prompt" button sits in Settings → Agent
+  setup. After the app relaunches on a new version, a one-time toast says
+  "Updated to vX. Your agent may need updating too", with the same button.
+
+**Tests.**
+
+- `agent-prompt.test.cjs` covers both kinds.
+- `mac-update.cjs` exposes a pure `isNewer(a, b)` version compare, tested in
+  `desktop/test/mac-update.test.cjs`.
+- The download-swap-relaunch path is verified by hand: install v0.3.0, tag a
+  test release v0.3.1 as a pre-release on a fork or with `workflow_dispatch`
+  artifacts, and update. The plan picks the cheapest of those.
+
+## 4. openalan.com (`~/Projects/openalan`, capthvnsen/openalan.com)
 
 **Favicon.** Generate `favicon.png` (32px) and `apple-touch-icon.png` (180px)
 from `desktop/assets/icon.png`, the Hermes bust. Replace the inline column
@@ -144,7 +245,10 @@ SVG favicon.
 ```
 /download/mac      https://github.com/capthvnsen/alans-way/releases/latest/download/OpenAlan-mac.dmg 302
 /download/windows  https://github.com/capthvnsen/alans-way/releases/latest/download/OpenAlan-windows-setup.exe 302
+/agent-update      https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/update-for-agents.md 302
 ```
+
+Use 302, not 301, so browsers never cache a target.
 
 `/agent-prompt` stays as is, pointing at `docs/setup-prompt.md` on `main`.
 Every installed app now depends on that URL, so it must never break.
@@ -184,10 +288,14 @@ alternative.
 
 ## Rollout order and gates
 
-1. Release pipeline. Verify with `workflow_dispatch` artifacts: install the
-   dmg from a quarantined download on a Mac, and the exe if a Windows machine
-   or VM is available. Otherwise say it's unverified.
-2. Wizard and prompt module, released in the same version.
+1. Release pipeline. Verify with `workflow_dispatch` artifacts:
+   - Install the dmg from a quarantined download **on a Mac user account
+     without Node or Xcode command-line tools**, then run setup end to end
+     against the VM, including one computer-use action. That is the real
+     one-click test.
+   - Install the exe if a Windows machine or VM is available. Otherwise say
+     it's unverified.
+2. Wizard, prompt module and updaters, all in the same version.
 3. **Ask Alex**, then push tag `v0.3.0` (the first public release with
    installers).
 4. Website. Check it locally in a browser at desktop and 375px widths.
