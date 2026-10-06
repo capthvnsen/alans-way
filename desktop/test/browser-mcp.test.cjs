@@ -30,7 +30,7 @@ test('browser MCP exposes close and reports non-JSON host errors cleanly', { tim
   assert.deepEqual(tools, [
     'cua_alans_way_status', 'cua_alans_way_tabs', 'cua_alans_way_open',
     'cua_alans_way_snapshot', 'cua_alans_way_screenshot', 'cua_alans_way_close',
-    'workspace_computer_apps', 'workspace_computer_snapshot', 'workspace_computer_action',
+    'workspace_computer_apps', 'workspace_computer_snapshot', 'workspace_computer_screenshot', 'workspace_computer_action',
     'cua_alans_way_action',
   ]);
   const result = await client.callTool({ name: 'cua_alans_way_status', arguments: {} });

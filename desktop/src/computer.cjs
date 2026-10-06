@@ -59,4 +59,19 @@ function drag(pid, x, y, x2, y2) {
   return run(['drag', String(pid), String(x), String(y), String(x2), String(y2)]);
 }
 
-module.exports = { apps, snapshot, press, click, drag, ensureBinary };
+function screenshot(pid, maxWidth) {
+  requireApp(pid);
+  const cap = Number.isInteger(maxWidth) ? Math.min(Math.max(maxWidth, 320), 1280) : 960;
+  const shot = run(['shot', String(pid), String(cap)]);
+  return {
+    image: shot.image,
+    imageWidth: shot.imageWidth,
+    imageHeight: shot.imageHeight,
+    windowX: shot.windowX,
+    windowY: shot.windowY,
+    windowWidth: shot.windowWidth,
+    windowHeight: shot.windowHeight,
+  };
+}
+
+module.exports = { apps, snapshot, press, click, drag, screenshot, ensureBinary };
