@@ -126,7 +126,7 @@ function getState() {
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
     autoOpenLinks: prefs.autoOpenLinks !== false,
-    activeTabId, browserContentsId: tabs.get(activeTabId)?.view.webContents.id || null, browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
+    activeTabId, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [],
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
 }
@@ -528,7 +528,11 @@ function registerIpc() {
       case 'reset-site-permissions': sitePermissions.reset(); break;
       case 'settings':
         if (typeof value.macSshHost === 'string' && value.macSshHost.trim() && !isSshTarget(value.macSshHost.trim())) throw new Error('Enter the Mac SSH address as user@host or host, with no spaces or symbols.');
-        if (value.vpsBrowser && typeof value.vpsBrowser === 'object') { prefs.vpsBrowser={sshHost:String(value.vpsBrowser.sshHost || '').trim(),scriptPath:String(value.vpsBrowser.scriptPath || '').trim(),sudo:value.vpsBrowser.sudo===true}; vpsBrowserStatus='connecting'; refreshVpsTabs(); }
+        if (value.vpsBrowser && typeof value.vpsBrowser === 'object') {
+          const sshHost = String(value.vpsBrowser.sshHost || '').trim();
+          if (sshHost && !isSshTarget(sshHost)) throw new Error('Enter the VPS SSH address as user@host or host, with no spaces or symbols.');
+          prefs.vpsBrowser={sshHost,scriptPath:String(value.vpsBrowser.scriptPath || '').trim(),sudo:value.vpsBrowser.sudo===true}; vpsBrowserStatus='connecting'; refreshVpsTabs();
+        }
         if (Number.isFinite(value.agentIdleMinutes)) prefs.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         if (typeof value.preview === 'boolean') prefs.preview = value.preview;
@@ -592,6 +596,7 @@ function registerIpc() {
         const host = (prefs.vpsBrowser?.sshHost || '').trim();
         const mac = (prefs.macSshHost || '').trim();
         if (!host) throw new Error('Save a VPS browser SSH host first.');
+        if (!isSshTarget(host)) throw new Error('The saved VPS SSH address is invalid. Re-enter it as user@host or host.');
         if (!mac) throw new Error('Enter this Mac’s SSH address as your VPS reaches it.');
         if (!isSshTarget(mac)) throw new Error('The saved Mac SSH address is invalid. Re-enter it as user@host or host.');
         return new Promise((resolve) => {
@@ -1045,13 +1050,20 @@ function startApi() {
     } catch (error) { send(error.status || 400, { error: error.message }); }
   });
   apiServer.requestTimeout = 30000;
-  apiServer.on('error', (error) => { apiError = error.message; broadcast(); });
-  const envPort = Number(process.env.HERMES_WORKSPACE_PORT);
-  apiServer.listen(Number.isInteger(envPort) && envPort >= 0 && envPort < 65536 ? envPort : 9464, '127.0.0.1', () => {
+  apiServer.on('listening', () => {
     apiPort = apiServer.address().port;
+    apiError = '';
     writePrivateJson(path.join(app.getPath('userData'), 'connection.json'), { url: `http://127.0.0.1:${apiPort}`, token: API_TOKEN, protocol: 1 });
     broadcast();
   });
+  apiServer.on('error', (error) => {
+    // A taken port would leave the old connection.json pointing at a dead or
+    // foreign listener. Come up on an ephemeral port and write the real one.
+    if (error.code === 'EADDRINUSE' && !apiPort) { apiServer.listen(0, '127.0.0.1'); return; }
+    apiError = error.message; broadcast();
+  });
+  const envPort = Number(process.env.HERMES_WORKSPACE_PORT);
+  apiServer.listen(Number.isInteger(envPort) && envPort >= 0 && envPort < 65536 ? envPort : 9464, '127.0.0.1');
 }
 function createWindow() {
   nativeTheme.themeSource = 'dark';
