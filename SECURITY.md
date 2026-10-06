@@ -4,11 +4,11 @@ This is an alpha. Use synthetic or non-sensitive workspaces until you have revie
 
 ## Scope
 
-This repository ships two things with different boundaries: the desktop app in `desktop/`, and the optional Companion CLI in `src/hermes_companion/`.
+This repository ships two things with different boundaries: Alan's Way app in `desktop/`, and the optional Companion CLI in `src/hermes_companion/`.
 
-### Desktop app
+### Alan's Way app
 
-The app gives your Hermes bots real browser control. Its API listens on `127.0.0.1` only and requires the bearer token in `~/Library/Application Support/Hermes Workspace/connection.json` (mode 0600, rotated on every app start). Anything that can read that file can drive agent tabs, including running page JavaScript through `eval` and allowlisted DevTools commands. Run the connector on the Mac over SSH; do not expose the API on Tailscale or a public interface.
+Alan's Way app gives your Hermes bots real browser control. Its API listens on `127.0.0.1` only and requires the bearer token in `~/Library/Application Support/Hermes Workspace/connection.json` (mode 0600, rotated on every app start). Anything that can read that file can drive agent tabs, including running page JavaScript through `eval` and allowlisted DevTools commands. Run the connector on the Mac over SSH; do not expose the API on Tailscale or a public interface.
 
 Human control wins: a tab under human control is sealed to bots (snapshots and screenshots return 409), and every takeover invalidates queued agent actions. Per-tab ownership between bots is cooperative policy, not a cryptographic boundary. Agents never use OS input, the clipboard or your keyboard focus. See the [integration boundary](desktop/docs/integration.md) for the full contract.
 

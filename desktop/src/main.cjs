@@ -28,7 +28,7 @@ const HOST_LABEL = process.platform === 'darwin' ? 'mac' : process.platform === 
 const isLocalHost = (value) => value === undefined || value === 'mac' || value === 'windows' || value === 'local' || value === HOST_LABEL;
 
 app.enableSandbox();
-app.setName("alans-way-localapp");
+app.setName("Alan's Way");
 if (process.platform === 'win32') app.setAppUserModelId('app.alans-way.localapp');
 // Keep existing sessions and connector discovery stable when the product name changes.
 app.setPath('userData', process.env.HERMES_WORKSPACE_DATA

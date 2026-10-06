@@ -1,8 +1,8 @@
 # Desktop distribution licensing
 
-Copyright (c) 2026 Hermes Workspace contributors.
+Copyright (c) 2026 Alan's Way contributors.
 
-The desktop application is distributed under **GPL-3.0-or-later**; see
+Alan's Way desktop application is distributed under **GPL-3.0-or-later**; see
 [LICENSE](LICENSE). Earlier original desktop code was released under MIT, whose
 notice is retained in [LICENSE-MIT](LICENSE-MIT). The separate Python Hermes
 Companion add-on remains MIT under the repository's root LICENSE.

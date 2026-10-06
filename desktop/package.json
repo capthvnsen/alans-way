@@ -1,6 +1,6 @@
 {
   "name": "alans-way-localapp",
-  "productName": "alans-way-localapp",
+  "productName": "Alan's Way",
   "version": "0.2.1",
   "description": "A Telegram, local Chromium and remote desktop workspace for Hermes agents.",
   "private": true,

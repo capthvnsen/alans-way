@@ -1,10 +1,10 @@
-# alans-way-localapp
+# Alan's Way
 
 A free Mac desktop workspace with your Telegram bot chats on the left, real local Chromium tabs on the right, and a live VPS desktop in the corner. The dark three-pane layout follows the supplied Grok Bot reference. This is a functional first release for testing with Hermes bots.
 
 ## Use it
 
-Open **alans-way-localapp**. The packaged bundle is `alans-way-localapp.app`; installs that still carry the older `Open Alan.app` or `Hermes Workspace.app` names keep working — update the connector paths below to match whichever bundle is installed. Sign in to Telegram with its normal QR or phone login if needed. No Telegram developer API credentials are required: the chat pane loads the official Telegram Web A and applies local styling.
+Open **Alan's Way**. The packaged bundle is `alans-way-localapp.app`; installs that still carry the older `Open Alan.app` or `Hermes Workspace.app` names keep working — update the connector paths below to match whichever bundle is installed. Sign in to Telegram with its normal QR or phone login if needed. No Telegram developer API credentials are required: the chat pane loads the official Telegram Web A and applies local styling.
 
 - The sidebar contains verified bot conversations from your Telegram account. Drag them to sort; hover and click × to hide one. The panel button at the top of the chat collapses or restores the whole agent list, and remembers your choice. **Settings → Telegram bots** has an individual visibility switch for every discovered bot, including hidden bots. Choices save immediately and survive app restarts. Hiding a bot leaves its Telegram chat and Hermes agent intact. The + at the top opens a bot by username.
 - Click the selected bot’s portrait, or **Settings → Customize bot avatars**, to choose one of the ten marble avatars or import PNG, JPEG, or WebP pictures. Click **Save avatar** to keep the choice on this Mac. Built-in eyes are already positioned; **Adjust eye positions** calibrates an imported picture. This does not change the bot’s Telegram profile photo.
@@ -95,9 +95,9 @@ App data lives in `~/Library/Application Support/Hermes Workspace/`. The product
 
 ## Companion integration
 
-This app lives in `desktop/` in the alans-way repository. The
+Alan's Way app lives in `desktop/` in the alans-way repository. The
 [agents repo](https://github.com/capthvnsen/alans-way-agents) owns the VPS
-side — `setup.sh` there is a one-command bootstrap that installs the plugin,
+side — `setup.sh` there is a one-command bootstrap that installs Alan's Way Plugin,
 wires the browser connector, restarts the gateway, and binds the primary
 route (including the path for a Hermes that has never configured Telegram).
 Settings → Agent setup shows a live checklist and copies a pre-filled
