@@ -15,6 +15,20 @@ function snapshotExpression(generation, opts = {}) {
     // The parser yields between chunks, so a snapshot can land mid-document;
     // give a still-parsing page a moment and report it if it is not done.
     if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${parseWaitMs}); });
+    const shortHref = (raw) => {
+      if (!raw) return '';
+      try {
+        const url = new URL(raw, location.href);
+        if (url.protocol !== 'https:' && url.protocol !== 'http:' && url.protocol !== 'mailto:') return '';
+        if (url.protocol === 'http:' || url.protocol === 'https:') {
+          for (const key of [...url.searchParams.keys()]) {
+            if (/^(utm_|fbclid$|gclid$|mc_eid$|mc_cid$|igshid$|_hsenc$|_hsmi$)/.test(key)) url.searchParams.delete(key);
+          }
+          url.hash = '';
+        }
+        return url.href.slice(0, 300);
+      } catch { return ''; }
+    };
     const items = [];
     const deadline = performance.now() + ${elementMs};
     const pick = 'a[href],button,summary,input:not([type="hidden"]),textarea,select,[onclick],[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="treeitem"],[role="slider"],[contenteditable="true"]';
@@ -102,7 +116,8 @@ function snapshotExpression(generation, opts = {}) {
       const role = el.getAttribute('role') || el.tagName.toLowerCase();
       const type = el.type || '';
       const value = type === 'password' ? '[password]' : String(el.value || '').slice(0, 200);
-      const href = (el.href || '').slice(0, 300);
+      const rawHref = typeof el.href === 'string' ? el.href : (el.getAttribute('href') || '');
+      const href = shortHref(rawHref);
       const item = { ref, role, name };
       if (type) item.type = type;
       if (value) item.value = value;
