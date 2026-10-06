@@ -12,8 +12,14 @@ def prompt_block(path):
 
 
 class SetupPromptTests(unittest.TestCase):
-    def test_readme_carries_the_canonical_prompt_verbatim(self):
-        self.assertEqual(prompt_block("README.md"), prompt_block("docs/setup-prompt.md"))
+    def test_readme_prompt_points_at_the_full_instructions(self):
+        short = prompt_block("README.md")
+        self.assertIn("https://github.com/capthvnsen/alans-way", short)
+        self.assertIn("https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-prompt.md", short)
+        self.assertLess(len(short), 500)
+        full = prompt_block("docs/setup-prompt.md")
+        self.assertIn("connect-mac.sh", full)
+        self.assertGreater(len(full), 2000)
 
     def test_connect_mac_flags_in_the_prompt_exist(self):
         prompt = prompt_block("docs/setup-prompt.md")

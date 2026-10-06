@@ -1,10 +1,10 @@
 # Setup prompt for your cloud agent
 
-Paste this whole block to the agent that has a terminal on the server running
-your Hermes gateway: your Hermes bot itself, or any coding agent with SSH to
-that server. It connects the server and your Mac over Tailscale, installs the
-Alan's Way app and Hermes plugin, and proves both ends work. You will be asked
-to do four things on your Mac; everything else is automatic.
+The short prompt in the [README](../README.md#connect-your-agents) points here.
+An agent fetches this page and carries out the text block below. It connects
+the server and the Mac over Tailscale, installs the Alan's Way app and Hermes
+plugin, and proves both ends work. The person does four things on the Mac;
+everything else is automatic.
 
 ```text
 Set up Alan's Way for me. This server runs my Hermes gateway; connect it to my
