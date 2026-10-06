@@ -1,4 +1,4 @@
-# install-windows.ps1 — build and install (or upgrade) the Alan's Way app on Windows.
+﻿# install-windows.ps1 — build and install (or upgrade) the Alan's Way app on Windows.
 #
 #   powershell -ExecutionPolicy Bypass -File install-windows.ps1
 #

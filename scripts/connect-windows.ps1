@@ -1,4 +1,4 @@
-# connect-windows.ps1 — connect this PC to the machine that runs your Hermes
+﻿# connect-windows.ps1 — connect this PC to the machine that runs your Hermes
 # gateway. Your setup agent prints this command with the remote address and
 # public keys filled in:
 #
