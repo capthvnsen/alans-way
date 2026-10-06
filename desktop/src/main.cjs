@@ -1,11 +1,11 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, Menu, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session } = require('electron');
+const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
-const { normalizeUrl, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('./core.cjs');
 const { createAvatarStore } = require('./avatar-store.cjs');
 const { createAgentInput, tintScript, botAccent } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -83,11 +83,12 @@ function savePreferences() {
   fs.mkdirSync(app.getPath('userData'), { recursive: true });
   writePrivateJson(path.join(app.getPath('userData'), 'preferences.json'), prefs);
 }
-function describeTab(tab) {
+function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
-  return { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
+  const info = { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
     controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
+  return forBot ? redactTabForBot(info) : info;
 }
 function isVpsTab(id) { return vpsTabs.has(id); }
 async function refreshVpsTabs() {
@@ -121,12 +122,12 @@ function selectAgent(id) {
 function getState() {
   return { name: app.getName(), version: app.getVersion(), bots: prefs.bots.map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
-    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(describeTab),
+    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
     autoOpenLinks: prefs.autoOpenLinks !== false,
-    activeTabId, browserContentsId: tabs.get(activeTabId)?.view.webContents.id || null, browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
+    activeTabId, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [],
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
 }
@@ -209,7 +210,8 @@ function configureContents(contents, isTelegram = false) {
   contents.setWindowOpenHandler((details) => {
     let url;
     const extensionPage = !isTelegram && isExtensionUrl(details.url);
-    try { url = extensionPage ? details.url : normalizeUrl(details.url); } catch { return { action: 'deny' }; }
+    const opener = [...tabs.values()].find((tab) => tab.view.webContents === contents);
+    try { url = extensionPage ? details.url : (opener?.controller === 'agent' ? agentPageUrl(details.url) : normalizeUrl(details.url)); } catch { return { action: 'deny' }; }
     if (isTelegram) {
       // Guest windows inherit the persist:telegram session, which the extension
       // host rejects — open Telegram links in our own browser-session tab.
@@ -222,18 +224,28 @@ function configureContents(contents, isTelegram = false) {
       return { action: 'deny' };
     }
     return { action: 'allow', createWindow: (options) => {
-      const parent = [...tabs.values()].find((tab) => tab.view.webContents === contents);
+      const parent = opener;
       const tab = createTab({ url, extensionPage, botId: parent?.botId || prefs.selectedBotId || 'shared', controller: extensionPage ? 'human' : parent?.controller || 'human', options, skipLoad: details.disposition !== 'background-tab', activate: parent?.controller !== 'agent' && details.disposition !== 'background-tab' });
       return tab.view.webContents;
     } };
   });
+  // Agent tabs follow redirects and in-page location changes without another
+  // API call, so the address check has to live on the navigation itself.
+  const blockAgentNavigation = (event, url) => {
+    const owner = [...tabs.values()].find((tab) => tab.view.webContents === contents);
+    if (owner?.controller !== 'agent') return;
+    try { agentPageUrl(url); } catch { event.preventDefault(); }
+  };
   contents.on('will-navigate', (event, url) => {
     if (isTelegram && !url.startsWith(TELEGRAM)) { event.preventDefault(); try { createTab({ url }); } catch {} }
-    else if (!isTelegram && !/^https?:\/\//i.test(url) && url !== 'about:blank') {
+    else if (!isTelegram) blockAgentNavigation(event, url);
+    if (isTelegram) return;
+    if (!isTelegram && !/^https?:\/\//i.test(url) && url !== 'about:blank') {
       if (!isExtensionUrl(url)) event.preventDefault();
       else { const tab = [...tabs.values()].find(item => item.view.webContents === contents); if (tab) { tab.extensionPage = true; changeController(tab.id, 'human'); } }
     }
   });
+  contents.on('will-redirect', (event, url) => { if (!isTelegram) blockAgentNavigation(event, url); });
   contents.on('before-input-event', (event, input) => {
     const targetTab = [...tabs.values()].find(tab => tab.view.webContents === contents);
     if (targetTab && agentInput.isDispatching(targetTab)) return;
@@ -267,15 +279,30 @@ async function resolveFavicon(tab, favicons) {
   const apply = (value) => { if (tab.faviconSeq === seq && value !== tab.favicon) { tab.favicon = value; broadcast(); } };
   const url = favicons.find((item) => /^https?:\/\//i.test(item));
   if (!url) return apply(favicons.find((item) => item && item !== 'data:,') || '');
-  if (faviconCache.has(url)) return apply(faviconCache.get(url));
+  // Only same-origin icons, fetched without the browser session or its
+  // cookies: a page-controlled favicon URL must never become a credentialed
+  // fetch to somewhere the page points at (loopback, LAN, metadata).
+  const pageUrlNow = tab.view?.webContents && !tab.view.webContents.isDestroyed() ? tab.view.webContents.getURL() : String(tab.url || '');
+  let target = faviconTarget(pageUrlNow, url);
+  if (!target) return apply('');
+  if (faviconCache.has(target)) return apply(faviconCache.get(target));
   try {
-    const response = await session.fromPartition('persist:browser').fetch(url);
+    let response;
+    for (let hop = 0; hop < 3; hop++) {
+      response = await fetch(target, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
+      const location = response.headers.get('location');
+      if (response.status >= 300 && response.status < 400 && location) {
+        target = faviconTarget(pageUrlNow, new URL(location, target).href);
+        if (!target) return apply('');
+      } else break;
+    }
+    const mime = response.headers.get('content-type')?.split(';')[0]?.trim() || '';
+    if (!response.ok || !mime.startsWith('image/')) return apply('');
     const buffer = Buffer.from(await response.arrayBuffer());
-    if (!response.ok || !buffer.length || buffer.length > 262144) return apply('');
-    const mime = response.headers.get('content-type')?.split(';')[0]?.trim() || (url.endsWith('.ico') ? 'image/x-icon' : 'image/png');
+    if (!buffer.length || buffer.length > 262144) return apply('');
     const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`;
     if (faviconCache.size > 300) faviconCache.clear();
-    faviconCache.set(url, dataUrl);
+    faviconCache.set(target, dataUrl);
     apply(dataUrl);
   } catch { apply(''); }
 }
@@ -336,13 +363,22 @@ function closeTab(id) {
   if (activeTabId === id) activeTabId = [...tabs.keys()].at(-1) || 'home';
   savePreferences(); applyLayout(); broadcast();
 }
-function changeController(id, controller) {
+function changeController(id, controller, source = 'human') {
   const tab = tabs.get(id);
   if (!tab) throw new Error('Tab not found.');
   if (tab.extensionPage && controller === 'agent') throw new Error('Extension account pages stay under your control.');
+  const wasAgent = tab.controller === 'agent';
   tab.controller = controller === 'agent' ? 'agent' : 'human';
-  if (tab.controller === 'agent') tab.agentSince = Date.now();
+  // An explicit human takeover seals the tab to bots until the human hands
+  // it back in the UI. A bot's own release or the idle-expiry clock stays
+  // retakeable, and a tab already locked stays locked.
+  if (tab.controller === 'agent') { tab.humanLock = false; tab.agentSince = Date.now(); }
+  else if (wasAgent) tab.humanLock = source === 'human';
   if (tab.controller === 'agent' && tab.botId === 'shared' && prefs.selectedBotId) tab.botId = prefs.selectedBotId;
+  // Bots can't plant persistent page scripts (the cdp action denies the
+  // method) but strip any surviving registrations when the human takes over.
+  if (tab.controller === 'human' && !tab.view.webContents.isDestroyed() && tab.view.webContents.debugger.isAttached())
+    browserCommand(tab, 'Page.removeAllScriptsToEvaluateOnNewDocument').catch(() => {});
   tab.view.webContents.executeJavaScript(tintScript(tab.controller === 'agent')).catch(() => {});
   tab.epoch++;
   tab.refs.clear();
@@ -519,7 +555,11 @@ function registerIpc() {
       case 'reset-site-permissions': sitePermissions.reset(); break;
       case 'settings':
         if (typeof value.macSshHost === 'string' && value.macSshHost.trim() && !isSshTarget(value.macSshHost.trim())) throw new Error('Enter the Mac SSH address as user@host or host, with no spaces or symbols.');
-        if (value.vpsBrowser && typeof value.vpsBrowser === 'object') { prefs.vpsBrowser={sshHost:String(value.vpsBrowser.sshHost || '').trim(),scriptPath:String(value.vpsBrowser.scriptPath || '').trim(),sudo:value.vpsBrowser.sudo===true}; vpsBrowserStatus='connecting'; refreshVpsTabs(); }
+        if (value.vpsBrowser && typeof value.vpsBrowser === 'object') {
+          const sshHost = String(value.vpsBrowser.sshHost || '').trim();
+          if (sshHost && !isSshTarget(sshHost)) throw new Error('Enter the VPS SSH address as user@host or host, with no spaces or symbols.');
+          prefs.vpsBrowser={sshHost,scriptPath:String(value.vpsBrowser.scriptPath || '').trim(),sudo:value.vpsBrowser.sudo===true}; vpsBrowserStatus='connecting'; refreshVpsTabs();
+        }
         if (Number.isFinite(value.agentIdleMinutes)) prefs.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         if (typeof value.preview === 'boolean') prefs.preview = value.preview;
@@ -583,6 +623,7 @@ function registerIpc() {
         const host = (prefs.vpsBrowser?.sshHost || '').trim();
         const mac = (prefs.macSshHost || '').trim();
         if (!host) throw new Error('Save a VPS browser SSH host first.');
+        if (!isSshTarget(host)) throw new Error('The saved VPS SSH address is invalid. Re-enter it as user@host or host.');
         if (!mac) throw new Error('Enter this Mac’s SSH address as your VPS reaches it.');
         if (!isSshTarget(mac)) throw new Error('The saved Mac SSH address is invalid. Re-enter it as user@host or host.');
         return new Promise((resolve) => {
@@ -655,7 +696,7 @@ function registerIpc() {
     if (now - (linkOpenedAt.get(chatId) || 0) < 3000) return;
     linkOpenedAt.set(chatId, now);
     try {
-      const normalized = normalizeUrl(url);
+      const normalized = agentPageUrl(url);
       const tab = createTab({ url: normalized, botId: chatId, controller: 'agent', activate: value.outgoing === true });
       recentLinkTabs.set(normalized, { tabId: tab.id, at: now });
       if (recentLinkTabs.size > 50) recentLinkTabs.clear();
@@ -672,6 +713,7 @@ const intParam = (url, key, min, max) => {
 };
 async function snapshot(tab, opts = {}) {
   const work = tab.queue.then(async () => {
+    requireAgentRead(tab);
     const generation = ++tab.generation;
     let timer;
     // A wedged renderer leaves executeJavaScript pending forever; bound it so
@@ -681,7 +723,9 @@ async function snapshot(tab, opts = {}) {
       new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000); }),
     ]).finally(() => clearTimeout(timer));
     if (!result || !Array.isArray(result.elements)) throw Object.assign(new Error('Snapshot returned no page data.'), { status: 503 });
-    return { ...settleSnapshot(tab, result, generation, opts.since), tab: describeTab(tab) };
+    // A takeover while the page was being read seals the response.
+    requireAgentRead(tab);
+    return { ...settleSnapshot(tab, result, generation, opts.since), tab: describeTab(tab, true) };
   });
   tab.queue = work.catch(() => {});
   return work;
@@ -735,12 +779,21 @@ function browserCommand(tab, method, params) {
   if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
   return wc.debugger.sendCommand(method, params);
 }
+// A wedged renderer leaves executeJavaScript pending forever and would
+// wedge tab.queue behind it. Bound every probe like snapshot's 10s race.
+function boundedJs(wc, code, ms = 5000) {
+  let timer;
+  return Promise.race([
+    wc.executeJavaScript(code),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('The page stopped responding.'), { status: 503 })), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
 async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = {}) {
   const capture = backgroundCaptureQueue.then(async () => {
     const wc = tab.view.webContents;
     const viaDevTools = async (cdpFormat) => {
       // clip.scale downscales at capture instead of a full-size decode then resize.
-      const size = await wc.executeJavaScript('({ width: innerWidth, height: innerHeight, dsf: devicePixelRatio })');
+      const size = await boundedJs(wc, '({ width: innerWidth, height: innerHeight, dsf: devicePixelRatio })');
       const scale = maxWidth && size.width * size.dsf > maxWidth ? Math.max(0.01, maxWidth / size.width) : size.dsf;
       const shot = await browserCommand(tab, 'Page.captureScreenshot', { format: cdpFormat, ...(cdpFormat === 'png' ? {} : { quality }), fromSurface: true, clip: { x: 0, y: 0, width: size.width, height: size.height, scale } });
       return shot.data;
@@ -763,7 +816,7 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = 
     const heldFocus = tab.focusEmulation === true;
     if (!heldFocus) await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: true });
     try {
-      await wc.executeJavaScript('new Promise(resolve => { const timer = setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); })); })');
+      await boundedJs(wc, 'new Promise(resolve => { const timer = setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); })); })');
       return await encode();
     }
     finally { if (!heldFocus && !wc.isDestroyed()) await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {}); }
@@ -786,7 +839,9 @@ async function performAction(tab, body, botId, depth = 0) {
       try { results.push(await performAction(tab, { ...step, epoch: body.epoch }, botId, 1)); }
       catch (error) { results.push({ error: error.message }); break; }
     }
-    return { results, tab: describeTab(tab), dispatched: true };
+    // A takeover mid-batch seals the accumulated step results too.
+    requireActor(tab, botId, body.epoch, true, overseer);
+    return { results, tab: describeTab(tab, true), dispatched: true };
   }
   if (body.action === 'eval') {
     const code = String(body.code || '');
@@ -796,9 +851,12 @@ async function performAction(tab, body, botId, depth = 0) {
       wc.executeJavaScript(code, true),
       new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('eval timed out after 15s.'), { status: 408 })), 15000)),
     ]);
+    // A takeover while the eval ran seals the result: the human's page state
+    // is not returned to the bot.
+    requireActor(tab, botId, body.epoch, true, overseer);
     const serialized = typeof value === 'string' ? value : JSON.stringify(value);
     if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
-    return { value, tab: describeTab(tab), dispatched: true };
+    return { value, tab: describeTab(tab, true), dispatched: true };
   }
   if (body.action === 'wait') {
     const selector = String(body.selector || '').slice(0, 2000);
@@ -836,6 +894,7 @@ async function performAction(tab, body, botId, depth = 0) {
     const hostStart = Date.now();
     let value = null;
     while (Date.now() - hostStart < timeout + 1000) {
+      requireAgentRead(tab);
       const remaining = Math.max(400, timeout - (Date.now() - hostStart));
       const attempt = await Promise.race([
         wc.executeJavaScript(waitCode(remaining), true).catch(() => ({ navRetry: true })),
@@ -846,14 +905,15 @@ async function performAction(tab, body, botId, depth = 0) {
       await new Promise((r) => setTimeout(r, 250));
     }
     if (!value || !value.found) throw Object.assign(new Error(`wait timed out after ${value ? value.waited : Date.now() - hostStart}ms for ${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`), { status: 408 });
-    return { waited: value.waited, tab: describeTab(tab), dispatched: true };
+    requireActor(tab, botId, body.epoch, true, overseer);
+    return { waited: value.waited, tab: describeTab(tab, true), dispatched: true };
   }
   if (body.action === 'viewport') {
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     if (body.clear === true) {
       await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
       delete tab.viewport;
-      return { viewport: null, tab: describeTab(tab), dispatched: true };
+      return { viewport: null, tab: describeTab(tab, true), dispatched: true };
     }
     const width = Math.round(Number(body.width)), height = Math.round(Number(body.height));
     const scale = Math.min(Math.max(Number(body.scale) || 1, 0.1), 5);
@@ -862,33 +922,41 @@ async function performAction(tab, body, botId, depth = 0) {
     await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
     tab.viewport = { width, height, scale };
     broadcast();
-    return { viewport: tab.viewport, tab: describeTab(tab), dispatched: true };
+    return { viewport: tab.viewport, tab: describeTab(tab, true), dispatched: true };
   }
   if (body.action === 'cdp') {
     const method = String(body.method || '');
-    if (!/^(Page|Runtime|Input|Emulation|Network|DOM|DOMSnapshot|Accessibility|CSS|Log|Fetch|Storage)\.[a-zA-Z]+$/.test(method))
-      throw Object.assign(new Error('Unsupported CDP method. Allowed domains: Page, Runtime, Input, Emulation, Network, DOM, DOMSnapshot, Accessibility, CSS, Log, Fetch, Storage.'), { status: 400 });
-    const params = body.params && typeof body.params === 'object' ? body.params : {};
+    const methodError = cdpMethodError(method);
+    if (methodError) throw Object.assign(new Error(methodError), { status: 400 });
+    const params = { ...(body.params && typeof body.params === 'object' ? body.params : {}) };
     if (JSON.stringify(params).length > 64000) throw Object.assign(new Error('cdp params too large (max 64KB).'), { status: 400 });
+    // Page.navigate bypasses will-navigate: route it through the same agent
+    // address validation as the navigate action (no file:, no local hosts).
+    if (method === 'Page.navigate') {
+      if (typeof params.url !== 'string' || !params.url) throw Object.assign(new Error('Page.navigate needs a url string.'), { status: 400 });
+      params.url = agentPageUrl(params.url);
+    }
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     let value = await Promise.race([
       wc.debugger.sendCommand(method, params),
       new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('cdp timed out after 20s.'), { status: 408 })), 20000)),
     ]);
+    // Seal mid-flight takeovers: the result is the human's page state then.
+    requireActor(tab, botId, body.epoch, true, overseer);
     const cdpSerialized = typeof value === 'string' ? value : JSON.stringify(value);
     if (cdpSerialized && cdpSerialized.length > 48000) value = cdpSerialized.slice(0, 48000) + '…[truncated]';
-    return { value, tab: describeTab(tab), dispatched: true };
+    return { value, tab: describeTab(tab, true), dispatched: true };
   }
   if (['click', 'type', 'press', 'scroll', 'move'].includes(body.action)) {
     const result = await agentInput.perform(tab, body, botId);
     if (body.action !== 'move') tab.refs.clear();
     broadcast();
-    return { ...result, tab: describeTab(tab), dispatched: true };
+    return { ...result, tab: describeTab(tab, true), dispatched: true };
   }
   if (body.action === 'navigate') {
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
-    const target = pageUrl(body.url);
+    const target = pageUrl(agentPageUrl(body.url));
     // loadURL resolves only at did-finish-load — far past the connector's own
     // abort. Cap the wait at commit+settle; the caller reads `loading` and can
     // snapshot to follow a still-loading page.
@@ -896,7 +964,7 @@ async function performAction(tab, body, botId, depth = 0) {
       wc.loadURL(target).then(() => 'loaded', (error) => ({ error })),
       new Promise(resolve => setTimeout(() => resolve('loading'), 12000)),
     ]);
-    if (outcome === 'loading') { tab.refs.clear(); broadcast(); return { loading: true, url: target, tab: describeTab(tab), dispatched: true }; }
+    if (outcome === 'loading') { requireActor(tab, botId, body.epoch, true, overseer); tab.refs.clear(); broadcast(); return { loading: true, url: target, tab: describeTab(tab, true), dispatched: true }; }
     if (outcome !== 'loaded') throw outcome.error;
   } else if (['back', 'forward', 'reload'].includes(body.action)) {
     await agentInput.clear(tab);
@@ -906,9 +974,21 @@ async function performAction(tab, body, botId, depth = 0) {
       : body.action === 'forward' ? history.canGoForward() && (() => history.goForward())
       : () => wc.reload();
     if (go) await settleNavigation(wc, go);
+    // History entries predate the address check, so a back/forward/reload can
+    // land on one. will-navigate covers the cases Electron emits it for.
+    if (tab.controller === 'agent') {
+      try { agentPageUrl(wc.getURL()); }
+      catch (error) {
+        await wc.loadURL('about:blank').catch(() => {});
+        throw Object.assign(error, { status: 400 });
+      }
+    }
   } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, move, scroll, back, forward, reload, batch, eval, wait, viewport, cdp.'), { status: 400 });
+  // Seal navigation-family results too: a takeover while the page settled
+  // makes this response the human's page state.
+  requireActor(tab, botId, body.epoch, true, overseer);
   tab.refs.clear(); broadcast();
-  return { tab: describeTab(tab), dispatched: true };
+  return { tab: describeTab(tab, true), dispatched: true };
 }
 async function readJson(req) {
   let size = 0; const chunks = [];
@@ -927,12 +1007,15 @@ function startApi() {
       const overseer = isOverseer(botId);
       if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', hosts:{mac:'connected',vps:vpsBrowserStatus}, capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'batch', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
-        const appearance = await telegramView.webContents.executeJavaScript(`(() => ({
+        const appearance = await Promise.race([
+          telegramView.webContents.executeJavaScript(`(() => ({
           styled: document.body.classList.contains('hw-chat'),
           composerCount: document.querySelectorAll('.Composer').length,
           middleClasses: document.querySelector('#MiddleColumn')?.className || '',
           middleChildren: [...(document.querySelector('#MiddleColumn')?.children || [])].map(el => ({ tag: el.tagName, id: el.id, className: String(el.className), background: getComputedStyle(el).backgroundImage, display: getComputedStyle(el).display })),
-        }))()`).catch(() => ({}));
+        }))()`).catch(() => ({})),
+          new Promise(resolve => setTimeout(() => resolve({}), 3000)),
+        ]);
         const activityStates = prefs.bots.map(bot => activity.get(bot.id).state);
         return send(200, { telegram: { status: telegramStatus, ...telegramDiagnostics, appearance,
           activity: { available: activityStates.some(state => state !== 'unknown'), activeBots: activityStates.filter(state => state === 'active').length } }, remote: remoteStatus,
@@ -943,18 +1026,19 @@ function startApi() {
         // The 5s timer already keeps vpsTabs warm; a blocking SSH refresh here
         // cost seconds on a read-only list call. Serve the cache, refresh async.
         if(prefs.vpsBrowser?.sshHost)refreshVpsTabs();
-        return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage).map(describeTab).concat([...vpsTabs.values()]).filter((tab) => overseer || tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
+        return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage).map(tab => describeTab(tab, true)).concat([...vpsTabs.values()]).filter((tab) => overseer || tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
       }
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
         const body = await readJson(req);
         if(body.host==='vps'){const result=await vpsBrowser.request('/v1/tabs','POST',body,{botId,botName:nameForBot(botId)});vpsTabs.set(result.id,result);broadcast();return send(201,result);}
         if(body.host!==undefined&&body.host!=='mac')throw new Error('Choose mac or vps explicitly.');
-        { const created = createTab({ url: body.url, botId, controller: 'agent', activate: body.background === false }); created.agentSince = Date.now();
+        { const targetUrl = pageUrl(agentPageUrl(body.url));
+          const created = createTab({ url: targetUrl, botId, controller: 'agent', activate: body.background === false }); created.agentSince = Date.now();
           // Answer after commit (not full load): the first snapshot or eval then
           // sees the real document instead of racing about:blank. Cap the wait
           // so a slow site still returns promptly — `loading` reports the rest.
-          if (/^https?:\/\//i.test(pageUrl(body.url))) {
+          if (/^https?:\/\//i.test(targetUrl)) {
             const wc = created.view.webContents;
             await new Promise(resolve => {
               const done = () => { clearTimeout(timer); wc.removeListener('did-navigate', done).removeListener('did-fail-load', failed).removeListener('destroyed', done); resolve(); };
@@ -963,7 +1047,7 @@ function startApi() {
               wc.once('did-navigate', done); wc.on('did-fail-load', failed); wc.once('destroyed', done);
             });
           }
-          return send(201, describeTab(created)); }
+          return send(201, describeTab(created, true)); }
       }
       const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions|control))?$/.exec(url.pathname);
       const tab = match && tabs.get(match[1]);
@@ -975,25 +1059,38 @@ function startApi() {
       // Shared tabs are claimable by any known bot via POST control; the
       // per-endpoint gates still fence reads/actions until it is claimed.
       requireActor(tab, botId, undefined, false, overseer || (tab.botId === 'shared' && prefs.bots.some((bot) => bot.id === botId)));
-      if (req.method === 'GET' && !match[2]) return send(200, describeTab(tab));
+      if (req.method === 'GET' && !match[2]) return send(200, describeTab(tab, true));
       tab.lastAgentActivity = Date.now();
-      if (req.method === 'GET' && match[2] === 'snapshot') { requireAgentRead(tab);
+      // A bounded backlog of pending reads per tab: a bot cannot stack up
+      // snapshots or screenshots that would drain after a human takeover.
+      if (req.method === 'GET' && (match[2] === 'snapshot' || match[2] === 'screenshot')) {
+        requireAgentRead(tab);
+        if ((tab.pendingReads || 0) >= 8) throw Object.assign(new Error('Too many pending reads on this tab.'), { status: 429 });
+        tab.pendingReads = (tab.pendingReads || 0) + 1;
+      }
+      try {
+      if (req.method === 'GET' && match[2] === 'snapshot') {
         return send(200, await snapshot(tab, { maxChars: intParam(url, 'maxChars', 0, 20000), maxElements: intParam(url, 'maxElements', 0, 300), since: intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER) }));
       }
-      if (req.method === 'GET' && match[2] === 'screenshot') { requireAgentRead(tab);
+      if (req.method === 'GET' && match[2] === 'screenshot') {
         const format = url.searchParams.get('format') ?? 'jpeg';
         if (!['jpeg', 'png', 'webp'].includes(format)) throw Object.assign(new Error('format must be jpeg, png, or webp.'), { status: 400 });
         const quality = intParam(url, 'quality', 1, 100) ?? 70;
         const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 1280;
         const capture = tab.queue.then(async () => {
+          // Reads are gated again inside the queue so a takeover while this
+          // capture waited comes back 409, not a last page peek.
+          requireAgentRead(tab);
           const base64 = await captureTab(tab, { format, quality, maxWidth });
-          const viewport = await tab.view.webContents.executeJavaScript('({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })');
+          const viewport = await boundedJs(tab.view.webContents, '({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })');
+          requireAgentRead(tab);
           return { base64, viewport };
         });
         tab.queue = capture.catch(() => {});
         const { base64, viewport } = await capture;
-        return send(200, { mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], base64, viewport, tab: describeTab(tab) });
+        return send(200, { mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], base64, viewport, tab: describeTab(tab, true) });
       }
+      } finally { if (req.method === 'GET' && (match[2] === 'snapshot' || match[2] === 'screenshot')) tab.pendingReads--; }
       if (req.method === 'POST' && match[2] === 'actions') {
         const body = await readJson(req);
         tab.pendingActions = (tab.pendingActions || 0) + 1;
@@ -1009,20 +1106,27 @@ function startApi() {
         if (botId !== tab.botId && !overseer && !granted) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
         if (body.controller === 'agent') { requireAgentClaim(tab); tab.handoff = reviewedHandoff(tab.handoff); }
         if (tab.botId === 'shared' && body.controller === 'agent') tab.botId = botId;
-        return send(200, changeController(tab.id, body.controller));
+        return send(200, redactTabForBot(changeController(tab.id, body.controller, 'agent')));
       }
       if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true, overseer); closeTab(tab.id); return send(200, { closed: true }); }
       return send(405, { error: 'Method not supported.' });
     } catch (error) { send(error.status || 400, { error: error.message }); }
   });
   apiServer.requestTimeout = 30000;
-  apiServer.on('error', (error) => { apiError = error.message; broadcast(); });
-  const envPort = Number(process.env.HERMES_WORKSPACE_PORT);
-  apiServer.listen(Number.isInteger(envPort) && envPort >= 0 && envPort < 65536 ? envPort : 9464, '127.0.0.1', () => {
+  apiServer.on('listening', () => {
     apiPort = apiServer.address().port;
+    apiError = '';
     writePrivateJson(path.join(app.getPath('userData'), 'connection.json'), { url: `http://127.0.0.1:${apiPort}`, token: API_TOKEN, protocol: 1 });
     broadcast();
   });
+  apiServer.on('error', (error) => {
+    // A taken port would leave the old connection.json pointing at a dead or
+    // foreign listener. Come up on an ephemeral port and write the real one.
+    if (error.code === 'EADDRINUSE' && !apiPort) { apiServer.listen(0, '127.0.0.1'); return; }
+    apiError = error.message; broadcast();
+  });
+  const envPort = Number(process.env.HERMES_WORKSPACE_PORT);
+  apiServer.listen(Number.isInteger(envPort) && envPort >= 0 && envPort < 65536 ? envPort : 9464, '127.0.0.1');
 }
 function createWindow() {
   nativeTheme.themeSource = 'dark';
@@ -1077,7 +1181,7 @@ function createWindow() {
     const idleMs = Math.max(1, Number(process.env.HERMES_AGENT_IDLE_MINUTES) || prefs.agentIdleMinutes || 15) * 60000, now = Date.now();
     for (const tab of tabs.values()) {
       if (tab.controller !== 'agent' || tab.extensionPage || tab.pendingActions > 0 || agentInput.isDispatching(tab)) continue;
-      if (now - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) > idleMs) changeController(tab.id, 'human');
+      if (now - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) > idleMs) changeController(tab.id, 'human', 'idle');
     }
   }, 30000).unref();
   vpsTimer=setInterval(refreshVpsTabs,5000);vpsTimer.unref();refreshVpsTabs();
@@ -1089,6 +1193,22 @@ else {
     try { parseRemoteUrl(prefs.remoteUrl); } catch { prefs.remoteUrl = ''; }
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
     const browserSession = session.fromPartition('persist:browser');
+    // Subresources (fetch, XHR, images) never hit will-navigate. Cancel the
+    // ones an agent tab aims at a blocked address; the human's tabs are not
+    // touched, and main-frame loads stay with the navigation hooks above.
+    browserSession.webRequest.onBeforeRequest((details, callback) => {
+      let cancel = false;
+      try {
+        const frame = details.webContentsId && webContents.fromId(details.webContentsId);
+        const owner = frame && [...tabs.values()].find((tab) => tab.view.webContents === frame);
+        if (owner?.controller === 'agent' && details.resourceType !== 'mainFrame') {
+          const parsed = new URL(details.url);
+          const barrier = (parsed.protocol === 'http:' || parsed.protocol === 'https:') && agentHostBarrier(parsed.hostname);
+          cancel = Boolean(barrier) && !(barrier === 'loopback' && process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK === '1');
+        }
+      } catch {}
+      callback(cancel ? { cancel: true } : {});
+    });
     extensionHost = new ElectronChromeExtensions({ license: 'GPL-3.0', session: browserSession,
       createTab: async details => { const tab = createTab({ url: details.url || 'about:blank', activate: details.active !== false, extensionPage: isExtensionUrl(details.url) }); return [tab.view.webContents, win]; },
       selectTab: wc => { if (isQuitting || registeringExtensionTab) return; const tab = [...tabs.values()].find(item => item.view.webContents === wc); if (tab) { activeTabId = tab.id; prefs.remoteControl = false; applyLayout(); broadcast(); } else BrowserWindow.fromWebContents(wc)?.show(); },

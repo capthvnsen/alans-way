@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('../src/core.cjs');
 const { snapshotExpression, settleSnapshot } = require('../src/browser-page.cjs');
 
 test('browser URLs reject executable and credential-bearing schemes', () => {
@@ -8,6 +8,46 @@ test('browser URLs reject executable and credential-bearing schemes', () => {
   assert.equal(normalizeUrl('github.com'), 'https://github.com/');
   assert.equal(normalizeUrl('localhost:3000/test'), 'http://localhost:3000/test');
   assert.match(normalizeUrl('browser task handoff'), /^https:\/\/www.google.com\/search\?/);
+});
+test('agent navigations refuse loopback, link-local and metadata addresses in every spelling', () => {
+  for (const value of ['http://127.0.0.1:3000/', 'http://localhost:3000/', 'http://0x7f000001/', 'http://2130706433/', 'http://127.1/', 'http://[::1]/', 'http://[::ffff:7f00:1]/', 'http://0.0.0.0/', 'http://[::]/', 'http://169.254.169.254/latest/meta-data', 'http://169.254.1.1/', 'http://sub.localhost:8080/'])
+    assert.throws(() => agentPageUrl(value), /loopback|link-local|metadata/, value);
+  for (const value of ['http://192.168.1.20:3000/', 'http://10.0.0.4/', 'http://172.16.5.4/', 'https://dev.internal.example/'])
+    assert.doesNotThrow(() => agentPageUrl(value), value);
+});
+test('HERMES_WORKSPACE_ALLOW_LOOPBACK reopens loopback for fixtures only', () => {
+  process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
+  try {
+    assert.equal(agentPageUrl('http://127.0.0.1:3000/x'), 'http://127.0.0.1:3000/x');
+    assert.equal(agentPageUrl('localhost:3000/x'), 'http://localhost:3000/x');
+    assert.throws(() => agentPageUrl('http://169.254.169.254/'), /link-local|metadata/);
+    assert.throws(() => agentPageUrl('http://0.0.0.0/'));
+  } finally { delete process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK; }
+});
+test('only same-origin favicons may be fetched', () => {
+  assert.equal(faviconTarget('https://a.example/page', 'https://a.example/favicon.ico'), 'https://a.example/favicon.ico');
+  assert.equal(faviconTarget('http://a.example:8080/x', 'http://a.example:8080/i.png'), 'http://a.example:8080/i.png');
+  for (const icon of ['https://evil.example/x.png', 'http://127.0.0.1:9999/x.png', 'https://a.example.evil.com/x.png', 'data:image/png;base64,x', 'file:///etc/passwd'])
+    assert.equal(faviconTarget('https://a.example/page', icon), '', icon);
+  assert.equal(faviconTarget('https://a.example:444/x', 'https://a.example/i.png'), '', 'ports differ');
+});
+test('bot-visible tab metadata seals url, title, icon and note on human-controlled tabs', () => {
+  const info = { id: 't', url: 'https://a.example/private?token=1', title: 'Secret page', favicon: 'data:image/png;base64,x', controller: 'human', handoff: { phase: 'handed_off', destinationTabId: 't2', note: 'do this' } };
+  const redacted = redactTabForBot(info);
+  assert.equal(redacted.url, 'https://a.example');
+  assert.equal(redacted.title, '');
+  assert.equal(redacted.favicon, '');
+  assert.equal(redacted.handoff.note, '');
+  assert.equal(redacted.handoff.phase, 'handed_off');
+  assert.equal(redacted.handoff.destinationTabId, 't2');
+  assert.equal(redactTabForBot({ ...info, controller: 'agent' }).url, info.url, 'agent tabs keep full metadata');
+  assert.equal(redactTabForBot({ ...info, url: 'file:///private/x' }).url, '', 'non-web urls blank out fully');
+});
+test('the cdp allowlist denies storage, cookie, file and interception methods', () => {
+  for (const method of ['Page.addScriptToEvaluateOnNewDocument', 'Page.removeScriptToEvaluateOnNewDocument', 'Page.setInterceptFileChooserDialog', 'Page.handleFileChooser', 'Page.navigateToHistoryEntry', 'Page.setDownloadBehavior', 'Page.getCookies', 'DOM.setFileInputFiles', 'Network.getCookies', 'Network.getAllCookies', 'Network.setCookie', 'Network.setCookies', 'Network.clearBrowserCookies', 'Network.clearBrowserCache', 'Network.loadNetworkResource', 'Network.setRequestInterception', 'Network.continueInterceptedRequest', 'Fetch.enable', 'Fetch.continueRequest', 'Storage.getCookies', 'Storage.setCookies', 'Storage.clearDataForOrigin', 'Target.createTarget', 'Browser.getCookies'])
+    assert.match(cdpMethodError(method), /./, method);
+  for (const method of ['Runtime.evaluate', 'Page.navigate', 'Page.captureScreenshot', 'Input.dispatchMouseEvent', 'Emulation.setDeviceMetricsOverride', 'DOM.querySelector', 'Network.enable', 'Accessibility.getFullAXTree'])
+    assert.equal(cdpMethodError(method), '', method);
 });
 test('existing noVNC links map to their websocket route', () => {
   assert.equal(parseRemoteUrl('https://desktop.example:8445/vnc.html?view_only=true'), 'wss://desktop.example:8445/websockify');
@@ -41,7 +81,7 @@ test('human-controlled tabs reject bot page reads', () => {
 });
 test('API authentication rejects missing, truncated and different tokens', () => {
   assert.equal(isAuthorized('Bearer paired-secret', 'paired-secret'), true);
-  for (const header of [undefined, 'Bearer paired', 'Bearer another-secret']) assert.equal(isAuthorized(header, 'paired-secret'), false);
+  for (const header of [undefined, 'paired-secret', 'Bearer paired', 'Bearer another-secret', 'Bearer', 'Basic cGFpcmVkLXNlY3JldA==']) assert.equal(isAuthorized(header, 'paired-secret'), false);
 });
 test('saved SSH addresses accept user@host or an alias and nothing a shell would interpret', () => {
   for (const value of ['me@mac.example.ts.net', 'mymac', 'me@192.0.2.7', 'a_b-c.d']) assert.equal(isSshTarget(value), true, value);
@@ -57,6 +97,12 @@ test('a handoff source and an unverified destination refuse agent claims until t
   assert.equal(reviewed.phase, 'reviewed');
   requireAgentClaim({ handoff: reviewed });
   assert.equal(reviewedHandoff(undefined), undefined);
+});
+test('an explicit human takeover locks bots out while an idle or released tab stays claimable', () => {
+  assert.throws(() => requireAgentClaim({ controller: 'human', humanLock: true }), /human_has_control/);
+  requireAgentClaim({ controller: 'human', humanLock: false });
+  requireAgentClaim({ controller: 'human' });
+  requireAgentClaim({ controller: 'agent', humanLock: true });
 });
 test('an unchanged snapshot keeps the refs the agent already holds usable', () => {
   const page = (generation, label = 'Send') => ({ url: 'https://a.example/', title: 'A', text: 'hello',
