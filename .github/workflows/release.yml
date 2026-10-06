@@ -51,7 +51,9 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
-      - run: npm run check
+      # The suite has Mac/Linux-only tests; tests.yml covers the Windows driver.
+      - if: runner.os == 'macOS'
+        run: npm run check
       - if: github.event_name == 'push'
         run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
       - run: npm run ${{ matrix.script }}
