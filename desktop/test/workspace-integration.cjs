@@ -11,7 +11,14 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-integrat
 process.env.HERMES_WORKSPACE_DATA = profile;
 process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
 process.env.HERMES_OVERSEER_BOTS = 'overseer-bot';
+// The fixture serves agent pages from loopback; production code only lets a
+// bot navigate there through this explicit opt-in.
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ bots: [{ id: '123', name: 'Avatar test fixture', isBot: true }, { id: '456', name: 'Second fixture bot', isBot: true }], selectedBotId: '123', preview: false }));
+// Occupy the configured API port: the app must retry on an ephemeral port
+// and still write the real address into connection.json.
+const portBlocker = http.createServer((_req, res) => res.end('occupied'));
+portBlocker.listen(Number(process.env.HERMES_WORKSPACE_PORT), '127.0.0.1');
 require('../src/main.cjs');
 const waitFor = async (read, predicate, timeout = 12000) => {
   const deadline = Date.now() + timeout;
@@ -85,7 +92,13 @@ app.whenReady().then(async () => {
   assert.ok(gaze.active && gaze.idle && gaze.neutral, 'Idle avatars stop and return to neutral pupils.');
   console.log('PASS: fixture-driven live avatar gaze and immediate idle reset in the real renderer.');
 
-  server = http.createServer((req, res) => req.url === '/streaming' ? (res.write('<title>streaming</title><h1>First half</h1>'), setTimeout(() => res.end('<p>Second half</p>'), 600)) : res.end(req.url === '/blocks' ? '<title>blocks</title><h1>Order 42</h1><ul><li>Apples <b>3</b></li><li>Pears 5</li></ul><table><tr><td>Total</td><td>8</td></tr></table><p>Due <i>today</i></p>' : req.url === '/red' || req.url === '/blue' ? `<style>html{background:${req.url.slice(1)}}</style><title>${req.url.slice(1)}</title><button onclick="window.open('/popup')">Open fixture popup</button>` : '<!doctype html><title>Human focus fixture</title><input id="human" aria-label="Human input" value="Keep my draft"><script>human.focus()</script>'));
+  const PNG_ICON = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  server = http.createServer((req, res) => {
+    if (req.url === '/icon.png') { res.setHeader('Content-Type', 'image/png'); return res.end(PNG_ICON); }
+    if (req.url === '/favicon-local') return res.end('<title>favicon-local</title><link rel="icon" href="/icon.png">');
+    if (req.url === '/favicon-cross') return res.end(`<title>favicon-cross</title><link rel="icon" href="http://localhost:${server.address().port}/icon.png">`);
+    return req.url === '/streaming' ? (res.write('<title>streaming</title><h1>First half</h1>'), setTimeout(() => res.end('<p>Second half</p>'), 600)) : res.end(req.url === '/blocks' ? '<title>blocks</title><h1>Order 42</h1><ul><li>Apples <b>3</b></li><li>Pears 5</li></ul><table><tr><td>Total</td><td>8</td></tr></table><p>Due <i>today</i></p>' : req.url === '/red' || req.url === '/blue' ? `<style>html{background:${req.url.slice(1)}}</style><title>${req.url.slice(1)}</title><button onclick="window.open('/popup')">Open fixture popup</button>` : '<!doctype html><title>Human focus fixture</title><input id="human" aria-label="Human input" value="Keep my draft"><script>human.focus()</script>');
+  });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const human = await invoke('create-tab', { url: `http://127.0.0.1:${server.address().port}` });
   const humanWc = await waitFor(() => webContents.getAllWebContents().find(item => item.getURL() === `http://127.0.0.1:${server.address().port}/` && item !== wc), Boolean);
@@ -103,6 +116,8 @@ app.whenReady().then(async () => {
     assert.ok(current === focus || (current === undefined && !win.isFocused()), `Native focus changed inside the workspace (${focus} -> ${current}).`);
   };
   const connection = JSON.parse(fs.readFileSync(path.join(profile, 'connection.json')));
+  assert.notEqual(new URL(connection.url).port, process.env.HERMES_WORKSPACE_PORT, 'The API retried onto a free port after EADDRINUSE.');
+  console.log('PASS: API port collision falls back to an ephemeral port and connection.json carries the real one.');
   const apiRaw = async (route, method = 'GET', body, actor = 'capture-regression') => {
     const response = await fetch(new URL(route, connection.url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': actor, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
     return { status: response.status, data: await response.json() };
@@ -215,6 +230,27 @@ app.whenReady().then(async () => {
   assert.equal(seizedByGrantee.controller, 'agent', 'A granted bot takes over a human-controlled tab.');
   assert.equal((await api(`/v1/tabs/${colored[0].id}`, 'GET', undefined, '456')).botId, 'capture-regression', 'Grantee control does not transfer ownership.');
   console.log('PASS: shared-tab claim by a known bot and granted-bot takeover of a human tab.');
+  // An explicit takeover through the UI seals the tab: no bot can flip it
+  // back — not the owner, a grantee or the overseer — and a bot POST of
+  // 'human' cannot wash the lock. Only Give to agent hands it back.
+  await invoke('control', { id: colored[0].id, controller: 'human' });
+  for (const actor of ['capture-regression', '456', 'overseer-bot']) {
+    const attempt = await apiRaw(`/v1/tabs/${colored[0].id}/control`, 'POST', { controller: 'agent' }, actor);
+    assert.equal(attempt.status, 409, `${actor} cannot reverse an explicit human takeover`);
+  }
+  await api(`/v1/tabs/${colored[0].id}/control`, 'POST', { controller: 'human' }, '456');
+  assert.equal((await apiRaw(`/v1/tabs/${colored[0].id}/control`, 'POST', { controller: 'agent' }, '456')).status, 409, 'POSTing human again does not clear the takeover seal');
+  // While sealed, bot metadata shows the origin only — not the live page.
+  const sealedMeta = (await apiRaw(`/v1/tabs/${colored[0].id}`, 'GET', undefined, '456')).data;
+  assert.equal(sealedMeta.url, `http://127.0.0.1:${server.address().port}`, 'A sealed tab leaks its origin only');
+  assert.equal(sealedMeta.title, '', 'A sealed tab leaks no title');
+  assert.equal(sealedMeta.favicon, '', 'A sealed tab leaks no favicon');
+  const humanMeta = (await apiRaw(`/v1/tabs/${human.id}`, 'GET', undefined, 'overseer-bot')).data;
+  assert.equal(humanMeta.url, `http://127.0.0.1:${server.address().port}`, 'The overseer sees only the origin of the human tab');
+  assert.equal(humanMeta.title, '');
+  await invoke('control', { id: colored[0].id, controller: 'agent' });
+  assert.equal((await api(`/v1/tabs/${colored[0].id}`, 'GET', undefined, '456')).controller, 'agent', 'Give to agent hands the sealed tab back');
+  console.log('PASS: explicit takeover seals control and page metadata until the human hands the tab back.');
   // batch runs a multi-step sequence in one request and eval executes page JS;
   // both honor the same controller/epoch gate as single actions.
   const seizedTab = await api(`/v1/tabs/${colored[1].id}`, 'GET', undefined, 'overseer-bot');
@@ -287,6 +323,57 @@ app.whenReady().then(async () => {
   assert.equal(cdpResult.value.result.value, 42, 'cdp Runtime.evaluate returns the result.');
   assert.equal((await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'cdp', method: 'Target.createTarget', params: {}, epoch: seizedTab.epoch }, 'overseer-bot')).status, 400, 'cdp rejects out-of-scope domains.');
   console.log('PASS: viewport override, clear, raw cdp command, and domain allowlist.');
+  // The cdp surface is a per-method policy, not a domain grant: cookie and
+  // storage access, file pickers, request interception, persistent scripts
+  // and privileged fetches are denied, and Page.navigate shares the agent
+  // address check.
+  for (const method of ['Network.getCookies', 'Network.getAllCookies', 'Network.setCookie', 'Network.clearBrowserCookies', 'Network.clearBrowserCache', 'Network.loadNetworkResource', 'DOM.setFileInputFiles', 'Page.setInterceptFileChooserDialog', 'Page.addScriptToEvaluateOnNewDocument', 'Page.setDownloadBehavior', 'Fetch.enable', 'Storage.getCookies']) {
+    const denied = await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'cdp', method, params: {}, epoch: seizedTab.epoch }, 'overseer-bot');
+    assert.equal(denied.status, 400, `cdp denies ${method}`);
+  }
+  assert.equal((await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'cdp', method: 'Page.navigate', params: { url: 'file:///etc/passwd' }, epoch: seizedTab.epoch }, 'overseer-bot')).status, 400, 'cdp Page.navigate cannot open file: urls');
+  const cdpNav = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'cdp', method: 'Page.navigate', params: { url: `http://127.0.0.1:${server.address().port}/blue` }, epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.ok(cdpNav.value.frameId, 'cdp Page.navigate still works on allowed urls');
+  await waitFor(() => api(`/v1/tabs/${colored[1].id}/snapshot`, 'GET', undefined, 'overseer-bot'), snap => snap.title === 'blue');
+  // Agent navigation never reaches link-local or metadata addresses, even
+  // with the fixture's loopback opt-in enabled.
+  for (const bad of ['http://169.254.169.254/latest/meta-data', 'http://0.0.0.0:1/']) {
+    assert.equal((await apiRaw('/v1/tabs', 'POST', { url: bad, background: true })).status, 400, `bot tab create to ${bad}`);
+    assert.equal((await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'navigate', url: bad, epoch: seizedTab.epoch }, 'overseer-bot')).status, 400, `navigate to ${bad}`);
+  }
+  console.log('PASS: cdp per-method denylist, Page.navigate address check, and link-local navigation refusal.');
+  // Reads re-check control inside the queue: screenshots still pending when
+  // the human takes over come back 409, and a tab holds at most 8 of them.
+  const capped = await Promise.all([...Array(12)].map(() => apiRaw(`/v1/tabs/${colored[1].id}/screenshot`, 'GET', undefined, 'overseer-bot')));
+  assert.ok(capped.some(r => r.status === 429), `pending reads cap at 8 (${capped.map(r => r.status)})`);
+  assert.ok(capped.every(r => [200, 429].includes(r.status)));
+  const swarm = Promise.all([...Array(8)].map(() => apiRaw(`/v1/tabs/${colored[1].id}/screenshot`, 'GET', undefined, 'overseer-bot')));
+  await new Promise(r => setTimeout(r, 25));
+  await invoke('control', { id: colored[1].id, controller: 'human' });
+  const drained = await swarm;
+  assert.ok(drained.some(r => r.status === 409), `queued reads re-check control after a takeover (${drained.map(r => r.status)})`);
+  assert.ok(drained.every(r => [200, 409].includes(r.status)));
+  console.log('PASS: pending-read cap and queued-read sealing across a takeover.');
+  // A takeover mid-eval seals the result; Give to agent reopens the tab.
+  await invoke('control', { id: colored[1].id, controller: 'agent' });
+  const midEpoch = (await api(`/v1/tabs/${colored[1].id}`, 'GET', undefined, 'overseer-bot')).epoch;
+  const slowEval = apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: 'new Promise(r => setTimeout(() => r(document.title), 800))', epoch: midEpoch }, 'overseer-bot');
+  await new Promise(r => setTimeout(r, 150));
+  await invoke('control', { id: colored[1].id, controller: 'human' });
+  assert.equal((await slowEval).status, 409, 'a mid-flight eval is sealed by takeover');
+  console.log('PASS: in-flight eval results stay sealed after a takeover.');
+  // Favicons fetch only same-origin icons, without the browser session.
+  const favTab = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/favicon-local`, background: true });
+  await waitFor(() => api(`/v1/tabs/${favTab.id}`), tab => typeof tab.favicon === 'string' && tab.favicon.startsWith('data:image/png;base64,'), 8000);
+  const crossTab = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/favicon-cross`, background: true });
+  await waitFor(() => api(`/v1/tabs/${crossTab.id}`), tab => tab.title === 'favicon-cross');
+  await new Promise(r => setTimeout(r, 1200));
+  assert.equal((await api(`/v1/tabs/${crossTab.id}`)).favicon, '', 'a cross-origin favicon is never fetched');
+  console.log('PASS: favicons come only from the page origin and fetch without browser cookies.');
+  // The saved VPS ssh target is validated like the Mac one — a stored option
+  // injection can no longer reach ssh argv.
+  await assert.rejects(invoke('settings', { vpsBrowser: { sshHost: '-oProxyCommand=touch /tmp/hs-pwn', scriptPath: '/x' } }), /user@host/);
+  console.log('PASS: settings rejects a non-host VPS SSH target.');
   // The designated primary bot pins to the top of the sidebar with a PRIMARY
   // badge; with no explicit pick the overseer bot is the primary.
   state = await invoke('settings', { primaryBotId: '123' });
@@ -314,5 +401,5 @@ app.whenReady().then(async () => {
     mainWindowFocusedBefore, mainWindowFocusedAfter, nativeFocusMeasured,
     systemPointerUnchangedDuringTest: point.x === afterPoint.x && point.y === afterPoint.y }));
   console.log('PASS: full app MCP background typing, clicking, screenshots, Enter, and human focus isolation.');
-  server.close(); app.quit();
+  server.close(); portBlocker.close(); app.quit();
 }).catch(error => { console.error(error.stack); server?.close(); app.exit(1); });
