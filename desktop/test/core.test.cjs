@@ -225,6 +225,8 @@ test('opening a tab does not let the model pick the machine', () => {
   assert.match(mcp, /The Mac tab is gone\. Keep working in tab/);
   assert.match(mcp, /continuedTab/);
   assert.match(mcp, /continuedEpoch/);
+  assert.match(mcp, /Stale or unknown reference/);
+  assert.match(mcp, /maxChars=0&maxElements=40/);
   assert.match(mcp, /--continued-tab/);
   assert.match(mcp, /same machine as the browser/);
 });
