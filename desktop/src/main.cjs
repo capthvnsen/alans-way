@@ -459,7 +459,10 @@ function registerIpc() {
         try {
           await tg.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
           await tg.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
-          await tg.debugger.sendCommand('Input.insertText', { text: `${title}\n${url}\n` });
+          await tg.debugger.sendCommand('Input.insertText', { text: `${title}\n${url}` });
+          const enter = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+          await tg.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', ...enter });
+          await tg.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', ...enter });
         }
         finally { tg.debugger.detach(); }
         break;

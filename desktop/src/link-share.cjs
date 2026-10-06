@@ -9,8 +9,8 @@ function firstLink(message) {
   const text = typeof body?.text === 'string' ? body.text : typeof body === 'string' ? body : '';
   let url = '';
   for (const entity of body?.entities || []) {
-    if (entity?.type === 'textEntityTypeTextUrl' && typeof entity.url === 'string') { url = entity.url; break; }
-    if (entity?.type === 'textEntityTypeUrl' && Number.isInteger(entity.offset) && Number.isInteger(entity.length)) {
+    if (entity?.type === 'MessageEntityTextUrl' && typeof entity.url === 'string') { url = entity.url; break; }
+    if (entity?.type === 'MessageEntityUrl' && Number.isInteger(entity.offset) && Number.isInteger(entity.length)) {
       url = text.slice(entity.offset, entity.offset + entity.length); break;
     }
   }
