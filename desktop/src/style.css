@@ -87,3 +87,19 @@
 .downloads-foot{display:flex;justify-content:flex-end;border-top:1px solid #2c2c34;margin-top:4px;padding:8px 10px}
 #downloads-button.active{color:#a8e9cc}
 body.win32 .pane-actions{padding-right:140px}body.win32 .side-title{padding-top:14px}
+.voice-bar{display:flex;align-items:center;gap:9px;padding:7px 12px;border-bottom:1px solid var(--line);background:#101013;font-size:11px;color:#babac4;flex-shrink:0}
+.voice-orb{width:9px;height:9px;border-radius:50%;background:#3a3a44;flex-shrink:0;transition:background .2s}
+.voice-orb.starting{background:#d8b64a}
+.voice-orb.listening{background:#3ecf8e;box-shadow:0 0 8px #3ecf8e66}
+.voice-orb.transcribing{background:#8baaf1}
+.voice-orb.thinking{background:#b48cf2}
+.voice-orb.speaking{background:#f1a35c;box-shadow:0 0 8px #f1a35c66}
+.voice-status{font-weight:550;white-space:nowrap}
+.voice-transcript{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8a8a99}
+.voice-transcript:hover{cursor:pointer}
+#voice-mic.active,#voice-call.active,#voice-mute.active{color:#3ecf8e;background:#3ecf8e1f}
+.voice-hangup{color:#e06c75!important}
+.voice-hangup:hover{background:#e06c7522!important}
+#voice-mute .mute-slash{display:none}
+#voice-mute.active .mute-slash{display:block}
+#voice-mute.active{color:#e0a05c}

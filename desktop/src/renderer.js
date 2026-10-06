@@ -241,6 +241,27 @@ function renderDownloads() {
     footer.append(all); menu.append(footer);
   }
 }
+const voiceLabels = { off: '', starting: 'Loading voice models…', listening: 'Listening', transcribing: 'Transcribing…', thinking: 'Thinking…', speaking: 'Speaking' };
+function renderVoice() {
+  const voice = state.voice || {}, active = !!voice.callActive, dictating = !!voice.dictating;
+  $('voice-bar').classList.toggle('hidden', !active && !dictating);
+  $('voice-orb').className = `voice-orb ${voice.status || 'off'}`;
+  let statusText = voiceLabels[voice.status] || (dictating ? 'Dictating' : '');
+  if (voice.status === 'starting' && voice.progress?.progress != null) statusText = `Downloading models… ${Math.round(voice.progress.progress)}%`;
+  $('voice-status').textContent = statusText;
+  if (voice.botTyping && !['transcribing', 'speaking'].includes(voice.status)) $('voice-status').textContent = 'Bot is working…';
+  $('voice-transcript').textContent = voice.transcript || '';
+  $('voice-transcript').title = voice.transcript || '';
+  $('voice-mic').setAttribute('aria-pressed', String(dictating));
+  $('voice-mic').classList.toggle('active', dictating);
+  $('voice-call').setAttribute('aria-pressed', String(active));
+  $('voice-call').classList.toggle('active', active);
+  $('voice-mute').setAttribute('aria-pressed', String(!!voice.muted));
+  $('voice-mute').classList.toggle('active', !!voice.muted);
+  $('voice-hangup').classList.toggle('hidden', !active);
+  $('voice-mute').classList.toggle('hidden', !active && !dictating);
+  if (voice.error) $('voice-status').textContent = voice.error;
+}
 function render(next) {
   state = next;
   window.HermesAvatars.update(state);
@@ -259,7 +280,7 @@ function render(next) {
     $('presence-status').textContent = window.HermesAvatars.activityLabel(bot.activity);
     $('presence-status').classList.toggle('active', window.HermesAvatars.isActive(bot.activity));
   }
-  renderBots(); renderTabs(); renderSettingsBots(); renderSitePermissions(); renderExtensions(); renderDownloads();
+  renderBots(); renderTabs(); renderSettingsBots(); renderSitePermissions(); renderExtensions(); renderDownloads(); renderVoice();
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
   const remote = state.activeTabId==='vps';
   $('vm-toggle').title = remote ? 'Return to browser' : 'Expand virtual desktop';
@@ -452,6 +473,24 @@ function showSettings() {
   const avatars = element('button', 'secondary-button', 'Customize bot avatars');
   avatars.onclick = () => showAvatarEditor(); body.append(avatars);
   body.append(element('p', 'settings-note', 'Pick a marble avatar or import your own. Eyes follow your mouse only while Telegram reports activity.'), element('hr', 'section-divider'));
+  // ---- Voice ----
+  body.append(element('h3', '', 'Voice'));
+  body.append(element('p', 'settings-note', 'Local voice calls and dictation — speech runs entirely on this Mac (Moonshine transcription, Kokoro voices). Only text goes through Telegram. Use ⌘⌥V to start or end a call from anywhere.'));
+  const voiceRow = element('div', 'setting-row'); voiceRow.append(element('span', '', 'Speaking voice'));
+  const voiceSelect = element('select'); voiceSelect.setAttribute('aria-label', 'Speaking voice');
+  for (const [value, label] of [['af_heart', 'Heart (warm)'], ['af_bella', 'Bella (bright)'], ['af_nicole', 'Nicole (soft)'], ['am_michael', 'Michael (warm)'], ['am_puck', 'Puck (playful)'], ['bf_emma', 'Emma (British)'], ['bm_george', 'George (British)']]) {
+    const option = element('option', '', label); option.value = value; option.selected = (state.voice?.voice || 'af_heart') === value; voiceSelect.append(option);
+  }
+  voiceSelect.onchange = () => command('voice-settings', { voiceId: voiceSelect.value });
+  voiceRow.append(voiceSelect); body.append(voiceRow);
+  const sttRow = element('div', 'setting-row'); sttRow.append(element('span', '', 'Transcription model'));
+  const sttSelect = element('select'); sttSelect.setAttribute('aria-label', 'Transcription model');
+  for (const [value, label] of [['onnx-community/moonshine-base-ONNX', 'Moonshine base (recommended)'], ['onnx-community/moonshine-tiny-ONNX', 'Moonshine tiny (fastest)'], ['onnx-community/whisper-tiny.en', 'Whisper tiny (slower)']]) {
+    const option = element('option', '', label); option.value = value; option.selected = (state.voice?.sttModel || 'onnx-community/moonshine-base-ONNX') === value; sttSelect.append(option);
+  }
+  sttSelect.onchange = () => command('voice-settings', { sttModel: sttSelect.value });
+  sttRow.append(sttSelect); body.append(sttRow);
+  body.append(element('p', 'settings-note', 'Models download from Hugging Face the first time you start a call or dictate (~260 MB) and are then cached on this Mac.'), element('hr', 'section-divider'));
   showSitePermissionSettings(body);
   showCookieSettings(body);
   const label = element('label', '', 'Remote desktop connection'); label.htmlFor = 'remote-url';
@@ -578,9 +617,19 @@ for (const action of ['back', 'forward', 'reload']) $(action).onclick = () => co
 $('control-button').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: tab.controller === 'agent' ? 'human' : 'agent' }); };
 $('ask-bot').onclick = () => command('share-page');
 
+$('voice-mic').onclick = () => command('voice-dictation');
+$('voice-call').onclick = () => command('voice-call');
+$('voice-mute').onclick = () => command('voice-mute');
+$('voice-hangup').onclick = () => command('voice-call');
+$('voice-transcript').onclick = () => { if (state?.voice?.speaking) command('voice-interrupt'); };
 $('modal-close').onclick = closeModal;
 $('modal').onclick = (event) => { if (event.target === $('modal')) closeModal(); };
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { if (modalOpen) closeModal(); else closeDownloads(); } });
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') { if (modalOpen) closeModal(); else closeDownloads(); }
+  // ⌘⌥V toggles the voice call from inside the shell. The same chord is
+  // registered as a global hotkey in the main process for unfocused use.
+  if (event.key.toLowerCase() === 'v' && event.metaKey && event.altKey && !event.shiftKey && !event.ctrlKey) { event.preventDefault(); command('voice-call'); }
+});
 $('splitter').onpointerdown = (event) => {
   const startX = event.clientX, startWidth = state.chatWidth; $('splitter').setPointerCapture(event.pointerId); $('splitter').classList.add('active');
   const sidebar = document.querySelector('.sidebar');

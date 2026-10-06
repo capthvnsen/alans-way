@@ -78,6 +78,9 @@ function renderAgentBubble() {
 function receiveTelegramActivity(update) {
   if (!update || typeof update !== 'object') return;
   switch (update.type) {
+    case 'message':
+      ipcRenderer.send('telegram:message', { chatId: update.chatId, id: update.id, text: update.text, edited: update.edited === true });
+      return;
     case 'ready': activityWorkerReady = true; break;
     case 'unavailable': activityWorkerReady = false; break;
     case 'connection': activityNetworkReady = update.ready === true; break;
@@ -145,6 +148,25 @@ if (location.origin === 'https://web.telegram.org' && location.pathname.startsWi
                     if (typeof botId !== 'string' || botId !== actorId || !/^\d{1,20}$/.test(botId)) break;
                     emit({ type: 'ready' });
                     emit({ type: 'action', botId, actorId, action: update.typingStatus === undefined ? 'cancel' : update.typingStatus?.type });
+                    break;
+                  }
+                  case 'updateNewMessage':
+                  case 'updateNewChannelMessage':
+                  case 'updateEditMessage':
+                  case 'updateEditChannelMessage': {
+                    isApiWorker = true;
+                    const message = update.message;
+                    if (!message || typeof message !== 'object') break;
+                    // Private bot DMs only: chat and sender are the same id, so
+                    // group traffic and the user's own messages never leave
+                    // this world — the work ring in renderAgentBubble is enough.
+                    const chatId = String(message.chatId ?? '');
+                    const senderId = String(message.senderId ?? message.fromId ?? '');
+                    if (!botChatIds.has(chatId) || senderId !== chatId) break;
+                    const text = message.content?.text?.text ?? (typeof message.message === 'string' ? message.message : '');
+                    if (typeof text !== 'string') break;
+                    emit({ type: 'message', chatId, id: message.id,
+                      text: text.slice(0, 8000), edited: update['@type'].startsWith('updateEdit') || !!message.editDate });
                     break;
                   }
                 }

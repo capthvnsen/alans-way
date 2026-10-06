@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session } = require('electron');
+const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, globalShortcut, powerMonitor, systemPreferences } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -15,6 +15,9 @@ const { createVpsBrowser } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
 const { createComputerSnapshots } = require('./computer-snapshot.cjs');
+const { createTelegramSend } = require('./telegram-send.cjs');
+const { createVoiceMode } = require('./voice-mode.cjs');
+const { registerVoiceScheme, installVoiceProtocol } = require('./voice-protocol.cjs');
 const { ElectronChromeExtensions } = require('electron-chrome-extensions');
 
 // The host computer driver runs in the app's own session — the only place it
@@ -28,6 +31,7 @@ const HOST_LABEL = process.platform === 'darwin' ? 'mac' : process.platform === 
 const isLocalHost = (value) => value === undefined || value === 'mac' || value === 'windows' || value === 'local' || value === HOST_LABEL;
 
 app.enableSandbox();
+registerVoiceScheme();
 app.setName("alans-way-localapp");
 if (process.platform === 'win32') app.setAppUserModelId('app.alans-way.localapp');
 // Keep existing sessions and connector discovery stable when the product name changes.
@@ -72,10 +76,14 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
 });
 const downloadStore = createDownloadStore({ getPreferences: () => prefs, savePreferences, onChanged: () => broadcast(),
   shell, existsSync: fs.existsSync, downloadsPath: () => app.getPath('downloads') });
+const telegramSend = createTelegramSend({ getView: () => telegramView, openBot: (id) => openBot(id) });
+const voiceMode = createVoiceMode({ getView: () => telegramView, telegramSend, openBot: (id) => openBot(id),
+  hostWindow: () => backgroundHost(), getPrefs: () => prefs, savePrefs: savePreferences, broadcast,
+  electron: { WebContentsView, systemPreferences } });
 let pointerTimer, activityTimer, idleTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [],
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], voice: {},
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -153,7 +161,8 @@ function getState() {
     autoOpenLinks: prefs.autoOpenLinks !== false,
     activeTabId, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
-    fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
+    fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError },
+    voice: voiceMode.describe() };
 }
 let lastBotWorkSignature = '';
 // Bots with agent tabs that are dispatching, navigating, or recently acted
@@ -492,39 +501,11 @@ function registerIpc() {
         if (!tab || !/^https?:\/\//i.test(url)) throw new Error('Open a web page first.');
         const title = (tab.view.webContents.getTitle() || url).slice(0, 300);
         if (!prefs.selectedBotId) throw new Error('Select a bot in the sidebar first — that is who the page goes to.');
-        if (!telegramView || telegramView.webContents.isDestroyed()) throw new Error('Telegram is not loaded.');
-        const tg = telegramView.webContents;
-        const chatHash = new RegExp(`#${prefs.selectedBotId.replace(/\W/g, '')}(?:_|/|$)`);
-        if (!chatHash.test(tg.getURL())) await openBot(prefs.selectedBotId);
-        if (tg.isLoading()) throw new Error('Telegram is still loading — try again in a moment.');
-        let point = null;
-        for (let i = 0; i < 16 && !point; i++) {
-          // A stopped or never-committed page can leave executeJavaScript pending
-          // forever; bound the probe so the button reports instead of hanging.
-          point = await Promise.race([
-            tg.executeJavaScript(`(() => {
-              const el = document.querySelector('#editable-message-text') || document.querySelector('.Composer [contenteditable="true"], #MiddleColumn [contenteditable="true"]');
-              if (!el || !el.offsetParent) return null;
-              const r = el.getBoundingClientRect();
-              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-            })()`).catch(() => null),
-            new Promise(resolve => setTimeout(() => resolve(null), 3000)),
-          ]);
-          if (!point) await new Promise(resolve => setTimeout(resolve, 250));
-        }
-        if (!point) throw new Error('The bot chat opened but no message box appeared.');
-        if (!tg.debugger.isAttached()) tg.debugger.attach('1.3');
-        try {
-          await tg.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
-          await tg.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
-          await tg.debugger.sendCommand('Input.insertText', { text: `${title}\n${url}` });
-          const enter = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
-          await tg.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', ...enter });
-          await tg.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', ...enter });
-        }
-        finally { tg.debugger.detach(); }
+        await telegramSend.send(prefs.selectedBotId, `${title}\n${url}`);
         break;
       }
+      case 'voice-call': case 'voice-dictation': case 'voice-mute': case 'voice-interrupt': case 'voice-settings':
+        return voiceMode.command(command, value);
       case 'handoff': return handoffTab(value);
       case 'grant-tab': {
         if (isVpsTab(value.id)) { await remoteRequest(value.id,'grant',value); break; }
@@ -710,6 +691,19 @@ function registerIpc() {
   ipcMain.on('telegram:activity', (event, packet) => {
     if (event.sender !== telegramView?.webContents || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith(TELEGRAM)) return;
     if (activity.ingest(packet)) broadcast();
+    if (packet?.type === 'action') voiceMode.onBotAction(packet.botId, packet.action);
+  });
+  // Voice mode reads bot replies from the same trusted origin check; message
+  // text only ever flows for chats the sidebar already knows are bots.
+  ipcMain.on('telegram:message', (event, value) => {
+    if (event.sender !== telegramView?.webContents || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith(TELEGRAM)) return;
+    if (!value || typeof value.chatId !== 'string' || typeof value.text !== 'string' || value.text.length > 8000) return;
+    voiceMode.onBotMessage({ chatId: value.chatId, id: value.id, text: value.text, edited: value.edited === true });
+  });
+  ipcMain.on('voice:event', (event, value) => {
+    if (!voiceMode.view || event.sender !== voiceMode.view.webContents) return;
+    if (!value || typeof value.type !== 'string' || value.type.length > 40) return;
+    voiceMode.onViewEvent(value);
   });
   // The preload pulls the work map after attaching its listener so a send that
   // raced a reload can never wedge the signature dedup.
@@ -1341,10 +1335,16 @@ else {
     });
     extensionStore = createExtensionStore({ root: app.getPath('userData'), session: browserSession, dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences, onChanged: broadcast,
       canInstall: frame => [...tabs.values()].some(tab => tab.id === activeTabId && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
+    installVoiceProtocol();
+    // Lid close kills the microphone — end any live call cleanly instead of
+    // leaving Hermes waiting on a turn that can never arrive.
+    powerMonitor.on('suspend', () => voiceMode.endCall());
+    powerMonitor.on('shutdown', () => voiceMode.endCall());
+    globalShortcut.register('CommandOrControl+Alt+V', () => { voiceMode.command('voice-call').catch(() => {}); });
     await extensionStore.installStore(); createWindow(); await extensionStore.restore(); broadcast();
   });
   app.on('second-instance', () => { win?.show(); win?.focus(); });
   app.on('activate', () => { win?.show(); win?.focus(); });
-  app.on('before-quit', () => { isQuitting = true; clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(vpsTimer); savePreferences(); apiServer?.close(); });
+  app.on('before-quit', () => { isQuitting = true; clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(vpsTimer); savePreferences(); apiServer?.close(); globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

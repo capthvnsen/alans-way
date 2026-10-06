@@ -10,3 +10,5 @@ connection.json
 src/preload.bundle.cjs
 
 src/telegram-preload.bundle.cjs
+src/voice-preload.bundle.cjs
+src/voice/*.bundle.js
