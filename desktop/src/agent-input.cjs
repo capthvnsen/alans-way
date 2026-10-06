@@ -23,6 +23,13 @@ function locateElement(selectorSource) {
       while ((node = walker.nextNode()) && n++ < 4000) {
         if (node.shadowRoot && !seen.has(node.shadowRoot)) { seen.add(node.shadowRoot); queue.push(node.shadowRoot); }
       }
+      let frames = [];
+      try { frames = root.querySelectorAll('iframe'); } catch {}
+      for (const frame of frames) {
+        let doc = null;
+        try { doc = frame.contentDocument; } catch {}
+        if (doc && !seen.has(doc)) { seen.add(doc); queue.push(doc); }
+      }
     }
     return null;
   })()`;
@@ -245,15 +252,24 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
           el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
           await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
           void el.offsetHeight;
+          const view = el.ownerDocument.defaultView || window;
+          let ox = 0, oy = 0, parent = view;
+          while (parent && parent !== window) {
+            const frame = parent.frameElement;
+            if (!frame) break;
+            const fr = frame.getBoundingClientRect();
+            ox += fr.left; oy += fr.top;
+            parent = frame.ownerDocument.defaultView;
+          }
           const r = el.getBoundingClientRect();
-          const l = Math.max(0, r.left), t = Math.max(0, r.top), rr = Math.min(innerWidth, r.right), b = Math.min(innerHeight, r.bottom);
+          const l = Math.max(0, r.left), t = Math.max(0, r.top), rr = Math.min(view.innerWidth, r.right), b = Math.min(view.innerHeight, r.bottom);
           const w = rr - l, h = b - t;
           if (!r.width || !r.height || w <= 0 || h <= 0) return { fail: 'no visible area' };
           let point = null, coveredBy = '';
           for (const [fx, fy] of [[.5,.5],[.5,.25],[.5,.75],[.25,.5],[.75,.5],[.2,.2],[.8,.2],[.2,.8],[.8,.8]]) {
-            const x = Math.round(l + w * fx), y = Math.round(t + h * fy);
-            const hit = document.elementFromPoint(x, y);
-            if (hit && (hit === el || el.contains(hit))) { point = { x, y }; break; }
+            const lx = Math.round(l + w * fx), ly = Math.round(t + h * fy);
+            const hit = view.document.elementFromPoint(lx, ly);
+            if (hit && (hit === el || el.contains(hit))) { point = { x: lx + ox, y: ly + oy }; break; }
             if (hit && !coveredBy && !el.contains(hit)) coveredBy = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/)[0] : '');
           }
           if (!point) return { fail: coveredBy ? 'covered by ' + coveredBy : 'no clickable point' };
@@ -262,10 +278,10 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
             el.focus({ preventScroll: true });
             if (${body.action === 'type'}) {
               if (typeof el.select === 'function') el.select();
-              else { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+              else { const doc = el.ownerDocument; const range = doc.createRange(); range.selectNodeContents(el); const s = doc.getSelection(); s.removeAllRanges(); s.addRange(range); }
             }
           }
-          return { ...point, hl: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) } };
+          return { ...point, hl: { x: Math.round(r.left + ox), y: Math.round(r.top + oy), width: Math.round(r.width), height: Math.round(r.height) } };
         })()`);
         check();
         if (!point || point.fail) throw fail(`Element is ${point ? point.fail : 'unavailable'} — request a fresh snapshot or use a different selector.`);
