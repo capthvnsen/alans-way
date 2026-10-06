@@ -68,7 +68,7 @@ Fetch https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-pro
 2. Click **Copy setup command** and paste it in a terminal on the VPS — one bootstrap installs the plugin, wires the browser, restarts the gateway, and offers to bind your primary bot. (Never configured Telegram on Hermes? The bootstrap walks you through the QR-code setup.)
 3. Click **Test agent path** — the app verifies VPS → Mac SSH end-to-end.
 
-The bot then has a `workspace_browser` tool that opens tabs you can watch.
+The bot then has a `cua_alans_way` tool that opens tabs you can watch.
 The plugin's `workspace-setup` skill teaches installed agents the same playbook.
 
 ## Upgrading

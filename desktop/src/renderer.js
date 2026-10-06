@@ -163,6 +163,81 @@ function showExtensions() {
   body.append(element('p', 'settings-note', 'This browser is Chromium, not Chrome — Google sync and Chrome’s built-in password manager are not included. For passwords and passkeys, install your manager’s extension from the Web Store and sign in inside it.'));
   renderExtensions();
 }
+function formatBytes(bytes) {
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = Number(bytes) || 0, unit = 0;
+  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit++; }
+  return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
+}
+function downloadStatus(item) {
+  if (item.state === 'progressing') {
+    if (item.paused) return `Paused · ${formatBytes(item.receivedBytes)}${item.totalBytes ? ` of ${formatBytes(item.totalBytes)}` : ''}`;
+    if (item.totalBytes > 0) return `${Math.min(100, Math.round(item.receivedBytes / item.totalBytes * 100))}% of ${formatBytes(item.totalBytes)}`;
+    return `Downloading · ${formatBytes(item.receivedBytes)}`;
+  }
+  if (item.state === 'completed') return formatBytes(item.totalBytes || item.receivedBytes);
+  if (item.state === 'interrupted') return 'Interrupted';
+  return 'Cancelled';
+}
+function closeDownloads() {
+  $('downloads-menu').classList.add('hidden');
+  $('downloads-button').setAttribute('aria-expanded', 'false');
+}
+function renderDownloads() {
+  const items = state?.downloads || [];
+  $('downloads-button').classList.toggle('active', items.some(item => item.state === 'progressing'));
+  const menu = $('downloads-menu');
+  if (menu.classList.contains('hidden')) return;
+  const signature = JSON.stringify(items);
+  if (menu.dataset.signature === signature) return;
+  menu.dataset.signature = signature; menu.replaceChildren();
+  const head = element('div', 'downloads-head');
+  head.append(element('span', 'downloads-title', 'Downloads'));
+  if (items.some(item => item.state !== 'progressing')) {
+    const clear = element('button', 'downloads-clear', 'Clear all');
+    clear.onclick = () => command('clear-downloads'); head.append(clear);
+  }
+  menu.append(head);
+  if (!items.length) menu.append(element('p', 'downloads-empty', 'No downloads yet.'));
+  for (const item of items.slice(0, 20)) {
+    const row = element('div', 'download-row'); row.setAttribute('role', 'menuitem');
+    row.append(element('span', 'download-badge', (item.name || '?').trim().charAt(0).toUpperCase() || '?'));
+    const copy = element('span', 'download-copy'), name = element('span', 'download-name', item.name || 'download');
+    name.title = item.path || item.name;
+    copy.append(name, element('span', 'download-status', [item.source, downloadStatus(item)].filter(Boolean).join(' · ')));
+    if (item.state === 'progressing' && item.totalBytes > 0) {
+      const bar = element('span', 'download-progress'), fill = element('i');
+      fill.style.width = `${Math.min(100, item.receivedBytes / item.totalBytes * 100)}%`;
+      bar.append(fill); copy.append(bar);
+    }
+    row.append(copy);
+    if (item.state === 'progressing') {
+      const pause = element('button', 'download-action', item.paused ? 'Resume' : 'Pause');
+      pause.title = `${item.paused ? 'Resume' : 'Pause'} ${item.name}`;
+      pause.onclick = () => command('pause-download', { id: item.id, paused: !item.paused });
+      const cancel = element('button', 'download-action', 'Cancel');
+      cancel.title = `Cancel ${item.name}`; cancel.setAttribute('aria-label', cancel.title);
+      cancel.onclick = () => command('cancel-download', { id: item.id });
+      row.append(pause, cancel);
+    } else {
+      if (item.state === 'completed') {
+        const open = () => { command('open-download', { id: item.id }); closeDownloads(); };
+        row.classList.add('openable'); row.tabIndex = 0; row.onclick = open;
+        row.onkeydown = (event) => { if (event.key === 'Enter') open(); };
+      }
+      const reveal = element('button', 'download-action', 'Show in folder');
+      reveal.title = `Show ${item.name} in Finder`; reveal.setAttribute('aria-label', reveal.title);
+      reveal.onclick = (event) => { event.stopPropagation(); command('show-download', { id: item.id }); closeDownloads(); };
+      row.append(reveal);
+    }
+    menu.append(row);
+  }
+  if (items.length) {
+    const footer = element('div', 'downloads-foot'), all = element('button', 'download-action', 'Show all downloads');
+    all.onclick = () => { command('downloads-folder'); closeDownloads(); };
+    footer.append(all); menu.append(footer);
+  }
+}
 function render(next) {
   state = next;
   window.HermesAvatars.update(state);
@@ -181,7 +256,7 @@ function render(next) {
     $('presence-status').textContent = window.HermesAvatars.activityLabel(bot.activity);
     $('presence-status').classList.toggle('active', window.HermesAvatars.isActive(bot.activity));
   }
-  renderBots(); renderTabs(); renderSettingsBots(); renderSitePermissions(); renderExtensions();
+  renderBots(); renderTabs(); renderSettingsBots(); renderSitePermissions(); renderExtensions(); renderDownloads();
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
   const remote = state.activeTabId==='vps';
   $('vm-toggle').title = remote ? 'Return to browser' : 'Expand virtual desktop';
@@ -465,6 +540,7 @@ $('sort-menu').onclick = (event) => {
 };
 document.addEventListener('click', (event) => {
   if (!event.target.closest('#sort-menu') && !event.target.closest('#sort-bots')) { $('sort-menu').classList.add('hidden'); $('sort-bots').setAttribute('aria-expanded', 'false'); }
+  if (!event.target.closest('#downloads-menu') && !event.target.closest('#downloads-button')) closeDownloads();
 });
 $('presence-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onclick = () => showAvatarEditor();
@@ -475,6 +551,13 @@ $('preview-hide').onclick = () => command('settings', { preview: false });
 $('preview-chip').onclick = () => command('settings', { preview: true });
 wirePreviewDrag();
 $('extensions-button').onclick = showExtensions;
+$('downloads-button').onclick = (event) => {
+  event.stopPropagation();
+  const menu = $('downloads-menu'), open = menu.classList.contains('hidden');
+  menu.classList.toggle('hidden', !open);
+  $('downloads-button').setAttribute('aria-expanded', String(open));
+  if (open) { delete menu.dataset.signature; renderDownloads(); }
+};
 $('new-tab').onclick = async () => { await command('create-tab'); $('address').focus(); };
 function submitUrl(event, inputId) { event.preventDefault(); const url = $(inputId).value.trim(); if (!url) return; if (state.tabs.some((tab) => tab.id === state.activeTabId)) command('navigate', { id: state.activeTabId, url }); else command('create-tab', { url }); }
 $('address-form').onsubmit = (event) => submitUrl(event, 'address');
@@ -486,7 +569,7 @@ $('ask-bot').onclick = () => command('share-page');
 
 $('modal-close').onclick = closeModal;
 $('modal').onclick = (event) => { if (event.target === $('modal')) closeModal(); };
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && modalOpen) closeModal(); });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { if (modalOpen) closeModal(); else closeDownloads(); } });
 $('splitter').onpointerdown = (event) => {
   const startX = event.clientX, startWidth = state.chatWidth; $('splitter').setPointerCapture(event.pointerId); $('splitter').classList.add('active');
   const sidebar = document.querySelector('.sidebar');

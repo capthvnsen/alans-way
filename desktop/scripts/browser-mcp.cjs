@@ -19,13 +19,13 @@ const file = (connectionIndex>=0?process.argv[connectionIndex+1]:undefined) || p
 const objectSchema = (properties = {}, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = { type: 'string' };
 const tools = [
-  { name: 'workspace_browser_status', description: 'Check the configured browser host and available hosts. Inspect host before acting; an unavailable computer is never replaced implicitly by another. Host selection is decided by the connector at spawn and re-converges on its own when Mac availability flips — on a tool error just retry once, and if it still fails report it; never restart, kill, or edit connector processes to steer the host.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
-  { name: 'workspace_browser_tabs', description: 'List this bot’s owned Chromium tabs with execution host and current control epochs. Mac and VPS logins are separate; bots on a host share sign-ins.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
-  { name: 'workspace_browser_open', description: 'Open a tab owned by this bot — the default surface for web-shaped work; use it whenever a task needs a site or web app with no API. No human handoff, assignment, grant, or approval is ever needed: the call itself creates your tab. On the Mac connector, defaults to Mac — keep it there whenever the Mac is reachable; host vps is only for work that must outlive the Mac sleeping or when the user names the VPS. A native VPS connector serves only VPS. Shared sign-ins within a host, separate tab ownership and input. Opens in the background.', inputSchema: objectSchema({ url: string, host:{type:'string',enum:['mac','vps']}, background: { type: 'boolean', default: true } }, ['url']), annotations: { readOnlyHint: false, openWorldHint: true } },
-  { name: 'workspace_browser_snapshot', description: 'Read a tab: bounded page text plus interactive elements in elements[] ({ref, role, name, …}). role is usually the lowercase tag (a, input, button) or an ARIA role. loading:true means the document was still parsing after a 2s grace. Refs cover the top document only; use screenshot for iframe content. Pass since=<last generation> for a cheap {unchanged:true}. Request a fresh snapshot after actions that change the page; action responses include generation/url/title/loading so you can often skip one.', inputSchema: objectSchema({ tabId: string, maxChars: { type: 'integer', description: 'Cap on returned page text, default 6000, max 20000.' }, maxElements: { type: 'integer', description: 'Cap on interactive element refs, default 150, max 300.' }, since: { type: 'integer', description: 'Generation from the previous snapshot; returns {unchanged:true} when content is identical.' } }, ['tabId']), annotations: { readOnlyHint: true } },
-  { name: 'workspace_browser_screenshot', description: 'Capture the tab viewport as an image file. Hermes delivers it as MEDIA:<path> — run a vision step on that path to see pixels. Defaults to compact jpeg; png keeps alpha.', inputSchema: objectSchema({ tabId: string, format: { type: 'string', enum: ['jpeg', 'png', 'webp'], description: 'Image format, default jpeg.' }, quality: { type: 'integer', description: 'jpeg/webp quality 1-100, default 70.' }, maxWidth: { type: 'integer', description: 'Downscale cap on image width in px, default 1280.' } }, ['tabId']), annotations: { readOnlyHint: true } },
-  { name: 'workspace_browser_close', description: 'Close a tab this bot owns. Pass the current epoch. Required to free VPS tabs (global cap 40).', inputSchema: objectSchema({ tabId: string, epoch: { type: 'integer' } }, ['tabId', 'epoch']), annotations: { readOnlyHint: false, openWorldHint: true } },
-  { name: 'workspace_computer_apps', description: 'List Mac apps the agent can drive in the background. The frontmost app and Keychain are off limits. Web work stays on workspace_browser. Never moves the human cursor.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
+  { name: 'cua_alans_way_status', description: 'Check the configured browser host and available hosts. Inspect host before acting; an unavailable computer is never replaced implicitly by another. Host selection is decided by the connector at spawn and re-converges on its own when Mac availability flips — on a tool error just retry once, and if it still fails report it; never restart, kill, or edit connector processes to steer the host.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
+  { name: 'cua_alans_way_tabs', description: 'List this bot’s owned Chromium tabs with execution host and current control epochs. Mac and VPS logins are separate; bots on a host share sign-ins.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
+  { name: 'cua_alans_way_open', description: 'Open a tab owned by this bot — the default surface for web-shaped work; use it whenever a task needs a site or web app with no API. No human handoff, assignment, grant, or approval is ever needed: the call itself creates your tab. On the Mac connector, defaults to Mac — keep it there whenever the Mac is reachable; host vps is only for work that must outlive the Mac sleeping or when the user names the VPS. A native VPS connector serves only VPS. Shared sign-ins within a host, separate tab ownership and input. Opens in the background.', inputSchema: objectSchema({ url: string, host:{type:'string',enum:['mac','vps']}, background: { type: 'boolean', default: true } }, ['url']), annotations: { readOnlyHint: false, openWorldHint: true } },
+  { name: 'cua_alans_way_snapshot', description: 'Read a tab: bounded page text plus interactive elements in elements[] ({ref, role, name, …}). role is usually the lowercase tag (a, input, button) or an ARIA role. loading:true means the document was still parsing after a 2s grace. Refs cover the top document only; use screenshot for iframe content. Pass since=<last generation> for a cheap {unchanged:true}. Request a fresh snapshot after actions that change the page; action responses include generation/url/title/loading so you can often skip one.', inputSchema: objectSchema({ tabId: string, maxChars: { type: 'integer', description: 'Cap on returned page text, default 6000, max 20000.' }, maxElements: { type: 'integer', description: 'Cap on interactive element refs, default 150, max 300.' }, since: { type: 'integer', description: 'Generation from the previous snapshot; returns {unchanged:true} when content is identical.' } }, ['tabId']), annotations: { readOnlyHint: true } },
+  { name: 'cua_alans_way_screenshot', description: 'Capture the tab viewport as an image file. Hermes delivers it as MEDIA:<path> — run a vision step on that path to see pixels. Defaults to compact jpeg; png keeps alpha.', inputSchema: objectSchema({ tabId: string, format: { type: 'string', enum: ['jpeg', 'png', 'webp'], description: 'Image format, default jpeg.' }, quality: { type: 'integer', description: 'jpeg/webp quality 1-100, default 70.' }, maxWidth: { type: 'integer', description: 'Downscale cap on image width in px, default 1280.' } }, ['tabId']), annotations: { readOnlyHint: true } },
+  { name: 'cua_alans_way_close', description: 'Close a tab this bot owns. Pass the current epoch. Required to free VPS tabs (global cap 40).', inputSchema: objectSchema({ tabId: string, epoch: { type: 'integer' } }, ['tabId', 'epoch']), annotations: { readOnlyHint: false, openWorldHint: true } },
+  { name: 'workspace_computer_apps', description: 'List Mac apps the agent can drive in the background. The frontmost app and Keychain are off limits. Web work stays on cua_alans_way. Never moves the human cursor.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
   { name: 'workspace_computer_snapshot', description: 'Read one background Mac app: elements[] with ref, role, name, and screen x,y,width,height. Prefer press by ref. Use click or drag with those coordinates only when the control is a canvas. Take a fresh snapshot after the app changes.', inputSchema: objectSchema({ pid: { type: 'integer' } }, ['pid']), annotations: { readOnlyHint: true } },
   { name: 'workspace_computer_action', description: 'Act in a background Mac app without moving the human cursor. press uses a snapshot ref. click and drag use snapshot coordinates. batch runs up to 25 steps. Refuses the frontmost app, Keychain, and password fields.', inputSchema: objectSchema({
     pid: { type: 'integer' },
@@ -34,7 +34,7 @@ const tools = [
     x: { type: 'number' }, y: { type: 'number' }, x2: { type: 'number' }, y2: { type: 'number' },
     steps: { type: 'array', items: { type: 'object' }, description: 'For batch: up to 25 press, click, or drag steps.' },
   }, ['pid', 'action']), annotations: { readOnlyHint: false } },
-  { name: 'workspace_browser_action', description: 'Use the bot’s own cursor and keyboard in its assigned Chromium tab, including background tabs; never moves the human’s system mouse or types into another tab. Include current epoch. move/click accept a fresh ref, a selector, or viewport x,y; type replaces the text of a fresh ref or selector; press sends a key to that tab (optional ref/selector); scroll uses x,y as deltas. batch runs up to 25 steps in one call — prefer it; use selectors or refs from one snapshot (refs stay valid for the whole batch unless the page navigates). eval runs JS in the page; keep results small. wait blocks until a selector exists, text appears, or the url contains a substring — after navigate, wait on url or a new-page selector, not body alone. viewport sets layout size. cdp sends an allowlisted DevTools command. Each result includes generation, url, title, loading. Three identical failing calls pause this connector ~60s — change approach instead of retrying the same call. Stops during human takeover. claim/release change control; claim returns a fresh epoch. Do not retry an uncertain submission; inspect the page first.', inputSchema: objectSchema({
+  { name: 'cua_alans_way_action', description: 'Use the bot’s own cursor and keyboard in its assigned Chromium tab, including background tabs; never moves the human’s system mouse or types into another tab. Include current epoch. move/click accept a fresh ref, a selector, or viewport x,y; type replaces the text of a fresh ref or selector; press sends a key to that tab (optional ref/selector); scroll uses x,y as deltas. batch runs up to 25 steps in one call — prefer it; use selectors or refs from one snapshot (refs stay valid for the whole batch unless the page navigates). eval runs JS in the page; keep results small. wait blocks until a selector exists, text appears, or the url contains a substring — after navigate, wait on url or a new-page selector, not body alone. viewport sets layout size. cdp sends an allowlisted DevTools command. Each result includes generation, url, title, loading. Three identical failing calls pause this connector ~60s — change approach instead of retrying the same call. Stops during human takeover. claim/release change control; claim returns a fresh epoch. Do not retry an uncertain submission; inspect the page first.', inputSchema: objectSchema({
     tabId: string, epoch: { type: 'integer' }, action: { type: 'string', enum: ['navigate', 'move', 'click', 'type', 'press', 'scroll', 'back', 'forward', 'reload', 'batch', 'eval', 'wait', 'viewport', 'cdp', 'claim', 'release'] }, ref: string, text: string, url: string, key: string,
     modifiers: { type: 'array', items: { type: 'string', enum: ['shift', 'control', 'alt', 'meta'] } }, x: { type: 'number', description: 'Viewport x for move/click; horizontal scroll delta for scroll.' }, y: { type: 'number', description: 'Viewport y for move/click; vertical scroll delta for scroll.' },
     steps: { type: 'array', items: { type: 'object' }, description: 'For batch: up to 25 action objects run sequentially; execution stops at the first error.' },
@@ -67,22 +67,22 @@ async function request(endpoint, method = 'GET', body, epoch) {
   if (!response.ok) throw new Error(data.error || `Browser request failed (${response.status}).`);
   return data;
 }
-const server = new Server({ name: 'hermes-workspace-browser', version: '0.1.0' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'hermes-cua-alans-way', version: '0.1.0' }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
   try {
     const args = params.arguments || {}; let result;
     const tabPath = `/v1/tabs/${encodeURIComponent(args.tabId || '')}`;
     switch (params.name) {
-      case 'workspace_browser_status': result = await request('/v1/status'); break;
-      case 'workspace_browser_tabs': result = await request('/v1/tabs'); break;
-      case 'workspace_browser_open': result = await request('/v1/tabs', 'POST', { url: args.url, host:args.host, background: args.background !== false }); break;
-      case 'workspace_browser_snapshot': {
+      case 'cua_alans_way_status': result = await request('/v1/status'); break;
+      case 'cua_alans_way_tabs': result = await request('/v1/tabs'); break;
+      case 'cua_alans_way_open': result = await request('/v1/tabs', 'POST', { url: args.url, host:args.host, background: args.background !== false }); break;
+      case 'cua_alans_way_snapshot': {
         const q = new URLSearchParams();
         for (const key of ['maxChars', 'maxElements', 'since']) if (Number.isInteger(args[key])) q.set(key, args[key]);
         result = await request(`${tabPath}/snapshot${q.size ? '?' + q : ''}`); break;
       }
-      case 'workspace_browser_screenshot': {
+      case 'cua_alans_way_screenshot': {
         const q = new URLSearchParams();
         if (typeof args.format === 'string') q.set('format', args.format);
         for (const key of ['quality', 'maxWidth']) if (Number.isInteger(args[key])) q.set(key, args[key]);
@@ -90,7 +90,7 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
         return { content: [{ type: 'image', data: shot.base64, mimeType: shot.mimeType },
           { type: 'text', text: JSON.stringify({ viewport: shot.viewport, note: 'Pointer coordinates use CSS viewport pixels; the image is downscaled to maxWidth, so scale screenshot pixels by viewport.width / image width.' }) }] };
       }
-      case 'workspace_browser_close':
+      case 'cua_alans_way_close':
         result = await request(tabPath, 'DELETE', undefined, args.epoch);
         break;
       case 'workspace_computer_apps': result = { apps: computer.apps() }; break;
@@ -113,7 +113,7 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
         } else result = step(args);
         break;
       }
-      case 'workspace_browser_action': {
+      case 'cua_alans_way_action': {
         const { tabId, ...body } = args;
         result = body.action === 'claim' || body.action === 'release'
           ? await request(`${tabPath}/control`, 'POST', { controller: body.action === 'claim' ? 'agent' : 'human' })

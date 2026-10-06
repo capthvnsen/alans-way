@@ -122,7 +122,7 @@ without a terminal (most agents), add `--non-interactive --bind --proactive
 `--profile <name>` for any profile other than `default`. It installs the
 plugin and gateway hook, clones
 this repository for the cloud browser, writes the browser services, configures
-the `workspace_browser` connector, restarts the gateway and offers to bind the
+the `cua_alans_way` connector, restarts the gateway and offers to bind the
 primary bot. Answer its prompts:
 
 - "Run 'hermes gateway setup' now?" appears only when no Telegram bot token is
@@ -177,7 +177,7 @@ desktop connection** in the app.
 | Stage 1 check: `Cannot find module …connection.json` | The app is not running or never started its API. Open it and retry. |
 | Mac → VPS check prints `Tailscale SSH requires an additional check` or hangs | The VPS runs Tailscale SSH, so the tailnet's SSH rules (not keys) decide logins, and "check" mode needs a browser. Have the human change the rule for that user to "accept" in the Tailscale admin console → Access controls, or run `tailscale set --ssh=false` if they don't use Tailscale SSH. |
 | `Host key verification failed` | A host key is not pinned on the side that connects. Re-run the stage 2 `connect-mac.sh` line (pins the VPS on the Mac) and the `known_hosts` line on the VPS. |
-| Verify says `workspace_browser timeout …s is below 120s` | Long browser actions get cut off. Re-run stage 3 setup, or set `timeout: 120` on the block and restart the gateway. |
+| Verify says `cua_alans_way timeout …s is below 120s` | Long browser actions get cut off. Re-run stage 3 setup, or set `timeout: 120` on the block and restart the gateway. |
 | Bot opens tabs on the VPS while the Mac is awake | The Mac app is closed, or SSH from the VPS fails. Re-run the stage 2 check. |
 | Browser tool errors right after setup | The gateway is still running old code. `hermes gateway restart`. |
 | `handoff_review_required` | A page moved between computers needs the human to check it, for example a login. Ask them. |
