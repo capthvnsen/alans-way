@@ -128,6 +128,9 @@ test('web snapshot names say on, off, and disabled', () => {
   assert.match(source, /name \+= ' on'/);
   assert.match(source, /name \+= ' off'/);
   assert.match(source, /name \+= ' disabled'/);
+  assert.match(source, /summary/);
+  assert.match(source, /name \+= ' open'/);
+  assert.match(source, /name \+= ' closed'/);
   assert.match(source, /disabled:!!el\.disabled/);
 });
 test('snapshot bounds clamp and never splice caller text into page code', () => {
