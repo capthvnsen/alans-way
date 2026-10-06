@@ -8,13 +8,27 @@ const { computerDecision } = require('./computer-policy.cjs');
 const source = path.join(__dirname, '..', 'scripts', 'mac-computer.swift');
 const binary = path.join(__dirname, '..', 'scripts', 'mac-computer');
 
+// The prebuilt helper ships in the app bundle; a connector copy pushed to the
+// home directory runs under that app's Electron, so execPath finds it.
+const bundled = path.join(path.dirname(process.execPath), '..', 'Resources', 'app', 'scripts', 'mac-computer');
+
+function pickHelper({ binary, source, bundled, exists, mtime, compile }) {
+  const fresh = exists(binary) && (!exists(source) || mtime(binary) >= mtime(source));
+  if (fresh) return binary;
+  if (exists(source) && compile()) return binary;
+  if (exists(bundled)) return bundled;
+  if (exists(binary)) return binary;
+  throw new Error('Could not build the Mac computer helper, and no prebuilt one ships with this app.');
+}
+
 function ensureBinary() {
   if (process.platform !== 'darwin') throw new Error('Mac computer use only runs on the Mac.');
-  const stale = !fs.existsSync(binary) || fs.statSync(source).mtimeMs > fs.statSync(binary).mtimeMs;
-  if (!stale) return binary;
-  const built = spawnSync('swiftc', ['-O', '-o', binary, source], { encoding: 'utf8' });
-  if (built.status !== 0) throw new Error((built.stderr || 'Could not build the Mac computer helper.').trim());
-  return binary;
+  return pickHelper({
+    binary, source, bundled,
+    exists: (p) => fs.existsSync(p),
+    mtime: (p) => fs.statSync(p).mtimeMs,
+    compile: () => spawnSync('swiftc', ['-O', '-o', binary, source], { encoding: 'utf8' }).status === 0,
+  });
 }
 
 // A connector spawned over SSH lives outside the guest's Aqua session, where
@@ -91,4 +105,4 @@ function screenshot(pid, maxWidth) {
   };
 }
 
-module.exports = { apps, snapshot, press, click, drag, type, screenshot, ensureBinary, driverCommand };
+module.exports = { apps, snapshot, press, click, drag, type, screenshot, ensureBinary, pickHelper, driverCommand };
