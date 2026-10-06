@@ -111,6 +111,20 @@ function settleSnapshot(tab, data, generation, since) {
   if (unchanged) for (let index = 1; index <= data.elements.length; index++) tab.refs.add(`s${base}-${index}`);
   return unchanged ? { unchanged: true, generation } : { ...data, generation };
 }
+// After an action, return the controls the model can act on next. Page text
+// stays out so the reply is the refs, not another full read.
+async function readControls(execute, tab) {
+  const generation = ++tab.generation;
+  let timer;
+  const result = await Promise.race([
+    Promise.resolve(execute(snapshotExpression(generation, { maxChars: 0, maxElements: 40, keep: tab.snapshotStamp?.base }))),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('controls')), 8000); }),
+  ]).finally(() => clearTimeout(timer));
+  if (!result || !Array.isArray(result.elements)) return null;
+  const settled = settleSnapshot(tab, result, generation);
+  if (!Array.isArray(settled.elements)) return { unchanged: true, generation: settled.generation };
+  return { elements: settled.elements, generation: settled.generation };
+}
 
 function checkpointExpression(includeDrafts) {
   return `(() => {
@@ -149,4 +163,4 @@ function restoreExpression(checkpoint) {
     return {verification:restored === c.drafts.length ? 'ready' : 'review_required',restored,skipped:c.drafts.length-restored};
   })()`;
 }
-module.exports = { snapshotExpression, settleSnapshot, checkpointExpression, restoreExpression };
+module.exports = { snapshotExpression, settleSnapshot, readControls, checkpointExpression, restoreExpression };

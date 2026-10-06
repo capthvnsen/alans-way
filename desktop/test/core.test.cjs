@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('../src/core.cjs');
-const { snapshotExpression, settleSnapshot } = require('../src/browser-page.cjs');
+const { snapshotExpression, settleSnapshot, readControls } = require('../src/browser-page.cjs');
 
 test('browser URLs reject executable and credential-bearing schemes', () => {
   for (const value of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,test', 'https://user:password@example.com']) assert.throws(() => normalizeUrl(value));
@@ -136,6 +136,18 @@ test('web snapshot names say on, off, and disabled', () => {
   assert.match(source, /name \+= ' current'/);
   assert.match(source, /item\.disabled = true/);
   assert.match(source, /\.slice\(0, 300\)/);
+});
+test('an action read returns controls and leaves the page text out', async () => {
+  const tab = { refs: new Set(), generation: 4 };
+  let code = '';
+  const reply = await readControls((expression) => {
+    code = expression;
+    return { url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's5-1', role: 'button', name: 'Go' }] };
+  }, tab);
+  assert.match(code, /text\.slice\(0, 0\)/);
+  assert.match(code, /items\.length >= 40/);
+  assert.deepEqual(reply, { elements: [{ ref: 's5-1', role: 'button', name: 'Go' }], generation: 5 });
+  assert.ok(tab.refs.has('s5-1'));
 });
 test('snapshot bounds clamp and never splice caller text into page code', () => {
   assert.match(snapshotExpression(3), /text\.slice\(0, 6000\)/);
