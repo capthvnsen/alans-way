@@ -302,6 +302,10 @@ app.whenReady().then(async () => {
   // Snapshot refs stay valid across an entire batch until navigation.
   const formTab = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/form` });
   const formSnap = await waitFor(() => api(`/v1/tabs/${formTab.id}/snapshot`), snap => snap.title === 'form');
+  await waitFor(async () => {
+    try { return (await api(`/v1/tabs/${formTab.id}/actions`, 'POST', { action: 'eval', code: 'typeof f.onsubmit', epoch: formTab.epoch })).value; }
+    catch { return ''; }
+  }, value => value === 'function');
   const refs = ['Field A', 'Field B', 'Field C', 'Send form'].map(name => formSnap.elements.find(el => el.name === name).ref);
   const filled = await api(`/v1/tabs/${formTab.id}/actions`, 'POST', { action: 'batch', epoch: formTab.epoch, steps: [
     { action: 'type', ref: refs[0], text: 'one' }, { action: 'type', ref: refs[1], text: 'two' }, { action: 'type', ref: refs[2], text: 'three' }, { action: 'click', ref: refs[3] },
