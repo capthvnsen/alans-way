@@ -219,6 +219,7 @@ test('opening a tab does not let the model pick the machine', () => {
   const mcp = require('node:fs').readFileSync(require('node:path').join(__dirname, '../scripts/browser-mcp.cjs'), 'utf8');
   assert.doesNotMatch(mcp, /host:args\.host/);
   assert.match(mcp, /Do not pass host/);
+  assert.match(mcp, /args\.maxChars : 2000/);
   assert.match(mcp, /reopen the same URL and continue/);
   assert.match(mcp, /same machine as the browser/);
 });
