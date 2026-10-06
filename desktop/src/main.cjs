@@ -1,11 +1,11 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, Menu, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session } = require('electron');
+const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('./core.cjs');
 const { createAvatarStore } = require('./avatar-store.cjs');
 const { createAgentInput, tintScript, botAccent } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -210,7 +210,8 @@ function configureContents(contents, isTelegram = false) {
   contents.setWindowOpenHandler((details) => {
     let url;
     const extensionPage = !isTelegram && isExtensionUrl(details.url);
-    try { url = extensionPage ? details.url : normalizeUrl(details.url); } catch { return { action: 'deny' }; }
+    const opener = [...tabs.values()].find((tab) => tab.view.webContents === contents);
+    try { url = extensionPage ? details.url : (opener?.controller === 'agent' ? agentPageUrl(details.url) : normalizeUrl(details.url)); } catch { return { action: 'deny' }; }
     if (isTelegram) {
       // Guest windows inherit the persist:telegram session, which the extension
       // host rejects — open Telegram links in our own browser-session tab.
@@ -223,18 +224,28 @@ function configureContents(contents, isTelegram = false) {
       return { action: 'deny' };
     }
     return { action: 'allow', createWindow: (options) => {
-      const parent = [...tabs.values()].find((tab) => tab.view.webContents === contents);
+      const parent = opener;
       const tab = createTab({ url, extensionPage, botId: parent?.botId || prefs.selectedBotId || 'shared', controller: extensionPage ? 'human' : parent?.controller || 'human', options, skipLoad: details.disposition !== 'background-tab', activate: parent?.controller !== 'agent' && details.disposition !== 'background-tab' });
       return tab.view.webContents;
     } };
   });
+  // Agent tabs follow redirects and in-page location changes without another
+  // API call, so the address check has to live on the navigation itself.
+  const blockAgentNavigation = (event, url) => {
+    const owner = [...tabs.values()].find((tab) => tab.view.webContents === contents);
+    if (owner?.controller !== 'agent') return;
+    try { agentPageUrl(url); } catch { event.preventDefault(); }
+  };
   contents.on('will-navigate', (event, url) => {
     if (isTelegram && !url.startsWith(TELEGRAM)) { event.preventDefault(); try { createTab({ url }); } catch {} }
-    else if (!isTelegram && !/^https?:\/\//i.test(url) && url !== 'about:blank') {
+    else if (!isTelegram) blockAgentNavigation(event, url);
+    if (isTelegram) return;
+    if (!isTelegram && !/^https?:\/\//i.test(url) && url !== 'about:blank') {
       if (!isExtensionUrl(url)) event.preventDefault();
       else { const tab = [...tabs.values()].find(item => item.view.webContents === contents); if (tab) { tab.extensionPage = true; changeController(tab.id, 'human'); } }
     }
   });
+  contents.on('will-redirect', (event, url) => { if (!isTelegram) blockAgentNavigation(event, url); });
   contents.on('before-input-event', (event, input) => {
     const targetTab = [...tabs.values()].find(tab => tab.view.webContents === contents);
     if (targetTab && agentInput.isDispatching(targetTab)) return;
@@ -685,7 +696,7 @@ function registerIpc() {
     if (now - (linkOpenedAt.get(chatId) || 0) < 3000) return;
     linkOpenedAt.set(chatId, now);
     try {
-      const normalized = normalizeUrl(url);
+      const normalized = agentPageUrl(url);
       const tab = createTab({ url: normalized, botId: chatId, controller: 'agent', activate: value.outgoing === true });
       recentLinkTabs.set(normalized, { tabId: tab.id, at: now });
       if (recentLinkTabs.size > 50) recentLinkTabs.clear();
@@ -963,6 +974,15 @@ async function performAction(tab, body, botId, depth = 0) {
       : body.action === 'forward' ? history.canGoForward() && (() => history.goForward())
       : () => wc.reload();
     if (go) await settleNavigation(wc, go);
+    // History entries predate the address check, so a back/forward/reload can
+    // land on one. will-navigate covers the cases Electron emits it for.
+    if (tab.controller === 'agent') {
+      try { agentPageUrl(wc.getURL()); }
+      catch (error) {
+        await wc.loadURL('about:blank').catch(() => {});
+        throw Object.assign(error, { status: 400 });
+      }
+    }
   } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, move, scroll, back, forward, reload, batch, eval, wait, viewport, cdp.'), { status: 400 });
   // Seal navigation-family results too: a takeover while the page settled
   // makes this response the human's page state.
@@ -1173,6 +1193,22 @@ else {
     try { parseRemoteUrl(prefs.remoteUrl); } catch { prefs.remoteUrl = ''; }
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
     const browserSession = session.fromPartition('persist:browser');
+    // Subresources (fetch, XHR, images) never hit will-navigate. Cancel the
+    // ones an agent tab aims at a blocked address; the human's tabs are not
+    // touched, and main-frame loads stay with the navigation hooks above.
+    browserSession.webRequest.onBeforeRequest((details, callback) => {
+      let cancel = false;
+      try {
+        const frame = details.webContentsId && webContents.fromId(details.webContentsId);
+        const owner = frame && [...tabs.values()].find((tab) => tab.view.webContents === frame);
+        if (owner?.controller === 'agent' && details.resourceType !== 'mainFrame') {
+          const parsed = new URL(details.url);
+          const barrier = (parsed.protocol === 'http:' || parsed.protocol === 'https:') && agentHostBarrier(parsed.hostname);
+          cancel = Boolean(barrier) && !(barrier === 'loopback' && process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK === '1');
+        }
+      } catch {}
+      callback(cancel ? { cancel: true } : {});
+    });
     extensionHost = new ElectronChromeExtensions({ license: 'GPL-3.0', session: browserSession,
       createTab: async details => { const tab = createTab({ url: details.url || 'about:blank', activate: details.active !== false, extensionPage: isExtensionUrl(details.url) }); return [tab.view.webContents, win]; },
       selectTab: wc => { if (isQuitting || registeringExtensionTab) return; const tab = [...tabs.values()].find(item => item.view.webContents === wc); if (tab) { activeTabId = tab.id; prefs.remoteControl = false; applyLayout(); broadcast(); } else BrowserWindow.fromWebContents(wc)?.show(); },

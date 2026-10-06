@@ -88,10 +88,12 @@ const CDP_METHOD_RE = /^(Page|Runtime|Input|Emulation|Network|DOM|DOMSnapshot|Ac
 // Storage are excluded from the allowed domains entirely.
 const CDP_BLOCKED = new Set([
   'Page.addScriptToEvaluateOnNewDocument', 'Page.removeScriptToEvaluateOnNewDocument',
-  'Page.setInterceptFileChooserDialog', 'Page.setDownloadBehavior', 'Page.getCookies',
+  'Page.setInterceptFileChooserDialog', 'Page.handleFileChooser', 'Page.setDownloadBehavior', 'Page.getCookies',
+  'Page.navigateToHistoryEntry',
   'DOM.setFileInputFiles',
   'Network.getCookies', 'Network.getAllCookies', 'Network.setCookie', 'Network.setCookies',
   'Network.clearBrowserCookies', 'Network.clearBrowserCache', 'Network.loadNetworkResource',
+  'Network.setRequestInterception', 'Network.continueInterceptedRequest',
 ]);
 function cdpMethodError(method) {
   if (CDP_BLOCKED.has(method)) return `cdp method ${method} is not available to agents.`;
