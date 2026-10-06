@@ -108,9 +108,11 @@ and `…/OpenAlan-windows-setup.exe`.
 "Done" both set `prefs.onboarded = true`. Settings → Agent setup gets a
 "Run setup wizard" button that reopens it.
 
-**Form.** A full-window overlay in the renderer, built with the same
-`element()` helpers and CSS as the Settings panel. No new framework. The
-Telegram pane stays visible on step 1 so the QR code can be scanned.
+**Form.** A panel in the workspace pane, in place of the new-tab home
+screen. It is not a modal, because the modal hides Telegram. It uses the
+same `element()` helpers and CSS as the Settings panel, with no new
+framework. Telegram stays visible, so the QR code can be scanned and the
+prompt pasted to the bot.
 
 **Steps:**
 
