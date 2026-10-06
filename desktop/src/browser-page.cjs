@@ -86,6 +86,11 @@ function snapshotExpression(generation, opts = {}) {
       const checked = /^(checkbox|radio)$/.test(el.type) ? !!el.checked : ariaChecked === 'true' ? true : ariaChecked === 'false' ? false : null;
       if (checked === true) name += ' on';
       else if (checked === false) name += ' off';
+      else {
+        const pressed = el.getAttribute('aria-pressed');
+        if (pressed === 'true') name += ' on';
+        else if (pressed === 'false') name += ' off';
+      }
       if (el.disabled || el.getAttribute('aria-disabled') === 'true') name += ' disabled';
       const expanded = el.getAttribute('aria-expanded');
       if (expanded === 'true') name += ' open';
