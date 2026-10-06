@@ -162,14 +162,54 @@ def walk(call, glib, app):
             continue
         if role in READABLE or role in PASSWORD:
             index += 1
-            elements.append({'ref': f'c{index}', 'role': role, 'name': name[:120], 'dest': dest, 'path': path})
+            element = {'ref': f'c{index}', 'role': role, 'name': name[:120], 'dest': dest, 'path': path}
+            element.update(box_of(call, glib, dest, path))
+            elements.append(element)
         for child_dest, child_path in kids:
             queue.append((child_dest, child_path, depth + 1))
     return elements
 
 
+def box_of(call, glib, dest, path):
+    try:
+        x, y, width, height = call(
+            dest, path, 'org.a11y.atspi.Component', 'GetExtents',
+            glib.Variant('(u)', (0,)), '((iiii))',
+        ).unpack()[0]
+    except Exception:
+        return {}
+    if width <= 0 or height <= 0:
+        return {}
+    return {'x': x, 'y': y, 'width': width, 'height': height}
+
+
 def public_element(element):
-    return {'ref': element['ref'], 'role': element['role'], 'name': element['name']}
+    shown = {'ref': element['ref'], 'role': element['role'], 'name': element['name']}
+    for key in ('x', 'y', 'width', 'height'):
+        if key in element:
+            shown[key] = element[key]
+    return shown
+
+
+def click_at(call, glib, app, x, y):
+    hits = []
+    for element in walk(call, glib, app):
+        if 'width' not in element or element['role'] not in INTERACTIVE:
+            continue
+        if element['x'] <= x <= element['x'] + element['width'] and element['y'] <= y <= element['y'] + element['height']:
+            hits.append(element)
+    if not hits:
+        fail('No control at that point. Press a ref instead.')
+    target = min(hits, key=lambda element: element['width'] * element['height'])
+    if target['role'] in PASSWORD:
+        fail('Password fields are off limits.')
+    try:
+        done = call(target['dest'], target['path'], 'org.a11y.atspi.Action', 'DoAction', glib.Variant('(i)', (0,)), '(b)').unpack()[0]
+    except Exception:
+        done = False
+    if not done:
+        fail('Press failed.')
+    return {'ok': True, 'cursorMoved': False}
 
 
 def window_id(pid):
@@ -253,6 +293,10 @@ def main():
         if not done:
             fail('Press failed.')
         emit({'ok': True, 'cursorMoved': False})
+    if command == 'click':
+        pid = int(sys.argv[2])
+        app = require_app(listed, pid)
+        emit(click_at(call, glib, app, float(sys.argv[3]), float(sys.argv[4])))
     if command == 'shot':
         pid = int(sys.argv[2])
         cap = int(sys.argv[3]) if len(sys.argv) > 3 else 960

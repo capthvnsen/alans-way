@@ -26,8 +26,8 @@ function press(pid, ref) {
   return run(['press', String(pid), ref]);
 }
 
-function click() {
-  throw new Error('Press a snapshot ref on this desktop. Coordinate click is for Mac apps.');
+function click(pid, x, y) {
+  return run(['click', String(pid), String(x), String(y)]);
 }
 
 function drag() {
