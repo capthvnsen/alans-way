@@ -316,8 +316,9 @@ function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared
   view.webContents.on('render-process-gone', () => { tab.error = 'This page stopped. Reload to reconnect.'; broadcast(); });
   // Pages can close themselves (OAuth popups end with window.close()); once the
   // webContents is gone the tab is a zombie — route it through normal cleanup.
-  // During teardown the hosts are already gone and cleanup only throws.
-  view.webContents.on('destroyed', () => { if (!isQuitting && tabs.has(tab.id)) closeTab(tab.id); });
+  // During teardown the hosts are already gone and cleanup only throws, and
+  // app.exit() tears down without before-quit, so check the host itself.
+  view.webContents.on('destroyed', () => { if (!isQuitting && tabs.has(tab.id) && !tab.host?.isDestroyed()) closeTab(tab.id); });
   if (activate) { prefs.remoteControl = false; activeTabId = tab.id; }
   applyLayout(); broadcast();
   if (!skipLoad) view.webContents.loadURL(targetUrl).catch(() => {});
@@ -730,16 +731,20 @@ function browserCommand(tab, method, params) {
 async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = {}) {
   const capture = backgroundCaptureQueue.then(async () => {
     const wc = tab.view.webContents;
+    const viaDevTools = async (cdpFormat) => {
+      // clip.scale downscales at capture instead of a full-size decode then resize.
+      const size = await wc.executeJavaScript('({ width: innerWidth, height: innerHeight, dsf: devicePixelRatio })');
+      const scale = maxWidth && size.width * size.dsf > maxWidth ? Math.max(0.01, maxWidth / size.width) : size.dsf;
+      const shot = await browserCommand(tab, 'Page.captureScreenshot', { format: cdpFormat, ...(cdpFormat === 'png' ? {} : { quality }), fromSurface: true, clip: { x: 0, y: 0, width: size.width, height: size.height, scale } });
+      return shot.data;
+    };
     const encode = async () => {
-      if (format === 'webp') {
-        // nativeImage has no webp encoder; the compositor does, and clip.scale
-        // downscales at capture instead of a full-size decode then resize.
-        const size = await wc.executeJavaScript('({ width: innerWidth, height: innerHeight, dsf: devicePixelRatio })');
-        const scale = maxWidth && size.width * size.dsf > maxWidth ? Math.max(0.01, maxWidth / size.width) : size.dsf;
-        const shot = await browserCommand(tab, 'Page.captureScreenshot', { format: 'webp', quality, fromSurface: true, clip: { x: 0, y: 0, width: size.width, height: size.height, scale } });
-        return shot.data;
-      }
-      let image = await wc.capturePage(undefined, { stayHidden: true });
+      // nativeImage has no webp encoder; the compositor does.
+      if (format === 'webp') return viaDevTools('webp');
+      // capturePage copies the last composited frame and fails (UnknownVizError)
+      // when a just-opened surface has not produced one; DevTools renders one.
+      let image = await wc.capturePage(undefined, { stayHidden: true }).catch(() => null);
+      if (!image || image.isEmpty()) return viaDevTools(format);
       if (maxWidth && image.getSize().width > maxWidth) image = image.resize({ width: maxWidth });
       return (format === 'jpeg' ? image.toJPEG(quality) : image.toPNG()).toString('base64');
     };
