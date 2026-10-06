@@ -9,9 +9,9 @@
   "scripts": {
     "start": "electron .",
     "test": "npm run check",
-    "check": "node --check src/cdp.cjs && node --check src/browser-page.cjs && node --check src/vps-browser.cjs && node --check scripts/vps-browser-host.cjs && node --check scripts/vps-chromium-host.cjs && node --check src/extension-namespace-preload.cjs && node --check scripts/build-preload.cjs && node --check src/extension-store.cjs && node --check src/main.cjs && node --check src/preload.cjs && node --check src/telegram-preload.cjs && node --check src/renderer.js && node --check src/avatars.js && node --check src/link-share.cjs && node --check src/agent-prompt.cjs && node --check src/activity.cjs && node --check src/avatar-store.cjs && node --check src/agent-input.cjs && node --check src/site-permissions.cjs && node --check src/download-store.cjs && node --check src/remote.js && node --check scripts/browser-mcp.cjs && node --check src/win-computer.cjs && node --test test/*.test.cjs",
-    "package:mac": "electron-packager . \"alans-way-localapp\" --platform=darwin --arch=arm64 --no-asar --out=dist --overwrite --ignore='^/(test|dist|screenshots)(/|$)' --app-bundle-id=app.alans-way.localapp --app-version=0.2.1 --icon assets/icon",
-    "package:win": "electron-packager . \"alans-way-localapp\" --platform=win32 --arch=x64 --no-asar --out=dist --overwrite --ignore='^/(test|dist|screenshots)(/|$)' --app-version=0.2.1 --icon assets/icon.ico",
+    "check": "node --check src/cdp.cjs && node --check src/browser-page.cjs && node --check src/vps-browser.cjs && node --check scripts/vps-browser-host.cjs && node --check scripts/vps-chromium-host.cjs && node --check src/extension-namespace-preload.cjs && node --check scripts/build-preload.cjs && node --check src/extension-store.cjs && node --check src/main.cjs && node --check src/preload.cjs && node --check src/telegram-preload.cjs && node --check src/renderer.js && node --check src/avatars.js && node --check src/link-share.cjs && node --check src/agent-prompt.cjs && node --check scripts/build-mac-helper.cjs && node --check src/activity.cjs && node --check src/avatar-store.cjs && node --check src/agent-input.cjs && node --check src/site-permissions.cjs && node --check src/download-store.cjs && node --check src/remote.js && node --check scripts/browser-mcp.cjs && node --check src/win-computer.cjs && node --test test/*.test.cjs",
+    "package:mac": "npm run build:preload && npm run build:mac-helper && electron-builder --mac --publish never",
+    "package:win": "npm run build:preload && electron-builder --win --publish never",
     "test:desktop": "electron test/workspace-integration.cjs",
     "test:agent-input": "electron test/agent-input-electron.cjs",
     "test:permissions": "electron test/site-permissions-electron.cjs",
@@ -22,8 +22,6 @@
     "test:newtab": "electron test/newtab-electron.cjs",
     "build:preload": "node scripts/build-preload.cjs",
     "prestart": "npm run build:preload",
-    "prepackage:mac": "npm run build:preload",
-    "prepackage:win": "npm run build:preload",
     "pretest:desktop": "npm run build:preload",
     "pretest:agent-input": "npm run build:preload",
     "pretest:permissions": "npm run build:preload",
@@ -33,20 +31,78 @@
     "pretest:web-store": "npm run build:preload",
     "pretest:agent-visual": "npm run build:preload",
     "pretest:preview-drag": "npm run build:preload",
-    "pretest:newtab": "npm run build:preload"
+    "pretest:newtab": "npm run build:preload",
+    "build:mac-helper": "node scripts/build-mac-helper.cjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",
     "@novnc/novnc": "1.7.0",
     "electron-chrome-extensions": "4.9.0",
-    "electron-chrome-web-store": "0.13.0"
+    "electron-chrome-web-store": "0.13.0",
+    "electron-updater": "6.8.9"
   },
   "devDependencies": {
-    "@electron/packager": "20.3.0",
     "electron": "44.5.1",
+    "electron-builder": "26.15.3",
     "esbuild": "0.28.2"
   },
   "overrides": {
     "adm-zip": "0.6.1"
+  },
+  "build": {
+    "appId": "app.alans-way.localapp",
+    "productName": "alans-way-localapp",
+    "asar": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!test{,/**}",
+      "!dist{,/**}",
+      "!screenshots{,/**}"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "capthvnsen",
+        "repo": "alans-way",
+        "releaseType": "draft"
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.icns",
+      "identity": "-",
+      "category": "public.app-category.productivity",
+      "artifactName": "OpenAlan-mac.${ext}",
+      "hardenedRuntime": false
+    },
+    "dmg": {
+      "artifactName": "OpenAlan-mac.${ext}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "OpenAlan-windows-setup.${ext}"
+    }
   }
 }

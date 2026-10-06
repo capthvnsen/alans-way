@@ -68,8 +68,8 @@ cd "$DIR/desktop"
 say "Installing dependencies"
 npm ci --no-audit --no-fund --loglevel=error >/dev/null
 say "Building the app"
-npm run package:mac --silent >/dev/null 2>&1 || npm run package:mac
-BUILT="$DIR/desktop/dist/$APP_NAME-darwin-arm64/$APP_NAME.app"
+npm run package:mac --silent -- --dir >/dev/null 2>&1 || npm run package:mac -- --dir
+BUILT="$DIR/desktop/dist/mac-arm64/$APP_NAME.app"
 [ -d "$BUILT" ] || die "build finished but $BUILT is missing"
 
 if pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1; then
