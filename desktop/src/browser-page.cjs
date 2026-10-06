@@ -140,10 +140,16 @@ function snapshotExpression(generation, opts = {}) {
   })()`;
 }
 
+function elementFingerprint(elements) {
+  return JSON.stringify((elements || []).map(({ ref, ...rest }) => rest));
+}
+function elementsHash(elements) {
+  return crypto.createHash('sha1').update(elementFingerprint(elements)).digest('hex');
+}
 function snapshotHash(data) {
   const hash = crypto.createHash('sha1');
   for (const part of [data.url, data.title, data.text]) hash.update(part || '').update('\0');
-  return hash.update(JSON.stringify(data.elements.map(({ ref, ...rest }) => rest))).digest('hex');
+  return hash.update(elementFingerprint(data.elements)).digest('hex');
 }
 // An unchanged reply carries no elements, so the agent keeps acting on refs
 // from its last full snapshot (`base`); the page keeps those tokens too.
@@ -151,7 +157,7 @@ function settleSnapshot(tab, data, generation, since) {
   const hash = snapshotHash(data), previous = tab.snapshotStamp;
   const unchanged = !!previous && since !== undefined && previous.generation === since && previous.hash === hash;
   const base = unchanged ? previous.base : generation;
-  tab.snapshotStamp = { generation, hash, base };
+  tab.snapshotStamp = { generation, hash, base, elementsHash: elementsHash(data.elements) };
   tab.refs = new Set(data.elements.map((item) => item.ref));
   if (unchanged) for (let index = 1; index <= data.elements.length; index++) tab.refs.add(`s${base}-${index}`);
   return unchanged ? { unchanged: true, generation } : { ...data, generation };
@@ -164,16 +170,27 @@ async function readControls(execute, tab) {
   const generation = (previous && Number.isInteger(previous.generation) ? previous.generation : (Number.isInteger(tab.generation) ? tab.generation : 0)) + 1;
   let timer;
   const result = await Promise.race([
-    Promise.resolve(execute(snapshotExpression(generation, { maxElements: 150, keep: previous ? previous.base : undefined }))),
+    Promise.resolve(execute(snapshotExpression(generation, { maxChars: 0, maxElements: 150, keep: previous ? previous.base : undefined }))),
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('controls')), 8000); }),
   ]).finally(() => clearTimeout(timer));
   if (!result || !Array.isArray(result.elements)) return null;
+  // Controls are enough to know the page the agent can click. Skipping the
+  // text walk keeps a click from rereading the whole document.
+  if (previous && previous.elementsHash && elementsHash(result.elements) === previous.elementsHash) {
+    tab.refs = new Set();
+    for (let index = 1; index <= result.elements.length; index++) tab.refs.add(`s${previous.base}-${index}`);
+    return { unchanged: true, generation: previous.generation };
+  }
   if (previous && snapshotHash(result) === previous.hash) {
     tab.refs = new Set();
     for (let index = 1; index <= result.elements.length; index++) tab.refs.add(`s${previous.base}-${index}`);
     return { unchanged: true, generation: previous.generation };
   }
   tab.generation = generation;
+  if (previous) {
+    tab.refs = new Set(result.elements.map((item) => item.ref));
+    return { elements: result.elements.slice(0, 40), generation };
+  }
   const settled = settleSnapshot(tab, result, generation);
   if (!Array.isArray(settled.elements)) return { unchanged: true, generation: settled.generation };
   return { elements: settled.elements.slice(0, 40), generation: settled.generation };
