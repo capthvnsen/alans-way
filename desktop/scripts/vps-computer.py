@@ -11,6 +11,7 @@ import tempfile
 INTERACTIVE = {
     'push button', 'toggle button', 'check box', 'radio button', 'text',
     'combo box', 'menu item', 'link', 'slider', 'spin button', 'list item',
+    'scroll bar',
 }
 READABLE = INTERACTIVE | {'label', 'static'}
 PASSWORD = {'password text'}
@@ -157,6 +158,12 @@ def walk(call, glib, app):
         try:
             role = call(dest, path, 'org.a11y.atspi.Accessible', 'GetRoleName', None, '(s)').unpack()[0]
             name = prop(call, glib, dest, path, 'Name') or ''
+            if role == 'scroll bar' and not name:
+                name = 'scroll bar'
+                try:
+                    name = f'scroll bar {round(float(value_of(call, glib, dest, path, "CurrentValue")))}'
+                except Exception:
+                    pass
             if role == 'text' and not name:
                 try:
                     name = call(dest, path, 'org.a11y.atspi.Text', 'GetText', glib.Variant('(ii)', (0, 200)), '(s)').unpack()[0]
