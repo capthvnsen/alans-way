@@ -95,7 +95,7 @@ App data lives in `~/Library/Application Support/Hermes Workspace/`. The product
 
 ## Companion integration
 
-This app lives in `desktop/` in the hermes-companion repository. The
+This app lives in `desktop/` in the alans-way repository. The
 [agents repo](https://github.com/capthvnsen/alans-way-agents) owns the VPS
 side — `setup.sh` there is a one-command bootstrap that installs the plugin,
 wires the browser connector, restarts the gateway, and binds the primary
