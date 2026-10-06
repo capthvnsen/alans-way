@@ -7,7 +7,7 @@ const fs = require('node:fs'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
-const { normalizeUrl, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized } = require('../src/core.cjs');
+const { normalizeUrl, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload } = require('../src/core.cjs');
 const { createAgentInput, tintScript, botAccent } = require('../src/agent-input.cjs');
 const { snapshotExpression, settleSnapshot, readControls, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
 const root =
@@ -187,6 +187,14 @@ async function serve() {
     try {
       await tab.view.webContents.command('Page.enable');
       await tab.view.webContents.command('Page.navigate', { url });
+      // A laptop-close continue must not wait out a slow Docs or Notion load.
+      // The tab id is returned immediately; the next snapshot sees loading.
+      if (body.settle === false) {
+        tab.url = url;
+        if (tab.controller === 'agent') tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
+        await persist();
+        return tab;
+      }
       await loaded(tab, url);
       if (tab.controller === 'agent') await tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
       await persist();
@@ -414,7 +422,10 @@ async function serve() {
   });
   await cdp.send('Target.setDiscoverTargets', { discover: true });
   const token = crypto.randomBytes(32).toString('hex');
+  let inFlight = 0;
   const server = http.createServer(async (req, res) => {
+    inFlight++;
+    res.on('close', () => { inFlight = Math.max(0, inFlight - 1); });
     const send = (status, data) => {
       res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(data));
@@ -488,8 +499,8 @@ async function serve() {
         if (!human) requireAgentRead(tab);
         const format = url.searchParams.get('format') ?? 'jpeg';
         if (!['jpeg', 'png', 'webp'].includes(format)) throw fail('format must be jpeg, png, or webp.');
-        const quality = intParam(url, 'quality', 1, 100) ?? 70;
-        const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 1280;
+        const quality = intParam(url, 'quality', 1, 100) ?? 50;
+        const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 960;
         const capture = tab.queue.then(async () => {
           const viewport = await wc.executeJavaScript(
             '({width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio})',
@@ -620,6 +631,16 @@ async function serve() {
     write(connectionFile, { url: 'http://127.0.0.1:' + server.address().port, token, protocol: 1, host: 'vps' });
     process.stderr.write('VPS browser host ready on loopback.\n');
   });
+  let startedMtime = 0;
+  try { startedMtime = fs.statSync(__filename).mtimeMs; } catch { /* a missing script has nothing newer to load */ }
+  const reloadTimer = setInterval(() => {
+    let mtime = startedMtime;
+    try { mtime = fs.statSync(__filename).mtimeMs; } catch { return; }
+    if (!hostShouldReload(mtime, startedMtime, inFlight)) return;
+    process.stderr.write('vps-browser-host: script replaced — exiting so the service loads it\n');
+    process.exit(1);
+  }, 5000);
+  reloadTimer.unref();
 }
 if (require.main === module) {
   const mode = process.argv[2];

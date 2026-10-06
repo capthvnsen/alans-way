@@ -153,7 +153,9 @@ function botAccent(_botId) {
 function cursorPath(from, to) {
   if (!from || from.x === to.x && from.y === to.y) return [to];
   const dx = to.x - from.x, dy = to.y - from.y, distance = Math.hypot(dx, dy);
-  const duration = Math.max(60, Math.min(200, 40 + distance * .3));
+  // A long glide made every click wait on a demo. A few frames is enough
+  // for the page to see the pointer arrive, then the click lands.
+  const duration = Math.min(64, Math.max(48, 24 + distance * .05));
   const steps = Math.max(2, Math.ceil(duration / 16));
   const bend = Math.min(18, distance * .04) * ((Math.round(from.x + from.y + to.x + to.y) & 1) ? 1 : -1);
   return Array.from({ length: steps }, (_, index) => {

@@ -10,11 +10,25 @@ function snapshotExpression(generation, opts = {}) {
   // buttons, so the scan gets a wider budget than the text walk.
   const elementMs = int(opts.elementMs, 5, 2000, 200);
   const keep = int(opts.keep, 0, Number.MAX_SAFE_INTEGER, -1);
-  const parseWaitMs = int(opts.parseWaitMs, 0, 5000, 2000);
+  const parseWaitMs = int(opts.parseWaitMs, 0, 5000, 400);
   return `(async () => {
     // The parser yields between chunks, so a snapshot can land mid-document;
     // give a still-parsing page a moment and report it if it is not done.
     if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${parseWaitMs}); });
+    const shortHref = (raw) => {
+      if (!raw) return '';
+      try {
+        const url = new URL(raw, location.href);
+        if (url.protocol !== 'https:' && url.protocol !== 'http:' && url.protocol !== 'mailto:') return '';
+        if (url.protocol === 'http:' || url.protocol === 'https:') {
+          for (const key of [...url.searchParams.keys()]) {
+            if (/^(utm_|fbclid$|gclid$|mc_eid$|mc_cid$|igshid$|_hsenc$|_hsmi$)/.test(key)) url.searchParams.delete(key);
+          }
+          url.hash = '';
+        }
+        return url.href.slice(0, 300);
+      } catch { return ''; }
+    };
     const items = [];
     const deadline = performance.now() + ${elementMs};
     const pick = 'a[href],button,summary,input:not([type="hidden"]),textarea,select,[onclick],[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="treeitem"],[role="slider"],[contenteditable="true"]';
@@ -36,6 +50,7 @@ function snapshotExpression(generation, opts = {}) {
       const walker = document.createTreeWalker(start, NodeFilter.SHOW_ELEMENT);
       let node, walked = 0;
       while ((node = walker.nextNode()) && walked++ < 4000) {
+        if (performance.now() > deadline) { more = true; break; }
         if (node.shadowRoot && !seenRoot.has(node.shadowRoot)) queue.push(node.shadowRoot);
       }
       if (walked >= 4000) more = true;
@@ -102,7 +117,8 @@ function snapshotExpression(generation, opts = {}) {
       const role = el.getAttribute('role') || el.tagName.toLowerCase();
       const type = el.type || '';
       const value = type === 'password' ? '[password]' : String(el.value || '').slice(0, 200);
-      const href = (el.href || '').slice(0, 300);
+      const rawHref = typeof el.href === 'string' ? el.href : (el.getAttribute('href') || '');
+      const href = shortHref(rawHref);
       const item = { ref, role, name };
       if (type) item.type = type;
       if (value) item.value = value;
@@ -119,31 +135,43 @@ function snapshotExpression(generation, opts = {}) {
       // Tag names stand in for computed display so lists, rows and headings
       // keep their line breaks without a style read per text node.
       const blockTag = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|BODY|CAPTION|DD|DETAILS|DIALOG|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H[1-6]|HEADER|HR|LEGEND|LI|MAIN|NAV|OL|P|PRE|SECTION|SUMMARY|TABLE|TR|UL)$/;
-      let node, lastBlock = null;
+      let node, lastBlock = null, seenParent = null, parentVisible = true, parentBlock = null;
       while ((node = walker.nextNode())) {
         const p = node.parentElement;
         if (!p || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(p.tagName)) continue;
-        if (p.checkVisibility && !p.checkVisibility({ checkVisibilityCSS: true })) continue;
+        // Sibling text nodes share a parent. One style check covers the run.
+        if (p !== seenParent) {
+          seenParent = p;
+          parentVisible = !(p.checkVisibility && !p.checkVisibility({ checkVisibilityCSS: true }));
+          let block = p;
+          while (block.parentElement && !blockTag.test(block.tagName)) block = block.parentElement;
+          parentBlock = block;
+        }
+        if (!parentVisible) continue;
         const chunk = node.nodeValue.replace(/\\s+/g, ' ').trim();
         if (!chunk) continue;
-        let block = p;
-        while (block.parentElement && !blockTag.test(block.tagName)) block = block.parentElement;
-        text += (text ? (block === lastBlock ? ' ' : '\\n') : '') + chunk;
-        lastBlock = block;
+        text += (text ? (parentBlock === lastBlock ? ' ' : '\\n') : '') + chunk;
+        lastBlock = parentBlock;
         // The time budget never cuts the first screenful: a slow renderer
         // must still return enough text for the agent to orient itself.
         if (text.length >= ${maxChars} || (text.length >= ${Math.min(1000, maxChars)} && performance.now() > textDeadline)) { textCut = true; break; }
       }
       text = text.slice(0, ${maxChars});
     } else textCut = ${maxChars} <= 0 && !!document.body?.textContent?.trim();
-    return {title:document.title,url:location.href,loading:document.readyState === 'loading',text,elements:items,truncated:{text:textCut,elements:more || scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:el.title,src:el.src})).slice(0,20)};
+    return {title:document.title,url:location.href,loading:document.readyState === 'loading',text,elements:items,truncated:{text:textCut,elements:more || scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8)};
   })()`;
 }
 
+function elementFingerprint(elements) {
+  return JSON.stringify((elements || []).map(({ ref, ...rest }) => rest));
+}
+function elementsHash(elements) {
+  return crypto.createHash('sha1').update(elementFingerprint(elements)).digest('hex');
+}
 function snapshotHash(data) {
   const hash = crypto.createHash('sha1');
   for (const part of [data.url, data.title, data.text]) hash.update(part || '').update('\0');
-  return hash.update(JSON.stringify(data.elements.map(({ ref, ...rest }) => rest))).digest('hex');
+  return hash.update(elementFingerprint(data.elements)).digest('hex');
 }
 // An unchanged reply carries no elements, so the agent keeps acting on refs
 // from its last full snapshot (`base`); the page keeps those tokens too.
@@ -151,7 +179,7 @@ function settleSnapshot(tab, data, generation, since) {
   const hash = snapshotHash(data), previous = tab.snapshotStamp;
   const unchanged = !!previous && since !== undefined && previous.generation === since && previous.hash === hash;
   const base = unchanged ? previous.base : generation;
-  tab.snapshotStamp = { generation, hash, base };
+  tab.snapshotStamp = { generation, hash, base, elementsHash: elementsHash(data.elements) };
   tab.refs = new Set(data.elements.map((item) => item.ref));
   if (unchanged) for (let index = 1; index <= data.elements.length; index++) tab.refs.add(`s${base}-${index}`);
   return unchanged ? { unchanged: true, generation } : { ...data, generation };
@@ -164,16 +192,27 @@ async function readControls(execute, tab) {
   const generation = (previous && Number.isInteger(previous.generation) ? previous.generation : (Number.isInteger(tab.generation) ? tab.generation : 0)) + 1;
   let timer;
   const result = await Promise.race([
-    Promise.resolve(execute(snapshotExpression(generation, { maxElements: 150, keep: previous ? previous.base : undefined }))),
+    Promise.resolve(execute(snapshotExpression(generation, { maxChars: 0, maxElements: 150, keep: previous ? previous.base : undefined }))),
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('controls')), 8000); }),
   ]).finally(() => clearTimeout(timer));
   if (!result || !Array.isArray(result.elements)) return null;
+  // Controls are enough to know the page the agent can click. Skipping the
+  // text walk keeps a click from rereading the whole document.
+  if (previous && previous.elementsHash && elementsHash(result.elements) === previous.elementsHash) {
+    tab.refs = new Set();
+    for (let index = 1; index <= result.elements.length; index++) tab.refs.add(`s${previous.base}-${index}`);
+    return { unchanged: true, generation: previous.generation };
+  }
   if (previous && snapshotHash(result) === previous.hash) {
     tab.refs = new Set();
     for (let index = 1; index <= result.elements.length; index++) tab.refs.add(`s${previous.base}-${index}`);
     return { unchanged: true, generation: previous.generation };
   }
   tab.generation = generation;
+  if (previous) {
+    tab.refs = new Set(result.elements.map((item) => item.ref));
+    return { elements: result.elements.slice(0, 40), generation };
+  }
   const settled = settleSnapshot(tab, result, generation);
   if (!Array.isArray(settled.elements)) return { unchanged: true, generation: settled.generation };
   return { elements: settled.elements.slice(0, 40), generation: settled.generation };

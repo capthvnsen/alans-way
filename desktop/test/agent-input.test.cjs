@@ -47,6 +47,7 @@ test('cursor motion is deterministic, eased, bounded and lands exactly on the ta
   const path = cursorPath({ x: 10, y: 10 }, { x: 610, y: 410 });
   assert.deepEqual(path, cursorPath({ x: 10, y: 10 }, { x: 610, y: 410 }));
   assert.ok(short.length >= 2);
+  assert.ok(path.length <= 5, 'a long move stays within a few frames');
   assert.ok(path.length <= Math.ceil(420 / 16));
   assert.deepEqual(path.at(-1), { x: 610, y: 410 });
   assert.notDeepEqual(path[Math.floor(path.length / 2)], { x: 310, y: 210 });

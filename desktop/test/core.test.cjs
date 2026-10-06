@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload } = require('../src/core.cjs');
 const { snapshotExpression, settleSnapshot, readControls } = require('../src/browser-page.cjs');
 const { locateElement } = require('../src/agent-input.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
@@ -161,7 +161,7 @@ test('an action read returns controls and leaves the page text out', async () =>
     code = expression;
     return { url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's5-1', role: 'button', name: 'Go' }] };
   }, tab);
-  assert.match(code, /text\.slice\(0, 6000\)/);
+  assert.match(code, /text\.slice\(0, 0\)/);
   assert.match(code, /items\.length >= 150/);
   assert.equal(reply.text, undefined);
   assert.deepEqual(reply.elements, [{ ref: 's5-1', role: 'button', name: 'Go' }]);
@@ -178,9 +178,35 @@ test('an action read keeps the last generation when the page did not change', as
   assert.ok(tab.refs.has('s1-1'));
   assert.equal(tab.generation, 1);
 });
+test('an action read does not walk page text or replace the snapshot when controls match', async () => {
+  const tab = { refs: new Set(), generation: 2 };
+  const page = { url: 'https://a.example/', title: 'A', text: 'a long document', elements: [{ ref: 's2-1', role: 'button', name: 'Go' }] };
+  const settled = settleSnapshot(tab, page, 2);
+  const stamp = tab.snapshotStamp.hash;
+  let code = '';
+  const reply = await readControls((expression) => {
+    code = expression;
+    return { url: page.url, title: page.title, text: '', elements: [{ ref: 's9-1', role: 'button', name: 'Go' }] };
+  }, tab);
+  assert.match(code, /text\.slice\(0, 0\)/);
+  assert.deepEqual(reply, { unchanged: true, generation: settled.generation });
+  assert.equal(tab.snapshotStamp.hash, stamp);
+  assert.ok(tab.refs.has('s2-1'));
+  const changed = await readControls(() => ({ url: page.url, title: page.title, text: '', elements: [{ ref: 's9-1', role: 'button', name: 'Sent' }] }), tab);
+  assert.equal(changed.elements[0].name, 'Sent');
+  assert.equal(tab.snapshotStamp.hash, stamp);
+});
 test('snapshot bounds clamp and never splice caller text into page code', () => {
   assert.match(snapshotExpression(3), /text\.slice\(0, 6000\)/);
   assert.match(snapshotExpression(3, { maxChars: 999999 }), /text\.slice\(0, 20000\)/);
+  assert.match(snapshotExpression(3), /setTimeout\(done, 400\)/);
+  assert.match(snapshotExpression(3), /seenParent/);
+  assert.match(snapshotExpression(3), /checkVisibilityCSS: true/);
+  assert.match(snapshotExpression(3), /utm_/);
+  assert.match(snapshotExpression(3), /src:shortHref/);
+  assert.match(snapshotExpression(3), /performance\.now\(\) > deadline\) \{ more = true; break; \}/);
+  assert.match(snapshotExpression(3), /\.slice\(0,8\)/);
+  assert.match(snapshotExpression(3), /searchParams\.delete/);
   assert.doesNotMatch(snapshotExpression(3, { maxChars: '1);alert(1' }), /alert/);
 });
 test('tool results drop favicon images and keep the fields a model acts on', () => {
@@ -196,6 +222,41 @@ test('tool results drop favicon images and keep the fields a model acts on', () 
   assert.equal(reply.tabs[0].epoch, 3);
   assert.equal(reply.tabs[0].tab.url, 'https://a.example/');
   assert.match(reply.note, /favicon/);
+});
+test('opening a tab does not let the model pick the machine', () => {
+  const mcp = require('node:fs').readFileSync(require('node:path').join(__dirname, '../scripts/browser-mcp.cjs'), 'utf8');
+  assert.doesNotMatch(mcp, /host:args\.host/);
+  assert.match(mcp, /Do not pass host/);
+  assert.match(mcp, /args\.maxChars : 2000/);
+  assert.match(mcp, /400ms grace/);
+  assert.match(mcp, /args\.quality : 50/);
+  assert.match(mcp, /args\.maxWidth : 960/);
+  assert.match(mcp, /reopen the same URL and continue/);
+  assert.match(mcp, /names a tab, keep working in that tab/);
+  assert.match(mcp, /The Mac tab is gone\. Keep working in tab/);
+  assert.match(mcp, /continuedTab/);
+  assert.match(mcp, /continuedEpoch/);
+  assert.match(mcp, /Stale or unknown reference/);
+  assert.match(mcp, /maxChars=0&maxElements=40/);
+  assert.match(mcp, /--continued-tab/);
+  assert.match(mcp, /same machine as the browser/);
+});
+test('a missing Mac tab is carried onto the continued VPS tab', () => {
+  const page = { tabId: 'tab-9' };
+  assert.equal(retargetMissingTab('/v1/tabs/mac-tab/snapshot?maxChars=2000', 'GET', page), '/v1/tabs/tab-9/snapshot?maxChars=2000');
+  assert.equal(retargetMissingTab('/v1/tabs/tab-9/snapshot', 'GET', page), null);
+  assert.equal(retargetMissingTab('/v1/tabs/mac-tab', 'DELETE', page), null);
+  assert.equal(retargetMissingTab('/v1/status', 'GET', page), null);
+  assert.equal(retargetMissingTab('/v1/tabs/mac-tab/actions', 'POST', page), '/v1/tabs/tab-9/actions');
+  assert.equal(retargetMissingTab('/v1/tabs/a%2Fb/snapshot', 'GET', page), '/v1/tabs/tab-9/snapshot');
+  assert.equal(needsContinuedEpoch('stale_control_epoch: read the tab state and retry after a fresh snapshot.', 'POST'), true);
+  assert.equal(needsContinuedEpoch('stale_control_epoch', 'GET'), false);
+  assert.equal(needsContinuedEpoch('tab not found', 'POST'), false);
+  assert.equal(hostShouldReload(20, 10, 0), true);
+  assert.equal(hostShouldReload(20, 10, 1), false);
+  assert.equal(hostShouldReload(10, 10, 0), false);
+  const host = require('node:fs').readFileSync(require('node:path').join(__dirname, '../scripts/vps-browser-host.cjs'), 'utf8');
+  assert.match(host, /script replaced — exiting so the service loads it/);
 });
 test('only positively identified direct bot IDs enter the catalog', () => {
   const bots = sanitizeBots([{ id: '123', isBot: true, name: 'Agent' }, { id: '456', name: 'Human' }, { id: '-100123', isBot: true }, { id: '789', isBot: false }]);

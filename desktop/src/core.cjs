@@ -177,4 +177,29 @@ function sanitizeBots(value) {
   }));
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots };
+// A laptop-close leaves the model holding a Mac tab id. Carry the read or
+// action onto the VPS tab the connector already opened. Never carry a close:
+// that would shut the page the task just moved to.
+function retargetMissingTab(endpoint, method, page) {
+  if (!page || !page.tabId || method === 'DELETE') return null;
+  const match = /^\/v1\/tabs\/([^/?]+)(.*)$/.exec(String(endpoint || ''));
+  if (!match) return null;
+  let requested = match[1];
+  try { requested = decodeURIComponent(requested); } catch { return null; }
+  if (requested === page.tabId) return null;
+  return '/v1/tabs/' + encodeURIComponent(page.tabId) + match[2];
+}
+
+// The new VPS tab starts at its own control epoch. A Mac epoch must not be
+// reused for the action that just moved.
+function needsContinuedEpoch(message, method) {
+  return method !== 'GET' && method !== 'DELETE' && /stale_control_epoch/i.test(String(message || ''));
+}
+
+// The VPS browser host stays on the script it loaded. A replaced file should
+// restart only while nothing is in flight, so a click is not cut off.
+function hostShouldReload(mtime, started, inFlight) {
+  return inFlight === 0 && Number(mtime) > Number(started);
+}
+
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload };
