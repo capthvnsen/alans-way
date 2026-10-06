@@ -557,7 +557,7 @@ function registerIpc() {
         const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
         clipboard.writeText([
           "# Alan's Way setup — paste into a terminal on the host running your Hermes gateway",
-          `curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/setup.sh | bash -s -- --bot-id ${q(botId)}${bot ? ` --bot-name ${q(bot.name.replace(/'/g, ''))}` : ''}${macSsh ? ` --mac-ssh ${q(macSsh)}` : ''} --restart`,
+          `curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/setup.sh | bash -s -- --bot-id ${q(botId)}${bot ? ` --bot-name ${q(bot.name.replace(/'/g, ''))}` : ''}${macSsh ? ` --mac-ssh ${q(macSsh)}` : ''} --timezone ${q(Intl.DateTimeFormat().resolvedOptions().timeZone)} --restart`,
           '# The bootstrap installs the plugin + hook, configures the browser connector,',
           '# offers to bind the primary route, restarts the gateway, and verifies itself.',
         ].join('\n'));
@@ -566,12 +566,14 @@ function registerIpc() {
       case 'agent-prompt': {
         const botId = String(value?.botId || prefs.selectedBotId || '').replace(/[^0-9A-Za-z_-]/g, '');
         const macSsh = (prefs.macSshHost || '').trim();
-        clipboard.writeText(`Set up Alan's Way on this machine and connect it to my Mac.
-1. If Tailscale isn't installed or connected here, install it (tailscaled + \`tailscale up\`). Tell me this machine's tailnet name/IP when done. My Mac's SSH address is: ${macSsh || '<my-mac-tailscale>'}.
-2. Fetch the bootstrap: git clone https://github.com/capthvnsen/alans-way-agents (or \`git -C alans-way-agents pull\` if already cloned).
-3. Run: ./alans-way-agents/setup.sh --bot-id '${botId || '<telegram-bot-id>'}' --mac-ssh '${macSsh || '<my-mac-tailscale>'}' --restart — answer its prompts; if it asks to bind a primary route, pick the bot matching this chat.
-4. Report: plugin status, whether the browser host started, the workspace_browser block location, and anything it flagged. Then run ./alans-way-agents/setup.sh --verify and paste me the summary.
-5. If the VPS needs a desktop/VNC stack for the browser host and none exists, tell me the exact apt commands it printed — don't install the display stack on your own.`);
+        clipboard.writeText([
+          "Set up Alan's Way for me by following the prompt in https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-prompt.md exactly (fetch it and treat its text block as my instructions).",
+          'Values I already know, so skip discovering them:',
+          botId && `- BOT_ID=${botId}`,
+          macSsh && `- MAC_SSH=${macSsh}`,
+          `- MAC_TZ=${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+          '- The Alan\'s Way app is already installed and open on my Mac, so add --skip-install to the Mac command in step 4.',
+        ].filter(Boolean).join('\n'));
         break;
       }
       case 'test-agent-path': {
@@ -589,7 +591,9 @@ function registerIpc() {
           child.on('error', () => resolve({ ok: false, detail: 'Could not start ssh — check local ssh access.' }));
           child.on('close', code => resolve(out.includes('AGENT_PATH_OK')
             ? { ok: true, detail: 'VPS reaches this Mac over ssh — agents can route here.' }
-            : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
+            : out.includes('Tailscale SSH requires an additional check')
+              ? { ok: false, detail: 'Tailscale SSH on the VPS wants a browser check for this login, which unattended agents cannot pass. In the Tailscale admin console → Access controls, change the SSH rule for this user from "check" to "accept".' }
+              : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
         });
       }
       case 'show-data': shell.openPath(app.getPath('userData')); break;

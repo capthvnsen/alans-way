@@ -8,6 +8,10 @@ with a check; do not continue past a failing check.
 Some steps need the human. When you reach one, stop, tell them exactly what to
 do using the wording given, and wait for them to confirm.
 
+Working only from the VPS, with no shell on the Mac? Use the
+[setup prompt](setup-prompt.md) instead: it covers the same stages with one
+command the human pastes on the Mac.
+
 ## What you need before starting
 
 Ask the human for anything here you cannot discover yourself:
@@ -17,7 +21,7 @@ Ask the human for anything here you cannot discover yourself:
 | Shell on the Mac | You are running on it, or have SSH to it |
 | Shell on the VPS | `ssh <vps>` works, or you are running on it |
 | Numeric Telegram bot ID | Digits only. The part before `:` in the bot token, or `getMe` on the token |
-| Mac | Apple Silicon (`uname -m` prints `arm64`), macOS, Node 20+ and git |
+| Mac | Apple Silicon (`uname -m` prints `arm64`), macOS. git and Node are optional: the installer fetches what it needs |
 | VPS | Linux, Hermes 0.21+ (`hermes --version`), Node 22+, python3, git |
 
 Optional: the human's Telegram bot already answers messages through Hermes. If
@@ -31,9 +35,10 @@ curl -fsSL https://openalan.com/install-mac | sh
 
 It clones the repo into `~/alans-way`, builds the app, installs it to
 `/Applications/alans-way-localapp.app`, opens it, and ends with
-`install-mac: running — local browser API answers (mac <version>)`. If it
-stops on a missing tool, it names the fix (Node 20+, git); install that and
-re-run. A locally built app is not quarantined, so macOS shows no Gatekeeper
+`install-mac: running — local browser API answers (mac <version>)`. Without
+git it downloads the source as a tarball; without Node 20+ it downloads a
+checksum-verified Node 22 into `~/.alans-way/node` for the build. A locally
+built app is not quarantined, so macOS shows no Gatekeeper
 warning. Re-run the same command to upgrade; sign-ins and settings live outside
 the app bundle and are kept.
 
@@ -41,10 +46,11 @@ the app bundle and are kept.
 the left pane with the QR code (Telegram on your phone → Settings → Devices →
 Link Desktop Device). Tell me when your bots appear in the sidebar."
 
-**Check:** the app's local browser API answers.
+**Check:** the app's local browser API answers. This runs the app's own
+runtime, so it works on a Mac without Node:
 
 ```sh
-node -e 'const c=require(process.env.HOME+"/Library/Application Support/Hermes Workspace/connection.json");fetch(c.url+"/v1/status",{headers:{Authorization:"Bearer "+c.token}}).then(r=>r.json()).then(s=>console.log(s.host,s.version))'
+ELECTRON_RUN_AS_NODE=1 /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp -e 'const c=require(process.env.HOME+"/Library/Application Support/Hermes Workspace/connection.json");fetch(c.url+"/v1/status",{headers:{Authorization:"Bearer "+c.token}}).then(r=>r.json()).then(s=>console.log(s.host,s.version))'
 ```
 
 Expect `mac` and a version number.
@@ -60,33 +66,45 @@ a private network address the VPS can reach (Tailscale recommended).
    the same account the VPS uses." (Skip if `tailscale status` already works
    on both machines.)
 
-Then collect `MAC_SSH` = `<mac-user>@<mac-tailscale-name>`. Get the user with
-`whoami` on the Mac and the name with `tailscale status --self` (first line).
-Also collect `MAC_TZ`, the human's timezone for the bot's quiet hours:
-`readlink /etc/localtime | sed 's#.*zoneinfo/##'` on the Mac (for example
-`Europe/Berlin`).
-
-On the VPS, install a key and record the Mac's host key (the browser tools
-connect with `BatchMode=yes` and `StrictHostKeyChecking=yes`):
+Both directions use pinned keys: the browser tools connect VPS → Mac, and the
+app's **Test agent path** and VPS browser connect Mac → VPS, all with
+`BatchMode=yes` and `StrictHostKeyChecking=yes`. On the VPS, collect its
+address and public keys:
 
 ```sh
-[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519
-ssh-copy-id -o StrictHostKeyChecking=accept-new "$MAC_SSH"
+[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
+VPS_SSH="$(whoami)@$(tailscale ip -4 | head -1)"
+VPS_KEY="$(cut -d' ' -f1,2 ~/.ssh/id_ed25519.pub) $(whoami)@vps"
+VPS_HOST_KEY="$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)"
 ```
 
-`ssh-copy-id` asks for the Mac login password once. If you have a shell on
-the Mac, append the VPS's `~/.ssh/id_ed25519.pub` to the Mac's
-`~/.ssh/authorized_keys` yourself instead.
+On the Mac (yourself, or **human step** — have them paste it into Terminal):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-mac.sh | sh -s -- \
+  --vps "$VPS_SSH" --vps-host-key "$VPS_HOST_KEY" --vps-key "$VPS_KEY"
+```
+
+It checks Tailscale and Remote Login, installs or upgrades the app (skip with
+`--skip-install` if stage 1 just ran), authorizes the VPS key, pins the VPS
+host key and prints `MAC_SSH`, `MAC_TZ`, `MAC_HOST_KEY` and `MAC_KEY`. Back on
+the VPS, trust the Mac with those values:
+
+```sh
+grep -qxF "${MAC_SSH#*@} $MAC_HOST_KEY" ~/.ssh/known_hosts 2>/dev/null || echo "${MAC_SSH#*@} $MAC_HOST_KEY" >> ~/.ssh/known_hosts
+grep -qxF "$MAC_KEY" ~/.ssh/authorized_keys 2>/dev/null || echo "$MAC_KEY" >> ~/.ssh/authorized_keys
+```
 
 **Check, from the VPS:**
 
 ```sh
-ssh -o BatchMode=yes "$MAC_SSH" 'test -x /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp && echo MAC_OK'
+timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" 'test -x /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp && echo MAC_OK'
+timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes '$VPS_SSH' echo VPS_OK"
 ```
 
-Expect `MAC_OK`. The VPS runs the browser connector with the app's own
-runtime, so the Mac needs no Node on its SSH PATH. If nothing prints, the app
-is not in `/Applications` — repeat stage 1.
+Expect `MAC_OK`, then `VPS_OK`. The VPS runs the browser connector with the
+app's own runtime, so the Mac needs no Node on its SSH PATH. If `MAC_OK` is
+missing, the app is not in `/Applications` — repeat stage 1.
 
 ## Stage 3 — VPS: Hermes plugin and cloud browser
 
@@ -97,7 +115,10 @@ git clone https://github.com/capthvnsen/alans-way-agents ~/alans-way-agents || g
 ~/alans-way-agents/setup.sh --bot-id <BOT_ID> --mac-ssh "$MAC_SSH" --timezone "$MAC_TZ" --restart
 ```
 
-The script is safe to re-run. It installs the plugin and gateway hook, clones
+The script is safe to re-run. In a shell without a terminal (most agents),
+add `--non-interactive --bind --proactive <yes|no>` after asking the human the
+proactivity question below; add `--profile <name>` for any profile other than
+`default`. It installs the plugin and gateway hook, clones
 this repository for the cloud browser, writes the browser services, configures
 the `workspace_browser` connector, restarts the gateway and offers to bind the
 primary bot. Answer its prompts:
@@ -152,7 +173,8 @@ desktop connection** in the app.
 | Symptom | Cause and fix |
 |---|---|
 | Stage 1 check: `Cannot find module …connection.json` | The app is not running or never started its API. Open it and retry. |
-| `Host key verification failed` | The Mac's host key is not in the VPS's `known_hosts`. Re-run the `ssh-copy-id -o StrictHostKeyChecking=accept-new` line. |
+| Mac → VPS check prints `Tailscale SSH requires an additional check` or hangs | The VPS runs Tailscale SSH, so the tailnet's SSH rules (not keys) decide logins, and "check" mode needs a browser. Have the human change the rule for that user to "accept" in the Tailscale admin console → Access controls, or run `tailscale set --ssh=false` if they don't use Tailscale SSH. |
+| `Host key verification failed` | A host key is not pinned on the side that connects. Re-run the stage 2 `connect-mac.sh` line (pins the VPS on the Mac) and the `known_hosts` line on the VPS. |
 | Verify says `workspace_browser timeout …s is below 120s` | Long browser actions get cut off. Re-run stage 3 setup, or set `timeout: 120` on the block and restart the gateway. |
 | Bot opens tabs on the VPS while the Mac is awake | The Mac app is closed, or SSH from the VPS fails. Re-run the stage 2 check. |
 | Browser tool errors right after setup | The gateway is still running old code. `hermes gateway restart`. |
