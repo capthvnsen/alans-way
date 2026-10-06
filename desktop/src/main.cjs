@@ -90,6 +90,14 @@ function describeTab(tab, forBot = false) {
     controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
   return forBot ? redactTabForBot(info) : info;
 }
+function pageState(tab) {
+  const wc = tab.view?.webContents;
+  const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
+  return { generation: tab.generation, url, title: tab.title || 'New tab', loading: !!tab.loading };
+}
+function actionReply(tab, payload = {}) {
+  return { ...pageState(tab), ...payload, tab: describeTab(tab, true) };
+}
 function isVpsTab(id) { return vpsTabs.has(id); }
 async function refreshVpsTabs() {
   if (!prefs?.vpsBrowser?.sshHost || vpsRefreshBusy) return;
@@ -774,6 +782,23 @@ function settleNavigation(wc, trigger, timeout = 15000) {
     try { trigger(); } catch { done(); }
   });
 }
+function waitForNavigationCommit(wc, load, timeout = 15000) {
+  return new Promise((resolve) => {
+    const done = (result) => {
+      clearTimeout(timer);
+      wc.removeListener('did-navigate', onNav).removeListener('did-fail-load', onFail).removeListener('destroyed', onDestroy);
+      resolve(result);
+    };
+    const onNav = () => done('committed');
+    const onFail = (_e, _c, _d, _u, main) => { if (main) done('failed'); };
+    const onDestroy = () => done('destroyed');
+    const timer = setTimeout(() => done('timeout'), timeout);
+    wc.once('did-navigate', onNav);
+    wc.on('did-fail-load', onFail);
+    wc.once('destroyed', onDestroy);
+    Promise.resolve(load()).catch(() => done('failed'));
+  });
+}
 function browserCommand(tab, method, params) {
   const wc = tab.view.webContents;
   if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
@@ -841,7 +866,7 @@ async function performAction(tab, body, botId, depth = 0) {
     }
     // A takeover mid-batch seals the accumulated step results too.
     requireActor(tab, botId, body.epoch, true, overseer);
-    return { results, tab: describeTab(tab, true), dispatched: true };
+    return actionReply(tab, { results, dispatched: true });
   }
   if (body.action === 'eval') {
     const code = String(body.code || '');
@@ -856,7 +881,7 @@ async function performAction(tab, body, botId, depth = 0) {
     requireActor(tab, botId, body.epoch, true, overseer);
     const serialized = typeof value === 'string' ? value : JSON.stringify(value);
     if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
-    return { value, tab: describeTab(tab, true), dispatched: true };
+    return actionReply(tab, { value, dispatched: true });
   }
   if (body.action === 'wait') {
     const selector = String(body.selector || '').slice(0, 2000);
@@ -906,14 +931,14 @@ async function performAction(tab, body, botId, depth = 0) {
     }
     if (!value || !value.found) throw Object.assign(new Error(`wait timed out after ${value ? value.waited : Date.now() - hostStart}ms for ${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`), { status: 408 });
     requireActor(tab, botId, body.epoch, true, overseer);
-    return { waited: value.waited, tab: describeTab(tab, true), dispatched: true };
+    return actionReply(tab, { waited: value.waited, dispatched: true });
   }
   if (body.action === 'viewport') {
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     if (body.clear === true) {
       await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
       delete tab.viewport;
-      return { viewport: null, tab: describeTab(tab, true), dispatched: true };
+      return actionReply(tab, { viewport: null, dispatched: true });
     }
     const width = Math.round(Number(body.width)), height = Math.round(Number(body.height));
     const scale = Math.min(Math.max(Number(body.scale) || 1, 0.1), 5);
@@ -922,7 +947,7 @@ async function performAction(tab, body, botId, depth = 0) {
     await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
     tab.viewport = { width, height, scale };
     broadcast();
-    return { viewport: tab.viewport, tab: describeTab(tab, true), dispatched: true };
+    return actionReply(tab, { viewport: tab.viewport, dispatched: true });
   }
   if (body.action === 'cdp') {
     const method = String(body.method || '');
@@ -945,27 +970,24 @@ async function performAction(tab, body, botId, depth = 0) {
     requireActor(tab, botId, body.epoch, true, overseer);
     const cdpSerialized = typeof value === 'string' ? value : JSON.stringify(value);
     if (cdpSerialized && cdpSerialized.length > 48000) value = cdpSerialized.slice(0, 48000) + '…[truncated]';
-    return { value, tab: describeTab(tab, true), dispatched: true };
+    return actionReply(tab, { value, dispatched: true });
   }
   if (['click', 'type', 'press', 'scroll', 'move'].includes(body.action)) {
     const result = await agentInput.perform(tab, body, botId);
-    if (body.action !== 'move') tab.refs.clear();
+    if (depth === 0 && body.action !== 'move') tab.refs.clear();
     broadcast();
-    return { ...result, tab: describeTab(tab, true), dispatched: true };
+    return actionReply(tab, { ...result, dispatched: true });
   }
   if (body.action === 'navigate') {
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
     const target = pageUrl(agentPageUrl(body.url));
-    // loadURL resolves only at did-finish-load — far past the connector's own
-    // abort. Cap the wait at commit+settle; the caller reads `loading` and can
-    // snapshot to follow a still-loading page.
-    const outcome = await Promise.race([
-      wc.loadURL(target).then(() => 'loaded', (error) => ({ error })),
-      new Promise(resolve => setTimeout(() => resolve('loading'), 12000)),
-    ]);
-    if (outcome === 'loading') { requireActor(tab, botId, body.epoch, true, overseer); tab.refs.clear(); broadcast(); return { loading: true, url: target, tab: describeTab(tab, true), dispatched: true }; }
-    if (outcome !== 'loaded') throw outcome.error;
+    const commit = await waitForNavigationCommit(wc, () => wc.loadURL(target));
+    if (commit === 'failed' || commit === 'destroyed') throw Object.assign(new Error('Navigation failed.'), { status: 400 });
+    tab.refs.clear();
+    if (commit === 'timeout' || wc.isLoading()) { requireActor(tab, botId, body.epoch, true, overseer); broadcast(); return actionReply(tab, { loading: true, dispatched: true }); }
+    const loaded = await new Promise(resolve => { if (!wc.isLoading()) return resolve(true); wc.once('did-stop-loading', () => resolve(true)); setTimeout(() => resolve(false), 12000); });
+    if (!loaded) { requireActor(tab, botId, body.epoch, true, overseer); broadcast(); return actionReply(tab, { loading: true, dispatched: true }); }
   } else if (['back', 'forward', 'reload'].includes(body.action)) {
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
@@ -988,7 +1010,7 @@ async function performAction(tab, body, botId, depth = 0) {
   // makes this response the human's page state.
   requireActor(tab, botId, body.epoch, true, overseer);
   tab.refs.clear(); broadcast();
-  return { tab: describeTab(tab, true), dispatched: true };
+  return actionReply(tab, { dispatched: true });
 }
 async function readJson(req) {
   let size = 0; const chunks = [];
@@ -1051,7 +1073,7 @@ function startApi() {
       }
       const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions|control))?$/.exec(url.pathname);
       const tab = match && tabs.get(match[1]);
-      if(match&&!tab&&prefs.vpsBrowser?.sshHost){
+      if(match&&!tab&&isVpsTab(match[1])){
         const result=await vpsBrowser.request(url.pathname+url.search,req.method,req.method==='POST'?await readJson(req):undefined,{botId,botName:nameForBot(botId),epoch:Number(req.headers['x-control-epoch'])});
         const remote=result.tab || (result.id?result:null);if(remote)vpsTabs.set(remote.id,remote);if(req.method==='DELETE')vpsTabs.delete(match[1]);broadcast();return send(200,result);
       }
