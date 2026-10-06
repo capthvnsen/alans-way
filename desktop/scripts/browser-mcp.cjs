@@ -4,7 +4,20 @@ const path = require('node:path');
 const os = require('node:os');
 const computer = process.platform === 'darwin' ? require('../src/computer.cjs') : require('../src/vps-computer.cjs');
 const { createComputerSnapshots } = require('../src/computer-snapshot.cjs');
+const { connectorReplaced } = require('../src/connector-reload.cjs');
 const computerSnapshot = createComputerSnapshots();
+const watched = [
+  __filename,
+  path.join(__dirname, '..', 'src', 'computer-snapshot.cjs'),
+  path.join(__dirname, '..', 'src', process.platform === 'darwin' ? 'computer.cjs' : 'vps-computer.cjs'),
+];
+const fileMtime = (file) => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } };
+const started = Object.fromEntries(watched.map((file) => [file, fileMtime(file)]));
+const reloadIfReplaced = () => {
+  const current = Object.fromEntries(watched.map((file) => [file, fileMtime(file)]));
+  if (!connectorReplaced(started, current)) return;
+  setTimeout(() => process.exit(0), 50).unref();
+};
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
@@ -146,5 +159,6 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
     }
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   } catch (error) { return { isError: true, content: [{ type: 'text', text: error.message }] }; }
+  finally { reloadIfReplaced(); }
 });
 server.connect(new StdioServerTransport()).catch(() => { process.stderr.write('Browser MCP connection failed.\n'); process.exit(1); });
