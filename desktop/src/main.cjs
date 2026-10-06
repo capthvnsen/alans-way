@@ -871,33 +871,41 @@ async function performAction(tab, body, botId, depth = 0) {
     await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
     tab.viewport = { width, height, scale };
     broadcast();
-    return { viewport: tab.viewport, tab: describeTab(tab), dispatched: true };
+    return { viewport: tab.viewport, tab: describeTab(tab, true), dispatched: true };
   }
   if (body.action === 'cdp') {
     const method = String(body.method || '');
-    if (!/^(Page|Runtime|Input|Emulation|Network|DOM|DOMSnapshot|Accessibility|CSS|Log|Fetch|Storage)\.[a-zA-Z]+$/.test(method))
-      throw Object.assign(new Error('Unsupported CDP method. Allowed domains: Page, Runtime, Input, Emulation, Network, DOM, DOMSnapshot, Accessibility, CSS, Log, Fetch, Storage.'), { status: 400 });
-    const params = body.params && typeof body.params === 'object' ? body.params : {};
+    const methodError = cdpMethodError(method);
+    if (methodError) throw Object.assign(new Error(methodError), { status: 400 });
+    const params = { ...(body.params && typeof body.params === 'object' ? body.params : {}) };
     if (JSON.stringify(params).length > 64000) throw Object.assign(new Error('cdp params too large (max 64KB).'), { status: 400 });
+    // Page.navigate bypasses will-navigate: route it through the same agent
+    // address validation as the navigate action (no file:, no local hosts).
+    if (method === 'Page.navigate') {
+      if (typeof params.url !== 'string' || !params.url) throw Object.assign(new Error('Page.navigate needs a url string.'), { status: 400 });
+      params.url = agentPageUrl(params.url);
+    }
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     let value = await Promise.race([
       wc.debugger.sendCommand(method, params),
       new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('cdp timed out after 20s.'), { status: 408 })), 20000)),
     ]);
+    // Seal mid-flight takeovers: the result is the human's page state then.
+    requireActor(tab, botId, body.epoch, true, overseer);
     const cdpSerialized = typeof value === 'string' ? value : JSON.stringify(value);
     if (cdpSerialized && cdpSerialized.length > 48000) value = cdpSerialized.slice(0, 48000) + '…[truncated]';
-    return { value, tab: describeTab(tab), dispatched: true };
+    return { value, tab: describeTab(tab, true), dispatched: true };
   }
   if (['click', 'type', 'press', 'scroll', 'move'].includes(body.action)) {
     const result = await agentInput.perform(tab, body, botId);
     if (body.action !== 'move') tab.refs.clear();
     broadcast();
-    return { ...result, tab: describeTab(tab), dispatched: true };
+    return { ...result, tab: describeTab(tab, true), dispatched: true };
   }
   if (body.action === 'navigate') {
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
-    const target = pageUrl(body.url);
+    const target = pageUrl(agentPageUrl(body.url));
     // loadURL resolves only at did-finish-load — far past the connector's own
     // abort. Cap the wait at commit+settle; the caller reads `loading` and can
     // snapshot to follow a still-loading page.
