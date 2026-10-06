@@ -15,4 +15,9 @@ test('an unchanged desktop tree is not sent again', () => {
   assert.equal(changed.generation, 2);
   assert.equal(changed.unchanged, undefined);
   assert.equal(changed.elements[0].name, '2');
+  const after = reply.observe(7, tree);
+  assert.equal(after.unchanged, false);
+  assert.equal(after.generation, 3);
+  const same = reply.observe(7, tree);
+  assert.deepEqual(same, { unchanged: true, generation: 3 });
 });

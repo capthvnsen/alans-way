@@ -9,19 +9,23 @@ function fingerprint(snapshot) {
 
 function createComputerSnapshots() {
   const seen = new Map();
-  return function reply(pid, snapshot, since) {
+  function observe(pid, snapshot) {
     const next = fingerprint(snapshot);
     const prior = seen.get(pid);
-    if (prior && prior.fingerprint === next) {
-      if (Number.isInteger(since) && since === prior.generation) {
-        return { unchanged: true, generation: prior.generation };
-      }
-      return { ...snapshot, generation: prior.generation };
-    }
+    if (prior && prior.fingerprint === next) return { unchanged: true, generation: prior.generation };
     const generation = (prior ? prior.generation : 0) + 1;
     seen.set(pid, { fingerprint: next, generation });
-    return { ...snapshot, generation };
-  };
+    return { unchanged: false, generation, elements: Array.isArray(snapshot.elements) ? snapshot.elements : [] };
+  }
+  function reply(pid, snapshot, since) {
+    const observed = observe(pid, snapshot);
+    if (observed.unchanged && Number.isInteger(since) && since === observed.generation) {
+      return { unchanged: true, generation: observed.generation };
+    }
+    return { ...snapshot, generation: observed.generation };
+  }
+  reply.observe = observe;
+  return reply;
 }
 
 module.exports = { createComputerSnapshots, fingerprint };
