@@ -16,6 +16,89 @@ function normalizeUrl(value) {
   return url.href;
 }
 
+// Agent-initiated navigations never open loopback, link-local or cloud
+// metadata addresses: those expose services that trust the machine itself,
+// and the bot would read them through the Mac's network position. Private
+// LAN ranges stay reachable (people run dev servers and home tools there).
+// The URL parser normalizes numeric, hex and shorthand IP forms before this
+// check. HERMES_WORKSPACE_ALLOW_LOOPBACK=1 lifts only the loopback part, for
+// test fixtures that serve pages from 127.0.0.1.
+function ipv4Bytes(hostname) {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (!match) return null;
+  const bytes = match.slice(1).map(Number);
+  return bytes.every((byte) => byte <= 255) ? bytes : null;
+}
+function agentHostBarrier(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost')) return 'loopback';
+  let v4 = ipv4Bytes(host);
+  if (host.startsWith('[') && host.endsWith(']')) {
+    const inner = host.slice(1, -1);
+    if (inner === '::1') return 'loopback';
+    if (inner === '::') return 'unspecified';
+    const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(inner);
+    if (mapped) {
+      const hi = parseInt(mapped[1], 16), lo = parseInt(mapped[2], 16);
+      v4 = [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff];
+    } else if ((parseInt(inner.split(':', 1)[0] || '0', 16) & 0xffc0) === 0xfe80) return 'link-local';
+  }
+  if (v4) {
+    if (v4[0] === 127) return 'loopback';
+    if (v4[0] === 0) return 'unspecified';
+    if (v4[0] === 169 && v4[1] === 254) return 'link-local';
+  }
+  return '';
+}
+function agentPageUrl(value) {
+  const url = normalizeUrl(value);
+  if (url === 'about:blank') return url;
+  const barrier = agentHostBarrier(new URL(url).hostname);
+  if (!barrier || (barrier === 'loopback' && process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK === '1')) return url;
+  throw new Error('Agents cannot open loopback, link-local or metadata addresses.');
+}
+
+// A page can name any favicon URL and bots read favicons, so only
+// same-origin icons may be fetched — anything else would be a credentialed
+// SSRF/exfil channel through the browser session.
+function faviconTarget(pageUrlValue, iconUrl) {
+  try {
+    const icon = new URL(String(iconUrl), String(pageUrlValue));
+    const page = new URL(String(pageUrlValue));
+    if (!['http:', 'https:'].includes(icon.protocol) || icon.origin !== page.origin) return '';
+    return icon.href;
+  } catch { return ''; }
+}
+
+// While the human holds a tab, bots may learn that it exists and who holds
+// it — not where the human is. Keep metadata structural: origin-only URL,
+// no title, icon or handoff note.
+function redactTabForBot(info) {
+  if (!info || info.controller !== 'human') return info;
+  let origin = '';
+  try { const url = new URL(info.url); if (url.protocol === 'http:' || url.protocol === 'https:') origin = url.origin; } catch {}
+  const handoff = info.handoff && typeof info.handoff === 'object' ? { ...info.handoff, note: '' } : info.handoff;
+  return { ...info, url: origin, title: '', favicon: '', handoff };
+}
+
+const CDP_METHOD_RE = /^(Page|Runtime|Input|Emulation|Network|DOM|DOMSnapshot|Accessibility|CSS|Log)\.[a-zA-Z]+$/;
+// These in-domain methods still reach outside the page: cookie/storage
+// jars, file pickers and downloads, browser-privileged fetches, request
+// interception and persistent script injection all stay denied. Fetch and
+// Storage are excluded from the allowed domains entirely.
+const CDP_BLOCKED = new Set([
+  'Page.addScriptToEvaluateOnNewDocument', 'Page.removeScriptToEvaluateOnNewDocument',
+  'Page.setInterceptFileChooserDialog', 'Page.setDownloadBehavior', 'Page.getCookies',
+  'DOM.setFileInputFiles',
+  'Network.getCookies', 'Network.getAllCookies', 'Network.setCookie', 'Network.setCookies',
+  'Network.clearBrowserCookies', 'Network.clearBrowserCache', 'Network.loadNetworkResource',
+]);
+function cdpMethodError(method) {
+  if (CDP_BLOCKED.has(method)) return `cdp method ${method} is not available to agents.`;
+  if (!CDP_METHOD_RE.test(method)) return 'Unsupported CDP method. Allowed domains: Page, Runtime, Input, Emulation, Network, DOM, DOMSnapshot, Accessibility, CSS, Log.';
+  return '';
+}
+
 function parseRemoteUrl(value) {
   if (!value) return '';
   const url = new URL(String(value));
@@ -57,6 +140,11 @@ function requireAgentClaim(tab) {
     throw Object.assign(new Error(h.phase === 'handed_off'
       ? `handoff_source: this task moved to the ${h.destinationHost || 'other'} tab ${h.destinationTabId || ''}. Continue there; only the human can reopen this tab for agents.`
       : 'handoff_review_required: the handed-off page needs the human to check it (for example a login) before an agent can take control.'), { status: 409 });
+  // An explicit human takeover (Take over, human navigation, extension page)
+  // seals the tab until the human hands it back in the UI. A bot's own
+  // release or the idle-expiry clock stays retakeable.
+  if (tab.controller === 'human' && tab.humanLock)
+    throw Object.assign(new Error('human_has_control: the human took this tab over; only they can hand it back.'), { status: 409 });
 }
 function reviewedHandoff(handoff) {
   return handoff && handoff.phase !== 'reviewed' ? { ...handoff, phase: 'reviewed', reviewedAt: Date.now() } : handoff;
@@ -67,7 +155,9 @@ function requireAgentRead(tab) {
 }
 
 function isAuthorized(header, token) {
-  const input = Buffer.from(String(header || '').replace(/^Bearer /, ''));
+  const match = /^Bearer (.+)$/i.exec(String(header || ''));
+  if (!match) return false;
+  const input = Buffer.from(match[1]);
   const expected = Buffer.from(token);
   return input.length === expected.length && crypto.timingSafeEqual(input, expected);
 }
@@ -85,4 +175,4 @@ function sanitizeBots(value) {
   }));
 }
 
-module.exports = { normalizeUrl, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots };
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots };

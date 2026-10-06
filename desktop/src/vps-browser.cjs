@@ -1,11 +1,12 @@
 const { spawn } = require('node:child_process');
+const { isSshTarget } = require('./core.cjs');
 const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
 function createVpsBrowser({ getConfig }) {
   async function request(route, method = 'GET', body, { botId = '', botName = '', human = false, epoch } = {}) {
     const cfg = getConfig();
     if (!cfg?.sshHost || !cfg.scriptPath) throw new Error('Configure the VPS browser connection in Settings.');
     if (
-      !/^[a-zA-Z0-9][\w.@-]{0,150}$/.test(cfg.sshHost) ||
+      !isSshTarget(cfg.sshHost) ||
       !cfg.scriptPath.startsWith('/') ||
       /[\r\n\0]/.test(cfg.scriptPath)
     )
