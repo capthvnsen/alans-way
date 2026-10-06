@@ -1,9 +1,8 @@
 # Set up Alan's Way (instructions for an AI agent)
 
-You are setting up three pieces for a human: the **desktop app**
-(alans-way-localapp) on their computer, the **VPS** that runs their Hermes
-gateway and a cloud browser, and the **Hermes
-plugin** (alans-way-agents). Work through the stages in order. Each stage ends
+You are setting up three pieces for a human: **Alan's Way app**
+on their computer, the **VPS** that runs their Hermes
+gateway and a cloud browser, and **Alan's Way Plugin**. Work through the stages in order. Each stage ends
 with a check; do not continue past a failing check.
 
 This guide is written for a Mac as the user's computer. When it is a Windows

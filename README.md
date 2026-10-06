@@ -1,4 +1,4 @@
-# Hermes — Alan's Way
+# Alan's Way
 
 **Your AI agents live on a VPS. This gives them a window into your computer — on your terms.**
 
@@ -22,15 +22,15 @@ A desktop app for people running [Hermes Agent](https://github.com/NousResearch/
 
 | Repo | What it is | Who installs it |
 |---|---|---|
-| **alans-way** (this one) | The desktop app (macOS/Windows) + companion CLI | You, on your computer |
-| [alans-way-agents](https://github.com/capthvnsen/alans-way-agents) | The plugin: proactivity, workspace skill, auto-routing | Your Hermes gateway (VPS or macOS VM) |
+| **alans-way** (this one) | Alan's Way desktop app (macOS/Windows) + companion CLI | You, on your computer |
+| [alans-way-agents](https://github.com/capthvnsen/alans-way-agents) | Alan's Way Plugin: proactivity, workspace skill, auto-routing | Your Hermes gateway (VPS or macOS VM) |
 
 The app works without the plugin (manual tab sharing), and the plugin falls back to VPS-only browsing when the app isn't running.
 
 ## How the pieces fit
 
-- **Telegram stays stock.** Your existing Hermes gateway on the VPS keeps owning the bot conversation end to end. This app embeds the official Telegram Web client so you can chat and watch — it is not a second gateway and never polls the bot token.
-- **Host browser.** The app's own Chromium tabs are the bots' window into your computer, driven per-tab through Chromium's debugger by a loopback-only connector.
+- **Telegram stays stock.** Your existing Hermes gateway on the VPS keeps owning the bot conversation end to end. Alan's Way app embeds the official Telegram Web client so you can chat and watch — it is not a second gateway and never polls the bot token.
+- **Host browser.** Alan's Way app's own Chromium tabs are the bots' window into your computer, driven per-tab through Chromium's debugger by a loopback-only connector.
 - **VPS browser.** A separate managed Chromium on the server handles cloud work and is the fallback for *new* tasks when your computer is asleep. It does not absorb in-flight host tabs — those block and resume.
 - **Remote desktop preview.** Optional. On a Linux server it needs a VNC server plus a noVNC (WebSocket) viewer you already run — the app only embeds the viewer URL you paste in. On a macOS guest VM, `scripts/mac-vm-preview.sh` bridges Tart's VNC display into the same view. Its **Take control** mode is the one place your input is forwarded to the remote desktop.
 - **Plugin proactivity is read/research/draft by default.** The optional primary bot reviews its own work and drafts suggestions on a bounded budget; consequential actions (external messages, purchases, credential or permission changes, production changes, destructive operations) always require your approval.
@@ -38,7 +38,7 @@ The app works without the plugin (manual tab sharing), and the plugin falls back
 
 ## Install the app
 
-**Setting this up with an AI agent?** Point it at [docs/setup-for-agents.md](docs/setup-for-agents.md) — one page covering the desktop app, the server and the Hermes plugin, with a check after every stage and the exact steps that need you.
+**Setting this up with an AI agent?** Point it at [docs/setup-for-agents.md](docs/setup-for-agents.md) — one page covering Alan's Way app, the server and Alan's Way Plugin, with a check after every stage and the exact steps that need you.
 
 On a Mac (Apple Silicon) one command builds the app, installs it to
 `/Applications` and opens it; re-run it to upgrade. Without git or Node it
@@ -78,7 +78,7 @@ The plugin's `workspace-setup` skill teaches installed agents the same playbook.
 
 ## Upgrading
 
-Fresh installs and upgrades follow the same path: pull the repo, `cd desktop && npm ci`, restart the app. On the VPS, update the plugin checkout and restart the gateway through Hermes' normal lifecycle — a running gateway keeps old code until restarted. Then send one Telegram message and watch a bounded browser action to confirm both ends still work. See [deployment](docs/deployment.md) and the [multi-profile fleet guide](docs/agent-setup.md) for details.
+Fresh installs and upgrades follow the same path: pull the repo, `cd desktop && npm ci`, restart Alan's Way app. On the VPS, update the plugin checkout and restart the gateway through Hermes' normal lifecycle — a running gateway keeps old code until restarted. Then send one Telegram message and watch a bounded browser action to confirm both ends still work. See [deployment](docs/deployment.md) and the [multi-profile fleet guide](docs/agent-setup.md) for details.
 
 ## Honest boundaries
 

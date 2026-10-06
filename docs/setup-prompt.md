@@ -8,8 +8,8 @@ their computer; everything else is automatic.
 
 ```text
 Set up Alan's Way for me. This server runs my Hermes gateway; connect it to my
-<Mac | Windows PC> over Tailscale, install the Alan's Way app on it and the
-alans-way Hermes plugin here, and prove it works. Do not modify Hermes itself.
+<Mac | Windows PC> over Tailscale, install Alan's Way app on it and
+Alan's Way Plugin here, and prove it works. Do not modify Hermes itself.
 Reference: https://github.com/capthvnsen/alans-way/blob/main/docs/setup-for-agents.md
 
 Rules for the whole job:
