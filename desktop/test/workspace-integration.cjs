@@ -97,7 +97,13 @@ app.whenReady().then(async () => {
     if (req.url === '/icon.png') { res.setHeader('Content-Type', 'image/png'); return res.end(PNG_ICON); }
     if (req.url === '/favicon-local') return res.end('<title>favicon-local</title><link rel="icon" href="/icon.png">');
     if (req.url === '/favicon-cross') return res.end(`<title>favicon-cross</title><link rel="icon" href="http://localhost:${server.address().port}/icon.png">`);
-    return req.url === '/streaming' ? (res.write('<title>streaming</title><h1>First half</h1>'), setTimeout(() => res.end('<p>Second half</p>'), 600)) : res.end(req.url === '/blocks' ? '<title>blocks</title><h1>Order 42</h1><ul><li>Apples <b>3</b></li><li>Pears 5</li></ul><table><tr><td>Total</td><td>8</td></tr></table><p>Due <i>today</i></p>' : req.url === '/red' || req.url === '/blue' ? `<style>html{background:${req.url.slice(1)}}</style><title>${req.url.slice(1)}</title><button onclick="window.open('/popup')">Open fixture popup</button>` : '<!doctype html><title>Human focus fixture</title><input id="human" aria-label="Human input" value="Keep my draft"><script>human.focus()</script>');
+    if (req.url === '/streaming') { res.write('<title>streaming</title><h1>First half</h1>'); setTimeout(() => res.end('<p>Second half</p>'), 600); return; }
+    if (req.url === '/form') return res.end('<!doctype html><title>form</title><form id="f"><input name="a" aria-label="Field A"><input name="b" aria-label="Field B"><input name="c" aria-label="Field C"><button type="submit">Send form</button></form><p id="out">idle</p><script>f.onsubmit=e=>{e.preventDefault();out.textContent=[f.a.value,f.b.value,f.c.value].join("|")}</script>');
+    if (req.url === '/nav-a') return res.end('<title>nav-a</title><body>Nav A');
+    if (req.url === '/nav-b') return res.end('<title>nav-b</title><body>Nav B');
+    if (req.url === '/blocks') return res.end('<title>blocks</title><h1>Order 42</h1><ul><li>Apples <b>3</b></li><li>Pears 5</li></ul><table><tr><td>Total</td><td>8</td></tr></table><p>Due <i>today</i></p>');
+    if (req.url === '/red' || req.url === '/blue') return res.end(`<style>html{background:${req.url.slice(1)}}</style><title>${req.url.slice(1)}</title><button onclick="window.open('/popup')">Open fixture popup</button>`);
+    res.end('<!doctype html><title>Human focus fixture</title><input id="human" aria-label="Human input" value="Keep my draft"><script>human.focus()</script>');
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const human = await invoke('create-tab', { url: `http://127.0.0.1:${server.address().port}` });
@@ -293,6 +299,29 @@ app.whenReady().then(async () => {
   ] }, 'overseer-bot');
   assert.equal(typed.results[1].value, 'via selector', 'type by selector produces real field input.');
   console.log('PASS: selector-targeted typing inside a self-contained batch.');
+  // Snapshot refs stay valid across an entire batch until navigation.
+  const formTab = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/form` });
+  const formSnap = await waitFor(() => api(`/v1/tabs/${formTab.id}/snapshot`), snap => snap.title === 'form');
+  const refs = ['Field A', 'Field B', 'Field C', 'Send form'].map(name => formSnap.elements.find(el => el.name === name).ref);
+  const filled = await api(`/v1/tabs/${formTab.id}/actions`, 'POST', { action: 'batch', epoch: formTab.epoch, steps: [
+    { action: 'type', ref: refs[0], text: 'one' }, { action: 'type', ref: refs[1], text: 'two' }, { action: 'type', ref: refs[2], text: 'three' }, { action: 'click', ref: refs[3] },
+  ] });
+  assert.equal(filled.results.length, 4, 'batch form fill by refs completes all steps');
+  assert.equal((await api(`/v1/tabs/${formTab.id}/actions`, 'POST', { action: 'eval', code: "document.getElementById('out').textContent", epoch: formTab.epoch })).value, 'one|two|three');
+  assert.ok(Number.isInteger(filled.generation) && filled.url.includes('/form') && filled.title === 'form', 'action responses carry page state');
+  const closed = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/nav-a` });
+  await fetch(new URL(`/v1/tabs/${closed.id}`, connection.url), { method: 'DELETE', headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'capture-regression', 'X-Control-Epoch': String(closed.epoch) } });
+  const missing = await apiRaw(`/v1/tabs/${closed.id}/snapshot`, 'GET');
+  assert.equal(missing.status, 404, 'closed Mac tab returns local 404');
+  assert.equal(missing.data.error, 'Tab not found.');
+  const navTab = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/nav-a` });
+  const navBatch = await api(`/v1/tabs/${navTab.id}/actions`, 'POST', { action: 'batch', epoch: navTab.epoch, steps: [
+    { action: 'navigate', url: `http://127.0.0.1:${server.address().port}/nav-b` },
+    { action: 'wait', url: '/nav-b', timeout: 5000 },
+  ] });
+  assert.equal(navBatch.results.length, 2);
+  assert.ok(navBatch.results[1].waited >= 0 && navBatch.url.includes('/nav-b'), 'wait after navigate evaluates the new document');
+  console.log('PASS: batch refs for multi-field forms, closed-tab 404, navigate-then-wait, and action page state.');
   // wait honors a visibility requirement and a url condition; clicks hit a
   // covered element through an alternate point and name the blocker when it
   // cannot be clicked at all.
