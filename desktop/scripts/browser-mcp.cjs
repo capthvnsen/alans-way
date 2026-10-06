@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const computer = process.platform === 'darwin' ? require('../src/computer.cjs') : require('../src/vps-computer.cjs');
+const { createComputerSnapshots } = require('../src/computer-snapshot.cjs');
+const computerSnapshot = createComputerSnapshots();
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
@@ -26,7 +28,7 @@ const tools = [
   { name: 'cua_alans_way_screenshot', description: 'Capture the tab viewport as an image file. Hermes delivers it as MEDIA:<path> — run a vision step on that path to see pixels. Defaults to compact jpeg; png keeps alpha.', inputSchema: objectSchema({ tabId: string, format: { type: 'string', enum: ['jpeg', 'png', 'webp'], description: 'Image format, default jpeg.' }, quality: { type: 'integer', description: 'jpeg/webp quality 1-100, default 70.' }, maxWidth: { type: 'integer', description: 'Downscale cap on image width in px, default 1280.' } }, ['tabId']), annotations: { readOnlyHint: true } },
   { name: 'cua_alans_way_close', description: 'Close a tab this bot owns. Pass the current epoch. Required to free VPS tabs (global cap 40).', inputSchema: objectSchema({ tabId: string, epoch: { type: 'integer' } }, ['tabId', 'epoch']), annotations: { readOnlyHint: false, openWorldHint: true } },
   { name: 'workspace_computer_apps', description: 'List desktop apps the agent can drive without taking the focused window. On a Mac that is every background app. On a Linux desktop that is every app except the focused one. Keychain and password fields are off limits. Web work stays on cua_alans_way. Never moves the pointer.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
-  { name: 'workspace_computer_snapshot', description: 'Read one desktop app: elements[] with ref, role, and name. On a Mac, elements also include screen x,y,width,height. Prefer press by ref. Take a fresh snapshot after the app changes. Refuses the focused window.', inputSchema: objectSchema({ pid: { type: 'integer' } }, ['pid']), annotations: { readOnlyHint: true } },
+  { name: 'workspace_computer_snapshot', description: 'Read one desktop app: elements[] with ref, role, and name. On a Mac, elements also include screen x,y,width,height. Prefer press by ref. Pass since=<last generation> for a cheap {unchanged:true} when the tree is the same. Take a fresh snapshot after the app changes. Refuses the focused window.', inputSchema: objectSchema({ pid: { type: 'integer' }, since: { type: 'integer', description: 'Generation from the previous snapshot. Returns {unchanged:true} when the tree is identical.' } }, ['pid']), annotations: { readOnlyHint: true } },
   { name: 'workspace_computer_screenshot', description: 'Capture one app window as a small jpeg. Use only when the snapshot has no named control for what you need, such as a canvas or a chart. Never a full screen. On a Mac, scale image pixels by window.width / imageWidth. Refuses the focused window and Keychain.', inputSchema: objectSchema({ pid: { type: 'integer' }, maxWidth: { type: 'integer', description: 'Downscale cap in px, default 960, max 1280.' } }, ['pid']), annotations: { readOnlyHint: true } },
   { name: 'workspace_computer_action', description: 'Act in a desktop app without moving the pointer. press uses a snapshot ref. On a Mac, click and drag use snapshot coordinates. On a Linux desktop, use press. batch runs up to 25 steps. Refuses the focused window, Keychain, and password fields.', inputSchema: objectSchema({
     pid: { type: 'integer' },
@@ -95,7 +97,9 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
         result = await request(tabPath, 'DELETE', undefined, args.epoch);
         break;
       case 'workspace_computer_apps': result = { apps: computer.apps() }; break;
-      case 'workspace_computer_snapshot': result = computer.snapshot(args.pid); break;
+      case 'workspace_computer_snapshot':
+        result = computerSnapshot(args.pid, computer.snapshot(args.pid), args.since);
+        break;
       case 'workspace_computer_screenshot': {
         const shot = computer.screenshot(args.pid, args.maxWidth);
         return { content: [
