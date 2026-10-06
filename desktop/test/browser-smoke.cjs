@@ -33,7 +33,7 @@ async function eventually(fn, predicate) {
   await new Promise(resolve => fixtureServer.listen(0, '127.0.0.1', resolve));
   connection = JSON.parse(fs.readFileSync(process.env.HERMES_WORKSPACE_CONNECTION || path.join(os.homedir(), 'Library/Application Support/Hermes Workspace/connection.json'), 'utf8'));
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [process.env.HERMES_WORKSPACE_MCP || path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', botId], env: { ...process.env } }));
-  assert.equal((await client.listTools()).tools.length, 10);
+  assert.equal((await client.listTools()).tools.length, 11);
   assert.equal((await tool('cua_alans_way_status')).host, 'mac');
   const root = `http://127.0.0.1:${fixtureServer.address().port}`;
   const tab = await tool('cua_alans_way_open', { url: root }); created.push(tab.id);

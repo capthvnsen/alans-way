@@ -27,6 +27,7 @@ const tools = [
   { name: 'cua_alans_way_close', description: 'Close a tab this bot owns. Pass the current epoch. Required to free VPS tabs (global cap 40).', inputSchema: objectSchema({ tabId: string, epoch: { type: 'integer' } }, ['tabId', 'epoch']), annotations: { readOnlyHint: false, openWorldHint: true } },
   { name: 'workspace_computer_apps', description: 'List Mac apps the agent can drive in the background. The frontmost app and Keychain are off limits. Web work stays on cua_alans_way. Never moves the human cursor.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
   { name: 'workspace_computer_snapshot', description: 'Read one background Mac app: elements[] with ref, role, name, and screen x,y,width,height. Prefer press by ref. Use click or drag with those coordinates only when the control is a canvas. Take a fresh snapshot after the app changes.', inputSchema: objectSchema({ pid: { type: 'integer' } }, ['pid']), annotations: { readOnlyHint: true } },
+  { name: 'workspace_computer_screenshot', description: 'Capture one background Mac app window as a small jpeg. Use only when the snapshot has no named control for what you need, such as a canvas or a chart. Never a full screen. Click coordinates stay in snapshot space: scale image pixels by window.width / imageWidth. Refuses the frontmost app and Keychain.', inputSchema: objectSchema({ pid: { type: 'integer' }, maxWidth: { type: 'integer', description: 'Downscale cap in px, default 960, max 1280.' } }, ['pid']), annotations: { readOnlyHint: true } },
   { name: 'workspace_computer_action', description: 'Act in a background Mac app without moving the human cursor. press uses a snapshot ref. click and drag use snapshot coordinates. batch runs up to 25 steps. Refuses the frontmost app, Keychain, and password fields.', inputSchema: objectSchema({
     pid: { type: 'integer' },
     action: { type: 'string', enum: ['press', 'click', 'drag', 'batch'] },
@@ -95,6 +96,17 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
         break;
       case 'workspace_computer_apps': result = { apps: computer.apps() }; break;
       case 'workspace_computer_snapshot': result = computer.snapshot(args.pid); break;
+      case 'workspace_computer_screenshot': {
+        const shot = computer.screenshot(args.pid, args.maxWidth);
+        return { content: [
+          { type: 'image', data: shot.image, mimeType: 'image/jpeg' },
+          { type: 'text', text: JSON.stringify({
+            imageWidth: shot.imageWidth, imageHeight: shot.imageHeight,
+            window: { x: shot.windowX, y: shot.windowY, width: shot.windowWidth, height: shot.windowHeight },
+            note: 'Click coordinates stay in snapshot space. Scale image pixels by window.width / imageWidth.',
+          }) },
+        ] };
+      }
       case 'workspace_computer_action': {
         const step = (body) => {
           if (body.action === 'press') return computer.press(args.pid, body.ref);

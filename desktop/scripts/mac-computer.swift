@@ -11,6 +11,12 @@ struct Out: Encodable {
     var text: String?
     var cursorMoved: Bool?
     var image: String?
+    var imageWidth: Int? = nil
+    var imageHeight: Int? = nil
+    var windowX: Double? = nil
+    var windowY: Double? = nil
+    var windowWidth: Double? = nil
+    var windowHeight: Double? = nil
 }
 
 struct AppInfo: Encodable {
@@ -127,6 +133,72 @@ func pressAtPoint(_ pid: pid_t, _ axPoint: CGPoint) -> Bool {
     return AXUIElementPerformAction(element, "AXPress" as CFString) == .success
 }
 
+func ownerPid(_ item: [String: Any]) -> Int32 {
+    let key = kCGWindowOwnerPID as String
+    if let value = item[key] as? NSNumber { return value.int32Value }
+    return -1
+}
+
+func windowBounds(_ item: [String: Any]) -> CGRect {
+    guard let bounds = item[kCGWindowBounds as String] as? [String: Any] else { return .zero }
+    func number(_ name: String) -> Double { (bounds[name] as? NSNumber)?.doubleValue ?? 0 }
+    return CGRect(x: number("X"), y: number("Y"), width: number("Width"), height: number("Height"))
+}
+
+func captureWindow(_ pid: pid_t, maxWidth: Int) -> Out {
+    let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    var bestId: CGWindowID = 0
+    var bestArea = 0.0
+    var bestBounds = CGRect.zero
+    for item in info {
+        if ownerPid(item) != pid { continue }
+        if (item[kCGWindowLayer as String] as? NSNumber)?.intValue != 0 { continue }
+        let bounds = windowBounds(item)
+        if bounds.width < 40 || bounds.height < 40 { continue }
+        let area = bounds.width * bounds.height
+        if area <= bestArea { continue }
+        bestArea = area
+        bestId = (item[kCGWindowNumber as String] as? NSNumber)?.uint32Value ?? 0
+        bestBounds = bounds
+    }
+    guard bestId != 0 else { fail("That app has no window to capture.") }
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("alans-way-\(bestId).jpg")
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    process.arguments = ["-l", String(bestId), "-x", "-o", "-t", "jpg", file.path]
+    do { try process.run(); process.waitUntilExit() } catch { fail("Could not capture that window.") }
+    guard process.terminationStatus == 0,
+          let sourceData = try? Data(contentsOf: file),
+          let source = NSBitmapImageRep(data: sourceData),
+          source.pixelsWide > 1, source.pixelsHigh > 1 else {
+        try? FileManager.default.removeItem(at: file)
+        fail("Screen Recording is off for this program. Turn it on in System Settings → Privacy & Security → Screen Recording, then retry.")
+    }
+    let cap = min(max(maxWidth, 320), 1280)
+    let scale = source.pixelsWide > cap ? Double(cap) / Double(source.pixelsWide) : 1
+    let width = max(1, Int((Double(source.pixelsWide) * scale).rounded()))
+    let height = max(1, Int((Double(source.pixelsHigh) * scale).rounded()))
+    guard let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+    ) else { fail("Could not encode the window.") }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    source.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
+    NSGraphicsContext.restoreGraphicsState()
+    try? FileManager.default.removeItem(at: file)
+    guard let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.55]) else {
+        fail("Could not encode the window.")
+    }
+    return Out(
+        ok: true, error: nil, apps: nil, elements: nil, text: nil, cursorMoved: nil,
+        image: jpeg.base64EncodedString(), imageWidth: width, imageHeight: height,
+        windowX: bestBounds.origin.x, windowY: bestBounds.origin.y,
+        windowWidth: bestBounds.width, windowHeight: bestBounds.height
+    )
+}
+
 func axToQuartz(_ point: CGPoint) -> CGPoint {
     for screen in NSScreen.screens {
         let frame = screen.frame
@@ -196,6 +268,10 @@ case "press":
     }
     if moved(before) { CGWarpMouseCursorPosition(before) }
     emit(Out(ok: true, error: nil, apps: nil, elements: nil, text: nil, cursorMoved: moved(before), image: nil))
+case "shot":
+    guard args.count > 1, let pid = Int32(args[1]) else { fail("shot needs a pid") }
+    let maxWidth = args.count > 2 ? Int(args[2]) ?? 960 : 960
+    emit(captureWindow(pid, maxWidth: maxWidth))
 case "click", "drag":
     guard args.count > 3, let pid = Int32(args[1]), let x = Double(args[2]), let y = Double(args[3]) else {
         fail("\(command) needs pid x y")
