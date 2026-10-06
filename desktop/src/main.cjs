@@ -10,7 +10,7 @@ const { createAvatarStore } = require('./avatar-store.cjs');
 const { createAgentInput, tintScript, botAccent } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
-const { snapshotExpression, settleSnapshot, checkpointExpression, restoreExpression } = require('./browser-page.cjs');
+const { snapshotExpression, settleSnapshot, readControls, checkpointExpression, restoreExpression } = require('./browser-page.cjs');
 const { createVpsBrowser } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
@@ -856,6 +856,17 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = 
   backgroundCaptureQueue = capture.catch(() => {});
   return capture;
 }
+async function actionControls(tab) {
+  try {
+    requireAgentRead(tab);
+    const controls = await readControls((code) => tab.view.webContents.executeJavaScript(code), tab);
+    requireAgentRead(tab);
+    return controls;
+  } catch (error) {
+    if (error && error.status === 409) throw error;
+    return null;
+  }
+}
 async function performAction(tab, body, botId, depth = 0) {
   const overseer = isOverseer(botId);
   requireActor(tab, botId, body.epoch, true, overseer);
@@ -873,7 +884,8 @@ async function performAction(tab, body, botId, depth = 0) {
     }
     // A takeover mid-batch seals the accumulated step results too.
     requireActor(tab, botId, body.epoch, true, overseer);
-    return actionReply(tab, { results, dispatched: true });
+    const controls = await actionControls(tab);
+    return actionReply(tab, { results, ...(controls || {}), dispatched: true });
   }
   if (body.action === 'eval') {
     const code = String(body.code || '');
@@ -983,7 +995,8 @@ async function performAction(tab, body, botId, depth = 0) {
     const result = await agentInput.perform(tab, body, botId);
     if (depth === 0 && body.action !== 'move') tab.refs.clear();
     broadcast();
-    return actionReply(tab, { ...result, dispatched: true });
+    const controls = depth === 0 && body.action !== 'move' ? await actionControls(tab) : null;
+    return actionReply(tab, { ...result, ...(controls || {}), dispatched: true });
   }
   if (body.action === 'navigate') {
     await agentInput.clear(tab);
@@ -1017,7 +1030,8 @@ async function performAction(tab, body, botId, depth = 0) {
   // makes this response the human's page state.
   requireActor(tab, botId, body.epoch, true, overseer);
   tab.refs.clear(); broadcast();
-  return actionReply(tab, { dispatched: true });
+  const controls = await actionControls(tab);
+  return actionReply(tab, { ...(controls || {}), dispatched: true });
 }
 async function readJson(req) {
   let size = 0; const chunks = [];

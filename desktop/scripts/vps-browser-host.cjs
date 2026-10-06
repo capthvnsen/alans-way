@@ -9,7 +9,7 @@ const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
 const { normalizeUrl, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized } = require('../src/core.cjs');
 const { createAgentInput, tintScript, botAccent } = require('../src/agent-input.cjs');
-const { snapshotExpression, settleSnapshot, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
+const { snapshotExpression, settleSnapshot, readControls, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
 const root =
   process.env.HERMES_VPS_BROWSER_DATA || path.join(os.homedir(), '.local', 'share', 'hermes-alans-way', 'browser');
 const configFile = path.join(root, 'config.json'),
@@ -241,6 +241,17 @@ async function serve() {
     const e = h.entries[h.currentIndex + (action === 'back' ? -1 : 1)];
     if (e) await settle(tab, () => wc.command('Page.navigateToHistoryEntry', { entryId: e.id }));
   }
+  async function actionControls(tab) {
+    try {
+      requireAgentRead(tab);
+      const controls = await readControls((code) => tab.view.webContents.executeJavaScript(code), tab);
+      requireAgentRead(tab);
+      return controls;
+    } catch (error) {
+      if (error && error.status === 409) throw error;
+      return null;
+    }
+  }
   async function vpsPerform(tab, body, botId, overseer, depth = 0) {
     const wc = tab.view.webContents;
     requireActor(tab, botId, body.epoch, true, overseer);
@@ -255,7 +266,8 @@ async function serve() {
         try { results.push(await vpsPerform(tab, { ...step, epoch: body.epoch }, botId, overseer, 1)); }
         catch (error) { results.push({ error: error.message }); break; }
       }
-      return { results, dispatched: true };
+      const controls = await actionControls(tab);
+      return { results, ...(controls || {}), dispatched: true };
     }
     if (body.action === 'eval') {
       const code = String(body.code || '');
@@ -356,7 +368,8 @@ async function serve() {
       await history(tab, body.action);
     } else throw fail('Unsupported VPS action.');
     if (body.action !== 'move') tab.refs.clear();
-    return { dispatched: true };
+    const controls = depth === 0 && body.action !== 'move' ? await actionControls(tab) : null;
+    return { ...(controls || {}), dispatched: true };
   }
   cdp.listeners.add((event) => {
     if (event.method === 'Target.targetInfoChanged') {
