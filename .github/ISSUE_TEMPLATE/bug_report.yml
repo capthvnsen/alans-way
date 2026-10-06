@@ -1,0 +1,32 @@
+name: Bug report
+description: Something doesn't work the way the docs say it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Don't paste tokens, `connection.json`, machine IPs, Telegram IDs, transcripts or raw logs. For a security problem, use **Report a vulnerability** on the Security tab instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: App version, macOS version, Hermes version (`hermes --version`), VPS OS, and the output of `./setup.sh --verify` if the VPS side is involved (redact hosts).
+    validations:
+      required: true
