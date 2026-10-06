@@ -10,7 +10,7 @@ function snapshotExpression(generation, opts = {}) {
   // buttons, so the scan gets a wider budget than the text walk.
   const elementMs = int(opts.elementMs, 5, 2000, 200);
   const keep = int(opts.keep, 0, Number.MAX_SAFE_INTEGER, -1);
-  const parseWaitMs = int(opts.parseWaitMs, 0, 5000, 2000);
+  const parseWaitMs = int(opts.parseWaitMs, 0, 5000, 400);
   return `(async () => {
     // The parser yields between chunks, so a snapshot can land mid-document;
     // give a still-parsing page a moment and report it if it is not done.
