@@ -17,13 +17,13 @@ test('no url returns empty', () => {
 });
 
 test('text-url entity url wins over plain text', () => {
-  const url = firstLink(msg('click this', { entities: [{ type: 'textEntityTypeTextUrl', offset: 0, length: 4, url: 'https://target.example/x' }] }));
+  const url = firstLink(msg('click this', { entities: [{ type: 'MessageEntityTextUrl', offset: 0, length: 4, url: 'https://target.example/x' }] }));
   assert.equal(url, 'https://target.example/x');
 });
 
 test('url entity slices the covered text', () => {
   const url = firstLink(msg('see https://sliced.example here', {
-    entities: [{ type: 'textEntityTypeUrl', offset: 4, length: 22 }] }));
+    entities: [{ type: 'MessageEntityUrl', offset: 4, length: 22 }] }));
   assert.equal(url, 'https://sliced.example');
 });
 
