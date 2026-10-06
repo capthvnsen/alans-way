@@ -17,9 +17,10 @@ function snapshotExpression(generation, opts = {}) {
     if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${parseWaitMs}); });
     const items = [];
     const deadline = performance.now() + ${elementMs};
-    const candidates = document.querySelectorAll('a[href],button,summary,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[contenteditable="true"]');
+    const candidates = document.querySelectorAll('a[href],button,summary,input:not([type="hidden"]),textarea,select,[onclick],[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="treeitem"],[role="slider"],[contenteditable="true"]');
     let scanned = 0;
     for (const el of candidates) {
+      if (el.tagName === 'BODY' || el.tagName === 'HTML') continue;
       if (scanned >= ${maxScan} || items.length >= ${maxElements} || performance.now() > deadline) break;
       scanned++;
       // checkVisibility rejects display:none/visibility:hidden without forcing
