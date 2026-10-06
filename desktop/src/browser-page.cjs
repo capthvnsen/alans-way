@@ -17,7 +17,7 @@ function snapshotExpression(generation, opts = {}) {
     if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${parseWaitMs}); });
     const items = [];
     const deadline = performance.now() + ${elementMs};
-    const candidates = document.querySelectorAll('a[href],button,summary,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="switch"],[contenteditable="true"]');
+    const candidates = document.querySelectorAll('a[href],button,summary,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[contenteditable="true"]');
     let scanned = 0;
     for (const el of candidates) {
       if (scanned >= ${maxScan} || items.length >= ${maxElements} || performance.now() > deadline) break;
@@ -51,6 +51,8 @@ function snapshotExpression(generation, opts = {}) {
       if (expanded === 'true') name += ' open';
       else if (expanded === 'false') name += ' closed';
       else if (el.tagName === 'SUMMARY' && el.parentElement && el.parentElement.tagName === 'DETAILS') name += el.parentElement.open ? ' open' : ' closed';
+      if (el.getAttribute('aria-selected') === 'true') name += ' selected';
+      if (el.getAttribute('aria-current') === 'page') name += ' current';
       name = name.trim().slice(0, 200);
       items.push({ref,role:el.getAttribute('role') || el.tagName.toLowerCase(),name,type:el.type || '',value:el.type === 'password' ? '[password]' : String(el.value || '').slice(0,200),href:el.href || '',disabled:!!el.disabled});
     }
