@@ -272,6 +272,9 @@ case "snapshot":
             if (role == "AXCheckBox" || role == "AXRadioButton"), let number = numberAttr(element, "AXValue") {
                 name += number != 0 ? " on" : " off"
             }
+            if let enabled = axValue(element, "AXEnabled") as? NSNumber, enabled.boolValue == false {
+                name += name.isEmpty ? "disabled" : " disabled"
+            }
             elements.append(Element(ref: "c\(index)", role: role, name: String(name.prefix(120)),
                                     x: frame.origin.x, y: frame.origin.y, width: frame.width, height: frame.height))
         }
