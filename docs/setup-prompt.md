@@ -49,7 +49,7 @@ Rules for the whole job:
    VPS_KEY = `cut -d' ' -f1,2 ~/.ssh/id_ed25519.pub` plus " <this user>@vps",
    and VPS_HOST_KEY = `cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub`.
 
-4. My Mac. Send me these steps with the command filled in, then wait:
+4. My Mac. It must be Apple Silicon. Send me these steps with the command filled in, then wait:
    1. Install Tailscale from https://tailscale.com/download and sign in with
       the same account as this server.
    2. Open System Settings → General → Sharing and turn on Remote Login.
@@ -77,7 +77,10 @@ Rules for the whole job:
    check-ins and follow-ups (at most a few a day, never 22:00–08:00)?" Then
    install the plugin:
      git clone https://github.com/capthvnsen/alans-way-agents ~/alans-way-agents 2>/dev/null || git -C ~/alans-way-agents pull --ff-only
-     ~/alans-way-agents/setup.sh --non-interactive --bot-id <BOT_ID> --mac-ssh '<MAC_SSH>' --timezone '<MAC_TZ>' --bind --proactive <yes|no> [--profile <profile> unless it is default]
+     # If `hermes plugins list` already shows alans-way, add --skip-plugin so
+     # that catalogue copy stays. If it does not, omit --skip-plugin and
+     # setup.sh installs the plugin.
+     ~/alans-way-agents/setup.sh --non-interactive --bot-id <BOT_ID> --mac-ssh '<MAC_SSH>' --timezone '<MAC_TZ>' --bind --proactive <yes|no> [--skip-plugin] [--profile <profile> unless it is default]
    If it says there are no Telegram DM sessions yet, ask me to message the bot
    once, then run the same command again. If it prints an apt-get line for a
    display stack, show me that line and ask before installing anything.

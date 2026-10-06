@@ -115,10 +115,12 @@ git clone https://github.com/capthvnsen/alans-way-agents ~/alans-way-agents || g
 ~/alans-way-agents/setup.sh --bot-id <BOT_ID> --mac-ssh "$MAC_SSH" --timezone "$MAC_TZ" --restart
 ```
 
-The script is safe to re-run. In a shell without a terminal (most agents),
-add `--non-interactive --bind --proactive <yes|no>` after asking the human the
-proactivity question below; add `--profile <name>` for any profile other than
-`default`. It installs the plugin and gateway hook, clones
+The script is safe to re-run. If `hermes plugins list` already shows
+`alans-way`, add `--skip-plugin` so that catalogue copy stays. In a shell
+without a terminal (most agents), add `--non-interactive --bind --proactive
+<yes|no>` after asking the human the proactivity question below; add
+`--profile <name>` for any profile other than `default`. It installs the
+plugin and gateway hook, clones
 this repository for the cloud browser, writes the browser services, configures
 the `workspace_browser` connector, restarts the gateway and offers to bind the
 primary bot. Answer its prompts:
