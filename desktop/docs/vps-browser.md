@@ -3,8 +3,17 @@
 This optional add-on leaves stock Hermes unchanged. One graphical Chromium
 profile supplies live shared sign-ins; each managed tab opens in a separate
 window and belongs to a bot ID. Agents use tab-specific Chromium input rather
-than the desktop mouse. The Mac displays those windows through its existing
-noVNC connection. It is one shared desktop, not separate desktop streams.
+than the desktop mouse. The user's computer displays those windows through its
+existing noVNC connection. It is one shared desktop, not separate desktop
+streams.
+
+> **Platform note.** This guide is written for a Linux VPS. On a macOS guest
+> VM (Hermes running in a Tart VM) the same two services run as LaunchAgents
+> in the console GUI session — no X11, VNC server or x11vnc inside the guest;
+> `scripts/mac-guest-services.sh` installs them and `scripts/mac-vm-preview.sh`
+> bridges the VM's display into the same noVNC view. See
+> [docs/mac-vm-guest.md](../../docs/mac-vm-guest.md). The config and wire
+> protocol below are identical on both.
 
 ## Provision the browser
 

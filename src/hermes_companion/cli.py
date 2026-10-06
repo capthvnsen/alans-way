@@ -15,7 +15,12 @@ import tempfile
 from collections.abc import Sequence
 
 from . import __version__
-from .config import MAC_TOOLS, build_mcp_config, validate_absolute_path
+from .config import MAC_TOOLS, WINDOWS_TOOLS, build_mcp_config, validate_absolute_path, validate_windows_path
+
+_HOST_SPEC = {
+    "mac": {"tools": MAC_TOOLS, "execution_host": "mac", "system": "Darwin", "server_key": "mac_companion"},
+    "windows": {"tools": WINDOWS_TOOLS, "execution_host": "windows", "system": "Windows", "server_key": "windows_companion"},
+}
 
 SDK_VERSION = "2.0.0"
 
@@ -84,28 +89,30 @@ def _private_sdk_log(errlog):
         capture.close()
 
 
-def _tool_payload(result) -> dict:
+def _tool_payload(result, label="Mac") -> dict:
     if result.is_error:
-        raise VerificationError("Mac tool returned an error; verification stopped")
+        raise VerificationError(f"{label} tool returned an error; verification stopped")
     payload = result.structured_content
     if not isinstance(payload, dict):
         # Accept standards-compliant JSON text results as well as SDK structure.
         if len(result.content) != 1 or getattr(result.content[0], "type", None) != "text":
-            raise VerificationError("Mac tool returned an invalid response")
+            raise VerificationError(f"{label} tool returned an invalid response")
         text = result.content[0].text
         if not isinstance(text, str) or len(text) > 262144:
-            raise VerificationError("Mac tool returned an invalid response")
+            raise VerificationError(f"{label} tool returned an invalid response")
         try:
             payload = json.loads(text)
         except (ValueError, TypeError):
-            raise VerificationError("Mac tool returned an invalid response") from None
+            raise VerificationError(f"{label} tool returned an invalid response") from None
     if not isinstance(payload, dict):
-        raise VerificationError("Mac tool returned an invalid response")
+        raise VerificationError(f"{label} tool returned an invalid response")
     return payload
 
 
 async def _verify_connection(server: dict, sdk, request_timeout: float, overall_timeout: float,
-                             read_path: str | None = None) -> dict:
+                             host_os: str = "mac", read_path: str | None = None) -> dict:
+    spec = _HOST_SPEC[host_os]
+    tools, label = spec["tools"], host_os.capitalize()
     ClientSession, StdioServerParameters, stdio_client, get_default_environment, fail_after = sdk
     env = get_default_environment()
     agent_socket = os.environ.get("SSH_AUTH_SOCK")
@@ -122,25 +129,25 @@ async def _verify_connection(server: dict, sdk, request_timeout: float, overall_
                     await session.initialize()
                     listing = await session.list_tools()
                     names = [tool.name for tool in listing.tools]
-                    if (len(names) != len(MAC_TOOLS) or set(names) != set(MAC_TOOLS)
+                    if (len(names) != len(tools) or set(names) != set(tools)
                             or listing.next_cursor is not None):
-                        raise VerificationError("Unexpected Mac tool set; verification stopped")
+                        raise VerificationError(f"Unexpected {label} tool set; verification stopped")
                     if any(tool.annotations is None or tool.annotations.read_only_hint is not True
                            for tool in listing.tools):
-                        raise VerificationError("Mac tools lack required read-only annotations")
-                    status = _tool_payload(await session.call_tool("mac_device_status", {}))
-                    if status.get("execution_host") != "mac" or status.get("system") != "Darwin":
-                        raise VerificationError("Mac identity could not be confirmed; verification stopped")
+                        raise VerificationError(f"{label} tools lack required read-only annotations")
+                    status = _tool_payload(await session.call_tool(tools[0], {}), label)
+                    if status.get("execution_host") != spec["execution_host"] or status.get("system") != spec["system"]:
+                        raise VerificationError(f"{label} identity could not be confirmed; verification stopped")
                     report = {
                         "connection_verified": True, "full_integration_ready": False,
-                        "execution_host": "mac", "system": "Darwin",
-                        "tools": list(MAC_TOOLS), "read_performed": False,
+                        "execution_host": spec["execution_host"], "system": spec["system"],
+                        "tools": list(tools), "read_performed": False,
                     }
                     if read_path is not None:
-                        read = _tool_payload(await session.call_tool("mac_workspace_read_file", {"path": read_path}))
-                        if (read.get("execution_host") != "mac" or read.get("path") != read_path
+                        read = _tool_payload(await session.call_tool(tools[1], {"path": read_path}), label)
+                        if (read.get("execution_host") != spec["execution_host"] or read.get("path") != read_path
                                 or not isinstance(read.get("content"), str)):
-                            raise VerificationError("Mac read identity or result could not be confirmed")
+                            raise VerificationError(f"{label} read identity or result could not be confirmed")
                         byte_count = len(read["content"].encode("utf-8"))
                         if byte_count > 65536:
                             raise VerificationError("Mac read exceeded the bounded fixture size")
@@ -165,14 +172,17 @@ def _validate_timeout(value: float, maximum: float) -> float:
     return float(value)
 
 
-def verify_mac(mac_host: str, mac_python: str, workspace: str, *, read_path: str | None = None,
+def verify_mac(mac_host: str, mac_python: str, workspace: str, *, host_os: str = "mac",
+               read_path: str | None = None,
                request_timeout: float = 10.0, overall_timeout: float = 30.0) -> dict:
     """Explicitly check SSH + the real MCP protocol, without retries or fallback.
 
     Overall protocol work is bounded; the SDK additionally uses bounded cleanup
     when stopping the SSH child. No file is read unless read_path is supplied.
     """
-    server = build_mcp_config(mac_host, mac_python, workspace)["mcp_servers"]["mac_companion"]
+    if host_os not in _HOST_SPEC:
+        raise ValueError('host_os must be "mac" or "windows"')
+    server = build_mcp_config(mac_host, mac_python, workspace, host_os=host_os)["mcp_servers"][_HOST_SPEC[host_os]["server_key"]]
     if read_path is not None:
         _validate_read_path(read_path)
     request_timeout = _validate_timeout(request_timeout, 30.0)
@@ -182,11 +192,11 @@ def verify_mac(mac_host: str, mac_python: str, workspace: str, *, read_path: str
     except Exception:
         raise VerificationError("Verification requires the optional hermes-companion[mcp] extra with mcp==2.0.0") from None
     try:
-        return asyncio.run(_verify_connection(server, sdk, request_timeout, overall_timeout, read_path))
+        return asyncio.run(_verify_connection(server, sdk, request_timeout, overall_timeout, host_os, read_path))
     except VerificationError:
         raise
     except Exception:
-        raise VerificationError("Mac connection or protocol verification failed; no retry or fallback was attempted") from None
+        raise VerificationError(f"{host_os.capitalize()} connection or protocol verification failed; no retry or fallback was attempted") from None
 
 
 class _Parser(argparse.ArgumentParser):
@@ -203,14 +213,18 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("doctor", help="check local dependencies only, without network calls")
     serve = commands.add_parser("serve-mac", help="explicitly run the scoped read-only Mac MCP server")
     serve.add_argument("--workspace", required=True, help="absolute approved local workspace")
+    serve_win = commands.add_parser("serve-windows", help="explicitly run the scoped read-only Windows MCP server")
+    serve_win.add_argument("--workspace", required=True, help="absolute approved local workspace")
     for name, help_text in (
         ("mcp-config", "print a scoped SSH MCP JSON fragment; never connect or apply"),
         ("verify-mac", "explicitly verify one private SSH MCP connection; no config writes"),
     ):
         connection = commands.add_parser(name, help=help_text)
         connection.add_argument("--mac-host", required=True, help="literal user@private-host")
-        connection.add_argument("--mac-python", required=True, help="absolute remote virtualenv Python path")
+        connection.add_argument("--mac-python", required=True, help="absolute remote Python path (POSIX or X:\\)")
         connection.add_argument("--workspace", required=True, help="absolute approved remote workspace")
+        connection.add_argument("--host-os", choices=["mac", "windows"], default="mac",
+                                help="remote host OS the generated SSH command targets (default mac)")
         if name == "verify-mac":
             connection.add_argument("--read", dest="read_path", help="opt in to reading this relative synthetic fixture; content is never printed")
             connection.add_argument("--request-timeout", type=float, default=10.0, help="per-request seconds (0 < value <= 30)")
@@ -234,21 +248,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = doctor()
         print(json.dumps(report, indent=2))
         return 0 if all(report[key] for key in ("sdk_available", "ssh_available", "hermes_available")) else 1
-    if args.command == "serve-mac":
+    if args.command in ("serve-mac", "serve-windows"):
+        windows = args.command == "serve-windows"
         try:
-            validate_absolute_path(args.workspace)
+            (validate_windows_path if windows else validate_absolute_path)(args.workspace)
         except ValueError as exc:
             print(f"hermes-companion: {exc}", file=sys.stderr)
             return 2
         try:
-            from .mac_server import main as server_main
+            if windows:
+                from .windows_server import main as server_main
+            else:
+                from .mac_server import main as server_main
             return server_main(["--workspace", args.workspace])
         except Exception:
-            print("hermes-companion: Mac server unavailable or failed; requires Darwin and the optional MCP SDK", file=sys.stderr)
+            label = "Windows" if windows else "Mac"
+            print(f"hermes-companion: {label} server unavailable or failed; requires the matching host OS and the optional MCP SDK", file=sys.stderr)
             return 1
     if args.command == "verify-mac":
         try:
-            report = verify_mac(args.mac_host, args.mac_python, args.workspace,
+            report = verify_mac(args.mac_host, args.mac_python, args.workspace, host_os=args.host_os,
                                 read_path=args.read_path, request_timeout=args.request_timeout,
                                 overall_timeout=args.overall_timeout)
         except ValueError as exc:
@@ -263,7 +282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(report, indent=2))
         return 0
     try:
-        config = build_mcp_config(args.mac_host, args.mac_python, args.workspace)
+        config = build_mcp_config(args.mac_host, args.mac_python, args.workspace, host_os=args.host_os)
     except ValueError as exc:
         print(f"hermes-companion: {exc}", file=sys.stderr)
         return 2

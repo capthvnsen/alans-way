@@ -6,7 +6,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const root =
-  process.env.HERMES_VPS_BROWSER_DATA || path.join(os.homedir(), '.local', 'share', 'hermes-alans-way', 'browser');
+  process.env.HERMES_VPS_BROWSER_DATA ||
+  (process.platform === 'darwin'
+    ? path.join(os.homedir(), 'Library', 'Application Support', 'hermes-alans-way', 'browser')
+    : path.join(os.homedir(), '.local', 'share', 'hermes-alans-way', 'browser'));
 const config = JSON.parse(fs.readFileSync(path.join(root, 'config.json')));
 const endpoint = new URL(config.cdpUrl);
 if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1')

@@ -1,16 +1,25 @@
 # Set up Alan's Way (instructions for an AI agent)
 
-You are setting up three pieces for a human: the **Mac app** (alans-way-localapp),
-the **VPS** that runs their Hermes gateway and a cloud browser, and the **Hermes
+You are setting up three pieces for a human: the **desktop app**
+(alans-way-localapp) on their computer, the **VPS** that runs their Hermes
+gateway and a cloud browser, and the **Hermes
 plugin** (alans-way-agents). Work through the stages in order. Each stage ends
 with a check; do not continue past a failing check.
+
+This guide is written for a Mac as the user's computer. When it is a Windows
+PC instead (Windows 10/11 x64), substitute per stage: `install-windows.ps1`
+for stage 1, `connect-windows.ps1` for stage 2 (elevated PowerShell — it
+installs OpenSSH Server itself), `--host-os windows` on `setup.sh` in stage 3,
+and the PC-side check commands noted inline. Everything else is identical.
+When Hermes runs on a macOS VM instead of a Linux VPS, see
+[macOS guest VM](mac-vm-guest.md) for the guest-side differences.
 
 Some steps need the human. When you reach one, stop, tell them exactly what to
 do using the wording given, and wait for them to confirm.
 
-Working only from the VPS, with no shell on the Mac? Use the
+Working only from the VPS, with no shell on the user's computer? Use the
 [setup prompt](setup-prompt.md) instead: it covers the same stages with one
-command the human pastes on the Mac.
+command the human pastes on their computer.
 
 ## What you need before starting
 
@@ -18,53 +27,73 @@ Ask the human for anything here you cannot discover yourself:
 
 | Item | How to get it |
 |---|---|
-| Shell on the Mac | You are running on it, or have SSH to it |
+| Shell on the user's computer | You are running on it, or have SSH to it |
 | Shell on the VPS | `ssh <vps>` works, or you are running on it |
 | Numeric Telegram bot ID | Digits only. The part before `:` in the bot token, or `getMe` on the token |
-| Mac | Apple Silicon (`uname -m` prints `arm64`), macOS. git and Node are optional: the installer fetches what it needs |
-| VPS | Linux, Hermes 0.21+ (`hermes --version`), Node 22+, python3, git |
+| User's computer | Mac: Apple Silicon (`uname -m` prints `arm64`), or Windows 10/11 x64. git and Node are optional: the installers fetch what they need |
+| VPS | Linux, Hermes 0.21+ (`hermes --version`), Node 22+, python3, git — or a macOS VM (see [mac-vm-guest.md](mac-vm-guest.md)) |
 
 Optional: the human's Telegram bot already answers messages through Hermes. If
 not, stage 3 offers to set that up.
 
-## Stage 1 — Mac app
+## Stage 1 — Desktop app
+
+On a Mac:
 
 ```sh
 curl -fsSL https://openalan.com/install-mac | sh
 ```
 
-It clones the repo into `~/alans-way`, builds the app, installs it to
-`/Applications/alans-way-localapp.app`, opens it, and ends with
+On a Windows PC (**human step** — in an elevated PowerShell, from a clone of
+this repo):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
+```
+
+The Mac installer clones the repo into `~/alans-way`, builds the app, installs
+it to `/Applications/alans-way-localapp.app`, opens it, and ends with
 `install-mac: running — local browser API answers (mac <version>)`. Without
 git it downloads the source as a tarball; without Node 20+ it downloads a
 checksum-verified Node 22 into `~/.alans-way/node` for the build. A locally
 built app is not quarantined, so macOS shows no Gatekeeper
-warning. Re-run the same command to upgrade; sign-ins and settings live outside
-the app bundle and are kept.
+warning. On Windows the script builds with `npm run package:win` and installs
+under `%LOCALAPPDATA%\Programs\alans-way-localapp` — a local build needs no
+code signature or SmartScreen bypass. Re-run the same command to upgrade;
+sign-ins and settings live outside the app bundle and are kept on both OSes.
 
 **Human step — tell them:** "The Alan's Way app is open. Sign in to Telegram in
 the left pane with the QR code (Telegram on your phone → Settings → Devices →
 Link Desktop Device). Tell me when your bots appear in the sidebar."
 
 **Check:** the app's local browser API answers. This runs the app's own
-runtime, so it works on a Mac without Node:
+runtime, so it works without Node:
 
 ```sh
+# macOS
 ELECTRON_RUN_AS_NODE=1 /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp -e 'const c=require(process.env.HOME+"/Library/Application Support/Hermes Workspace/connection.json");fetch(c.url+"/v1/status",{headers:{Authorization:"Bearer "+c.token}}).then(r=>r.json()).then(s=>console.log(s.host,s.version))'
 ```
 
-Expect `mac` and a version number.
+```powershell
+# Windows
+$env:ELECTRON_RUN_AS_NODE='1'; & "$env:LOCALAPPDATA\Programs\alans-way-localapp\alans-way-localapp.exe" -e "const c=require(process.env.APPDATA+'/Hermes Workspace/connection.json');fetch(c.url+'/v1/status',{headers:{Authorization:'Bearer '+c.token}}).then(r=>r.json()).then(s=>console.log(s.host,s.version))"
+```
 
-## Stage 2 — Let the VPS reach the Mac over SSH
+Expect `mac` or `windows` and a version number.
 
-The VPS drives the Mac browser through SSH, so the Mac needs Remote Login and
-a private network address the VPS can reach (Tailscale recommended).
+## Stage 2 — Let the VPS reach your computer over SSH
+
+The VPS drives the host browser through SSH, so the user's computer needs an
+SSH server — Remote Login on a Mac; the connect script installs OpenSSH Server
+on Windows — and a private network address the VPS can reach (Tailscale
+recommended).
 
 **Human step — tell them:**
-1. "Open System Settings → General → Sharing and turn on **Remote Login**."
-2. "Install Tailscale on the Mac from tailscale.com/download and sign in with
-   the same account the VPS uses." (Skip if `tailscale status` already works
-   on both machines.)
+1. On a Mac: "Open System Settings → General → Sharing and turn on **Remote
+   Login**." (On Windows the connect script below does this part itself.)
+2. "Install Tailscale on your computer from tailscale.com/download and sign in
+   with the same account the VPS uses." (Skip if `tailscale status` already
+   works on both machines.)
 
 Both directions use pinned keys: the browser tools connect VPS → Mac, and the
 app's **Test agent path** and VPS browser connect Mac → VPS, all with
@@ -78,17 +107,26 @@ VPS_KEY="$(cut -d' ' -f1,2 ~/.ssh/id_ed25519.pub) $(whoami)@vps"
 VPS_HOST_KEY="$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)"
 ```
 
-On the Mac (yourself, or **human step** — have them paste it into Terminal):
+On the user's computer (yourself, or **human step** — have them paste it into
+Terminal on a Mac, or elevated PowerShell on Windows):
 
 ```sh
+# macOS
 curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-mac.sh | sh -s -- \
   --vps "$VPS_SSH" --vps-host-key "$VPS_HOST_KEY" --vps-key "$VPS_KEY"
 ```
 
-It checks Tailscale and Remote Login, installs or upgrades the app (skip with
-`--skip-install` if stage 1 just ran), authorizes the VPS key, pins the VPS
+```powershell
+# Windows (from a clone of this repo)
+powershell -ExecutionPolicy Bypass -File scripts\connect-windows.ps1 `
+  -Vps "$VPS_SSH" -VpsHostKey "$VPS_HOST_KEY" -VpsKey "$VPS_KEY"
+```
+
+Either script checks connectivity and its SSH server, installs or upgrades the
+app (skip with `--skip-install`/`-SkipInstall` if stage 1 just ran),
+authorizes the VPS key, pins the VPS
 host key and prints `MAC_SSH`, `MAC_TZ`, `MAC_HOST_KEY` and `MAC_KEY`. Back on
-the VPS, trust the Mac with those values:
+the VPS, trust the computer with those values:
 
 ```sh
 grep -qxF "${MAC_SSH#*@} $MAC_HOST_KEY" ~/.ssh/known_hosts 2>/dev/null || echo "${MAC_SSH#*@} $MAC_HOST_KEY" >> ~/.ssh/known_hosts
@@ -98,13 +136,20 @@ grep -qxF "$MAC_KEY" ~/.ssh/authorized_keys 2>/dev/null || echo "$MAC_KEY" >> ~/
 **Check, from the VPS:**
 
 ```sh
+# macOS target
 timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" 'test -x /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp && echo MAC_OK'
+# Windows target (PowerShell is the sshd default shell after connect-windows.ps1)
+timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" 'if (Test-Path "$env:LOCALAPPDATA\Programs\alans-way-localapp\alans-way-localapp.exe") { "MAC_OK" }'
+# either OS
 timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes '$VPS_SSH' echo VPS_OK"
 ```
 
 Expect `MAC_OK`, then `VPS_OK`. The VPS runs the browser connector with the
-app's own runtime, so the Mac needs no Node on its SSH PATH. If `MAC_OK` is
-missing, the app is not in `/Applications` — repeat stage 1.
+app's own runtime, so the host needs no Node on its SSH PATH. If `MAC_OK` is
+missing, the app is not installed — repeat stage 1. On Windows, desktop
+control additionally requires the app to be running: SSH sessions cannot
+reach the interactive desktop, so `workspace_computer_*` calls go through the
+app's loopback API.
 
 ## Stage 3 — VPS: Hermes plugin and cloud browser
 
@@ -113,6 +158,7 @@ On the VPS:
 ```sh
 git clone https://github.com/capthvnsen/alans-way-agents ~/alans-way-agents || git -C ~/alans-way-agents pull
 ~/alans-way-agents/setup.sh --bot-id <BOT_ID> --mac-ssh "$MAC_SSH" --timezone "$MAC_TZ" --restart
+# add `--host-os windows` when the user's computer is a PC
 ```
 
 The script is safe to re-run. If `hermes plugins list` already shows
@@ -141,6 +187,9 @@ Do not install a desktop stack on your own. **Human step — tell them:** the
 exact `apt-get install` line it printed, and ask whether to install it. The
 browser services start once a display on `:99` exists.
 
+Running the guest as a macOS VM on the user's Mac instead? Skip the Linux
+display stack entirely and follow [macOS guest VM](mac-vm-guest.md).
+
 **Check:**
 
 ```sh
@@ -152,9 +201,9 @@ human.
 
 ## Stage 4 — Prove it end to end
 
-1. In the Mac app: **Settings → Agent setup**, enter the VPS SSH address and
+1. In the app: **Settings → Agent setup**, enter the VPS SSH address and
    `MAC_SSH`, click **Save addresses**, then **Test agent path**. Success text
-   starts with "VPS reaches this Mac over ssh".
+   is "VPS reaches this Mac over ssh" (or "this PC" on Windows).
 2. **Human step — tell them:** "In the Alan's Way app, message your bot:
    *Open example.com in the workspace browser and tell me the page title.*"
    Expect a tab with the bot's named cursor to appear on the right and the bot
@@ -164,10 +213,12 @@ human.
 
 Report to the human: what passed, every warning, and anything you skipped.
 
-## Optional — watch the VPS desktop from the Mac
+## Optional — watch the remote desktop from the app
 
-Requires the display stack from stage 3 plus a noVNC viewer on the VPS that the
-Mac can reach over Tailscale. Paste the viewer URL into **Settings → VPS
+On a Linux VPS this needs the display stack from stage 3 plus a noVNC viewer
+on the VPS that your computer can reach over Tailscale. On a macOS guest VM,
+run `scripts/mac-vm-preview.sh` on the Mac running Tart — it bridges the VM's
+VNC display to a noVNC URL. Paste the viewer URL into **Settings → VPS
 desktop connection** in the app.
 
 ## Troubleshooting

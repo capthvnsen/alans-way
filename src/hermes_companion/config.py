@@ -15,6 +15,11 @@ MAC_TOOLS = (
     "mac_workspace_read_file",
     "mac_workspace_list",
 )
+WINDOWS_TOOLS = (
+    "windows_device_status",
+    "windows_workspace_read_file",
+    "windows_workspace_list",
+)
 SSH_OPTIONS = (
     "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
     "-o", "ConnectTimeout=5",
@@ -45,24 +50,51 @@ def validate_absolute_path(value: str) -> str:
     return value
 
 
-def build_mcp_config(mac_host: str, mac_python: str, workspace: str) -> dict:
-    """Return a JSON-serializable fragment; never apply it or contact the Mac."""
-    validate_host(mac_host)
-    validate_absolute_path(mac_python)
-    validate_absolute_path(workspace)
-    remote_command = shlex.join([
-        mac_python, "-m", "hermes_companion.mac_server", "--workspace", workspace,
-    ])
-    return {"mcp_servers": {"mac_companion": {
+def validate_windows_path(value: str) -> str:
+    """Validate remote Windows spelling: drive-lettered, no traversal or device names."""
+    normalized = value.rstrip("/\\") if isinstance(value, str) else value
+    if (not isinstance(normalized, str) or not re.fullmatch(r"[A-Za-z]:[\\/][^<>\"|?*]*", normalized)
+            or _has_control(normalized)
+            or any(part in ("", ".", "..") for part in re.split(r"[\\/]", normalized[3:]))
+            or "${" in normalized):
+        raise ValueError("remote paths must be absolute Windows paths (X:\\...) without traversal, control characters, or interpolation")
+    return normalized
+
+
+def _ps_join(argv: list[str]) -> str:
+    """Quote for the remote PowerShell: single-quoted literals, & call operator."""
+    return "& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
+
+
+def build_mcp_config(host: str, host_python: str, workspace: str, host_os: str = "mac") -> dict:
+    """Return a JSON-serializable fragment; never apply it or contact the host."""
+    validate_host(host)
+    if host_os == "windows":
+        validate_windows_path(host_python)
+        validate_windows_path(workspace)
+        remote_command = _ps_join([
+            host_python, "-m", "hermes_companion.windows_server", "--workspace", workspace,
+        ])
+        tools, key = WINDOWS_TOOLS, "windows_companion"
+    elif host_os == "mac":
+        validate_absolute_path(host_python)
+        validate_absolute_path(workspace)
+        remote_command = shlex.join([
+            host_python, "-m", "hermes_companion.mac_server", "--workspace", workspace,
+        ])
+        tools, key = MAC_TOOLS, "mac_companion"
+    else:
+        raise ValueError('host_os must be "mac" or "windows"')
+    return {"mcp_servers": {key: {
         "command": "ssh",
         "connect_timeout": 10,
         "timeout": 20,
         "lazy": True,
-        "args": [*SSH_OPTIONS, mac_host, remote_command],
+        "args": [*SSH_OPTIONS, host, remote_command],
         # Keep the caller's SSH agent usable through Hermes' filtered env without
         # serializing its machine-specific socket path into the generated file.
         "env": {"SSH_AUTH_SOCK": "${SSH_AUTH_SOCK}"},
         "trust": "untrusted",
         "sampling": {"enabled": False},
-        "tools": {"include": list(MAC_TOOLS), "resources": False, "prompts": False},
+        "tools": {"include": list(tools), "resources": False, "prompts": False},
     }}}

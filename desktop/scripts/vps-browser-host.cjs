@@ -11,7 +11,10 @@ const { normalizeUrl, requireActor, requireAgentRead, requireAgentClaim, reviewe
 const { createAgentInput, tintScript, botAccent } = require('../src/agent-input.cjs');
 const { snapshotExpression, settleSnapshot, readControls, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
 const root =
-  process.env.HERMES_VPS_BROWSER_DATA || path.join(os.homedir(), '.local', 'share', 'hermes-alans-way', 'browser');
+  process.env.HERMES_VPS_BROWSER_DATA ||
+  (process.platform === 'darwin'
+    ? path.join(os.homedir(), 'Library', 'Application Support', 'hermes-alans-way', 'browser')
+    : path.join(os.homedir(), '.local', 'share', 'hermes-alans-way', 'browser'));
 const configFile = path.join(root, 'config.json'),
   connectionFile = path.join(root, 'connection.json'),
   registryFile = path.join(root, 'tabs.json');

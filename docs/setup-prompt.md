@@ -2,14 +2,14 @@
 
 The short prompt in the [README](../README.md#connect-your-agents) points here.
 An agent fetches this page and carries out the text block below. It connects
-the server and the Mac over Tailscale, installs the Alan's Way app and Hermes
-plugin, and proves both ends work. The person does four things on the Mac;
-everything else is automatic.
+the server and the user's computer over Tailscale, installs the Alan's Way app
+and Hermes plugin, and proves both ends work. The person does four things on
+their computer; everything else is automatic.
 
 ```text
 Set up Alan's Way for me. This server runs my Hermes gateway; connect it to my
-Mac over Tailscale, install the Alan's Way app on the Mac and the alans-way
-Hermes plugin here, and prove it works. Do not modify Hermes itself.
+<Mac | Windows PC> over Tailscale, install the Alan's Way app on it and the
+alans-way Hermes plugin here, and prove it works. Do not modify Hermes itself.
 Reference: https://github.com/capthvnsen/alans-way/blob/main/docs/setup-for-agents.md
 
 Rules for the whole job:
@@ -49,7 +49,10 @@ Rules for the whole job:
    VPS_KEY = `cut -d' ' -f1,2 ~/.ssh/id_ed25519.pub` plus " <this user>@vps",
    and VPS_HOST_KEY = `cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub`.
 
-4. My Mac. It must be Apple Silicon. Send me these steps with the command filled in, then wait:
+4. My computer. Ask me first whether it is a Mac or a Windows PC — the steps
+   differ. On a Mac it must be Apple Silicon; on Windows it must be Windows
+   10/11 x64.
+   On a Mac send me these steps with the command filled in, then wait:
    1. Install Tailscale from https://tailscale.com/download and sign in with
       the same account as this server.
    2. Open System Settings → General → Sharing and turn on Remote Login.
@@ -60,13 +63,28 @@ Rules for the whole job:
    5. In the Alan's Way app that opened, sign in to Telegram with the QR code
       (on your phone: Telegram → Settings → Devices → Link Desktop Device).
    If the script stops, it says why in one line; tell me that line.
+   On a Windows PC send me these steps instead:
+   1. Install Tailscale from https://tailscale.com/download and sign in with
+      the same account as this server.
+   2. Open PowerShell **as Administrator**, then paste this line — it installs
+      the OpenSSH Server Windows feature, sets PowerShell as the default SSH
+      shell, builds the app with `npm run package:win`, and wires both key
+      directions:
+      powershell -ExecutionPolicy Bypass -File <path to connect-windows.ps1> -Vps '<VPS_SSH>' -VpsHostKey '<VPS_HOST_KEY>' -VpsKey '<VPS_KEY>'
+      (fetch the script from the repo first if needed: scripts/connect-windows.ps1)
+   3. Copy the lines it prints between the ===== markers and send them to me.
+   4. In the Alan's Way app that opened, sign in to Telegram as above.
+   Note: on Windows the SSH session cannot drive the desktop — computer-use
+   calls run through the app's local API, so the app must stay running.
 
 5. Trust both ways, on this server, using MAC_SSH, MAC_HOST_KEY and MAC_KEY
-   from my reply. Append "<host part of MAC_SSH> <MAC_HOST_KEY>" to
+   from my reply (the same variable names are printed by both connect
+   scripts). Append "<host part of MAC_SSH> <MAC_HOST_KEY>" to
    ~/.ssh/known_hosts and MAC_KEY to ~/.ssh/authorized_keys, each only if not
    already there. Check both directions:
-     timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<MAC_SSH>' 'test -x /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp && echo MAC_OK'
-     timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<MAC_SSH>' "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes '<VPS_SSH>' echo VPS_OK"
+   - Mac:  timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<MAC_SSH>' 'test -x /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp && echo MAC_OK'
+   - PC:   timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<MAC_SSH>' 'if (Test-Path "$env:LOCALAPPDATA\Programs\alans-way-localapp\alans-way-localapp.exe") { "MAC_OK" }'
+   - then: timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<MAC_SSH>' "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes '<VPS_SSH>' echo VPS_OK"
    Expect MAC_OK, then VPS_OK. If the second prints "Tailscale SSH requires an
    additional check" or times out, ask me to open the Tailscale admin console →
    Access controls and change the SSH rule that covers this server from
@@ -80,7 +98,7 @@ Rules for the whole job:
      # If `hermes plugins list` already shows alans-way, add --skip-plugin so
      # that catalogue copy stays. If it does not, omit --skip-plugin and
      # setup.sh installs the plugin.
-     ~/alans-way-agents/setup.sh --non-interactive --bot-id <BOT_ID> --mac-ssh '<MAC_SSH>' --timezone '<MAC_TZ>' --bind --proactive <yes|no> [--skip-plugin] [--profile <profile> unless it is default]
+     ~/alans-way-agents/setup.sh --non-interactive --bot-id <BOT_ID> --mac-ssh '<MAC_SSH>' --host-os <mac|windows> --timezone '<MAC_TZ>' --bind --proactive <yes|no> [--skip-plugin] [--profile <profile> unless it is default]
    If it says there are no Telegram DM sessions yet, ask me to message the bot
    once, then run the same command again. If it prints an apt-get line for a
    display stack, show me that line and ask before installing anything.
@@ -94,7 +112,7 @@ Rules for the whole job:
    1. In the Alan's Way app open Settings → Agent setup, enter '<VPS_SSH>' as
       the VPS address and '<MAC_SSH>' as this Mac's address, click Save
       addresses, then Test agent path. It should say "VPS reaches this Mac over
-      ssh".
+      ssh" (or "this PC" on Windows).
    2. Message the bot in the app: "Open example.com in the workspace browser
       and tell me the page title." A tab with the bot's cursor should appear
       and the reply should say "Example Domain".
@@ -106,11 +124,14 @@ anything you skipped or that still needs me.
 ## What it needs from you
 
 1. Approve the Tailscale login link on the server, if Tailscale was not set up.
-2. Install Tailscale on the Mac and turn on Remote Login.
-3. Paste one command into Terminal on the Mac and send back what it prints.
+2. Install Tailscale on your computer and turn on its SSH server (Remote Login
+   on a Mac; the connect script installs OpenSSH Server on Windows).
+3. Paste one command into Terminal/PowerShell on your computer and send back
+   what it prints.
 4. Sign in to Telegram in the app, then answer whether the bot may message you
    first.
 
-The command in step 3 is [scripts/connect-mac.sh](../scripts/connect-mac.sh).
-It only adds the server's public key to the Mac and pins the server's host key,
-so neither side ever accepts an unknown key.
+The command in step 3 is [scripts/connect-mac.sh](../scripts/connect-mac.sh) on
+a Mac or [scripts/connect-windows.ps1](../scripts/connect-windows.ps1) on
+Windows. Each only adds the server's public key to your computer and pins the
+server's host key, so neither side ever accepts an unknown key.

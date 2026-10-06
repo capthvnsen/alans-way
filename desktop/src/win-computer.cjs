@@ -5,31 +5,30 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { computerDecision } = require('./computer-policy.cjs');
 
-const source = path.join(__dirname, '..', 'scripts', 'mac-computer.swift');
-const binary = path.join(__dirname, '..', 'scripts', 'mac-computer');
+const source = path.join(__dirname, '..', 'scripts', 'win-computer.cs');
+const binary = path.join(__dirname, '..', 'scripts', 'win-computer.exe');
+
+const compilers = [
+  'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
+  'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe',
+];
 
 function ensureBinary() {
-  if (process.platform !== 'darwin') throw new Error('Mac computer use only runs on the Mac.');
+  if (process.platform !== 'win32') throw new Error('Windows computer use only runs on Windows.');
   const stale = !fs.existsSync(binary) || fs.statSync(source).mtimeMs > fs.statSync(binary).mtimeMs;
   if (!stale) return binary;
-  const built = spawnSync('swiftc', ['-O', '-o', binary, source], { encoding: 'utf8' });
-  if (built.status !== 0) throw new Error((built.stderr || 'Could not build the Mac computer helper.').trim());
+  const compiler = compilers.find((candidate) => fs.existsSync(candidate));
+  if (!compiler) throw new Error('Could not find the .NET Framework compiler (csc.exe).');
+  const built = spawnSync(compiler, [
+    '/nologo', '/target:exe', '/out:' + binary,
+    '/r:UIAutomationClient.dll', '/r:UIAutomationTypes.dll', '/r:WindowsBase.dll', source,
+  ], { encoding: 'utf8' });
+  if (built.status !== 0) throw new Error((built.stderr || built.stdout || 'Could not build the Windows computer helper.').trim());
   return binary;
 }
 
-// A connector spawned over SSH lives outside the guest's Aqua session, where
-// AX calls and screen capture are denied even when the console user granted
-// them. HERMES_COMPUTER_ASUSER=1 re-enters that session through launchd; -n
-// makes sudo fail fast instead of prompting when NOPASSWD is missing.
-function driverCommand(helper, args) {
-  if (process.env.HERMES_COMPUTER_ASUSER === '1')
-    return ['sudo', '-n', 'launchctl', 'asuser', String(process.getuid()), helper, ...args];
-  return [helper, ...args];
-}
-
 function run(args) {
-  const [command, ...rest] = driverCommand(ensureBinary(), args);
-  const result = spawnSync(command, rest, { encoding: 'utf8', timeout: 20000 });
+  const result = spawnSync(ensureBinary(), args, { encoding: 'utf8', timeout: 20000 });
   let parsed;
   try { parsed = JSON.parse(result.stdout || '{}'); } catch { parsed = null; }
   if (!parsed) throw new Error((result.stderr || result.stdout || 'Computer helper failed.').trim().slice(0, 300));
@@ -91,4 +90,4 @@ function screenshot(pid, maxWidth) {
   };
 }
 
-module.exports = { apps, snapshot, press, click, drag, type, screenshot, ensureBinary, driverCommand };
+module.exports = { apps, snapshot, press, click, drag, type, screenshot, ensureBinary };
