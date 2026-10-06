@@ -221,6 +221,7 @@ test('opening a tab does not let the model pick the machine', () => {
   assert.match(mcp, /Do not pass host/);
   assert.match(mcp, /args\.maxChars : 2000/);
   assert.match(mcp, /reopen the same URL and continue/);
+  assert.match(mcp, /names a tab, keep working in that tab/);
   assert.match(mcp, /same machine as the browser/);
 });
 test('only positively identified direct bot IDs enter the catalog', () => {
