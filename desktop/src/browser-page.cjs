@@ -53,7 +53,9 @@ function snapshotExpression(generation, opts = {}) {
         while (block.parentElement && !blockTag.test(block.tagName)) block = block.parentElement;
         text += (text ? (block === lastBlock ? ' ' : '\\n') : '') + chunk;
         lastBlock = block;
-        if (text.length >= ${maxChars} || performance.now() > textDeadline) { textCut = true; break; }
+        // The time budget never cuts the first screenful: a slow renderer
+        // must still return enough text for the agent to orient itself.
+        if (text.length >= ${maxChars} || (text.length >= ${Math.min(1000, maxChars)} && performance.now() > textDeadline)) { textCut = true; break; }
       }
       text = text.slice(0, ${maxChars});
     } else textCut = ${maxChars} <= 0 && !!document.body?.textContent?.trim();
