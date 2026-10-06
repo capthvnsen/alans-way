@@ -83,11 +83,12 @@ function savePreferences() {
   fs.mkdirSync(app.getPath('userData'), { recursive: true });
   writePrivateJson(path.join(app.getPath('userData'), 'preferences.json'), prefs);
 }
-function describeTab(tab) {
+function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
-  return { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
+  const info = { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
     controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
+  return forBot ? redactTabForBot(info) : info;
 }
 function isVpsTab(id) { return vpsTabs.has(id); }
 async function refreshVpsTabs() {
@@ -711,7 +712,7 @@ async function snapshot(tab, opts = {}) {
       new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000); }),
     ]).finally(() => clearTimeout(timer));
     if (!result || !Array.isArray(result.elements)) throw Object.assign(new Error('Snapshot returned no page data.'), { status: 503 });
-    return { ...settleSnapshot(tab, result, generation, opts.since), tab: describeTab(tab) };
+    return { ...settleSnapshot(tab, result, generation, opts.since), tab: describeTab(tab, true) };
   });
   tab.queue = work.catch(() => {});
   return work;
@@ -825,7 +826,7 @@ async function performAction(tab, body, botId, depth = 0) {
       try { results.push(await performAction(tab, { ...step, epoch: body.epoch }, botId, 1)); }
       catch (error) { results.push({ error: error.message }); break; }
     }
-    return { results, tab: describeTab(tab), dispatched: true };
+    return { results, tab: describeTab(tab, true), dispatched: true };
   }
   if (body.action === 'eval') {
     const code = String(body.code || '');
@@ -948,7 +949,7 @@ async function performAction(tab, body, botId, depth = 0) {
       wc.loadURL(target).then(() => 'loaded', (error) => ({ error })),
       new Promise(resolve => setTimeout(() => resolve('loading'), 12000)),
     ]);
-    if (outcome === 'loading') { tab.refs.clear(); broadcast(); return { loading: true, url: target, tab: describeTab(tab), dispatched: true }; }
+    if (outcome === 'loading') { tab.refs.clear(); broadcast(); return { loading: true, url: target, tab: describeTab(tab, true), dispatched: true }; }
     if (outcome !== 'loaded') throw outcome.error;
   } else if (['back', 'forward', 'reload'].includes(body.action)) {
     await agentInput.clear(tab);
@@ -960,7 +961,7 @@ async function performAction(tab, body, botId, depth = 0) {
     if (go) await settleNavigation(wc, go);
   } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, move, scroll, back, forward, reload, batch, eval, wait, viewport, cdp.'), { status: 400 });
   tab.refs.clear(); broadcast();
-  return { tab: describeTab(tab), dispatched: true };
+  return { tab: describeTab(tab, true), dispatched: true };
 }
 async function readJson(req) {
   let size = 0; const chunks = [];
@@ -998,18 +999,19 @@ function startApi() {
         // The 5s timer already keeps vpsTabs warm; a blocking SSH refresh here
         // cost seconds on a read-only list call. Serve the cache, refresh async.
         if(prefs.vpsBrowser?.sshHost)refreshVpsTabs();
-        return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage).map(describeTab).concat([...vpsTabs.values()]).filter((tab) => overseer || tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
+        return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage).map(tab => describeTab(tab, true)).concat([...vpsTabs.values()]).filter((tab) => overseer || tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
       }
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
         const body = await readJson(req);
         if(body.host==='vps'){const result=await vpsBrowser.request('/v1/tabs','POST',body,{botId,botName:nameForBot(botId)});vpsTabs.set(result.id,result);broadcast();return send(201,result);}
         if(body.host!==undefined&&body.host!=='mac')throw new Error('Choose mac or vps explicitly.');
-        { const created = createTab({ url: body.url, botId, controller: 'agent', activate: body.background === false }); created.agentSince = Date.now();
+        { const targetUrl = pageUrl(agentPageUrl(body.url));
+          const created = createTab({ url: targetUrl, botId, controller: 'agent', activate: body.background === false }); created.agentSince = Date.now();
           // Answer after commit (not full load): the first snapshot or eval then
           // sees the real document instead of racing about:blank. Cap the wait
           // so a slow site still returns promptly — `loading` reports the rest.
-          if (/^https?:\/\//i.test(pageUrl(body.url))) {
+          if (/^https?:\/\//i.test(targetUrl)) {
             const wc = created.view.webContents;
             await new Promise(resolve => {
               const done = () => { clearTimeout(timer); wc.removeListener('did-navigate', done).removeListener('did-fail-load', failed).removeListener('destroyed', done); resolve(); };
@@ -1018,7 +1020,7 @@ function startApi() {
               wc.once('did-navigate', done); wc.on('did-fail-load', failed); wc.once('destroyed', done);
             });
           }
-          return send(201, describeTab(created)); }
+          return send(201, describeTab(created, true)); }
       }
       const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions|control))?$/.exec(url.pathname);
       const tab = match && tabs.get(match[1]);
