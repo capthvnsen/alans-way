@@ -17,7 +17,30 @@ function snapshotExpression(generation, opts = {}) {
     if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${parseWaitMs}); });
     const items = [];
     const deadline = performance.now() + ${elementMs};
-    const candidates = document.querySelectorAll('a[href],button,summary,input:not([type="hidden"]),textarea,select,[onclick],[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="treeitem"],[role="slider"],[contenteditable="true"]');
+    const pick = 'a[href],button,summary,input:not([type="hidden"]),textarea,select,[onclick],[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="treeitem"],[role="slider"],[contenteditable="true"]';
+    // Open shadow roots only. A closed root reads null here, which keeps the
+    // agent cursor (and anything else the page sealed) out of the snapshot.
+    const queue = [document];
+    const seenRoot = new Set();
+    const candidates = [];
+    let more = false;
+    while (queue.length && seenRoot.size < 40 && performance.now() <= deadline) {
+      const root = queue.shift();
+      if (seenRoot.has(root)) continue;
+      seenRoot.add(root);
+      let list = [];
+      try { list = root.querySelectorAll(pick); } catch {}
+      for (const el of list) candidates.push(el);
+      const start = root.nodeType === 11 ? root : (root.documentElement || root.body || null);
+      if (!start) continue;
+      const walker = document.createTreeWalker(start, NodeFilter.SHOW_ELEMENT);
+      let node, walked = 0;
+      while ((node = walker.nextNode()) && walked++ < 4000) {
+        if (node.shadowRoot && !seenRoot.has(node.shadowRoot)) queue.push(node.shadowRoot);
+      }
+      if (walked >= 4000) more = true;
+    }
+    if (queue.length) more = true;
     let scanned = 0;
     for (const el of candidates) {
       if (el.tagName === 'BODY' || el.tagName === 'HTML') continue;
@@ -92,7 +115,7 @@ function snapshotExpression(generation, opts = {}) {
       }
       text = text.slice(0, ${maxChars});
     } else textCut = ${maxChars} <= 0 && !!document.body?.textContent?.trim();
-    return {title:document.title,url:location.href,loading:document.readyState === 'loading',text,elements:items,truncated:{text:textCut,elements:scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:el.title,src:el.src})).slice(0,20)};
+    return {title:document.title,url:location.href,loading:document.readyState === 'loading',text,elements:items,truncated:{text:textCut,elements:more || scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:el.title,src:el.src})).slice(0,20)};
   })()`;
 }
 

@@ -4,6 +4,30 @@ const INPUT_ACTIONS = new Set(['move', 'click', 'type', 'press', 'scroll']);
 const CURSOR_ID = 'hermes-workspace-agent-cursor';
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 
+// document.querySelector stays in the light DOM. Refs stamped inside an open
+// shadow root are found by walking those roots; a closed root is not readable.
+function locateElement(selectorSource) {
+  return `(() => {
+    const sel = ${selectorSource};
+    const queue = [document];
+    const seen = new Set();
+    for (let i = 0; i < queue.length && i < 40; i++) {
+      const root = queue[i];
+      let hit = null;
+      try { hit = root.querySelector(sel); } catch { return null; }
+      if (hit) return hit;
+      const start = root.nodeType === 11 ? root : (root.documentElement || root);
+      if (!start) continue;
+      const walker = document.createTreeWalker(start, NodeFilter.SHOW_ELEMENT);
+      let node, n = 0;
+      while ((node = walker.nextNode()) && n++ < 4000) {
+        if (node.shadowRoot && !seen.has(node.shadowRoot)) { seen.add(node.shadowRoot); queue.push(node.shadowRoot); }
+      }
+    }
+    return null;
+  })()`;
+}
+
 function keyboardEvent(body) {
   if (typeof body.key !== 'string' || !body.key || body.key.length > 30) throw fail('Invalid key.');
   if (body.modifiers !== undefined && (!Array.isArray(body.modifiers) || body.modifiers.some(key => !['alt', 'control', 'meta', 'shift'].includes(key)))) throw fail('Invalid key modifiers.');
@@ -216,8 +240,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       let point;
       if (body.ref || body.selector) {
         point = await wc.executeJavaScript(`(async () => {
-          let el = null;
-          try { el = document.querySelector(${JSON.stringify(body.ref ? `[data-hermes-workspace-ref~="${body.ref}"]` : body.selector)}); } catch {}
+          const el = ${locateElement(JSON.stringify(body.ref ? `[data-hermes-workspace-ref~="${body.ref}"]` : body.selector))};
           if (!el || el.disabled || el.closest('[inert]')) return { fail: 'missing or disabled' };
           el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
           await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -258,15 +281,14 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         await moveCursor(point, hl);
         if (body.action === 'click') {
           const submitClick = (body.ref || body.selector) && await wc.executeJavaScript(`(() => {
-            let el = null;
-            try { el = document.querySelector(${JSON.stringify(body.ref ? `[data-hermes-workspace-ref~="${body.ref}"]` : body.selector)}); } catch {}
+            const el = ${locateElement(JSON.stringify(body.ref ? `[data-hermes-workspace-ref~="${body.ref}"]` : body.selector))};
             if (!el?.form) return false;
             const t = (el.type || '').toLowerCase();
             return (el.tagName === 'BUTTON' && (!t || t === 'submit')) || (el.tagName === 'INPUT' && t === 'submit');
           })()`) === true;
           if (submitClick) {
             await wc.executeJavaScript(`(() => {
-              const el = document.querySelector(${JSON.stringify(body.ref ? `[data-hermes-workspace-ref~="${body.ref}"]` : body.selector)});
+              const el = ${locateElement(JSON.stringify(body.ref ? `[data-hermes-workspace-ref~="${body.ref}"]` : body.selector))};
               el.form.requestSubmit();
             })()`);
           } else {
@@ -313,4 +335,4 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   return { perform, clear, isDispatching };
 }
 
-module.exports = { createAgentInput, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent };
+module.exports = { createAgentInput, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement };

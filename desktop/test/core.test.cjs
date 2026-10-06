@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('../src/core.cjs');
 const { snapshotExpression, settleSnapshot, readControls } = require('../src/browser-page.cjs');
+const { locateElement } = require('../src/agent-input.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
 
 test('browser URLs reject executable and credential-bearing schemes', () => {
@@ -139,6 +140,8 @@ test('web snapshot names say on, off, and disabled', () => {
   assert.match(source, /role="treeitem"/);
   assert.match(source, /role="slider"/);
   assert.match(source, /el\.tagName === 'BODY'/);
+  assert.match(source, /node\.shadowRoot/);
+  assert.match(locateElement(JSON.stringify('button')), /node\.shadowRoot/);
   assert.match(source, /name \+= ' selected'/);
   assert.match(source, /name \+= ' current'/);
   assert.match(source, /item\.disabled = true/);
