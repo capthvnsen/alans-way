@@ -199,6 +199,7 @@ test('an action read does not walk page text or replace the snapshot when contro
 test('snapshot bounds clamp and never splice caller text into page code', () => {
   assert.match(snapshotExpression(3), /text\.slice\(0, 6000\)/);
   assert.match(snapshotExpression(3, { maxChars: 999999 }), /text\.slice\(0, 20000\)/);
+  assert.match(snapshotExpression(3), /setTimeout\(done, 400\)/);
   assert.match(snapshotExpression(3), /seenParent/);
   assert.match(snapshotExpression(3), /checkVisibilityCSS: true/);
   assert.match(snapshotExpression(3), /utm_/);
@@ -224,6 +225,7 @@ test('opening a tab does not let the model pick the machine', () => {
   assert.doesNotMatch(mcp, /host:args\.host/);
   assert.match(mcp, /Do not pass host/);
   assert.match(mcp, /args\.maxChars : 2000/);
+  assert.match(mcp, /400ms grace/);
   assert.match(mcp, /args\.quality : 50/);
   assert.match(mcp, /args\.maxWidth : 960/);
   assert.match(mcp, /reopen the same URL and continue/);
