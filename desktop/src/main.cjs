@@ -570,7 +570,7 @@ function registerIpc() {
 1. If Tailscale isn't installed or connected here, install it (tailscaled + \`tailscale up\`). Tell me this machine's tailnet name/IP when done. My Mac's SSH address is: ${macSsh || '<my-mac-tailscale>'}.
 2. Fetch the bootstrap: git clone https://github.com/capthvnsen/alans-way-agents (or \`git -C alans-way-agents pull\` if already cloned).
 3. Run: ./alans-way-agents/setup.sh --bot-id '${botId || '<telegram-bot-id>'}' --mac-ssh '${macSsh || '<my-mac-tailscale>'}' --restart — answer its prompts; if it asks to bind a primary route, pick the bot matching this chat.
-4. Report: plugin status, whether the browser host started, the workspace_browser block location, and anything it flagged. Then run ./alans-way-agents/setup.sh --verify and paste me the summary.
+4. Report: plugin status, whether the browser host started, the cua_alans_way block location, and anything it flagged. Then run ./alans-way-agents/setup.sh --verify and paste me the summary.
 5. If the VPS needs a desktop/VNC stack for the browser host and none exists, tell me the exact apt commands it printed — don't install the display stack on your own.`);
         break;
       }

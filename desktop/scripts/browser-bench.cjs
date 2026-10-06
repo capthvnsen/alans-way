@@ -6,7 +6,7 @@
 // Usage: node scripts/browser-bench.cjs [--connection PATH] [--bot-id ID]
 //        [--mode both|per-action|batch]
 // Connection defaults to the app's connection.json (HERMES_WORKSPACE_CONNECTION
-// env wins). Requires a reachable workspace browser host.
+// env wins). Requires a reachable `cua_alans_way` browser host.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');

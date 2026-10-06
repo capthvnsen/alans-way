@@ -99,7 +99,7 @@ git clone https://github.com/capthvnsen/alans-way-agents ~/alans-way-agents || g
 
 The script is safe to re-run. It installs the plugin and gateway hook, clones
 this repository for the cloud browser, writes the browser services, configures
-the `workspace_browser` connector, restarts the gateway and offers to bind the
+the `cua_alans_way` connector, restarts the gateway and offers to bind the
 primary bot. Answer its prompts:
 
 - "Run 'hermes gateway setup' now?" appears only when no Telegram bot token is
@@ -133,7 +133,7 @@ human.
    `MAC_SSH`, click **Save addresses**, then **Test agent path**. Success text
    starts with "VPS reaches this Mac over ssh".
 2. **Human step — tell them:** "In the Alan's Way app, message your bot:
-   *Open example.com in the workspace browser and tell me the page title.*"
+   *Open example.com in a browser tab and tell me the page title.*"
    Expect a tab with the bot's named cursor to appear on the right and the bot
    to reply "Example Domain".
 3. **Human step — tell them:** "Send `/proactivity status` to the bot." Expect
@@ -153,7 +153,7 @@ desktop connection** in the app.
 |---|---|
 | Stage 1 check: `Cannot find module …connection.json` | The app is not running or never started its API. Open it and retry. |
 | `Host key verification failed` | The Mac's host key is not in the VPS's `known_hosts`. Re-run the `ssh-copy-id -o StrictHostKeyChecking=accept-new` line. |
-| Verify says `workspace_browser timeout …s is below 120s` | Long browser actions get cut off. Re-run stage 3 setup, or set `timeout: 120` on the block and restart the gateway. |
+| Verify says `cua_alans_way timeout …s is below 120s` | Long browser actions get cut off. Re-run stage 3 setup, or set `timeout: 120` on the block and restart the gateway. |
 | Bot opens tabs on the VPS while the Mac is awake | The Mac app is closed, or SSH from the VPS fails. Re-run the stage 2 check. |
 | Browser tool errors right after setup | The gateway is still running old code. `hermes gateway restart`. |
 | `handoff_review_required` | A page moved between computers needs the human to check it, for example a login. Ask them. |

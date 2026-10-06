@@ -32,7 +32,7 @@ For a Hermes process running on the Mac, merge this server entry into that profi
 
 ```yaml
 mcp_servers:
-  workspace_browser:
+  cua_alans_way:
     command: /absolute/path/to/node
     args:
       - /Applications/alans-way-localapp.app/Contents/Resources/app/scripts/browser-mcp.cjs
@@ -44,7 +44,7 @@ For a Hermes process on the VPS, run the same command on the Mac through its alr
 
 ```yaml
 mcp_servers:
-  workspace_browser:
+  cua_alans_way:
     command: ssh
     args:
       - -T
@@ -56,9 +56,9 @@ mcp_servers:
 
 Use a different `--bot-id` for each bot. Keep existing Hermes settings and server entries. Restart or reload MCP through the workflow supported by your installed Hermes version. This project does not modify Hermes source or apply changes to running bot profiles.
 
-The six tools are `workspace_browser_status`, `workspace_browser_tabs`, `workspace_browser_open`, `workspace_browser_snapshot`, `workspace_browser_screenshot`, and `workspace_browser_action`. Actions need the current tab epoch. Use fresh snapshot refs after each action. Bot tabs open in the background by default; pass `background: false` only to explicitly select a Mac tab. Open defaults to `host: mac`; choose `host: vps` explicitly for VPS work. The Mac connector requires the Mac awake and app running. A separate native VPS connector can continue cloud browser work while the Mac is offline. There is no silent fallback between hosts.
+The six tools are `cua_alans_way_status`, `cua_alans_way_tabs`, `cua_alans_way_open`, `cua_alans_way_snapshot`, `cua_alans_way_screenshot`, and `cua_alans_way_action`. Actions need the current tab epoch. Use fresh snapshot refs after each action. Bot tabs open in the background by default; pass `background: false` only to explicitly select a Mac tab. Open defaults to `host: mac`; choose `host: vps` explicitly for VPS work. The Mac connector requires the Mac awake and app running. A separate native VPS connector can continue cloud browser work while the Mac is offline. There is no silent fallback between hosts.
 
-`workspace_browser_action` is the bot’s separate input command. `move` and `click` accept a snapshot ref or viewport `x,y`; `type` replaces text at a fresh ref; `press` sends keys to that tab; `scroll` uses `x,y` as deltas. A pointer labeled with the driving bot's name glides across the page during dispatched input — every bot owns a distinct color derived from its ID — the target element flashes blue and the page frame gains a teal tint while a bot holds control. These commands use Chromium’s tab-specific input protocol and never move the system mouse, paste into another app, or activate the bot’s window. Agent keyboard shortcuts cannot trigger workspace shortcuts. **Take over** revokes queued input; an action already delivered to Chromium cannot be recalled.
+`cua_alans_way_action` is the bot’s separate input command. `move` and `click` accept a snapshot ref or viewport `x,y`; `type` replaces text at a fresh ref; `press` sends keys to that tab; `scroll` uses `x,y` as deltas. A pointer labeled with the driving bot's name glides across the page during dispatched input — every bot owns a distinct color derived from its ID — the target element flashes blue and the page frame gains a teal tint while a bot holds control. These commands use Chromium’s tab-specific input protocol and never move the system mouse, paste into another app, or activate the bot’s window. Agent keyboard shortcuts cannot trigger workspace shortcuts. **Take over** revokes queued input; an action already delivered to Chromium cannot be recalled.
 
 ## What the activity indicator verifies
 

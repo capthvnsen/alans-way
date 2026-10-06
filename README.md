@@ -70,7 +70,7 @@ In the app: **Settings → Agent setup** — the checklist shows what's already 
 2. Click **Copy setup command** and paste it in a terminal on the VPS — one bootstrap installs the plugin, wires the browser, restarts the gateway, and offers to bind your primary bot. (Never configured Telegram on Hermes? The bootstrap walks you through the QR-code setup.)
 3. Click **Test agent path** — the app verifies VPS → Mac SSH end-to-end.
 
-That's it. The bot gets a `workspace_browser` tool that opens tabs you can watch.
+That's it. The bot gets a `cua_alans_way` tool that opens tabs you can watch.
 
 **Or let an agent do it.** If a Hermes agent already has a terminal on your VPS, paste it this prompt — it sets up Tailscale between the machines if needed, runs the same bootstrap, and reports back:
 
