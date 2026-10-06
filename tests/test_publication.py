@@ -36,7 +36,12 @@ class PublicationTests(unittest.TestCase):
     def test_private_host_addresses_are_denied(self):
         address = ".".join(["100", "72", "1", "23"])
         self.assertTrue(self.scan("README.md", address))
+        self.assertTrue(self.scan("desktop/test/fixture.cjs", address))
         self.assertEqual(self.scan("tests/test_local.py", "127.0.0.1"), [])
+        self.assertEqual(self.scan("desktop/docs/integration.md", "169.254.169.254 and 0.0.0.0"), [])
+        lan = ".".join(["192", "168", "1", "20"])
+        self.assertEqual(self.scan("desktop/test/core.test.cjs", lan), [])
+        self.assertTrue(self.scan("README.md", lan))
 
     def test_credentials_are_denied_without_printing_the_value(self):
         key = "ghp_" + "a" * 36
