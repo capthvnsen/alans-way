@@ -74,11 +74,16 @@ jobs:
         working-directory: .
         shell: powershell
         run: |
-          $errs = $null
+          $found = $false
           foreach ($f in 'scripts/install-windows.ps1', 'scripts/connect-windows.ps1') {
-            [void][System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$null, [ref]$errs)
+            $tokens = $null; $fileErrs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$tokens, [ref]$fileErrs)
+            foreach ($e in $fileErrs) {
+              $found = $true
+              Write-Host "$f line $($e.Extent.StartLineNumber) col $($e.Extent.StartColumnNumber): $($e.Message)"
+            }
           }
-          if ($errs) { $errs | ForEach-Object { Write-Error $_.Message }; exit 1 }
+          if ($found) { exit 1 }
 
   package-and-test:
     strategy:
