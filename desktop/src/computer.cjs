@@ -21,13 +21,29 @@ function pickHelper({ binary, source, bundled, exists, mtime, compile }) {
   throw new Error('Could not build the Mac computer helper, and no prebuilt one ships with this app.');
 }
 
+// Without the Command Line Tools, /usr/bin/swiftc is a stub that pops an
+// install dialog, so check xcode-select first and try at most once per process.
+function makeCompile({ hasDevTools, swiftc }) {
+  let failed = false;
+  return () => {
+    if (failed) return false;
+    if (hasDevTools() && swiftc()) return true;
+    failed = true;
+    return false;
+  };
+}
+
+const compile = makeCompile({
+  hasDevTools: () => spawnSync('xcode-select', ['-p'], { encoding: 'utf8' }).status === 0,
+  swiftc: () => spawnSync('swiftc', ['-O', '-o', binary, source], { encoding: 'utf8' }).status === 0,
+});
+
 function ensureBinary() {
   if (process.platform !== 'darwin') throw new Error('Mac computer use only runs on the Mac.');
   return pickHelper({
-    binary, source, bundled,
+    binary, source, bundled, compile,
     exists: (p) => fs.existsSync(p),
     mtime: (p) => fs.statSync(p).mtimeMs,
-    compile: () => spawnSync('swiftc', ['-O', '-o', binary, source], { encoding: 'utf8' }).status === 0,
   });
 }
 
@@ -105,4 +121,4 @@ function screenshot(pid, maxWidth) {
   };
 }
 
-module.exports = { apps, snapshot, press, click, drag, type, screenshot, ensureBinary, pickHelper, driverCommand };
+module.exports = { apps, snapshot, press, click, drag, type, screenshot, ensureBinary, pickHelper, makeCompile, driverCommand };
