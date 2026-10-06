@@ -212,6 +212,46 @@ def click_at(call, glib, app, x, y):
     return {'ok': True, 'cursorMoved': False}
 
 
+def value_of(call, glib, dest, path, key):
+    return call(
+        dest, path, 'org.freedesktop.DBus.Properties', 'Get',
+        glib.Variant('(ss)', ('org.a11y.atspi.Value', key)), '(v)',
+    ).unpack()[0]
+
+
+def drag_to(call, glib, app, x, y, x2, y2):
+    hits = []
+    for element in walk(call, glib, app):
+        if 'width' not in element or element['role'] not in INTERACTIVE:
+            continue
+        if element['x'] <= x <= element['x'] + element['width'] and element['y'] <= y <= element['y'] + element['height']:
+            hits.append(element)
+    if not hits:
+        fail('No control at that point. Press a ref instead.')
+    target = min(hits, key=lambda element: element['width'] * element['height'])
+    if target['role'] in PASSWORD:
+        fail('Password fields are off limits.')
+    try:
+        low = float(value_of(call, glib, target['dest'], target['path'], 'MinimumValue'))
+        high = float(value_of(call, glib, target['dest'], target['path'], 'MaximumValue'))
+    except Exception:
+        fail('That control cannot be dragged. Press a ref instead.')
+    span = target['width'] if target['width'] >= target['height'] else target['height']
+    origin = target['x'] if target['width'] >= target['height'] else target['y']
+    end = x2 if target['width'] >= target['height'] else y2
+    fraction = 0 if span <= 0 else min(1, max(0, (end - origin) / span))
+    try:
+        done = call(
+            target['dest'], target['path'], 'org.a11y.atspi.Value', 'SetCurrentValue',
+            glib.Variant('(d)', (low + fraction * (high - low),)), '(b)',
+        ).unpack()[0]
+    except Exception:
+        done = False
+    if not done:
+        fail('That control cannot be dragged. Press a ref instead.')
+    return {'ok': True, 'cursorMoved': False}
+
+
 def window_id(pid):
     ids = subprocess.check_output(
         ['xdotool', 'search', '--onlyvisible', '--pid', str(pid)],
@@ -297,6 +337,10 @@ def main():
         pid = int(sys.argv[2])
         app = require_app(listed, pid)
         emit(click_at(call, glib, app, float(sys.argv[3]), float(sys.argv[4])))
+    if command == 'drag':
+        pid = int(sys.argv[2])
+        app = require_app(listed, pid)
+        emit(drag_to(call, glib, app, float(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5]), float(sys.argv[6])))
     if command == 'shot':
         pid = int(sys.argv[2])
         cap = int(sys.argv[3]) if len(sys.argv) > 3 else 960
