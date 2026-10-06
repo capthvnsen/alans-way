@@ -68,7 +68,10 @@ function stubEvaluate(pages, sessionId, expression) {
     return { title: page.title, url: page.url, text: 'stub page text',
       elements: [{ ref: 's1-1', role: 'button', name: 'Stub button', type: '', value: '', href: '', disabled: false }],
       viewport: { width: 900, height: 700, deviceScaleFactor: 1 }, iframes: [] };
-  if (expression.includes('document.readyState')) return { url: page.url, title: page.title, ready: 'complete' };
+  if (expression.includes('document.readyState')) {
+    if (String(page.url).includes('slow.example')) return { url: page.url, title: page.title, ready: 'loading' };
+    return { url: page.url, title: page.title, ready: 'complete' };
+  }
   if (expression.includes('drafts.push')) return { url: page.url, title: page.title, scroll: { x: 0, y: 0 }, drafts: [] };
   if (expression.includes('c.drafts'))
     return { verification: expression.includes('needs-review.example') ? 'review_required' : 'ready', restored: 0, skipped: 0 };
@@ -176,6 +179,14 @@ test('an overseer lists every tab while regular bots see only their own', async 
   assert.ok(aList.includes(a.id) && !aList.includes(b.id), 'bot-a sees only its tabs');
   assert.ok(bList.includes(b.id) && !bList.includes(a.id), 'bot-b sees only its tabs');
   assert.ok(overseerList.includes(a.id) && overseerList.includes(b.id), 'overseer sees every tab');
+});
+
+test('a continued page returns its tab without waiting for a slow load', async () => {
+  const started = Date.now();
+  const opened = await api('/v1/tabs', 'POST', { url: 'https://slow.example/doc', settle: false });
+  assert.equal(opened.status, 201);
+  assert.ok(Date.now() - started < 2000, 'settle:false must not wait out the load');
+  assert.equal(opened.data.url, 'https://slow.example/doc');
 });
 
 test('bots cannot read a human-controlled tab until control is taken', async () => {
