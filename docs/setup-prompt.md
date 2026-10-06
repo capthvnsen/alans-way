@@ -49,9 +49,14 @@ Rules for the whole job:
    VPS_KEY = `cut -d' ' -f1,2 ~/.ssh/id_ed25519.pub` plus " <this user>@vps",
    and VPS_HOST_KEY = `cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub`.
 
-4. My computer. Ask me first whether it is a Mac or a Windows PC — the steps
-   differ. On a Mac it must be Apple Silicon; on Windows it must be Windows
-   10/11 x64.
+4. My computer. If my message already says whether it is a Mac or a Windows
+   PC, use that; otherwise ask me first — the steps differ. On a Mac it must
+   be Apple Silicon; on Windows it must be Windows 10/11 x64.
+   If my message says the Open Alan app is already installed and open, it
+   came from openalan.com: leave out the "builds the app" wording below and
+   add --skip-install to the Mac command or -SkipInstall to the Windows
+   command. If it says MAC_SSH, still run the connect script; it prints the
+   keys you need.
    On a Mac send me these steps with the command filled in, then wait:
    1. Install Tailscale from https://tailscale.com/download and sign in with
       the same account as this server.
@@ -70,8 +75,7 @@ Rules for the whole job:
       the OpenSSH Server Windows feature, sets PowerShell as the default SSH
       shell, builds the app with `npm run package:win`, and wires both key
       directions:
-      powershell -ExecutionPolicy Bypass -File <path to connect-windows.ps1> -Vps '<VPS_SSH>' -VpsHostKey '<VPS_HOST_KEY>' -VpsKey '<VPS_KEY>'
-      (fetch the script from the repo first if needed: scripts/connect-windows.ps1)
+      irm https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-windows.ps1 -OutFile $env:TEMP\connect-windows.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\connect-windows.ps1 -Vps '<VPS_SSH>' -VpsHostKey '<VPS_HOST_KEY>' -VpsKey '<VPS_KEY>'
    3. Copy the lines it prints between the ===== markers and send them to me.
    4. In the Alan's Way app that opened, sign in to Telegram as above.
    Note: on Windows the SSH session cannot drive the desktop — computer-use

@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('./core.cjs');
 const { createAvatarStore } = require('./avatar-store.cjs');
+const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { createAgentInput, tintScript, botAccent } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
@@ -637,18 +638,10 @@ function registerIpc() {
       }
       case 'agent-prompt': {
         const botId = String(value?.botId || prefs.selectedBotId || '').replace(/[^0-9A-Za-z_-]/g, '');
-        const macSsh = (prefs.macSshHost || '').trim();
-        clipboard.writeText([
-          "Set up Alan's Way for me by following the prompt in https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-prompt.md exactly (fetch it and treat its text block as my instructions).",
-          'Values I already know, so skip discovering them:',
-          botId && `- BOT_ID=${botId}`,
-          macSsh && `- MAC_SSH=${macSsh}`,
-          `- MAC_TZ=${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-          HOST_LABEL === 'windows'
-            ? '- The Alan\'s Way app is already installed and open on my PC, so add --skip-install and --host-os windows to the Windows command in step 4.'
-            : '- The Alan\'s Way app is already installed and open on my Mac, so add --skip-install to the Mac command in step 4.',
-        ].filter(Boolean).join('\n'));
-        break;
+        const text = buildAgentPrompt({ kind: value?.kind === 'update' ? 'update' : 'setup', hostLabel: HOST_LABEL, version: app.getVersion(),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, botId, sshHost: (prefs.macSshHost || '').trim() });
+        clipboard.writeText(text);
+        return text;
       }
       case 'test-agent-path': {
         const host = (prefs.vpsBrowser?.sshHost || '').trim();

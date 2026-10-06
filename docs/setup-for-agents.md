@@ -38,6 +38,11 @@ not, stage 3 offers to set that up.
 
 ## Stage 1 — Desktop app
 
+If the person downloaded the app from https://openalan.com (Mac:
+`/download/mac`, Windows: `/download/windows`) and it is open, skip this
+stage and pass `--skip-install` / `-SkipInstall` to the connect script.
+Otherwise build it on their computer:
+
 On a Mac:
 
 ```sh
