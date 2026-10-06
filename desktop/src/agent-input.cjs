@@ -215,11 +215,13 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       if (!tab.focusEmulation) { tab.focusEmulation = true; await send('Emulation.setFocusEmulationEnabled', { enabled: true }); }
       let point;
       if (body.ref || body.selector) {
-        point = await wc.executeJavaScript(`(() => {
+        point = await wc.executeJavaScript(`(async () => {
           let el = null;
           try { el = document.querySelector(${JSON.stringify(body.ref ? `[data-hermes-workspace-ref~="${body.ref}"]` : body.selector)}); } catch {}
           if (!el || el.disabled || el.closest('[inert]')) return { fail: 'missing or disabled' };
           el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+          void el.offsetHeight;
           const r = el.getBoundingClientRect();
           const l = Math.max(0, r.left), t = Math.max(0, r.top), rr = Math.min(innerWidth, r.right), b = Math.min(innerHeight, r.bottom);
           const w = rr - l, h = b - t;
@@ -255,10 +257,24 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       if (body.action === 'move' || body.action === 'click') {
         await moveCursor(point, hl);
         if (body.action === 'click') {
-          mouseDown = point;
-          await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
-          await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 });
-          mouseDown = null;
+          const submitClick = (body.ref || body.selector) && await wc.executeJavaScript(`(() => {
+            let el = null;
+            try { el = document.querySelector(${JSON.stringify(body.ref ? `[data-hermes-workspace-ref~="${body.ref}"]` : body.selector)}); } catch {}
+            if (!el?.form) return false;
+            const t = (el.type || '').toLowerCase();
+            return (el.tagName === 'BUTTON' && (!t || t === 'submit')) || (el.tagName === 'INPUT' && t === 'submit');
+          })()`) === true;
+          if (submitClick) {
+            await wc.executeJavaScript(`(() => {
+              const el = document.querySelector(${JSON.stringify(body.ref ? `[data-hermes-workspace-ref~="${body.ref}"]` : body.selector)});
+              el.form.requestSubmit();
+            })()`);
+          } else {
+            mouseDown = point;
+            await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
+            await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 });
+            mouseDown = null;
+          }
           await cursor(point, 'click', hl);
         }
       } else if (body.action === 'type') {
