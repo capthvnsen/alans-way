@@ -184,6 +184,14 @@ async function serve() {
     try {
       await tab.view.webContents.command('Page.enable');
       await tab.view.webContents.command('Page.navigate', { url });
+      // A laptop-close continue must not wait out a slow Docs or Notion load.
+      // The tab id is returned immediately; the next snapshot sees loading.
+      if (body.settle === false) {
+        tab.url = url;
+        if (tab.controller === 'agent') tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
+        await persist();
+        return tab;
+      }
       await loaded(tab, url);
       if (tab.controller === 'agent') await tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
       await persist();
