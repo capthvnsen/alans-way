@@ -29,7 +29,9 @@ test('browser MCP exposes close and reports non-JSON host errors cleanly', { tim
   const tools = (await client.listTools()).tools.map((tool) => tool.name);
   assert.deepEqual(tools, [
     'workspace_browser_status', 'workspace_browser_tabs', 'workspace_browser_open',
-    'workspace_browser_snapshot', 'workspace_browser_screenshot', 'workspace_browser_close', 'workspace_browser_action',
+    'workspace_browser_snapshot', 'workspace_browser_screenshot', 'workspace_browser_close',
+    'workspace_computer_apps', 'workspace_computer_snapshot', 'workspace_computer_action',
+    'workspace_browser_action',
   ]);
   const result = await client.callTool({ name: 'workspace_browser_status', arguments: {} });
   assert.equal(result.isError, true);

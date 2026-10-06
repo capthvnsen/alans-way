@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const computer = require('../src/computer.cjs');
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
@@ -24,6 +25,15 @@ const tools = [
   { name: 'workspace_browser_snapshot', description: 'Read a tab: bounded page text plus interactive elements in elements[] ({ref, role, name, …}). role is usually the lowercase tag (a, input, button) or an ARIA role. loading:true means the document was still parsing after a 2s grace. Refs cover the top document only; use screenshot for iframe content. Pass since=<last generation> for a cheap {unchanged:true}. Request a fresh snapshot after actions that change the page; action responses include generation/url/title/loading so you can often skip one.', inputSchema: objectSchema({ tabId: string, maxChars: { type: 'integer', description: 'Cap on returned page text, default 6000, max 20000.' }, maxElements: { type: 'integer', description: 'Cap on interactive element refs, default 150, max 300.' }, since: { type: 'integer', description: 'Generation from the previous snapshot; returns {unchanged:true} when content is identical.' } }, ['tabId']), annotations: { readOnlyHint: true } },
   { name: 'workspace_browser_screenshot', description: 'Capture the tab viewport as an image file. Hermes delivers it as MEDIA:<path> — run a vision step on that path to see pixels. Defaults to compact jpeg; png keeps alpha.', inputSchema: objectSchema({ tabId: string, format: { type: 'string', enum: ['jpeg', 'png', 'webp'], description: 'Image format, default jpeg.' }, quality: { type: 'integer', description: 'jpeg/webp quality 1-100, default 70.' }, maxWidth: { type: 'integer', description: 'Downscale cap on image width in px, default 1280.' } }, ['tabId']), annotations: { readOnlyHint: true } },
   { name: 'workspace_browser_close', description: 'Close a tab this bot owns. Pass the current epoch. Required to free VPS tabs (global cap 40).', inputSchema: objectSchema({ tabId: string, epoch: { type: 'integer' } }, ['tabId', 'epoch']), annotations: { readOnlyHint: false, openWorldHint: true } },
+  { name: 'workspace_computer_apps', description: 'List Mac apps the agent can drive in the background. The frontmost app and Keychain are off limits. Web work stays on workspace_browser. Never moves the human cursor.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
+  { name: 'workspace_computer_snapshot', description: 'Read one background Mac app: elements[] with ref, role, name, and screen x,y,width,height. Prefer press by ref. Use click or drag with those coordinates only when the control is a canvas. Take a fresh snapshot after the app changes.', inputSchema: objectSchema({ pid: { type: 'integer' } }, ['pid']), annotations: { readOnlyHint: true } },
+  { name: 'workspace_computer_action', description: 'Act in a background Mac app without moving the human cursor. press uses a snapshot ref. click and drag use snapshot coordinates. batch runs up to 25 steps. Refuses the frontmost app, Keychain, and password fields.', inputSchema: objectSchema({
+    pid: { type: 'integer' },
+    action: { type: 'string', enum: ['press', 'click', 'drag', 'batch'] },
+    ref: string,
+    x: { type: 'number' }, y: { type: 'number' }, x2: { type: 'number' }, y2: { type: 'number' },
+    steps: { type: 'array', items: { type: 'object' }, description: 'For batch: up to 25 press, click, or drag steps.' },
+  }, ['pid', 'action']), annotations: { readOnlyHint: false } },
   { name: 'workspace_browser_action', description: 'Use the bot’s own cursor and keyboard in its assigned Chromium tab, including background tabs; never moves the human’s system mouse or types into another tab. Include current epoch. move/click accept a fresh ref, a selector, or viewport x,y; type replaces the text of a fresh ref or selector; press sends a key to that tab (optional ref/selector); scroll uses x,y as deltas. batch runs up to 25 steps in one call — prefer it; use selectors or refs from one snapshot (refs stay valid for the whole batch unless the page navigates). eval runs JS in the page; keep results small. wait blocks until a selector exists, text appears, or the url contains a substring — after navigate, wait on url or a new-page selector, not body alone. viewport sets layout size. cdp sends an allowlisted DevTools command. Each result includes generation, url, title, loading. Three identical failing calls pause this connector ~60s — change approach instead of retrying the same call. Stops during human takeover. claim/release change control; claim returns a fresh epoch. Do not retry an uncertain submission; inspect the page first.', inputSchema: objectSchema({
     tabId: string, epoch: { type: 'integer' }, action: { type: 'string', enum: ['navigate', 'move', 'click', 'type', 'press', 'scroll', 'back', 'forward', 'reload', 'batch', 'eval', 'wait', 'viewport', 'cdp', 'claim', 'release'] }, ref: string, text: string, url: string, key: string,
     modifiers: { type: 'array', items: { type: 'string', enum: ['shift', 'control', 'alt', 'meta'] } }, x: { type: 'number', description: 'Viewport x for move/click; horizontal scroll delta for scroll.' }, y: { type: 'number', description: 'Viewport y for move/click; vertical scroll delta for scroll.' },
@@ -83,6 +93,26 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
       case 'workspace_browser_close':
         result = await request(tabPath, 'DELETE', undefined, args.epoch);
         break;
+      case 'workspace_computer_apps': result = { apps: computer.apps() }; break;
+      case 'workspace_computer_snapshot': result = computer.snapshot(args.pid); break;
+      case 'workspace_computer_action': {
+        const step = (body) => {
+          if (body.action === 'press') return computer.press(args.pid, body.ref);
+          if (body.action === 'click') return computer.click(args.pid, body.x, body.y);
+          if (body.action === 'drag') return computer.drag(args.pid, body.x, body.y, body.x2, body.y2);
+          throw new Error('Computer action must be press, click, drag, or batch.');
+        };
+        if (args.action === 'batch') {
+          const steps = Array.isArray(args.steps) ? args.steps.slice(0, 25) : [];
+          const results = [];
+          for (const item of steps) {
+            try { results.push(step(item || {})); }
+            catch (error) { results.push({ error: error.message }); break; }
+          }
+          result = { results };
+        } else result = step(args);
+        break;
+      }
       case 'workspace_browser_action': {
         const { tabId, ...body } = args;
         result = body.action === 'claim' || body.action === 'release'

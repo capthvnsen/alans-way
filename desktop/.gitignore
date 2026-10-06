@@ -1,4 +1,5 @@
 node_modules/
+scripts/mac-computer
 dist/
 screenshots/
 .DS_Store
