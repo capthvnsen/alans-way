@@ -10,11 +10,12 @@ function snapshotExpression(generation, opts = {}) {
   // buttons, so the scan gets a wider budget than the text walk.
   const elementMs = int(opts.elementMs, 5, 2000, 200);
   const keep = int(opts.keep, 0, Number.MAX_SAFE_INTEGER, -1);
-  return `(() => {
+  const parseWaitMs = int(opts.parseWaitMs, 0, 5000, 2000);
+  return `(async () => {
+    // The parser yields between chunks, so a snapshot can land mid-document;
+    // give a still-parsing page a moment and report it if it is not done.
+    if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${parseWaitMs}); });
     const items = [];
-    // Flush pending style/layout first: on a freshly loaded page the first
-    // visibility check pays for it, which would otherwise eat a whole budget.
-    document.documentElement.getBoundingClientRect();
     const deadline = performance.now() + ${elementMs};
     const candidates = document.querySelectorAll('a[href],button,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[contenteditable="true"]');
     let scanned = 0;
@@ -56,7 +57,7 @@ function snapshotExpression(generation, opts = {}) {
       }
       text = text.slice(0, ${maxChars});
     } else textCut = ${maxChars} <= 0 && !!document.body?.textContent?.trim();
-    return {title:document.title,url:location.href,text,elements:items,truncated:{text:textCut,elements:scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:el.title,src:el.src})).slice(0,20)};
+    return {title:document.title,url:location.href,loading:document.readyState === 'loading',text,elements:items,truncated:{text:textCut,elements:scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:el.title,src:el.src})).slice(0,20)};
   })()`;
 }
 

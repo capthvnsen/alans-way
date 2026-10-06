@@ -64,11 +64,11 @@ function wsParse(buffer) {
 }
 function stubEvaluate(pages, sessionId, expression) {
   const page = pages.get(sessionId) || { url: 'about:blank', title: 'Stub page' };
-  if (expression.includes('document.readyState')) return { url: page.url, title: page.title, ready: 'complete' };
   if (expression.includes('items.push'))
     return { title: page.title, url: page.url, text: 'stub page text',
       elements: [{ ref: 's1-1', role: 'button', name: 'Stub button', type: '', value: '', href: '', disabled: false }],
       viewport: { width: 900, height: 700, deviceScaleFactor: 1 }, iframes: [] };
+  if (expression.includes('document.readyState')) return { url: page.url, title: page.title, ready: 'complete' };
   if (expression.includes('drafts.push')) return { url: page.url, title: page.title, scroll: { x: 0, y: 0 }, drafts: [] };
   if (expression.includes('c.drafts'))
     return { verification: expression.includes('needs-review.example') ? 'review_required' : 'ready', restored: 0, skipped: 0 };
