@@ -37,3 +37,33 @@ test('browser MCP exposes close and reports non-JSON host errors cleanly', { tim
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /Browser request failed \(502\).*upstream timeout from proxy/);
 });
+
+test('browser tool results omit favicon images', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
+  const icon = 'data:image/png;base64,' + 'A'.repeat(5000);
+  const host = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ tabs: [{ id: 't', title: 'Inbox', url: 'https://a.example/', epoch: 3, favicon: icon }] }));
+  });
+  await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')],
+    env: { ...process.env },
+  });
+  const client = new Client({ name: 'browser-mcp-test', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {});
+    await transport.close().catch(() => {});
+    await new Promise((resolve) => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const result = await client.callTool({ name: 'cua_alans_way_tabs', arguments: {} });
+  const text = result.content[0].text;
+  assert.equal(result.isError, undefined);
+  assert.doesNotMatch(text, /favicon|data:image/);
+  assert.match(text, /Inbox/);
+  assert.match(text, /"epoch":3/);
+});
