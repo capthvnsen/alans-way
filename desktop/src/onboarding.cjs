@@ -6,4 +6,9 @@ function shouldOnboard(prefs) {
   return !prefs.onboarded && !prefs.macSshHost;
 }
 
-module.exports = { shouldOnboard };
+// Decide once at launch: step 3 saves an SSH address, which must not end the wizard.
+function pinOnboarding(prefs) {
+  if (prefs.onboarded === undefined && shouldOnboard(prefs)) prefs.onboarded = false;
+}
+
+module.exports = { shouldOnboard, pinOnboarding };
