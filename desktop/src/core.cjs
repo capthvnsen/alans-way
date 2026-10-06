@@ -190,4 +190,10 @@ function retargetMissingTab(endpoint, method, page) {
   return '/v1/tabs/' + encodeURIComponent(page.tabId) + match[2];
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab };
+// The new VPS tab starts at its own control epoch. A Mac epoch must not be
+// reused for the action that just moved.
+function needsContinuedEpoch(message, method) {
+  return method !== 'GET' && method !== 'DELETE' && /stale_control_epoch/i.test(String(message || ''));
+}
+
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch };
