@@ -420,7 +420,7 @@ static class WinComputer {
   }
 
   static void CommandClick(string[] args) {
-    int pid; double x, y;
+    int pid = 0; double x = 0, y = 0;
     if (args.Length < 4 || !int.TryParse(args[1], out pid) || !NumArg(args[2], out x) || !NumArg(args[3], out y)) Fail("click needs pid x y");
     RequireApp(pid);
     var target = HitAtPoint(pid, x, y);
@@ -454,10 +454,10 @@ static class WinComputer {
   }
 
   static void CommandDrag(string[] args) {
-    int pid; double x, y;
+    int pid = 0; double x = 0, y = 0;
     if (args.Length < 4 || !int.TryParse(args[1], out pid) || !NumArg(args[2], out x) || !NumArg(args[3], out y)) Fail("drag needs pid x y");
     if (args.Length < 6) Fail("drag needs x2 y2");
-    double x2, y2;
+    double x2 = 0, y2 = 0;
     if (!NumArg(args[4], out x2) || !NumArg(args[5], out y2)) Fail("drag needs x2 y2");
     RequireApp(pid);
     var target = HitAt(Collect(pid), x, y);
@@ -519,7 +519,7 @@ static class WinComputer {
     ImageCodecInfo jpeg = null;
     foreach (var codec in ImageCodecInfo.GetImageEncoders()) if (codec.MimeType == "image/jpeg") jpeg = codec;
     var quality = new EncoderParameters(1);
-    quality.Param[0] = new EncoderParameter(Encoder.Quality, 55L);
+    quality.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 55L);
     var stream = new MemoryStream();
     bitmap.Save(stream, jpeg, quality);
     var image = Convert.ToBase64String(stream.ToArray());
