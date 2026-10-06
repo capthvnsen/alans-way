@@ -17,7 +17,7 @@ function snapshotExpression(generation, opts = {}) {
     if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${parseWaitMs}); });
     const items = [];
     const deadline = performance.now() + ${elementMs};
-    const candidates = document.querySelectorAll('a[href],button,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[contenteditable="true"]');
+    const candidates = document.querySelectorAll('a[href],button,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="switch"],[contenteditable="true"]');
     let scanned = 0;
     for (const el of candidates) {
       if (scanned >= ${maxScan} || items.length >= ${maxElements} || performance.now() > deadline) break;
@@ -31,7 +31,24 @@ function snapshotExpression(generation, opts = {}) {
       const ref = 's${generation}-' + (items.length + 1);
       const kept = (el.getAttribute('data-hermes-workspace-ref') || '').split(' ').filter(token => token.startsWith('s${keep}-'));
       el.setAttribute('data-hermes-workspace-ref', [...kept, ref].join(' '));
-      items.push({ref,role:el.getAttribute('role') || el.tagName.toLowerCase(),name:(el.getAttribute('aria-label') || el.labels?.[0]?.innerText || el.innerText || el.placeholder || el.title || '').trim().slice(0,200),type:el.type || '',value:el.type === 'password' ? '[password]' : String(el.value || '').slice(0,200),href:el.href || '',disabled:!!el.disabled});
+      let name = (el.getAttribute('aria-label') || el.placeholder || el.title || '').trim();
+      if (!name && el.labels && el.labels[0]) {
+        const labelText = (el.labels[0].innerText || '').trim();
+        const own = (el.innerText || '').trim();
+        name = own && labelText.endsWith(own) ? labelText.slice(0, -own.length).trim() : labelText;
+      }
+      if (!name) name = (el.innerText || '').trim();
+      if (el.tagName === 'SELECT' && el.selectedIndex >= 0) {
+        const picked = (el.options[el.selectedIndex].label || el.options[el.selectedIndex].text || '').trim();
+        if (picked && picked !== name) name = (name ? name + ' ' : '') + picked;
+      }
+      const ariaChecked = el.getAttribute('aria-checked');
+      const checked = /^(checkbox|radio)$/.test(el.type) ? !!el.checked : ariaChecked === 'true' ? true : ariaChecked === 'false' ? false : null;
+      if (checked === true) name += ' on';
+      else if (checked === false) name += ' off';
+      if (el.disabled || el.getAttribute('aria-disabled') === 'true') name += ' disabled';
+      name = name.trim().slice(0, 200);
+      items.push({ref,role:el.getAttribute('role') || el.tagName.toLowerCase(),name,type:el.type || '',value:el.type === 'password' ? '[password]' : String(el.value || '').slice(0,200),href:el.href || '',disabled:!!el.disabled});
     }
     // body.innerText pays a full-document render pass regardless of the slice;
     // a bounded walker stops at the char cap or the time budget instead.

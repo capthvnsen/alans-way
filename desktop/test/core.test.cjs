@@ -122,6 +122,14 @@ test('an unchanged snapshot keeps the refs the agent already holds usable', () =
   assert.ok(!tab.refs.has('s1-1'), 'refs from before a real change stay stale');
   assert.equal(settleSnapshot(tab, page(5, 'Sent'), 5).unchanged, undefined, 'no since means a full reply');
 });
+test('web snapshot names say on, off, and disabled', () => {
+  const source = snapshotExpression(1);
+  assert.match(source, /role="checkbox"/);
+  assert.match(source, /name \+= ' on'/);
+  assert.match(source, /name \+= ' off'/);
+  assert.match(source, /name \+= ' disabled'/);
+  assert.match(source, /disabled:!!el\.disabled/);
+});
 test('snapshot bounds clamp and never splice caller text into page code', () => {
   assert.match(snapshotExpression(3), /text\.slice\(0, 6000\)/);
   assert.match(snapshotExpression(3, { maxChars: 999999 }), /text\.slice\(0, 20000\)/);
