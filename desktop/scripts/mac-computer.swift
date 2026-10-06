@@ -269,6 +269,9 @@ case "snapshot":
             if (role == "AXSlider" || role == "AXScrollBar"), let number = numberAttr(element, "AXValue") {
                 name = title.isEmpty ? String(Int(number.rounded())) : "\(title) \(Int(number.rounded()))"
             }
+            if (role == "AXCheckBox" || role == "AXRadioButton"), let number = numberAttr(element, "AXValue") {
+                name += number != 0 ? " on" : " off"
+            }
             elements.append(Element(ref: "c\(index)", role: role, name: String(name.prefix(120)),
                                     x: frame.origin.x, y: frame.origin.y, width: frame.width, height: frame.height))
         }

@@ -169,6 +169,13 @@ def walk(call, glib, app):
                     name = call(dest, path, 'org.a11y.atspi.Text', 'GetText', glib.Variant('(ii)', (0, 200)), '(s)').unpack()[0]
                 except Exception:
                     name = ''
+            if role in ('check box', 'radio button', 'toggle button'):
+                try:
+                    words = call(dest, path, 'org.a11y.atspi.Accessible', 'GetState', None, '(au)').unpack()[0]
+                    checked = bool(words) and bool(int(words[0]) & (1 << 4))
+                    name = f'{name} on' if checked else f'{name} off'
+                except Exception:
+                    pass
             kids = call(dest, path, 'org.a11y.atspi.Accessible', 'GetChildren', None, '(a(so))').unpack()[0]
         except Exception:
             continue
