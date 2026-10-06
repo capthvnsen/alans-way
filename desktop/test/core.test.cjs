@@ -143,6 +143,7 @@ test('web snapshot names say on, off, and disabled', () => {
   assert.match(source, /node\.shadowRoot/);
   assert.match(source, /contentDocument/);
   assert.match(source, /aria-labelledby/);
+  assert.match(source, /aria-pressed/);
   assert.match(source, /getRootNode/);
   assert.match(source, /labelledby\.split\(\/\\s\+\/\)/);
   assert.match(locateElement(JSON.stringify('button')), /node\.shadowRoot/);
