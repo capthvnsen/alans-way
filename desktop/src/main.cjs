@@ -591,7 +591,9 @@ function registerIpc() {
           child.on('error', () => resolve({ ok: false, detail: 'Could not start ssh — check local ssh access.' }));
           child.on('close', code => resolve(out.includes('AGENT_PATH_OK')
             ? { ok: true, detail: 'VPS reaches this Mac over ssh — agents can route here.' }
-            : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
+            : out.includes('Tailscale SSH requires an additional check')
+              ? { ok: false, detail: 'Tailscale SSH on the VPS wants a browser check for this login, which unattended agents cannot pass. In the Tailscale admin console → Access controls, change the SSH rule for this user from "check" to "accept".' }
+              : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
         });
       }
       case 'show-data': shell.openPath(app.getPath('userData')); break;
