@@ -133,6 +133,12 @@ test('web snapshot names say on, off, and disabled', () => {
   assert.match(source, /name \+= ' open'/);
   assert.match(source, /name \+= ' closed'/);
   assert.match(source, /role="tab"/);
+  assert.match(source, /\[onclick\]/);
+  assert.match(source, /role="menuitem"/);
+  assert.match(source, /role="option"/);
+  assert.match(source, /role="treeitem"/);
+  assert.match(source, /role="slider"/);
+  assert.match(source, /el\.tagName === 'BODY'/);
   assert.match(source, /name \+= ' selected'/);
   assert.match(source, /name \+= ' current'/);
   assert.match(source, /item\.disabled = true/);
