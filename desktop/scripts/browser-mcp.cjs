@@ -35,8 +35,31 @@ const connectionIndex=process.argv.indexOf('--connection');
 const file = (connectionIndex>=0?process.argv[connectionIndex+1]:undefined) || process.env.HERMES_WORKSPACE_CONNECTION || path.join(os.homedir(), 'Library', 'Application Support', 'Hermes Workspace', 'connection.json');
 const objectSchema = (properties = {}, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = { type: 'string' };
+function continuedFromArgv(argv) {
+  const tabAt = argv.indexOf('--continued-tab');
+  const urlAt = argv.indexOf('--continued-url');
+  const tabId = tabAt >= 0 ? String(argv[tabAt + 1] || '') : '';
+  const raw = urlAt >= 0 ? String(argv[urlAt + 1] || '') : '';
+  if (!/^[\w-]{1,100}$/.test(tabId)) return null;
+  try {
+    const url = new URL(raw);
+    if (url.username || url.password || url.protocol !== 'https:') return null;
+    url.hash = '';
+    if (url.href.length > 500) return null;
+    return { tabId, url: url.href };
+  } catch { return null; }
+}
+function withContinuedTab(message, page) {
+  const text = String(message || '');
+  if (!page || !/tab not found/i.test(text)) return text;
+  return text + ' The Mac tab is gone. Keep working in tab ' + page.tabId + ' at ' + page.url + '.';
+}
+const continued = continuedFromArgv(process.argv);
+const continuedNote = continued
+  ? ' The Mac page was continued in this browser as tab ' + continued.tabId + ' at ' + continued.url + '. Keep working in that tab.'
+  : '';
 const tools = [
-  { name: 'cua_alans_way_status', description: 'Check the configured browser host and available hosts. Inspect host before acting; an unavailable computer is never replaced implicitly by another. Host selection is decided by the connector at spawn and re-converges on its own when Mac availability flips — on a tool error just retry once, and if it still fails report it; never restart, kill, or edit connector processes to steer the host. If the Mac goes offline mid-task, the connector continues the last https page in the VPS browser. If the [workspace] line names a tab, keep working in that tab. If it only names a URL, reopen the same URL and continue. Calls that do not run on the Mac keep going.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
+  { name: 'cua_alans_way_status', description: 'Check the configured browser host and available hosts. Inspect host before acting; an unavailable computer is never replaced implicitly by another. Host selection is decided by the connector at spawn and re-converges on its own when Mac availability flips — on a tool error just retry once, and if it still fails report it; never restart, kill, or edit connector processes to steer the host. If the Mac goes offline mid-task, the connector continues the last https page in the VPS browser. If the [workspace] line names a tab, keep working in that tab. If it only names a URL, reopen the same URL and continue. Calls that do not run on the Mac keep going.' + continuedNote, inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
   { name: 'cua_alans_way_tabs', description: 'List this bot’s owned Chromium tabs with execution host and current control epochs. Mac and VPS logins are separate; bots on a host share sign-ins.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
   { name: 'cua_alans_way_open', description: 'Open a tab in this connector browser. This is the in-app Mac browser whenever the Mac is reachable, and the VPS browser when the Mac is not. Do not pass host; the connector already chose the machine. No human handoff, assignment, grant, or approval is ever needed. Shared sign-ins within a host, separate tab ownership and input. Opens in the background.', inputSchema: objectSchema({ url: string, host:{type:'string',enum:['mac','vps'], description: 'Ignored. The connector already chose the Mac when it is reachable and the VPS when it is not.'}, background: { type: 'boolean', default: true } }, ['url']), annotations: { readOnlyHint: false, openWorldHint: true } },
   { name: 'cua_alans_way_snapshot', description: 'Read a tab: bounded page text plus interactive elements in elements[] ({ref, role, name, …}). role is usually the lowercase tag (a, input, button, div) or an ARIA role. Menu items, options, tree items, sliders, and clickable divs are included by name. Controls inside an open shadow root are included too; a closed root is not. A name can come from aria-labelledby. A pressed toggle ends in on or off. loading:true means the document was still parsing after a 2s grace. Same-origin frames are included. A cross-origin frame is not readable; screenshot that frame only. Pass since=<last generation> for a cheap {unchanged:true}. Request a fresh snapshot after actions that change the page; action responses include generation/url/title/loading so you can often skip one.', inputSchema: objectSchema({ tabId: string, maxChars: { type: 'integer', description: 'Cap on returned page text. Default 2000. Raise it up to 20000 when you need more of the page.' }, maxElements: { type: 'integer', description: 'Cap on interactive element refs, default 150, max 300.' }, since: { type: 'integer', description: 'Generation from the previous snapshot; returns {unchanged:true} when content is identical.' } }, ['tabId']), annotations: { readOnlyHint: true } },
@@ -163,7 +186,7 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
       default: throw new Error('Unknown browser tool.');
     }
     return { content: [{ type: 'text', text: JSON.stringify(omitIcons(result)) }] };
-  } catch (error) { return { isError: true, content: [{ type: 'text', text: error.message }] }; }
+  } catch (error) { return { isError: true, content: [{ type: 'text', text: withContinuedTab(error.message, continued) }] }; }
   finally { reloadIfReplaced(); }
 });
 server.connect(new StdioServerTransport()).catch(() => { process.stderr.write('Browser MCP connection failed.\n'); process.exit(1); });
