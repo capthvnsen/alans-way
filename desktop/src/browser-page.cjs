@@ -54,7 +54,16 @@ function snapshotExpression(generation, opts = {}) {
       if (el.getAttribute('aria-selected') === 'true') name += ' selected';
       if (el.getAttribute('aria-current') === 'page') name += ' current';
       name = name.trim().slice(0, 200);
-      items.push({ref,role:el.getAttribute('role') || el.tagName.toLowerCase(),name,type:el.type || '',value:el.type === 'password' ? '[password]' : String(el.value || '').slice(0,200),href:el.href || '',disabled:!!el.disabled});
+      const role = el.getAttribute('role') || el.tagName.toLowerCase();
+      const type = el.type || '';
+      const value = type === 'password' ? '[password]' : String(el.value || '').slice(0, 200);
+      const href = (el.href || '').slice(0, 300);
+      const item = { ref, role, name };
+      if (type) item.type = type;
+      if (value) item.value = value;
+      if (href) item.href = href;
+      if (el.disabled) item.disabled = true;
+      items.push(item);
     }
     // body.innerText pays a full-document render pass regardless of the slice;
     // a bounded walker stops at the char cap or the time budget instead.
