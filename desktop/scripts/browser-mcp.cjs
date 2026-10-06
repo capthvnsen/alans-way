@@ -135,7 +135,15 @@ async function request(endpoint, method = 'GET', body, epoch) {
     } catch (finalError) {
       const message = String(finalError.message || '');
       if (message.includes('Keep working in tab')) throw finalError;
-      throw new Error(message + ' The Mac tab is gone. Keep working in tab ' + continued.tabId + ' at ' + continued.url + '.');
+      let controls = '';
+      if (/Stale or unknown reference/.test(message)) {
+        try {
+          const snap = await requestOnce('/v1/tabs/' + encodeURIComponent(continued.tabId) + '/snapshot?maxChars=0&maxElements=40', 'GET');
+          const elements = Array.isArray(snap && snap.elements) ? snap.elements.slice(0, 40) : [];
+          controls = ' ' + JSON.stringify({ continuedTab: continued.tabId, generation: snap && snap.generation, elements });
+        } catch { /* the tab id in the error is still enough to continue */ }
+      }
+      throw new Error(message + ' The Mac tab is gone. Keep working in tab ' + continued.tabId + ' at ' + continued.url + '.' + controls);
     }
   }
 }
