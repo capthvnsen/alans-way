@@ -74,7 +74,10 @@ class WindowsExecutor:
             root = Path(workspace)
             if not root.is_absolute():
                 raise PermissionError
-            with self._open(str(root), directory=True) as (handle, info):
+            # The supplied root may be non-canonical (8.3 names, case) — the
+            # opened handle's final name is the truth we pin; the name check
+            # only applies to workspace-relative paths opened afterwards.
+            with self._open(str(root), directory=True, check_name=False) as (handle, info):
                 self.workspace = self._final_name(handle)
                 self.workspace_identity = self._identity(info)
         except (PermissionError, TypeError):
@@ -112,7 +115,7 @@ class WindowsExecutor:
         return name[4:] if name.startswith('\\\\?\\') else name
 
     @contextmanager
-    def _open(self, target, directory=False):
+    def _open(self, target, directory=False, check_name=True):
         """Open one approved object; never follow a reparse point at any depth."""
         access = FILE_READ_ATTRIBUTES if directory else GENERIC_READ
         handle = self._kernel.CreateFileW(target, access, SHARE_ALL, None,
@@ -126,7 +129,8 @@ class WindowsExecutor:
             is_dir = bool(info.dwFileAttributes & ATTRIBUTE_DIRECTORY)
             if is_dir != directory or info.dwFileAttributes & ATTRIBUTE_DENIED_LEAF:
                 raise PermissionError('Workspace object unavailable or denied')
-            if os.path.normcase(self._final_name(handle)) != os.path.normcase(target):
+            if (check_name
+                    and os.path.normcase(self._final_name(handle)) != os.path.normcase(target)):
                 raise PermissionError('Unapproved workspace path')
             yield handle, info
         finally:
