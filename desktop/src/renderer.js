@@ -290,10 +290,18 @@ function render(next) {
   if (document.activeElement !== $('address')) $('address').value = tab?.internal ? '' : tab?.url || '';
   const agentName = tab ? state.bots.find(bot => bot.id === tab.botId)?.name || 'Agent' : '';
   $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? `${agentName}${tab.agentBusy ? ' is working' : ' is browsing'}` : 'You'} in control${tab.controller === 'agent' ? ' · Take over anytime' : ''} · ${hostName(tab.host)}${tab.handoff?.phase==='handed_off'?` · Handed off to the ${hostName(tab.handoff.destinationHost)} — agents continue there`:tab.handoff&&tab.handoff.phase!=='reviewed'?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `${remoteName()} · ${state.remoteStatus}` : 'Ready';
+  renderUpdate();
   $('connection-status').textContent = state.api.ready ? 'Browser connector ready' : state.api.error ? 'Browser connector unavailable' : 'Browser connector starting…';
   const notes = { login: 'Sign in with your Telegram account. Your bots appear on the left.', connected: 'Your Telegram account · bot chats only', locked: 'Unlock Telegram to load your bot chats.', offline: 'Telegram is offline. Check your connection, then sync in Settings.', loading: 'Connecting to Telegram…' };
   $('telegram-note').textContent = notes[state.telegramStatus] || notes.loading;
   scheduleLayout();
+}
+function renderUpdate() {
+  const note = $('update-note'), u = state.update || {};
+  const label = u.busy ? 'Updating…' : u.error ? 'Update failed · Open download page' : u.ready ? `Restart to update to v${u.available}` : u.available ? `Update to v${u.available}` : '';
+  note.classList.toggle('hidden', !label); note.textContent = label; note.disabled = !!u.busy;
+  note.onclick = () => command(u.error ? 'open-download' : 'update-now');
+  if (u.justUpdatedFrom) { toast(`Updated to v${state.version}. Your agent may need updating too: Settings → Agent setup → Copy agent update prompt.`); command('dismiss-updated'); }
 }
 let onboardingStep = 1, onboardingSignature = '';
 function renderOnboarding(show) {

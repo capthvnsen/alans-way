@@ -9,6 +9,7 @@ const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabFo
 const { createAvatarStore } = require('./avatar-store.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard } = require('./onboarding.cjs');
+const macUpdate = require('./mac-update.cjs');
 const { createAgentInput, tintScript, botAccent } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
@@ -42,6 +43,7 @@ const TELEGRAM = 'https://web.telegram.org/a/';
 let win, backgroundWindow, telegramView, remoteView, apiServer, prefs, layout = {}, apiPort = 0;
 let extensionStore, extensionHost, extensionPopup, extensionPopupTabId, extensionActiveContentsId;
 let registeringExtensionTab = false;
+const update = { available: '', tag: '', ready: false, busy: false, error: '', justUpdatedFrom: '' };
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 const tabs = new Map();
 const vpsTabs = new Map();
@@ -150,6 +152,7 @@ function getState() {
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
+    update: { available: update.available, ready: update.ready, busy: update.busy, error: update.error, justUpdatedFrom: update.justUpdatedFrom },
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? app.isInApplicationsFolder() : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
@@ -449,6 +452,28 @@ async function openBot(id) {
     telegramView.webContents.reload();
   }
 }
+// Offline or rate-limited checks stay silent; the next check retries.
+function startUpdates() {
+  if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
+  if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
+  if (!app.isPackaged) return;
+  let check;
+  if (process.platform === 'win32') {
+    const { autoUpdater } = require('electron-updater');
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('update-downloaded', (info) => { update.available = info.version; update.ready = true; broadcast(); });
+    autoUpdater.on('error', () => {});
+    check = () => autoUpdater.checkForUpdates().catch(() => {});
+  } else if (process.platform === 'darwin') {
+    check = async () => {
+      try {
+        const latest = await macUpdate.checkLatest();
+        if (latest && macUpdate.isNewer(latest.version, app.getVersion())) { update.available = latest.version; update.tag = latest.tag; broadcast(); }
+      } catch {}
+    };
+  } else return;
+  check(); setInterval(check, 6 * 60 * 60 * 1000);
+}
 function registerIpc() {
   ipcMain.handle('workspace:get', (event) => { trustSender(event); return getState(); });
   ipcMain.on('workspace:layout', (event, value) => { try { trustSender(event); layout = value || {}; applyLayout(); } catch {} });
@@ -667,6 +692,16 @@ function registerIpc() {
         });
       }
       case 'show-data': shell.openPath(app.getPath('userData')); break;
+      case 'update-now': {
+        if (process.platform === 'win32') { if (update.ready) require('electron-updater').autoUpdater.quitAndInstall(); break; }
+        if (!update.tag) break;
+        update.busy = true; update.error = ''; broadcast();
+        try { await macUpdate.installMacUpdate({ tag: update.tag, bundlePath: path.resolve(process.execPath, '../../..') }); }
+        catch (error) { update.busy = false; update.error = error.message; broadcast(); throw error; }
+        app.relaunch(); app.exit(0); break;
+      }
+      case 'open-download': shell.openExternal(`https://openalan.com/download/${HOST_LABEL === 'windows' ? 'windows' : 'mac'}`); break;
+      case 'dismiss-updated': update.justUpdatedFrom = ''; break;
       case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;
       case 'onboarding-open': prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; savePreferences(); applyLayout(); break;
       case 'move-to-applications': return app.moveToApplicationsFolder();
@@ -1340,6 +1375,7 @@ else {
     extensionStore = createExtensionStore({ root: app.getPath('userData'), session: browserSession, dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences, onChanged: broadcast,
       canInstall: frame => [...tabs.values()].some(tab => tab.id === activeTabId && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
     await extensionStore.installStore(); createWindow(); await extensionStore.restore(); broadcast();
+    startUpdates();
   });
   app.on('second-instance', () => { win?.show(); win?.focus(); });
   app.on('activate', () => { win?.show(); win?.focus(); });
