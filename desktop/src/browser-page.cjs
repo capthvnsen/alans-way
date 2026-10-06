@@ -62,7 +62,16 @@ function snapshotExpression(generation, opts = {}) {
       const ref = 's${generation}-' + (items.length + 1);
       const kept = (el.getAttribute('data-hermes-workspace-ref') || '').split(' ').filter(token => token.startsWith('s${keep}-'));
       el.setAttribute('data-hermes-workspace-ref', [...kept, ref].join(' '));
-      let name = (el.getAttribute('aria-label') || el.placeholder || el.title || '').trim();
+      let name = '';
+      const labelledby = el.getAttribute('aria-labelledby');
+      if (labelledby) {
+        const root = el.getRootNode();
+        name = labelledby.split(/\\s+/).map(id => {
+          const node = root.getElementById ? root.getElementById(id) : null;
+          return (node && (node.innerText || node.textContent) || '').trim();
+        }).filter(Boolean).join(' ').trim();
+      }
+      if (!name) name = (el.getAttribute('aria-label') || el.placeholder || el.title || '').trim();
       if (!name && el.labels && el.labels[0]) {
         const labelText = (el.labels[0].innerText || '').trim();
         const own = (el.innerText || '').trim();
