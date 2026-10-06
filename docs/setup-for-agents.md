@@ -98,8 +98,8 @@ grep -qxF "$MAC_KEY" ~/.ssh/authorized_keys 2>/dev/null || echo "$MAC_KEY" >> ~/
 **Check, from the VPS:**
 
 ```sh
-ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" 'test -x /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp && echo MAC_OK'
-ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '$VPS_SSH' echo VPS_OK"
+timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" 'test -x /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp && echo MAC_OK'
+timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes '$VPS_SSH' echo VPS_OK"
 ```
 
 Expect `MAC_OK`, then `VPS_OK`. The VPS runs the browser connector with the
@@ -173,6 +173,7 @@ desktop connection** in the app.
 | Symptom | Cause and fix |
 |---|---|
 | Stage 1 check: `Cannot find module …connection.json` | The app is not running or never started its API. Open it and retry. |
+| Mac → VPS check prints `Tailscale SSH requires an additional check` or hangs | The VPS runs Tailscale SSH, so the tailnet's SSH rules (not keys) decide logins, and "check" mode needs a browser. Have the human change the rule for that user to "accept" in the Tailscale admin console → Access controls, or run `tailscale set --ssh=false` if they don't use Tailscale SSH. |
 | `Host key verification failed` | A host key is not pinned on the side that connects. Re-run the stage 2 `connect-mac.sh` line (pins the VPS on the Mac) and the `known_hosts` line on the VPS. |
 | Verify says `workspace_browser timeout …s is below 120s` | Long browser actions get cut off. Re-run stage 3 setup, or set `timeout: 120` on the block and restart the gateway. |
 | Bot opens tabs on the VPS while the Mac is awake | The Mac app is closed, or SSH from the VPS fails. Re-run the stage 2 check. |

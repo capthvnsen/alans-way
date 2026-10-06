@@ -39,6 +39,10 @@ Rules for the whole job:
    send me the login URL from that log to open, and poll `tailscale status`
    until it is connected. Do not ask me for an auth key. Then note
    VPS_SSH = <this user>@<first line of `tailscale ip -4`>.
+   If `tailscale debug prefs` shows "RunSSH": true, Tailscale SSH answers
+   port 22 on that address: my tailnet's SSH rules decide who may log in and
+   SSH keys are ignored. Unattended logins need the rule for this user to be
+   "accept", not "check"; the VPS_OK check in step 5 shows which.
 
 3. SSH keys, on this server. Create ~/.ssh/id_ed25519 (no passphrase) if it is
    missing, and make sure sshd is running and accepts key logins. Note
@@ -61,9 +65,13 @@ Rules for the whole job:
    from my reply. Append "<host part of MAC_SSH> <MAC_HOST_KEY>" to
    ~/.ssh/known_hosts and MAC_KEY to ~/.ssh/authorized_keys, each only if not
    already there. Check both directions:
-     ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<MAC_SSH>' 'test -x /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp && echo MAC_OK'
-     ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<MAC_SSH>' "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<VPS_SSH>' echo VPS_OK"
-   Expect MAC_OK, then VPS_OK.
+     timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<MAC_SSH>' 'test -x /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp && echo MAC_OK'
+     timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<MAC_SSH>' "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes '<VPS_SSH>' echo VPS_OK"
+   Expect MAC_OK, then VPS_OK. If the second prints "Tailscale SSH requires an
+   additional check" or times out, ask me to open the Tailscale admin console →
+   Access controls and change the SSH rule that covers this server from
+   "check" to "accept" for <this user>. Only if I say I don't use Tailscale SSH
+   to reach this server, run `tailscale set --ssh=false` instead.
 
 6. Ask me first: "Should your bot be allowed to message you first, with
    check-ins and follow-ups (at most a few a day, never 22:00–08:00)?" Then
