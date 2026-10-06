@@ -6,7 +6,7 @@ const computer = process.platform === 'darwin' ? require('../src/computer.cjs') 
 const { createComputerSnapshots } = require('../src/computer-snapshot.cjs');
 const { connectorReplaced } = require('../src/connector-reload.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
-const { retargetMissingTab } = require('../src/core.cjs');
+const { retargetMissingTab, needsContinuedEpoch } = require('../src/core.cjs');
 const computerSnapshot = createComputerSnapshots();
 const watched = [
   __filename,
@@ -117,12 +117,24 @@ async function request(endpoint, method = 'GET', body, epoch) {
     const next = /tab not found/i.test(error.message) ? retargetMissingTab(endpoint, method, continued) : null;
     if (!next) throw error;
     try {
-      const data = await requestOnce(next, method, body, epoch);
-      if (data && typeof data === 'object') data.continuedTab = continued.tabId;
-      return data;
-    } catch (retryError) {
-      const message = String(retryError.message || '');
-      if (message.includes('Keep working in tab')) throw retryError;
+      try {
+        const data = await requestOnce(next, method, body, epoch);
+        if (data && typeof data === 'object') data.continuedTab = continued.tabId;
+        return data;
+      } catch (retryError) {
+        if (!needsContinuedEpoch(retryError.message, method)) throw retryError;
+        const tab = await requestOnce('/v1/tabs/' + encodeURIComponent(continued.tabId), 'GET');
+        if (!Number.isInteger(tab && tab.epoch)) throw retryError;
+        const data = await requestOnce(next, method, body, tab.epoch);
+        if (data && typeof data === 'object') {
+          data.continuedTab = continued.tabId;
+          data.continuedEpoch = tab.epoch;
+        }
+        return data;
+      }
+    } catch (finalError) {
+      const message = String(finalError.message || '');
+      if (message.includes('Keep working in tab')) throw finalError;
       throw new Error(message + ' The Mac tab is gone. Keep working in tab ' + continued.tabId + ' at ' + continued.url + '.');
     }
   }
