@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/capthvnsen/alans-way/security/advisories/new
+    about: Report privately. Please do not open a public issue.
+  - name: Setup guide
+    url: https://openalan.com
+    about: Start here if you are installing Alan's Way for the first time.

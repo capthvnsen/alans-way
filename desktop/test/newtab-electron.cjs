@@ -44,11 +44,17 @@ app.whenReady().then(async () => {
   await invoke('control', { id: tab.id, controller: 'agent' });
   const connection = JSON.parse(fs.readFileSync(path.join(profile, 'connection.json')));
   const shot = await fetch(`${connection.url}/v1/tabs/${tab.id}/screenshot`, { headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'shared' } });
-  assert.equal(shot.status, 200);
+  assert.equal(shot.status, 200, await shot.clone().text());
   const bitmap = nativeImage.createFromBuffer(Buffer.from((await shot.json()).base64, 'base64')).toBitmap();
   let bright = 0;
   for (let i = 0; i < bitmap.length; i += 4) if (bitmap[i] > 100) bright++;
   assert.ok(bright > 500, `The backdrop image renders inside the tab (${bright} bright pixels).`);
+  const capturePage = newtabWc.capturePage;
+  newtabWc.capturePage = () => Promise.reject(new Error('UnknownVizError'));
+  const fallback = await fetch(`${connection.url}/v1/tabs/${tab.id}/screenshot`, { headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'shared' } });
+  newtabWc.capturePage = capturePage;
+  assert.equal(fallback.status, 200, await fallback.clone().text());
+  assert.ok(!nativeImage.createFromBuffer(Buffer.from((await fallback.json()).base64, 'base64')).isEmpty(), 'A failed compositor copy falls back to a DevTools capture.');
 
   server = http.createServer((req, res) => res.end('<title>fixture</title>'));
   await new Promise(r => server.listen(0, '127.0.0.1', r));

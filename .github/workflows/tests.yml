@@ -24,6 +24,29 @@ jobs:
       - run: npm ci
       - run: npm run check
 
+  desktop-electron:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      - run: npm run test:desktop
+        timeout-minutes: 3
+      - run: npm run test:agent-input
+        timeout-minutes: 3
+      - run: npm run test:permissions
+        timeout-minutes: 3
+      - run: npm run test:newtab
+        timeout-minutes: 3
+
   package-and-test:
     strategy:
       fail-fast: false

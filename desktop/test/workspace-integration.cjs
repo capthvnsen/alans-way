@@ -85,7 +85,7 @@ app.whenReady().then(async () => {
   assert.ok(gaze.active && gaze.idle && gaze.neutral, 'Idle avatars stop and return to neutral pupils.');
   console.log('PASS: fixture-driven live avatar gaze and immediate idle reset in the real renderer.');
 
-  server = http.createServer((req, res) => res.end(req.url === '/blocks' ? '<title>blocks</title><h1>Order 42</h1><ul><li>Apples <b>3</b></li><li>Pears 5</li></ul><table><tr><td>Total</td><td>8</td></tr></table><p>Due <i>today</i></p>' : req.url === '/red' || req.url === '/blue' ? `<style>html{background:${req.url.slice(1)}}</style><title>${req.url.slice(1)}</title><button onclick="window.open('/popup')">Open fixture popup</button>` : '<!doctype html><title>Human focus fixture</title><input id="human" aria-label="Human input" value="Keep my draft"><script>human.focus()</script>'));
+  server = http.createServer((req, res) => req.url === '/streaming' ? (res.write('<title>streaming</title><h1>First half</h1>'), setTimeout(() => res.end('<p>Second half</p>'), 600)) : res.end(req.url === '/blocks' ? '<title>blocks</title><h1>Order 42</h1><ul><li>Apples <b>3</b></li><li>Pears 5</li></ul><table><tr><td>Total</td><td>8</td></tr></table><p>Due <i>today</i></p>' : req.url === '/red' || req.url === '/blue' ? `<style>html{background:${req.url.slice(1)}}</style><title>${req.url.slice(1)}</title><button onclick="window.open('/popup')">Open fixture popup</button>` : '<!doctype html><title>Human focus fixture</title><input id="human" aria-label="Human input" value="Keep my draft"><script>human.focus()</script>'));
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const human = await invoke('create-tab', { url: `http://127.0.0.1:${server.address().port}` });
   const humanWc = await waitFor(() => webContents.getAllWebContents().find(item => item.getURL() === `http://127.0.0.1:${server.address().port}/` && item !== wc), Boolean);
@@ -121,6 +121,10 @@ app.whenReady().then(async () => {
   const blockSnap = await waitFor(() => api(`/v1/tabs/${blocks.id}/snapshot`), snap => snap.title === 'blocks');
   assert.equal(blockSnap.text, 'Order 42\nApples 3\nPears 5\nTotal 8\nDue today', 'snapshot text keeps one line per block and inline text on its line');
   await fetch(new URL(`/v1/tabs/${blocks.id}`, connection.url), { method: 'DELETE', headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'capture-regression', 'X-Control-Epoch': String(blocks.epoch) } });
+  const streaming = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/streaming` });
+  const streamSnap = await waitFor(() => api(`/v1/tabs/${streaming.id}/snapshot`), snap => snap.title === 'streaming');
+  assert.deepEqual([streamSnap.text, streamSnap.loading], ['First half\nSecond half', false], 'a snapshot taken mid-parse waits for the rest of the document');
+  await fetch(new URL(`/v1/tabs/${streaming.id}`, connection.url), { method: 'DELETE', headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'capture-regression', 'X-Control-Epoch': String(streaming.epoch) } });
   // Bounded snapshots report their caps, generation, and dedupe on since.
   const bounded = await api(`/v1/tabs/${colored[0].id}/snapshot?maxChars=2000&maxElements=50`);
   assert.ok(Number.isInteger(bounded.generation) && bounded.elements.length <= 50 && bounded.truncated, 'snapshot reports generation and truncated flags');
@@ -144,7 +148,9 @@ app.whenReady().then(async () => {
   const viewport = await redWc.executeJavaScript('({width:innerWidth,height:innerHeight,scale:devicePixelRatio})');
   assert.deepEqual(image.getSize(), { width: Math.round(viewport.width * viewport.scale), height: Math.round(viewport.height * viewport.scale) });
   const pixel = image.toBitmap();
-  assert.deepEqual([...pixel.subarray(0, 4)], [0, 0, 255, 255], 'A background screenshot contains its own red pixels.');
+  // BGRA; the display's color profile shifts pure sRGB red slightly.
+  const [b, g, r] = pixel.subarray(0, 3);
+  assert.ok(r > 200 && g < 80 && b < 80, `A background screenshot contains its own red pixels (got r=${r} g=${g} b=${b}).`);
   assertHumanFocus();
   const tabsBeforeShortcuts = (await evaluate('window.workspace.getState()')).tabs.length;
   for (const key of ['l', 't', 'w']) {

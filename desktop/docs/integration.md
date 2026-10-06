@@ -14,7 +14,7 @@ All requests use bearer authentication and `X-Hermes-Bot`. The current protocol 
 | Assigned tabs (every tab for an overseer) | `GET /v1/tabs` |
 | New tab | `POST /v1/tabs` with `url` and optional `background` |
 | Tab state | `GET /v1/tabs/:id` |
-| Text and element refs | `GET /v1/tabs/:id/snapshot` (`maxChars`, `maxElements`, `since`) |
+| Text and element refs | `GET /v1/tabs/:id/snapshot` (`maxChars`, `maxElements`, `since`); `loading: true` means the document was still parsing after a 2s grace |
 | Screenshot | `GET /v1/tabs/:id/screenshot` (`format` jpeg/png/webp, `quality`, `maxWidth`) |
 | Input/navigation | `POST /v1/tabs/:id/actions` with current `epoch` |
 | Close assigned agent tab | `DELETE /v1/tabs/:id` with `X-Control-Epoch` |
