@@ -5,7 +5,7 @@ const { pathToFileURL } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
-const { normalizeUrl, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('./core.cjs');
 const { createAvatarStore } = require('./avatar-store.cjs');
 const { createAgentInput, tintScript, botAccent } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -336,13 +336,22 @@ function closeTab(id) {
   if (activeTabId === id) activeTabId = [...tabs.keys()].at(-1) || 'home';
   savePreferences(); applyLayout(); broadcast();
 }
-function changeController(id, controller) {
+function changeController(id, controller, source = 'human') {
   const tab = tabs.get(id);
   if (!tab) throw new Error('Tab not found.');
   if (tab.extensionPage && controller === 'agent') throw new Error('Extension account pages stay under your control.');
+  const wasAgent = tab.controller === 'agent';
   tab.controller = controller === 'agent' ? 'agent' : 'human';
-  if (tab.controller === 'agent') tab.agentSince = Date.now();
+  // An explicit human takeover seals the tab to bots until the human hands
+  // it back in the UI. A bot's own release or the idle-expiry clock stays
+  // retakeable, and a tab already locked stays locked.
+  if (tab.controller === 'agent') { tab.humanLock = false; tab.agentSince = Date.now(); }
+  else if (wasAgent) tab.humanLock = source === 'human';
   if (tab.controller === 'agent' && tab.botId === 'shared' && prefs.selectedBotId) tab.botId = prefs.selectedBotId;
+  // Bots can't plant persistent page scripts (the cdp action denies the
+  // method) but strip any surviving registrations when the human takes over.
+  if (tab.controller === 'human' && !tab.view.webContents.isDestroyed() && tab.view.webContents.debugger.isAttached())
+    browserCommand(tab, 'Page.removeAllScriptsToEvaluateOnNewDocument').catch(() => {});
   tab.view.webContents.executeJavaScript(tintScript(tab.controller === 'agent')).catch(() => {});
   tab.epoch++;
   tab.refs.clear();
@@ -1009,7 +1018,7 @@ function startApi() {
         if (botId !== tab.botId && !overseer && !granted) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
         if (body.controller === 'agent') { requireAgentClaim(tab); tab.handoff = reviewedHandoff(tab.handoff); }
         if (tab.botId === 'shared' && body.controller === 'agent') tab.botId = botId;
-        return send(200, changeController(tab.id, body.controller));
+        return send(200, redactTabForBot(changeController(tab.id, body.controller, 'agent')));
       }
       if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true, overseer); closeTab(tab.id); return send(200, { closed: true }); }
       return send(405, { error: 'Method not supported.' });
@@ -1077,7 +1086,7 @@ function createWindow() {
     const idleMs = Math.max(1, Number(process.env.HERMES_AGENT_IDLE_MINUTES) || prefs.agentIdleMinutes || 15) * 60000, now = Date.now();
     for (const tab of tabs.values()) {
       if (tab.controller !== 'agent' || tab.extensionPage || tab.pendingActions > 0 || agentInput.isDispatching(tab)) continue;
-      if (now - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) > idleMs) changeController(tab.id, 'human');
+      if (now - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) > idleMs) changeController(tab.id, 'human', 'idle');
     }
   }, 30000).unref();
   vpsTimer=setInterval(refreshVpsTabs,5000);vpsTimer.unref();refreshVpsTabs();
