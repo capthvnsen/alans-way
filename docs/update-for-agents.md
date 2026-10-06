@@ -27,10 +27,12 @@ Rules for the whole job:
    (`hermes profile list`; the default profile's config is
    <home>/config.yaml, others are <home>/profiles/<name>/config.yaml). In that
    config.yaml, the lines between ">>> alans-way workspace_browser managed
-   block >>>" and its closing marker hold the router arguments: take
-   BOT_ID from --bot-id, MAC_SSH from --mac-ssh and HOST_OS from --host-os.
-   Facts in my message (BOT_ID, MAC_SSH, Mac or Windows PC, timezone) win
-   over what you read. If BOT_ID or MAC_SSH is still unknown, ask me.
+   block >>>" and its closing marker hold them: BOT_ID is the value after
+   `--bot-id` in `args`, BOT_NAME the value after `--bot-name` (may be
+   absent), and under `env:` MAC_SSH is HERMES_WORKSPACE_MAC_SSH and HOST_OS
+   is HERMES_WORKSPACE_HOST_OS. These server values win; use my message only
+   for values missing here. If my message names a different BOT_ID or
+   MAC_SSH than the server has, ask me which is right before continuing.
 
 3. Update the plugin checkout:
      git -C ~/alans-way-agents pull --ff-only
@@ -40,13 +42,17 @@ Rules for the whole job:
 
 4. Re-run setup with the same values. It updates the pinned server scripts,
    the browser services and the connector copy on my computer:
-     ~/alans-way-agents/setup.sh --non-interactive --bot-id <BOT_ID> --mac-ssh '<MAC_SSH>' --host-os <mac|windows> --timezone '<my timezone>' [--profile <profile> unless it is default]
+     ~/alans-way-agents/setup.sh --non-interactive --bot-id <BOT_ID> [--bot-name '<BOT_NAME>' if found] --mac-ssh '<MAC_SSH>' --host-os <HOST_OS> --timezone '<my timezone>' [--profile <profile> unless it is default]
    Do not pass --bind or --proactive; those choices are already made. If it
    prints an apt-get line for a display stack, show me that line and ask
    before installing anything.
 
 5. Verify: `~/alans-way-agents/setup.sh --verify [--profile <profile>]` must
-   end with "setup: all required checks passed".
+   end with "setup: all required checks passed". If my computer is a Mac,
+   tell me: "Updates can switch off computer control on a Mac. If I can't
+   use your Mac, open System Settings → Privacy & Security → Accessibility
+   and Screen Recording, and turn Open Alan (alans-way-localapp) off and on
+   again." 
 
 6. Restart the gateway so it loads the update. If you are this Hermes bot,
    first tell me "Restarting now; send me any message in a minute to

@@ -301,7 +301,7 @@ function renderUpdate() {
   const label = u.busy ? 'Updating…' : u.error ? 'Update failed · Open download page' : u.ready ? `Restart to update to v${u.available}` : u.available ? `Update to v${u.available}` : '';
   note.classList.toggle('hidden', !label); note.textContent = label; note.disabled = !!u.busy;
   note.onclick = () => command(u.error ? 'open-download' : 'update-now');
-  if (u.justUpdatedFrom) { toast(`Updated to v${state.version}. Your agent may need updating too: Settings → Agent setup → Copy agent update prompt.`); command('dismiss-updated'); }
+  if (u.justUpdatedFrom) { toast(`Updated to v${state.version}. Send your agent the update prompt: Settings → Agent setup → Copy agent update prompt.${state.platform === 'darwin' ? ' If your agent can no longer use this Mac, turn Open Alan off and on again in System Settings → Privacy & Security → Accessibility.' : ''}`); command('dismiss-updated'); }
 }
 let onboardingStep = 1, onboardingSignature = '';
 function renderOnboarding(show) {

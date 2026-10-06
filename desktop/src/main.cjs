@@ -698,7 +698,7 @@ function registerIpc() {
         update.busy = true; update.error = ''; broadcast();
         try { await macUpdate.installMacUpdate({ tag: update.tag, bundlePath: path.resolve(process.execPath, '../../..') }); }
         catch (error) { update.busy = false; update.error = error.message; broadcast(); throw error; }
-        app.relaunch(); app.exit(0); break;
+        savePreferences(); app.relaunch(); app.exit(0); break;
       }
       case 'open-download': shell.openExternal(`https://openalan.com/download/${HOST_LABEL === 'windows' ? 'windows' : 'mac'}`); break;
       case 'dismiss-updated': update.justUpdatedFrom = ''; break;
