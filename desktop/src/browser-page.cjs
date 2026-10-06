@@ -134,17 +134,23 @@ function snapshotExpression(generation, opts = {}) {
       // Tag names stand in for computed display so lists, rows and headings
       // keep their line breaks without a style read per text node.
       const blockTag = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|BODY|CAPTION|DD|DETAILS|DIALOG|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H[1-6]|HEADER|HR|LEGEND|LI|MAIN|NAV|OL|P|PRE|SECTION|SUMMARY|TABLE|TR|UL)$/;
-      let node, lastBlock = null;
+      let node, lastBlock = null, seenParent = null, parentVisible = true, parentBlock = null;
       while ((node = walker.nextNode())) {
         const p = node.parentElement;
         if (!p || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(p.tagName)) continue;
-        if (p.checkVisibility && !p.checkVisibility({ checkVisibilityCSS: true })) continue;
+        // Sibling text nodes share a parent. One style check covers the run.
+        if (p !== seenParent) {
+          seenParent = p;
+          parentVisible = !(p.checkVisibility && !p.checkVisibility({ checkVisibilityCSS: true }));
+          let block = p;
+          while (block.parentElement && !blockTag.test(block.tagName)) block = block.parentElement;
+          parentBlock = block;
+        }
+        if (!parentVisible) continue;
         const chunk = node.nodeValue.replace(/\\s+/g, ' ').trim();
         if (!chunk) continue;
-        let block = p;
-        while (block.parentElement && !blockTag.test(block.tagName)) block = block.parentElement;
-        text += (text ? (block === lastBlock ? ' ' : '\\n') : '') + chunk;
-        lastBlock = block;
+        text += (text ? (parentBlock === lastBlock ? ' ' : '\\n') : '') + chunk;
+        lastBlock = parentBlock;
         // The time budget never cuts the first screenful: a slow renderer
         // must still return enough text for the agent to orient itself.
         if (text.length >= ${maxChars} || (text.length >= ${Math.min(1000, maxChars)} && performance.now() > textDeadline)) { textCut = true; break; }
