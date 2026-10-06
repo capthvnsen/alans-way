@@ -12,6 +12,24 @@ const compilers = [
   'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
   'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe',
 ];
+const assemblies = ['UIAutomationClient.dll', 'UIAutomationTypes.dll', 'WindowsBase.dll'];
+
+// Bare '/r:name.dll' only resolves against the compiler's own directory, and
+// Server SKUs keep the UIA assemblies out of it — search the framework and
+// reference-assemblies roots and pass absolute paths instead.
+function assemblyPaths(compiler) {
+  const dirs = [path.dirname(compiler), path.join(path.dirname(compiler), 'WPF')];
+  const programFiles = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+  const refRoot = path.join(programFiles, 'Reference Assemblies', 'Microsoft', 'Framework', '.NETFramework');
+  try {
+    for (const entry of fs.readdirSync(refRoot)) dirs.push(path.join(refRoot, entry));
+  } catch { /* no SDK-style reference assemblies — the framework dir is the fallback */ }
+  return assemblies.map((name) => {
+    const dir = dirs.find((candidate) => fs.existsSync(path.join(candidate, name)));
+    if (!dir) throw new Error(`Could not find the .NET Framework assembly ${name}.`);
+    return path.join(dir, name);
+  });
+}
 
 function ensureBinary() {
   if (process.platform !== 'win32') throw new Error('Windows computer use only runs on Windows.');
@@ -21,7 +39,7 @@ function ensureBinary() {
   if (!compiler) throw new Error('Could not find the .NET Framework compiler (csc.exe).');
   const built = spawnSync(compiler, [
     '/nologo', '/target:exe', '/out:' + binary,
-    '/r:UIAutomationClient.dll', '/r:UIAutomationTypes.dll', '/r:WindowsBase.dll', source,
+    ...assemblyPaths(compiler).map((assembly) => '/r:' + assembly), source,
   ], { encoding: 'utf8' });
   if (built.status !== 0) throw new Error((built.stderr || built.stdout || 'Could not build the Windows computer helper.').trim());
   return binary;
