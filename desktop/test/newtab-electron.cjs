@@ -44,7 +44,7 @@ app.whenReady().then(async () => {
   await invoke('control', { id: tab.id, controller: 'agent' });
   const connection = JSON.parse(fs.readFileSync(path.join(profile, 'connection.json')));
   const shot = await fetch(`${connection.url}/v1/tabs/${tab.id}/screenshot`, { headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'shared' } });
-  assert.equal(shot.status, 200);
+  assert.equal(shot.status, 200, await shot.clone().text());
   const bitmap = nativeImage.createFromBuffer(Buffer.from((await shot.json()).base64, 'base64')).toBitmap();
   let bright = 0;
   for (let i = 0; i < bitmap.length; i += 4) if (bitmap[i] > 100) bright++;
