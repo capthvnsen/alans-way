@@ -203,6 +203,8 @@ test('snapshot bounds clamp and never splice caller text into page code', () => 
   assert.match(snapshotExpression(3), /seenParent/);
   assert.match(snapshotExpression(3), /checkVisibilityCSS: true/);
   assert.match(snapshotExpression(3), /utm_/);
+  assert.match(snapshotExpression(3), /src:shortHref/);
+  assert.match(snapshotExpression(3), /\.slice\(0,8\)/);
   assert.match(snapshotExpression(3), /searchParams\.delete/);
   assert.doesNotMatch(snapshotExpression(3, { maxChars: '1);alert(1' }), /alert/);
 });
