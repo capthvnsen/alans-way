@@ -744,12 +744,21 @@ function browserCommand(tab, method, params) {
   if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
   return wc.debugger.sendCommand(method, params);
 }
+// A wedged renderer leaves executeJavaScript pending forever and would
+// wedge tab.queue behind it. Bound every probe like snapshot's 10s race.
+function boundedJs(wc, code, ms = 5000) {
+  let timer;
+  return Promise.race([
+    wc.executeJavaScript(code),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('The page stopped responding.'), { status: 503 })), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
 async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = {}) {
   const capture = backgroundCaptureQueue.then(async () => {
     const wc = tab.view.webContents;
     const viaDevTools = async (cdpFormat) => {
       // clip.scale downscales at capture instead of a full-size decode then resize.
-      const size = await wc.executeJavaScript('({ width: innerWidth, height: innerHeight, dsf: devicePixelRatio })');
+      const size = await boundedJs(wc, '({ width: innerWidth, height: innerHeight, dsf: devicePixelRatio })');
       const scale = maxWidth && size.width * size.dsf > maxWidth ? Math.max(0.01, maxWidth / size.width) : size.dsf;
       const shot = await browserCommand(tab, 'Page.captureScreenshot', { format: cdpFormat, ...(cdpFormat === 'png' ? {} : { quality }), fromSurface: true, clip: { x: 0, y: 0, width: size.width, height: size.height, scale } });
       return shot.data;
@@ -772,7 +781,7 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = 
     const heldFocus = tab.focusEmulation === true;
     if (!heldFocus) await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: true });
     try {
-      await wc.executeJavaScript('new Promise(resolve => { const timer = setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); })); })');
+      await boundedJs(wc, 'new Promise(resolve => { const timer = setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); })); })');
       return await encode();
     }
     finally { if (!heldFocus && !wc.isDestroyed()) await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {}); }
@@ -944,12 +953,15 @@ function startApi() {
       const overseer = isOverseer(botId);
       if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', hosts:{mac:'connected',vps:vpsBrowserStatus}, capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'batch', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
-        const appearance = await telegramView.webContents.executeJavaScript(`(() => ({
+        const appearance = await Promise.race([
+          telegramView.webContents.executeJavaScript(`(() => ({
           styled: document.body.classList.contains('hw-chat'),
           composerCount: document.querySelectorAll('.Composer').length,
           middleClasses: document.querySelector('#MiddleColumn')?.className || '',
           middleChildren: [...(document.querySelector('#MiddleColumn')?.children || [])].map(el => ({ tag: el.tagName, id: el.id, className: String(el.className), background: getComputedStyle(el).backgroundImage, display: getComputedStyle(el).display })),
-        }))()`).catch(() => ({}));
+        }))()`).catch(() => ({})),
+          new Promise(resolve => setTimeout(() => resolve({}), 3000)),
+        ]);
         const activityStates = prefs.bots.map(bot => activity.get(bot.id).state);
         return send(200, { telegram: { status: telegramStatus, ...telegramDiagnostics, appearance,
           activity: { available: activityStates.some(state => state !== 'unknown'), activeBots: activityStates.filter(state => state === 'active').length } }, remote: remoteStatus,
