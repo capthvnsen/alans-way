@@ -86,3 +86,4 @@
 .download-action:hover{background:#373741;color:#dedee7}
 .downloads-foot{display:flex;justify-content:flex-end;border-top:1px solid #2c2c34;margin-top:4px;padding:8px 10px}
 #downloads-button.active{color:#a8e9cc}
+body.win32 .pane-actions{padding-right:140px}body.win32 .side-title{padding-top:14px}

@@ -1,5 +1,27 @@
 # Compatibility and upgrade policy
 
+## Supported operating-system arrangements
+
+Two machines are involved and their OS choices are independent:
+
+| Machine | OS | Status |
+|---|---|---|
+| User's computer (the app) | macOS, Apple Silicon | verified — `install-mac`/`connect-mac.sh`, Swift accessibility driver |
+| User's computer (the app) | Windows 10/11 x64 | supported — `install-windows.ps1`/`connect-windows.ps1`, UI Automation driver; CI-verified on `windows-latest`, not yet exercised on owned hardware |
+| Hermes' home (agent side) | Linux VPS | verified — primary target; systemd units, X11/VNC desktop |
+| Hermes' home (agent side) | macOS VM via Tart | supported — `scripts/mac-vm-setup.sh` + `mac-guest-services.sh` (launchd); preview via `tart --vnc-experimental` + `mac-vm-preview.sh`; manual TCC grants required once |
+
+Windows notes: computer-use runs through the app's authenticated loopback API
+(`/v1/computer/*`) because an SSH session cannot reach the interactive desktop
+— the app must be running for desktop control. Elevated apps are unreachable
+by design (UIPI), matching the existing refusal policy. The file-workspace MCP
+on Windows is `hermes-companion serve-windows`.
+
+macOS guest notes: accessibility and screen recording grants cannot be
+scripted (SIP-protected); grant them once, suspend the VM and clone the image
+— `scripts/mac-vm-setup.sh` walks that flow. Services run as LaunchAgents in
+the console user's GUI session.
+
 ## Supported alpha boundary
 
 - Python 3.11+ for configuration, diagnostics, and packaging.

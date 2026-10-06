@@ -28,6 +28,7 @@ EXAMPLE_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pem", ".key", ".patch", ".diff", ".log"}
 FORBIDDEN_IMPORTS = {"gateway", "tui_gateway", "hermes_cli", "hermes_state", "run_agent", "model_tools", "tools", "agent"}
 BINARY_ASSETS = {"desktop/assets/icon.png": b"\x89PNG\r\n\x1a\n", "desktop/assets/icon.icns": b"icns",
+                 "desktop/assets/icon.ico": b"\x00\x00\x01\x00",
                  "desktop/src/newtab-backdrop.png": b"\x89PNG\r\n\x1a\n"}
 AVATAR_ASSETS = frozenset(f"desktop/assets/avatars/{name}.png" for name in (
     "apollo", "artemis", "athena", "faun", "hades", "hermes", "medusa",

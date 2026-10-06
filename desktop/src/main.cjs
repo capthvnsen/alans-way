@@ -14,10 +14,22 @@ const { snapshotExpression, settleSnapshot, readControls, checkpointExpression, 
 const { createVpsBrowser } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
+const { createComputerSnapshots } = require('./computer-snapshot.cjs');
 const { ElectronChromeExtensions } = require('electron-chrome-extensions');
+
+// The host computer driver runs in the app's own session — the only place it
+// works on Windows, where SSH-spawned processes sit in Session 0 and cannot
+// see the desktop. Linux hosts have no driver (the Linux path is the guest's).
+const hostComputer = process.platform === 'darwin' ? require('./computer.cjs')
+  : process.platform === 'win32' ? require('./win-computer.cjs')
+  : null;
+const hostComputerSnapshots = createComputerSnapshots();
+const HOST_LABEL = process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'windows' : 'linux';
+const isLocalHost = (value) => value === undefined || value === 'mac' || value === 'windows' || value === 'local' || value === HOST_LABEL;
 
 app.enableSandbox();
 app.setName("alans-way-localapp");
+if (process.platform === 'win32') app.setAppUserModelId('app.alans-way.localapp');
 // Keep existing sessions and connector discovery stable when the product name changes.
 app.setPath('userData', process.env.HERMES_WORKSPACE_DATA
   ? path.resolve(process.env.HERMES_WORKSPACE_DATA)
@@ -63,7 +75,7 @@ const downloadStore = createDownloadStore({ getPreferences: () => prefs, savePre
 let pointerTimer, activityTimer, idleTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [],
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -90,7 +102,7 @@ function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
   const info = { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
-    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: 'mac', session: 'shared-mac', handoff: tab.handoff || null };
+    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null };
   return forBot ? redactTabForBot(info) : info;
 }
 function pageState(tab) {
@@ -135,6 +147,7 @@ function getState() {
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
+    platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
     autoOpenLinks: prefs.autoOpenLinks !== false,
@@ -577,6 +590,7 @@ function registerIpc() {
         }
         if (Number.isFinite(value.agentIdleMinutes)) prefs.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
+        if (value.remotePlatform !== undefined) prefs.remotePlatform = value.remotePlatform === 'mac' ? 'mac' : 'linux';
         if (typeof value.preview === 'boolean') prefs.preview = value.preview;
         if (typeof value.showBots === 'boolean') prefs.showBots = value.showBots;
         if (typeof value.showBrowser === 'boolean') prefs.showBrowser = value.showBrowser;
@@ -602,7 +616,7 @@ function registerIpc() {
       case 'preview-drop': if (win && !win.isDestroyed()) win.webContents.send('workspace:preview-drop'); break;
       case 'remote-control': prefs.remoteControl = value.enabled === true; break;
       case 'remote-status': remoteStatus = String(value.status).slice(0, 50); break;
-      case 'remote-paste': if (!prefs.remoteControl || remoteStatus!=='connected') throw new Error('Take control of the connected VPS desktop first.'); return clipboard.readText().slice(0,20000);
+      case 'remote-paste': if (!prefs.remoteControl || remoteStatus!=='connected') throw new Error('Take control of the connected remote desktop first.'); return clipboard.readText().slice(0,20000);
       case 'fullscreen': win.setFullScreen(!win.isFullScreen()); break;
       case 'open-settings': win.webContents.send('workspace:settings'); break;
       case 'focus-workspace': win.webContents.send('workspace:focus-workspace'); break;
@@ -615,7 +629,7 @@ function registerIpc() {
         const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
         clipboard.writeText([
           "# Alan's Way setup — paste into a terminal on the host running your Hermes gateway",
-          `curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/setup.sh | bash -s -- --bot-id ${q(botId)}${bot ? ` --bot-name ${q(bot.name.replace(/'/g, ''))}` : ''}${macSsh ? ` --mac-ssh ${q(macSsh)}` : ''} --timezone ${q(Intl.DateTimeFormat().resolvedOptions().timeZone)} --restart`,
+          `curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/setup.sh | bash -s -- --bot-id ${q(botId)}${bot ? ` --bot-name ${q(bot.name.replace(/'/g, ''))}` : ''}${macSsh ? ` --mac-ssh ${q(macSsh)}` : ''}${HOST_LABEL === 'windows' ? ' --host-os windows' : ''} --timezone ${q(Intl.DateTimeFormat().resolvedOptions().timeZone)} --restart`,
           '# The bootstrap installs the plugin + hook, configures the browser connector,',
           '# offers to bind the primary route, restarts the gateway, and verifies itself.',
         ].join('\n'));
@@ -630,7 +644,9 @@ function registerIpc() {
           botId && `- BOT_ID=${botId}`,
           macSsh && `- MAC_SSH=${macSsh}`,
           `- MAC_TZ=${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-          '- The Alan\'s Way app is already installed and open on my Mac, so add --skip-install to the Mac command in step 4.',
+          HOST_LABEL === 'windows'
+            ? '- The Alan\'s Way app is already installed and open on my PC, so add --skip-install and --host-os windows to the Windows command in step 4.'
+            : '- The Alan\'s Way app is already installed and open on my Mac, so add --skip-install to the Mac command in step 4.',
         ].filter(Boolean).join('\n'));
         break;
       }
@@ -639,8 +655,8 @@ function registerIpc() {
         const mac = (prefs.macSshHost || '').trim();
         if (!host) throw new Error('Save a VPS browser SSH host first.');
         if (!isSshTarget(host)) throw new Error('The saved VPS SSH address is invalid. Re-enter it as user@host or host.');
-        if (!mac) throw new Error('Enter this Mac’s SSH address as your VPS reaches it.');
-        if (!isSshTarget(mac)) throw new Error('The saved Mac SSH address is invalid. Re-enter it as user@host or host.');
+        if (!mac) throw new Error(`Enter this ${HOST_LABEL === 'windows' ? 'PC' : 'computer'}’s SSH address as your VPS reaches it.`);
+        if (!isSshTarget(mac)) throw new Error('The saved SSH address for this computer is invalid. Re-enter it as user@host or host.');
         return new Promise((resolve) => {
           const child = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host,
             `ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=yes ${mac} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
@@ -649,7 +665,7 @@ function registerIpc() {
           child.stderr.on('data', chunk => { out += chunk; });
           child.on('error', () => resolve({ ok: false, detail: 'Could not start ssh — check local ssh access.' }));
           child.on('close', code => resolve(out.includes('AGENT_PATH_OK')
-            ? { ok: true, detail: 'VPS reaches this Mac over ssh — agents can route here.' }
+            ? { ok: true, detail: `VPS reaches this ${HOST_LABEL === 'mac' ? 'Mac' : HOST_LABEL === 'windows' ? 'PC' : 'computer'} over ssh — agents can route here.` }
             : out.includes('Tailscale SSH requires an additional check')
               ? { ok: false, detail: 'Tailscale SSH on the VPS wants a browser check for this login, which unattended agents cannot pass. In the Tailscale admin console → Access controls, change the SSH rule for this user from "check" to "accept".' }
               : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
@@ -752,30 +768,33 @@ async function navigateVps(id,url) {
 async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   const source=tabs.get(id) || vpsTabs.get(id); if(!source)throw new Error('Source tab not found.');
   const sourceHost=tabs.has(id)?'mac':'vps';
-  if(!['mac','vps'].includes(destination)||destination===sourceHost)throw new Error('Choose the other computer.');
+  // Local tabs describe themselves with HOST_LABEL (e.g. 'windows'); 'mac'
+  // stays accepted as the compat wire name for the user's own computer.
+  const dest=destination===HOST_LABEL?'mac':destination;
+  if(!['mac','vps'].includes(dest)||dest===sourceHost)throw new Error('Choose the other computer.');
   if(sourceHost==='mac') { changeController(id,'human'); await source.queue; }
   else await remoteRequest(id,'control',{controller:'human'});
   const checkpoint=sourceHost==='mac'?await source.view.webContents.executeJavaScript(checkpointExpression(includeDrafts)):await remoteRequest(id,'checkpoint',{includeDrafts});
   if(!/^https?:\/\//.test(checkpoint.url))throw new Error('Open a web page before handing it off.');
-  const handoff={id:crypto.randomUUID(),sourceHost,sourceTabId:id,destinationHost:destination,createdAt:Date.now(),note:String(note).slice(0,4000),phase:'review_required'};
+  const handoff={id:crypto.randomUUID(),sourceHost,sourceTabId:id,destinationHost:dest,createdAt:Date.now(),note:String(note).slice(0,4000),phase:'review_required'};
   let target,result;
-  if(destination==='vps') {
+  if(dest==='vps') {
     target=await vpsBrowser.request('/v1/tabs','POST',{url:checkpoint.url},{botId:source.botId,human:true});vpsTabs.set(target.id,target);
     result=await remoteRequest(target.id,'restore',{checkpoint,handoff});target=result.tab;
   } else {
     target=createTab({url:checkpoint.url,botId:source.botId,controller:'human',activate:false});target.handoff=handoff;
     for(let n=0;n<100;n++){if(!target.view.webContents.isLoading()&&target.view.webContents.getURL()!=='about:blank')break;await new Promise(r=>setTimeout(r,100));}
-    if(target.view.webContents.isLoading()){try{closeTab(target.id)}catch{}throw new Error('Mac destination is still loading. Its tab was closed — retry the handoff.');}
+    if(target.view.webContents.isLoading()){try{closeTab(target.id)}catch{}throw new Error(`${HOST_LABEL==='windows'?'PC':'Mac'} destination is still loading. Its tab was closed — retry the handoff.`);}
     result=await target.view.webContents.executeJavaScript(restoreExpression(checkpoint));
   }
   const record={...handoff,destinationTabId:target.id,verification:result.verification,restoredDrafts:result.restored,skippedDrafts:result.skipped};
-  if(destination==='mac')target.handoff=record;
+  if(dest==='mac')target.handoff=record;
   else {target.handoff=record;vpsTabs.set(target.id,target);}
-  const retired={id:record.id,phase:'handed_off',sourceHost,destinationHost:destination,destinationTabId:target.id,createdAt:record.createdAt};
+  const retired={id:record.id,phase:'handed_off',sourceHost,destinationHost:dest,destinationTabId:target.id,createdAt:record.createdAt};
   if(sourceHost==='mac')source.handoff=retired;
   else record.sourceRetired=await remoteRequest(id,'control',{controller:'human',handoff:retired}).then(()=>true,()=>false);
-  prefs.remoteControl=false; prefs.handoffs=[record,...prefs.handoffs].slice(0,20);activeTabId=destination==='vps'?'vps':target.id;
-  if(destination==='vps')await remoteRequest(target.id,'activate',{});
+  prefs.remoteControl=false; prefs.handoffs=[record,...prefs.handoffs].slice(0,20);activeTabId=dest==='vps'?'vps':target.id;
+  if(dest==='vps')await remoteRequest(target.id,'activate',{});
   savePreferences();applyLayout();broadcast();return record;
 }
 // History navigation has no promise. Listeners go on before the trigger so a
@@ -1048,7 +1067,7 @@ function startApi() {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
       const overseer = isOverseer(botId);
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: 'mac', hosts:{mac:'connected',vps:vpsBrowserStatus}, capabilities: ['tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'batch', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'batch', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await Promise.race([
           telegramView.webContents.executeJavaScript(`(() => ({
@@ -1074,8 +1093,8 @@ function startApi() {
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
         const body = await readJson(req);
-        if(body.host==='vps'){const result=await vpsBrowser.request('/v1/tabs','POST',body,{botId,botName:nameForBot(botId)});vpsTabs.set(result.id,result);broadcast();return send(201,result);}
-        if(body.host!==undefined&&body.host!=='mac')throw new Error('Choose mac or vps explicitly.');
+        if(body.host==='vps'||body.host==='remote'){const forward={...body};delete forward.host;const result=await vpsBrowser.request('/v1/tabs','POST',forward,{botId,botName:nameForBot(botId)});vpsTabs.set(result.id,result);broadcast();return send(201,result);}
+        if(!isLocalHost(body.host))throw new Error(`Choose ${HOST_LABEL} or vps explicitly.`);
         { const targetUrl = pageUrl(agentPageUrl(body.url));
           const created = createTab({ url: targetUrl, botId, controller: 'agent', activate: body.background === false }); created.agentSince = Date.now();
           // Answer after commit (not full load): the first snapshot or eval then
@@ -1091,6 +1110,46 @@ function startApi() {
             });
           }
           return send(201, describeTab(created, true)); }
+      }
+      // Host computer use is served here so an SSH-spawned connector never
+      // drives the desktop itself — on Windows that process would sit in
+      // Session 0 and see no windows. Same verbs the MCP connector wraps.
+      const computerMatch = /^\/v1\/computer\/(apps|\d{1,10})(?:\/(snapshot|screenshot|action))?$/.exec(url.pathname);
+      if (computerMatch) {
+        if (!hostComputer) return send(400, { error: 'Computer use is not available on this host.' });
+        if (computerMatch[1] === 'apps') {
+          if (computerMatch[2] || req.method !== 'GET') return send(405, { error: 'Use GET /v1/computer/apps.' });
+          return send(200, { apps: hostComputer.apps() });
+        }
+        const pid = Number(computerMatch[1]);
+        if (!Number.isInteger(pid) || pid < 0) return send(400, { error: 'App pid must be a non-negative integer.' });
+        if (req.method === 'GET' && computerMatch[2] === 'snapshot')
+          return send(200, hostComputerSnapshots(pid, hostComputer.snapshot(pid), intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER)));
+        if (req.method === 'GET' && computerMatch[2] === 'screenshot')
+          return send(200, hostComputer.screenshot(pid, intParam(url, 'maxWidth', 1, 10000)));
+        if (req.method === 'POST' && computerMatch[2] === 'action') {
+          const body = await readJson(req);
+          const step = (item) => {
+            if (item.action === 'press') return hostComputer.press(pid, item.ref);
+            if (item.action === 'click') return hostComputer.click(pid, item.x, item.y);
+            if (item.action === 'drag') return hostComputer.drag(pid, item.x, item.y, item.x2, item.y2);
+            if (item.action === 'type') return hostComputer.type(pid, item.ref, item.text);
+            throw new Error('Computer action must be press, click, drag, type, or batch.');
+          };
+          let result;
+          if (body.action === 'batch') {
+            const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
+            const results = [];
+            for (const item of steps) { try { results.push(step(item || {})); } catch (error) { results.push({ error: error.message }); break; } }
+            result = { results };
+          } else result = step(body);
+          try {
+            const observed = hostComputerSnapshots.observe(pid, hostComputer.snapshot(pid));
+            result = observed.unchanged ? { ...result, unchanged: true, generation: observed.generation } : { ...result, generation: observed.generation, elements: observed.elements };
+          } catch { /* the action stands even when a follow-up read is refused */ }
+          return send(200, result);
+        }
+        return send(405, { error: 'Method not supported.' });
       }
       const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions|control))?$/.exec(url.pathname);
       const tab = match && tabs.get(match[1]);
@@ -1174,7 +1233,9 @@ function startApi() {
 function createWindow() {
   nativeTheme.themeSource = 'dark';
   win = new BrowserWindow({ width: 1550, height: 980, minWidth: 1120, minHeight: 680, backgroundColor: '#09090a', title: app.getName(),
-    titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 },
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 } }
+      : { titleBarStyle: 'hidden', titleBarOverlay: { color: '#111112', symbolColor: '#e7e7eb', height: 40 } }),
     webPreferences: { preload: path.join(ROOT, 'preload.bundle.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   telegramView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'telegram-preload.bundle.cjs'), partition: 'persist:telegram', contextIsolation: true, nodeIntegration: false, sandbox: true } });
   telegramView.setBackgroundColor('#09090a');
@@ -1188,7 +1249,8 @@ function createWindow() {
   remoteView.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   remoteView.webContents.on('will-navigate', (event) => event.preventDefault());
   remoteView.webContents.on('before-input-event',(event,input)=>{
-    if(prefs.remoteControl && remoteStatus==='connected' && input.meta && input.type==='keyDown' && /^[altrwf]$/i.test(input.key)){
+    const hostModifier = process.platform === 'darwin' ? input.meta : input.control;
+    if(prefs.remoteControl && remoteStatus==='connected' && hostModifier && input.type==='keyDown' && /^[altrwf]$/i.test(input.key)){
       event.preventDefault();remoteView.webContents.send('workspace:remote-shortcut',{key:input.key.toLowerCase(),shift:input.shift});
     }
   });
@@ -1200,13 +1262,15 @@ function createWindow() {
   for (const item of prefs.savedTabs.slice(0, 12)) { try { createTab({ url: item.url, botId: item.botId, activate: false }); } catch {} }
   activeTabId = 'home';
   win.on('enter-full-screen', broadcast); win.on('leave-full-screen', broadcast);
-  win.on('close', (event) => { if (!isQuitting) { event.preventDefault(); win.hide(); } });
+  // macOS convention keeps the app alive after close; Windows has no dock to
+  // restore from, so closing the window quits (window-all-closed handles it).
+  win.on('close', (event) => { if (process.platform === 'darwin' && !isQuitting) { event.preventDefault(); win.hide(); } });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
-    { label: 'File', submenu: [{ label: 'New Browser Tab', accelerator: 'CmdOrCtrl+T', click: () => createTab({}) }, { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(activeTabId) }] },
+    ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
+    { label: 'File', submenu: [{ label: 'New Browser Tab', accelerator: 'CmdOrCtrl+T', click: () => createTab({}) }, { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(activeTabId) }, ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, { role: 'quit' }])] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { label: 'View', submenu: [{ label: 'Reload Page', accelerator: 'CmdOrCtrl+R', click: () => tabs.get(activeTabId)?.view.webContents.reload() }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
-    { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] },
+    ...(process.platform === 'darwin' ? [{ label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }] : []),
   ]));
   startApi();
   // Read the real pointer position, even over native child views or another app.

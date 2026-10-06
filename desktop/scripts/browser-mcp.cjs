@@ -2,7 +2,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const computer = process.platform === 'darwin' ? require('../src/computer.cjs') : require('../src/vps-computer.cjs');
+// Computer drivers are per-OS. On Windows an SSH-spawned process lives in
+// Session 0 and cannot see the interactive desktop at all, so the driver runs
+// inside the app and these tools reach it over the app's loopback API instead.
+const computer = process.platform === 'darwin' ? require('../src/computer.cjs')
+  : process.platform === 'win32' ? null
+  : require('../src/vps-computer.cjs');
 const { createComputerSnapshots } = require('../src/computer-snapshot.cjs');
 const { connectorReplaced } = require('../src/connector-reload.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
@@ -12,8 +17,9 @@ const watched = [
   __filename,
   path.join(__dirname, '..', 'src', 'omit-icons.cjs'),
   path.join(__dirname, '..', 'src', 'computer-snapshot.cjs'),
-  path.join(__dirname, '..', 'src', process.platform === 'darwin' ? 'computer.cjs' : 'vps-computer.cjs'),
 ];
+if (process.platform !== 'win32')
+  watched.push(path.join(__dirname, '..', 'src', process.platform === 'darwin' ? 'computer.cjs' : 'vps-computer.cjs'));
 const fileMtime = (file) => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } };
 const started = Object.fromEntries(watched.map((file) => [file, fileMtime(file)]));
 const reloadIfReplaced = () => {
@@ -33,7 +39,9 @@ if (!botId || botId.length > 100 || /[\r\n]/.test(botId)) {
 const nameIndex = process.argv.indexOf('--bot-name');
 const botName = encodeURIComponent(String((nameIndex >= 0 ? process.argv[nameIndex + 1] : '') || process.env.HERMES_BOT_NAME || '').slice(0, 80));
 const connectionIndex=process.argv.indexOf('--connection');
-const file = (connectionIndex>=0?process.argv[connectionIndex+1]:undefined) || process.env.HERMES_WORKSPACE_CONNECTION || path.join(os.homedir(), 'Library', 'Application Support', 'Hermes Workspace', 'connection.json');
+const file = (connectionIndex>=0?process.argv[connectionIndex+1]:undefined) || process.env.HERMES_WORKSPACE_CONNECTION || path.join(
+  process.platform === 'win32' ? (process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming')) : path.join(os.homedir(), 'Library', 'Application Support'),
+  'Hermes Workspace', 'connection.json');
 const objectSchema = (properties = {}, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = { type: 'string' };
 function continuedFromArgv(argv) {
@@ -62,14 +70,14 @@ const continuedNote = continued
 const tools = [
   { name: 'cua_alans_way_status', description: 'Check the configured browser host and available hosts. Inspect host before acting; an unavailable computer is never replaced implicitly by another. Host selection is decided by the connector at spawn and re-converges on its own when Mac availability flips — on a tool error just retry once, and if it still fails report it; never restart, kill, or edit connector processes to steer the host. If the Mac goes offline mid-task, the connector continues the last https page in the VPS browser. If the [workspace] line names a tab, keep working in that tab. If it only names a URL, reopen the same URL and continue. Calls that do not run on the Mac keep going.' + continuedNote, inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
   { name: 'cua_alans_way_tabs', description: 'List this bot’s owned Chromium tabs with execution host and current control epochs. Mac and VPS logins are separate; bots on a host share sign-ins.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
-  { name: 'cua_alans_way_open', description: 'Open a tab in this connector browser. This is the in-app Mac browser whenever the Mac is reachable, and the VPS browser when the Mac is not. Do not pass host; the connector already chose the machine. No human handoff, assignment, grant, or approval is ever needed. Shared sign-ins within a host, separate tab ownership and input. Opens in the background.', inputSchema: objectSchema({ url: string, host:{type:'string',enum:['mac','vps'], description: 'Ignored. The connector already chose the Mac when it is reachable and the VPS when it is not.'}, background: { type: 'boolean', default: true } }, ['url']), annotations: { readOnlyHint: false, openWorldHint: true } },
+  { name: 'cua_alans_way_open', description: 'Open a tab in this connector browser. This is the in-app browser on the user’s computer whenever it is reachable, and the VPS browser when it is not. Do not pass host; the connector already chose the machine. No human handoff, assignment, grant, or approval is ever needed. Shared sign-ins within a host, separate tab ownership and input. Opens in the background.', inputSchema: objectSchema({ url: string, host:{type:'string',enum:['mac','windows','vps'], description: 'Ignored. The connector already chose the user’s computer when it is reachable and the VPS when it is not.'}, background: { type: 'boolean', default: true } }, ['url']), annotations: { readOnlyHint: false, openWorldHint: true } },
   { name: 'cua_alans_way_snapshot', description: 'Read a tab: bounded page text plus interactive elements in elements[] ({ref, role, name, …}). role is usually the lowercase tag (a, input, button, div) or an ARIA role. Menu items, options, tree items, sliders, and clickable divs are included by name. Controls inside an open shadow root are included too; a closed root is not. A name can come from aria-labelledby. A pressed toggle ends in on or off. loading:true means the document was still parsing after a 400ms grace. Same-origin frames are included. A cross-origin frame is not readable; screenshot that frame only. Pass since=<last generation> for a cheap {unchanged:true}. Request a fresh snapshot after actions that change the page; action responses include generation/url/title/loading so you can often skip one.', inputSchema: objectSchema({ tabId: string, maxChars: { type: 'integer', description: 'Cap on returned page text. Default 2000. Raise it up to 20000 when you need more of the page.' }, maxElements: { type: 'integer', description: 'Cap on interactive element refs, default 150, max 300.' }, since: { type: 'integer', description: 'Generation from the previous snapshot; returns {unchanged:true} when content is identical.' } }, ['tabId']), annotations: { readOnlyHint: true } },
   { name: 'cua_alans_way_screenshot', description: 'Capture the tab viewport as an image file. Hermes delivers it as MEDIA:<path> — run a vision step on that path to see pixels. Defaults to compact jpeg; png keeps alpha.', inputSchema: objectSchema({ tabId: string, format: { type: 'string', enum: ['jpeg', 'png', 'webp'], description: 'Image format, default jpeg.' }, quality: { type: 'integer', description: 'jpeg/webp quality 1-100, default 50.' }, maxWidth: { type: 'integer', description: 'Downscale cap on image width in px, default 960.' } }, ['tabId']), annotations: { readOnlyHint: true } },
   { name: 'cua_alans_way_close', description: 'Close a tab this bot owns. Pass the current epoch. Required to free VPS tabs (global cap 40).', inputSchema: objectSchema({ tabId: string, epoch: { type: 'integer' } }, ['tabId', 'epoch']), annotations: { readOnlyHint: false, openWorldHint: true } },
-  { name: 'workspace_computer_apps', description: 'List desktop apps the agent can drive without taking the focused window. These apps are on the same machine as the browser: the Mac when it is reachable, otherwise the Linux desktop. On a Mac that is every background app. On a Linux desktop that is every app except the focused one. Keychain and password fields are off limits. Web work stays on cua_alans_way. Never moves the pointer.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
-  { name: 'workspace_computer_snapshot', description: 'Read one desktop app: elements[] with ref, role, and name. On a Mac, elements also include screen x,y,width,height. Prefer press by ref. Pass since=<last generation> for a cheap {unchanged:true} when the tree is the same. Take a fresh snapshot after the app changes. Refuses the focused window.', inputSchema: objectSchema({ pid: { type: 'integer' }, since: { type: 'integer', description: 'Generation from the previous snapshot. Returns {unchanged:true} when the tree is identical.' } }, ['pid']), annotations: { readOnlyHint: true } },
-  { name: 'workspace_computer_screenshot', description: 'Capture one app window as a small jpeg. Use only when the snapshot has no named control for what you need, such as a canvas or a chart. Never a full screen. On a Mac, scale image pixels by window.width / imageWidth. Refuses the focused window and Keychain.', inputSchema: objectSchema({ pid: { type: 'integer' }, maxWidth: { type: 'integer', description: 'Downscale cap in px, default 960, max 1280.' } }, ['pid']), annotations: { readOnlyHint: true } },
-  { name: 'workspace_computer_action', description: 'Act in a desktop app without moving the pointer. press uses a snapshot ref. type replaces the text of a ref and does not send keystrokes. click uses snapshot x,y and lands on the control at that point. drag uses snapshot coordinates; it sets a slider from the end point, and on Linux a scroll bar too. batch runs up to 25 steps. The result includes generation. unchanged:true means the tree is the same and no new snapshot is needed. elements, when present, is the fresh tree. Refuses the focused window, Keychain, and password fields.', inputSchema: objectSchema({
+  { name: 'workspace_computer_apps', description: 'List desktop apps the agent can drive without taking the focused window. These apps are on the same machine as the browser: the user’s computer when it is reachable, otherwise the Linux desktop. On macOS and Windows that is every background app. On a Linux desktop that is every app except the focused one. Keychain, Windows secure-desktop surfaces (UAC, lock screen) and password fields are off limits. Web work stays on cua_alans_way. Never moves the pointer.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
+  { name: 'workspace_computer_snapshot', description: 'Read one desktop app: elements[] with ref, role, and name. On macOS and Windows, elements also include screen x,y,width,height. Prefer press by ref. Pass since=<last generation> for a cheap {unchanged:true} when the tree is the same. Take a fresh snapshot after the app changes. Refuses the focused window.', inputSchema: objectSchema({ pid: { type: 'integer' }, since: { type: 'integer', description: 'Generation from the previous snapshot. Returns {unchanged:true} when the tree is identical.' } }, ['pid']), annotations: { readOnlyHint: true } },
+  { name: 'workspace_computer_screenshot', description: 'Capture one app window as a small jpeg. Use only when the snapshot has no named control for what you need, such as a canvas or a chart. Never a full screen. On macOS and Windows, scale image pixels by window.width / imageWidth. On Windows a minimized window cannot be captured — restore it first. Refuses the focused window, Keychain, and Windows secure-desktop UI.', inputSchema: objectSchema({ pid: { type: 'integer' }, maxWidth: { type: 'integer', description: 'Downscale cap in px, default 960, max 1280.' } }, ['pid']), annotations: { readOnlyHint: true } },
+  { name: 'workspace_computer_action', description: 'Act in a desktop app without moving the pointer. press uses a snapshot ref. type replaces the text of a ref and does not send keystrokes. click uses snapshot x,y and lands on the control at that point. drag uses snapshot coordinates; it sets a slider from the end point, and on Linux a scroll bar too. batch runs up to 25 steps. The result includes generation. unchanged:true means the tree is the same and no new snapshot is needed. elements, when present, is the fresh tree. Refuses the focused window, Keychain, Windows secure-desktop UI, and password fields.', inputSchema: objectSchema({
     pid: { type: 'integer' },
     action: { type: 'string', enum: ['press', 'click', 'drag', 'type', 'batch'] },
     ref: string,
@@ -177,12 +185,18 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
       case 'cua_alans_way_close':
         result = await request(tabPath, 'DELETE', undefined, args.epoch);
         break;
-      case 'workspace_computer_apps': result = { apps: computer.apps() }; break;
+      case 'workspace_computer_apps':
+        result = computer ? { apps: computer.apps() } : await request('/v1/computer/apps');
+        break;
       case 'workspace_computer_snapshot':
-        result = computerSnapshot(args.pid, computer.snapshot(args.pid), args.since);
+        result = computer
+          ? computerSnapshot(args.pid, computer.snapshot(args.pid), args.since)
+          : await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/snapshot${Number.isInteger(args.since) ? `?since=${args.since}` : ''}`);
         break;
       case 'workspace_computer_screenshot': {
-        const shot = computer.screenshot(args.pid, args.maxWidth);
+        const shot = computer
+          ? computer.screenshot(args.pid, args.maxWidth)
+          : await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/screenshot${Number.isInteger(args.maxWidth) ? `?maxWidth=${args.maxWidth}` : ''}`);
         return { content: [
           { type: 'image', data: shot.image, mimeType: 'image/jpeg' },
           { type: 'text', text: JSON.stringify({
@@ -193,6 +207,11 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
         ] };
       }
       case 'workspace_computer_action': {
+        if (!computer) {
+          const { pid, ...body } = args;
+          result = await request(`/v1/computer/${encodeURIComponent(String(pid))}/action`, 'POST', body);
+          break;
+        }
         const step = (body) => {
           if (body.action === 'press') return computer.press(args.pid, body.ref);
           if (body.action === 'click') return computer.click(args.pid, body.x, body.y);

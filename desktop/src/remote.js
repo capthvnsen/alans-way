@@ -47,7 +47,7 @@ function render(next) {
   $('control').textContent = state.remoteControl ? 'Stop control' : 'Take control'; $('control').classList.toggle('controlling', state.remoteControl);
   $('control').setAttribute('aria-pressed',String(state.remoteControl));
   $('control').disabled = !connected;
-  $('remote-name').textContent='VPS computer';
+  $('remote-name').textContent=state.remotePlatform==='mac'?'Mac VM':'VPS computer';
   $('control').title = state.remoteControl ? 'Return to watch mode' : 'Enable your mouse and keyboard · desktop agents may still be active';
   $('remote-hint').textContent = state.remoteControl ? 'You control this view · click, drag, scroll and type' : state.activeTabId === 'vps' ? 'Watching · click Take control to use your mouse and keyboard' : 'Watching · drag the preview anywhere · Take control for mouse and keyboard';
   $('paste').disabled=!connected || !state.remoteControl;
@@ -58,7 +58,8 @@ $('control').onclick = async () => {
     else await api.command('remote-control',{enabled:false});
   }catch(error){$('remote-hint').textContent=error.message;}
 };
-function shortcut(key,shift=false){if(!connected || !state.remoteControl)return;rfb.focus();rfb.sendKey(0xffe3,'ControlLeft',true);if(shift)rfb.sendKey(0xffe1,'ShiftLeft',true);rfb.sendKey(key.charCodeAt(0),'Key'+key.toUpperCase());if(shift)rfb.sendKey(0xffe1,'ShiftLeft',false);rfb.sendKey(0xffe3,'ControlLeft',false);}
+// The guest's primary modifier: Command reaches a macOS guest as Super.
+function shortcut(key,shift=false){if(!connected || !state.remoteControl)return;rfb.focus();const mod=state.remotePlatform==='mac'?[0xffeb,'MetaLeft']:[0xffe3,'ControlLeft'];rfb.sendKey(mod[0],mod[1],true);if(shift)rfb.sendKey(0xffe1,'ShiftLeft',true);rfb.sendKey(key.charCodeAt(0),'Key'+key.toUpperCase());if(shift)rfb.sendKey(0xffe1,'ShiftLeft',false);rfb.sendKey(mod[0],mod[1],false);}
 api.onRemoteShortcut?.(({key,shift})=>shortcut(key,shift));
 $('paste').onclick=async()=>{try{const text=await api.command('remote-paste');rfb.clipboardPasteFrom(text);shortcut('v');}catch(error){$('remote-hint').textContent=error.message;}};
 // In watch-mode preview, dragging anywhere in the viewer moves the floating

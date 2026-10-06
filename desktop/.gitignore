@@ -1,5 +1,6 @@
 node_modules/
 scripts/mac-computer
+scripts/win-computer.exe
 dist/
 screenshots/
 .DS_Store

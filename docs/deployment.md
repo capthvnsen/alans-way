@@ -1,9 +1,11 @@
 # Deploy Hermes- Alan's way to another Hermes instance
 
 This is a manual setup today, with a stock Hermes gateway and an optional Mac
-profile. It does not require a Hermes fork. Desktop packaging currently targets
-Apple Silicon Macs; Windows, Linux desktops and Intel Mac distributions have
-not been verified.
+profile. It does not require a Hermes fork. Desktop packaging targets Apple
+Silicon Macs and Windows 10/11 x64 (`npm run package:win`); Linux desktops and
+Intel Mac distributions have not been verified. The Hermes side can also live
+on a macOS VM (see [the macOS guest guide](mac-vm-guest.md)) instead of a
+Linux VPS.
 
 1. Install a supported stock Hermes release on the destination VPS. Create the
    primary profile and configure its model/provider through native setup.

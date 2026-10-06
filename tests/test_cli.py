@@ -116,7 +116,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(json.loads(out), safe_report)
         self.assertEqual(err, "")
         verify.assert_called_once_with("operator@private-mac", "/opt/python", "/srv/approved",
-                                       read_path=None, request_timeout=10.0, overall_timeout=30.0)
+                                       host_os="mac", read_path=None, request_timeout=10.0, overall_timeout=30.0)
 
     def test_verify_cli_optional_read_and_timeout_arguments(self):
         with patch("hermes_companion.cli.verify_mac", return_value={"read_performed": True}) as verify:
@@ -127,7 +127,7 @@ class CLITests(unittest.TestCase):
             ])
         self.assertEqual(status, 0)
         verify.assert_called_once_with("operator@private-mac", "/opt/python", "/srv/approved",
-                                       read_path="fixture.txt", request_timeout=2.0, overall_timeout=8.0)
+                                       host_os="mac", read_path="fixture.txt", request_timeout=2.0, overall_timeout=8.0)
 
     def test_verify_cli_failure_is_nonzero_without_private_diagnostics(self):
         from hermes_companion.cli import VerificationError

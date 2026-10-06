@@ -47,6 +47,44 @@ jobs:
       - run: npm run test:newtab
         timeout-minutes: 3
 
+  desktop-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: node --check src/win-computer.cjs
+      - run: node --test test/win-computer.test.cjs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Windows workspace MCP executor tests
+        working-directory: .
+        env:
+          PYTHONPATH: src
+        run: python -m unittest tests.test_windows_server -v
+      - name: Parse the PowerShell install/connect scripts
+        working-directory: .
+        shell: powershell
+        run: |
+          $found = $false
+          foreach ($f in 'scripts/install-windows.ps1', 'scripts/connect-windows.ps1') {
+            $tokens = $null; $fileErrs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$tokens, [ref]$fileErrs)
+            foreach ($e in $fileErrs) {
+              $found = $true
+              Write-Host "$f line $($e.Extent.StartLineNumber) col $($e.Extent.StartColumnNumber): $($e.Message)"
+            }
+          }
+          if ($found) { exit 1 }
+
   package-and-test:
     strategy:
       fail-fast: false
