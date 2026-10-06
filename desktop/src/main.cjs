@@ -712,6 +712,8 @@ async function snapshot(tab, opts = {}) {
       new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000); }),
     ]).finally(() => clearTimeout(timer));
     if (!result || !Array.isArray(result.elements)) throw Object.assign(new Error('Snapshot returned no page data.'), { status: 503 });
+    // A takeover while the page was being read seals the response.
+    requireAgentRead(tab);
     return { ...settleSnapshot(tab, result, generation, opts.since), tab: describeTab(tab, true) };
   });
   tab.queue = work.catch(() => {});
@@ -826,6 +828,8 @@ async function performAction(tab, body, botId, depth = 0) {
       try { results.push(await performAction(tab, { ...step, epoch: body.epoch }, botId, 1)); }
       catch (error) { results.push({ error: error.message }); break; }
     }
+    // A takeover mid-batch seals the accumulated step results too.
+    requireActor(tab, botId, body.epoch, true, overseer);
     return { results, tab: describeTab(tab, true), dispatched: true };
   }
   if (body.action === 'eval') {
@@ -949,7 +953,7 @@ async function performAction(tab, body, botId, depth = 0) {
       wc.loadURL(target).then(() => 'loaded', (error) => ({ error })),
       new Promise(resolve => setTimeout(() => resolve('loading'), 12000)),
     ]);
-    if (outcome === 'loading') { tab.refs.clear(); broadcast(); return { loading: true, url: target, tab: describeTab(tab, true), dispatched: true }; }
+    if (outcome === 'loading') { requireActor(tab, botId, body.epoch, true, overseer); tab.refs.clear(); broadcast(); return { loading: true, url: target, tab: describeTab(tab, true), dispatched: true }; }
     if (outcome !== 'loaded') throw outcome.error;
   } else if (['back', 'forward', 'reload'].includes(body.action)) {
     await agentInput.clear(tab);
@@ -960,6 +964,9 @@ async function performAction(tab, body, botId, depth = 0) {
       : () => wc.reload();
     if (go) await settleNavigation(wc, go);
   } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, move, scroll, back, forward, reload, batch, eval, wait, viewport, cdp.'), { status: 400 });
+  // Seal navigation-family results too: a takeover while the page settled
+  // makes this response the human's page state.
+  requireActor(tab, botId, body.epoch, true, overseer);
   tab.refs.clear(); broadcast();
   return { tab: describeTab(tab, true), dispatched: true };
 }
