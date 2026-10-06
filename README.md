@@ -78,8 +78,8 @@ Fresh installs and upgrades follow the same path: pull the repo, `cd desktop && 
 ## Honest boundaries
 
 - **Alpha software.** Tested on the author's setup; yours may differ. Bugs → [issues](https://github.com/capthvnsen/alans-way/issues).
-- Agents think on the VPS. The Mac lends them a browser tab — it does **not** become their general-purpose computer.
-- Agent input goes through Chromium's debugger into one tab — it never moves your real cursor or types into other apps.
+- Agents think on the VPS. On the Mac they can drive a background app or a browser tab. They do not take the app you are currently using, and they do not move your cursor.
+- Browser input goes through Chromium's debugger into one tab. Other apps are read as buttons and text first; a click uses that control and does not move your cursor. Keychain and password fields are refused.
 - One exception: in the VPS preview, "Take control" mode *does* send your clicks to the remote desktop — that's the point of it.
 - Telegram sending rides the embedded Telegram Web client. If sends stall, Settings → **Sync Telegram bots** reloads the session.
 
