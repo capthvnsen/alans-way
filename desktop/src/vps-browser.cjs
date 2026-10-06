@@ -19,6 +19,7 @@ function createVpsBrowser({ getConfig }) {
         { stdio: ['pipe', 'pipe', 'pipe'] },
       );
       let output = '',
+        stderr = '',
         size = 0,
         done = false;
       const finish = (error, value) => {
@@ -38,10 +39,13 @@ function createVpsBrowser({ getConfig }) {
           finish(new Error('VPS response too large.'));
         } else output += chunk;
       });
-      child.stderr.on('data', () => {});
+      child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-500); });
       child.on('error', () => finish(new Error('Unable to start the private VPS SSH connection.')));
       child.on('close', (code) => {
-        if (code !== 0) return finish(new Error('VPS browser SSH unavailable. Check Tailscale and saved SSH access.'));
+        if (code !== 0) {
+          const tail = stderr.replace(/\s+/g, ' ').trim();
+          return finish(new Error('VPS browser SSH unavailable. Check Tailscale and saved SSH access.' + (tail ? ` (${tail})` : '')));
+        }
         try {
           const response = JSON.parse(output);
           if (response.status >= 400) throw Object.assign(new Error(response.data.error), { status: response.status });

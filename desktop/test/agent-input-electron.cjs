@@ -14,6 +14,7 @@ app.setPath('userData', temp);
 app.setName('Hermes isolated input test');
 let win, server;
 const fixture = `<!doctype html><meta charset="utf-8"><style>body{font:20px system-ui;margin:30px}input,button{font:inherit;padding:12px}#space{height:1800px}</style><h1>Isolated agent input</h1><form id="form"><input id="entry" aria-label="Agent input" data-hermes-workspace-ref="s1-1"><button id="submit" data-hermes-workspace-ref="s1-2">Confirm</button></form><p id="result">Waiting</p><div id="space"></div><script>window.events=[];for(const name of ['input','click','keydown','pointermove'])document.addEventListener(name,e=>events.push({type:e.type,trusted:e.isTrusted,key:e.key,x:e.clientX,y:e.clientY}));document.querySelector('#form').onsubmit=e=>{e.preventDefault();document.querySelector('#result').textContent='Confirmed: '+document.querySelector('#entry').value};</script>`;
+const longForm = `<!doctype html><meta charset="utf-8"><style>body{font:20px system-ui;margin:30px}input,button{font:inherit;padding:12px}</style><form id="longform"><input id="custname" aria-label="Customer name" data-hermes-workspace-ref="s1-1"><div style="height:2200px"></div><button type="submit" id="order" data-hermes-workspace-ref="s1-2">Submit order</button></form><p id="result">Waiting</p><script>longform.onsubmit=e=>{e.preventDefault();result.textContent='Submitted: '+custname.value}</script>`;
 const humanPage = '<title>Human focus fixture</title><input id="human" value="Human draft stays here"><script>human.focus();human.setSelectionRange(6,11)</script>';
 async function value(wc, expression) { return wc.executeJavaScript(expression); }
 async function eventually(fn, predicate) {
@@ -21,7 +22,7 @@ async function eventually(fn, predicate) {
   throw new Error('Timed out waiting for browser input.');
 }
 app.whenReady().then(async () => {
-  server = http.createServer((req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(req.url === '/human' ? humanPage : fixture); });
+  server = http.createServer((req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(req.url === '/human' ? humanPage : req.url === '/longform' ? longForm : fixture); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const root = `http://127.0.0.1:${server.address().port}`;
   win = new BrowserWindow({ show: false, width: 1000, height: 720, webPreferences: { sandbox: true } });
@@ -78,11 +79,21 @@ app.whenReady().then(async () => {
   await perform({ action: 'click', ref: 's1-2' });
   assert.equal(await value(view.webContents, 'result.textContent'), 'Confirmed: Visible agent pane');
   assert.equal(await value(view.webContents, 'events.filter(e=>["input","click","keydown"].includes(e.type)).every(e=>e.trusted)'), true, 'Input must be trusted Chromium events');
+  await view.webContents.loadURL(`${root}/longform`);
+  tab.refs = new Set(['s1-1', 's1-2']);
+  await view.webContents.executeJavaScript('scrollTo(0,0)');
+  await perform({ action: 'type', ref: 's1-1', text: 'Offscreen submit' });
+  await perform({ action: 'click', ref: 's1-2' });
+  assert.equal(await value(view.webContents, 'result.textContent'), 'Submitted: Offscreen submit');
+  await view.webContents.executeJavaScript('scrollTo(0,0)');
+  await perform({ action: 'type', ref: 's1-1', text: 'Selector submit' });
+  await perform({ action: 'click', selector: 'button[type=submit]' });
+  assert.equal(await value(view.webContents, 'result.textContent'), 'Submitted: Selector submit');
   tab.controller = 'human'; tab.epoch++;
   await agent.clear(tab);
   assert.equal(await value(view.webContents, '!!document.getElementById("hermes-workspace-agent-cursor")'), false);
   await assert.rejects(agent.perform(tab, { action: 'click', epoch: 1, ref: 's1-2' }, 'fixture-agent'), /human_has_control/);
-  console.log('PASS: hidden and visible tab CDP replacement typing, clearing, click, Enter, real pointer movement/cursor, scrolling, native shortcut isolation, takeover, and unchanged human draft/selection/native focus.');
+  console.log('PASS: hidden and visible tab CDP replacement typing, clearing, click, Enter, offscreen submit by ref/selector, real pointer movement/cursor, scrolling, native shortcut isolation, takeover, and unchanged human draft/selection/native focus.');
 }).catch(error => { console.error(error.stack); process.exitCode = 1; }).finally(() => {
   win?.destroy();
   server?.close();
