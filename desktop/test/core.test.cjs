@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('../src/core.cjs');
 const { snapshotExpression, settleSnapshot, readControls } = require('../src/browser-page.cjs');
+const { omitIcons } = require('../src/omit-icons.cjs');
 
 test('browser URLs reject executable and credential-bearing schemes', () => {
   for (const value of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,test', 'https://user:password@example.com']) assert.throws(() => normalizeUrl(value));
@@ -165,6 +166,20 @@ test('snapshot bounds clamp and never splice caller text into page code', () => 
   assert.match(snapshotExpression(3), /text\.slice\(0, 6000\)/);
   assert.match(snapshotExpression(3, { maxChars: 999999 }), /text\.slice\(0, 20000\)/);
   assert.doesNotMatch(snapshotExpression(3, { maxChars: '1);alert(1' }), /alert/);
+});
+test('tool results drop favicon images and keep the fields a model acts on', () => {
+  const icon = 'data:image/png;base64,' + 'A'.repeat(4000);
+  const reply = omitIcons({
+    tabs: [{ id: 't', title: 'Inbox', epoch: 3, favicon: icon, tab: { favicon: icon, url: 'https://a.example/' } }],
+    note: 'favicon stays when it is only a word',
+  });
+  assert.equal(JSON.stringify(reply).includes('data:image'), false);
+  assert.equal(reply.tabs[0].favicon, undefined);
+  assert.equal(reply.tabs[0].tab.favicon, undefined);
+  assert.equal(reply.tabs[0].title, 'Inbox');
+  assert.equal(reply.tabs[0].epoch, 3);
+  assert.equal(reply.tabs[0].tab.url, 'https://a.example/');
+  assert.match(reply.note, /favicon/);
 });
 test('only positively identified direct bot IDs enter the catalog', () => {
   const bots = sanitizeBots([{ id: '123', isBot: true, name: 'Agent' }, { id: '456', name: 'Human' }, { id: '-100123', isBot: true }, { id: '789', isBot: false }]);

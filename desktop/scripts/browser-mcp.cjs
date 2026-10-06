@@ -5,9 +5,11 @@ const os = require('node:os');
 const computer = process.platform === 'darwin' ? require('../src/computer.cjs') : require('../src/vps-computer.cjs');
 const { createComputerSnapshots } = require('../src/computer-snapshot.cjs');
 const { connectorReplaced } = require('../src/connector-reload.cjs');
+const { omitIcons } = require('../src/omit-icons.cjs');
 const computerSnapshot = createComputerSnapshots();
 const watched = [
   __filename,
+  path.join(__dirname, '..', 'src', 'omit-icons.cjs'),
   path.join(__dirname, '..', 'src', 'computer-snapshot.cjs'),
   path.join(__dirname, '..', 'src', process.platform === 'darwin' ? 'computer.cjs' : 'vps-computer.cjs'),
 ];
@@ -159,7 +161,7 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
       }
       default: throw new Error('Unknown browser tool.');
     }
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    return { content: [{ type: 'text', text: JSON.stringify(omitIcons(result)) }] };
   } catch (error) { return { isError: true, content: [{ type: 'text', text: error.message }] }; }
   finally { reloadIfReplaced(); }
 });
