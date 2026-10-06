@@ -220,6 +220,8 @@ test('opening a tab does not let the model pick the machine', () => {
   assert.doesNotMatch(mcp, /host:args\.host/);
   assert.match(mcp, /Do not pass host/);
   assert.match(mcp, /args\.maxChars : 2000/);
+  assert.match(mcp, /args\.quality : 50/);
+  assert.match(mcp, /args\.maxWidth : 960/);
   assert.match(mcp, /reopen the same URL and continue/);
   assert.match(mcp, /names a tab, keep working in that tab/);
   assert.match(mcp, /The Mac tab is gone\. Keep working in tab/);

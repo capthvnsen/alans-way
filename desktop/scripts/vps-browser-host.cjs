@@ -496,8 +496,8 @@ async function serve() {
         if (!human) requireAgentRead(tab);
         const format = url.searchParams.get('format') ?? 'jpeg';
         if (!['jpeg', 'png', 'webp'].includes(format)) throw fail('format must be jpeg, png, or webp.');
-        const quality = intParam(url, 'quality', 1, 100) ?? 70;
-        const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 1280;
+        const quality = intParam(url, 'quality', 1, 100) ?? 50;
+        const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 960;
         const capture = tab.queue.then(async () => {
           const viewport = await wc.executeJavaScript(
             '({width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio})',

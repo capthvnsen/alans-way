@@ -1118,8 +1118,8 @@ function startApi() {
       if (req.method === 'GET' && match[2] === 'screenshot') {
         const format = url.searchParams.get('format') ?? 'jpeg';
         if (!['jpeg', 'png', 'webp'].includes(format)) throw Object.assign(new Error('format must be jpeg, png, or webp.'), { status: 400 });
-        const quality = intParam(url, 'quality', 1, 100) ?? 70;
-        const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 1280;
+        const quality = intParam(url, 'quality', 1, 100) ?? 50;
+        const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 960;
         const capture = tab.queue.then(async () => {
           // Reads are gated again inside the queue so a takeover while this
           // capture waited comes back 409, not a last page peek.
