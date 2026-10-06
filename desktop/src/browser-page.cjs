@@ -12,6 +12,9 @@ function snapshotExpression(generation, opts = {}) {
   const keep = int(opts.keep, 0, Number.MAX_SAFE_INTEGER, -1);
   return `(() => {
     const items = [];
+    // Flush pending style/layout first: on a freshly loaded page the first
+    // visibility check pays for it, which would otherwise eat a whole budget.
+    document.documentElement.getBoundingClientRect();
     const deadline = performance.now() + ${elementMs};
     const candidates = document.querySelectorAll('a[href],button,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[contenteditable="true"]');
     let scanned = 0;

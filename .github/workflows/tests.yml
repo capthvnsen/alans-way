@@ -39,9 +39,13 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
       - run: npm run test:desktop
+        timeout-minutes: 3
       - run: npm run test:agent-input
+        timeout-minutes: 3
       - run: npm run test:permissions
+        timeout-minutes: 3
       - run: npm run test:newtab
+        timeout-minutes: 3
 
   package-and-test:
     strategy:
