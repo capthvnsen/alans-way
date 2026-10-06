@@ -269,9 +269,10 @@ function render(next) {
   $('browser-collapse').title = state.showBrowser === false ? 'Show browser pane' : 'Hide browser pane';
   $('browser-collapse').setAttribute('aria-label', $('browser-collapse').title);
   $('browser-collapse').setAttribute('aria-pressed', String(state.showBrowser === false));
-  $('home').classList.toggle('hidden', !!tab || state.activeTabId === 'vps');
+  $('home').classList.toggle('hidden', !!tab || state.activeTabId === 'vps' || !!state.onboarding);
+  renderOnboarding(!tab && state.activeTabId !== 'vps' && !!state.onboarding);
   $('browser-toolbar').classList.toggle('hidden', state.activeTabId === 'vps');
-  $('remote-preview-slot').classList.toggle('hidden', !state.preview || remote);
+  $('remote-preview-slot').classList.toggle('hidden', !state.preview || remote || !!state.onboarding);
   $('preview-chip').classList.toggle('hidden', state.preview || remote);
   $('preview-label').textContent = state.remoteStatus === 'connected' ? `${remoteName()} desktop` : `${remoteName()} · ${state.remoteStatus}`;
   document.body.classList.toggle('win32', state.platform === 'win32');
@@ -293,6 +294,65 @@ function render(next) {
   const notes = { login: 'Sign in with your Telegram account. Your bots appear on the left.', connected: 'Your Telegram account · bot chats only', locked: 'Unlock Telegram to load your bot chats.', offline: 'Telegram is offline. Check your connection, then sync in Settings.', loading: 'Connecting to Telegram…' };
   $('telegram-note').textContent = notes[state.telegramStatus] || notes.loading;
   scheduleLayout();
+}
+let onboardingStep = 1, onboardingSignature = '';
+function renderOnboarding(show) {
+  const panel = $('onboarding');
+  panel.classList.toggle('hidden', !show);
+  if (!show) { onboardingSignature = ''; return; }
+  const signature = JSON.stringify(onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications] : [onboardingStep]);
+  if (signature === onboardingSignature) return;
+  onboardingSignature = signature;
+  const go = (step) => { onboardingStep = step; renderOnboarding(true); };
+  const finish = async () => { onboardingStep = 1; await command('onboarding-done'); };
+  const button = (label, className, onclick) => { const el = element('button', className, label); el.onclick = onclick; return el; };
+  const card = element('div', 'onboarding-card');
+  card.append(element('p', 'onboarding-step', `Step ${onboardingStep} of 3`));
+  const actions = element('div', 'onboarding-actions');
+  const windows = state.platform === 'win32';
+  if (onboardingStep === 1) {
+    card.append(element('h2', '', 'Welcome to Open Alan'), element('p', 'settings-note', 'Three short steps connect your Hermes agent to this computer.'));
+    const signedIn = state.telegramStatus === 'connected';
+    card.append(element('p', `check-item${signedIn ? ' done' : ''}`, signedIn ? '✓ Signed in to Telegram' : '○ Scan the QR code on the left with your phone: Telegram → Settings → Devices → Link Desktop Device.'));
+    if (state.inApplications === false) {
+      const move = element('div', 'onboarding-move');
+      move.append(element('p', 'settings-note', 'Move Open Alan to your Applications folder so your agent can find it.'),
+        button('Move to Applications', 'secondary-button', () => command('move-to-applications')));
+      card.append(move);
+    }
+    actions.append(button('Skip setup', 'secondary-button', finish), button('Next', 'primary-button', () => go(2)));
+  } else if (onboardingStep === 2) {
+    card.append(element('h2', '', 'Give your agent this prompt'));
+    const box = element('textarea', 'onboarding-prompt'); box.readOnly = true; box.rows = 7; box.setAttribute('aria-label', 'Setup prompt for your agent');
+    command('agent-prompt', { botId: state.selectedBotId, copy: false }).then((text) => { if (typeof text === 'string') box.value = text; });
+    card.append(box, element('p', 'settings-note', 'Paste it into the chat with your Hermes bot on the left. It stays current for every version of Open Alan.'));
+    const help = button('No Hermes agent yet? Start here ↗', 'link-button', () => command('create-tab', { url: 'https://github.com/NousResearch/hermes-agent' }));
+    card.append(help);
+    actions.append(button('Back', 'secondary-button', () => go(1)),
+      button('Next', 'secondary-button', () => go(3)),
+      button('Copy prompt', 'primary-button', async () => { if (typeof await command('agent-prompt', { botId: state.selectedBotId }) === 'string') toast('Prompt copied. Paste it to your Hermes bot.'); }));
+  } else {
+    card.append(element('h2', '', 'Finish the connection'),
+      element('p', 'settings-note', `Your agent will send you one command. ${windows ? 'Open PowerShell as Administrator' : 'Open Terminal'}, paste it, and send back what it prints. Your agent then tells you the two addresses below.`));
+    const field = (id, label, placeholder, value) => {
+      const wrap = element('div', 'field'), lab = element('label', '', label), input = element('input');
+      lab.htmlFor = id; input.id = id; input.placeholder = placeholder; input.value = value || ''; input.autocomplete = 'off';
+      wrap.append(lab, input); card.append(wrap); return input;
+    };
+    const vps = field('ob-vps-ssh-host', 'Agent machine SSH address', 'you@your-vps', state.vpsBrowser?.sshHost);
+    const mine = field('ob-mac-ssh-host', `This ${windows ? 'PC' : 'Mac'}’s SSH address`, windows ? 'you@mypc' : 'you@mymac', state.macSshHost);
+    const result = element('p', 'settings-note', '');
+    const testButton = button('Test connection', 'secondary-button', async () => {
+      if (!await command('settings', { macSshHost: mine.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } })) return;
+      testButton.disabled = true; result.textContent = 'Checking…';
+      const check = await command('test-agent-path'); testButton.disabled = false;
+      result.textContent = check && typeof check === 'object' ? `${check.ok ? '✓' : '✗'} ${check.detail}` : '✗ The check could not run.';
+    });
+    card.append(testButton, result);
+    actions.append(button('Back', 'secondary-button', () => go(2)), button('Done', 'primary-button', finish));
+  }
+  card.append(actions);
+  panel.replaceChildren(card);
 }
 function rect(id) {
   const el = $(id); if (!el || el.classList.contains('hidden')) return null;
@@ -490,9 +550,11 @@ function showSettings() {
   const sshSave = element('button', 'secondary-button', 'Save addresses'); sshSave.onclick = async () => { if (await command('settings', { macSshHost: sshInput.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vpsInput.value.trim() } })) toast('SSH addresses saved.'); };
   const agentSetup = element('button', 'secondary-button', 'Copy setup command'); agentSetup.onclick = async () => { const ok = await command('agent-setup', { botId: state.selectedBotId }); if (ok !== false) toast('Bootstrap command copied — paste it in a terminal on the agent machine.'); };
   const agentPrompt = element('button', 'secondary-button', 'Copy setup prompt'); agentPrompt.onclick = async () => { const ok = await command('agent-prompt', { botId: state.selectedBotId }); if (ok !== false) toast('Setup prompt copied — paste it to a Hermes agent that has a terminal on the agent machine.'); };
+  const agentUpdate = element('button', 'secondary-button', 'Copy agent update prompt'); agentUpdate.onclick = async () => { if (typeof await command('agent-prompt', { botId: state.selectedBotId, kind: 'update' }) === 'string') toast('Update prompt copied. Paste it to your Hermes bot.'); };
+  const wizard = element('button', 'secondary-button', 'Run setup wizard'); wizard.onclick = async () => { closeModal(); await command('onboarding-open'); };
   const agentTest = element('button', 'secondary-button', 'Test agent path'); const agentResult = element('p', 'settings-note', '');
   agentTest.onclick = async () => { agentTest.disabled = true; agentResult.textContent = `Checking ${remoteName()} → computer ssh path…`; const result = await command('test-agent-path'); agentTest.disabled = false; agentResult.textContent = result && typeof result === 'object' ? `${result.ok ? '✓' : '✗'} ${result.detail}` : '✗ Path check failed.'; };
-  body.append(vpsField, sshField, element('div', 'setting-row'), sshSave, agentSetup, agentPrompt, agentTest, agentResult);
+  body.append(vpsField, sshField, element('div', 'setting-row'), sshSave, agentSetup, agentPrompt, agentUpdate, agentTest, wizard, agentResult);
   const primaryField = element('div', 'field'), primaryLabel = element('label', '', 'Primary bot'); primaryLabel.htmlFor = 'primary-bot';
   const primarySelect = element('select'); primarySelect.id = 'primary-bot';
   const none = element('option', '', 'None (defaults to the overseer bot)'); none.value = ''; primarySelect.append(none);
