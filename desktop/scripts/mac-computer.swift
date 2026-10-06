@@ -39,7 +39,7 @@ struct Element: Encodable {
 let interactive: Set<String> = [
     "AXButton", "AXCheckBox", "AXRadioButton", "AXTextField", "AXTextArea",
     "AXPopUpButton", "AXMenuButton", "AXSlider", "AXIncrementor", "AXComboBox",
-    "AXLink", "AXMenuItem",
+    "AXLink", "AXMenuItem", "AXScrollBar",
 ]
 
 func emit(_ value: Out) -> Never {
@@ -103,6 +103,28 @@ func cursor() -> CGPoint { CGEvent(source: nil)?.location ?? .zero }
 func moved(_ before: CGPoint) -> Bool {
     let after = cursor()
     return abs(after.x - before.x) > 1 || abs(after.y - before.y) > 1
+}
+
+func numberAttr(_ element: AXUIElement, _ name: String) -> Double? {
+    (axValue(element, name) as? NSNumber)?.doubleValue
+}
+
+func setSliderValue(pid: pid_t, from: CGPoint, to: CGPoint) -> Bool {
+    var element: AXUIElement?
+    let app = AXUIElementCreateApplication(pid)
+    guard AXUIElementCopyElementAtPosition(app, Float(from.x), Float(from.y), &element) == .success,
+          let element else { return false }
+    let role = axString(element, "AXRole")
+    guard role == "AXSlider" || role == "AXScrollBar" else { return false }
+    guard let low = numberAttr(element, "AXMinValue"), let high = numberAttr(element, "AXMaxValue") else { return false }
+    let frame = axFrame(element)
+    let horizontal = frame.width >= frame.height
+    let span = horizontal ? frame.width : frame.height
+    let origin = horizontal ? frame.minX : frame.minY
+    let end = horizontal ? to.x : to.y
+    let fraction = span <= 0 ? 0 : min(1, max(0, (end - origin) / span))
+    let value = low + fraction * (high - low)
+    return AXUIElementSetAttributeValue(element, "AXValue" as CFString, NSNumber(value: value)) == .success
 }
 
 func postClick(_ pid: pid_t, _ point: CGPoint, dragTo: CGPoint?) {
@@ -241,9 +263,12 @@ case "snapshot":
             let title = axString(element, "AXTitle")
             let description = axString(element, "AXDescription")
             let value = axString(element, "AXValue")
-            let name = (role == "AXStaticText" || role == "AXTextField" || role == "AXTextArea")
+            var name = (role == "AXStaticText" || role == "AXTextField" || role == "AXTextArea")
                 ? (value.isEmpty ? (title.isEmpty ? description : title) : value)
                 : (title.isEmpty ? (description.isEmpty ? value : description) : title)
+            if (role == "AXSlider" || role == "AXScrollBar"), let number = numberAttr(element, "AXValue") {
+                name = title.isEmpty ? String(Int(number.rounded())) : "\(title) \(Int(number.rounded()))"
+            }
             elements.append(Element(ref: "c\(index)", role: role, name: String(name.prefix(120)),
                                     x: frame.origin.x, y: frame.origin.y, width: frame.width, height: frame.height))
         }
@@ -296,7 +321,12 @@ case "click", "drag":
     let origin = axToQuartz(axPoint)
     if command == "drag" {
         guard args.count > 5, let x2 = Double(args[4]), let y2 = Double(args[5]) else { fail("drag needs x2 y2") }
-        postClick(pid, origin, dragTo: axToQuartz(CGPoint(x: x2, y: y2)))
+        let end = CGPoint(x: x2, y: y2)
+        if setSliderValue(pid: pid, from: axPoint, to: end) {
+            if moved(before) { CGWarpMouseCursorPosition(before) }
+            emit(Out(ok: true, error: nil, apps: nil, elements: nil, text: nil, cursorMoved: moved(before), image: nil))
+        }
+        postClick(pid, origin, dragTo: axToQuartz(end))
     } else {
         postClick(pid, origin, dragTo: nil)
     }
