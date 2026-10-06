@@ -141,7 +141,10 @@ test('web snapshot names say on, off, and disabled', () => {
   assert.match(source, /role="slider"/);
   assert.match(source, /el\.tagName === 'BODY'/);
   assert.match(source, /node\.shadowRoot/);
+  assert.match(source, /contentDocument/);
   assert.match(locateElement(JSON.stringify('button')), /node\.shadowRoot/);
+  assert.match(locateElement(JSON.stringify('button')), /contentDocument/);
+  assert.match(require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/agent-input.cjs'), 'utf8'), /frameElement/);
   assert.match(source, /name \+= ' selected'/);
   assert.match(source, /name \+= ' current'/);
   assert.match(source, /item\.disabled = true/);

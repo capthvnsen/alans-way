@@ -39,6 +39,13 @@ function snapshotExpression(generation, opts = {}) {
         if (node.shadowRoot && !seenRoot.has(node.shadowRoot)) queue.push(node.shadowRoot);
       }
       if (walked >= 4000) more = true;
+      let frames = [];
+      try { frames = root.querySelectorAll('iframe'); } catch {}
+      for (const frame of frames) {
+        let doc = null;
+        try { doc = frame.contentDocument; } catch {}
+        if (doc && !seenRoot.has(doc)) queue.push(doc);
+      }
     }
     if (queue.length) more = true;
     let scanned = 0;
