@@ -267,15 +267,30 @@ async function resolveFavicon(tab, favicons) {
   const apply = (value) => { if (tab.faviconSeq === seq && value !== tab.favicon) { tab.favicon = value; broadcast(); } };
   const url = favicons.find((item) => /^https?:\/\//i.test(item));
   if (!url) return apply(favicons.find((item) => item && item !== 'data:,') || '');
-  if (faviconCache.has(url)) return apply(faviconCache.get(url));
+  // Only same-origin icons, fetched without the browser session or its
+  // cookies: a page-controlled favicon URL must never become a credentialed
+  // fetch to somewhere the page points at (loopback, LAN, metadata).
+  const pageUrlNow = tab.view?.webContents && !tab.view.webContents.isDestroyed() ? tab.view.webContents.getURL() : String(tab.url || '');
+  let target = faviconTarget(pageUrlNow, url);
+  if (!target) return apply('');
+  if (faviconCache.has(target)) return apply(faviconCache.get(target));
   try {
-    const response = await session.fromPartition('persist:browser').fetch(url);
+    let response;
+    for (let hop = 0; hop < 3; hop++) {
+      response = await fetch(target, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
+      const location = response.headers.get('location');
+      if (response.status >= 300 && response.status < 400 && location) {
+        target = faviconTarget(pageUrlNow, new URL(location, target).href);
+        if (!target) return apply('');
+      } else break;
+    }
+    const mime = response.headers.get('content-type')?.split(';')[0]?.trim() || '';
+    if (!response.ok || !mime.startsWith('image/')) return apply('');
     const buffer = Buffer.from(await response.arrayBuffer());
-    if (!response.ok || !buffer.length || buffer.length > 262144) return apply('');
-    const mime = response.headers.get('content-type')?.split(';')[0]?.trim() || (url.endsWith('.ico') ? 'image/x-icon' : 'image/png');
+    if (!buffer.length || buffer.length > 262144) return apply('');
     const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`;
     if (faviconCache.size > 300) faviconCache.clear();
-    faviconCache.set(url, dataUrl);
+    faviconCache.set(target, dataUrl);
     apply(dataUrl);
   } catch { apply(''); }
 }
