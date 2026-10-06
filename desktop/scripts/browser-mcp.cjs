@@ -6,6 +6,7 @@ const computer = process.platform === 'darwin' ? require('../src/computer.cjs') 
 const { createComputerSnapshots } = require('../src/computer-snapshot.cjs');
 const { connectorReplaced } = require('../src/connector-reload.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
+const { retargetMissingTab } = require('../src/core.cjs');
 const computerSnapshot = createComputerSnapshots();
 const watched = [
   __filename,
@@ -90,7 +91,7 @@ const tools = [
     params: { type: 'object', description: 'For cdp: method parameters object.' },
   }, ['tabId', 'epoch', 'action']), annotations: { readOnlyHint: false, openWorldHint: true } },
 ];
-async function request(endpoint, method = 'GET', body, epoch) {
+async function requestOnce(endpoint, method = 'GET', body, epoch) {
   let connection;
   try { connection = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw new Error('Configured browser unavailable: start its app or browser host first.'); }
   const url = new URL(connection.url);
@@ -108,6 +109,23 @@ async function request(endpoint, method = 'GET', body, epoch) {
   }
   if (!response.ok) throw new Error(data.error || `Browser request failed (${response.status}).`);
   return data;
+}
+async function request(endpoint, method = 'GET', body, epoch) {
+  try {
+    return await requestOnce(endpoint, method, body, epoch);
+  } catch (error) {
+    const next = /tab not found/i.test(error.message) ? retargetMissingTab(endpoint, method, continued) : null;
+    if (!next) throw error;
+    try {
+      const data = await requestOnce(next, method, body, epoch);
+      if (data && typeof data === 'object') data.continuedTab = continued.tabId;
+      return data;
+    } catch (retryError) {
+      const message = String(retryError.message || '');
+      if (message.includes('Keep working in tab')) throw retryError;
+      throw new Error(message + ' The Mac tab is gone. Keep working in tab ' + continued.tabId + ' at ' + continued.url + '.');
+    }
+  }
 }
 const server = new Server({ name: 'hermes-cua-alans-way', version: '0.1.0' }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
@@ -130,8 +148,10 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
         if (typeof args.format === 'string') q.set('format', args.format);
         for (const key of ['quality', 'maxWidth']) if (Number.isInteger(args[key])) q.set(key, args[key]);
         const shot = await request(`${tabPath}/screenshot${q.size ? '?' + q : ''}`);
+        const shotNote = { viewport: shot.viewport, note: 'Pointer coordinates use CSS viewport pixels; the image is downscaled to maxWidth, so scale screenshot pixels by viewport.width / image width.' };
+        if (shot.continuedTab) shotNote.continuedTab = shot.continuedTab;
         return { content: [{ type: 'image', data: shot.base64, mimeType: shot.mimeType },
-          { type: 'text', text: JSON.stringify({ viewport: shot.viewport, note: 'Pointer coordinates use CSS viewport pixels; the image is downscaled to maxWidth, so scale screenshot pixels by viewport.width / image width.' }) }] };
+          { type: 'text', text: JSON.stringify(shotNote) }] };
       }
       case 'cua_alans_way_close':
         result = await request(tabPath, 'DELETE', undefined, args.epoch);

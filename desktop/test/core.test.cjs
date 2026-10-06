@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab } = require('../src/core.cjs');
 const { snapshotExpression, settleSnapshot, readControls } = require('../src/browser-page.cjs');
 const { locateElement } = require('../src/agent-input.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
@@ -223,8 +223,18 @@ test('opening a tab does not let the model pick the machine', () => {
   assert.match(mcp, /reopen the same URL and continue/);
   assert.match(mcp, /names a tab, keep working in that tab/);
   assert.match(mcp, /The Mac tab is gone\. Keep working in tab/);
+  assert.match(mcp, /continuedTab/);
   assert.match(mcp, /--continued-tab/);
   assert.match(mcp, /same machine as the browser/);
+});
+test('a missing Mac tab is carried onto the continued VPS tab', () => {
+  const page = { tabId: 'tab-9' };
+  assert.equal(retargetMissingTab('/v1/tabs/mac-tab/snapshot?maxChars=2000', 'GET', page), '/v1/tabs/tab-9/snapshot?maxChars=2000');
+  assert.equal(retargetMissingTab('/v1/tabs/tab-9/snapshot', 'GET', page), null);
+  assert.equal(retargetMissingTab('/v1/tabs/mac-tab', 'DELETE', page), null);
+  assert.equal(retargetMissingTab('/v1/status', 'GET', page), null);
+  assert.equal(retargetMissingTab('/v1/tabs/mac-tab/actions', 'POST', page), '/v1/tabs/tab-9/actions');
+  assert.equal(retargetMissingTab('/v1/tabs/a%2Fb/snapshot', 'GET', page), '/v1/tabs/tab-9/snapshot');
 });
 test('only positively identified direct bot IDs enter the catalog', () => {
   const bots = sanitizeBots([{ id: '123', isBot: true, name: 'Agent' }, { id: '456', name: 'Human' }, { id: '-100123', isBot: true }, { id: '789', isBot: false }]);
