@@ -34,6 +34,11 @@ function drag(pid, x, y, x2, y2) {
   return run(['drag', String(pid), String(x), String(y), String(x2), String(y2)]);
 }
 
+function type(pid, ref, text) {
+  if (typeof text !== 'string' || text.length > 2000) throw new Error('Text must be a string of at most 2000 characters.');
+  return run(['type', String(pid), ref, text]);
+}
+
 function screenshot(pid, maxWidth) {
   const cap = Number.isInteger(maxWidth) ? Math.min(Math.max(maxWidth, 320), 1280) : 960;
   const shot = run(['shot', String(pid), String(cap)]);
@@ -48,4 +53,4 @@ function screenshot(pid, maxWidth) {
   };
 }
 
-module.exports = { apps, snapshot, press, click, drag, screenshot };
+module.exports = { apps, snapshot, press, click, drag, type, screenshot };

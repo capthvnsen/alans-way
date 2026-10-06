@@ -253,6 +253,18 @@ case "snapshot":
         walk(window, 0)
     }
     emit(Out(ok: true, error: nil, apps: nil, elements: elements, text: nil, cursorMoved: nil, image: nil))
+case "type":
+    guard args.count > 3, let pid = Int32(args[1]) else { fail("type needs a pid, a ref, and text") }
+    guard let element = findRef(pid, args[2]) else { fail("Unknown ref. Take a fresh snapshot.") }
+    if axString(element, "AXRole") == "AXSecureTextField" || axString(element, "AXSubrole") == "AXSecureTextField" {
+        fail("Password fields are off limits.")
+    }
+    if args[3].count > 2000 { fail("Text is too long.") }
+    let before = cursor()
+    let result = AXUIElementSetAttributeValue(element, "AXValue" as CFString, args[3] as CFString)
+    if result != .success { fail("Could not set that text (\(result.rawValue)).") }
+    if moved(before) { CGWarpMouseCursorPosition(before) }
+    emit(Out(ok: true, error: nil, apps: nil, elements: nil, text: nil, cursorMoved: moved(before), image: nil))
 case "press":
     guard args.count > 2, let pid = Int32(args[1]) else { fail("press needs a pid and a ref") }
     guard let element = findRef(pid, args[2]) else { fail("Unknown ref. Take a fresh snapshot.") }
