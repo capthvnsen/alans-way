@@ -2,22 +2,12 @@
 
 **Your AI agents live on a VPS. This gives them a window into your Mac — on your terms.**
 
-A desktop app for people running [Hermes Agent](https://github.com/NousResearch/hermes-agent) on a Linux server who want to watch, steer, and lend their agents a local browser — without giving up the keyboard.
+JOIN THE DISCORD TO CONTRIBUTE OR SUBMIT BUGS: https://discord.gg/jBQCPUsVE
+Follow and DM the creator here: https://x.com/alexhvnsen
 
-```
-┌──────────────────────────────────────────────┐
-│  Telegram chat on the left ──────────────┐   │
-│                                          │   │
-│  Bot-owned browser tabs on the right ────┤   │
-│                                          │   │
-│  ┌─────┐ ← your agent's cursor, labeled  │   │
-│  └─────┘   and colored per bot           │   │
-│                                          │   │
-│  ┌──────────┐ ← draggable VPS desktop    │   │
-│  │ mini VM  │   preview, click to take   │   │
-│  └──────────┘   control                  │   │
-└──────────────────────────────────────────────┘
-```
+A desktop app for people running [Hermes Agent](https://github.com/NousResearch/hermes-agent) on a Linux server who want to watch, steer, and lend their agents a local mac browser — without giving up the keyboard.
+
+
 
 ## What you get
 
