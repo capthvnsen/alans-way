@@ -144,10 +144,22 @@ test('an action read returns controls and leaves the page text out', async () =>
     code = expression;
     return { url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's5-1', role: 'button', name: 'Go' }] };
   }, tab);
-  assert.match(code, /text\.slice\(0, 0\)/);
-  assert.match(code, /items\.length >= 40/);
-  assert.deepEqual(reply, { elements: [{ ref: 's5-1', role: 'button', name: 'Go' }], generation: 5 });
+  assert.match(code, /text\.slice\(0, 6000\)/);
+  assert.match(code, /items\.length >= 150/);
+  assert.equal(reply.text, undefined);
+  assert.deepEqual(reply.elements, [{ ref: 's5-1', role: 'button', name: 'Go' }]);
+  assert.equal(reply.generation, 5);
   assert.ok(tab.refs.has('s5-1'));
+});
+test('an action read keeps the last generation when the page did not change', async () => {
+  const tab = { refs: new Set(), generation: 1 };
+  const page = { url: 'https://a.example/', title: 'A', text: 'hello', elements: [{ ref: 's1-1', role: 'button', name: 'Go' }] };
+  settleSnapshot(tab, page, 1);
+  tab.refs.clear();
+  const reply = await readControls(() => ({ ...page, elements: [{ ref: 's9-1', role: 'button', name: 'Go' }] }), tab);
+  assert.deepEqual(reply, { unchanged: true, generation: 1 });
+  assert.ok(tab.refs.has('s1-1'));
+  assert.equal(tab.generation, 1);
 });
 test('snapshot bounds clamp and never splice caller text into page code', () => {
   assert.match(snapshotExpression(3), /text\.slice\(0, 6000\)/);

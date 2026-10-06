@@ -112,18 +112,26 @@ function settleSnapshot(tab, data, generation, since) {
   return unchanged ? { unchanged: true, generation } : { ...data, generation };
 }
 // After an action, return the controls the model can act on next. Page text
-// stays out so the reply is the refs, not another full read.
+// stays out of the reply. A page that did not change keeps the generation
+// and refs the model already holds, so a later since= check still dedupes.
 async function readControls(execute, tab) {
-  const generation = ++tab.generation;
+  const previous = tab.snapshotStamp;
+  const generation = (previous && Number.isInteger(previous.generation) ? previous.generation : (Number.isInteger(tab.generation) ? tab.generation : 0)) + 1;
   let timer;
   const result = await Promise.race([
-    Promise.resolve(execute(snapshotExpression(generation, { maxChars: 0, maxElements: 40, keep: tab.snapshotStamp?.base }))),
+    Promise.resolve(execute(snapshotExpression(generation, { maxElements: 150, keep: previous ? previous.base : undefined }))),
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('controls')), 8000); }),
   ]).finally(() => clearTimeout(timer));
   if (!result || !Array.isArray(result.elements)) return null;
+  if (previous && snapshotHash(result) === previous.hash) {
+    tab.refs = new Set();
+    for (let index = 1; index <= result.elements.length; index++) tab.refs.add(`s${previous.base}-${index}`);
+    return { unchanged: true, generation: previous.generation };
+  }
+  tab.generation = generation;
   const settled = settleSnapshot(tab, result, generation);
   if (!Array.isArray(settled.elements)) return { unchanged: true, generation: settled.generation };
-  return { elements: settled.elements, generation: settled.generation };
+  return { elements: settled.elements.slice(0, 40), generation: settled.generation };
 }
 
 function checkpointExpression(includeDrafts) {
