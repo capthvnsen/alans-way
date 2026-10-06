@@ -50,6 +50,7 @@ function snapshotExpression(generation, opts = {}) {
       const walker = document.createTreeWalker(start, NodeFilter.SHOW_ELEMENT);
       let node, walked = 0;
       while ((node = walker.nextNode()) && walked++ < 4000) {
+        if (performance.now() > deadline) { more = true; break; }
         if (node.shadowRoot && !seenRoot.has(node.shadowRoot)) queue.push(node.shadowRoot);
       }
       if (walked >= 4000) more = true;
