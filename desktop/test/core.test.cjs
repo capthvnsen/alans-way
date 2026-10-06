@@ -197,6 +197,12 @@ test('tool results drop favicon images and keep the fields a model acts on', () 
   assert.equal(reply.tabs[0].tab.url, 'https://a.example/');
   assert.match(reply.note, /favicon/);
 });
+test('opening a tab does not let the model pick the machine', () => {
+  const mcp = require('node:fs').readFileSync(require('node:path').join(__dirname, '../scripts/browser-mcp.cjs'), 'utf8');
+  assert.doesNotMatch(mcp, /host:args\.host/);
+  assert.match(mcp, /Do not pass host/);
+  assert.match(mcp, /same machine as the browser/);
+});
 test('only positively identified direct bot IDs enter the catalog', () => {
   const bots = sanitizeBots([{ id: '123', isBot: true, name: 'Agent' }, { id: '456', name: 'Human' }, { id: '-100123', isBot: true }, { id: '789', isBot: false }]);
   assert.deepEqual(bots.map((bot) => bot.id), ['123']);
