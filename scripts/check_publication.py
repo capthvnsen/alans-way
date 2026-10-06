@@ -60,9 +60,13 @@ def inspect_text(path: str, text: str) -> list[dict]:
                 address = ipaddress.ip_address(match.group())
             except ValueError:
                 continue
-            if address.is_loopback or any(address in network for network in EXAMPLE_NETWORKS):
+            if address.is_loopback or address.is_unspecified or address.is_link_local or any(address in network for network in EXAMPLE_NETWORKS):
                 continue
             if address.is_private or address in TAILNET:
+                # Security tests name RFC1918 ranges on purpose. A tailnet
+                # address is still a real machine, including inside a test.
+                if address not in TAILNET and path.startswith(("desktop/test/", "tests/")):
+                    continue
                 findings.append({"file": path, "line": number, "rule": "private-device-address"})
     if path.startswith("src/") and path.endswith(".py"):
         try:
