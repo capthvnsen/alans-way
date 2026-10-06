@@ -157,6 +157,11 @@ def walk(call, glib, app):
         try:
             role = call(dest, path, 'org.a11y.atspi.Accessible', 'GetRoleName', None, '(s)').unpack()[0]
             name = prop(call, glib, dest, path, 'Name') or ''
+            if role == 'text' and not name:
+                try:
+                    name = call(dest, path, 'org.a11y.atspi.Text', 'GetText', glib.Variant('(ii)', (0, 200)), '(s)').unpack()[0]
+                except Exception:
+                    name = ''
             kids = call(dest, path, 'org.a11y.atspi.Accessible', 'GetChildren', None, '(a(so))').unpack()[0]
         except Exception:
             continue
@@ -189,6 +194,26 @@ def public_element(element):
         if key in element:
             shown[key] = element[key]
     return shown
+
+
+def type_text(call, glib, app, ref, text):
+    if len(text) > 2000:
+        fail('Text is too long.')
+    element = next((item for item in walk(call, glib, app) if item['ref'] == ref), None)
+    if not element:
+        fail('Unknown ref. Take a fresh snapshot.')
+    if element['role'] in PASSWORD:
+        fail('Password fields are off limits.')
+    try:
+        done = call(
+            element['dest'], element['path'], 'org.a11y.atspi.EditableText', 'SetTextContents',
+            glib.Variant('(s)', (text,)), '(b)',
+        ).unpack()[0]
+    except Exception:
+        done = False
+    if not done:
+        fail('That control does not take text.')
+    return {'ok': True, 'cursorMoved': False}
 
 
 def click_at(call, glib, app, x, y):
@@ -337,6 +362,10 @@ def main():
         pid = int(sys.argv[2])
         app = require_app(listed, pid)
         emit(click_at(call, glib, app, float(sys.argv[3]), float(sys.argv[4])))
+    if command == 'type':
+        pid = int(sys.argv[2])
+        app = require_app(listed, pid)
+        emit(type_text(call, glib, app, sys.argv[3], sys.argv[4]))
     if command == 'drag':
         pid = int(sys.argv[2])
         app = require_app(listed, pid)

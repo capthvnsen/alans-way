@@ -43,10 +43,11 @@ const tools = [
   { name: 'workspace_computer_apps', description: 'List desktop apps the agent can drive without taking the focused window. On a Mac that is every background app. On a Linux desktop that is every app except the focused one. Keychain and password fields are off limits. Web work stays on cua_alans_way. Never moves the pointer.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
   { name: 'workspace_computer_snapshot', description: 'Read one desktop app: elements[] with ref, role, and name. On a Mac, elements also include screen x,y,width,height. Prefer press by ref. Pass since=<last generation> for a cheap {unchanged:true} when the tree is the same. Take a fresh snapshot after the app changes. Refuses the focused window.', inputSchema: objectSchema({ pid: { type: 'integer' }, since: { type: 'integer', description: 'Generation from the previous snapshot. Returns {unchanged:true} when the tree is identical.' } }, ['pid']), annotations: { readOnlyHint: true } },
   { name: 'workspace_computer_screenshot', description: 'Capture one app window as a small jpeg. Use only when the snapshot has no named control for what you need, such as a canvas or a chart. Never a full screen. On a Mac, scale image pixels by window.width / imageWidth. Refuses the focused window and Keychain.', inputSchema: objectSchema({ pid: { type: 'integer' }, maxWidth: { type: 'integer', description: 'Downscale cap in px, default 960, max 1280.' } }, ['pid']), annotations: { readOnlyHint: true } },
-  { name: 'workspace_computer_action', description: 'Act in a desktop app without moving the pointer. press uses a snapshot ref. click uses snapshot x,y and lands on the control at that point. drag uses snapshot coordinates; on Linux it sets a slider from the end point. batch runs up to 25 steps. The result includes generation. unchanged:true means the tree is the same and no new snapshot is needed. elements, when present, is the fresh tree. Refuses the focused window, Keychain, and password fields.', inputSchema: objectSchema({
+  { name: 'workspace_computer_action', description: 'Act in a desktop app without moving the pointer. press uses a snapshot ref. type replaces the text of a ref and does not send keystrokes. click uses snapshot x,y and lands on the control at that point. drag uses snapshot coordinates; on Linux it sets a slider from the end point. batch runs up to 25 steps. The result includes generation. unchanged:true means the tree is the same and no new snapshot is needed. elements, when present, is the fresh tree. Refuses the focused window, Keychain, and password fields.', inputSchema: objectSchema({
     pid: { type: 'integer' },
-    action: { type: 'string', enum: ['press', 'click', 'drag', 'batch'] },
+    action: { type: 'string', enum: ['press', 'click', 'drag', 'type', 'batch'] },
     ref: string,
+    text: { type: 'string', description: 'For type: the replacement text, at most 2000 characters. Password fields are refused.' },
     x: { type: 'number' }, y: { type: 'number' }, x2: { type: 'number' }, y2: { type: 'number' },
     steps: { type: 'array', items: { type: 'object' }, description: 'For batch: up to 25 press, click, or drag steps.' },
   }, ['pid', 'action']), annotations: { readOnlyHint: false } },
@@ -129,7 +130,8 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
           if (body.action === 'press') return computer.press(args.pid, body.ref);
           if (body.action === 'click') return computer.click(args.pid, body.x, body.y);
           if (body.action === 'drag') return computer.drag(args.pid, body.x, body.y, body.x2, body.y2);
-          throw new Error('Computer action must be press, click, drag, or batch.');
+          if (body.action === 'type') return computer.type(args.pid, body.ref, body.text);
+          throw new Error('Computer action must be press, click, drag, type, or batch.');
         };
         if (args.action === 'batch') {
           const steps = Array.isArray(args.steps) ? args.steps.slice(0, 25) : [];
