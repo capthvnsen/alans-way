@@ -52,7 +52,7 @@ Rules for the whole job:
    tell me: "Updates can switch off computer control on a Mac. If I can't
    use your Mac, open System Settings → Privacy & Security → Accessibility
    and Screen Recording, and turn Open Alan (alans-way-localapp) off and on
-   again." 
+   again."
 
 6. Restart the gateway so it loads the update. If you are this Hermes bot,
    first tell me "Restarting now; send me any message in a minute to

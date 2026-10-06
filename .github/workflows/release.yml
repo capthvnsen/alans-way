@@ -10,41 +10,46 @@ permissions:
 
 jobs:
   # Assets upload into a draft, so releases/latest never points at a release
-  # whose installers are still building.
+  # whose installers are still building. A published release is never
+  # re-uploaded into.
   draft:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - run: gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --title "$TAG" --generate-notes --verify-tag
+      - run: |
+          draft=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          case "$draft" in
+            none) gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --title "$TAG" --generate-notes --verify-tag ;;
+            false) echo "::error::$TAG is already published; tag a new version instead"; exit 1 ;;
+          esac
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
 
+  # Builds run every dependency's install scripts, so they get no write token.
   build:
     needs: [draft]
-    if: always() && (needs.draft.result == 'success' || github.event_name == 'workflow_dispatch')
+    if: ${{ !cancelled() && (needs.draft.result == 'success' || github.event_name == 'workflow_dispatch') }}
     strategy:
       fail-fast: true
       matrix:
         include:
           - os: macos-latest
             script: package:mac
-            files: dist/OpenAlan-mac.dmg dist/OpenAlan-mac.dmg.sha512
           - os: windows-latest
             script: package:win
-            files: dist/OpenAlan-windows-setup.exe dist/latest.yml
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    permissions:
-      contents: write
     defaults:
       run:
         working-directory: desktop
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -62,16 +67,30 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.os }}
+          if-no-files-found: error
           path: |
-            desktop/dist/OpenAlan-*
+            desktop/dist/OpenAlan-mac.dmg
+            desktop/dist/OpenAlan-mac.dmg.sha512
+            desktop/dist/OpenAlan-windows-setup.exe
             desktop/dist/latest.yml
-      - if: github.event_name == 'push'
-        run: gh release upload "$GITHUB_REF_NAME" ${{ matrix.files }} --clobber -R "$GITHUB_REPOSITORY"
+
+  upload:
+    needs: [build]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: gh release upload "$GITHUB_REF_NAME" dist/OpenAlan-mac.dmg dist/OpenAlan-mac.dmg.sha512 dist/OpenAlan-windows-setup.exe dist/latest.yml --clobber -R "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ github.token }}
 
   publish:
-    needs: [build]
+    needs: [upload]
     # Release candidates (tags with '-') stay drafts: never public, safe for testing.
     if: github.event_name == 'push' && !contains(github.ref_name, '-')
     runs-on: ubuntu-latest
