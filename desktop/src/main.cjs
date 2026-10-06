@@ -13,6 +13,7 @@ const { createSitePermissions } = require('./site-permissions.cjs');
 const { snapshotExpression, settleSnapshot, checkpointExpression, restoreExpression } = require('./browser-page.cjs');
 const { createVpsBrowser } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
+const { createDownloadStore } = require('./download-store.cjs');
 const { ElectronChromeExtensions } = require('electron-chrome-extensions');
 
 app.enableSandbox();
@@ -57,10 +58,12 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
     return answer.response === 1;
   }
 });
+const downloadStore = createDownloadStore({ getPreferences: () => prefs, savePreferences, onChanged: () => broadcast(),
+  shell, existsSync: fs.existsSync, downloadsPath: () => app.getPath('downloads') });
 let pointerTimer, activityTimer, idleTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [],
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -127,7 +130,7 @@ function getState() {
     botSort: prefs.botSort || 'manual',
     autoOpenLinks: prefs.autoOpenLinks !== false,
     activeTabId, browserContentsId: tabs.get(activeTabId)?.view.webContents.id || null, browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
-    locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [],
+    locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
 }
 let lastBotWorkSignature = '';
@@ -248,9 +251,7 @@ function configureContents(contents, isTelegram = false) {
   if (configuredSessions.has(session)) return;
   configuredSessions.add(session);
   sitePermissions.install(session, isTelegram ? 'telegram' : 'browser');
-  session.on('will-download', (_event, item) => {
-    if (item.getState() !== 'interrupted') item.setSaveDialogOptions({ title: 'Save download' });
-  });
+  downloadStore.install(session, isTelegram ? 'telegram' : 'browser');
 }
 function isExtensionUrl(value) {
   try { const url = new URL(value); return url.protocol === 'chrome-extension:' && !url.username && !url.password && !!session.fromPartition('persist:browser').extensions.getExtension(url.hostname); } catch { return false; }
@@ -500,6 +501,12 @@ function registerIpc() {
         }
         broadcast(); break;
       }
+      case 'open-download': await downloadStore.open(value.id); break;
+      case 'show-download': downloadStore.showInFolder(value.id); break;
+      case 'pause-download': downloadStore.pause(value.id, value.paused === true); break;
+      case 'cancel-download': downloadStore.cancel(value.id); break;
+      case 'clear-downloads': downloadStore.clear(); break;
+      case 'downloads-folder': await downloadStore.openFolder(); break;
       case 'open-bot': await openBot(String(value.id)); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
       case 'bot-sort': if (['recent', 'alpha', 'manual'].includes(value.mode)) { prefs.botSort = value.mode; savePreferences(); } break;

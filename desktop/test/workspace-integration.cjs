@@ -314,5 +314,36 @@ app.whenReady().then(async () => {
     mainWindowFocusedBefore, mainWindowFocusedAfter, nativeFocusMeasured,
     systemPointerUnchangedDuringTest: point.x === afterPoint.x && point.y === afterPoint.y }));
   console.log('PASS: full app MCP background typing, clicking, screenshots, Enter, and human focus isolation.');
+  // The toolbar bubble lists downloads like other browsers. A synthetic item
+  // through the real session exercises the store, commands and menu markup.
+  const downloadListeners = {};
+  const fakeDownload = {
+    name: 'fixture-report.pdf', url: 'https://example.com/dl', path: '', total: 2048, received: 512, state: 'progressing', paused: false,
+    getFilename() { return this.name; }, getURL() { return this.url; }, getState() { return this.state; },
+    getTotalBytes() { return this.total; }, getReceivedBytes() { return this.received; },
+    getSavePath() { return this.path; }, isPaused() { return this.paused; }, canResume() { return this.paused; },
+    pause() { this.paused = true; }, resume() { this.paused = false; },
+    cancel() { this.state = 'cancelled'; (downloadListeners.done || []).forEach(fn => fn({}, 'cancelled')); },
+    setSaveDialogOptions() {}, on(n, f) { (downloadListeners[n] ||= []).push(f); }, once(n, f) { this.on(n, f); },
+  };
+  session.fromPartition('persist:browser').emit('will-download', {}, fakeDownload);
+  state = await evaluate('window.workspace.getState()');
+  assert.equal(state.downloads[0]?.name, 'fixture-report.pdf');
+  assert.equal(state.downloads[0]?.state, 'progressing');
+  assert.equal(state.downloads[0]?.source, 'example.com');
+  await evaluate('document.getElementById("downloads-button").click()');
+  await waitFor(() => evaluate('document.querySelectorAll("#downloads-menu .download-row").length'), count => count >= 1);
+  assert.equal(await evaluate('document.getElementById("downloads-button").getAttribute("aria-expanded")'), 'true');
+  assert.equal(await evaluate('document.getElementById("downloads-button").classList.contains("active")'), true, 'An active download marks the button.');
+  await invoke('pause-download', { id: state.downloads[0].id, paused: true });
+  assert.equal(fakeDownload.paused, true, 'Pause reaches the live download item.');
+  (downloadListeners.updated || []).forEach(fn => fn({}, 'progressing'));
+  await waitFor(() => evaluate('window.workspace.getState()'), value => value.downloads[0]?.paused === true);
+  fakeDownload.received = 2048; fakeDownload.state = 'completed'; fakeDownload.path = path.join(profile, 'fixture-report.pdf');
+  (downloadListeners.done || []).forEach(fn => fn({}, 'completed'));
+  state = await waitFor(() => evaluate('window.workspace.getState()'), value => value.downloads[0]?.state === 'completed');
+  assert.equal(await evaluate('document.getElementById("downloads-button").classList.contains("active")'), false, 'Finished downloads clear the button badge.');
+  assert.ok((await evaluate('document.querySelector("#downloads-menu .download-status")?.textContent || ""')).includes('KB'), 'A finished download shows its size.');
+  console.log('PASS: downloads bubble lists a live download, pauses it, then shows the finished size.');
   server.close(); app.quit();
 }).catch(error => { console.error(error.stack); server?.close(); app.exit(1); });
