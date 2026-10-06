@@ -686,6 +686,7 @@ const intParam = (url, key, min, max) => {
 };
 async function snapshot(tab, opts = {}) {
   const work = tab.queue.then(async () => {
+    requireAgentRead(tab);
     const generation = ++tab.generation;
     let timer;
     // A wedged renderer leaves executeJavaScript pending forever; bound it so
@@ -819,9 +820,12 @@ async function performAction(tab, body, botId, depth = 0) {
       wc.executeJavaScript(code, true),
       new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('eval timed out after 15s.'), { status: 408 })), 15000)),
     ]);
+    // A takeover while the eval ran seals the result: the human's page state
+    // is not returned to the bot.
+    requireActor(tab, botId, body.epoch, true, overseer);
     const serialized = typeof value === 'string' ? value : JSON.stringify(value);
     if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
-    return { value, tab: describeTab(tab), dispatched: true };
+    return { value, tab: describeTab(tab, true), dispatched: true };
   }
   if (body.action === 'wait') {
     const selector = String(body.selector || '').slice(0, 2000);
@@ -859,6 +863,7 @@ async function performAction(tab, body, botId, depth = 0) {
     const hostStart = Date.now();
     let value = null;
     while (Date.now() - hostStart < timeout + 1000) {
+      requireAgentRead(tab);
       const remaining = Math.max(400, timeout - (Date.now() - hostStart));
       const attempt = await Promise.race([
         wc.executeJavaScript(waitCode(remaining), true).catch(() => ({ navRetry: true })),
@@ -869,14 +874,15 @@ async function performAction(tab, body, botId, depth = 0) {
       await new Promise((r) => setTimeout(r, 250));
     }
     if (!value || !value.found) throw Object.assign(new Error(`wait timed out after ${value ? value.waited : Date.now() - hostStart}ms for ${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`), { status: 408 });
-    return { waited: value.waited, tab: describeTab(tab), dispatched: true };
+    requireActor(tab, botId, body.epoch, true, overseer);
+    return { waited: value.waited, tab: describeTab(tab, true), dispatched: true };
   }
   if (body.action === 'viewport') {
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     if (body.clear === true) {
       await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
       delete tab.viewport;
-      return { viewport: null, tab: describeTab(tab), dispatched: true };
+      return { viewport: null, tab: describeTab(tab, true), dispatched: true };
     }
     const width = Math.round(Number(body.width)), height = Math.round(Number(body.height));
     const scale = Math.min(Math.max(Number(body.scale) || 1, 0.1), 5);
@@ -1009,25 +1015,38 @@ function startApi() {
       // Shared tabs are claimable by any known bot via POST control; the
       // per-endpoint gates still fence reads/actions until it is claimed.
       requireActor(tab, botId, undefined, false, overseer || (tab.botId === 'shared' && prefs.bots.some((bot) => bot.id === botId)));
-      if (req.method === 'GET' && !match[2]) return send(200, describeTab(tab));
+      if (req.method === 'GET' && !match[2]) return send(200, describeTab(tab, true));
       tab.lastAgentActivity = Date.now();
-      if (req.method === 'GET' && match[2] === 'snapshot') { requireAgentRead(tab);
+      // A bounded backlog of pending reads per tab: a bot cannot stack up
+      // snapshots or screenshots that would drain after a human takeover.
+      if (req.method === 'GET' && (match[2] === 'snapshot' || match[2] === 'screenshot')) {
+        requireAgentRead(tab);
+        if ((tab.pendingReads || 0) >= 8) throw Object.assign(new Error('Too many pending reads on this tab.'), { status: 429 });
+        tab.pendingReads = (tab.pendingReads || 0) + 1;
+      }
+      try {
+      if (req.method === 'GET' && match[2] === 'snapshot') {
         return send(200, await snapshot(tab, { maxChars: intParam(url, 'maxChars', 0, 20000), maxElements: intParam(url, 'maxElements', 0, 300), since: intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER) }));
       }
-      if (req.method === 'GET' && match[2] === 'screenshot') { requireAgentRead(tab);
+      if (req.method === 'GET' && match[2] === 'screenshot') {
         const format = url.searchParams.get('format') ?? 'jpeg';
         if (!['jpeg', 'png', 'webp'].includes(format)) throw Object.assign(new Error('format must be jpeg, png, or webp.'), { status: 400 });
         const quality = intParam(url, 'quality', 1, 100) ?? 70;
         const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 1280;
         const capture = tab.queue.then(async () => {
+          // Reads are gated again inside the queue so a takeover while this
+          // capture waited comes back 409, not a last page peek.
+          requireAgentRead(tab);
           const base64 = await captureTab(tab, { format, quality, maxWidth });
-          const viewport = await tab.view.webContents.executeJavaScript('({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })');
+          const viewport = await boundedJs(tab.view.webContents, '({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })');
+          requireAgentRead(tab);
           return { base64, viewport };
         });
         tab.queue = capture.catch(() => {});
         const { base64, viewport } = await capture;
-        return send(200, { mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], base64, viewport, tab: describeTab(tab) });
+        return send(200, { mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], base64, viewport, tab: describeTab(tab, true) });
       }
+      } finally { if (req.method === 'GET' && (match[2] === 'snapshot' || match[2] === 'screenshot')) tab.pendingReads--; }
       if (req.method === 'POST' && match[2] === 'actions') {
         const body = await readJson(req);
         tab.pendingActions = (tab.pendingActions || 0) + 1;
