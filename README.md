@@ -40,7 +40,20 @@ The app works without the plugin (manual tab sharing), and the plugin falls back
 
 **Setting this up with an AI agent?** Point it at [docs/setup-for-agents.md](docs/setup-for-agents.md) — one page covering the desktop app, the server and the Hermes plugin, with a check after every stage and the exact steps that need you.
 
-On a Mac (Apple Silicon) one command builds the app, installs it to
+**Download it:** [Mac (Apple Silicon)](https://openalan.com/download/mac) ·
+[Windows 10/11 x64](https://openalan.com/download/windows). Both links always
+serve the newest release. Open it and the setup wizard walks you through
+Telegram sign-in and hands you one prompt for your Hermes agent. The app
+updates itself after that.
+
+The builds are not code-signed yet, so the first launch needs one extra click:
+
+- **Mac:** open the `.dmg` and drag the app to Applications, then open it. When
+  macOS blocks it, go to **System Settings → Privacy & Security** and click
+  **Open Anyway**.
+- **Windows:** if SmartScreen appears, click **More info → Run anyway**.
+
+**Or build from source.** On a Mac one command builds the app, installs it to
 `/Applications` and opens it; re-run it to upgrade. Without git or Node it
 downloads the source and a private, checksum-verified Node for the build:
 
@@ -48,10 +61,10 @@ downloads the source and a private, checksum-verified Node for the build:
 curl -fsSL https://openalan.com/install-mac | sh
 ```
 
-On Windows 10/11 x64, run `scripts/install-windows.ps1` from a clone of this
-repo in PowerShell — it builds the app with `npm run package:win` into
+On Windows, run `scripts/install-windows.ps1` from a clone of this repo in
+PowerShell: it builds the app into
 `%LOCALAPPDATA%\Programs\alans-way-localapp` and opens it. Local builds skip
-SmartScreen/signing prompts by construction.
+the Gatekeeper and SmartScreen prompts by construction.
 
 Sign into Telegram inside the app, and your existing bots appear in the sidebar.
 
@@ -60,12 +73,14 @@ For development, run from source instead: `cd desktop && npm ci && npm start`
 
 ## Connect your agents
 
-**Let your cloud agent do it (recommended).** Paste this to the agent that has a terminal on the server running your Hermes gateway. Your Hermes bot itself works. The steps live in the repo, so the prompt stays short.
+**Let your cloud agent do it (recommended).** The app's setup wizard (or **Settings → Agent setup → Copy setup prompt**) gives you a prompt to paste to your Hermes bot. It points at [docs/setup-prompt.md](docs/setup-prompt.md) through `openalan.com/agent-prompt`, so it stays current as setup changes. Without the app open, this works too:
 
 ```text
 Set up Alan's Way. Repo: https://github.com/capthvnsen/alans-way
 Fetch https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-prompt.md and follow the text block in it exactly. Do not modify Hermes. Never print secrets.
 ```
+
+**Updating your agent.** After the app updates, send your bot the prompt from **Settings → Agent setup → Copy agent update prompt**. It follows [docs/update-for-agents.md](docs/update-for-agents.md): pull the plugin, re-run its setup with the same values, verify, restart.
 
 **Or by hand, in the app:** **Settings → Agent setup** — the checklist shows what's already done.
 
