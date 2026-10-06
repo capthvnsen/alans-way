@@ -30,8 +30,8 @@ function click(pid, x, y) {
   return run(['click', String(pid), String(x), String(y)]);
 }
 
-function drag() {
-  throw new Error('Press a snapshot ref on this desktop. Coordinate drag is for Mac apps.');
+function drag(pid, x, y, x2, y2) {
+  return run(['drag', String(pid), String(x), String(y), String(x2), String(y2)]);
 }
 
 function screenshot(pid, maxWidth) {
