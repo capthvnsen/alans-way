@@ -37,6 +37,15 @@ class SetupPromptTests(unittest.TestCase):
         for name in ("connect-mac.sh", "install-mac.sh"):
             subprocess.run(["sh", "-n", str(ROOT / "scripts" / name)], check=True)
 
+    def test_exit_node_scripts_parse(self):
+        for name in ("alans-watchdog-mac.sh", "alans-watchdog-vps.sh", "alans-watchdog.sh"):
+            subprocess.run(["sh", "-n", str(ROOT / "scripts" / name)], check=True)
+
+    def test_exit_node_doc_names_scripts_that_exist(self):
+        doc = (ROOT / "docs" / "alans-watchdog.md").read_text(encoding="utf-8")
+        for path in re.findall(r"scripts/[\w.-]+\.sh", doc):
+            self.assertTrue((ROOT / path).is_file(), path)
+
 
 if __name__ == "__main__":
     unittest.main()

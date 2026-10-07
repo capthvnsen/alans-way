@@ -99,7 +99,7 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[mcp]'
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request and [SECURITY.md](SECURITY.md) to report a vulnerability. Design docs live in [`docs/`](docs/) — [setup for agents](docs/setup-for-agents.md), [multi-profile fleets](docs/agent-setup.md), [security model](docs/mac-security.md), [integration](desktop/docs/integration.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request and [SECURITY.md](SECURITY.md) to report a vulnerability. Design docs live in [`docs/`](docs/) — [setup for agents](docs/setup-for-agents.md), [multi-profile fleets](docs/agent-setup.md), [security model](docs/mac-security.md), [Alan's Watchdog](docs/alans-watchdog.md), [integration](desktop/docs/integration.md).
 
 ## License
 

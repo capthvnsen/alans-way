@@ -12,6 +12,7 @@ const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { snapshotExpression, settleSnapshot, readControls, checkpointExpression, restoreExpression } = require('./browser-page.cjs');
 const { createVpsBrowser } = require('./vps-browser.cjs');
+const { createWatchdog } = require('./watchdog.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
 const { createComputerSnapshots } = require('./computer-snapshot.cjs');
@@ -46,6 +47,7 @@ const vpsTabs = new Map();
 const recentLinkTabs = new Map();
 let vpsBrowserStatus = 'unconfigured', vpsRefreshBusy = false, vpsTimer;
 const vpsBrowser = createVpsBrowser({ getConfig: () => prefs?.vpsBrowser });
+const watchdog = createWatchdog();
 const configuredSessions = new WeakSet();
 const API_TOKEN = crypto.randomBytes(32).toString('hex');
 // Connectors allow 90s for action requests; a batch stops starting new steps
@@ -147,6 +149,7 @@ function getState() {
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
+    watchdogEnabled: prefs.watchdogEnabled === true,
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
@@ -670,6 +673,13 @@ function registerIpc() {
               ? { ok: false, detail: 'Tailscale SSH on the VPS wants a browser check for this login, which unattended agents cannot pass. In the Tailscale admin console → Access controls, change the SSH rule for this user from "check" to "accept".' }
               : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
         });
+      }
+      case 'watchdog': {
+        const enable = value.enabled === true;
+        const result = await watchdog.setEnabled({ enabled: enable, sshHost: prefs.vpsBrowser?.sshHost || '', remotePlatform: prefs.remotePlatform || 'linux' });
+        if (result.ok) { prefs.watchdogEnabled = enable; savePreferences(); }
+        broadcast();
+        return { ok: result.ok, enabled: prefs.watchdogEnabled === true, detail: result.detail };
       }
       case 'show-data': shell.openPath(app.getPath('userData')); break;
       case 'sync-telegram': telegramView.webContents.reload(); break;

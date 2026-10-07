@@ -510,6 +510,23 @@ function showSettings() {
   body.append(element('hr', 'section-divider'));
   const sync = element('button', 'secondary-button', 'Sync Telegram bots'); sync.onclick = () => { command('sync-telegram'); toast('Reading Telegram’s bot chat list…'); };
   body.append(sync, element('p', 'settings-note', 'Bot discovery reads Telegram Web A’s local cache. Newly opened bot chats appear after Telegram saves them. Your Telegram session and browser logins stay on this computer.'));
+  body.append(element('hr', 'section-divider'), element('h3', '', 'Alan’s Watchdog'));
+  body.append(element('p', 'settings-note', `Send the ${remoteName()}’s outbound traffic through this computer whenever it stays connected — agents browse and call APIs from this computer’s address. When it sleeps or leaves Tailscale, a watchdog on the ${remoteName()} restores its own connection within about a minute. Needs the SSH addresses above, Tailscale running on both machines, and one exit-node approval in the Tailscale admin console.`));
+  const watchdogRow = element('div', 'setting-row'); watchdogRow.append(element('span', '', `Route ${remoteName()} egress through this computer`));
+  const watchdogToggle = element('button', 'secondary-button', state.watchdogEnabled ? 'On' : 'Off'), watchdogResult = element('p', 'settings-note', '');
+  watchdogToggle.onclick = async () => {
+    const enabling = !state.watchdogEnabled;
+    watchdogToggle.disabled = true;
+    watchdogResult.textContent = enabling ? `Turning on — advertising this computer and installing the watchdog on the ${remoteName()}…` : 'Turning off — restoring direct egress…';
+    const result = await command('watchdog', { enabled: enabling });
+    watchdogToggle.disabled = false;
+    if (result && typeof result === 'object' && 'ok' in result) {
+      state.watchdogEnabled = result.enabled;
+      watchdogToggle.textContent = result.enabled ? 'On' : 'Off';
+      watchdogResult.textContent = `${result.ok ? '✓' : '✗'} ${result.detail}`;
+    } else watchdogResult.textContent = '✗ Watchdog command failed.';
+  };
+  watchdogRow.append(watchdogToggle); body.append(watchdogRow, watchdogResult);
 }
 function showAvatarEditor(botId = state.selectedBotId || orderedBots()[0]?.id) {
   if (!botId) return toast('Open a Telegram bot before customizing its avatar.');

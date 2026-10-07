@@ -213,6 +213,15 @@ human.
 
 Report to the human: what passed, every warning, and anything you skipped.
 
+## Optional — Alan's Watchdog (VPS egress via the user's computer)
+
+So agents' traffic leaves from the user's home address instead of the
+datacenter's: the computer advertises itself as a Tailscale exit node and
+Alan's Watchdog on the VPS applies it only while the computer stays connected,
+falling back to direct egress when it doesn't. See
+[alans-watchdog.md](alans-watchdog.md) — it needs one admin-console approval
+step, or the desktop app's Settings toggle can drive the whole thing.
+
 ## Optional — watch the remote desktop from the app
 
 On a Linux VPS this needs the display stack from stage 3 plus a noVNC viewer
