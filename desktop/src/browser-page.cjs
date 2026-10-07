@@ -204,6 +204,26 @@ function snapshotExpression(generation, opts = {}) {
     if (${maxChars} > 0 && document.body) {
       const textDeadline = performance.now() + ${textMs};
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      // Password managers and other extensions inject their own UI into the
+      // page; none of it is page content. Skip a subtree when an element (or
+      // an ancestor) carries a known extension data attribute, came from
+      // another document, or is an aria-live region announcing a known
+      // extension message, and drop the known announcement text outright.
+      const extAttr = /^data-(?:1p|lastpass|bitwarden|dashlane)[-_]/i;
+      const extPhrase = /1Password menu is available|Press down arrow to select/i;
+      const extCache = new WeakMap();
+      const extNoise = (el) => {
+        if (!el || el.nodeType !== 1) return false;
+        let hit = extCache.get(el);
+        if (hit !== undefined) return hit;
+        hit = el.ownerDocument !== document;
+        const attrs = el.attributes;
+        for (let i = 0; !hit && attrs && i < attrs.length; i++) hit = extAttr.test(attrs[i].name);
+        if (!hit && el.hasAttribute('aria-live')) hit = extPhrase.test(el.textContent || '');
+        if (!hit) hit = extNoise(el.parentElement);
+        extCache.set(el, hit);
+        return hit;
+      };
       // Tag names stand in for computed display so lists, rows and headings
       // keep their line breaks without a style read per text node.
       const blockTag = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|BODY|CAPTION|DD|DETAILS|DIALOG|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H[1-6]|HEADER|HR|LEGEND|LI|MAIN|NAV|OL|P|PRE|SECTION|SUMMARY|TABLE|TR|UL)$/;
@@ -215,14 +235,14 @@ function snapshotExpression(generation, opts = {}) {
         // Sibling text nodes share a parent. One style check covers the run.
         if (p !== seenParent) {
           seenParent = p;
-          parentVisible = !(p.checkVisibility && !p.checkVisibility({ checkVisibilityCSS: true }));
+          parentVisible = !(p.checkVisibility && !p.checkVisibility({ checkVisibilityCSS: true })) && !extNoise(p);
           let block = p;
           while (block.parentElement && !blockTag.test(block.tagName)) block = block.parentElement;
           parentBlock = block;
         }
         if (!parentVisible) continue;
         const chunk = node.nodeValue.replace(/\\s+/g, ' ').trim();
-        if (!chunk) continue;
+        if (!chunk || extPhrase.test(chunk)) continue;
         for (let i = 0; i < chunk.length; i++) { sigHash ^= chunk.charCodeAt(i); sigHash = Math.imul(sigHash, 0x01000193); }
         sigHash ^= 0x9d; sigHash = Math.imul(sigHash, 0x01000193);
         sigNodes++;

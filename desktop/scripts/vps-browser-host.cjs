@@ -490,7 +490,9 @@ async function serve() {
       requireActor(tab, botId, body.epoch, true, overseer);
       didNavigate = await history(tab, body.action);
     } else throw fail('Unsupported VPS action.');
-    if (body.action !== 'move') tab.refs.clear();
+    // Navigations retire every ref; page-touching steps keep the batch's refs
+    // valid so a later step can act on them (top-level calls still clear).
+    if (body.action !== 'move' && (depth === 0 || !INPUT_ACTIONS.has(body.action))) tab.refs.clear();
     result.dispatched = true;
     // A move changes no page state; report it without paying for a read.
     if (body.action === 'move') return depth > 0 ? result : { ...result, effect: { ...EMPTY_EFFECT } };

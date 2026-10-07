@@ -1,9 +1,12 @@
 // The one-turn benchmark contract: a page that mimics ten sequential tasks.
-// Each task's instruction becomes visible only after the previous task is
-// done, and each action call is a batch (act, wait for the next instruction,
-// read) whose effect.text must already carry that instruction, so no follow-up
-// snapshot is needed. Runs the real VPS host against a real headless Chromium;
-// skipped when no Chrome is found (set HERMES_TEST_CHROME).
+// Like the real benchmark page, a correct answer first shows "✓ Correct"
+// feedback and about 800ms later swaps in the next instruction and its
+// controls, so the one-call pattern is act, wait for the current prompt's
+// phrase to be gone, read: the reply then already carries the next state and
+// fresh refs, so no follow-up snapshot is needed. A password-manager style
+// announcement sits on the page the whole time and must stay out of the text.
+// Runs the real VPS host against a real headless Chromium; skipped when no
+// Chrome is found (set HERMES_TEST_CHROME).
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -28,26 +31,32 @@ const chrome = findChrome();
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Ten tasks: button click, link click, checkbox, select and type+submit run
-// twice each. Task N's instruction and control stay hidden until task N-1
-// finishes. A transient "New!" badge self-removes so one wait uses gone:true.
+// twice each. Each batch acts on a ref taken from the previous reply's
+// elements, then waits for the current prompt's phrase to disappear, then
+// reads, exactly the pattern the tool description teaches.
+const pick = (els, pred, hint) => {
+  const el = els.find(pred);
+  assert.ok(el && el.ref, `no fresh ref for ${hint}: ${JSON.stringify(els)}`);
+  return el.ref;
+};
 const tasks = [
-  { instruction: 'Task 1: Click the Start button', steps: [{ action: 'click', selector: '#t1' }], next: 'Task 2:', gone: '#flash1' },
-  { instruction: 'Task 2: Click the Continue link', steps: [{ action: 'click', selector: '#t2' }], next: 'Task 3:' },
-  { instruction: 'Task 3: Check the Agree checkbox', steps: [{ action: 'click', selector: '#t3' }], next: 'Task 4:' },
-  { instruction: 'Task 4: Choose Banana in the fruit select', steps: [{ action: 'select', selector: '#t4', text: 'Banana' }], next: 'Task 5:' },
-  { instruction: 'Task 5: Type a word and send the form', steps: [{ action: 'type', selector: '#t5in', text: 'hello' }, { action: 'click', selector: '#t5go' }], next: 'Task 6:' },
-  { instruction: 'Task 6: Click the Finish button', steps: [{ action: 'click', selector: '#t6' }], next: 'Task 7:' },
-  { instruction: 'Task 7: Click the Proceed link', steps: [{ action: 'click', selector: '#t7' }], next: 'Task 8:' },
-  { instruction: 'Task 8: Check the Confirm checkbox', steps: [{ action: 'click', selector: '#t8' }], next: 'Task 9:' },
-  { instruction: 'Task 9: Choose Cherry in the dessert select', steps: [{ action: 'select', selector: '#t9', choice: 'Cherry' }], next: 'Task 10:' },
-  { instruction: 'Task 10: Type a word and send the second form', steps: [{ action: 'type', selector: '#t10in', text: 'done' }, { action: 'click', selector: '#t10go' }], next: 'All 10 tasks done' },
+  { prompt: 'Click the Start button', steps: (els) => [{ action: 'click', ref: pick(els, (e) => e.role === 'button' && /Start/.test(e.name || ''), 'Start') }], next: 'Task 2:' },
+  { prompt: 'Click the Continue link', steps: (els) => [{ action: 'click', ref: pick(els, (e) => /Continue/.test(e.name || ''), 'Continue') }], next: 'Task 3:' },
+  { prompt: 'Check the Agree checkbox', steps: (els) => [{ action: 'click', ref: pick(els, (e) => e.type === 'checkbox', 'Agree') }], next: 'Task 4:' },
+  { prompt: 'Choose Banana in the fruit select', steps: (els) => [{ action: 'select', ref: pick(els, (e) => e.role === 'select', 'fruit select'), text: 'Banana' }], next: 'Task 5:' },
+  { prompt: 'Type a word and send the first form', steps: (els) => [{ action: 'type', ref: pick(els, (e) => e.role === 'input' && !e.type, 'first input'), text: 'hello' }, { action: 'click', ref: pick(els, (e) => /Send/.test(e.name || ''), 'Send') }], next: 'Task 6:' },
+  { prompt: 'Click the Finish button', steps: (els) => [{ action: 'click', ref: pick(els, (e) => /Finish/.test(e.name || ''), 'Finish') }], next: 'Task 7:' },
+  { prompt: 'Click the Proceed link', steps: (els) => [{ action: 'click', ref: pick(els, (e) => /Proceed/.test(e.name || ''), 'Proceed') }], next: 'Task 8:' },
+  { prompt: 'Check the Confirm checkbox', steps: (els) => [{ action: 'click', ref: pick(els, (e) => e.type === 'checkbox', 'Confirm') }], next: 'Task 9:' },
+  { prompt: 'Choose Cherry in the dessert select', steps: (els) => [{ action: 'select', ref: pick(els, (e) => e.role === 'select', 'dessert select'), choice: 'Cherry' }], next: 'Task 10:' },
+  { prompt: 'Type a word and send the second form', steps: (els) => [{ action: 'type', ref: pick(els, (e) => e.role === 'input' && !e.type, 'second input'), text: 'done' }, { action: 'click', ref: pick(els, (e) => /Send/.test(e.name || ''), 'Send') }], next: 'All 10 tasks done' },
 ];
 const sections = [
   `<div id="task1"><p>Task 1: Click the Start button</p><button id="t1" onclick="advance(1)">Start</button></div>`,
-  `<div id="task2" class="hidden"><p>Task 2: Click the Continue link <span id="flash1">New!</span></p><a id="t2" href="#" onclick="advance(2);return false">Continue</a></div>`,
+  `<div id="task2" class="hidden"><p>Task 2: Click the Continue link</p><a id="t2" href="#" onclick="advance(2);return false">Continue</a></div>`,
   `<div id="task3" class="hidden"><p>Task 3: Check the Agree checkbox</p><label><input id="t3" type="checkbox" onchange="advance(3)"> Agree</label></div>`,
   `<div id="task4" class="hidden"><p>Task 4: Choose Banana in the fruit select</p><select id="t4" onchange="advance(4)"><option value="">Pick a fruit</option><option value="a">Apple</option><option value="b">Banana</option><option value="c">Cherry</option></select></div>`,
-  `<div id="task5" class="hidden"><p>Task 5: Type a word and send the form</p><form onsubmit="advance(5);return false"><input id="t5in"><button id="t5go" type="submit">Send</button></form></div>`,
+  `<div id="task5" class="hidden"><p>Task 5: Type a word and send the first form</p><form onsubmit="advance(5);return false"><input id="t5in"><button id="t5go" type="submit">Send</button></form></div>`,
   `<div id="task6" class="hidden"><p>Task 6: Click the Finish button</p><button id="t6" onclick="advance(6)">Finish</button></div>`,
   `<div id="task7" class="hidden"><p>Task 7: Click the Proceed link</p><a id="t7" href="#" onclick="advance(7);return false">Proceed</a></div>`,
   `<div id="task8" class="hidden"><p>Task 8: Check the Confirm checkbox</p><label><input id="t8" type="checkbox" onchange="advance(8)"> Confirm</label></div>`,
@@ -56,13 +65,17 @@ const sections = [
   `<div id="done" class="hidden"><p>All 10 tasks done</p></div>`,
 ];
 const benchPage = `<!doctype html><title>bench</title><style>.hidden{display:none}</style>
+<div id="fb" class="hidden">✓ Correct — 0.4s</div>
 ${sections.join('\n')}
+<div aria-live="polite" data-1p-announce="menu">1Password menu is available. Press down arrow to select.</div>
 <script>
 function advance(done) {
-  var next = document.getElementById(done === 10 ? 'done' : 'task' + (done + 1));
-  next.classList.remove('hidden');
-  var flash = document.getElementById('flash1');
-  if (flash) setTimeout(function () { flash.remove(); }, 400);
+  document.getElementById('fb').classList.remove('hidden');
+  setTimeout(function () {
+    document.getElementById('fb').classList.add('hidden');
+    document.getElementById('task' + done).classList.add('hidden');
+    document.getElementById(done === 10 ? 'done' : 'task' + (done + 1)).classList.remove('hidden');
+  }, 800);
 }
 </script>`;
 
@@ -121,12 +134,17 @@ after(async () => {
 test('ten sequential tasks each complete in one action call', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 120000 }, async () => {
   const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/bench` })).data;
   assert.ok(tab.id, `tab did not open: ${stderr}`);
+  const snap = await api(`/v1/tabs/${tab.id}/snapshot`);
+  assert.equal(snap.status, 200);
+  assert.ok(!snap.data.text.includes('1Password'), `snapshot leaked extension text: ${snap.data.text}`);
+  let elements = snap.data.elements;
+  assert.ok(Array.isArray(elements) && elements.length, 'the first snapshot lists the task 1 controls');
   let calls = 0;
   for (let i = 0; i < tasks.length; i++) {
     const task = tasks[i];
     const steps = [
-      ...task.steps,
-      task.gone ? { action: 'wait', selector: task.gone, gone: true, timeout: 10000 } : { action: 'wait', text: task.next, timeout: 10000 },
+      ...task.steps(elements),
+      { action: 'wait', text: task.prompt, gone: true, timeout: 10000 },
       { action: 'read' },
     ];
     const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'batch', epoch: tab.epoch, steps });
@@ -136,8 +154,17 @@ test('ten sequential tasks each complete in one action call', { skip: !chrome &&
     assert.ok(reply.data.effect, `task ${i + 1} reply carries no effect`);
     assert.equal(reply.data.effect.changed, true, `task ${i + 1} changed nothing`);
     assert.ok(reply.data.effect.text.includes(task.next), `task ${i + 1} effect.text lacks ${JSON.stringify(task.next)}: ${JSON.stringify(reply.data.effect)}`);
+    assert.ok(!reply.data.effect.text.includes('1Password'), `task ${i + 1} effect.text leaked extension text`);
     const read = reply.data.results[steps.length - 1];
     assert.ok(read.text.includes(task.next), `task ${i + 1} read lacks ${JSON.stringify(task.next)}`);
+    assert.ok(!/1Password|down arrow/.test(read.text), `task ${i + 1} read leaked extension text: ${read.text}`);
+    // The controls changed with the task, so the reply carries fresh refs the
+    // next call acts on directly, with no snapshot in between. The final task
+    // leaves no controls behind, so its list is empty.
+    assert.ok(Array.isArray(reply.data.elements), `task ${i + 1} reply lacks an elements list: ${JSON.stringify(reply.data)}`);
+    if (i + 1 < tasks.length) assert.ok(reply.data.elements.length, `task ${i + 1} reply lacks fresh element refs`);
+    assert.ok(reply.data.elements.every((el) => /^s\d+-\d+$/.test(el.ref)), `task ${i + 1} refs malformed: ${JSON.stringify(reply.data.elements)}`);
+    elements = reply.data.elements;
     if (i === 0) {
       assert.equal(reply.data.effect.navigated, false);
       assert.equal(reply.data.effect.url, `http://bench.example:${port}/bench`);
