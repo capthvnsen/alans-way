@@ -524,7 +524,9 @@ test('a mirrored bot restores its tabs with cookies, scroll and drafts, once', a
   assert.ok(calls.some((c) => c.method === 'Runtime.evaluate' && c.params.expression.includes('"y":120') && c.params.expression.includes('hello') && !c.params.expression.includes('hunter2')), 'scroll and drafts are restored');
   const listed = (await host.api('/v1/tabs', 'GET', undefined, { bot: 'bot-m' })).data.tabs;
   assert.deepEqual(listed.map((t) => [t.id, t.controller, t.url]), [[vmTab, 'agent', 'https://shop.example/cart']]);
-  assert.ok(!JSON.stringify(listed).includes('abc'), 'cookies are never readable through the tab API');
+  // Ids are random hex and can hold the substring 'abc' by chance, so compare
+  // the fields an agent could actually read.
+  assert.ok(!JSON.stringify(listed.map(({ id, targetId, ...rest }) => rest)).includes('abc'), 'cookies are never readable through the tab API');
 
   const created = () => calls.filter((c) => c.method === 'Target.createTarget').length;
   const before = created();
@@ -541,6 +543,15 @@ test('a mirrored bot restores its tabs with cookies, scroll and drafts, once', a
 });
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+// The stub socket records the broker's replies asynchronously; await the
+// condition instead of trusting a fixed sleep on a busy runner.
+const until = async (fn, ms = 10000) => {
+  for (const deadline = Date.now() + ms; ;) {
+    const value = await fn();
+    if (value || Date.now() > deadline) return value;
+    await wait(20);
+  }
+};
 const sessionOf = (tab) => `stub-session-${tab.targetId}`;
 
 test('a page that lands on a blocked address is sent back to about:blank, and such popups are closed', async () => {
@@ -550,7 +561,7 @@ test('a page that lands on a blocked address is sent back to about:blank, and su
   for (const url of ['http://127.0.0.1:8082/secret', 'http://169.254.169.254/latest/meta-data/']) {
     const before = navigations().length;
     host.stub.send('Target.targetInfoChanged', { targetInfo: { targetId: tab.targetId, type: 'page', url, title: '' } });
-    await wait(100);
+    await until(() => navigations().length > before);
     assert.deepEqual(navigations().slice(before).map((c) => c.params.url), ['about:blank'], url);
   }
   const noted = (await host.api(`/v1/tabs/${tab.id}`)).data;
@@ -559,10 +570,13 @@ test('a page that lands on a blocked address is sent back to about:blank, and su
 
   host.stub.send('Target.targetCreated', { targetInfo: { targetId: 'popup-bad', type: 'page', url: 'http://127.0.0.1:8082/secret', title: '', openerId: tab.targetId } });
   host.stub.send('Target.targetCreated', { targetInfo: { targetId: 'popup-ok', type: 'page', url: 'http://popup.example/', title: '', openerId: tab.targetId } });
-  await wait(150);
-  assert.ok(host.stub.calls.some((c) => c.method === 'Target.closeTarget' && c.params.targetId === 'popup-bad'));
-  const urls = (await host.api('/v1/tabs')).data.tabs.map((t) => t.url);
-  assert.ok(urls.includes('http://popup.example/') && !urls.some((u) => u.includes('127.0.0.1')));
+  await until(() => host.stub.calls.some((c) => c.method === 'Target.closeTarget' && c.params.targetId === 'popup-bad'));
+  // The good popup's attach is asynchronous too, so list it by condition.
+  const urls = await until(async () => {
+    const listed = (await host.api('/v1/tabs')).data.tabs.map((t) => t.url);
+    return listed.includes('http://popup.example/') && listed;
+  });
+  assert.ok(urls && !urls.some((u) => u.includes('127.0.0.1')));
 
   const mine = (await host.api('/v1/tabs', 'POST', { url: 'http://mine.example/' }, { human: true })).data;
   const before = host.stub.calls.filter((c) => c.method === 'Page.navigate' && c.sessionId === sessionOf(mine)).length;
@@ -577,9 +591,10 @@ test('every request an agent tab makes is checked before it leaves, redirects, u
   const enable = host.stub.calls.find((c) => c.method === 'Fetch.enable' && c.sessionId === sessionOf(tab));
   assert.deepEqual(enable.params.patterns, [{ urlPattern: '*' }], 'all resource types, not just documents');
   const paused = async (url, sessionId = sessionOf(tab), resourceType = 'XHR') => {
+    const replies = () => host.stub.calls.filter((c) => /^Fetch\.(failRequest|continueRequest)$/.test(c.method) && c.params.requestId === url).map((c) => c.method);
     host.stub.send('Fetch.requestPaused', { requestId: url, request: { url }, resourceType }, sessionId);
-    await wait(80);
-    return host.stub.calls.filter((c) => /^Fetch\.(failRequest|continueRequest)$/.test(c.method) && c.params.requestId === url).map((c) => c.method);
+    await until(() => replies().length);
+    return replies();
   };
   for (const url of ['http://127.0.0.1:8082/secret', 'http://[::1]/x', 'http://u:p@127.0.0.1:8082/cred', 'http://2130706433/dec', 'http://169.254.169.254/latest'])
     assert.deepEqual(await paused(url, sessionOf(tab), 'Document'), ['Fetch.failRequest'], url);
@@ -607,18 +622,17 @@ test('popups and frames are guarded from their first request, before the page re
   assert.ok(host.stub.calls.some((c) => c.method === 'Target.setAutoAttach' && c.sessionId === sessionOf(tab) && c.params.waitForDebuggerOnStart), 'page-level auto-attach catches frames and workers');
   const order = (sessionId) => host.stub.calls.filter((c) => c.sessionId === sessionId).map((c) => c.method);
   host.stub.send('Target.attachedToTarget', { sessionId: 'auto-popup', waitingForDebugger: true, targetInfo: { targetId: 'popup-1', type: 'page', url: '', openerId: tab.targetId } });
-  await wait(100);
+  await until(() => order('auto-popup').includes('Runtime.runIfWaitingForDebugger'));
   assert.deepEqual(order('auto-popup').filter((m) => m !== 'Target.setAutoAttach'), ['Fetch.enable', 'Page.addScriptToEvaluateOnNewDocument', 'Runtime.runIfWaitingForDebugger'], 'the filter and settle seed are on before the popup is released');
   host.stub.send('Target.attachedToTarget', { sessionId: 'auto-frame', waitingForDebugger: true, targetInfo: { targetId: 'frame-1', type: 'iframe', url: 'http://127.0.0.1:8082/' } }, sessionOf(tab));
-  await wait(100);
+  await until(() => order('auto-frame').includes('Runtime.runIfWaitingForDebugger'));
   assert.deepEqual(order('auto-frame').filter((m) => m !== 'Target.setAutoAttach'), ['Fetch.enable', 'Page.addScriptToEvaluateOnNewDocument', 'Runtime.runIfWaitingForDebugger'], 'a cross-process frame of an agent page is guarded');
   host.stub.send('Fetch.requestPaused', { requestId: 'frame-req', request: { url: 'http://127.0.0.1:8082/in-frame' }, resourceType: 'Document' }, 'auto-frame');
-  await wait(80);
-  assert.ok(host.stub.calls.some((c) => c.method === 'Fetch.failRequest' && c.sessionId === 'auto-frame'));
+  assert.ok(await until(() => host.stub.calls.some((c) => c.method === 'Fetch.failRequest' && c.sessionId === 'auto-frame')), 'the frame request is denied');
   const mine = (await host.api('/v1/tabs', 'POST', { url: 'http://human-opener.example/' }, { human: true })).data;
   host.stub.send('Target.attachedToTarget', { sessionId: 'auto-human', waitingForDebugger: true, targetInfo: { targetId: 'popup-2', type: 'page', url: '', openerId: mine.targetId } });
   host.stub.send('Target.attachedToTarget', { sessionId: 'auto-stranger', waitingForDebugger: true, targetInfo: { targetId: 'popup-3', type: 'page', url: '' } });
-  await wait(100);
+  await until(() => order('auto-human').includes('Runtime.runIfWaitingForDebugger') && order('auto-stranger').includes('Runtime.runIfWaitingForDebugger'));
   for (const id of ['auto-human', 'auto-stranger']) {
     assert.ok(!order(id).includes('Fetch.enable'), id + ' is not filtered');
     assert.ok(order(id).includes('Runtime.runIfWaitingForDebugger'), id + ' is still released');
