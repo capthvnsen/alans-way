@@ -15,6 +15,7 @@ const cloudStatus = require('./cloud-status.cjs');
 const cloudConnect = require('./cloud-connect.cjs');
 const cloudMigrate = require('./cloud-migrate.cjs');
 const cloudModel = require('./cloud-model.cjs');
+const cloudTelegram = require('./cloud-telegram.cjs');
 const macUpdate = require('./mac-update.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
@@ -688,6 +689,7 @@ function cloudView() {
     step: cloudStep(prefs, cloudComputer) || '',
     migration: cloud.migration || '', tokenedProfiles: cloud.tokenedProfiles || [],
     migrateCommand: cloud.migration === 'bring' && (prefs.vpsBrowser?.sshHost || '').trim() ? cloudMigrate.migrateCommand(prefs.vpsBrowser.sshHost.trim()) : '',
+    telegramFallback: cloud.telegramFallback === true, botUsername: cloud.botUsername || '',
     computer, error: cloudError,
     supportUrl: session ? `${cloudClaim.apiBase()}/api/discord/start?session=${encodeURIComponent(session)}` : `${cloudClaim.apiBase()}/api/discord/start` };
 }
@@ -719,6 +721,50 @@ function startCloudOnboarding() {
   startCloudPolling();
   showWindow();
   broadcast();
+}
+// The account's first name comes out of Telegram's own IndexedDB state, the
+// same shape the preload polls, read directly when the wizard needs it.
+async function telegramFirstName() {
+  try {
+    if (!telegramView || telegramView.webContents.isDestroyed()) return '';
+    return await telegramView.webContents.executeJavaScript(`(async () => {
+      const request = indexedDB.open('tt-data');
+      const db = await new Promise((resolve) => { request.onsuccess = () => resolve(request.result); request.onerror = request.onupgradeneeded = () => resolve(null); });
+      if (!db || !db.objectStoreNames.contains('store')) return '';
+      const get = db.transaction('store', 'readonly').objectStore('store').get('tt-global-state');
+      const state = await new Promise((resolve) => { get.onsuccess = () => resolve(get.result || null); get.onerror = () => resolve(null); });
+      return String(state?.users?.byId?.[state?.currentUserId]?.firstName || '');
+    })()`);
+  } catch { return ''; }
+}
+// One env write + a gateway restart, shared by the API-key, model and bot-token
+// steps. The value travels over ssh stdin so it never shows in a process list.
+async function cloudWriteEnv(host, key, value, tokenedProfiles) {
+  const profiles = await sshRun(host, 'ls ~/.hermes/profiles 2>/dev/null');
+  const profile = key === 'TELEGRAM_BOT_TOKEN' ? cloudTelegram.untokenedProfile(profiles.out, tokenedProfiles) : cloudModel.chooseProfile(profiles.out);
+  const envPath = cloudModel.envPathFor(profile);
+  const current = await sshRun(host, cloudConnect.sshReadCommand(envPath));
+  const write = await sshWrite(host, envPath, cloudModel.setEnvValue(current.out, key, value));
+  if (write.code !== 0) return { ok: false, detail: 'The computer refused the env file write.' };
+  const status = await sshRun(host, 'supervisorctl status 2>/dev/null');
+  await sshRun(host, cloudModel.gatewayRestartCommand(status.out), { timeoutMs: 30000 });
+  return { ok: true, profile };
+}
+// Minted or pasted, a good bot token finishes the wizard the same way: write
+// the env, open the bot chat and send /start so the pair meets.
+async function cloudFinishTelegram(token, username) {
+  const host = (prefs.vpsBrowser?.sshHost || '').trim();
+  const write = await cloudWriteEnv(host, 'TELEGRAM_BOT_TOKEN', token, prefs.cloud?.tokenedProfiles);
+  if (!write.ok) return { done: false, detail: write.detail };
+  const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+  prefs.cloud = { ...cloud, botUsername: username, step: 'done' };
+  prefs.onboarded = true;
+  savePreferences();
+  if (telegramView && !telegramView.webContents.isDestroyed()) {
+    telegramView.webContents.executeJavaScript(cloudTelegram.sendMessageScript(username, '/start')).catch(() => {});
+  }
+  broadcast();
+  return { done: true, username };
 }
 // Local and remote probes for the connect step. Both cap output so a chatty
 // remote can never grow memory without bound.
@@ -1214,6 +1260,35 @@ function registerIpc() {
         if (next === 'done') { prefs.cloud.step = 'done'; prefs.onboarded = true; } else setCloudStep(prefs, next);
         savePreferences();
         return { done: true, detail: 'Signed in.' };
+      }
+      case 'cloud-telegram': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        if (!telegramView || telegramView.webContents.isDestroyed()) throw new Error('Telegram is not loaded.');
+        if (telegramStatus !== 'connected') return { done: false, detail: 'Sign in to Telegram on the left first.' };
+        const wc = telegramView.webContents, first = await telegramFirstName();
+        // Up to four tries: the first username plus three suffixed retries when
+        // BotFather says taken or rate-limits, then the paste-token fallback.
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const username = cloudTelegram.retryUsername(first, attempt);
+          const run = await wc.executeJavaScript(cloudTelegram.botFatherScript({ name: cloudTelegram.botName(first), username })).catch(() => null);
+          const reply = cloudTelegram.parseBotFatherReply(run?.reply || '');
+          if (reply.type !== 'token') continue;
+          const check = await cloudTelegram.validateToken(reply.token);
+          if (!check.ok) continue;
+          return cloudFinishTelegram(reply.token, check.username || username);
+        }
+        const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+        prefs.cloud = { ...cloud, telegramFallback: true };
+        savePreferences(); broadcast();
+        return { done: false, fallback: true, detail: 'BotFather did not mint a bot after a few tries. Paste a token below instead.' };
+      }
+      case 'cloud-telegram-paste': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        const check = await cloudTelegram.validateToken(String(value.token || '').trim());
+        if (!check.ok) return { done: false, detail: 'Telegram did not accept that token. Check it and try again.' };
+        return cloudFinishTelegram(String(value.token).trim(), check.username);
       }
       case 'cloud-discord': shell.openExternal(cloudView().supportUrl); break;
       case 'move-to-applications': return app.moveToApplicationsFolder();

@@ -509,6 +509,28 @@ function renderCloudOnboarding(card, actions, cloud) {
         const result = await command('cloud-model', { choice: 'apikey', key: input.value.trim() });
         status.textContent = result?.detail || '';
       }));
+  } else if (cloud.step === 'telegram') {
+    card.append(element('h2', '', 'Set up your Telegram bot'),
+      element('p', 'settings-note', 'Alan talks to you through a Telegram bot. We can make one with @BotFather, or you can paste a token you already have.'));
+    const status = element('p', 'settings-note', '');
+    card.append(status);
+    if (cloud.telegramFallback) {
+      card.append(element('p', 'settings-note', 'To make a bot by hand: 1. Open @BotFather in Telegram. 2. Send /newbot and follow the prompts. 3. Copy the token it gives you and paste it here.'));
+      const field = element('div', 'field'), lab = element('label', '', 'Bot token'); lab.htmlFor = 'ob-bot-token';
+      const input = element('input'); input.id = 'ob-bot-token'; input.placeholder = '123456789:AAE…'; input.autocomplete = 'off';
+      field.append(lab, input); card.append(field);
+      actions.append(button('Save token', 'primary-button', async () => {
+        status.textContent = 'Checking…';
+        const result = await command('cloud-telegram-paste', { token: input.value.trim() });
+        status.textContent = result?.detail || '';
+      }));
+    } else {
+      actions.append(button('Create my bot', 'primary-button', async () => {
+        status.textContent = 'Talking to @BotFather…';
+        const result = await command('cloud-telegram');
+        status.textContent = result?.done ? 'Bot created.' : result?.detail || '';
+      }));
+    }
   } else if (cloud.step === 'support') {
     card.append(element('h2', '', 'We’re on it'),
       element('p', 'settings-note', 'Something on our side needs a look. The support Discord has the team and your setup details handy.'));
