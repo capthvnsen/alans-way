@@ -313,7 +313,7 @@ function selectScript(target, body) {
 // until the new document has parsed, or the controls read lands on the old page.
 function watchNavigation(wc, delay) {
   const state = { started: false, ready: false, wake: null, awake: null };
-  if (typeof wc.on !== 'function') return { settle: async () => {}, stop() {} };
+  if (typeof wc.on !== 'function') return { settle: async () => {}, stop() {}, navigated: () => undefined };
   const onStart = (event, _url, inPlace, main) => {
     if (!(event.isMainFrame ?? main)) return;
     if (!(event.isSameDocument ?? inPlace)) { state.started = true; state.ready = false; }
@@ -335,6 +335,9 @@ function watchNavigation(wc, delay) {
         state.wake = done;
       });
     },
+    // True only when a main-frame cross-document navigation started; a
+    // same-document route change (pushState, hash) leaves it false.
+    navigated: () => state.started,
     stop() {
       wc.removeListener('did-start-navigation', onStart);
       for (const name of ['dom-ready', 'did-stop-loading', 'did-fail-load', 'destroyed']) wc.removeListener(name, onReady);
@@ -436,7 +439,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       if (!found || found.fail) throw fail(`Element is ${found ? found.fail : 'unavailable'}. Request a fresh snapshot or use a different selector.`);
       return found;
     }
-    const watching = ['click', 'double_click', 'press', 'select'].includes(action) ? watchNavigation(wc, delay) : null;
+    const watching = watchNavigation(wc, delay);
     own.active++;
     if (own.active === 1) onBusy(tab, true);
     wc.setIgnoreMenuShortcuts(true);
@@ -515,11 +518,12 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: Math.max(-2000, Math.min(2000, body.x || 0)), deltaY: Math.max(-2000, Math.min(2000, body.y || 0)) });
         cursor(point, 'scroll');
       }
-      if (watching) { await watching.settle(likelyNavigation); check(); }
+      await watching.settle(likelyNavigation);
+      check();
       succeeded = true;
-      return { dispatched: true, input: 'tab-cdp', cursor: tab.agentCursor || null, ...extra };
+      return { dispatched: true, input: 'tab-cdp', cursor: tab.agentCursor || null, navigated: watching.navigated(), ...extra };
     } finally {
-      watching?.stop();
+      watching.stop();
       if (!wc.isDestroyed()) {
         // Releasing outside the viewport cannot finish a revoked click on its
         // old target. No native input or synthetic retry is used for cleanup.

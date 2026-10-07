@@ -66,6 +66,16 @@ function advance(done) {
 }
 </script>`;
 
+// Fixture pages for the effect-reply edge cases.
+const longRows = Array.from({ length: 400 }, (_, i) => `<div>Long page row ${i} with enough padding to fill the read window</div>`).join('');
+const longPage = `<!doctype html><title>long</title><style>.hidden{display:none}</style>
+${longRows}<div id="tail" class="hidden">tail reveal beyond the read window</div>`;
+const asyncPage = `<!doctype html><title>async</title><button id="ab" onclick="setTimeout(function(){var d=document.createElement('div');d.textContent='Async result appeared';document.body.appendChild(d)},150)">Load</button>`;
+const navA = `<!doctype html><title>navA</title><p>Shared header</p><p>Page A body</p><a id="l" href="/nav-b">Next</a><a id="h" href="#frag">Jump</a><p id="frag">anchor</p>`;
+const navB = `<!doctype html><title>navB</title><p>Shared header</p><p>Page B body</p>`;
+const focusPage = `<!doctype html><title>focus</title><div id="f" tabindex="0">Plain focusable</div>`;
+const routes = { '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage };
+
 let dir, profile, browser, host, site, port, connection, stderr = '';
 const api = (route, method = 'GET', body, epoch) =>
   fetch(connection.url + route, {
@@ -76,7 +86,7 @@ const api = (route, method = 'GET', body, epoch) =>
 
 before(async () => {
   if (!chrome) return;
-  site = http.createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end(benchPage); });
+  site = http.createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end(routes[new URL(req.url, 'http://x').pathname] || 'nf'); });
   await new Promise((resolve) => site.listen(0, '127.0.0.1', resolve));
   port = site.address().port;
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-bench-'));
@@ -137,4 +147,71 @@ test('ten sequential tasks each complete in one action call', { skip: !chrome &&
     if (i === 3 || i === 8) assert.match(reply.data.results[0].matched.by, /label/, `task ${i + 1} select matched by label`);
   }
   assert.equal(calls, 10, 'one action call per task');
+});
+
+test('an unchanged long page does not report its unseen tail as new text', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/long` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  // The agent's snapshots cap the text walk below the effect read's, so the
+  // diff must be limited to the coverage the previous read actually had.
+  const snap = await api(`/v1/tabs/${tab.id}/snapshot?maxChars=2000`);
+  assert.equal(snap.status, 200);
+  assert.equal(snap.data.truncated.text, true, 'fixture must exceed the snapshot cap');
+  const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: '1', epoch: tab.epoch });
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.equal(reply.data.effect.changed, false, `effect: ${JSON.stringify(reply.data.effect)}`);
+  assert.equal(reply.data.effect.text, '');
+  // A reveal past the walk cap still reports changed via the whole-page hash.
+  const deep = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: `document.getElementById('tail').classList.remove('hidden')`, epoch: tab.epoch });
+  assert.equal(deep.status, 200);
+  assert.equal(deep.data.effect.changed, true, `effect: ${JSON.stringify(deep.data.effect)}`);
+});
+
+test('a bare click reports DOM text that lands shortly after it', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/async` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  await api(`/v1/tabs/${tab.id}/snapshot`);
+  const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#ab', epoch: tab.epoch });
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.equal(reply.data.effect.changed, true);
+  assert.ok(reply.data.effect.text.includes('Async result appeared'), `effect.text: ${JSON.stringify(reply.data.effect.text)}`);
+});
+
+test('navigated is true only for a cross-document main-frame navigation', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/nav-a` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  await api(`/v1/tabs/${tab.id}/snapshot`);
+  // A same-document pushState updates url without reporting a navigation.
+  const push = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: `history.pushState({}, '', location.pathname + '#sect')`, epoch: tab.epoch });
+  assert.equal(push.status, 200, JSON.stringify(push.data));
+  assert.equal(push.data.effect.navigated, false);
+  assert.ok(push.data.effect.url.endsWith('#sect'), `effect.url: ${push.data.effect.url}`);
+  // A hash link click is same-document too.
+  const hash = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#h', epoch: tab.epoch });
+  assert.equal(hash.status, 200, JSON.stringify(hash.data));
+  assert.equal(hash.data.effect.navigated, false, `effect: ${JSON.stringify(hash.data.effect)}`);
+  // A real link click commits a new document: navigated, and lines shared
+  // with the old page are not masked out of the new page's text.
+  const nav = await api(`/v1/tabs/${tab.id}/actions`, 'POST', {
+    action: 'batch', epoch: tab.epoch,
+    steps: [{ action: 'click', selector: '#l' }, { action: 'wait', url: '/nav-b', timeout: 10000 }],
+  });
+  assert.equal(nav.status, 200, JSON.stringify(nav.data));
+  assert.equal(nav.data.effect.navigated, true, `effect: ${JSON.stringify(nav.data.effect)}`);
+  assert.equal(nav.data.effect.url, `http://bench.example:${port}/nav-b`);
+  assert.ok(nav.data.effect.text.includes('Shared header'), `effect.text: ${JSON.stringify(nav.data.effect.text)}`);
+  assert.ok(nav.data.effect.text.includes('Page B body'), `effect.text: ${JSON.stringify(nav.data.effect.text)}`);
+});
+
+test('effect reports focus on any element and move skips the page read', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/focus` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  await api(`/v1/tabs/${tab.id}/snapshot`);
+  const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#f', epoch: tab.epoch });
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.ok(reply.data.effect.focused, `no focused element: ${JSON.stringify(reply.data.effect)}`);
+  assert.equal(reply.data.effect.focused.name, 'Plain focusable');
+  const move = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'move', x: 40, y: 40, epoch: tab.epoch });
+  assert.equal(move.status, 200, JSON.stringify(move.data));
+  assert.deepEqual(move.data.effect, { navigated: false, changed: false, text: '' });
 });

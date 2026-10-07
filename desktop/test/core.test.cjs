@@ -239,23 +239,31 @@ test('identical controls on a different page are a navigation, not an unchanged 
   const tab = { refs: new Set(), generation: 1 };
   const controls = (ref) => [{ ref, role: 'button', name: 'Continue' }];
   settleSnapshot(tab, { url: 'https://a.example/1', title: 'Step', text: '', elements: controls('s1-1') }, 1);
-  const moved = await readEffect(() => ({ url: 'https://a.example/2', title: 'Step', text: '', elements: controls('s2-1') }), tab);
+  const moved = await readEffect(() => ({ url: 'https://a.example/2', title: 'Step', text: '', elements: controls('s2-1'), sameDoc: false }), tab);
   assert.equal(moved.effect.navigated, true);
   assert.equal(moved.effect.changed, true);
   assert.equal(moved.elements[0].ref, 's2-1');
   assert.deepEqual([...tab.refs], ['s2-1']);
+  // A same-document URL change (pushState, hash) is not a navigation.
+  const rerouted = await readEffect(() => ({ url: 'https://a.example/2#frag', title: 'Step', text: '', elements: controls('s3-1'), sameDoc: true }), tab);
+  assert.equal(rerouted.effect.navigated, false);
+  assert.equal(rerouted.effect.url, 'https://a.example/2#frag');
 });
 test('an action read reports the value and focus of the element it touched', async () => {
   const tab = { refs: new Set(), generation: 1 };
   const code = snapshotExpression(2, { effect: true, valueFor: { ref: 's1-1' } });
-  assert.match(code, /const wantEffect = true, valueRef = "s1-1"/);
+  assert.match(code, /const wantEffect = true, wantSettle = false, valueRef = "s1-1"/);
+  assert.match(snapshotExpression(2, { effect: true, settle: true }), /wantSettle = true/, 'only settling reads watch for late mutations');
   assert.match(code, /activeElement === el\)/);
   assert.match(code, /el\.matches\(valueSel\)/);
-  const reply = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's2-1', role: 'input', name: 'Box' }], acted: 'typed text', focused: { index: 1, name: 'Box' } }), tab);
+  const reply = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's2-1', role: 'input', name: 'Box' }], acted: 'typed text', focused: { ref: 's2-1', kept: '', name: 'Box' } }), tab);
   assert.equal(reply.effect.value, 'typed text');
   assert.deepEqual(reply.effect.focused, { ref: 's2-1', name: 'Box' });
-  const same = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's3-1', role: 'input', name: 'Box' }], focused: { index: 1, name: 'Box' } }), tab);
+  const same = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's3-1', role: 'input', name: 'Box' }], focused: { ref: 's3-1', kept: 's2-1', name: 'Box' } }), tab);
   assert.equal(same.effect.focused.ref, 's2-1', 'an unchanged read names the held base ref');
+  // Focus outside the picked controls still reports, with a name only.
+  const plain = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's4-1', role: 'input', name: 'Box' }], focused: { ref: '', kept: '', name: 'Plain div' } }), tab);
+  assert.deepEqual(plain.effect.focused, { name: 'Plain div' });
 });
 test('snapshot bounds clamp and never splice caller text into page code', () => {
   assert.match(snapshotExpression(3), /text\.slice\(0, 6000\)/);

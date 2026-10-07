@@ -456,7 +456,7 @@ function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared
   view.webContents.on('page-title-updated', (_event, title) => { tab.title = title; broadcast(); });
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
   view.webContents.on('did-stop-loading', () => { tab.loading = false; savePreferencesSoon(); broadcast(); });
-  view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.snapshotStamp = null; tab.generation++; if (tab.controller === 'agent') { view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); scheduleVpsMirror(); } broadcast(); });
+  view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.snapshotStamp = null; tab.lastRead = null; tab.generation++; if (tab.controller === 'agent') { view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); scheduleVpsMirror(); } broadcast(); });
   view.webContents.on('page-favicon-updated', (event, favicons) => { resolveFavicon(tab, favicons).catch(() => {}); });
   view.webContents.on('did-navigate-in-page', () => { tab.refs.clear(); tab.generation++; if (tab.controller === 'agent') scheduleVpsMirror(); broadcast(); });
   view.webContents.on('did-fail-load', (_e, code, description, _url, isMainFrame) => {
@@ -949,11 +949,16 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
 }
 // History navigation has no promise. Listeners go on before the trigger so a
 // fast (cached or same-document) navigation cannot finish unobserved.
+// Resolves true when the trigger committed a cross-document main-frame
+// navigation; a same-document history step (did-navigate-in-page) is not one.
 function settleNavigation(wc, trigger, timeout = 15000) {
   return new Promise((resolve) => {
+    let committed = false;
+    const onNav = () => { committed = true; };
     const events = ['did-stop-loading', 'did-navigate-in-page', 'destroyed'];
-    const done = () => { clearTimeout(timer); for (const name of events) wc.off(name, done); resolve(); };
+    const done = () => { clearTimeout(timer); wc.off('did-navigate', onNav); for (const name of events) wc.off(name, done); resolve(committed); };
     const timer = setTimeout(done, timeout);
+    wc.on('did-navigate', onNav);
     for (const name of events) wc.on(name, done);
     try { trigger(); } catch { done(); }
   });
@@ -1018,15 +1023,17 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = 
   backgroundCaptureQueue = capture.catch(() => {});
   return capture;
 }
+const EMPTY_EFFECT = { navigated: false, changed: false, text: '' };
 async function actionEffect(tab, opts) {
   try {
     requireAgentRead(tab);
     const effect = await readEffect((code) => readJs(tab.view.webContents, code, 12000), tab, opts);
     requireAgentRead(tab);
-    return effect;
+    if (effect) return effect;
+    return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.' };
   } catch (error) {
     if (error && error.status === 409) throw error;
-    return null;
+    return { effect: { ...EMPTY_EFFECT }, error: String(error && error.message || error) };
   }
 }
 // A batch step answers with its own payload only: the page state, controls and
@@ -1038,15 +1045,14 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
   const overseer = isOverseer(botId);
   requireActor(tab, botId, body.epoch, true, overseer);
   const wc = tab.view.webContents;
-  const urlBefore = wc.getURL();
   const reply = (payload) => depth > 0 ? payload : actionReply(tab, payload);
-  const finish = async (payload, opts) => depth > 0 ? payload : actionReply(tab, { ...payload, ...((await actionEffect(tab, { urlBefore, ...opts })) || {}) });
+  const finish = async (payload, opts) => depth > 0 ? payload : actionReply(tab, { ...payload, ...(await actionEffect(tab, opts)) });
   if (body.action === 'batch') {
     if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
     const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
     if (!steps.length) throw Object.assign(new Error('batch needs a non-empty steps array (max 25).'), { status: 400 });
     const results = [], started = Date.now();
-    let lastTarget;
+    let lastTarget, sawInput = false;
     for (const step of steps) {
       if (!step || typeof step !== 'object') { results.push({ ok: false, error: 'Invalid step.' }); break; }
       if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ ok: false, error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
@@ -1054,16 +1060,18 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
       try { results.push({ ok: true, ...(await performAction(tab, { ...step, epoch: body.epoch }, botId, 1, isAborted)) }); }
       catch (error) { results.push({ ok: false, error: error.message }); break; }
       if (step.ref !== undefined || step.selector !== undefined) lastTarget = { ref: step.ref, selector: step.selector };
+      if (INPUT_ACTIONS.has(step.action) && step.action !== 'move') sawInput = true;
     }
     // A takeover mid-batch seals the accumulated step results too.
     requireActor(tab, botId, body.epoch, true, overseer);
-    return actionReply(tab, { results, ...((await actionEffect(tab, { urlBefore, target: lastTarget })) || {}), dispatched: true });
+    return actionReply(tab, { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput })), dispatched: true });
   }
   if (body.action === 'read') {
     const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
     requireAgentRead(tab);
     const data = await readJs(wc, snapshotExpression(tab.generation || 0, { maxChars, maxElements: 0, elementMs: 5 }), 12000).catch(() => null);
     requireActor(tab, botId, body.epoch, true, overseer);
+    if (data) tab.docMarked = true;
     return finish({ text: (data && typeof data.text === 'string' ? data.text : ''), dispatched: true });
   }
   if (body.action === 'eval') {
@@ -1179,11 +1187,14 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
     return finish({ value, dispatched: true });
   }
   if (INPUT_ACTIONS.has(body.action)) {
-    const { input, cursor, ...result } = await agentInput.perform(tab, body, botId);
+    const { input, cursor, navigated, ...result } = await agentInput.perform(tab, body, botId);
     if (depth === 0 && body.action !== 'move') tab.refs.clear();
     broadcast();
-    return finish({ ...result, ...(depth === 0 && cursor ? { cursor: { x: cursor.x, y: cursor.y } } : {}), dispatched: true },
-      { target: body.ref !== undefined || body.selector !== undefined ? { ref: body.ref, selector: body.selector } : undefined });
+    const payload = { ...result, ...(depth === 0 && cursor ? { cursor: { x: cursor.x, y: cursor.y } } : {}), dispatched: true };
+    // A move changes no page state; report it without paying for a read.
+    if (body.action === 'move') return depth > 0 ? payload : actionReply(tab, { ...payload, effect: { ...EMPTY_EFFECT } });
+    return finish(payload,
+      { navigated, settle: true, target: body.ref !== undefined || body.selector !== undefined ? { ref: body.ref, selector: body.selector } : undefined });
   }
   let parseWaitMs = 0, didNavigate = false;
   if (body.action === 'navigate') {
@@ -1205,7 +1216,7 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
     const go = body.action === 'back' ? history.canGoBack() && (() => history.goBack())
       : body.action === 'forward' ? history.canGoForward() && (() => history.goForward())
       : () => wc.reload();
-    if (go) { await settleNavigation(wc, go); didNavigate = true; }
+    if (go) didNavigate = await settleNavigation(wc, go);
     // History entries predate the address check, so a back/forward/reload can
     // land on one. will-navigate covers the cases Electron emits it for.
     if (tab.controller === 'agent') {
