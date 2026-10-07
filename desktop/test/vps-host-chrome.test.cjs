@@ -75,12 +75,18 @@ before(async () => {
   for (let i = 0; i < 100 && !fs.existsSync(path.join(data, 'connection.json')); i++) await wait(100);
   connection = JSON.parse(fs.readFileSync(path.join(data, 'connection.json')));
 });
-after(() => {
-  host?.kill();
-  browser?.kill();
+const exited = (child) => new Promise((resolve) => {
+  if (!child || child.exitCode !== null || child.signalCode) return resolve();
+  const force = setTimeout(() => child.kill('SIGKILL'), 3000);
+  child.once('exit', () => { clearTimeout(force); resolve(); });
+  child.kill();
+});
+after(async () => {
   site?.close();
   secret?.close();
-  if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  // Chrome keeps writing to its profile until it is gone, so wait for both exits.
+  await Promise.all([exited(host), exited(browser)]);
+  if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 
 test('real Chromium: an agent page cannot reach loopback or metadata by redirect, pop-up, frame, form, worker or subresource', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
