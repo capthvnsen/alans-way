@@ -45,7 +45,8 @@ jobs:
           - os: windows-latest
             script: package:win
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # Apple's first notarizations for a new Developer ID can take well over half an hour.
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: desktop
