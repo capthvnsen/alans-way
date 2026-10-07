@@ -60,6 +60,19 @@ test('the Windows driver keeps results when the post-step walk fails, sees UIA f
   assert.match(key, /ToUpperInvariant/, 'shift+letter is sent as the capital letter');
 });
 
+test('the Windows helper names a process from its image path first, then falls back, and never caches an unreadable start', () => {
+  const cs = fs.readFileSync(source, 'utf8');
+  const name = cs.slice(cs.indexOf('static string ProcessName(int pid)'), cs.indexOf('static List<App> Apps()'));
+  assert.ok(name.indexOf('ImagePath(pid') < name.indexOf('MainModule'), 'the limited-right image path is tried before MainModule');
+  assert.match(name, /MainModule[\s\S]*process\.ProcessName/, 'ProcessName is the last fallback');
+  assert.match(name, /if \(created != 0 && name\.Length > 0\)/, 'a name is cached only with a readable creation time');
+  assert.match(cs, /static string ExeName\(/);
+  assert.match(cs, /Check\(Rules\.ExeName\("", "Notepad"\) == "Notepad\.exe"/, 'the pure name logic is in the selftest');
+  const check = cs.slice(cs.indexOf('static void CheckApp(int pid)'), cs.indexOf('static double Clean('));
+  assert.ok(check.indexOf('name.Length == 0') < check.indexOf('in_front'), 'an unknown name is still blocked');
+  assert.ok(!/\bout var\b|=> *[{(a-z]/.test(name), 'the name lookup stays C# 5');
+});
+
 test('the Windows helper compiles and drives notepad', async (t) => {
   if (process.platform !== 'win32') return;
   const exe = await win.ensureBinary();
@@ -84,6 +97,7 @@ test('the Windows helper compiles and drives notepad', async (t) => {
   assert.equal(typeof app.name, 'string');
   assert.equal(typeof app.bundleId, 'string');
   assert.equal(typeof app.frontmost, 'boolean');
+  assert.notEqual(app.bundleId, '', 'the helper could not read notepad.exe\'s name, so every action on it is refused as off limits');
   if (app.frontmost) {
     await assert.rejects(win.service.snapshot('bot', notepad.pid), /in front/);
     return;

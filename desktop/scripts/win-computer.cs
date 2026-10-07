@@ -83,6 +83,8 @@ static class WinComputer {
   [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out RECT rect, int size);
   [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(int access, bool inherit, int pid);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll")] static extern bool GetProcessTimes(IntPtr process, out long creation, out long exit, out long kernel, out long user);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool QueryFullProcessImageName(IntPtr process, int flags, StringBuilder name, ref int size);
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, int access, out IntPtr token);
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int infoClass, out int info, int size, out int needed);
 
@@ -196,39 +198,54 @@ static class WinComputer {
   }
 
   class NameEntry {
-    public DateTime Started;
+    public long Created;
     public string Name = "";
   }
 
   static readonly Dictionary<int, NameEntry> processNames = new Dictionary<int, NameEntry>();
 
-  // Empty means the lookup failed; callers that gate access must treat that as blocked.
-  // Cached per pid + start time so a reused pid never inherits an old process's name.
-  static string ProcessName(int pid) {
-    Process process;
-    try { process = Process.GetProcessById(pid); } catch (Exception) { return ""; }
+  // Needs only the limited right Elevated() already uses, so it works for
+  // protected and packaged processes where Process.MainModule is refused.
+  static string ImagePath(int pid, out long created) {
+    created = 0;
+    IntPtr handle = OpenProcess(ProcessQueryLimited, false, pid);
+    if (handle == IntPtr.Zero) return "";
     try {
-      DateTime started = DateTime.MinValue;
-      bool haveStart = false;
-      try { started = process.StartTime; haveStart = true; } catch (Exception) { }
+      long exit, kernel, user;
+      if (!GetProcessTimes(handle, out created, out exit, out kernel, out user)) created = 0;
+      var path = new StringBuilder(1024);
+      int size = path.Capacity;
+      return QueryFullProcessImageName(handle, 0, path, ref size) ? path.ToString(0, size) : "";
+    } finally { CloseHandle(handle); }
+  }
+
+  // Empty means the lookup failed; callers that gate access must treat that as blocked.
+  // Cached per pid + creation time (only when readable) so a reused pid never
+  // inherits an old process's name.
+  static string ProcessName(int pid) {
+    long created;
+    string path = ImagePath(pid, out created);
+    lock (processNames) {
       NameEntry entry;
-      if (haveStart && processNames.TryGetValue(pid, out entry) && entry.Started == started) return entry.Name;
-      string name = "";
-      try { name = Path.GetFileName(process.MainModule.FileName) ?? ""; }
-      // MainModule throws for elevated/protected processes — the ones the
-      // .exe-suffixed blocklist targets — so keep the same filename shape.
-      catch (Exception) {
-        try { name = process.ProcessName; } catch (Exception) { name = ""; }
-        if (name.Length > 0 && !name.EndsWith(".exe")) name += ".exe";
-      }
-      if (haveStart && name.Length > 0) {
-        if (processNames.Count > 256) processNames.Clear();
-        processNames[pid] = new NameEntry { Started = started, Name = name };
-      }
-      return name;
-    } finally {
-      process.Dispose();
+      if (created != 0 && processNames.TryGetValue(pid, out entry) && entry.Created == created) return entry.Name;
     }
+    string name = Rules.ExeName(path, "");
+    if (name.Length == 0) {
+      try {
+        Process process = Process.GetProcessById(pid);
+        try {
+          try { name = Rules.ExeName(process.MainModule.FileName, ""); } catch (Exception) { }
+          if (name.Length == 0) name = Rules.ExeName("", process.ProcessName);
+        } finally { process.Dispose(); }
+      } catch (Exception) { }
+    }
+    if (created != 0 && name.Length > 0) {
+      lock (processNames) {
+        if (processNames.Count > 256) processNames.Clear();
+        processNames[pid] = new NameEntry { Created = created, Name = name };
+      }
+    }
+    return name;
   }
 
   static List<App> Apps() {
@@ -1655,6 +1672,16 @@ static class Rules {
     return false;
   }
 
+  // The blocklist's shape: the exe file name, or the bare process name plus ".exe".
+  public static string ExeName(string path, string processName) {
+    string file = "";
+    try { file = Path.GetFileName(path ?? "") ?? ""; } catch (ArgumentException) { }
+    if (file.Length > 0) return file;
+    string name = processName ?? "";
+    if (name.Length > 0 && !name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name += ".exe";
+    return name;
+  }
+
   // Menu titles compare without accelerator marks, shortcut text, trailing ellipsis or case.
   public static string NormTitle(string title) {
     string text = title ?? "";
@@ -1697,6 +1724,9 @@ static class SelfTest {
     Check(!Rules.Blocked("notepad.exe") && !Rules.Blocked(""), "policy allows");
     Rules.Set(null);
     Check(!Rules.Blocked("consent.exe"), "policy reset");
+    Check(Rules.ExeName("C:\\Windows\\System32\\notepad.exe", "") == "notepad.exe", "exe name from path");
+    Check(Rules.ExeName("", "Notepad") == "Notepad.exe" && Rules.ExeName(null, "calc.exe") == "calc.exe", "exe name from process name");
+    Check(Rules.ExeName("", "") == "" && Rules.ExeName(null, null) == "" && Rules.ExeName("C:\\dir\\", "") == "", "exe name unknown stays empty");
     Check(Rules.NormTitle("&Save As…\tCtrl+S") == "save as", "menu title");
     return checks;
   }
