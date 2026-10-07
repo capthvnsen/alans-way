@@ -353,5 +353,6 @@ if (-not $healthy) {
     Fail "updated but the broker did not report v$wanted; restart it with: Start-ScheduledTask -TaskName AlansWay_Browser"
 }
 
-Update-HermesPlugins
+# The app tools are already updated; a plugin error must stay a warning, never lose the result line.
+try { Update-HermesPlugins } catch { Write-Output "vm-update: plugin update stopped: $($_.Exception.Message)" }
 Write-Result $true ''

@@ -82,7 +82,8 @@ find_checkout() {
     [ -f "$d/desktop/package.json" ] && [ -d "$d/.git" ] && { printf '%s' "$d"; return 0; }
   done
   if [ "$(id -u)" = 0 ]; then
-    for d in /home/*/.local/share/hermes-alans-way/app /root/.local/share/hermes-alans-way/app; do
+    for h in /home/* /root; do
+      d="$h/.local/share/hermes-alans-way/app"
       [ -f "$d/desktop/package.json" ] && [ -d "$d/.git" ] && { printf '%s' "$d"; return 0; }
     done
   fi
@@ -96,10 +97,12 @@ find_data_dir() {
     [ -n "$d" ] && [ -f "$d/config.json" ] && { printf '%s' "$d"; return 0; }
   done
   if [ "$(id -u)" = 0 ]; then
-    for d in /home/*/.local/share/hermes-alans-way/browser /root/.local/share/hermes-alans-way/browser \
-        "/var/root/Library/Application Support/hermes-alans-way/browser"; do
+    for h in /home/* /root; do
+      d="$h/.local/share/hermes-alans-way/browser"
       [ -f "$d/config.json" ] && { printf '%s' "$d"; return 0; }
     done
+    d="/var/root/Library/Application Support/hermes-alans-way/browser"
+    [ -f "$d/config.json" ] && { printf '%s' "$d"; return 0; }
   fi
   return 1
 }
