@@ -486,6 +486,29 @@ function renderCloudOnboarding(card, actions, cloud) {
       actions.append(button('Start fresh', 'secondary-button', () => command('cloud-migrate', { choice: 'fresh' })),
         button('Bring my existing Hermes', 'primary-button', () => command('cloud-migrate', { choice: 'bring' })));
     }
+  } else if (cloud.step === 'model') {
+    card.append(element('h2', '', 'Choose the model login'), element('p', 'settings-note', 'Sign in with your Claude subscription, or paste an Anthropic API key for the agent.'));
+    const status = element('p', 'settings-note', '');
+    const field = element('div', 'field'), lab = element('label', '', 'Anthropic API key'); lab.htmlFor = 'ob-api-key';
+    const input = element('input'); input.id = 'ob-api-key'; input.placeholder = 'sk-ant-…'; input.type = 'password'; input.autocomplete = 'off';
+    field.append(lab, input);
+    card.append(field, status);
+    actions.append(
+      button('Use my Claude subscription', 'primary-button', async () => {
+        status.textContent = 'Starting the sign-in…';
+        const result = await command('cloud-model-subscribe');
+        status.textContent = result?.detail || '';
+        actions.append(button('Check sign-in', 'secondary-button', async () => {
+          status.textContent = 'Checking…';
+          const check = await command('cloud-model-check');
+          if (!check?.done) status.textContent = check?.detail || 'Still waiting.';
+        }));
+      }),
+      button('Save API key', 'secondary-button', async () => {
+        status.textContent = 'Saving…';
+        const result = await command('cloud-model', { choice: 'apikey', key: input.value.trim() });
+        status.textContent = result?.detail || '';
+      }));
   } else if (cloud.step === 'support') {
     card.append(element('h2', '', 'We’re on it'),
       element('p', 'settings-note', 'Something on our side needs a look. The support Discord has the team and your setup details handy.'));

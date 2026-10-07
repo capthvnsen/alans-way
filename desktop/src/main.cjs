@@ -14,6 +14,7 @@ const cloudClaim = require('./cloud-claim.cjs');
 const cloudStatus = require('./cloud-status.cjs');
 const cloudConnect = require('./cloud-connect.cjs');
 const cloudMigrate = require('./cloud-migrate.cjs');
+const cloudModel = require('./cloud-model.cjs');
 const macUpdate = require('./mac-update.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
@@ -84,7 +85,7 @@ const vmUpdater = createVmUpdater({ log: (label, error) => logError(label, error
 const vmProgress = {};
 let vmRetrying = false;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
-let cloudError = '', cloudComputer = null, cloudPollAbort = null;
+let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
 const tabs = new Map();
 const vpsTabs = new Map();
 const recentLinkTabs = new Map();
@@ -734,6 +735,22 @@ function localRun(file, args, { timeoutMs = 10000 } = {}) {
 function sshRun(host, remote, { timeoutMs = 15000 } = {}) {
   return localRun('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host, remote], { timeoutMs });
 }
+// Writes a whole file over stdin so the content never lands in the remote
+// command line (keys would leak into ps otherwise). Leading ~ becomes $HOME
+// inside the double quotes.
+function sshWrite(host, remotePath, content, { timeoutMs = 15000 } = {}) {
+  const target = `"${String(remotePath).replace(/^~/, '$HOME')}"`;
+  return new Promise((resolve) => {
+    const child = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host, `cat > ${target}`], { timeout: timeoutMs });
+    let out = '';
+    child.stdout.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
+    child.stderr.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
+    child.stdin.on('error', () => {});
+    child.on('error', () => resolve({ code: -1, out }));
+    child.on('close', (code) => resolve({ code: code ?? -1, out }));
+    child.stdin.end(content);
+  });
+}
 // The saved VPS SSH path check, shared by Settings and the connect step.
 function testAgentPath() {
   const host = (prefs.vpsBrowser?.sshHost || '').trim();
@@ -1144,6 +1161,59 @@ function registerIpc() {
         setCloudStep(prefs, 'model');
         savePreferences();
         return { done: true, profiles: prefs.cloud.tokenedProfiles };
+      }
+      case 'cloud-model': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        const key = String(value.key || '').trim();
+        if (!/^sk-[\w-]{10,}$/.test(key)) throw new Error('Paste the Anthropic API key (it starts with sk-).');
+        const profile = cloudModel.chooseProfile((await sshRun(host, 'ls ~/.hermes/profiles 2>/dev/null')).out);
+        const envPath = cloudModel.envPathFor(profile);
+        const current = await sshRun(host, cloudConnect.sshReadCommand(envPath));
+        const write = await sshWrite(host, envPath, cloudModel.setEnvValue(current.out, 'ANTHROPIC_API_KEY', key));
+        if (write.code !== 0) return { done: false, detail: 'The key could not be written on the computer.' };
+        const status = await sshRun(host, 'supervisorctl status 2>/dev/null');
+        await sshRun(host, cloudModel.gatewayRestartCommand(status.out), { timeoutMs: 30000 });
+        prefs.cloud = { ...(prefs.cloud || {}), model: 'apikey' };
+        const next = nextCloudStep(prefs, 'model');
+        if (next === 'done') { prefs.cloud.step = 'done'; prefs.onboarded = true; } else setCloudStep(prefs, next);
+        savePreferences();
+        return { done: true, detail: 'API key saved and the gateway restarted.' };
+      }
+      case 'cloud-model-subscribe': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        // The OAuth flow prints a URL once; it opens in the user's browser here
+        // while the remote waits, and cloud-model-check polls for the result.
+        if (!modelAuthChild) {
+          modelAuthChild = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host, cloudModel.authLoginCommand()]);
+          let seen = '', opened = false;
+          const feed = (chunk) => {
+            seen = (seen + chunk).slice(-20000);
+            const url = cloudModel.extractAuthUrl(seen);
+            if (url && !opened) { opened = true; shell.openExternal(url).catch(() => {}); }
+            try { if (win && !win.isDestroyed()) win.webContents.send('workspace:cloud-log', String(chunk)); } catch {}
+          };
+          modelAuthChild.stdout.on('data', feed);
+          modelAuthChild.stderr.on('data', feed);
+          const clear = () => { modelAuthChild = null; };
+          modelAuthChild.on('close', clear);
+          modelAuthChild.on('error', clear);
+        }
+        return { done: false, detail: 'The sign-in page opened in your browser. Finish it there, then check again.' };
+      }
+      case 'cloud-model-check': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        const status = await sshRun(host, 'hermes auth status anthropic 2>/dev/null');
+        if (!cloudModel.authLoggedIn(status.out)) return { done: false, detail: 'Still waiting for the sign-in to finish.' };
+        const supervisor = await sshRun(host, 'supervisorctl status 2>/dev/null');
+        await sshRun(host, cloudModel.gatewayRestartCommand(supervisor.out), { timeoutMs: 30000 });
+        prefs.cloud = { ...(prefs.cloud || {}), model: 'subscription' };
+        const next = nextCloudStep(prefs, 'model');
+        if (next === 'done') { prefs.cloud.step = 'done'; prefs.onboarded = true; } else setCloudStep(prefs, next);
+        savePreferences();
+        return { done: true, detail: 'Signed in.' };
       }
       case 'cloud-discord': shell.openExternal(cloudView().supportUrl); break;
       case 'move-to-applications': return app.moveToApplicationsFolder();
