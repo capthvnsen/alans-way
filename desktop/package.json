@@ -1,7 +1,7 @@
 {
   "name": "alans-way-localapp",
   "productName": "alans-way-localapp",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "A Telegram, local Chromium and remote desktop workspace for Hermes agents.",
   "private": true,
   "license": "GPL-3.0-or-later",
