@@ -842,7 +842,7 @@ function registerIpc() {
         clipboard.writeText([
           "# Alan's Way setup: paste into a terminal on the host running your Hermes gateway",
           `curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/setup.sh | bash -s -- --bot-id ${q(botId)}${bot ? ` --bot-name ${q(bot.name.replace(/'/g, ''))}` : ''}${macSsh ? ` --mac-ssh ${q(macSsh)}` : ''}${HOST_LABEL === 'mac' ? '' : ` --host-os ${HOST_LABEL}`} --timezone ${q(Intl.DateTimeFormat().resolvedOptions().timeZone)} --restart`,
-          '# The bootstrap installs the plugin + hook, configures the browser connector,',
+          '# The bootstrap installs the plugin, configures the browser connector,',
           '# offers to bind the primary route, restarts the gateway, and verifies itself.',
         ].join('\n'));
         break;

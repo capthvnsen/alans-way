@@ -16,7 +16,7 @@ Linux VPS.
    its numeric ID with `getMe` and keep a single active owner of its token. Follow
    [agent setup](agent-setup.md) for profile and connector identity rules.
 3. Install the [agent plugin](https://github.com/capthvnsen/alans-way-agents)
-   on the gateway host using its documented configuration and native plugin/hook
+   on the gateway host using its documented configuration and native plugin
    registration. Start with manual status/handoff verification before enabling
    optional proactive behavior. Each installation has its own credentials and
    device trust; do not distribute a user's app data or Hermes state directory.
@@ -47,7 +47,7 @@ Linux VPS.
 With Hermes, SSH and noVNC already working, deployment is mostly configuration.
 A fresh headless VPS also needs desktop provisioning, display/service lifecycle
 and browser setup. The agents repo's `setup.sh` bootstrap covers the Hermes
-side — plugin, hook, connector config, browser host units, gateway restart,
+side — plugin, connector config, browser host units, gateway restart,
 and primary-route binding — and prints guided steps for the display/VNC stack
 it can't safely automate.
 

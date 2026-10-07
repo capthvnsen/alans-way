@@ -201,7 +201,7 @@ The script is safe to re-run. If `hermes plugins list` already shows
 without a terminal (most agents), add `--non-interactive --bind --proactive
 <yes|no>` after asking the human the proactivity question below; add
 `--profile <name>` for any profile other than `default`. It installs the
-plugin and gateway hook, clones
+plugin and removes the old gateway startup hook, clones
 this repository for the cloud browser, writes the browser services, configures
 the `workspace_browser` MCP server (browser tools named `cua_alans_way_*`,
 desktop tools named `workspace_computer_*`), restarts the gateway and offers to bind the
@@ -215,7 +215,8 @@ primary bot. Answer its prompts:
   then run `~/alans-way-agents/setup.sh --bind --timezone "$MAC_TZ"`.
 - "Turn proactive messages on now?" — do not answer this yourself.
   **Human step — ask them:** "Should your bot be allowed to message you first,
-  with check-ins and follow-ups (at most a few a day, never 22:00–08:00)?" Answer
+  with an occasional check-in while the chat is idle (only 08:00–22:00 your
+  time, backing off when unanswered)?" Answer
   with their choice. If they say no, they can send `/proactivity resume` later.
 
 If it prints `no Xvfb/x11vnc detected`, the cloud browser has no display yet.
@@ -245,7 +246,8 @@ human.
    Expect a tab with the bot's named cursor to appear on the right and the bot
    to reply "Example Domain".
 3. **Human step — tell them:** "Send `/proactivity status` to the bot." Expect
-   it to report the route as bound, and on if they chose proactive messages.
+   it to report the route as bound and show the next check-in time, or that
+   check-ins are off if they declined proactive messages.
 
 Report to the human: what passed, every warning, and anything you skipped.
 

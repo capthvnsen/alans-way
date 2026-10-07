@@ -25,7 +25,7 @@ A desktop app for people running [Hermes Agent](https://github.com/NousResearch/
 | Repo | What it is | Who installs it |
 |---|---|---|
 | **alans-way** (this one) | The desktop app (macOS/Windows/Linux) + companion CLI | You, on your computer |
-| [alans-way-agents](https://github.com/capthvnsen/alans-way-agents) | The plugin: proactivity, workspace skill, auto-routing | Your Hermes gateway (VPS or macOS VM) |
+| [alans-way-agents](https://github.com/capthvnsen/alans-way-agents) | The plugin: idle check-ins, workspace skill, auto-routing | Your Hermes gateway (VPS or macOS VM) |
 
 The app works without the plugin (manual tab sharing), and the plugin falls back to VPS-only browsing when the app isn't running.
 
@@ -35,7 +35,7 @@ The app works without the plugin (manual tab sharing), and the plugin falls back
 - **Host browser.** The app's own Chromium tabs are the bots' window into your computer, driven per-tab through Chromium's debugger by a loopback-only connector.
 - **VPS browser.** A separate managed Chromium on the server handles cloud work and is the fallback for *new* tasks when your computer is asleep. It does not absorb in-flight host tabs — those block and resume.
 - **Remote desktop preview.** Optional. On a Linux server it needs a VNC server plus a noVNC (WebSocket) viewer you already run — the app only embeds the viewer URL you paste in. On a macOS guest VM, `scripts/mac-vm-preview.sh` bridges Tart's VNC display into the same view. Its **Take control** mode is the one place your input is forwarded to the remote desktop.
-- **Plugin proactivity is read/research/draft by default.** The optional primary bot reviews its own work and drafts suggestions on a bounded budget; consequential actions (external messages, purchases, credential or permission changes, production changes, destructive operations) always require your approval.
+- **Plugin proactivity is idle check-ins.** When the chat with the optional primary bot has been quiet for two hours, it checks in once: it does one safe, reversible thing toward your goals and reports it, suggests something it could do, or asks one useful question, or stays silent. Check-ins land only between 08:00 and 22:00 in your timezone and never mid-task; each one left unanswered doubles the wait (toward roughly weekly) and any reply resets it. Consequential actions (external messages, purchases, credential or permission changes, production changes, destructive operations) always require your approval.
 - **No bundled account connections.** Email, calendar, Notion and similar tools exist only if you install and authorize them separately in Hermes — nothing here provisions them.
 
 ## Install the app

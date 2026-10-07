@@ -103,8 +103,10 @@ route (including the path for a Hermes that has never configured Telegram).
 Settings → Agent setup shows a live checklist and copies a pre-filled
 bootstrap command or agent prompt for your setup.
 
-Use `/proactivity status`, `/proactivity pause`, `/proactivity resume`, or
-`/proactivity review` in the primary's Telegram chat here. These commands reach the real
+Use `/proactivity` (or `/proactivity status`) and `/proactivity pause` in the
+primary's Telegram chat here; `more`, `normal`, `resume` and `hours 9-21` are
+operator-only. Asking in plain chat to check in less, pause until a date, or
+stop also works. These commands reach the real
 plugin; the UI does not maintain a second proactivity state. Configure the
 browser MCP entry above on the same primary to let it use the local tabs.
 [The integration contract](docs/integration.md) describes the browser interface.
