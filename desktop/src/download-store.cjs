@@ -7,8 +7,15 @@ const STATES = new Set(['progressing', 'completed', 'cancelled', 'interrupted'])
 // so the user is asked first. Documents and media open without a prompt.
 const RISKY = /\.(app|bat|cmd|com|command|cpl|dll|dmg|exe|hta|inf|jar|js|jse|lnk|msc|msi|msp|pkg|ps1|psm1|py|reg|scpt|scr|sh|url|vb|vbe|vbs|webloc|workflow|ws|wsf|wsh|appimage|desktop|deb|rpm)$/i;
 
+// A download is a PDF when the server or blob said so, or when the saved name
+// says so; a name like report.pdf.exe still fails both ends of the check.
+function isPdf(record) {
+  const mime = String(record?.mime || '').split(';')[0].trim().toLowerCase();
+  return mime === 'application/pdf' || /\.pdf$/i.test(String(record?.name || '')) || /\.pdf$/i.test(String(record?.path || ''));
+}
+
 function describe(record) {
-  return { id: record.id, name: record.name, path: record.path, source: record.source,
+  return { id: record.id, name: record.name, path: record.path, source: record.source, mime: record.mime,
     state: record.state, paused: record.paused === true,
     receivedBytes: record.receivedBytes, totalBytes: record.totalBytes, startedAt: record.startedAt };
 }
@@ -20,6 +27,7 @@ function sanitize(entry) {
   const record = {
     id: String(entry.id || ''), name: String(entry.name || 'download').slice(0, 300),
     path: String(entry.path || '').slice(0, 2000), source: String(entry.source || '').slice(0, 60),
+    mime: String(entry.mime || '').slice(0, 100),
     state: STATES.has(entry.state) ? entry.state : 'interrupted',
     receivedBytes: Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Number(entry.receivedBytes) || 0)),
     totalBytes: Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Number(entry.totalBytes) || 0)),
@@ -29,7 +37,7 @@ function sanitize(entry) {
   return /^[\w-]{8,64}$/.test(record.id) ? record : null;
 }
 
-function createDownloadStore({ getPreferences, savePreferences, onChanged = () => {}, shell, existsSync = () => false, downloadsPath = () => '', progressMs = 250, confirmOpen = async () => false }) {
+function createDownloadStore({ getPreferences, savePreferences, onChanged = () => {}, shell, existsSync = () => false, downloadsPath = () => '', progressMs = 250, confirmOpen = async () => false, openInTab = null }) {
   const live = new Map();
   let progressTimer, restored = false;
   function records() {
@@ -62,6 +70,7 @@ function createDownloadStore({ getPreferences, savePreferences, onChanged = () =
     const record = {
       id: crypto.randomUUID(), name: String(item.getFilename() || 'download').slice(0, 300),
       path: '', source: sourceOf(item.getURL(), scope),
+      mime: String(item.getMimeType?.() || '').slice(0, 100),
       state: STATES.has(item.getState?.()) ? item.getState() : 'progressing',
       receivedBytes: 0, totalBytes: Math.max(0, Number(item.getTotalBytes()) || 0),
       startedAt: Date.now(), paused: false,
@@ -85,6 +94,11 @@ function createDownloadStore({ getPreferences, savePreferences, onChanged = () =
       live.delete(record.id);
       savePreferences();
       notify(true);
+      // Chat attachments arrive through the Telegram session; a finished PDF
+      // opens in a workspace tab instead of surfacing a native dialog.
+      if (record.state === 'completed' && scope === 'telegram' && record.path && openInTab && isPdf(record)) {
+        Promise.resolve(openInTab(record)).catch(() => {});
+      }
     });
     if (item.getState() !== 'interrupted') item.setSaveDialogOptions?.({ title: 'Save download' });
     notify(true);
@@ -98,6 +112,7 @@ function createDownloadStore({ getPreferences, savePreferences, onChanged = () =
   }
   async function open(id) {
     const record = find(id), file = saved(record);
+    if (isPdf(record) && openInTab) return openInTab(record);
     if ((RISKY.test(file) || RISKY.test(record.name)) && !(await confirmOpen(record.name))) return;
     const failure = await shell.openPath(file);
     if (failure) throw new Error(String(failure).slice(0, 300));
@@ -126,4 +141,4 @@ function createDownloadStore({ getPreferences, savePreferences, onChanged = () =
   }
   return { install, list: () => records().map(describe), open, showInFolder, pause, cancel, clear, openFolder };
 }
-module.exports = { createDownloadStore, MAX_DOWNLOADS };
+module.exports = { createDownloadStore, isPdf, MAX_DOWNLOADS };

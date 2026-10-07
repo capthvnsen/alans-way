@@ -1,14 +1,15 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { createDownloadStore, MAX_DOWNLOADS } = require('../src/download-store.cjs');
+const { createDownloadStore, isPdf, MAX_DOWNLOADS } = require('../src/download-store.cjs');
 
 function fakeItem(fields = {}) {
   const listeners = {};
   return {
     fields: { filename: 'report.pdf', savePath: '/tmp/report.pdf', totalBytes: 100, receivedBytes: 0,
-      state: 'progressing', url: 'https://example.com/report.pdf', paused: false, ...fields },
+      state: 'progressing', url: 'https://example.com/report.pdf', paused: false, mimeType: 'application/pdf', ...fields },
     getFilename() { return this.fields.filename; },
     getSavePath() { return this.fields.savePath; },
+    getMimeType() { return this.fields.mimeType; },
     getTotalBytes() { return this.fields.totalBytes; },
     getReceivedBytes() { return this.fields.receivedBytes; },
     getState() { return this.fields.state; },
@@ -26,14 +27,14 @@ function fakeItem(fields = {}) {
   };
 }
 
-function fixture(initial = [], files = { '/tmp/report.pdf': true }, confirmOpen) {
+function fixture(initial = [], files = { '/tmp/report.pdf': true }, confirmOpen, openInTab, scope = 'browser') {
   let prefs = { downloads: initial.map(item => ({ ...item })) }, saved = 0, notices = 0;
   const opened = [], shown = [], session = { handlers: {}, on(name, fn) { (this.handlers[name] ||= []).push(fn); } };
   const store = createDownloadStore({ getPreferences: () => prefs, savePreferences: () => saved++, onChanged: () => notices++, progressMs: 0,
     downloadsPath: () => '/tmp/downloads',
     shell: { openPath: async (file) => { opened.push(file); return ''; }, showItemInFolder: (file) => shown.push(file) },
-    existsSync: (file) => files[file] === true, ...(confirmOpen ? { confirmOpen } : {}) });
-  store.install(session);
+    existsSync: (file) => files[file] === true, ...(confirmOpen ? { confirmOpen } : {}), ...(openInTab ? { openInTab } : {}) });
+  store.install(session, scope);
   return { store, prefs, opened, shown,
     get saved() { return saved; }, get notices() { return notices; },
     start(fields) { const item = fakeItem(fields); (session.handlers['will-download'] || []).forEach(fn => fn({}, item)); return item; } };
@@ -153,4 +154,54 @@ test('a risky file is never opened when nothing can ask the user', async () => {
   const f = fixture([{ id: 'risky-exe-1', name: 'setup.exe', path: '/tmp/setup.exe', state: 'completed', startedAt: 1 }], { '/tmp/setup.exe': true });
   await f.store.open('risky-exe-1');
   assert.deepEqual(f.opened, []);
+});
+
+test('PDF detection trusts the recorded mime, filename or saved path', () => {
+  assert.equal(isPdf({ mime: 'application/pdf', name: 'file.bin' }), true);
+  assert.equal(isPdf({ mime: 'Application/PDF; charset=binary' }), true);
+  assert.equal(isPdf({ name: 'Report.PDF' }), true);
+  assert.equal(isPdf({ path: 'C:\\Users\\user\\Downloads\\scan.pdf' }), true);
+  assert.equal(isPdf({ mime: 'application/octet-stream', name: 'setup.exe' }), false);
+  assert.equal(isPdf({ name: 'report.pdf.exe', path: '/tmp/report.pdf.exe' }), false);
+  assert.equal(isPdf({}), false);
+  assert.equal(isPdf(null), false);
+});
+
+test('a completed Telegram download opens a PDF in a tab, never as a dialog or external app', () => {
+  const inTab = [];
+  const f = fixture([], { '/tmp/report.pdf': true, '/tmp/photos.zip': true }, undefined,
+    async (record) => { inTab.push(record.path); }, 'telegram');
+  const pdf = f.start({ url: 'blob:https://web.telegram.org/doc' });
+  pdf.emit('done', 'completed');
+  assert.deepEqual(inTab, ['/tmp/report.pdf']);
+  const zip = f.start({ filename: 'photos.zip', savePath: '/tmp/photos.zip', mimeType: 'application/zip' });
+  zip.emit('done', 'completed');
+  const cancelled = f.start({ filename: 'later.pdf' });
+  cancelled.emit('done', 'cancelled');
+  assert.deepEqual(inTab, ['/tmp/report.pdf'], 'only the completed PDF opened a tab');
+  assert.equal(f.prefs.downloads.find(item => item.name === 'report.pdf').source, 'Telegram', 'a blob: download names its session, not a fake host');
+});
+
+test('a completed download in the browser session never auto-opens a tab', () => {
+  const inTab = [];
+  const f = fixture([], { '/tmp/report.pdf': true }, undefined, async (record) => { inTab.push(record.path); });
+  const pdf = f.start();
+  pdf.emit('done', 'completed');
+  assert.deepEqual(inTab, []);
+});
+
+test('Open on a PDF download goes to an in-app tab, other files keep the system viewer', async () => {
+  const inTab = [];
+  const files = { '/tmp/report.pdf': true, '/tmp/photo.zip': true };
+  const f = fixture([
+    { id: 'pdf-entry-01', name: 'report.pdf', path: '/tmp/report.pdf', mime: 'application/pdf', state: 'completed', startedAt: 1 },
+    { id: 'pdf-entry-02', name: 'download.bin', path: '/tmp/report.pdf', mime: 'application/pdf', state: 'completed', startedAt: 1 },
+    { id: 'zip-entry-01', name: 'photo.zip', path: '/tmp/photo.zip', state: 'completed', startedAt: 1 },
+  ], files, undefined, async (record) => { inTab.push(record.path); });
+  await f.store.open('pdf-entry-01');
+  await f.store.open('pdf-entry-02');
+  assert.deepEqual(inTab, ['/tmp/report.pdf', '/tmp/report.pdf'], 'the saved path is what the tab opens');
+  assert.deepEqual(f.opened, [], 'no PDF reached the external viewer');
+  await f.store.open('zip-entry-01');
+  assert.deepEqual(f.opened, ['/tmp/photo.zip'], 'non-PDF files still open externally');
 });

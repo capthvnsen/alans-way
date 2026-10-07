@@ -1,7 +1,7 @@
 const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
-const { pathToFileURL } = require('node:url');
+const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
@@ -103,6 +103,10 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
 });
 const downloadStore = createDownloadStore({ getPreferences: () => prefs, savePreferences, onChanged: () => broadcast(),
   shell, existsSync: fs.existsSync, downloadsPath: () => app.getPath('downloads'),
+  // Recorded downloads are the only files a tab may open: the path always
+  // comes from a store record, and agent tabs can never reach file: URLs
+  // (agentPageUrl rejects them and will-navigate blocks in-page file: jumps).
+  openInTab: async (record) => { createTab({ filePath: record.path }); },
   confirmOpen: async (name) => (await dialog.showMessageBox(win, { type: 'warning', buttons: ['Cancel', 'Open anyway'], defaultId: 0, cancelId: 0,
     message: `Open ${name}?`, detail: 'This file can run programs on your computer. Only open it if you trust where it came from.' })).response === 1 });
 let pointerTimer, activityTimer, idleTimer;
@@ -429,12 +433,15 @@ async function resolveFavicon(tab, favicons) {
     apply(dataUrl);
   } catch { apply(''); }
 }
-function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared', controller = 'human', options, skipLoad = false, activate = true, extensionPage = false } = {}) {
+function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedBotId || 'shared', controller = 'human', options, skipLoad = false, activate = true, extensionPage = false } = {}) {
   if (tabs.size >= 40) throw new Error('Close a tab before opening another.');
-  const targetUrl = pageUrl(url, extensionPage);
+  const targetUrl = filePath ? pathToFileURL(filePath).href : pageUrl(url, extensionPage);
+  // plugins: true enables only Chromium's bundled PDF viewer, so a PDF URL
+  // renders in the tab instead of downloading. The rest of the lockdown list
+  // is unchanged, and the extension preload ignores the viewer's own frame.
   const view = new WebContentsView({ ...(options?.webContents ? { webContents: options.webContents } : {}),
     webPreferences: { ...options?.webPreferences, preload: undefined, partition: 'persist:browser', contextIsolation: true, nodeIntegration: false, sandbox: true,
-      webSecurity: true, backgroundThrottling: false } });
+      webSecurity: true, plugins: true, backgroundThrottling: false } });
   view.setBackgroundColor('#0b0b0c');
   const tab = { id: crypto.randomUUID(), view, botId: String(botId).slice(0, 100), controller, extensionPage, epoch: 1, title: 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
   if (controller === 'agent') tab.agentSince = Date.now();
@@ -1501,7 +1508,12 @@ function createWindow() {
   win.loadFile(path.join(ROOT, 'index.html'));
   remoteView.webContents.loadFile(path.join(ROOT, 'remote.html'));
   telegramView.webContents.loadURL(prefs.selectedBotId ? `${TELEGRAM}#${prefs.selectedBotId}` : TELEGRAM).catch(() => {});
-  for (const item of prefs.savedTabs.slice(0, 12)) { try { createTab({ url: item.url, botId: item.botId, activate: false }); } catch {} }
+  for (const item of prefs.savedTabs.slice(0, 12)) {
+    try {
+      if (/^file:\/\//i.test(String(item.url))) createTab({ filePath: fileURLToPath(item.url), botId: item.botId, activate: false });
+      else createTab({ url: item.url, botId: item.botId, activate: false });
+    } catch {}
+  }
   activeTabId = 'home';
   win.on('enter-full-screen', broadcast); win.on('leave-full-screen', broadcast);
   createTray();
