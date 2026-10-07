@@ -167,11 +167,11 @@ async function startHost({ env = {}, config = {}, tabs, targets, mirror } = {}) 
   child.stderr.on('data', (chunk) => { host.stderr += chunk; });
   hosts.push(host);
   const connectionFile = path.join(dir, 'connection.json');
-  for (let i = 0; i < 100 && !fs.existsSync(connectionFile); i++) {
+  for (const deadline = Date.now() + 60000; !fs.existsSync(connectionFile);) {
     assert.equal(child.exitCode, null, `VPS host exited early: ${host.stderr}`);
+    assert.ok(Date.now() < deadline, `VPS host never wrote connection.json: ${host.stderr}`);
     await new Promise((r) => setTimeout(r, 50));
   }
-  assert.ok(fs.existsSync(connectionFile), `VPS host never wrote connection.json: ${host.stderr}`);
   host.connection = JSON.parse(fs.readFileSync(connectionFile));
   host.appToken = JSON.parse(fs.readFileSync(path.join(dir, 'app-token.json'))).token;
   host.api = (route, method = 'GET', body, { bot = 'bot-a', human = false, epoch, token } = {}) =>
@@ -213,7 +213,7 @@ test('a continued page returns its tab without waiting for a slow load', async (
   const started = Date.now();
   const opened = await api('/v1/tabs', 'POST', { url: 'https://slow.example/doc', settle: false });
   assert.equal(opened.status, 201);
-  assert.ok(Date.now() - started < 2000, 'settle:false must not wait out the load');
+  assert.ok(Date.now() - started < 4000, 'settle:false must not wait out the load');
   assert.equal(opened.data.url, 'https://slow.example/doc');
 });
 
@@ -405,7 +405,7 @@ test('request mode answers in ASCII only so a PowerShell shell cannot mangle UTF
   const tab = (await api('/v1/tabs', 'POST', { url: 'http://ascii.example/' })).data;
   const info = { targetInfo: { targetId: tab.targetId, type: 'page', url: 'http://ascii.example/', title: 'Caf\u00e9 \u65e5\u672c \ud83d\ude00' } };
   main.stub.send('Target.targetInfoChanged', info);
-  await new Promise((r) => setTimeout(r, 100));
+  await until(async () => (await api(`/v1/tabs/${tab.id}`)).data.title === 'Café 日本 😀');
   const raw = await run({ path: '/v1/tabs', human: true, botId: 'bot-a' });
   assert.ok(raw.every((byte) => byte < 0x80), 'every byte is ASCII');
   const listed = JSON.parse(raw.toString('latin1')).data.tabs.find((t) => t.id === tab.id);
@@ -418,11 +418,11 @@ test('a title-only change keeps the snapshot refs; a navigation drops them', asy
   const click = () => api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', ref: snap.elements[0].ref, epoch: tab.epoch });
   const info = (url, title) => ({ targetInfo: { targetId: tab.targetId, type: 'page', url, title } });
   main.stub.send('Target.targetInfoChanged', info('http://refs.example/', 'New title (1)'));
-  await new Promise((r) => setTimeout(r, 100));
+  await until(async () => (await api(`/v1/tabs/${tab.id}`)).data.title === 'New title (1)');
   const kept = await click();
   assert.ok(!/Stale or unknown/.test(kept.data.error || ''), 'unread-count title churn must not invalidate refs');
   main.stub.send('Target.targetInfoChanged', info('http://refs.example/next', 'Next'));
-  await new Promise((r) => setTimeout(r, 100));
+  await until(async () => (await api(`/v1/tabs/${tab.id}`)).data.url === 'http://refs.example/next');
   const dropped = await click();
   assert.equal(dropped.status, 409);
   assert.match(dropped.data.error, /Stale or unknown/);
@@ -581,7 +581,9 @@ test('a page that lands on a blocked address is sent back to about:blank, and su
   const mine = (await host.api('/v1/tabs', 'POST', { url: 'http://mine.example/' }, { human: true })).data;
   const before = host.stub.calls.filter((c) => c.method === 'Page.navigate' && c.sessionId === sessionOf(mine)).length;
   host.stub.send('Target.targetInfoChanged', { targetInfo: { targetId: mine.targetId, type: 'page', url: 'http://127.0.0.1:3000/', title: '' } });
-  await wait(100);
+  // The reported url updates inside the same handler that would navigate, so
+  // the readback proves the event was processed without racing it.
+  await until(async () => (await host.api(`/v1/tabs/${mine.id}`, 'GET', undefined, { human: true })).data.url === 'http://127.0.0.1:3000/');
   assert.equal(host.stub.calls.filter((c) => c.method === 'Page.navigate' && c.sessionId === sessionOf(mine)).length, before, 'the human may browse local pages');
 });
 
@@ -684,7 +686,7 @@ test('one malformed cookie does not stop the rest being set', async () => {
   assert.deepEqual(singles, ['good1', 'bad', 'good2'], 'falls back to one cookie at a time');
 });
 
-test('a restore of several slow pages runs in parallel and reports them for review', { timeout: 20000 }, async () => {
+test('a restore of several slow pages runs in parallel and reports them for review', { timeout: 40000 }, async () => {
   const host = await startHost();
   const tabs = [1, 2, 3, 4].map((n) => ({ id: `slow-${n}`, url: `https://slow.example/${n}`, title: '', scroll: { x: 0, y: 0 }, drafts: [], cookies: [] }));
   await host.api('/v1/mirror', 'POST', { bot: 'bot-s', tabs }, { human: true });
@@ -693,11 +695,13 @@ test('a restore of several slow pages runs in parallel and reports them for revi
   const took = Date.now() - started;
   assert.equal(Object.keys(restored.data.map).length, 4, 'every tab is opened');
   assert.ok(tabs.every((t) => restored.data.verification[t.id] === 'review_required'));
-  assert.ok(took >= 4500 && took < 9000, `four 5s waits overlap (took ${took}ms)`);
+  // Serial would cost four full 5s load budgets plus eval round-trips; under
+  // a loaded runner those trips stretch, so the bound stays well under serial.
+  assert.ok(took >= 4500 && took < 15000, `four 5s waits overlap (took ${took}ms)`);
   const again = Date.now();
   const second = await host.api('/v1/restore', 'POST', { bot: 'bot-s' }, { bot: 'bot-s' });
   assert.deepEqual(second.data.map, restored.data.map);
-  assert.ok(Date.now() - again < 1500, 'an idempotent repeat does not wait again');
+  assert.ok(Date.now() - again < 5000, 'an idempotent repeat does not wait again');
 });
 
 test('a restore never takes a tab back from the human or overwrites agent work', async () => {

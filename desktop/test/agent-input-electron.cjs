@@ -35,8 +35,18 @@ h5src.addEventListener('dragstart',()=>log.h5start=true);document.addEventListen
 const humanPage = '<title>Human focus fixture</title><input id="human" value="Human draft stays here"><script>human.focus();human.setSelectionRange(6,11)</script>';
 async function value(wc, expression) { return wc.executeJavaScript(expression); }
 async function eventually(fn, predicate) {
-  for (let i = 0; i < 30; i++) { const result = await fn(); if (predicate(result)) return result; await new Promise(r => setTimeout(r, 40)); }
-  throw new Error('Timed out waiting for browser input.');
+  let result;
+  for (let i = 0; i < 30; i++) { result = await fn(); if (predicate(result)) return result; await new Promise(r => setTimeout(r, 40)); }
+  throw new Error(`Timed out waiting for browser input; last value: ${JSON.stringify(result)}`);
+}
+// Dispatched input is acked over CDP before the renderer applies it, so a
+// page read taken the moment perform resolves can beat the events on a loaded
+// runner. Await the value the action was meant to produce instead.
+const equals = (got, expected) => JSON.stringify(got) === JSON.stringify(expected);
+async function eventuallyEquals(fn, expected) {
+  const got = await eventually(fn, value => equals(value, expected));
+  assert.deepEqual(got, expected);
+  return got;
 }
 app.whenReady().then(async () => {
   server = http.createServer((req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(req.url === '/human' ? humanPage : req.url === '/longform' ? longForm : req.url === '/widgets' ? widgets : fixture); });
@@ -76,15 +86,15 @@ app.whenReady().then(async () => {
   }
   for (const text of ['Discard this value', 'Background typing works', '', 'Final agent text']) {
     await perform({ action: 'type', ref: 's1-1', text });
-    assert.equal(await value(view.webContents, 'entry.value'), text);
+    await eventuallyEquals(() => value(view.webContents, 'entry.value'), text);
   }
   await perform({ action: 'click', ref: 's1-2' });
-  assert.equal(await value(view.webContents, 'result.textContent'), 'Confirmed: Final agent text');
+  await eventuallyEquals(() => value(view.webContents, 'result.textContent'), 'Confirmed: Final agent text');
   await perform({ action: 'type', ref: 's1-1', text: 'Enter submits' });
   await perform({ action: 'press', key: 'Enter' });
-  assert.equal(await value(view.webContents, 'result.textContent'), 'Confirmed: Enter submits');
+  await eventuallyEquals(() => value(view.webContents, 'result.textContent'), 'Confirmed: Enter submits');
   await perform({ action: 'move', x: 420, y: 210 });
-  assert.deepEqual(await value(view.webContents, 'events.filter(e=>e.type==="pointermove").at(-1)'), { type: 'pointermove', trusted: true, key: undefined, x: 420, y: 210 });
+  await eventuallyEquals(() => value(view.webContents, 'events.filter(e=>e.type==="pointermove").at(-1)'), { type: 'pointermove', trusted: true, key: undefined, x: 420, y: 210 });
   assert.match(await value(view.webContents, 'document.getElementById("hermes-workspace-agent-cursor").style.transform'), /420px, 210px/);
   await perform({ action: 'press', key: 'l', modifiers: ['meta'] });
   assert.equal(appShortcutCalls, 0);
@@ -94,32 +104,32 @@ app.whenReady().then(async () => {
   view.setVisible(true);
   await perform({ action: 'type', ref: 's1-1', text: 'Visible agent pane' });
   await perform({ action: 'click', ref: 's1-2' });
-  assert.equal(await value(view.webContents, 'result.textContent'), 'Confirmed: Visible agent pane');
+  await eventuallyEquals(() => value(view.webContents, 'result.textContent'), 'Confirmed: Visible agent pane');
   assert.equal(await value(view.webContents, 'events.filter(e=>["input","click","keydown"].includes(e.type)).every(e=>e.trusted)'), true, 'Input must be trusted Chromium events');
   await view.webContents.loadURL(`${root}/longform`);
   tab.refs = new Set(['s1-1', 's1-2']);
   await view.webContents.executeJavaScript('scrollTo(0,0)');
   await perform({ action: 'type', ref: 's1-1', text: 'Offscreen submit' });
   await perform({ action: 'click', ref: 's1-2' });
-  assert.equal(await value(view.webContents, 'result.textContent'), 'Submitted: Offscreen submit');
+  await eventuallyEquals(() => value(view.webContents, 'result.textContent'), 'Submitted: Offscreen submit');
   await view.webContents.executeJavaScript('scrollTo(0,0)');
   await perform({ action: 'type', ref: 's1-1', text: 'Selector submit' });
   await perform({ action: 'click', selector: 'button[type=submit]' });
-  assert.equal(await value(view.webContents, 'result.textContent'), 'Submitted: Selector submit');
+  await eventuallyEquals(() => value(view.webContents, 'result.textContent'), 'Submitted: Selector submit');
   await view.webContents.loadURL(`${root}/widgets`);
   tab.refs = new Set(['s1-1', 's1-2', 's1-3', 's1-4', 's1-5', 's1-6', 's1-7', 's1-8', 's1-9', 's1-10', 's1-11', 's1-12', 's1-13']);
   const log = () => value(view.webContents, 'JSON.parse(JSON.stringify(window.log))');
   const selection = () => value(view.webContents, '[t.selectionStart,t.selectionEnd]');
   await perform({ action: 'press', ref: 's1-1', key: 'End' });
   await perform({ action: 'press', key: 'a', modifiers: ['meta'] });
-  if (process.platform === 'darwin') assert.deepEqual(await selection(), [0, 11], 'Cmd+A selects the whole field on macOS');
+  if (process.platform === 'darwin') assert.deepEqual(await eventually(selection, got => equals(got, [0, 11])), [0, 11], 'Cmd+A selects the whole field on macOS');
   await perform({ action: 'press', key: 'ArrowLeft', modifiers: ['alt'] });
-  if (process.platform === 'darwin') assert.deepEqual(await selection(), [6, 6], 'Alt+Left moves the caret back one word');
+  if (process.platform === 'darwin') assert.deepEqual(await eventually(selection, got => equals(got, [6, 6])), [6, 6], 'Alt+Left moves the caret back one word');
   await perform({ action: 'type', ref: 's1-1', text: 'hello world' });
   await perform({ action: 'press', key: '.' });
   await perform({ action: 'press', key: "'" });
-  assert.equal(await value(view.webContents, 't.value'), "hello world.'", 'punctuation types its character');
-  assert.deepEqual((await log()).keys.slice(-2), [['.', 'Period', 190], ["'", 'Quote', 222]], 'punctuation keys report their real key, code and keyCode');
+  assert.equal(await eventually(() => value(view.webContents, 't.value'), got => got === "hello world.'"), "hello world.'", 'punctuation types its character');
+  assert.deepEqual((await eventually(log, got => got.keys.length >= 2 && equals(got.keys.slice(-2), [['.', 'Period', 190], ["'", 'Quote', 222]]))).keys.slice(-2), [['.', 'Period', 190], ["'", 'Quote', 222]], 'punctuation keys report their real key, code and keyCode');
   const picked = await perform({ action: 'select', ref: 's1-2', label: 'Beta' });
   assert.deepEqual(picked.matched, { by: 'label', value: 'b', label: 'Beta' });
   await perform({ action: 'select', selector: '#sel', value: 'c' });
@@ -127,20 +137,21 @@ app.whenReady().then(async () => {
   assert.equal(await value(view.webContents, 'sel.value'), 'c');
   await assert.rejects(perform({ action: 'select', ref: 's1-2', label: 'Delta' }), /no option matching.*Alpha/);
   await perform({ action: 'double_click', ref: 's1-3' });
-  assert.equal((await log()).dbl, true, 'double_click produces a trusted dblclick');
+  assert.equal((await eventually(log, got => got.dbl !== undefined)).dbl, true, 'double_click produces a trusted dblclick');
   await perform({ action: 'right_click', ref: 's1-4' });
-  assert.deepEqual((await log()).ctx, [true, 2], 'right_click produces a trusted contextmenu with button 2');
+  assert.deepEqual((await eventually(log, got => got.ctx !== undefined)).ctx, [true, 2], 'right_click produces a trusted contextmenu with button 2');
   await perform({ action: 'drag', ref: 's1-5', toX: 330, toY: await value(view.webContents, 'Math.round(rng.getBoundingClientRect().top + rng.getBoundingClientRect().height / 2)') });
-  assert.ok(Number(await value(view.webContents, 'rng.value')) >= 90, 'dragging a range thumb to its end sets the value');
+  assert.ok(Number(await eventually(() => value(view.webContents, 'rng.value'), v => Number(v) >= 90)) >= 90, 'dragging a range thumb to its end sets the value');
   await perform({ action: 'drag', ref: 's1-6', toRef: 's1-7' });
-  const dragged = await log();
+  const dragged = await eventually(log, got => got.up !== undefined);
   assert.equal(dragged.up, 'dst', 'the button is released over the destination element');
   assert.ok(dragged.moves >= 2, 'the pointer moved with the button held');
   const h5 = await Promise.race([perform({ action: 'drag', ref: 's1-8', toRef: 's1-9' }).then(() => 'settled'), new Promise(resolve => setTimeout(() => resolve('wedged'), 5000))]);
   assert.equal(h5, 'settled', 'a native HTML5 drag cannot wedge the action');
-  assert.deepEqual([(await log()).h5start, (await log()).h5drop], [true, 'h5dst'], 'an HTML5 draggable element starts a drag and drops on the destination');
+  const h5log = await eventually(log, got => got.h5start !== undefined && got.h5drop !== undefined);
+  assert.deepEqual([h5log.h5start, h5log.h5drop], [true, 'h5dst'], 'an HTML5 draggable element starts a drag and drops on the destination');
   await perform({ action: 'click', ref: 's1-10' });
-  assert.deepEqual(await value(view.webContents, 'submits'), [['f1', 'which=primary']], 'a submit click submits once, with its button as the submitter');
+  assert.deepEqual(await eventually(() => value(view.webContents, 'submits'), got => got.length === 1), [['f1', 'which=primary']], 'a submit click submits once, with its button as the submitter');
   await perform({ action: 'click', ref: 's1-11' });
   assert.equal((await value(view.webContents, 'submits')).length, 1, 'a click the page cancels does not submit');
   await assert.rejects(perform({ action: 'click', ref: 's1-12' }), /missing or disabled/);

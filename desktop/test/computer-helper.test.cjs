@@ -27,8 +27,16 @@ test('a crashed helper is replaced on the next request', async (t) => {
   t.after(() => helper.close());
   const first = await helper.request({ cmd: 'snapshot', pid: 5 });
   process.kill(first.helper, 'SIGKILL');
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  const second = await helper.request({ cmd: 'snapshot', pid: 5 });
+  // The 'close' event that marks the child dead can lag on a loaded runner;
+  // retry until the helper replaces it instead of assuming it already did.
+  let second;
+  for (const deadline = Date.now() + 10000;;) {
+    try { second = await helper.request({ cmd: 'snapshot', pid: 5, timeoutMs: 1000 }); break; }
+    catch (e) {
+      if (Date.now() > deadline) throw e;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
   assert.notEqual(first.helper, second.helper);
 });
 

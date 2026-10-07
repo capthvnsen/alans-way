@@ -40,9 +40,19 @@ function snapshotExpression(generation, opts = {}) {
       const settleStart = performance.now();
       // Dispatch is over by the time this read runs; a close probe lost to a
       // failed dispatch leaves the window open, so close it here with the
-      // same grace.
+      // same grace. While the close is still waiting out delivery, though,
+      // the input has not reached the page: sealing now would drop the work
+      // that late input starts, so the delivery-bound seal closes it instead.
       const armed = followUp && followUp.cur;
-      if (armed && armed.open) { armed.closing = true; armed.open = false; if (!armed.until) armed.until = performance.now() + ${FOLLOW_UP_GRACE_MS}; }
+      if (armed && armed.open) {
+        armed.closing = true;
+        if (typeof followUp.seal === 'function' && !armed.delivered) {
+          if (!armed.sealT) armed.sealT = setT(() => followUp.seal(armed), ${FOLLOW_UP_DELIVERY_MS});
+        } else {
+          armed.open = false;
+          if (!armed.until) armed.until = performance.now() + ${FOLLOW_UP_GRACE_MS};
+        }
+      }
       await new Promise((finish) => {
         const own = (node) => {
           const el = node && node.nodeType === 1 ? node : node && node.parentElement;

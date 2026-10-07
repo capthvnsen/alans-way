@@ -332,9 +332,12 @@ test('a link click waits for a slow load to start, but an in-page route change e
   watchSlow.stop();
   const spa = new EventEmitter();
   const watchSpa = watchNavigation(spa, delay);
-  setTimeout(() => spa.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true }), 20);
+  let emittedAt = 0;
+  setTimeout(() => { emittedAt = Date.now(); spa.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true }); }, 20);
   started = Date.now();
   await watchSpa.settle(true);
-  assert.ok(Date.now() - started < 300, 'an in-page route change does not wait out the window');
+  // Measure from the emit: a starved runner defers the timer itself, and what
+  // must be prompt is the end of the wait once the route change was seen.
+  assert.ok(emittedAt > 0 && Date.now() - emittedAt < 250, 'an in-page route change does not wait out the window');
   watchSpa.stop();
 });

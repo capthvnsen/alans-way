@@ -180,13 +180,16 @@ app.whenReady().then(async () => {
   assert.equal(jpeg.mimeType, 'image/jpeg', 'screenshots default to jpeg');
   // Both inactive views occupy the same hidden host. Capturing the first must
   // still return its own pixels and the complete viewport, not the top view.
-  const image = nativeImage.createFromBuffer(Buffer.from((await api(`/v1/tabs/${colored[0].id}/screenshot?format=png&maxWidth=10000`)).base64, 'base64'));
+  const grab = () => api(`/v1/tabs/${colored[0].id}/screenshot?format=png&maxWidth=10000`).then(shot => nativeImage.createFromBuffer(Buffer.from(shot.base64, 'base64')));
+  const image = await grab();
   const redWc = webContents.getAllWebContents().find(item => item.getURL().endsWith('/red'));
   const viewport = await redWc.executeJavaScript('({width:innerWidth,height:innerHeight,scale:devicePixelRatio})');
   assert.deepEqual(image.getSize(), { width: Math.round(viewport.width * viewport.scale), height: Math.round(viewport.height * viewport.scale) });
-  const pixel = image.toBitmap();
+  // A loaded runner can return a frame captured before the page's raster
+  // lands; recapture until the red is actually in the pixels.
+  const pixel = await waitFor(async () => (await grab()).toBitmap().subarray(0, 3), px => px[2] > 200 && px[1] < 80 && px[0] < 80);
   // BGRA; the display's color profile shifts pure sRGB red slightly.
-  const [b, g, r] = pixel.subarray(0, 3);
+  const [b, g, r] = pixel;
   assert.ok(r > 200 && g < 80 && b < 80, `A background screenshot contains its own red pixels (got r=${r} g=${g} b=${b}).`);
   assertHumanFocus();
   const tabsBeforeShortcuts = (await evaluate('window.workspace.getState()')).tabs.length;

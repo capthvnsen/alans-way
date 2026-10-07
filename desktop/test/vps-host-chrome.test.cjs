@@ -25,7 +25,7 @@ function findChrome() {
 const chrome = findChrome();
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 
-let dir, profile, browser, host, site, secret, pa, pb, hits, connection, stderr = '', cdpPort;
+let dir, profile, browser, host, site, secret, pa, pb, hits, marks, connection, stderr = '', cdpPort;
 const api = (route, method = 'GET', body, epoch) =>
   fetch(connection.url + route, {
     method,
@@ -33,6 +33,15 @@ const api = (route, method = 'GET', body, epoch) =>
     ...(body ? { body: JSON.stringify(body) } : {}),
   }).then(async (r) => ({ status: r.status, data: await r.json() }));
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+// Host bookkeeping (blocked stamps, reaping, attaches) lands asynchronously;
+// await the condition instead of trusting a fixed sleep on a busy runner.
+const until = async (fn, ms = 15000) => {
+  for (const deadline = Date.now() + ms; ;) {
+    const value = await fn();
+    if (value || Date.now() > deadline) return value;
+    await wait(100);
+  }
+};
 const call = (conn, appToken) => (route, method = 'GET', body, { bot = 'chrome-bot', human = false, epoch } = {}) =>
   fetch(conn.url + route, {
     method,
@@ -46,6 +55,15 @@ const call = (conn, appToken) => (route, method = 'GET', body, { bot = 'chrome-b
     ...(body ? { body: JSON.stringify(body) } : {}),
   }).then(async (r) => ({ status: r.status, data: await r.json() }));
 const extraHosts = [];
+// Child processes publish their endpoints through files; a loaded runner can
+// take tens of seconds to get there, so wait long and fail on an early exit.
+async function ready(file, child, stderrOf = () => '') {
+  for (const deadline = Date.now() + 60000; !fs.existsSync(file);) {
+    assert.equal(child.exitCode, null, `${path.basename(file)}: process exited early: ${stderrOf()}`);
+    assert.ok(Date.now() < deadline, `${path.basename(file)} never appeared: ${stderrOf()}`);
+    await wait(100);
+  }
+}
 async function spawnHost(env) {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vps-reap-'));
   const data = path.join(d, 'data');
@@ -62,8 +80,7 @@ async function spawnHost(env) {
   const rec = { child, dir: d, stderr: '' };
   child.stderr.on('data', (c) => { rec.stderr += c; });
   extraHosts.push(rec);
-  for (let i = 0; i < 100 && !fs.existsSync(path.join(data, 'connection.json')); i++) await wait(100);
-  assert.ok(fs.existsSync(path.join(data, 'connection.json')), `extra host never wrote connection.json: ${rec.stderr}`);
+  await ready(path.join(data, 'connection.json'), child, () => rec.stderr);
   rec.api = call(
     JSON.parse(fs.readFileSync(path.join(data, 'connection.json'))),
     JSON.parse(fs.readFileSync(path.join(data, 'app-token.json'))).token,
@@ -83,25 +100,33 @@ before(async () => {
     '/redir': (res) => { res.writeHead(302, { Location: T + '?redir' }); res.end(); },
     '/redir-cred': (res) => { res.writeHead(302, { Location: `http://u:p@127.0.0.1:${pb}/secret?cred` }); res.end(); },
     '/redir-dec': (res) => { res.writeHead(302, { Location: `http://2130706433:${pb}/secret?dec` }); res.end(); },
-    '/sub': page(`<script>fetch('${T}?fetch',{mode:'no-cors'}).catch(()=>{});var x=new XMLHttpRequest();x.open('GET','${T}?xhr');x.send();new Image().src='${T}?img';try{new WebSocket('ws://127.0.0.1:${pb}/ws')}catch(e){}navigator.sendBeacon('${T}?beacon','x')</script>sub`),
-    '/iframe': page(`<iframe src="${T}?iframe"></iframe>`),
+    // Each page marks the fixture server once its attempts are issued, so the
+    // test awaits real progress instead of a fixed sleep. A mark request is
+    // answered after every request the page issued before it.
+    '/sub': page(`<script>fetch('${T}?fetch',{mode:'no-cors'}).catch(()=>{});var x=new XMLHttpRequest();x.open('GET','${T}?xhr');x.send();new Image().src='${T}?img';try{new WebSocket('ws://127.0.0.1:${pb}/ws')}catch(e){}navigator.sendBeacon('${T}?beacon','x');fetch('/mark?sub',{mode:'no-cors'}).catch(()=>{})</script>sub`),
+    '/iframe': page(`<iframe src="${T}?iframe"></iframe><script>fetch('/mark?iframe',{mode:'no-cors'}).catch(()=>{})</script>`),
     '/form': page(`<form id=f method=post action="${T}?form"><input name=a value=1></form><script>f.submit()</script>`),
-    '/worker.js': (res) => { res.setHeader('content-type', 'application/javascript'); res.end(`fetch('${T}?worker',{mode:'no-cors'})`); },
+    '/worker.js': (res) => { res.setHeader('content-type', 'application/javascript'); res.end(`fetch('${T}?worker',{mode:'no-cors'}).then(function(){},function(){fetch('/mark?worker',{mode:'no-cors'}).catch(function(){})})`); },
     '/worker': page(`<script>new Worker('/worker.js')</script>worker`),
-    '/pop': page(`<script>setTimeout(()=>window.open("${T}?pop"),300)</script>pop`),
-    '/pop-userinfo': page(`<script>setTimeout(()=>window.open("http://u:p@127.0.0.1:${pb}/secret?popcred"),300)</script>pop`),
-    '/pop-blank': page(`<script>setTimeout(()=>{var w=window.open("about:blank");w.location="${T}?popblank"},300)</script>pop`),
+    '/pop': page(`<script>setTimeout(()=>{window.open("${T}?pop");fetch('/mark?pop',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
+    '/pop-userinfo': page(`<script>setTimeout(()=>{window.open("http://u:p@127.0.0.1:${pb}/secret?popcred");fetch('/mark?pop-userinfo',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
+    '/pop-blank': page(`<script>setTimeout(()=>{var w=window.open("about:blank");if(w)w.location="${T}?popblank";fetch('${T}?popblank-fetch',{mode:'no-cors'}).catch(()=>{});fetch('/mark?pop-blank',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/ok': page('<p id=ok>ok</p>' + '<img src="/i.png?1"><img src="/i.png?2"><img src="/i.png?3">'),
     '/i.png': (res) => { res.setHeader('content-type', 'image/png'); res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')); },
   };
-  site = http.createServer((req, res) => (routes[new URL(req.url, 'http://x').pathname] || page('fixture'))(res));
+  marks = new Set();
+  site = http.createServer((req, res) => {
+    const pathname = new URL(req.url, 'http://x').pathname;
+    if (pathname === '/mark') { marks.add(req.url.slice(6)); res.end('ok'); return; }
+    (routes[pathname] || page('fixture'))(res);
+  });
   pa = await listen(site);
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vps-chrome-'));
   profile = path.join(dir, 'profile');
   browser = spawn(chrome, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-sandbox',
     '--host-resolver-rules=MAP test.example 127.0.0.1', 'about:blank'], { stdio: 'ignore' });
   const portFile = path.join(profile, 'DevToolsActivePort');
-  for (let i = 0; i < 100 && !fs.existsSync(portFile); i++) await wait(100);
+  await ready(portFile, browser);
   cdpPort = fs.readFileSync(portFile, 'utf8').split('\n')[0];
   const data = path.join(dir, 'data');
   fs.mkdirSync(data);
@@ -110,7 +135,7 @@ before(async () => {
   delete env.HERMES_WORKSPACE_ALLOW_LOOPBACK;
   host = spawn(process.execPath, [path.join(__dirname, '../scripts/vps-browser-host.cjs'), 'serve'], { env, stdio: ['ignore', 'ignore', 'pipe'] });
   host.stderr.on('data', (c) => { stderr += c; });
-  for (let i = 0; i < 100 && !fs.existsSync(path.join(data, 'connection.json')); i++) await wait(100);
+  await ready(path.join(data, 'connection.json'), host, () => stderr);
   connection = JSON.parse(fs.readFileSync(path.join(data, 'connection.json')));
 });
 const exited = (child) => new Promise((resolve) => {
@@ -131,9 +156,36 @@ after(async () => {
 });
 
 test('real Chromium: an agent page cannot reach loopback or metadata by redirect, pop-up, frame, form, worker or subresource', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
-  const cases = ['redir', 'redir-cred', 'redir-dec', 'sub', 'iframe', 'form', 'worker', 'pop', 'pop-userinfo', 'pop-blank'];
-  await Promise.all(cases.map((name) => api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/${name}` })));
-  await wait(3000);
+  // A denied navigation makes the open reply an error but leaves the tab
+  // stamped, so each case is matched by the blocked url it was caught on.
+  const openCase = (name) => api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/${name}` }).then((r) => r.data);
+  const seenBlockedUrl = (frag, ms) => until(async () =>
+    (await api('/v1/tabs')).data.tabs.some((t) => t.blocked && String(t.blocked.url).includes(frag)), ms);
+  // Cases are serial so the tab cap cannot retire one before it is checked. A
+  // page-side mark proves every in-page attempt was issued and answered (the
+  // mark's own request is handled after every request the page made earlier).
+  for (const [name, frag] of [['redir', '?redir'], ['redir-cred', '?cred'], ['redir-dec', '?dec'], ['form', '?form']]) {
+    await openCase(name);
+    assert.ok(await seenBlockedUrl(frag), `${name} was never sent back\n${stderr}`);
+  }
+  for (const name of ['sub', 'iframe', 'worker']) {
+    await openCase(name);
+    assert.ok(await until(() => marks.has(name)), `${name} never reported its attempts\n${stderr}`);
+  }
+  // window.open without user activation may be eaten by Chrome itself; the
+  // mark still proves the call ran, and any popup the host did see stamps a
+  // tab, which is given a bounded window to arrive.
+  for (const [name, frag] of [['pop', '?pop'], ['pop-userinfo', '?popcred']]) {
+    await openCase(name);
+    assert.ok(await until(() => marks.has(name)), `${name} never reported its popup attempt\n${stderr}`);
+    await seenBlockedUrl(frag, 2500);
+  }
+  await openCase('pop-blank');
+  assert.ok(await until(() => marks.has('pop-blank')), `pop-blank never reported its attempt\n${stderr}`);
+  await seenBlockedUrl('popblank', 2500);
+  // A leaked request lands within a hop of being continued; drain a short
+  // straggler window so nothing hides behind the awaits.
+  for (let i = 0; i < 6 && hits.every((h) => h.startsWith('UPGRADE ')); i++) await wait(50);
   // WebSocket handshakes are invisible to the Fetch domain: a documented gap, so only they may arrive.
   const reached = hits.filter((h) => !h.startsWith('UPGRADE '));
   assert.deepEqual(reached, [], `loopback server was reached: ${reached.join(', ')}\n${stderr}`);
@@ -147,7 +199,10 @@ test('real Chromium: an agent page cannot reach loopback or metadata by redirect
   assert.equal(loadedImages.data.value, 3, 'ordinary subresources still load through the filter');
   const viaEval = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: `location.href='http://u@127.0.0.1:${pb}/secret?eval';1`, epoch: ok.epoch });
   assert.equal(viaEval.status, 200);
-  await wait(1500);
+  // The probe's own request passes through the same Fetch check that stopped
+  // the navigation, so its rejection is the awaited proof the guard ran.
+  const probe = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: `fetch('http://127.0.0.1:${pb}/secret?eval-probe',{mode:'no-cors'}).then(function(){return 'reached'},function(){return 'denied'})`, epoch: ok.epoch });
+  assert.equal(probe.data && probe.data.value, 'denied', `the request guard did not stop the probe: ${JSON.stringify(probe.data)}`);
   assert.deepEqual(hits.filter((h) => !h.startsWith('UPGRADE ')), [], 'script navigation is stopped too');
 });
 
@@ -228,7 +283,10 @@ test('real Chromium: a tab mid-action is never reaped', { skip: !chrome && 'no C
   const open = () => ha('/v1/tabs', 'POST', { url: `http://test.example:${pa}/ok` }, { bot: 'busy-bot' });
   const busy = (await open()).data;
   const pending = ha(`/v1/tabs/${busy.id}/actions`, 'POST', { action: 'wait', text: 'never-appears-xyzzy', timeout: 2500, epoch: busy.epoch }, { bot: 'busy-bot' });
-  await wait(300);
+  // The reaper consults pendingActions, which /v1/status reports as busy, so
+  // await the flag instead of guessing when the request has been picked up.
+  const busySeen = await until(() => ha('/v1/status').then((r) => r.data.busy === true));
+  assert.ok(busySeen, 'the wait action never registered as in-flight');
   const other = (await open()).data;
   const third = await open();
   assert.deepEqual((third.data.closedTabs || []).map((t) => t.tabId), [other.id], 'only the idle sibling is reaped');

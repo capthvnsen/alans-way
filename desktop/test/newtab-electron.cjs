@@ -45,11 +45,20 @@ app.whenReady().then(async () => {
   assert.ok(await evaluate('document.getElementById("home").classList.contains("hidden")'), 'The home empty state hides behind a real tab.');
   await invoke('control', { id: tab.id, controller: 'agent' });
   const connection = JSON.parse(fs.readFileSync(path.join(profile, 'connection.json')));
-  const shot = await fetch(`${connection.url}/v1/tabs/${tab.id}/screenshot`, { headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'shared' } });
-  assert.equal(shot.status, 200, await shot.clone().text());
-  const bitmap = nativeImage.createFromBuffer(Buffer.from((await shot.json()).base64, 'base64')).toBitmap();
-  let bright = 0;
-  for (let i = 0; i < bitmap.length; i += 4) if (bitmap[i] > 100) bright++;
+  // readyState covers the document, not the backdrop's decode and raster: a
+  // loaded runner can return a still-dark first frame, so capture until the
+  // image is actually on screen.
+  let bright = 0, status = 0;
+  await waitFor(async () => {
+    const shot = await fetch(`${connection.url}/v1/tabs/${tab.id}/screenshot`, { headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'shared' } });
+    status = shot.status;
+    if (status !== 200) return false;
+    const bitmap = nativeImage.createFromBuffer(Buffer.from((await shot.json()).base64, 'base64')).toBitmap();
+    bright = 0;
+    for (let i = 0; i < bitmap.length; i += 4) if (bitmap[i] > 100) bright++;
+    return bright > 500;
+  }, Boolean);
+  assert.equal(status, 200, 'the screenshot endpoint answered');
   assert.ok(bright > 500, `The backdrop image renders inside the tab (${bright} bright pixels).`);
   const capturePage = newtabWc.capturePage;
   newtabWc.capturePage = () => Promise.reject(new Error('UnknownVizError'));
