@@ -124,6 +124,18 @@ function isSshTarget(value) {
   return typeof value === 'string' && value.length <= 200 && /^(?:[A-Za-z0-9][A-Za-z0-9._-]*@)?[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value);
 }
 
+// Which machine a browser tab runs on: 'computer' is the user's own machine,
+// 'vm' is the connector host's browser. Unknown values resolve to undefined;
+// the plugin router keeps the same alias table.
+const HOST_ALIASES = {
+  computer: 'computer', mac: 'computer', windows: 'computer', linux: 'computer', local: 'computer', pc: 'computer',
+  vm: 'vm', vps: 'vm', remote: 'vm', server: 'vm',
+};
+function normalizeHost(value) {
+  if (value === undefined || value === null) return undefined;
+  return HOST_ALIASES[String(value).trim().toLowerCase()];
+}
+
 function requireActor(tab, botId, epoch, mutate = false, overseer = false) {
   if (!botId || typeof botId !== 'string' || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
   if (!overseer && tab.botId !== botId && !(tab.allowedBots || []).includes(botId)) {
@@ -206,4 +218,4 @@ function hostShouldReload(mtime, started, inFlight) {
   return inFlight === 0 && Number(mtime) > Number(started);
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload };
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload };
