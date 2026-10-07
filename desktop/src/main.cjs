@@ -12,6 +12,7 @@ const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
 const cloudStatus = require('./cloud-status.cjs');
+const cloudConnect = require('./cloud-connect.cjs');
 const macUpdate = require('./mac-update.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
@@ -715,6 +716,93 @@ function startCloudOnboarding() {
   showWindow();
   broadcast();
 }
+// Local and remote probes for the connect step. Both cap output so a chatty
+// remote can never grow memory without bound.
+function localRun(file, args, { timeoutMs = 10000 } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(file, args, { timeout: timeoutMs });
+    let out = '';
+    child.stdout.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
+    child.stderr.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
+    child.on('error', () => resolve({ code: -1, out }));
+    child.on('close', (code) => resolve({ code: code ?? -1, out }));
+  });
+}
+function sshRun(host, remote, { timeoutMs = 15000 } = {}) {
+  return localRun('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host, remote], { timeoutMs });
+}
+// The saved VPS SSH path check, shared by Settings and the connect step.
+function testAgentPath() {
+  const host = (prefs.vpsBrowser?.sshHost || '').trim();
+  const mac = (prefs.macSshHost || '').trim();
+  if (!host) throw new Error('Save a VPS browser SSH host first.');
+  if (!isSshTarget(host)) throw new Error('The saved VPS SSH address is invalid. Re-enter it as user@host or host.');
+  if (!mac) throw new Error(`Enter this ${HOST_LABEL === 'windows' ? 'PC' : 'computer'}’s SSH address as your VPS reaches it.`);
+  if (!isSshTarget(mac)) throw new Error('The saved SSH address for this computer is invalid. Re-enter it as user@host or host.');
+  return new Promise((resolve) => {
+    const child = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host,
+      `ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=yes ${mac} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
+    let out = '';
+    child.stdout.on('data', chunk => { out += chunk; });
+    child.stderr.on('data', chunk => { out += chunk; });
+    child.on('error', () => resolve({ ok: false, detail: 'Could not start ssh. Check local ssh access.' }));
+    child.on('close', code => resolve(out.includes('AGENT_PATH_OK')
+      ? { ok: true, detail: `VPS reaches this ${HOST_LABEL === 'mac' ? 'Mac' : HOST_LABEL === 'windows' ? 'PC' : 'computer'} over ssh, so agents can route here.` }
+      : out.includes('Tailscale SSH requires an additional check')
+        ? { ok: false, detail: 'Tailscale SSH on the VPS wants a browser check for this login, which unattended agents cannot pass. In the Tailscale admin console → Access controls, change the SSH rule for this user from "check" to "accept".' }
+        : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
+  });
+}
+// The connect step advances as far as it can each click: CLI check, pairing
+// status, the computer's own state file, then the saved return path check.
+// {stage} tells the wizard which message to show; 'done' moves to migrate.
+async function cloudConnectRun(diyHost) {
+  const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+  if (diyHost) {
+    if (!isSshTarget(diyHost)) throw new Error('Enter the server SSH address as user@host or host, with no spaces or symbols.');
+    cloud.diy = true;
+    cloud.step = 'connect';
+    prefs.vpsBrowser = { ...(prefs.vpsBrowser || {}), sshHost: diyHost };
+    prefs.cloud = cloud;
+    savePreferences();
+  }
+  if (cloud.diy === true) {
+    const sshHost = (prefs.vpsBrowser?.sshHost || '').trim();
+    if (!sshHost) return { stage: 'host', ok: false, detail: 'Enter the server SSH address first.' };
+    const probe = await sshRun(sshHost, 'echo CONNECT_OK');
+    if (probe.code !== 0 || !probe.out.includes('CONNECT_OK')) return { stage: 'ssh', ok: false, detail: `Could not reach ${sshHost} over SSH. Check the address and your key, then try again.` };
+    const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
+    if (remote?.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the server failed.' };
+    if ((prefs.macSshHost || '').trim()) {
+      const path = await testAgentPath();
+      if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
+    }
+    setCloudStep(prefs, 'migrate');
+    savePreferences();
+    return { stage: 'done', ok: true, detail: `Connected to ${sshHost}.` };
+  }
+  const cli = cloudConnect.tailscaleCli();
+  if (!cli) return { stage: 'cli', ok: false, detail: 'Tailscale is not installed on this computer. Install it, then check again.' };
+  const url = cloud.tailscaleUrl || cloudComputer?.tailscale_url || '';
+  if (url && !cloud.pairingOpened) { shell.openExternal(url).catch(() => {}); cloud.pairingOpened = true; prefs.cloud = cloud; savePreferencesSoon(); }
+  const status = await localRun(...cloudConnect.pairPollCommand(cli));
+  const name = cloud.computerName || cloudComputer?.computer_name || '';
+  const peer = status.code === 0 ? cloudConnect.findPeer(status.out, name) : null;
+  if (!peer) return { stage: 'pairing', ok: false, detail: url ? 'Waiting for the computer to join your tailnet. Finish the pairing page, then check again.' : 'Waiting for the computer to join your tailnet…' };
+  const sshHost = `root@${peer.ip}`;
+  if (prefs.vpsBrowser?.sshHost !== sshHost) { prefs.vpsBrowser = { ...(prefs.vpsBrowser || {}), sshHost }; savePreferences(); }
+  const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
+  if (!remote) return { stage: 'state', ok: false, detail: 'The computer joined Tailscale. Waiting for its setup to finish…' };
+  if (remote.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the computer failed.' };
+  if (remote.state !== 'ready' && remote.step !== 'paired') return { stage: 'state', ok: false, detail: 'The computer is still finishing its setup…' };
+  if ((prefs.macSshHost || '').trim()) {
+    const path = await testAgentPath();
+    if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
+  }
+  setCloudStep(prefs, 'migrate');
+  savePreferences();
+  return { stage: 'done', ok: true, detail: `Connected to ${name || peer.hostName} at ${sshHost}.` };
+}
 async function claimWithToken(token) {
   if (!token) return;
   if (cloudSession()) { startCloudOnboarding(); return; }
@@ -926,27 +1014,7 @@ function registerIpc() {
         if (value?.copy !== false) clipboard.writeText(text);
         return text;
       }
-      case 'test-agent-path': {
-        const host = (prefs.vpsBrowser?.sshHost || '').trim();
-        const mac = (prefs.macSshHost || '').trim();
-        if (!host) throw new Error('Save a VPS browser SSH host first.');
-        if (!isSshTarget(host)) throw new Error('The saved VPS SSH address is invalid. Re-enter it as user@host or host.');
-        if (!mac) throw new Error(`Enter this ${HOST_LABEL === 'windows' ? 'PC' : 'computer'}’s SSH address as your VPS reaches it.`);
-        if (!isSshTarget(mac)) throw new Error('The saved SSH address for this computer is invalid. Re-enter it as user@host or host.');
-        return new Promise((resolve) => {
-          const child = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host,
-            `ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=yes ${mac} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
-          let out = '';
-          child.stdout.on('data', chunk => { out += chunk; });
-          child.stderr.on('data', chunk => { out += chunk; });
-          child.on('error', () => resolve({ ok: false, detail: 'Could not start ssh. Check local ssh access.' }));
-          child.on('close', code => resolve(out.includes('AGENT_PATH_OK')
-            ? { ok: true, detail: `VPS reaches this ${HOST_LABEL === 'mac' ? 'Mac' : HOST_LABEL === 'windows' ? 'PC' : 'computer'} over ssh, so agents can route here.` }
-            : out.includes('Tailscale SSH requires an additional check')
-              ? { ok: false, detail: 'Tailscale SSH on the VPS wants a browser check for this login, which unattended agents cannot pass. In the Tailscale admin console → Access controls, change the SSH rule for this user from "check" to "accept".' }
-              : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
-        });
-      }
+      case 'test-agent-path': return testAgentPath();
       case 'show-data': shell.openPath(app.getPath('userData')); break;
       case 'mac-permissions': return process.platform === 'darwin' ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null;
       case 'open-mac-privacy': if (process.platform === 'darwin') shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${value.pane === 'screen' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility'}`); break;
@@ -1013,6 +1081,21 @@ function registerIpc() {
         if (next === 'done') { prefs.cloud.step = 'done'; prefs.onboarded = true; }
         else setCloudStep(prefs, next);
         savePreferences(); break;
+      }
+      case 'cloud-connect': return cloudConnectRun(String(value.host || '').trim());
+      case 'cloud-open-pairing': {
+        const url = prefs.cloud?.tailscaleUrl || cloudComputer?.tailscale_url || '';
+        if (url) await shell.openExternal(url);
+        break;
+      }
+      case 'cloud-tailscale-download': await shell.openExternal('https://tailscale.com/download'); break;
+      case 'cloud-diy': {
+        const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+        prefs.cloud = { ...cloud, diy: true, step: 'connect' };
+        prefs.onboarded = false;
+        savePreferences();
+        startCloudOnboarding();
+        break;
       }
       case 'cloud-discord': shell.openExternal(cloudView().supportUrl); break;
       case 'move-to-applications': return app.moveToApplicationsFolder();

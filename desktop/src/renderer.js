@@ -392,6 +392,7 @@ function renderOnboarding(show) {
     });
     claimWrap.append(claimLabel, claimInput, claimButton);
     card.append(claimWrap);
+    card.append(button('Use my own server', 'link-button', () => command('cloud-diy')));
     actions.append(button('Skip setup', 'secondary-button', finish), button('Next', 'primary-button', () => go(2)));
   } else if (onboardingStep === 2) {
     card.append(element('h2', '', 'Give your agent this prompt'));
@@ -437,6 +438,27 @@ function renderCloudOnboarding(card, actions, cloud) {
       element('p', 'settings-note', cloud.computer?.step ? `Status: ${cloud.computer.step}` : 'This usually takes a couple of minutes. Keep this window open.'));
     if (cloud.error) card.append(element('p', 'settings-note', cloud.error));
     actions.append(button('Get help', 'secondary-button', () => go('support')));
+  } else if (cloud.step === 'connect') {
+    const status = element('p', 'settings-note', '');
+    const check = async (extra = {}) => {
+      status.textContent = 'Checking…';
+      const result = await command('cloud-connect', extra);
+      status.textContent = result?.detail || '';
+    };
+    if (cloud.diy) {
+      card.append(element('h2', '', 'Use your own server'), element('p', 'settings-note', 'Enter the SSH address of the machine that will run your agent.'));
+      const field = element('div', 'field'), lab = element('label', '', 'Server SSH address'); lab.htmlFor = 'ob-diy-host';
+      const input = element('input'); input.id = 'ob-diy-host'; input.placeholder = 'you@your-server'; input.autocomplete = 'off'; input.value = state.vpsBrowser?.sshHost || '';
+      field.append(lab, input); card.append(field);
+      actions.append(button('Connect', 'primary-button', () => check({ host: input.value.trim() })));
+    } else {
+      card.append(element('h2', '', 'Connect to your computer'),
+        element('p', 'settings-note', `${cloud.computer?.name || 'Your computer'} pairs over Tailscale. Install Tailscale, open the pairing page, then check again.`));
+      actions.append(button('Install Tailscale', 'secondary-button', () => command('cloud-tailscale-download')),
+        button('Open pairing page', 'secondary-button', () => command('cloud-open-pairing')),
+        button('Check again', 'primary-button', () => check()));
+    }
+    card.append(status);
   } else if (cloud.step === 'support') {
     card.append(element('h2', '', 'We’re on it'),
       element('p', 'settings-note', 'Something on our side needs a look. The support Discord has the team and your setup details handy.'));
