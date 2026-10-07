@@ -108,7 +108,10 @@ test('every saved VM updates in parallel under one timeout cap, before the app u
     tag: 'v0.3.2', targets,
     applyAppUpdate: async () => { order.push('app'); return 'relaunch'; },
   });
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  for (const deadline = Date.now() + 5000; !(order.includes('start:user@a.example') && order.includes('start:user@b.example'));) {
+    assert.ok(Date.now() < deadline, 'the VM updates never fanned out');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   assert.deepEqual([...order].sort(), ['start:user@a.example', 'start:user@b.example']);
   assert.equal(gates['user@a.example'].opts.timeoutMs, VM_TIMEOUT_MS);
   assert.equal(gates['user@b.example'].opts.timeoutMs, VM_TIMEOUT_MS);
