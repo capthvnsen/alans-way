@@ -81,7 +81,7 @@ function physicalKey(key) {
 // Chromium on macOS routes editing shortcuts through NSResponder selectors, so
 // a raw Cmd+A key event selects nothing. Clipboard commands (copy, cut, paste)
 // are left out on purpose: the agent never reads or fills the human's clipboard.
-const MAC_COMMANDS = { 'Meta+a': 'selectAll', 'Meta+z': 'undo', 'Meta+Shift+z': 'redo',
+const MAC_COMMANDS = { Backspace: 'deleteBackward', Delete: 'deleteForward', 'Meta+a': 'selectAll', 'Meta+z': 'undo', 'Meta+Shift+z': 'redo',
   'Meta+ArrowLeft': 'moveToLeftEndOfLine', 'Meta+ArrowRight': 'moveToRightEndOfLine', 'Meta+ArrowUp': 'moveToBeginningOfDocument', 'Meta+ArrowDown': 'moveToEndOfDocument',
   'Meta+Shift+ArrowLeft': 'moveToLeftEndOfLineAndModifySelection', 'Meta+Shift+ArrowRight': 'moveToRightEndOfLineAndModifySelection', 'Meta+Shift+ArrowUp': 'moveToBeginningOfDocumentAndModifySelection', 'Meta+Shift+ArrowDown': 'moveToEndOfDocumentAndModifySelection',
   'Alt+ArrowLeft': 'moveWordLeft', 'Alt+ArrowRight': 'moveWordRight', 'Alt+Shift+ArrowLeft': 'moveWordLeftAndModifySelection', 'Alt+Shift+ArrowRight': 'moveWordRightAndModifySelection',

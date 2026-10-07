@@ -229,6 +229,9 @@ test('editing shortcuts carry macOS commands, but never clipboard ones', () => {
   assert.deepEqual(keyboardEvent({ key: 'a', modifiers: ['meta'] }, 'darwin').commands, ['selectAll']);
   assert.deepEqual(keyboardEvent({ key: 'z', modifiers: ['meta', 'shift'] }, 'darwin').commands, ['redo']);
   assert.deepEqual(keyboardEvent({ key: 'Backspace', modifiers: ['alt'] }, 'darwin').commands, ['deleteWordBackward']);
+  assert.deepEqual(keyboardEvent({ key: 'Backspace' }, 'darwin').commands, ['deleteBackward'], 'clearing a field must not depend on the raw key binding');
+  assert.deepEqual(keyboardEvent({ key: 'Delete' }, 'darwin').commands, ['deleteForward']);
+  assert.equal(keyboardEvent({ key: 'Backspace' }, 'win32').commands, undefined);
   assert.equal(keyboardEvent({ key: 'a', modifiers: ['meta'] }, 'win32').commands, undefined);
   assert.equal(keyboardEvent({ key: 'a' }, 'darwin').commands, undefined);
   for (const key of ['c', 'x', 'v']) assert.equal(keyboardEvent({ key, modifiers: ['meta'] }, 'darwin').commands, undefined, `Cmd+${key} never touches the clipboard`);
