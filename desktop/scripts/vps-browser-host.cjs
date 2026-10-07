@@ -149,7 +149,14 @@ async function serve() {
     blocked: t.blocked || null,
   });
   function persist() {
-    const data = [...tabs.values()].map(describe);
+    // hostOpened, humanHeld and lastUsedAt are the reaper's bookkeeping; they
+    // ride along in the registry so a restart keeps a tab's real age.
+    const data = [...tabs.values()].map((t) => ({
+      ...describe(t),
+      hostOpened: t.hostOpened === true,
+      humanHeld: t.humanHeld === true,
+      lastUsedAt: t.lastUsedAt || 0,
+    }));
     persistQueue = persistQueue.then(() => write(registryFile, data));
     return persistQueue;
   }
@@ -173,7 +180,7 @@ async function serve() {
     cdp.send(on ? 'Fetch.enable' : 'Fetch.disable', on ? { patterns: FETCH_ALL } : {}, sid);
   async function attach(data) {
     const wc = await cdp.page(data.targetId);
-    const t = { ...data, view: { webContents: wc }, refs: new Set(), generation: 0, queue: Promise.resolve(), sessions: new Set([wc.sessionId]) };
+    const t = { ...data, view: { webContents: wc }, refs: new Set(), generation: 0, queue: Promise.resolve(), sessions: new Set([wc.sessionId]), lastUsedAt: Number(data.lastUsedAt) || Date.now() };
     tabs.set(t.id, t);
     sessionOwner.set(wc.sessionId, { tab: t, targetId: data.targetId });
     // A pop-up's early session was filed under its opener; it belongs to this tab now.
@@ -217,6 +224,14 @@ async function serve() {
   }
   await persist();
   const agentIdleMs = Math.max(1, Number(process.env.HERMES_AGENT_IDLE_MINUTES) || 15) * 60000;
+  // Agent runs leave their tabs behind forever, and each costs the VM a
+  // renderer process. A bot's next open retires its agent tabs idle past
+  // ALANS_WAY_VM_TAB_IDLE_MINUTES and any beyond ALANS_WAY_VM_MAX_TABS,
+  // least recently used first. Tabs a human holds, a tab mid-action, the
+  // freshest tab and tabs the host never opened (pop-ups, VNC pages) are
+  // never reaped.
+  const maxBotTabs = Math.max(1, Number(process.env.ALANS_WAY_VM_MAX_TABS) || 6);
+  const tabIdleMs = Math.max(0, Number(process.env.ALANS_WAY_VM_TAB_IDLE_MINUTES) || 30) * 60000;
   setInterval(() => {
     const now = Date.now();
     for (const t of tabs.values()) {
@@ -235,7 +250,7 @@ async function serve() {
     process.stderr.write('Chromium disconnected; restarting the broker through its service.\n');
     process.exit(1);
   });
-  async function open(body, botId, human, prepare) {
+  async function open(body, botId, human, prepare, reap = true) {
     if (body.host !== undefined && normalizeHost(body.host) !== 'vm')
       throw fail('This connection serves only the VPS browser. Use the Mac connector for Mac tasks.', 503);
     if (!botId || botId.length > 100) throw fail('X-Hermes-Bot is required.');
@@ -254,6 +269,8 @@ async function serve() {
         controller: human ? 'human' : 'agent',
         epoch: 1,
         agentSince: human ? undefined : Date.now(),
+        hostOpened: true,
+        humanHeld: human === true,
       });
       await persist();
       await tab.view.webContents.command('Page.enable');
@@ -272,15 +289,39 @@ async function serve() {
         tab.url = url;
         if (tab.controller === 'agent') tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
         await persist();
-        return tab;
+      } else {
+        await loaded(tab, url);
+        if (tab.controller === 'agent') await tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
+        await persist();
       }
-      await loaded(tab, url);
-      if (tab.controller === 'agent') await tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
-      await persist();
-      return tab;
     } catch (e) {
       throw fail('VPS tab opened but navigation needs review. List its state before retrying.', 502);
     }
+    // A mirror restore opens its own fan-out; capping mid-flight would close
+    // tabs the same restore is still opening, so only direct opens reap.
+    return { tab, closed: reap ? await reapAgentTabs(botId, tab) : [] };
+  }
+  // Closes the bot's stale and over-cap agent tabs. "Used" is any open,
+  // snapshot or action on the tab; human-held, busy and not-host-opened tabs
+  // are skipped, and the most recently used one always survives.
+  async function reapAgentTabs(botId, keep) {
+    const now = Date.now();
+    const held = [...tabs.values()].filter((t) => t.botId === botId && t.hostOpened === true && t.humanHeld !== true);
+    const newest = held.reduce((a, t) => (!a || (t.lastUsedAt || 0) > (a.lastUsedAt || 0) ? t : a), null);
+    const closable = held.filter((t) => t !== keep && t !== newest && !(t.pendingActions > 0) && !input.isDispatching(t));
+    const doomed = new Set(closable.filter((t) => now - (t.lastUsedAt || 0) > tabIdleMs));
+    const lru = closable.filter((t) => !doomed.has(t)).sort((a, b) => (a.lastUsedAt || 0) - (b.lastUsedAt || 0));
+    while (held.length - doomed.size > maxBotTabs && lru.length) doomed.add(lru.shift());
+    const closed = [];
+    for (const t of doomed) {
+      closed.push({ tabId: t.id, url: t.url });
+      t.epoch++;
+      await input.clear(t).catch(() => {});
+      await closeTarget(t.targetId);
+      tabs.delete(t.id);
+    }
+    if (closed.length) await persist().catch(() => {});
+    return closed;
   }
   async function loaded(tab, url, attempts = 80, previous) {
     for (let i = 0; i < attempts; i++) {
@@ -575,14 +616,16 @@ async function serve() {
       previous = tab.url === url ? undefined : tab.url;
       await setCookies(tab, cookies);
       tab.controller = 'agent';
+      tab.humanHeld = false;
       tab.agentSince = Date.now();
+      tab.lastUsedAt = Date.now();
       tab.epoch++;
       tab.refs.clear();
       await syncFetch(tab);
       await input.clear(tab);
       await tab.view.webContents.command('Page.navigate', { url });
       tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
-    } else tab = await open({ url, settle: false }, bot, false, (opened) => setCookies(opened, cookies));
+    } else tab = (await open({ url, settle: false }, bot, false, (opened) => setCookies(opened, cookies), false)).tab;
     const ready = await loaded(tab, url, RESTORE_LOAD_ATTEMPTS, previous).then(() => true, () => false);
     const result = ready ? await tab.view.webContents.executeJavaScript(restoreExpression({ url: t.url, scroll: t.scroll, drafts: t.drafts })).catch(() => null) : null;
     const verification = result?.verification || 'review_required';
@@ -757,8 +800,10 @@ async function serve() {
             .filter((t) => human || overseer || t.botId === botId || (t.allowedBots ?? []).includes(botId))
             .map(describe),
         });
-      if (url.pathname === '/v1/tabs' && req.method === 'POST')
-        return send(201, describe(await open(await read(req), botId, human)));
+      if (url.pathname === '/v1/tabs' && req.method === 'POST') {
+        const { tab: opened, closed } = await open(await read(req), botId, human);
+        return send(201, { ...describe(opened), ...(closed.length ? { closedTabs: closed } : {}) });
+      }
       if (url.pathname === '/v1/mirror' && req.method === 'POST') {
         if (!isApp) throw fail('Only the app may update the mirror.', 403);
         return send(200, saveMirrorEntry(await read(req, 4000000)));
@@ -776,11 +821,16 @@ async function serve() {
         tab = m && tabs.get(m[1]);
       if (!tab) throw fail('VPS tab not found.', 404);
       if (!human) requireActor(tab, botId, undefined, false, overseer);
+      // The app touching a human-controlled tab on a person's behalf counts as
+      // a human holding it, so the reaper leaves it alone; a tab released by
+      // a bot or the idle clock stays reapable.
+      if (human && tab.controller === 'human') tab.humanHeld = true;
       const wc = tab.view.webContents;
       if (req.method === 'GET' && !m[2]) return send(200, describe(tab));
       if (!human) tab.lastAgentActivity = Date.now();
       if (req.method === 'GET' && m[2] === 'snapshot') {
         if (!human) requireAgentRead(tab);
+        tab.lastUsedAt = Date.now();
         const opts = {
           maxChars: intParam(url, 'maxChars', 0, 20000),
           maxElements: intParam(url, 'maxElements', 0, 300),
@@ -827,6 +877,7 @@ async function serve() {
       }
       if (req.method === 'POST' && m[2] === 'actions') {
         const body = await read(req);
+        tab.lastUsedAt = Date.now();
         tab.pendingActions = (tab.pendingActions || 0) + 1;
         const action = tab.queue.then(async () => {
           const result = await vpsPerform(tab, body, botId, overseer);
@@ -853,6 +904,9 @@ async function serve() {
           };
         else if (human && body.controller === 'agent') tab.handoff = reviewedHandoff(tab.handoff);
         tab.controller = body.controller === 'agent' ? 'agent' : 'human';
+        // Only a person holding the tab protects it from reaping; a bot's own
+        // release does not.
+        tab.humanHeld = human === true && tab.controller === 'human';
         if (tab.controller === 'agent') tab.agentSince = Date.now();
         tab.epoch++;
         tab.refs.clear();
