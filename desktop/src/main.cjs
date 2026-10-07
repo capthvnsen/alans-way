@@ -11,6 +11,7 @@ const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRet
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding } = require('./onboarding.cjs');
 const macUpdate = require('./mac-update.cjs');
+const { windowsFeed } = require('./win-update.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -556,7 +557,7 @@ async function openTelegramHash(hash) {
   watchChange({ read, delayMs: 1500, onStuck: () => { if (!wc.isDestroyed() && wc.getURL() === target) wc.reload(); } });
   await wc.loadURL(target).catch(() => {});
 }
-// Offline or rate-limited checks stay silent; the next check retries.
+// Offline or rate-limited checks stay quiet for the user; only the first failure is logged, and the next check retries.
 function startUpdates() {
   if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
   if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
@@ -566,8 +567,12 @@ function startUpdates() {
     const { autoUpdater } = require('electron-updater');
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.on('update-downloaded', (info) => { update.available = info.version; update.ready = true; broadcast(); });
-    autoUpdater.on('error', () => {});
-    check = () => autoUpdater.checkForUpdates().catch(() => {});
+    const feed = windowsFeed(fs.existsSync(path.join(process.resourcesPath, 'app-update.yml')), require('../package.json'));
+    if (feed) autoUpdater.setFeedURL(feed);
+    let logged = false;
+    const failed = (error) => { if (!logged) { logged = true; logError('updater', error); } };
+    autoUpdater.on('error', failed);
+    check = () => autoUpdater.checkForUpdates().catch(failed);
   } else if (process.platform === 'darwin') {
     check = async () => {
       try {
