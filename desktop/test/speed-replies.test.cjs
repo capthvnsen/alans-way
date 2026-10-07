@@ -68,7 +68,12 @@ const benchPage = `<!doctype html><title>bench</title><style>.hidden{display:non
 <div id="fb" class="hidden">✓ Correct — 0.4s</div>
 ${sections.join('\n')}
 <div aria-live="polite" data-1p-announce="menu">1Password menu is available. Press down arrow to select.</div>
+<div data-bitwarden-watching="1">Bitwarden inline menu opened. Press arrow keys to choose.</div>
+<acme-vault-helper id="vh">AcmeVault quick menu is ready.</acme-vault-helper>
 <script>
+// An extension's isolated world can attach a shadow root the page registry
+// never defined; the light-DOM text is noise either way.
+document.getElementById('vh').attachShadow({ mode: 'open' });
 function advance(done) {
   document.getElementById('fb').classList.remove('hidden');
   setTimeout(function () {
@@ -136,7 +141,7 @@ test('ten sequential tasks each complete in one action call', { skip: !chrome &&
   assert.ok(tab.id, `tab did not open: ${stderr}`);
   const snap = await api(`/v1/tabs/${tab.id}/snapshot`);
   assert.equal(snap.status, 200);
-  assert.ok(!snap.data.text.includes('1Password'), `snapshot leaked extension text: ${snap.data.text}`);
+  assert.ok(!/1Password|Bitwarden|AcmeVault/.test(snap.data.text), `snapshot leaked extension text: ${snap.data.text}`);
   let elements = snap.data.elements;
   assert.ok(Array.isArray(elements) && elements.length, 'the first snapshot lists the task 1 controls');
   let calls = 0;
@@ -154,10 +159,10 @@ test('ten sequential tasks each complete in one action call', { skip: !chrome &&
     assert.ok(reply.data.effect, `task ${i + 1} reply carries no effect`);
     assert.equal(reply.data.effect.changed, true, `task ${i + 1} changed nothing`);
     assert.ok(reply.data.effect.text.includes(task.next), `task ${i + 1} effect.text lacks ${JSON.stringify(task.next)}: ${JSON.stringify(reply.data.effect)}`);
-    assert.ok(!reply.data.effect.text.includes('1Password'), `task ${i + 1} effect.text leaked extension text`);
+    assert.ok(!/1Password|Bitwarden|AcmeVault/.test(reply.data.effect.text), `task ${i + 1} effect.text leaked extension text`);
     const read = reply.data.results[steps.length - 1];
     assert.ok(read.text.includes(task.next), `task ${i + 1} read lacks ${JSON.stringify(task.next)}`);
-    assert.ok(!/1Password|down arrow/.test(read.text), `task ${i + 1} read leaked extension text: ${read.text}`);
+    assert.ok(!/1Password|down arrow|Bitwarden|AcmeVault/.test(read.text), `task ${i + 1} read leaked extension text: ${read.text}`);
     // The controls changed with the task, so the reply carries fresh refs the
     // next call acts on directly, with no snapshot in between. The final task
     // leaves no controls behind, so its list is empty.

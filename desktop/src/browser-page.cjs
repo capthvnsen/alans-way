@@ -205,20 +205,25 @@ function snapshotExpression(generation, opts = {}) {
       const textDeadline = performance.now() + ${textMs};
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
       // Password managers and other extensions inject their own UI into the
-      // page; none of it is page content. Skip a subtree when an element (or
-      // an ancestor) carries a known extension data attribute, came from
-      // another document, or is an aria-live region announcing a known
-      // extension message, and drop the known announcement text outright.
-      const extAttr = /^data-(?:1p|lastpass|bitwarden|dashlane)[-_]/i;
+      // page; none of it is page content. Noise signals, cheapest first: the
+      // node (or an ancestor) came from another document or is a frame into
+      // an extension page, it carries a known extension data attribute
+      // (1Password, LastPass, Bitwarden, Dashlane, Keeper, NordPass, Proton
+      // Pass, Grammarly), it is a custom element whose shadow root the page
+      // registry never defined, or it is an aria-live region announcing a
+      // known extension phrase. The per-chunk phrase check is the fallback.
+      const extAttr = /^data-(?:1p|1password|lastpass|bitwarden|bw|dashlane|keeper|nordpass|protonpass|proton|grammarly|gramm)[-_]/i;
       const extPhrase = /1Password menu is available|Press down arrow to select/i;
+      const extFrame = /^(?:chrome|moz|safari-web)-extension:/i;
       const extCache = new WeakMap();
       const extNoise = (el) => {
         if (!el || el.nodeType !== 1) return false;
         let hit = extCache.get(el);
         if (hit !== undefined) return hit;
-        hit = el.ownerDocument !== document;
+        hit = el.ownerDocument !== document || extFrame.test(el.getAttribute('src') || el.getAttribute('href') || '');
         const attrs = el.attributes;
         for (let i = 0; !hit && attrs && i < attrs.length; i++) hit = extAttr.test(attrs[i].name);
+        if (!hit && el.localName.indexOf('-') >= 0 && el.shadowRoot && !customElements.get(el.localName)) hit = true;
         if (!hit && el.hasAttribute('aria-live')) hit = extPhrase.test(el.textContent || '');
         if (!hit) hit = extNoise(el.parentElement);
         extCache.set(el, hit);
