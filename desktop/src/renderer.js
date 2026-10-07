@@ -355,7 +355,7 @@ function renderOnboarding(show) {
   panel.classList.toggle('hidden', !show);
   if (!show) { onboardingSignature = ''; return; }
   const cloud = state.cloud || {};
-  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications] : [onboardingStep]);
+  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications] : [onboardingStep]);
   if (signature === onboardingSignature) return;
   onboardingSignature = signature;
   const go = (step) => { onboardingStep = step; renderOnboarding(true); };
@@ -459,6 +459,33 @@ function renderCloudOnboarding(card, actions, cloud) {
         button('Check again', 'primary-button', () => check()));
     }
     card.append(status);
+  } else if (cloud.step === 'migrate') {
+    card.append(element('h2', '', 'Bring your existing Hermes?'), element('p', 'settings-note', 'Move your old Hermes setup to the new computer, or start fresh.'));
+    const status = element('p', 'settings-note', '');
+    if (cloud.migration === 'bring') {
+      const box = element('textarea', 'onboarding-prompt'); box.readOnly = true; box.rows = 3; box.setAttribute('aria-label', 'Migrate command'); box.value = cloud.migrateCommand || '';
+      card.append(element('p', 'settings-note', 'Run this on the old machine, in a terminal. It packs up Hermes and ships it to the new computer.'), box, status);
+      const log = element('pre', 'settings-note', '');
+      const check = button('Check again', 'primary-button', async () => {
+        status.textContent = 'Checking…';
+        const result = await command('cloud-migrate-check');
+        status.textContent = result?.done ? `Migration found.${result.profiles?.length ? ` ${result.profiles.length} profile(s) already have a bot token.` : ''}` : result?.detail || '';
+      });
+      actions.append(
+        button('Copy command', 'secondary-button', async () => { await command('cloud-migrate-copy'); toast('Migrate command copied.'); }),
+        ...(state.platform === 'darwin' ? [button('Run on this Mac', 'secondary-button', async () => {
+          card.append(log);
+          status.textContent = 'Running the migrate script on this Mac…';
+          const result = await command('cloud-migrate-local');
+          status.textContent = result?.detail || '';
+          if (result?.done) await command('cloud-migrate-check');
+        })] : []),
+        check);
+      api.onCloudLog?.((text) => { log.textContent = (log.textContent + text).slice(-8000); });
+    } else {
+      actions.append(button('Start fresh', 'secondary-button', () => command('cloud-migrate', { choice: 'fresh' })),
+        button('Bring my existing Hermes', 'primary-button', () => command('cloud-migrate', { choice: 'bring' })));
+    }
   } else if (cloud.step === 'support') {
     card.append(element('h2', '', 'We’re on it'),
       element('p', 'settings-note', 'Something on our side needs a look. The support Discord has the team and your setup details handy.'));

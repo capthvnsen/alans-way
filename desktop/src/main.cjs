@@ -13,6 +13,7 @@ const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } =
 const cloudClaim = require('./cloud-claim.cjs');
 const cloudStatus = require('./cloud-status.cjs');
 const cloudConnect = require('./cloud-connect.cjs');
+const cloudMigrate = require('./cloud-migrate.cjs');
 const macUpdate = require('./mac-update.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
@@ -684,6 +685,8 @@ function cloudView() {
     name: cloudComputer.computer_name || cloud.computerName || '', tailscaleUrl: cloudComputer.tailscale_url || cloud.tailscaleUrl || '' } : null;
   return { claimed: !!session || cloud.diy === true, diy: cloud.diy === true,
     step: cloudStep(prefs, cloudComputer) || '',
+    migration: cloud.migration || '', tokenedProfiles: cloud.tokenedProfiles || [],
+    migrateCommand: cloud.migration === 'bring' && (prefs.vpsBrowser?.sshHost || '').trim() ? cloudMigrate.migrateCommand(prefs.vpsBrowser.sshHost.trim()) : '',
     computer, error: cloudError,
     supportUrl: session ? `${cloudClaim.apiBase()}/api/discord/start?session=${encodeURIComponent(session)}` : `${cloudClaim.apiBase()}/api/discord/start` };
 }
@@ -1096,6 +1099,51 @@ function registerIpc() {
         savePreferences();
         startCloudOnboarding();
         break;
+      }
+      case 'cloud-migrate': {
+        if (value.choice !== 'bring') { setCloudStep(prefs, nextCloudStep(prefs, 'migrate')); if (nextCloudStep(prefs, 'migrate') === 'done') { prefs.cloud.step = 'done'; prefs.onboarded = true; } savePreferences(); break; }
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+        prefs.cloud = { ...cloud, migration: 'bring' };
+        savePreferences();
+        return { command: cloudMigrate.migrateCommand(host) };
+      }
+      case 'cloud-migrate-copy': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        clipboard.writeText(cloudMigrate.migrateCommand(host));
+        break;
+      }
+      case 'cloud-migrate-local': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        return new Promise((resolve) => {
+          // The migrate script runs in a hidden shell; each chunk is relayed to
+          // the wizard log so the run is visible without a terminal.
+          const child = spawn('bash', ['-lc', cloudMigrate.migrateCommand(host)]);
+          let out = '';
+          const feed = (chunk) => {
+            out = (out + chunk).slice(-60000);
+            try { if (win && !win.isDestroyed()) win.webContents.send('workspace:cloud-log', String(chunk)); } catch {}
+          };
+          child.stdout.on('data', feed);
+          child.stderr.on('data', feed);
+          child.on('error', () => resolve({ done: false, detail: 'Could not start the local migrate run.' }));
+          child.on('close', (code) => resolve({ done: code === 0, detail: code === 0 ? 'The local migrate run finished.' : `The migrate run exited with ${code}.` }));
+        });
+      }
+      case 'cloud-migrate-check': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        const marker = await sshRun(host, cloudMigrate.migrateCheckCommand());
+        if (marker.code !== 0 || !marker.out.trim()) return { done: false, detail: 'No migration has landed on the computer yet.' };
+        const grep = await sshRun(host, cloudMigrate.profilesWithTokenCommand());
+        const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+        prefs.cloud = { ...cloud, tokenedProfiles: cloudMigrate.profilesWithToken(grep.out) };
+        setCloudStep(prefs, 'model');
+        savePreferences();
+        return { done: true, profiles: prefs.cloud.tokenedProfiles };
       }
       case 'cloud-discord': shell.openExternal(cloudView().supportUrl); break;
       case 'move-to-applications': return app.moveToApplicationsFolder();
