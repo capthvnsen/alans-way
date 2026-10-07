@@ -354,16 +354,23 @@ function renderOnboarding(show) {
   const panel = $('onboarding');
   panel.classList.toggle('hidden', !show);
   if (!show) { onboardingSignature = ''; return; }
-  const signature = JSON.stringify(onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications] : [onboardingStep]);
+  const cloud = state.cloud || {};
+  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications] : [onboardingStep]);
   if (signature === onboardingSignature) return;
   onboardingSignature = signature;
   const go = (step) => { onboardingStep = step; renderOnboarding(true); };
   const finish = async () => { onboardingStep = 1; await command('onboarding-done'); };
   const button = (label, className, onclick) => { const el = element('button', className, label); el.onclick = onclick; return el; };
   const card = element('div', 'onboarding-card');
-  card.append(element('p', 'onboarding-step', `Step ${onboardingStep} of 3`));
   const actions = element('div', 'onboarding-actions');
   const windows = state.platform === 'win32';
+  if (cloud.step) {
+    renderCloudOnboarding(card, actions, cloud);
+    card.append(actions);
+    panel.replaceChildren(card);
+    return;
+  }
+  card.append(element('p', 'onboarding-step', `Step ${onboardingStep} of 3`));
   if (onboardingStep === 1) {
     card.append(element('h2', '', 'Welcome to Open Alan'), element('p', 'settings-note', 'Three short steps connect your Hermes agent to this computer.'));
     const signedIn = state.telegramStatus === 'connected';
@@ -374,6 +381,17 @@ function renderOnboarding(show) {
         button('Move to Applications', 'secondary-button', () => command('move-to-applications')));
       card.append(move);
     }
+    const claimWrap = element('div', 'field'), claimLabel = element('label', '', 'Paid for a computer on openalan.com?');
+    claimLabel.htmlFor = 'ob-claim-code';
+    const claimInput = element('input');
+    claimInput.id = 'ob-claim-code'; claimInput.placeholder = 'Paste your claim code or link'; claimInput.autocomplete = 'off';
+    const claimButton = button('Claim computer', 'secondary-button', async () => {
+      claimButton.disabled = true;
+      await command('cloud-claim-code', { code: claimInput.value.trim() });
+      claimButton.disabled = false;
+    });
+    claimWrap.append(claimLabel, claimInput, claimButton);
+    card.append(claimWrap);
     actions.append(button('Skip setup', 'secondary-button', finish), button('Next', 'primary-button', () => go(2)));
   } else if (onboardingStep === 2) {
     card.append(element('h2', '', 'Give your agent this prompt'));
@@ -407,6 +425,27 @@ function renderOnboarding(show) {
   }
   card.append(actions);
   panel.replaceChildren(card);
+}
+function renderCloudOnboarding(card, actions, cloud) {
+  const button = (label, className, onclick) => { const el = element('button', className, label); el.onclick = onclick; return el; };
+  const go = (step) => command('cloud-goto', { step });
+  const next = () => command('cloud-next');
+  if (cloud.step === 'cloud-wait') {
+    const labels = { new: 'Creating your computer…', client_created: 'Creating your computer…', computer_created: 'Booting your computer…', bootstrapping: 'Installing your agent…' };
+    card.append(element('h2', '', 'Setting up your Alan computer'),
+      element('p', 'settings-note', labels[cloud.computer?.state] || 'Asking our servers for your computer…'),
+      element('p', 'settings-note', cloud.computer?.step ? `Status: ${cloud.computer.step}` : 'This usually takes a couple of minutes. Keep this window open.'));
+    if (cloud.error) card.append(element('p', 'settings-note', cloud.error));
+    actions.append(button('Get help', 'secondary-button', () => go('support')));
+  } else if (cloud.step === 'support') {
+    card.append(element('h2', '', 'We’re on it'),
+      element('p', 'settings-note', 'Something on our side needs a look. The support Discord has the team and your setup details handy.'));
+    if (cloud.computer?.error) card.append(element('p', 'settings-note', `Detail: ${cloud.computer.error}`));
+    actions.append(button('Join support Discord', 'primary-button', () => command('cloud-discord')), button('Skip', 'secondary-button', () => go('done')));
+  } else {
+    card.append(element('h2', '', 'Continue setup'), element('p', 'settings-note', `Step: ${cloud.step}`));
+    actions.append(button('Get help', 'secondary-button', () => go('support')), button('Continue', 'primary-button', next));
+  }
 }
 function rect(id) {
   const el = $(id); if (!el || el.classList.contains('hidden')) return null;

@@ -9,8 +9,9 @@ const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabFo
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
-const { shouldOnboard, pinOnboarding } = require('./onboarding.cjs');
+const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
+const cloudStatus = require('./cloud-status.cjs');
 const macUpdate = require('./mac-update.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
@@ -81,7 +82,7 @@ const vmUpdater = createVmUpdater({ log: (label, error) => logError(label, error
 const vmProgress = {};
 let vmRetrying = false;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
-let cloudError = '';
+let cloudError = '', cloudComputer = null, cloudPollAbort = null;
 const tabs = new Map();
 const vpsTabs = new Map();
 const recentLinkTabs = new Map();
@@ -677,11 +678,40 @@ function cloudSession() {
 }
 function cloudView() {
   const cloud = prefs?.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
-  return { claimed: !!cloudSession(), step: cloud.step || '', error: cloudError };
+  const session = cloudSession();
+  const computer = cloudComputer ? { state: cloudComputer.state || '', step: cloudComputer.step || '', error: cloudComputer.error || '',
+    name: cloudComputer.computer_name || cloud.computerName || '', tailscaleUrl: cloudComputer.tailscale_url || cloud.tailscaleUrl || '' } : null;
+  return { claimed: !!session || cloud.diy === true, diy: cloud.diy === true,
+    step: cloudStep(prefs, cloudComputer) || '',
+    computer, error: cloudError,
+    supportUrl: session ? `${cloudClaim.apiBase()}/api/discord/start?session=${encodeURIComponent(session)}` : `${cloudClaim.apiBase()}/api/discord/start` };
+}
+// The wait step polls the cloud API; each answer lands in cloudComputer for
+// cloudView and advances the stored step once pairing can start.
+function startCloudPolling() {
+  cloudPollAbort?.abort();
+  const session = cloudSession();
+  if (!session) return;
+  cloudPollAbort = new AbortController();
+  const signal = cloudPollAbort.signal;
+  cloudStatus.pollComputer(cloudClaim.apiBase(), session, {
+    signal,
+    onUpdate(data) {
+      cloudComputer = data;
+      const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+      if (data.computer_name && cloud.computerName !== data.computer_name) cloud.computerName = data.computer_name;
+      if (data.tailscale_url && cloud.tailscaleUrl !== data.tailscale_url) cloud.tailscaleUrl = data.tailscale_url;
+      if (data.state === 'ready' && cloud.step === 'cloud-wait') cloud.step = 'connect';
+      prefs.cloud = cloud;
+      savePreferencesSoon();
+      broadcast();
+    },
+  }).catch((error) => { if (!signal.aborted) { cloudError = error.message; broadcast(); } });
 }
 function startCloudOnboarding() {
   prefs.onboarded = false;
   activeTabId = 'home';
+  startCloudPolling();
   showWindow();
   broadcast();
 }
@@ -973,6 +1003,18 @@ function registerIpc() {
         if (cloudError) throw new Error(cloudError);
         break;
       }
+      case 'cloud-goto': {
+        if (value.step === 'done' && prefs.cloud) { prefs.cloud.step = 'done'; prefs.onboarded = true; savePreferences(); break; }
+        if (!setCloudStep(prefs, String(value.step || ''))) throw new Error('Unknown setup step.');
+        savePreferences(); break;
+      }
+      case 'cloud-next': {
+        const next = nextCloudStep(prefs, prefs.cloud?.step);
+        if (next === 'done') { prefs.cloud.step = 'done'; prefs.onboarded = true; }
+        else setCloudStep(prefs, next);
+        savePreferences(); break;
+      }
+      case 'cloud-discord': shell.openExternal(cloudView().supportUrl); break;
       case 'move-to-applications': return app.moveToApplicationsFolder();
       case 'sync-telegram': telegramView.webContents.reload(); break;
       case 'open-username': {
@@ -1794,6 +1836,7 @@ else {
     extensionStore = createExtensionStore({ root: app.getPath('userData'), session: browserSession, dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences, onChanged: broadcast,
       canInstall: frame => [...tabs.values()].some(tab => tab.id === activeTabId && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
     await extensionStore.installStore(); createWindow(); await extensionStore.restore(); broadcast();
+    if (cloudSession() && prefs.cloud?.step && prefs.cloud.step !== 'done') startCloudPolling();
     startUpdates();
   });
   app.on('second-instance', (_event, argv) => {
