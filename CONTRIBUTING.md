@@ -16,6 +16,14 @@ npm start         # launch the app from source
 
 The Electron integration tests (`npm run test:desktop`, `test:agent-input`, `test:permissions`, `test:extensions`, `test:newtab`) need a Mac with a display and use a temporary profile; run the ones that cover your change. `test:web-store` needs the network, and `test:cross-host` needs a real VPS (see `desktop/test/cross-host-electron.cjs`). CI does not run these, so say in your pull request which ones you ran.
 
+### Releasing the desktop app
+
+`desktop/package.json` `version` is the only place the app version lives; the label in the app, `/v1/status` and source builds all read it. The project is pre-1.0: bump the patch (0.3.0 to 0.3.1) for fixes and the minor (0.3.1 to 0.4.0) for features.
+
+1. In `desktop/`, run `npm version <x.y.z> --no-git-tag-version`, then commit `package.json` and `package-lock.json`.
+2. Merge to `main`, then tag that commit `v<x.y.z>` and push the tag. The release workflow fails if the tag differs from `package.json`.
+3. For a trial build, tag `v<x.y.z>-rc.<n>` instead. It uses the same base version, stays a draft, and is never offered to users.
+
 ## Companion CLI (`src/hermes_companion/`)
 
 Use Python 3.11+ and a fresh virtual environment. Install `-e '.[mcp]'`, run `python -m unittest discover -s tests -v`, and build the distribution with `python -m build`.

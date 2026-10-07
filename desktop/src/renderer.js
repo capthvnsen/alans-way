@@ -298,6 +298,7 @@ function render(next) {
   scheduleLayout();
 }
 function renderUpdate() {
+  const version = $('version-label'); version.textContent = `v${state.version}`; version.title = `Release notes for v${state.version}`; version.onclick = () => command('open-release-notes');
   const note = $('update-note'), u = state.update || {};
   const label = u.busy ? 'Updating…' : u.error ? 'Update failed · Open download page' : u.ready ? `Restart to update to v${u.available}` : u.available ? `Update to v${u.available}` : '';
   note.classList.toggle('hidden', !label); note.textContent = label; note.disabled = !!u.busy;
