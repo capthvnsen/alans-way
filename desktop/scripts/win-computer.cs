@@ -286,7 +286,9 @@ static class WinComputer {
     CachePrune(live);
     if (!found) throw Err("not_found", "App not found.");
     string name = ProcessName(pid);
-    if (name.Length == 0 || Rules.Blocked(name) || Elevated(pid)) throw Err("off_limits", "That app is off limits.");
+    if (name.Length == 0) throw Err("off_limits", "That app is off limits (its name could not be read).");
+    if (Rules.Blocked(name)) throw Err("off_limits", "That app is off limits.");
+    if (Elevated(pid)) throw Err("off_limits", "That app is off limits (it runs as administrator).");
     int front = ForegroundPid();
     if (front == 0) throw Err("failed", "Could not see which window is in front.");
     if (front == pid) throw Err("in_front", "That app is the one in front. Leave it there; the pointer stays where it is.");

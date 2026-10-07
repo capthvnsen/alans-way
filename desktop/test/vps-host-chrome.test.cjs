@@ -86,7 +86,8 @@ after(async () => {
   secret?.close();
   // Chrome keeps writing to its profile until it is gone, so wait for both exits.
   await Promise.all([exited(host), exited(browser)]);
-  if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  // Chrome's helper processes can outlive it on Linux; a leftover temp dir must not fail the run.
+  if (dir) { try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {} }
 });
 
 test('real Chromium: an agent page cannot reach loopback or metadata by redirect, pop-up, frame, form, worker or subresource', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {

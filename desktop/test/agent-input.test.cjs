@@ -317,3 +317,24 @@ test('same-document navigations and quiet clicks do not wait', async () => {
   await f.perform({ action: 'click', ref: 's1-2' });
   await f.perform({ action: 'press', key: 'Tab' });
 });
+
+test('a link click waits for a slow load to start, but an in-page route change ends the wait at once', async () => {
+  const { watchNavigation } = require('../src/agent-input.cjs');
+  const { EventEmitter } = require('node:events');
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const slow = new EventEmitter();
+  const watchSlow = watchNavigation(slow, delay);
+  setTimeout(() => slow.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false }), 300);
+  setTimeout(() => slow.emit('dom-ready'), 350);
+  let started = Date.now();
+  await watchSlow.settle(true);
+  assert.ok(Date.now() - started >= 300, 'a load that starts after 300ms is still awaited');
+  watchSlow.stop();
+  const spa = new EventEmitter();
+  const watchSpa = watchNavigation(spa, delay);
+  setTimeout(() => spa.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true }), 20);
+  started = Date.now();
+  await watchSpa.settle(true);
+  assert.ok(Date.now() - started < 300, 'an in-page route change does not wait out the window');
+  watchSpa.stop();
+});

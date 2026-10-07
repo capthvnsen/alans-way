@@ -310,16 +310,19 @@ function watchNavigation(wc, delay) {
   const state = { started: false, ready: false, wake: null, awake: null };
   if (typeof wc.on !== 'function') return { settle: async () => {}, stop() {} };
   const onStart = (event, _url, inPlace, main) => {
-    if ((event.isMainFrame ?? main) && !(event.isSameDocument ?? inPlace)) { state.started = true; state.ready = false; state.awake?.(); }
+    if (!(event.isMainFrame ?? main)) return;
+    if (!(event.isSameDocument ?? inPlace)) { state.started = true; state.ready = false; }
+    state.awake?.();
   };
   const onReady = () => { if (state.started) { state.ready = true; state.wake?.(); } };
   wc.on('did-start-navigation', onStart);
   for (const name of ['dom-ready', 'did-stop-loading', 'did-fail-load', 'destroyed']) wc.on(name, onReady);
   return {
     // likely is true when a navigation may follow (a link, Enter) and 'certain'
-    // when the page left a submit alone; a certain one is given longer to begin.
+    // when the page left a submit alone. A slow machine can take a few hundred
+    // ms to start a link's load; an in-page route change ends the wait at once.
     async settle(likely) {
-      if (!state.started && likely) await new Promise(resolve => { state.awake = resolve; delay(likely === 'certain' ? 1000 : 100).then(resolve); });
+      if (!state.started && likely) await new Promise(resolve => { state.awake = resolve; delay(likely === 'certain' ? 1000 : 600).then(resolve); });
       if (!state.started || state.ready) return;
       await new Promise(resolve => {
         const done = () => { clearTimeout(timer); state.wake = null; resolve(); };
@@ -529,4 +532,4 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   return { perform, clear, isDispatching };
 }
 
-module.exports = { createAgentInput, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf };
+module.exports = { createAgentInput, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };
