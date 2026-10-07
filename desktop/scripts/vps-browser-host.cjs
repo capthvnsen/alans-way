@@ -12,7 +12,7 @@ const agentInputModule = require('../src/agent-input.cjs');
 const { createAgentInput, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
 const INPUT_ACTIONS = agentInputModule.INPUT_ACTIONS || new Set(['click', 'type', 'press', 'move', 'scroll']);
-const { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
+const { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('../src/browser-page.cjs');
 const root =
   process.env.HERMES_VPS_BROWSER_DATA ||
   (process.platform === 'darwin'
@@ -155,6 +155,7 @@ async function serve() {
       ...describe(t),
       hostOpened: t.hostOpened === true,
       humanHeld: t.humanHeld === true,
+      humanLock: t.humanLock === true,
       lastUsedAt: t.lastUsedAt || 0,
     }));
     persistQueue = persistQueue.then(() => write(registryFile, data));
@@ -178,6 +179,26 @@ async function serve() {
   }
   const guardSession = (sid, on) =>
     cdp.send(on ? 'Fetch.enable' : 'Fetch.disable', on ? { patterns: FETCH_ALL } : {}, sid);
+  // The settle tracker is seeded on every agent session's new documents, so a
+  // page that bound fetch or setTimeout at module init still routes through
+  // the tracker once an action arms it. Inert until armed; a tab going back
+  // to a human sheds the seed again.
+  const trackSeeds = new Map();
+  const followUpSource = followUpInstallExpression();
+  const seedSession = async (sid, on) => {
+    if (on && !trackSeeds.has(sid)) {
+      const added = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: followUpSource }, sid).catch(() => null);
+      trackSeeds.set(sid, (added && added.identifier) || true);
+    } else if (!on && trackSeeds.has(sid)) {
+      const id = trackSeeds.get(sid);
+      trackSeeds.delete(sid);
+      await cdp.send(typeof id === 'string' ? 'Page.removeScriptToEvaluateOnNewDocument' : 'Page.removeAllScriptsToEvaluateOnNewDocument',
+        typeof id === 'string' ? { identifier: id } : {}, sid).catch(() => {});
+    }
+  };
+  function syncTrack(tab) {
+    return Promise.all([...tab.sessions].map((sid) => seedSession(sid, tab.controller === 'agent')));
+  }
   async function attach(data) {
     const wc = await cdp.page(data.targetId);
     const t = { ...data, view: { webContents: wc }, refs: new Set(), generation: 0, queue: Promise.resolve(), sessions: new Set([wc.sessionId]), lastUsedAt: Number(data.lastUsedAt) || Date.now() };
@@ -187,6 +208,7 @@ async function serve() {
     for (const [sid, entry] of sessionOwner) if (entry.targetId === data.targetId && entry.tab !== t) { entry.tab = t; t.sessions.add(sid); }
     await wc.command('Target.setAutoAttach', AUTO_ATTACH).catch(() => {});
     await syncFetch(t);
+    await syncTrack(t);
     return t;
   }
   const newTarget = async () =>
@@ -238,9 +260,13 @@ async function serve() {
       if (t.controller !== 'agent' || t.pendingActions > 0 || input.isDispatching(t)) continue;
       if (now - Math.max(t.agentSince || 0, t.lastAgentActivity || 0) <= agentIdleMs) continue;
       t.controller = 'human';
+      // The idle clock's release stays retakeable; only an explicit takeover
+      // seals a tab to bots.
+      t.humanLock = false;
       t.epoch++;
       t.refs.clear();
       syncFetch(t);
+      syncTrack(t);
       input.clear(t).catch(() => {});
       t.view.webContents.executeJavaScript(tintScript(false)).catch(() => {});
       persist();
@@ -414,9 +440,12 @@ async function serve() {
     if (body.action === 'read') {
       const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
       requireAgentRead(tab);
-      const data = await wc.executeJavaScript(snapshotExpression(tab.generation || 0, { maxChars, maxElements: 0, elementMs: 5 })).catch(() => null);
+      // A read step is the model's own baseline, so it must not plant the doc
+      // marker: on a fresh document the missing marker is what lets the final
+      // effect report the navigation it observed.
+      const data = await wc.executeJavaScript(snapshotExpression(tab.generation || 0, { maxChars, maxElements: 0, elementMs: 5, mark: false })).catch(() => null);
       requireActor(tab, botId, body.epoch, true, overseer);
-      if (data) tab.docMarked = true;
+      if (data) { tab.lastRead = data.sameDoc === false ? null : lastReadOf(data); tab.docMarked = tab.docMarked || data.sameDoc === true; }
       return finish({ text: (data && typeof data.text === 'string' ? data.text : ''), dispatched: true });
     }
     if (body.action === 'eval') {
@@ -480,6 +509,10 @@ async function serve() {
         await new Promise((r) => setTimeout(r, 250));
       }
       if (!value || !value.found) throw fail(`wait timed out after ${value ? value.waited : Date.now() - hostStart}ms for ${gone ? 'absence of ' : ''}${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`, 408);
+      // A successful wait observed the page, so it becomes the read baseline:
+      // the final effect must not re-report what the wait already confirmed.
+      const waited = await wc.executeJavaScript(snapshotExpression(tab.generation || 0, { maxChars: 8000, maxElements: 0, elementMs: 5, mark: false })).catch(() => null);
+      if (waited) { tab.lastRead = waited.sameDoc === false ? null : lastReadOf(waited); tab.docMarked = tab.docMarked || waited.sameDoc === true; }
       return finish({ waited: value.waited, dispatched: true });
     }
     if (body.action === 'viewport') {
@@ -617,11 +650,13 @@ async function serve() {
       await setCookies(tab, cookies);
       tab.controller = 'agent';
       tab.humanHeld = false;
+      tab.humanLock = false;
       tab.agentSince = Date.now();
       tab.lastUsedAt = Date.now();
       tab.epoch++;
       tab.refs.clear();
       await syncFetch(tab);
+      await syncTrack(tab);
       await input.clear(tab);
       await tab.view.webContents.command('Page.navigate', { url });
       tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
@@ -693,7 +728,10 @@ async function serve() {
           if (owner) {
             sessionOwner.set(sessionId, { tab: owner, targetId: targetInfo.targetId });
             owner.sessions.add(sessionId);
-            if (owner.controller === 'agent' && /^(page|iframe)$/.test(targetInfo.type)) await guardSession(sessionId, true);
+            if (owner.controller === 'agent' && /^(page|iframe)$/.test(targetInfo.type)) {
+              await guardSession(sessionId, true);
+              await seedSession(sessionId, true);
+            }
             if (/^(page|iframe|worker)$/.test(targetInfo.type)) await cdp.send('Target.setAutoAttach', AUTO_ATTACH, sessionId).catch(() => {});
           }
         } catch (e) {
@@ -706,6 +744,7 @@ async function serve() {
     if (event.method === 'Target.detachedFromTarget') {
       const entry = sessionOwner.get(event.params.sessionId);
       if (entry) { entry.tab.sessions.delete(event.params.sessionId); sessionOwner.delete(event.params.sessionId); }
+      trackSeeds.delete(event.params.sessionId);
     }
     if (event.method === 'Target.targetInfoChanged') {
       const info = event.params.targetInfo;
@@ -903,14 +942,20 @@ async function serve() {
             createdAt: Number(body.handoff.createdAt) || Date.now(),
           };
         else if (human && body.controller === 'agent') tab.handoff = reviewedHandoff(tab.handoff);
+        const wasAgent = tab.controller === 'agent';
         tab.controller = body.controller === 'agent' ? 'agent' : 'human';
         // Only a person holding the tab protects it from reaping; a bot's own
         // release does not.
         tab.humanHeld = human === true && tab.controller === 'human';
-        if (tab.controller === 'agent') tab.agentSince = Date.now();
+        // An explicit human takeover seals the tab to bots until the human
+        // hands it back (the seal persists across restarts); a bot's own
+        // release or the idle clock stays retakeable, and a lock stays locked.
+        if (tab.controller === 'agent') { tab.humanLock = false; tab.agentSince = Date.now(); }
+        else if (wasAgent) tab.humanLock = human === true;
         tab.epoch++;
         tab.refs.clear();
         await syncFetch(tab);
+        await syncTrack(tab);
         await input.clear(tab);
         await wc.executeJavaScript(tintScript(tab.controller === 'agent')).catch(() => {});
         await persist();

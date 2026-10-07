@@ -231,6 +231,8 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
       case 'cua_alans_way_tabs': result = await request('/v1/tabs'); break;
       case 'cua_alans_way_open': {
         const host = normalizeHost(args.host);
+        if (typeof args.host === 'string' && args.host.trim() && !host)
+          throw new Error('Use host "computer" or "vm", or omit it.');
         result = await request('/v1/tabs', 'POST', { url: args.url, background: args.background !== false,
           ...(host ? { host: host === 'vm' ? 'vps' : 'local' } : {}) });
         break;

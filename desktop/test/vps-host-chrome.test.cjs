@@ -223,6 +223,29 @@ test('real Chromium: a tab mid-action is never reaped', { skip: !chrome && 'no C
   assert.equal((await pending).status, 408, 'its pending wait still resolves normally');
 });
 
+test('real Chromium: a human takeover seals a VM tab to bot claims until the human hands it back', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 30000 }, async () => {
+  const h = await spawnHost({ HERMES_OVERSEER_BOT_IDS: 'overseer-1' });
+  const ha = h.api;
+  const tab = (await ha('/v1/tabs', 'POST', { url: `http://test.example:${pa}/ok` }, { bot: 'own-bot' })).data;
+  assert.equal(tab.controller, 'agent');
+  const taken = await ha(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'human' }, { human: true });
+  assert.equal(taken.status, 200);
+  assert.equal(taken.data.controller, 'human');
+  for (const bot of ['own-bot', 'overseer-1']) {
+    const claim = await ha(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' }, { bot });
+    assert.equal(claim.status, 409, `${bot} must not reclaim a human-held tab`);
+    assert.match(claim.data.error, /human_has_control/);
+  }
+  // The takeover awaits persist(), so the seal is already on disk.
+  const saved = JSON.parse(fs.readFileSync(path.join(h.dir, 'data', 'tabs.json'))).find((t) => t.id === tab.id);
+  assert.equal(saved.humanLock, true, 'the seal survives a broker restart');
+  const back = await ha(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' }, { human: true });
+  assert.equal(back.status, 200);
+  assert.equal(back.data.controller, 'agent');
+  const act = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: '1', epoch: back.data.epoch }, { bot: 'own-bot' });
+  assert.equal(act.status, 200, 'the owner acts again once the human hands the tab over');
+});
+
 test('real Chromium: the default cap is six agent tabs per bot', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
   const opened = [];
   for (let i = 0; i < 6; i++) opened.push((await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/ok` })).data);

@@ -107,7 +107,18 @@ setInterval(function () { const d = document.getElementById('tick'); d.textConte
 setTimeout(function () { document.body.appendChild(document.createElement('hr')); }, 5000);
 </script>`;
 const quietPage = `<!doctype html><title>quiet</title><button id="qb">Noop</button>`;
-const routes = { '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage };
+// A page's own hint is not extension noise: the phrase only gets filtered
+// inside a node the structural extension heuristics already flagged.
+const hintPage = `<!doctype html><title>hint</title><label for="c">Fruit</label><input id="c" role="combobox" aria-expanded="true"><p id="hint">Press down arrow to select a suggestion.</p>`;
+// A bundled page captures fetch at module init, before any agent action could
+// arm a lazy tracker; only a document-start install still counts its work.
+const boundPage = `<!doctype html><title>bound</title><button id="bb">Go</button><div id="out"></div><script>
+var capturedFetch = window.fetch;
+document.getElementById('bb').onclick = function () {
+  capturedFetch('/slow-json').then(function (r) { return r.text(); }).then(function (t) { document.getElementById('out').textContent = t; });
+};
+</script>`;
+const routes = { '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '';
 const api = (route, method = 'GET', body, epoch) =>
@@ -347,4 +358,74 @@ test('wrapped setTimeout, clearTimeout, fetch and XHR behave normally', { skip: 
   assert.deepEqual(out.fired, ['fired'], 'setTimeout returns a usable id and clearTimeout cancels');
   assert.equal(out.text, 'Fetched payload text');
   assert.equal(out.xhrText, 'Fetched payload text');
+});
+
+test('the wrappers are indistinguishable from the natives they replaced', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/quiet` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  const probeCode = `JSON.stringify({
+    names: [setTimeout.name, clearTimeout.name, fetch.name, XMLHttpRequest.prototype.send.name, Function.prototype.toString.name],
+    lens: [setTimeout.length, clearTimeout.length, fetch.length, XMLHttpRequest.prototype.send.length, Function.prototype.toString.length],
+    sources: [setTimeout, clearTimeout, fetch, XMLHttpRequest.prototype.send, Function.prototype.toString].map(String),
+    own: Object.getOwnPropertyNames(setTimeout).sort(),
+    stringKeys: Object.getOwnPropertyNames(window).filter(function (k) { return /hermes|followup|hw\\./i.test(k); }),
+    symbolKeys: Object.getOwnPropertySymbols(window).map(String).filter(function (s) { return /hermes|workspace/i.test(s); }),
+  })`;
+  const evalOn = (epoch) => api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: probeCode, epoch });
+  // Before the first arm the tracker is already planted by the document-start
+  // seed, already disguised, and inert.
+  const early = await evalOn(tab.epoch);
+  assert.equal(early.status, 200, JSON.stringify(early.data));
+  assert.deepEqual(JSON.parse(early.data.value).sources, [
+    'function setTimeout() { [native code] }', 'function clearTimeout() { [native code] }',
+    'function fetch() { [native code] }', 'function send() { [native code] }', 'function toString() { [native code] }',
+  ], 'the document-start wrappers report native sources before any arm');
+  const click = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#qb', epoch: tab.epoch });
+  assert.equal(click.status, 200, JSON.stringify(click.data));
+  const probe = await evalOn(tab.epoch);
+  assert.equal(probe.status, 200, JSON.stringify(probe.data));
+  const out = JSON.parse(probe.data.value);
+  assert.deepEqual(out.names, ['setTimeout', 'clearTimeout', 'fetch', 'send', 'toString']);
+  assert.deepEqual(out.lens, [1, 0, 1, 0, 0]);
+  for (const source of out.sources) assert.match(source, /^function \w+\(\) \{ \[native code\] \}$/, source);
+  assert.deepEqual(out.own, ['length', 'name'], 'no arguments/caller leftovers on the wrappers');
+  assert.deepEqual(out.stringKeys, [], 'no enumerable marker globals');
+  assert.deepEqual(out.symbolKeys, [], 'no named symbol markers');
+});
+
+test('a fetch bound at module init still counts once an action arms the tracker', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/bound` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  await api(`/v1/tabs/${tab.id}/snapshot`);
+  const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#bb', epoch: tab.epoch });
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.ok(reply.data.effect.text.includes('Fetched payload text'), `effect.text: ${JSON.stringify(reply.data.effect.text)}`);
+  assert.ok(reply.data.effect.settledMs >= 300, `the pre-bound request was not counted: ${reply.data.effect.settledMs}`);
+});
+
+test('a page\'s own "press down arrow" hint survives the extension filter', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/hint` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  const snap = await api(`/v1/tabs/${tab.id}/snapshot`);
+  assert.equal(snap.status, 200);
+  assert.ok(snap.data.text.includes('Press down arrow to select'), `snapshot lost the hint: ${JSON.stringify(snap.data.text)}`);
+});
+
+test('read and wait steps refresh the baseline so the effect does not repeat them', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/async` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  await api(`/v1/tabs/${tab.id}/snapshot`);
+  const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', {
+    action: 'batch', epoch: tab.epoch,
+    steps: [
+      { action: 'click', selector: '#ab' },
+      { action: 'wait', text: 'Async result appeared', timeout: 10000 },
+      { action: 'read', maxChars: 2000 },
+    ],
+  });
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.ok(reply.data.results.every((step) => step.ok), JSON.stringify(reply.data.results));
+  const read = reply.data.results[2];
+  assert.ok(read.text.includes('Async result appeared'), `read text: ${JSON.stringify(read.text)}`);
+  assert.ok(!reply.data.effect.text.includes('Async result appeared'), `effect.text repeats the read: ${JSON.stringify(reply.data.effect)}`);
 });

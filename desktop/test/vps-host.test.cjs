@@ -312,7 +312,14 @@ test('handed-off tabs refuse agent claims until the human gives them over', asyn
   assert.equal(given.data.handoff.phase, 'reviewed');
   assert.equal(given.data.controller, 'agent');
   await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'human' }, { human: true });
-  assert.equal((await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'agent' })).status, 200);
+  const locked = await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'agent' });
+  assert.equal(locked.status, 409, 'an explicit human takeover seals the tab to bots');
+  assert.match(locked.data.error, /human_has_control/);
+  assert.equal((await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'agent' }, { human: true })).status, 200,
+    'the human hands it back');
+  await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'human' });
+  assert.equal((await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'agent' })).status, 200,
+    'a bot release stays retakeable');
 
   const restore = async (url) => {
     const tab = (await api('/v1/tabs', 'POST', { url }, { human: true })).data;
@@ -444,12 +451,12 @@ test('a failed navigation closes the tab it opened instead of leaking it', async
 test('a restarted broker reopens tabs whose targets are gone and keeps agent control', async () => {
   const saved = (id, targetId, extra) => ({ id, targetId, title: 'Saved', url: 'http://saved.example/' + id, botId: 'bot-a', allowedBots: [], controller: 'agent', epoch: 3, host: 'vps', ...extra });
   const host = await startHost({
-    tabs: [saved('t-alive', 'alive-1'), saved('t-gone', 'gone-1'), saved('t-human', 'gone-2', { controller: 'human' })],
+    tabs: [saved('t-alive', 'alive-1'), saved('t-gone', 'gone-1'), saved('t-human', 'gone-2', { controller: 'human' }), saved('t-locked', 'gone-3', { controller: 'human', humanLock: true })],
     targets: [{ targetId: 'alive-1', type: 'page', url: 'http://alive.example/', title: 'Alive' }],
   });
   const list = (await host.api('/v1/tabs')).data.tabs;
   const by = Object.fromEntries(list.map((t) => [t.id, t]));
-  assert.deepEqual(Object.keys(by).sort(), ['t-alive', 't-gone', 't-human']);
+  assert.deepEqual(Object.keys(by).sort(), ['t-alive', 't-gone', 't-human', 't-locked']);
   assert.equal(by['t-alive'].url, 'http://alive.example/');
   for (const id of ['t-alive', 't-gone']) {
     assert.equal(by[id].controller, 'agent', `${id} stays with the agent`);
@@ -459,6 +466,11 @@ test('a restarted broker reopens tabs whose targets are gone and keeps agent con
   assert.notEqual(by['t-gone'].targetId, 'gone-1');
   assert.ok(host.stub.calls.some((c) => c.method === 'Page.navigate' && c.params.url === 'http://saved.example/t-gone'), 'the saved URL is reopened');
   assert.equal((await host.api(`/v1/tabs/${list.find((t) => t.id === 't-gone').id}/snapshot`)).status, 200);
+  const locked = await host.api(`/v1/tabs/${by['t-locked'].id}/control`, 'POST', { controller: 'agent' });
+  assert.equal(locked.status, 409, 'a persisted takeover seal survives the restart');
+  assert.match(locked.data.error, /human_has_control/);
+  const plain = await host.api(`/v1/tabs/${by['t-human'].id}/control`, 'POST', { controller: 'agent' });
+  assert.equal(plain.status, 200, 'a human-held tab that was never sealed stays claimable');
 });
 
 test('a port collision exits with a clear message and a distinct status', async () => {
@@ -580,8 +592,10 @@ test('every request an agent tab makes is checked before it leaves, redirects, u
   assert.deepEqual(await paused('http://127.0.0.1:3000/dev', sessionOf(mine)), ['Fetch.continueRequest']);
   await host.api(`/v1/tabs/${mine.id}/control`, 'POST', { controller: 'agent' }, { human: true });
   assert.ok(host.stub.calls.some((c) => c.method === 'Fetch.enable' && c.sessionId === sessionOf(mine)), 'taking a tab for an agent turns the filter on');
+  assert.ok(host.stub.calls.some((c) => c.method === 'Page.addScriptToEvaluateOnNewDocument' && c.sessionId === sessionOf(mine)), 'and seeds the settle tracker for new documents');
   await host.api(`/v1/tabs/${mine.id}/control`, 'POST', { controller: 'human' }, { human: true });
   assert.ok(host.stub.calls.some((c) => c.method === 'Fetch.disable' && c.sessionId === sessionOf(mine)), 'and giving it back turns it off');
+  assert.ok(host.stub.calls.some((c) => /^Page\.remove(All)?ScriptsToEvaluateOnNewDocument$/.test(c.method) && c.sessionId === sessionOf(mine)), 'and lifts the seed');
   const refused = await host.api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'cdp', method: 'Fetch.disable', epoch: tab.epoch });
   assert.equal(refused.status, 400, 'the agent cannot switch the filter off');
 });
@@ -594,10 +608,10 @@ test('popups and frames are guarded from their first request, before the page re
   const order = (sessionId) => host.stub.calls.filter((c) => c.sessionId === sessionId).map((c) => c.method);
   host.stub.send('Target.attachedToTarget', { sessionId: 'auto-popup', waitingForDebugger: true, targetInfo: { targetId: 'popup-1', type: 'page', url: '', openerId: tab.targetId } });
   await wait(100);
-  assert.deepEqual(order('auto-popup').filter((m) => m !== 'Target.setAutoAttach'), ['Fetch.enable', 'Runtime.runIfWaitingForDebugger'], 'the filter is on before the popup is released');
+  assert.deepEqual(order('auto-popup').filter((m) => m !== 'Target.setAutoAttach'), ['Fetch.enable', 'Page.addScriptToEvaluateOnNewDocument', 'Runtime.runIfWaitingForDebugger'], 'the filter and settle seed are on before the popup is released');
   host.stub.send('Target.attachedToTarget', { sessionId: 'auto-frame', waitingForDebugger: true, targetInfo: { targetId: 'frame-1', type: 'iframe', url: 'http://127.0.0.1:8082/' } }, sessionOf(tab));
   await wait(100);
-  assert.deepEqual(order('auto-frame').filter((m) => m !== 'Target.setAutoAttach'), ['Fetch.enable', 'Runtime.runIfWaitingForDebugger'], 'a cross-process frame of an agent page is guarded');
+  assert.deepEqual(order('auto-frame').filter((m) => m !== 'Target.setAutoAttach'), ['Fetch.enable', 'Page.addScriptToEvaluateOnNewDocument', 'Runtime.runIfWaitingForDebugger'], 'a cross-process frame of an agent page is guarded');
   host.stub.send('Fetch.requestPaused', { requestId: 'frame-req', request: { url: 'http://127.0.0.1:8082/in-frame' }, resourceType: 'Document' }, 'auto-frame');
   await wait(80);
   assert.ok(host.stub.calls.some((c) => c.method === 'Fetch.failRequest' && c.sessionId === 'auto-frame'));

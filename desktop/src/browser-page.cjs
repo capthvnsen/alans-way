@@ -21,15 +21,17 @@ function snapshotExpression(generation, opts = {}) {
     let focused = null, acted = null, settledMs;
     // The tracker's raw timers keep this read's own scheduling out of the
     // count: the settle lands inside the arm grace and must not track itself.
-    const followUp = window[${JSON.stringify(FOLLOW_UP_KEY)}];
+    const followUp = window[Symbol.for(${JSON.stringify(FOLLOW_UP_KEY)})];
     const setT = followUp && followUp.setT || setTimeout, clearT = followUp && followUp.clearT || clearTimeout;
     // The parser yields between chunks, so a snapshot can land mid-document;
     // give a still-parsing page a moment and report it if it is not done.
     if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setT(done, ${parseWaitMs}); });
     // Marks the document: a cross-document navigation swaps the window and
     // drops the marker, which is how a read tells it from a same-document one.
-    const sameDoc = window.__hermesWorkspaceDoc === 1;
-    try { window.__hermesWorkspaceDoc = 1; } catch {}
+    // Kept under a symbol and non-enumerable so window scans do not see it.
+    const docKey = Symbol.for(${JSON.stringify(FOLLOW_UP_DOC_KEY)});
+    const sameDoc = window[docKey] === 1;
+    if (${opts.mark !== false}) { try { Object.defineProperty(window, docKey, { value: 1, configurable: true }); } catch { try { window[docKey] = 1; } catch {} } }
     // An action's effect often lands a beat after it (XHR, setTimeout ~150ms
     // is common), so an action read first gives late reactions a moment to
     // land, then settles once the DOM has stayed quiet, bounded so a busy
@@ -243,11 +245,10 @@ function snapshotExpression(generation, opts = {}) {
       // node (or an ancestor) came from another document or is a frame into
       // an extension page, it carries a known extension data attribute
       // (1Password, LastPass, Bitwarden, Dashlane, Keeper, NordPass, Proton
-      // Pass, Grammarly), it is a custom element whose shadow root the page
-      // registry never defined, or it is an aria-live region announcing a
-      // known extension phrase. The per-chunk phrase check is the fallback.
+      // Pass, Grammarly), or it is a custom element whose shadow root the page
+      // registry never defined. All of these are structural: a phrase like
+      // "press down arrow to select" is real page text on comboboxes.
       const extAttr = /^data-(?:1p|1password|lastpass|bitwarden|bw|dashlane|keeper|nordpass|protonpass|proton|grammarly|gramm)[-_]/i;
-      const extPhrase = /1Password menu is available|Press down arrow to select/i;
       const extFrame = /^(?:chrome|moz|safari-web)-extension:/i;
       const extCache = new WeakMap();
       const extNoise = (el) => {
@@ -258,7 +259,6 @@ function snapshotExpression(generation, opts = {}) {
         const attrs = el.attributes;
         for (let i = 0; !hit && attrs && i < attrs.length; i++) hit = extAttr.test(attrs[i].name);
         if (!hit && el.localName.indexOf('-') >= 0 && el.shadowRoot && !customElements.get(el.localName)) hit = true;
-        if (!hit && el.hasAttribute('aria-live')) hit = extPhrase.test(el.textContent || '');
         if (!hit) hit = extNoise(el.parentElement);
         extCache.set(el, hit);
         return hit;
@@ -281,7 +281,7 @@ function snapshotExpression(generation, opts = {}) {
         }
         if (!parentVisible) continue;
         const chunk = node.nodeValue.replace(/\\s+/g, ' ').trim();
-        if (!chunk || extPhrase.test(chunk)) continue;
+        if (!chunk) continue;
         for (let i = 0; i < chunk.length; i++) { sigHash ^= chunk.charCodeAt(i); sigHash = Math.imul(sigHash, 0x01000193); }
         sigHash ^= 0x9d; sigHash = Math.imul(sigHash, 0x01000193);
         sigNodes++;
@@ -323,11 +323,19 @@ const EFFECT_SETTLE_MS = 400;
 // beat after the action; once anything mutates, the shorter quiet window is
 // all a settled page pays.
 const EFFECT_WATCH_MS = 250;
-// Consequence tracking: followUpArmExpression wraps the page's setTimeout,
-// fetch and XMLHttpRequest.send once and opens a counting window around each
-// action's dispatch, so the effect settle can wait out work the action itself
-// started (a short timer, a request) instead of answering mid-update.
-const FOLLOW_UP_KEY = '__hermesFollowUp';
+// Consequence tracking: followUpInstallExpression wraps the page's setTimeout,
+// fetch and XMLHttpRequest.send once — planted on agent tabs at document start
+// (so a bundled page that bound the originals at module init still routes
+// through the tracker) and lazily re-run by followUpArmExpression on pages that
+// predate the install. followUpArmExpression then opens a counting window
+// around each action's dispatch, so the effect settle can wait out work the
+// action itself started (a short timer, a request) instead of answering
+// mid-update. Unarmed the wrappers are pure pass-through.
+// State and document markers live under registered symbols and non-enumerable
+// properties: enumerable, plainly-named window keys are how bot detectors spot
+// injected globals.
+const FOLLOW_UP_KEY = 'hw.followUp';
+const FOLLOW_UP_DOC_KEY = 'hw.doc';
 // The window covers the dispatch plus a beat after: a handler can schedule
 // its follow-up a tick later than the input ack.
 const FOLLOW_UP_GRACE_MS = 50;
@@ -338,19 +346,40 @@ const FOLLOW_UP_TIMER_MS = 1000;
 const FOLLOW_UP_ARM_EXPIRY_MS = 15000;
 // The settle bound stretches to this only while tracked work is in flight.
 const FOLLOW_UP_CAP_MS = 1500;
-function followUpArmExpression() {
+function followUpInstallExpression() {
   return `(() => {
-    const w = window, key = ${JSON.stringify(FOLLOW_UP_KEY)};
-    const S = w[key] || (w[key] = { cur: null, inside: 0, timers: new Map(), installed: false });
-    if (!S.installed) {
-      const armed = () => { const c = S.cur; return S.inside > 0 || !!c && performance.now() < c.expires && (c.open || performance.now() < c.until); };
-      const setT = w.setTimeout, clearT = w.clearTimeout, fetch0 = w.fetch;
-      const send0 = w.XMLHttpRequest && w.XMLHttpRequest.prototype && w.XMLHttpRequest.prototype.send;
-      // Our own in-page timers (the settle's quiet windows, the cursor tween)
-      // schedule through the originals, or they would count against the arm.
-      S.setT = setT; S.clearT = clearT;
-      try {
-        w.setTimeout = function (callback, delay, ...rest) {
+    const w = window, key = Symbol.for(${JSON.stringify(FOLLOW_UP_KEY)});
+    let S = w[key];
+    if (!S) {
+      S = { cur: null, inside: 0, timers: new Map(), installed: false };
+      try { Object.defineProperty(w, key, { value: S, configurable: true }); } catch { try { w[key] = S; } catch {} }
+    }
+    if (S.installed) return true;
+    const armed = () => { const c = S.cur; return S.inside > 0 || !!c && performance.now() < c.expires && (c.open || performance.now() < c.until); };
+    const setT = w.setTimeout, clearT = w.clearTimeout, fetch0 = w.fetch;
+    const send0 = w.XMLHttpRequest && w.XMLHttpRequest.prototype && w.XMLHttpRequest.prototype.send;
+    // Our own in-page timers (the settle's quiet windows, the cursor tween)
+    // schedule through the originals, or they would count against the arm.
+    S.setT = setT; S.clearT = clearT;
+    try {
+      // The wrappers must be indistinguishable from the natives they replace:
+      // same name and arity, and a toString that answers the original's
+      // "[native code]" source through a patched Function.prototype.toString
+      // that reports native itself. Method shorthand matters here: plain
+      // functions carry a prototype own property and arguments/caller
+      // throwers, while natives expose only name and length.
+      const toString0 = Function.prototype.toString;
+      const sources = new Map();
+      const disguise = (fn, original) => {
+        try { Object.defineProperty(fn, 'name', { value: original.name, configurable: true }); } catch {}
+        try { Object.defineProperty(fn, 'length', { value: original.length, configurable: true }); } catch {}
+        try { delete fn.arguments; delete fn.caller; delete fn.prototype; } catch {}
+        sources.set(fn, toString0.call(original));
+        return fn;
+      };
+      const wrapped = {
+        toString() { const s = sources.get(this); return s === undefined ? toString0.call(this) : s; },
+        setTimeout(callback, delay, ...rest) {
           const c = S.cur, ms = typeof delay === 'number' ? delay : 0;
           if (!c || !armed() || ms > ${FOLLOW_UP_TIMER_MS}) return setT.call(this, callback, delay, ...rest);
           c.pending++; c.total++;
@@ -366,13 +395,13 @@ function followUpArmExpression() {
           catch (e) { c.pending--; c.total--; throw e; }
           S.timers.set(id, c);
           return id;
-        };
-        w.clearTimeout = function (id) {
+        },
+        clearTimeout(id) {
           const owner = S.timers.get(id);
           if (owner) { S.timers.delete(id); owner.pending--; }
           return clearT.call(this, id);
-        };
-        if (fetch0) w.fetch = function (...args) {
+        },
+        fetch(...args) {
           const c = S.cur;
           if (!c || !armed()) return fetch0.apply(this, args);
           c.pending++; c.total++;
@@ -385,8 +414,8 @@ function followUpArmExpression() {
           return new Promise((resolve, reject) => Promise.resolve(sent).then(
             (value) => { c.pending--; resolve(value); },
             (error) => { c.pending--; reject(error); }));
-        };
-        if (send0) w.XMLHttpRequest.prototype.send = function (...args) {
+        },
+        send(...args) {
           const c = S.cur;
           if (!c || !armed()) return send0.apply(this, args);
           c.pending++; c.total++;
@@ -399,17 +428,32 @@ function followUpArmExpression() {
             c.pending--; c.total--;
             throw e;
           }
-        };
-      } catch { /* a sealed page gets no tracking and the old timing */ }
-      S.installed = true;
-    }
+        },
+      };
+      sources.set(wrapped.toString, toString0.call(toString0));
+      try { delete wrapped.toString.arguments; delete wrapped.toString.caller; } catch {}
+      try { Function.prototype.toString = wrapped.toString; } catch {}
+      w.setTimeout = disguise(wrapped.setTimeout, setT);
+      w.clearTimeout = disguise(wrapped.clearTimeout, clearT);
+      if (fetch0) w.fetch = disguise(wrapped.fetch, fetch0);
+      if (send0) w.XMLHttpRequest.prototype.send = disguise(wrapped.send, send0);
+    } catch { /* a sealed page gets no tracking and the old timing */ }
+    S.installed = true;
+    return true;
+  })()`;
+}
+function followUpArmExpression() {
+  return `(() => {
+    const installed = ${followUpInstallExpression()};
+    const S = window[Symbol.for(${JSON.stringify(FOLLOW_UP_KEY)})];
+    if (!installed || !S) return false;
     S.cur = { open: true, until: 0, expires: performance.now() + ${FOLLOW_UP_ARM_EXPIRY_MS}, pending: 0, total: 0 };
     return true;
   })()`;
 }
 function followUpCloseExpression() {
   return `(() => {
-    const s = window[${JSON.stringify(FOLLOW_UP_KEY)}], c = s && s.cur;
+    const s = window[Symbol.for(${JSON.stringify(FOLLOW_UP_KEY)})], c = s && s.cur;
     if (c) { c.open = false; c.until = performance.now() + ${FOLLOW_UP_GRACE_MS}; }
     return true;
   })()`;
@@ -539,4 +583,4 @@ function restoreExpression(checkpoint) {
     return {verification:restored === c.drafts.length ? 'ready' : 'review_required',restored,skipped:c.drafts.length-restored};
   })()`;
 }
-module.exports = { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, FOLLOW_UP_KEY };
+module.exports = { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, followUpInstallExpression, lastReadOf, FOLLOW_UP_KEY };

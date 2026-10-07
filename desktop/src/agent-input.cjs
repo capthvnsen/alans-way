@@ -5,6 +5,9 @@ const INPUT_ACTIONS = new Set(['move', 'click', 'double_click', 'right_click', '
 const CLICKS = { click: { button: 'left', buttons: 1, count: 1 }, double_click: { button: 'left', buttons: 1, count: 2 }, right_click: { button: 'right', buttons: 2, count: 1 } };
 const POINTER_ACTIONS = new Set(['move', 'drag', ...Object.keys(CLICKS)]);
 const CURSOR_ID = 'hermes-workspace-agent-cursor';
+// The submit probe's flag and listener ride under a symbol key: an enumerable
+// window global is how bot detectors spot injected state.
+const SUBMIT_KEY = 'hw.submit', SUBMIT_SEEN_KEY = 'hw.submitSeen';
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 
 // A wedged renderer leaves executeJavaScript pending forever and would
@@ -110,7 +113,7 @@ function cursorScript(cursor) {
     const id = ${JSON.stringify(CURSOR_ID)}, value = ${JSON.stringify(cursor)};
     // The overlay lands inside the action's arm window; its own timers must
     // not count as follow-up work the action started.
-    const track = window[${JSON.stringify(FOLLOW_UP_KEY)}];
+    const track = window[Symbol.for(${JSON.stringify(FOLLOW_UP_KEY)})];
     const setT = track && track.setT || setTimeout, clearT = track && track.clearT || clearTimeout;
     let host = document.getElementById(id);
     if (!value) { host?.remove(); document.getElementById(id + '-hl')?.remove(); return; }
@@ -277,9 +280,10 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     }
     const kind = (el.type || '').toLowerCase();
     if (${probe}) {
-      view.__hermesSubmit = null;
-      view.__hermesSubmitSeen ||= (event) => { view.__hermesSubmit = event.defaultPrevented ? 'handled' : 'navigates'; };
-      view.addEventListener('submit', view.__hermesSubmitSeen, { once: true });
+      const sKey = Symbol.for(${JSON.stringify(SUBMIT_KEY)}), seenKey = Symbol.for(${JSON.stringify(SUBMIT_SEEN_KEY)});
+      try { Object.defineProperty(view, sKey, { value: null, writable: true, configurable: true }); } catch { view[sKey] = null; }
+      view[seenKey] ||= (event) => { view[sKey] = event.defaultPrevented ? 'handled' : 'navigates'; };
+      view.addEventListener('submit', view[seenKey], { once: true });
     }
     const submit = !!el.form && ((el.tagName === 'BUTTON' && (!kind || kind === 'submit')) || (el.tagName === 'INPUT' && kind === 'submit'));
     const link = !!el.closest('a[href]') && !/^#/.test(el.closest('a[href]').getAttribute('href') || '');
@@ -483,7 +487,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
           if (found.submit) {
             const submitted = await boundedJs(wc, `(() => {
               const el = ${locateElement(selectorFor(body))};
-              return (el?.ownerDocument.defaultView || window).__hermesSubmit || null;
+              return (el?.ownerDocument.defaultView || window)[Symbol.for(${JSON.stringify(SUBMIT_KEY)})] || null;
             })()`).catch(() => null);
             found.nav = submitted === 'navigates'; found.certain = found.nav;
           }

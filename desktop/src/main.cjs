@@ -16,7 +16,7 @@ const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
-const { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression } = require('./browser-page.cjs');
+const { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
 const { createVpsBrowser, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
@@ -451,6 +451,7 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
   const viewport = layout.browser || { x: 0, y: 0, width: 900, height: 700 };
   view.setBounds({ x: Math.round(viewport.x), y: Math.round(viewport.y), width: Math.round(viewport.width), height: Math.round(viewport.height) });
   configureContents(view.webContents);
+  syncFollowUpSeed(tab);
   // The library selects newly registered tabs. Registration must not reparent
   // or focus a background agent view in the human window.
   registeringExtensionTab = true;
@@ -492,12 +493,30 @@ function closeTab(id) {
   if (activeTabId === id) activeTabId = [...tabs.keys()].at(-1) || 'home';
   savePreferences(); applyLayout(); broadcast();
 }
+// The settle tracker is planted on an agent tab before its first document
+// script, so a page that bound fetch or setTimeout at module init still routes
+// through the tracker once an action arms it. Inert until armed, and stripped
+// again when the tab goes back to a human.
+function syncFollowUpSeed(tab) {
+  const wc = tab.view.webContents;
+  if (!wc || wc.isDestroyed()) return;
+  if (tab.controller === 'agent') {
+    if (tab.followUpSeed) return;
+    tab.followUpSeed = true;
+    browserCommand(tab, 'Page.addScriptToEvaluateOnNewDocument', { source: followUpInstallExpression() })
+      .catch(() => { tab.followUpSeed = false; });
+  } else if (tab.followUpSeed) {
+    tab.followUpSeed = false;
+    browserCommand(tab, 'Page.removeAllScriptsToEvaluateOnNewDocument').catch(() => {});
+  }
+}
 function changeController(id, controller, source = 'human') {
   const tab = tabs.get(id);
   if (!tab) throw new Error('Tab not found.');
   if (tab.extensionPage && controller === 'agent') throw new Error('Extension account pages stay under your control.');
   const wasAgent = tab.controller === 'agent';
   tab.controller = controller === 'agent' ? 'agent' : 'human';
+  syncFollowUpSeed(tab);
   // An explicit human takeover seals the tab to bots until the human hands
   // it back in the UI. A bot's own release or the idle-expiry clock stays
   // retakeable, and a tab already locked stays locked.
@@ -1076,9 +1095,12 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
   if (body.action === 'read') {
     const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
     requireAgentRead(tab);
-    const data = await readJs(wc, snapshotExpression(tab.generation || 0, { maxChars, maxElements: 0, elementMs: 5 }), 12000).catch(() => null);
+    // A read step is the model's own baseline, so it must not plant the doc
+    // marker: on a fresh document the missing marker is what lets the final
+    // effect report the navigation it observed.
+    const data = await readJs(wc, snapshotExpression(tab.generation || 0, { maxChars, maxElements: 0, elementMs: 5, mark: false }), 12000).catch(() => null);
     requireActor(tab, botId, body.epoch, true, overseer);
-    if (data) tab.docMarked = true;
+    if (data) { tab.lastRead = data.sameDoc === false ? null : lastReadOf(data); tab.docMarked = tab.docMarked || data.sameDoc === true; }
     return finish({ text: (data && typeof data.text === 'string' ? data.text : ''), dispatched: true });
   }
   if (body.action === 'eval') {
@@ -1151,6 +1173,10 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
     }
     if (!value || !value.found) throw Object.assign(new Error(`wait timed out after ${value ? value.waited : Date.now() - hostStart}ms for ${gone ? 'absence of ' : ''}${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`), { status: 408 });
     requireActor(tab, botId, body.epoch, true, overseer);
+    // A successful wait observed the page, so it becomes the read baseline:
+    // the final effect must not re-report what the wait already confirmed.
+    const waited = await readJs(wc, snapshotExpression(tab.generation || 0, { maxChars: 8000, maxElements: 0, elementMs: 5, mark: false }), 12000).catch(() => null);
+    if (waited) { tab.lastRead = waited.sameDoc === false ? null : lastReadOf(waited); tab.docMarked = tab.docMarked || waited.sameDoc === true; }
     return finish({ waited: value.waited, dispatched: true });
   }
   if (body.action === 'viewport') {
