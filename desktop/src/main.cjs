@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences } = require('electron');
+const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL, fileURLToPath } = require('node:url');
@@ -10,6 +10,7 @@ const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding } = require('./onboarding.cjs');
+const cloudClaim = require('./cloud-claim.cjs');
 const macUpdate = require('./mac-update.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
@@ -38,6 +39,13 @@ app.enableSandbox();
 protocol.registerSchemesAsPrivileged([{ scheme: AVATAR_SCHEME, privileges: { secure: true, supportFetchAPI: true } }]);
 app.setName("alans-way-localapp");
 if (process.platform === 'win32') app.setAppUserModelId('app.alans-way.localapp');
+// The paid-computer link arrives as alansway://claim?token=… — on macOS via
+// open-url possibly before the window exists, on Windows in the launch or
+// second-instance argv. Either way the token waits in a queue until the
+// window can act on it, and only the newest is kept.
+app.setAsDefaultProtocolClient('alansway');
+const claimTokens = cloudClaim.createTokenQueue();
+app.on('open-url', (event, url) => { event.preventDefault(); claimTokens.push(cloudClaim.parseClaimUrl(url)); });
 // Keep existing sessions and connector discovery stable when the product name changes.
 app.setPath('userData', process.env.HERMES_WORKSPACE_DATA
   ? path.resolve(process.env.HERMES_WORKSPACE_DATA)
@@ -73,6 +81,7 @@ const vmUpdater = createVmUpdater({ log: (label, error) => logError(label, error
 const vmProgress = {};
 let vmRetrying = false;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
+let cloudError = '';
 const tabs = new Map();
 const vpsTabs = new Map();
 const recentLinkTabs = new Map();
@@ -244,7 +253,7 @@ function selectAgent(id) {
 function getState() {
   return { name: app.getName(), version: app.getVersion(), build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
-    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)),
+    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)), cloud: cloudView(),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
     update: { available: update.available, ready: update.ready, busy: update.busy, error: update.error, justUpdatedFrom: update.justUpdatedFrom,
@@ -656,6 +665,39 @@ function startUpdates() {
   } else return;
   check(); setInterval(check, 6 * 60 * 60 * 1000);
 }
+// The claimed session stays encrypted in preferences and is never logged or
+// sent anywhere but the cloud API, so a restart or a second click on the
+// claim link resumes onboarding instead of claiming the token again.
+function cloudSession() {
+  try {
+    const enc = prefs?.cloud?.sessionEnc;
+    if (!enc || !safeStorage.isEncryptionAvailable()) return '';
+    return safeStorage.decryptString(Buffer.from(enc, 'base64'));
+  } catch { return ''; }
+}
+function cloudView() {
+  const cloud = prefs?.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+  return { claimed: !!cloudSession(), step: cloud.step || '', error: cloudError };
+}
+function startCloudOnboarding() {
+  prefs.onboarded = false;
+  activeTabId = 'home';
+  showWindow();
+  broadcast();
+}
+async function claimWithToken(token) {
+  if (!token) return;
+  if (cloudSession()) { startCloudOnboarding(); return; }
+  try {
+    const result = await cloudClaim.claim(cloudClaim.apiBase(), token, cloudClaim.ensureInstallId(prefs));
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is unavailable on this computer.');
+    const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+    prefs.cloud = { ...cloud, sessionEnc: safeStorage.encryptString(result.session).toString('base64'), sessionExpiresAt: result.expiresAt, step: 'cloud-wait' };
+    cloudError = '';
+    savePreferences();
+    startCloudOnboarding();
+  } catch (error) { cloudError = error.message; startCloudOnboarding(); }
+}
 function registerIpc() {
   ipcMain.handle('workspace:get', (event) => { trustSender(event); return getState(); });
   ipcMain.on('workspace:layout', (event, value) => { try { trustSender(event); layout = value || {}; applyLayout(); } catch {} });
@@ -924,6 +966,13 @@ function registerIpc() {
       case 'dismiss-updated': update.justUpdatedFrom = ''; break;
       case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;
       case 'onboarding-open': prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; savePreferences(); applyLayout(); break;
+      case 'cloud-claim-code': {
+        const token = cloudClaim.claimToken(value.code);
+        if (!token) throw new Error('That does not look like a claim code or claim link.');
+        await claimWithToken(token);
+        if (cloudError) throw new Error(cloudError);
+        break;
+      }
       case 'move-to-applications': return app.moveToApplicationsFolder();
       case 'sync-telegram': telegramView.webContents.reload(); break;
       case 'open-username': {
@@ -1638,6 +1687,7 @@ function createWindow() {
   });
   win.contentView.addChildView(remoteView);
   registerIpc();
+  claimTokens.setReady(claimWithToken);
   win.loadFile(path.join(ROOT, 'index.html'));
   remoteView.webContents.loadFile(path.join(ROOT, 'remote.html'));
   telegramView.webContents.loadURL(prefs.selectedBotId ? `${TELEGRAM}#${prefs.selectedBotId}` : TELEGRAM).catch(() => {});
@@ -1691,6 +1741,10 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(async () => {
     prefs = readPreferences(); prefs.remoteControl = false; pinOnboarding(prefs);
+    // A cold start launched by the claim link (Windows/Linux) carries the URL in argv.
+    for (const arg of process.argv) claimTokens.push(cloudClaim.parseClaimUrl(arg));
+    // A session already stored means onboarding was in progress: resume it.
+    if (cloudSession() && prefs.cloud?.step && prefs.cloud.step !== 'done') prefs.onboarded = false;
     session.defaultSession.protocol.handle(AVATAR_SCHEME, (request) => {
       const image = avatarStore.imageFor(request.url);
       return image ? new Response(image.data, { headers: { 'Content-Type': image.mime, 'Cache-Control': 'private, max-age=3600' } }) : new Response('', { status: 404 });
@@ -1742,7 +1796,10 @@ else {
     await extensionStore.installStore(); createWindow(); await extensionStore.restore(); broadcast();
     startUpdates();
   });
-  app.on('second-instance', showWindow);
+  app.on('second-instance', (_event, argv) => {
+    for (const arg of argv || []) claimTokens.push(cloudClaim.parseClaimUrl(arg));
+    showWindow();
+  });
   app.on('activate', showWindow);
   app.on('before-quit', () => { isQuitting = true; hostComputer?.close(); clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
