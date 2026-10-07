@@ -43,6 +43,16 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(self.scan("desktop/test/core.test.cjs", lan), [])
         self.assertTrue(self.scan("README.md", lan))
 
+    def test_network_ranges_are_not_device_addresses(self):
+        cidr = ".".join(["100", "64", "0", "0"]) + "/10"
+        self.assertEqual(self.scan("README.md", "tailnet range " + cidr), [])
+
+    def test_allowlisted_range_edges_only_pass_in_their_own_file(self):
+        edge = ".".join(["100", "64", "0", "0"])
+        self.assertEqual(self.scan("scripts/connect-mac.sh", edge), [])
+        self.assertTrue(self.scan("README.md", edge))
+        self.assertTrue(self.scan("scripts/connect-mac.sh", ".".join(["100", "72", "1", "23"])))
+
     def test_credentials_are_denied_without_printing_the_value(self):
         key = "ghp_" + "a" * 36
         findings = self.scan("config.txt", key)

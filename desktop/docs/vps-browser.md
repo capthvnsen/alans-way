@@ -100,11 +100,39 @@ WantedBy=multi-user.target
 ```
 
 Reload systemd and enable/start both units through your normal service setup.
-The broker writes private `connection.json` and `tabs.json` in its data
-directory. Never commit these files. Restarting only the broker reconnects
-existing live targets, increments control epochs and returns them to human
-control. Chromium exit loses the live target/page memory; retained URLs alone
-are not a restored task. Inspect pages before retrying uncertain submissions.
+The broker writes private `connection.json` (the agent token), `app-token.json`
+(the human/app token), `tabs.json` and `mirror.json` in its data directory.
+Never commit these files. Restarting only the broker reconnects existing live
+targets, increments control epochs and keeps each tab with whoever held it
+(an agent tab stays with its agent, but its epoch moves on, so take a fresh
+snapshot). Tabs whose Chromium target is gone (a Chromium crash or VM reboot)
+reopen at their saved URL; page memory is lost, so inspect pages before
+retrying uncertain submissions. A port clash exits with status 78 and a log
+line; set `RestartPreventExitStatus=78` on the unit to stop a restart loop.
+
+### Failover mirror
+
+The app pushes `POST /v1/mirror` (app token) every 10 seconds when something
+changed, and shortly after an agent tab navigates or changes hands. It carries
+each agent-controlled Mac tab's URL, scroll position, text drafts (never
+password-like fields) and the page's cookies, and is stored in `mirror.json`
+(0600). An entry the app stops refreshing is ignored and pruned after 24 hours,
+and the app clears the mirror of every bot without agent tabs when it connects.
+When the Mac is offline, the plugin calls `POST /v1/restore {bot}`: the broker
+sets the cookies, opens each tab (four at a time, waiting up to about 5 seconds
+for each page), reapplies scroll and drafts, gives the tabs to the bot and
+returns `{map, verification}` (old tab id to VPS tab id, and `ready`,
+`review_required` or `human_has_control` for each). Repeating the call returns
+the same tabs; it only navigates a tab again if the mirror changed since, and
+never when the human holds the tab (`human_has_control`) or the agent has
+already moved it to another URL or is acting in it. The agent token can restore its own
+bot; it cannot write or read the mirror. Pass the map to the VPS connector as
+`--tab-map '<json>'`.
+
+The two tokens only separate the human from the agent when the broker runs as
+another user than the agent with `appTokenFile` set to a path the agent cannot
+read. With one user the agent can read both; see the
+[integration contract](integration.md).
 
 ## Connect stock Hermes and the Mac
 

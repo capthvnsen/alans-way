@@ -3,6 +3,10 @@ const crypto = require('node:crypto');
 const MAX_DOWNLOADS = 50;
 const STATES = new Set(['progressing', 'completed', 'cancelled', 'interrupted']);
 
+// Opening one of these runs code (or installs it) with the user's privileges,
+// so the user is asked first. Documents and media open without a prompt.
+const RISKY = /\.(app|bat|cmd|com|command|cpl|dll|dmg|exe|hta|inf|jar|js|jse|lnk|msc|msi|msp|pkg|ps1|psm1|py|reg|scpt|scr|sh|url|vb|vbe|vbs|webloc|workflow|ws|wsf|wsh|appimage|desktop|deb|rpm)$/i;
+
 function describe(record) {
   return { id: record.id, name: record.name, path: record.path, source: record.source,
     state: record.state, paused: record.paused === true,
@@ -25,7 +29,7 @@ function sanitize(entry) {
   return /^[\w-]{8,64}$/.test(record.id) ? record : null;
 }
 
-function createDownloadStore({ getPreferences, savePreferences, onChanged = () => {}, shell, existsSync = () => false, downloadsPath = () => '', progressMs = 250 }) {
+function createDownloadStore({ getPreferences, savePreferences, onChanged = () => {}, shell, existsSync = () => false, downloadsPath = () => '', progressMs = 250, confirmOpen = async () => false }) {
   const live = new Map();
   let progressTimer, restored = false;
   function records() {
@@ -93,7 +97,9 @@ function createDownloadStore({ getPreferences, savePreferences, onChanged = () =
     return record.path;
   }
   async function open(id) {
-    const failure = await shell.openPath(saved(find(id)));
+    const record = find(id), file = saved(record);
+    if ((RISKY.test(file) || RISKY.test(record.name)) && !(await confirmOpen(record.name))) return;
+    const failure = await shell.openPath(file);
     if (failure) throw new Error(String(failure).slice(0, 300));
   }
   function showInFolder(id) { shell.showItemInFolder(saved(find(id))); }

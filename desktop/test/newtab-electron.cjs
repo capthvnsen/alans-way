@@ -8,6 +8,8 @@ const http = require('node:http');
 const { app, BrowserWindow, webContents, session, nativeImage } = require('electron');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-newtab-'));
 process.env.HERMES_WORKSPACE_DATA = profile;
+// A finished first-run wizard; the wizard otherwise stands in for the empty state.
+fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true }));
 process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
 require('../src/main.cjs');
 const waitFor = async (read, predicate, timeout = 12000) => {

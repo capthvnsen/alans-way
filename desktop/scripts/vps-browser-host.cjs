@@ -7,8 +7,11 @@ const fs = require('node:fs'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
-const { normalizeUrl, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload } = require('../src/core.cjs');
-const { createAgentInput, tintScript, botAccent } = require('../src/agent-input.cjs');
+const { normalizeUrl, agentPageUrl, cdpMethodError, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload } = require('../src/core.cjs');
+const agentInputModule = require('../src/agent-input.cjs');
+const { createAgentInput, tintScript, botAccent } = agentInputModule;
+// Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
+const INPUT_ACTIONS = agentInputModule.INPUT_ACTIONS || new Set(['click', 'type', 'press', 'move', 'scroll']);
 const { snapshotExpression, settleSnapshot, readControls, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
 const root =
   process.env.HERMES_VPS_BROWSER_DATA ||
@@ -17,9 +20,18 @@ const root =
     : path.join(os.homedir(), '.local', 'share', 'hermes-alans-way', 'browser'));
 const configFile = path.join(root, 'config.json'),
   connectionFile = path.join(root, 'connection.json'),
-  registryFile = path.join(root, 'tabs.json');
+  registryFile = path.join(root, 'tabs.json'),
+  mirrorFile = path.join(root, 'mirror.json');
+// The app token authorizes human-only operations. It lives outside the agent's
+// connection file; config.appTokenFile can move it somewhere the agent user
+// cannot read (see the setup notes for running the broker under another user).
+function appTokenFile() {
+  let configured;
+  try { configured = JSON.parse(fs.readFileSync(configFile)).appTokenFile; } catch { /* default location */ }
+  return typeof configured === 'string' && path.isAbsolute(configured) ? configured : path.join(root, 'app-token.json');
+}
 function write(file, data) {
-  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.writeFileSync(file + '.tmp', JSON.stringify(data, null, 2), { mode: 0o600 });
   fs.renameSync(file + '.tmp', file);
 }
@@ -34,29 +46,48 @@ const intParam = (url, key, min, max) => {
 // Must stay below the request timeouts for /actions in request() and the
 // Mac's SSH proxy, allowing a final 30s wait step to finish.
 const BATCH_BUDGET_MS = 50000;
+const MIRROR_TTL_MS = 24 * 3600000;
+const RESTORE_PARALLEL = 4, RESTORE_LOAD_ATTEMPTS = 50;
+// Every request an agent-held tab (or a frame, worker or pop-up of it) makes is
+// paused and checked against the barrier in core.cjs before it leaves, so
+// redirects, userinfo URLs, pop-ups and subresources cannot reach loopback or
+// metadata. Human tabs are not intercepted. Known gaps: WebSocket handshakes
+// (the Fetch domain never sees them), service workers and shared workers (not
+// tied to one tab), and hostnames that merely resolve to a blocked address.
+const FETCH_ALL = [{ urlPattern: '*' }];
+const AUTO_ATTACH = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
+// Judged on the host alone: userinfo on a public host is no threat, and on a
+// blocked host it must not be a way round the check.
+const agentUrlProblem = (url) => {
+  let u;
+  try { u = new URL(String(url)); } catch { return ''; }
+  if (!/^https?:$/.test(u.protocol)) return '';
+  try { agentPageUrl(`http://${u.host}/`); return ''; } catch (e) { return e.message; }
+};
 const overseerBots = new Set(
   String(process.env.HERMES_OVERSEER_BOT_IDS || '')
     .split(',')
     .map((id) => id.trim())
     .filter((id) => id && id.length <= 100),
 );
-async function read(req) {
+async function read(req, limit = 150000) {
   let size = 0;
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 150000) throw fail('Request too large.');
+    if (size > limit) throw fail('Request too large.');
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString() || '{}');
 }
 async function request(input) {
   const c = JSON.parse(fs.readFileSync(connectionFile));
-  if (!/^\/v1\/(status|tabs)(\/|$)/.test(input.path)) throw new Error('Invalid browser operation.');
+  if (!/^\/v1\/(status|tabs|mirror|restore)(\/|$)/.test(input.path)) throw new Error('Invalid browser operation.');
+  const token = input.human || input.path.startsWith('/v1/mirror') ? JSON.parse(fs.readFileSync(appTokenFile())).token : c.token;
   const response = await fetch(c.url + input.path, {
     method: input.method || 'GET',
     headers: {
-      Authorization: 'Bearer ' + c.token,
+      Authorization: 'Bearer ' + token,
       'X-Hermes-Bot': String(input.botId || ''),
       'X-Hermes-Bot-Name': encodeURIComponent(String(input.botName || '').slice(0, 80)),
       'X-Hermes-Human': input.human ? '1' : '0',
@@ -114,6 +145,7 @@ async function serve() {
     agentCursor: t.agentCursor || null,
     agentBusy: input.isDispatching(t),
     handoff: t.handoff || null,
+    blocked: t.blocked || null,
   });
   function persist() {
     const data = [...tabs.values()].map(describe);
@@ -125,22 +157,62 @@ async function serve() {
       requireActor(tab, botId, epoch, mutate, overseerBots.has(botId)),
     command: (tab, method, params) => tab.view.webContents.command(method, params),
     botName: (id) => botNames.get(id) || 'Agent',
+    isVisible: () => false,
   });
+  // Every CDP session that carries a tab's traffic (its own, plus auto-attached
+  // frames, workers and pop-ups) maps to the tab whose controller decides.
+  const sessionOwner = new Map();
+  // Agent tabs get the request filter on every session; giving a tab back
+  // turns it off again so human browsing pays nothing.
+  function syncFetch(tab) {
+    const on = tab.controller === 'agent';
+    return Promise.all([...tab.sessions].map((sid) => guardSession(sid, on).catch(() => {})));
+  }
+  const guardSession = (sid, on) =>
+    cdp.send(on ? 'Fetch.enable' : 'Fetch.disable', on ? { patterns: FETCH_ALL } : {}, sid);
   async function attach(data) {
     const wc = await cdp.page(data.targetId);
-    const t = { ...data, view: { webContents: wc }, refs: new Set(), generation: 0, queue: Promise.resolve() };
+    const t = { ...data, view: { webContents: wc }, refs: new Set(), generation: 0, queue: Promise.resolve(), sessions: new Set([wc.sessionId]) };
     tabs.set(t.id, t);
+    sessionOwner.set(wc.sessionId, { tab: t, targetId: data.targetId });
+    // A pop-up's early session was filed under its opener; it belongs to this tab now.
+    for (const [sid, entry] of sessionOwner) if (entry.targetId === data.targetId && entry.tab !== t) { entry.tab = t; t.sessions.add(sid); }
+    await wc.command('Target.setAutoAttach', AUTO_ATTACH).catch(() => {});
+    await syncFetch(t);
     return t;
   }
+  const newTarget = async () =>
+    (await cdp.send('Target.createTarget', { url: 'about:blank', newWindow: true, background: true })).targetId;
+  const closeTarget = (targetId) => cdp.send('Target.closeTarget', { targetId }).catch(() => {});
   const targets = (await cdp.send('Target.getTargets')).targetInfos;
+  let registry = [];
   try {
-    for (const saved of JSON.parse(fs.readFileSync(registryFile))) {
-      const target = targets.find((t) => t.targetId === saved.targetId && t.type === 'page');
-      if (target)
-        await attach({ ...saved, url: target.url, title: target.title, controller: 'human', epoch: saved.epoch + 1 });
-    }
+    registry = JSON.parse(fs.readFileSync(registryFile));
   } catch (e) {
     if (e.code !== 'ENOENT') throw e;
+  }
+  // A restart keeps who holds each tab (the epoch still moves on, so stale
+  // refs are refused). Targets lost to a Chromium crash or VM reboot reopen
+  // at their saved URL rather than vanishing from the task.
+  for (const saved of registry) {
+    const controller = saved.controller === 'agent' ? 'agent' : 'human';
+    const carried = { ...saved, controller, epoch: (saved.epoch || 0) + 1, ...(controller === 'agent' ? { agentSince: Date.now() } : {}) };
+    try {
+      const target = targets.find((t) => t.targetId === saved.targetId && t.type === 'page');
+      let tab;
+      if (target) tab = await attach({ ...carried, url: target.url, title: target.title });
+      else {
+        tab = await attach({ ...carried, targetId: await newTarget() });
+        if (/^https?:\/\//i.test(saved.url)) {
+          await tab.view.webContents.command('Page.enable');
+          await tab.view.webContents.command('Page.navigate', { url: saved.url });
+        }
+      }
+      if (controller === 'agent') tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
+    } catch (e) {
+      process.stderr.write(`Could not reattach saved tab ${String(saved.id).slice(0, 40)}: ${e.message}\n`);
+      tabs.delete(saved.id);
+    }
   }
   await persist();
   const agentIdleMs = Math.max(1, Number(process.env.HERMES_AGENT_IDLE_MINUTES) || 15) * 60000;
@@ -152,6 +224,7 @@ async function serve() {
       t.controller = 'human';
       t.epoch++;
       t.refs.clear();
+      syncFetch(t);
       input.clear(t).catch(() => {});
       t.view.webContents.executeJavaScript(tintScript(false)).catch(() => {});
       persist();
@@ -161,32 +234,37 @@ async function serve() {
     process.stderr.write('Chromium disconnected; restarting the broker through its service.\n');
     process.exit(1);
   });
-  async function open(body, botId, human) {
+  async function open(body, botId, human, prepare) {
     if (body.host !== undefined && body.host !== 'vps')
       throw fail('This connection serves only the VPS browser. Use the Mac connector for Mac tasks.', 503);
     if (!botId || botId.length > 100) throw fail('X-Hermes-Bot is required.');
     if (tabs.size >= 40) throw fail('Close a VPS browser tab before opening another.');
-    const url = normalizeUrl(body.url);
-    const { targetId } = await cdp.send('Target.createTarget', {
-      url: 'about:blank',
-      newWindow: true,
-      background: true,
-    });
-    const tab = await attach({
-      id: crypto.randomUUID(),
-      targetId,
-      title: 'New VPS tab',
-      url: 'about:blank',
-      botId,
-      allowedBots: [],
-      controller: human ? 'human' : 'agent',
-      epoch: 1,
-      agentSince: human ? undefined : Date.now(),
-    });
-    await persist();
+    const url = human ? normalizeUrl(body.url) : agentPageUrl(body.url);
+    const targetId = await newTarget();
+    let tab;
     try {
+      tab = await attach({
+        id: crypto.randomUUID(),
+        targetId,
+        title: 'New VPS tab',
+        url: 'about:blank',
+        botId,
+        allowedBots: [],
+        controller: human ? 'human' : 'agent',
+        epoch: 1,
+        agentSince: human ? undefined : Date.now(),
+      });
+      await persist();
       await tab.view.webContents.command('Page.enable');
+      if (prepare) await prepare(tab);
       await tab.view.webContents.command('Page.navigate', { url });
+    } catch (e) {
+      if (tab) tabs.delete(tab.id);
+      await closeTarget(targetId);
+      await persist().catch(() => {});
+      throw fail('VPS tab could not be opened and was closed. Retry the open.', 502);
+    }
+    try {
       // A laptop-close continue must not wait out a slow Docs or Notion load.
       // The tab id is returned immediately; the next snapshot sees loading.
       if (body.settle === false) {
@@ -203,12 +281,12 @@ async function serve() {
       throw fail('VPS tab opened but navigation needs review. List its state before retrying.', 502);
     }
   }
-  async function loaded(tab, url) {
-    for (let i = 0; i < 80; i++) {
+  async function loaded(tab, url, attempts = 80, previous) {
+    for (let i = 0; i < attempts; i++) {
       const s = await tab.view.webContents
         .executeJavaScript('({url:location.href,title:document.title,ready:document.readyState})')
         .catch(() => null);
-      if ((s && s.url !== 'about:blank' && s.ready === 'complete') || (s && url === 'about:blank')) {
+      if ((s && s.url !== 'about:blank' && s.url !== previous && s.ready === 'complete') || (s && url === 'about:blank')) {
         tab.url = s.url;
         tab.title = s.title;
         tab.favicon = await tab.view.webContents
@@ -355,10 +433,14 @@ async function serve() {
     }
     if (body.action === 'cdp') {
       const method = String(body.method || '');
-      if (!/^(Page|Runtime|Input|Emulation|Network|DOM|DOMSnapshot|Accessibility|CSS|Log|Fetch|Storage)\.[a-zA-Z]+$/.test(method))
-        throw fail('Unsupported CDP method. Allowed domains: Page, Runtime, Input, Emulation, Network, DOM, DOMSnapshot, Accessibility, CSS, Log, Fetch, Storage.');
-      const params = body.params && typeof body.params === 'object' ? body.params : {};
+      const methodError = cdpMethodError(method);
+      if (methodError) throw fail(methodError);
+      const params = { ...(body.params && typeof body.params === 'object' ? body.params : {}) };
       if (JSON.stringify(params).length > 64000) throw fail('cdp params too large (max 64KB).');
+      if (method === 'Page.navigate') {
+        if (typeof params.url !== 'string' || !params.url) throw fail('Page.navigate needs a url string.');
+        params.url = agentPageUrl(params.url);
+      }
       let value = await Promise.race([
         wc.command(method, params),
         new Promise((_, reject) => setTimeout(() => reject(fail('cdp timed out after 20s.', 408)), 20000)),
@@ -367,12 +449,13 @@ async function serve() {
       if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
       return { value, dispatched: true };
     }
-    if (['click', 'type', 'press', 'move', 'scroll'].includes(body.action)) await input.perform(tab, body, botId);
+    if (INPUT_ACTIONS.has(body.action)) await input.perform(tab, body, botId);
     else if (body.action === 'navigate') {
       await input.clear(tab);
       requireActor(tab, botId, body.epoch, true, overseer);
-      await wc.command('Page.navigate', { url: normalizeUrl(body.url) });
-      await loaded(tab, normalizeUrl(body.url));
+      const target = agentPageUrl(body.url);
+      await wc.command('Page.navigate', { url: target });
+      await loaded(tab, target);
     } else if (['back', 'forward', 'reload'].includes(body.action)) {
       await input.clear(tab);
       requireActor(tab, botId, body.epoch, true, overseer);
@@ -382,7 +465,171 @@ async function serve() {
     const controls = depth === 0 && body.action !== 'move' ? await actionControls(tab) : null;
     return { ...(controls || {}), dispatched: true };
   }
+  const mirror = (() => { try { return JSON.parse(fs.readFileSync(mirrorFile)).bots || {}; } catch { return {}; } })();
+  const saveMirror = () => write(mirrorFile, { bots: mirror });
+  const mirrorFresh = (entry) => entry && Number(entry.updatedAt) > Date.now() - MIRROR_TTL_MS;
+  // A mirror the app stopped refreshing (app closed, bot removed) must not
+  // resurrect an old task on a failover days later.
+  for (const bot of Object.keys(mirror)) {
+    if (!mirrorFresh(mirror[bot]) || !Array.isArray(mirror[bot].tabs)) delete mirror[bot];
+    else for (const key of ['restored', 'restoredAt', 'verification', 'restoredUrl']) mirror[bot][key] ||= {};
+  }
+  saveMirror();
+  const finite = (v, max) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(max, Number(v))) : 0);
+  const SECRET_FIELD = /password|passwd|secret|token|otp|one.time|credit|card|cc-|cvc|cvv/i;
+  function cleanMirrorTab(t) {
+    if (!t || !/^[\w-]{1,100}$/.test(String(t.id)) || typeof t.url !== 'string' || t.url.length > 2000 || !/^https?:\/\//i.test(t.url)) return null;
+    const drafts = (Array.isArray(t.drafts) ? t.drafts : [])
+      .filter((d) => d && typeof d.selector === 'string' && d.selector.length < 500 && typeof d.value === 'string' && d.value.length <= 10000 && d.type !== 'password' && !SECRET_FIELD.test(d.selector))
+      .slice(0, 30)
+      .map((d) => ({ selector: d.selector, tag: String(d.tag || ''), type: String(d.type || ''), editable: d.editable === true, value: d.value }));
+    const cookies = (Array.isArray(t.cookies) ? t.cookies : [])
+      .filter((c) => c && typeof c.name === 'string' && typeof c.value === 'string' && c.name.length <= 4096 && c.value.length <= 8192 && /^\.?[\w.-]{1,253}$/.test(String(c.domain)) && typeof c.path === 'string' && c.path.startsWith('/'))
+      .slice(0, 150)
+      .map((c) => ({
+        name: c.name, value: c.value, domain: c.domain, path: c.path,
+        expires: c.session === true || !(Number(c.expires) > 0) ? -1 : Number(c.expires),
+        httpOnly: c.httpOnly === true, secure: c.secure === true, session: c.session === true || !(Number(c.expires) > 0),
+        ...(['Strict', 'Lax', 'None'].includes(c.sameSite) ? { sameSite: c.sameSite } : {}),
+      }));
+    return { id: String(t.id), url: t.url, title: String(t.title || '').slice(0, 300), scroll: { x: finite(t.scroll?.x, 1e7), y: finite(t.scroll?.y, 1e7) }, drafts, cookies };
+  }
+  function saveMirrorEntry(body) {
+    if (typeof body.bot !== 'string' || !body.bot || body.bot.length > 100) throw fail('mirror needs a bot id.');
+    if (!Array.isArray(body.tabs)) throw fail('mirror needs a tabs array.');
+    const previous = mirror[body.bot];
+    const entry = {
+      updatedAt: Math.max(Date.now(), (previous?.updatedAt || 0) + 1),
+      tabs: body.tabs.slice(0, 40).map(cleanMirrorTab).filter(Boolean),
+      restored: previous?.restored || {}, restoredAt: previous?.restoredAt || {}, verification: previous?.verification || {}, restoredUrl: previous?.restoredUrl || {},
+    };
+    mirror[body.bot] = entry;
+    saveMirror();
+    return { stored: entry.tabs.length, updatedAt: entry.updatedAt };
+  }
+  const cookieParams = (t) => t.cookies.filter((c) => c.session || c.expires > Date.now() / 1000).map(({ session, expires, domain, ...c }) => ({
+    ...c,
+    ...(session ? {} : { expires }),
+    ...(domain.startsWith('.') ? { domain } : { url: `${c.secure ? 'https' : 'http'}://${domain}${c.path}` }),
+  }));
+  // One bad cookie rejects a whole Network.setCookies call; retry singly so
+  // the rest of the site's session still lands.
+  async function setCookies(tab, cookies) {
+    if (!cookies.length) return;
+    const wc = tab.view.webContents;
+    try { await wc.command('Network.setCookies', { cookies }); } catch {
+      for (const cookie of cookies) await wc.command('Network.setCookie', cookie).catch(() => {});
+    }
+  }
+  // Brings one mirrored tab to the VM: a new tab, or the one an earlier restore
+  // opened when the mirror has moved on since. The load wait is short (a slow
+  // page is reported review_required rather than holding up the failover).
+  async function restoreTab(bot, entry, t) {
+    const at = entry.updatedAt;
+    let url;
+    try { url = agentPageUrl(t.url); } catch { return null; }
+    let tab = tabs.get(entry.restored[t.id]);
+    if (tab && (entry.restoredAt[t.id] || 0) >= at) return { tab, verification: entry.verification[t.id] || 'review_required' };
+    // A tab the human holds is theirs: never navigated, never claimed. One the
+    // agent has moved on with (or is acting in) keeps its work.
+    if (tab && tab.controller === 'human') return { tab, verification: 'human_has_control' };
+    if (tab && (tab.url !== entry.restoredUrl[t.id] || tab.pendingActions > 0 || input.isDispatching(tab)))
+      return { tab, verification: entry.verification[t.id] || 'review_required' };
+    const cookies = cookieParams(t);
+    let previous;
+    if (tab) {
+      previous = tab.url === url ? undefined : tab.url;
+      await setCookies(tab, cookies);
+      tab.controller = 'agent';
+      tab.agentSince = Date.now();
+      tab.epoch++;
+      tab.refs.clear();
+      await syncFetch(tab);
+      await input.clear(tab);
+      await tab.view.webContents.command('Page.navigate', { url });
+      tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
+    } else tab = await open({ url, settle: false }, bot, false, (opened) => setCookies(opened, cookies));
+    const ready = await loaded(tab, url, RESTORE_LOAD_ATTEMPTS, previous).then(() => true, () => false);
+    const result = ready ? await tab.view.webContents.executeJavaScript(restoreExpression({ url: t.url, scroll: t.scroll, drafts: t.drafts })).catch(() => null) : null;
+    const verification = result?.verification || 'review_required';
+    const live = mirror[bot];
+    if (live) { live.restored[t.id] = tab.id; live.restoredAt[t.id] = at; live.verification[t.id] = verification; live.restoredUrl[t.id] = tab.url; }
+    return { tab, verification };
+  }
+  // Restores are serialized per host (a retry after a timeout returns the tabs
+  // already opened) and run RESTORE_PARALLEL tabs at a time inside one call.
+  let restoreQueue = Promise.resolve();
+  function restoreMirror(bot) {
+    const run = restoreQueue.then(async () => {
+      const entry = mirror[bot], map = {}, verification = {};
+      if (!mirrorFresh(entry)) return { map, verification };
+      const results = new Array(entry.tabs.length);
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(RESTORE_PARALLEL, entry.tabs.length) }, async () => {
+        while (next < entry.tabs.length) {
+          const index = next++;
+          try { results[index] = await restoreTab(bot, entry, entry.tabs[index]); } catch (e) {
+            process.stderr.write(`Mirror restore skipped ${entry.tabs[index].id}: ${e.message}\n`);
+          }
+        }
+      }));
+      entry.tabs.forEach((t, index) => {
+        if (!results[index]) return;
+        map[t.id] = results[index].tab.id;
+        verification[t.id] = results[index].verification;
+      });
+      saveMirror();
+      return { map, verification };
+    });
+    restoreQueue = run.catch(() => {});
+    return run;
+  }
+  // A tab an agent holds never rests on a blocked address, whichever way it
+  // got there (redirect, window.open, eval). The tab says why.
+  function sendBack(tab, url, problem) {
+    tab.blocked = { url: String(url).slice(0, 500), reason: problem, at: Date.now() };
+    tab.refs.clear();
+    tab.view.webContents.command('Page.navigate', { url: 'about:blank' }).catch(() => {});
+    persist().catch(() => {});
+  }
   cdp.listeners.add((event) => {
+    if (event.method === 'Fetch.requestPaused') {
+      const owner = sessionOwner.get(event.sessionId)?.tab;
+      const problem = owner?.controller === 'agent' ? agentUrlProblem(event.params.request?.url) : '';
+      if (problem && owner.blocked?.url !== event.params.request.url) {
+        owner.blocked = { url: String(event.params.request.url).slice(0, 500), reason: problem, at: Date.now() };
+        persist().catch(() => {});
+      }
+      cdp.send(problem ? 'Fetch.failRequest' : 'Fetch.continueRequest',
+        problem ? { requestId: event.params.requestId, errorReason: 'BlockedByClient' } : { requestId: event.params.requestId },
+        event.sessionId).catch(() => {});
+    }
+    // New pages, frames and workers start paused. The filter goes on before
+    // they run, and they are always released, even when guarding fails.
+    if (event.method === 'Target.attachedToTarget') {
+      const { sessionId, targetInfo, waitingForDebugger } = event.params;
+      (async () => {
+        try {
+          const own = [...tabs.values()].some((t) => t.targetId === targetInfo.targetId);
+          const owner = event.sessionId ? sessionOwner.get(event.sessionId)?.tab
+            : own ? null : [...sessionOwner.values()].find((e) => e.targetId === targetInfo.openerId)?.tab;
+          if (owner) {
+            sessionOwner.set(sessionId, { tab: owner, targetId: targetInfo.targetId });
+            owner.sessions.add(sessionId);
+            if (owner.controller === 'agent' && /^(page|iframe)$/.test(targetInfo.type)) await guardSession(sessionId, true);
+            if (/^(page|iframe|worker)$/.test(targetInfo.type)) await cdp.send('Target.setAutoAttach', AUTO_ATTACH, sessionId).catch(() => {});
+          }
+        } catch (e) {
+          process.stderr.write(`Could not guard ${targetInfo.type} target: ${e.message}\n`);
+        } finally {
+          if (waitingForDebugger) cdp.send('Runtime.runIfWaitingForDebugger', {}, sessionId).catch(() => {});
+        }
+      })();
+    }
+    if (event.method === 'Target.detachedFromTarget') {
+      const entry = sessionOwner.get(event.params.sessionId);
+      if (entry) { entry.tab.sessions.delete(event.params.sessionId); sessionOwner.delete(event.params.sessionId); }
+    }
     if (event.method === 'Target.targetInfoChanged') {
       const info = event.params.targetInfo;
       const tab = [...tabs.values()].find((t) => t.targetId === info.targetId);
@@ -390,8 +637,13 @@ async function serve() {
         const moved = info.url !== tab.url;
         tab.url = info.url;
         tab.title = info.title;
-        tab.refs.clear();
-        if (moved && tab.controller === 'agent') tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
+        if (moved) tab.refs.clear();
+        const problem = tab.controller === 'agent' ? agentUrlProblem(info.url) : '';
+        if (problem && moved) sendBack(tab, info.url, problem);
+        else if (moved && tab.controller === 'agent') {
+          if (tab.blocked && info.url !== 'about:blank' && !info.url.startsWith('chrome-error:')) tab.blocked = null;
+          tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
+        }
         persist().catch(() => {});
       }
     }
@@ -405,23 +657,33 @@ async function serve() {
     if (event.method === 'Target.targetCreated') {
       const info = event.params.targetInfo;
       const parent = [...tabs.values()].find((t) => t.targetId === info.openerId);
-      if (info.type === 'page' && parent && ![...tabs.values()].some((t) => t.targetId === info.targetId))
-        attach({
-          id: crypto.randomUUID(),
-          targetId: info.targetId,
-          title: info.title,
-          url: info.url,
-          botId: parent.botId,
-          allowedBots: [],
-          controller: parent.controller,
-          epoch: 1,
-        })
-          .then(persist)
-          .catch(() => {});
+      if (info.type === 'page' && parent && ![...tabs.values()].some((t) => t.targetId === info.targetId)) {
+        const problem = parent.controller === 'agent' ? agentUrlProblem(info.url) : '';
+        if (problem) {
+          parent.blocked = { url: String(info.url).slice(0, 500), reason: problem, at: Date.now() };
+          closeTarget(info.targetId);
+          persist().catch(() => {});
+        } else
+          attach({
+            id: crypto.randomUUID(),
+            targetId: info.targetId,
+            title: info.title,
+            url: info.url,
+            botId: parent.botId,
+            allowedBots: [],
+            controller: parent.controller,
+            epoch: 1,
+          })
+            .then(persist)
+            .catch(() => {});
+      }
     }
   });
   await cdp.send('Target.setDiscoverTargets', { discover: true });
+  await cdp.send('Target.setAutoAttach', AUTO_ATTACH);
   const token = crypto.randomBytes(32).toString('hex');
+  const appToken = crypto.randomBytes(32).toString('hex');
+  write(appTokenFile(), { token: appToken });
   let inFlight = 0;
   const server = http.createServer(async (req, res) => {
     inFlight++;
@@ -430,7 +692,8 @@ async function serve() {
       res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(data));
     };
-    if (req.headers.origin || !isAuthorized(req.headers.authorization, token))
+    const isApp = isAuthorized(req.headers.authorization, appToken);
+    if (req.headers.origin || !(isApp || isAuthorized(req.headers.authorization, token)))
       return send(401, { error: 'Unauthorized' });
     if (cdp.socket.readyState !== 1)
       return send(503, { error: 'VPS Chromium disconnected. Inspect task state before retrying.' });
@@ -439,6 +702,7 @@ async function serve() {
         botId = String(req.headers['x-hermes-bot'] || ''),
         human = req.headers['x-hermes-human'] === '1',
         overseer = overseerBots.has(botId);
+      if (human && !isApp) throw fail('Human-only operations need the app token.', 403);
       try {
         const botName = decodeURIComponent(String(req.headers['x-hermes-bot-name'] || '')).slice(0, 80);
         if (botId && botName) botNames.set(botId, botName);
@@ -461,6 +725,16 @@ async function serve() {
         });
       if (url.pathname === '/v1/tabs' && req.method === 'POST')
         return send(201, describe(await open(await read(req), botId, human)));
+      if (url.pathname === '/v1/mirror' && req.method === 'POST') {
+        if (!isApp) throw fail('Only the app may update the mirror.', 403);
+        return send(200, saveMirrorEntry(await read(req, 4000000)));
+      }
+      if (url.pathname === '/v1/restore' && req.method === 'POST') {
+        const body = await read(req);
+        if (typeof body.bot !== 'string' || !body.bot || body.bot.length > 100) throw fail('restore needs a bot id.');
+        if (!isApp && !overseer && body.bot !== botId) throw fail('This mirror belongs to a different bot.', 403);
+        return send(200, await restoreMirror(body.bot));
+      }
       const m =
           /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions|human-actions|control|activate|checkpoint|restore|grant))?$/.exec(
             url.pathname,
@@ -482,7 +756,7 @@ async function serve() {
           const generation = ++tab.generation;
           let timer;
           const data = await Promise.race([
-            wc.executeJavaScript(snapshotExpression(generation, { ...opts, keep: tab.snapshotStamp?.base })),
+            wc.executeJavaScript(snapshotExpression(generation, { ...opts, keep: tab.snapshotStamp?.base, restamp: tab.snapshotStamp?.base })),
             new Promise((_, reject) => {
               timer = setTimeout(() => reject(fail('Snapshot timed out after 10s. The page may be unresponsive.', 503)), 10000);
             }),
@@ -548,6 +822,7 @@ async function serve() {
         if (tab.controller === 'agent') tab.agentSince = Date.now();
         tab.epoch++;
         tab.refs.clear();
+        await syncFetch(tab);
         await input.clear(tab);
         await wc.executeJavaScript(tintScript(tab.controller === 'agent')).catch(() => {});
         await persist();
@@ -627,7 +902,16 @@ async function serve() {
       send(e.status || 400, { error: e.message });
     }
   });
-  server.listen(cfg.port || 9465, '127.0.0.1', () => {
+  const port = cfg.port || 9465;
+  // 78 (EX_CONFIG) lets the service unit stop restarting a broker that can
+  // never bind, via RestartPreventExitStatus=78.
+  server.on('error', (e) => {
+    process.stderr.write(e.code === 'EADDRINUSE'
+      ? `VPS browser host cannot listen on 127.0.0.1:${port}: port already in use. Stop the other broker or set a different "port" in config.json.\n`
+      : `VPS browser host cannot listen: ${e.message}\n`);
+    process.exit(e.code === 'EADDRINUSE' ? 78 : 1);
+  });
+  server.listen(port, '127.0.0.1', () => {
     write(connectionFile, { url: 'http://127.0.0.1:' + server.address().port, token, protocol: 1, host: 'vps' });
     process.stderr.write('VPS browser host ready on loopback.\n');
   });
@@ -637,7 +921,7 @@ async function serve() {
     let mtime = startedMtime;
     try { mtime = fs.statSync(__filename).mtimeMs; } catch { return; }
     if (!hostShouldReload(mtime, startedMtime, inFlight)) return;
-    process.stderr.write('vps-browser-host: script replaced — exiting so the service loads it\n');
+    process.stderr.write('vps-browser-host: script replaced; exiting so the service loads it\n');
     process.exit(1);
   }, 5000);
   reloadTimer.unref();
@@ -654,14 +938,15 @@ if (require.main === module) {
       text = '';
     process.stdin.on('data', (chunk) => {
       bytes += chunk.length;
-      if (bytes > 150000) process.exit(1);
+      if (bytes > 4100000) process.exit(1);
       text += chunk;
     });
+    // ASCII only: a PowerShell default shell on a Windows VM re-encodes anything else.
     process.stdin.on('end', () =>
       Promise.resolve()
         .then(() => JSON.parse(text))
         .then(request)
-        .then((data) => process.stdout.write(JSON.stringify(data)))
+        .then((data) => process.stdout.write(JSON.stringify(data).replace(/[\u007f-\uffff]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))))
         .catch(() => {
           process.stdout.write(
             JSON.stringify({

@@ -1,33 +1,40 @@
-const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session } = require('electron');
+const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('./core.cjs');
-const { createAvatarStore } = require('./avatar-store.cjs');
-const { createAgentInput, tintScript, botAccent } = require('./agent-input.cjs');
+const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
+const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange } = require('./shell-support.cjs');
+const { buildAgentPrompt } = require('./agent-prompt.cjs');
+const { shouldOnboard, pinOnboarding } = require('./onboarding.cjs');
+const macUpdate = require('./mac-update.cjs');
+const { windowsFeed } = require('./win-update.cjs');
+const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
+const { createAgentInput, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { snapshotExpression, settleSnapshot, readControls, checkpointExpression, restoreExpression } = require('./browser-page.cjs');
-const { createVpsBrowser } = require('./vps-browser.cjs');
+const { createVpsBrowser, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
-const { createComputerSnapshots } = require('./computer-snapshot.cjs');
 const { ElectronChromeExtensions } = require('electron-chrome-extensions');
 
 // The host computer driver runs in the app's own session — the only place it
 // works on Windows, where SSH-spawned processes sit in Session 0 and cannot
-// see the desktop. Linux hosts have no driver (the Linux path is the guest's).
-const hostComputer = process.platform === 'darwin' ? require('./computer.cjs')
-  : process.platform === 'win32' ? require('./win-computer.cjs')
+// see the desktop. Linux hosts drive the desktop through AT-SPI like the guest.
+const macPermissions = require('./mac-permissions.cjs').createMacPermissionHelp({ systemPreferences });
+const hostComputer = process.platform === 'darwin' ? macPermissions.wrap(require('./computer.cjs').service)
+  : process.platform === 'win32' ? require('./win-computer.cjs').service
+  : process.platform === 'linux' ? require('./vps-computer.cjs').service
   : null;
-const hostComputerSnapshots = createComputerSnapshots();
 const HOST_LABEL = process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'windows' : 'linux';
 const isLocalHost = (value) => value === undefined || value === 'mac' || value === 'windows' || value === 'local' || value === HOST_LABEL;
 
 app.enableSandbox();
+protocol.registerSchemesAsPrivileged([{ scheme: AVATAR_SCHEME, privileges: { secure: true, supportFetchAPI: true } }]);
 app.setName("alans-way-localapp");
 if (process.platform === 'win32') app.setAppUserModelId('app.alans-way.localapp');
 // Keep existing sessions and connector discovery stable when the product name changes.
@@ -36,29 +43,53 @@ app.setPath('userData', process.env.HERMES_WORKSPACE_DATA
   : path.join(app.getPath('appData'), 'Hermes Workspace'));
 const ROOT = __dirname;
 const NEWTAB_URL = pathToFileURL(path.join(ROOT, 'newtab.html')).href;
+const INDEX_FILE = path.join(ROOT, 'index.html');
+const REMOTE_FILE = path.join(ROOT, 'remote.html');
+const BUILD = readBuildInfo(path.join(ROOT, '..', 'build-info.json'));
+
+// Log and keep running: a stray rejection in one tab's plumbing must not take
+// down the connector every bot depends on. The log file helps when a Windows
+// user reports a silent failure.
+function logError(label, error) {
+  const line = `${new Date().toISOString()} ${label}: ${error?.stack || error}\n`;
+  try { console.error(line.trimEnd()); } catch {}
+  try {
+    const file = path.join(app.getPath('userData'), 'main-errors.log');
+    if (fs.existsSync(file) && fs.statSync(file).size > 1000000) fs.renameSync(file, `${file}.old`);
+    fs.appendFileSync(file, line);
+  } catch {}
+}
+process.on('uncaughtException', (error) => logError('uncaughtException', error));
+process.on('unhandledRejection', (reason) => logError('unhandledRejection', reason));
 const TELEGRAM = 'https://web.telegram.org/a/';
-let win, backgroundWindow, telegramView, remoteView, apiServer, prefs, layout = {}, apiPort = 0;
+let win, backgroundWindow, telegramView, remoteView, apiServer, prefs, layout = {}, apiPort = 0, tray, telegramRecovery;
 let extensionStore, extensionHost, extensionPopup, extensionPopupTabId, extensionActiveContentsId;
 let registeringExtensionTab = false;
+const update = { available: '', tag: '', ready: false, busy: false, error: '', justUpdatedFrom: '' };
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 const tabs = new Map();
 const vpsTabs = new Map();
 const recentLinkTabs = new Map();
-let vpsBrowserStatus = 'unconfigured', vpsRefreshBusy = false, vpsTimer;
+let vpsBrowserStatus = 'unconfigured', vpsBrowserError = '', vpsRefreshBusy = false, vpsFailures = 0, vpsTimer, vpsMirrorTimer, vpsMirrorDebounce;
 const vpsBrowser = createVpsBrowser({ getConfig: () => prefs?.vpsBrowser });
 const configuredSessions = new WeakSet();
 const API_TOKEN = crypto.randomBytes(32).toString('hex');
 // Connectors allow 90s for action requests; a batch stops starting new steps
 // early enough that its last step (wait caps at 30s) still answers in time.
 const BATCH_BUDGET_MS = 50000;
+const NAVIGATE_PARSE_MS = 3000;
+// A snapshot waits this long for a still-parsing document; the wait ends at DOMContentLoaded.
+const SNAPSHOT_PARSE_MS = 1500;
+const WAIT_SLICE_MS = 1000;
 let isQuitting = false;
 let backgroundCaptureQueue = Promise.resolve();
 const avatarStore = createAvatarStore({ root: ROOT, nativeImage, dialog, getWindow: () => win, getPreferences: () => prefs });
 const agentInput = createAgentInput({ command: browserCommand,
   requireActor: (tab, botId, epoch, mutate) => requireActor(tab, botId, epoch, mutate, isOverseer(botId)),
+  isVisible: (tab) => tab.host === win && win.isVisible() && !win.isMinimized(),
   botName: (id) => nameForBot(id) || 'Agent', onBusy: () => broadcast() });
 const activity = createActivityTracker();
-const sitePermissions = createSitePermissions({ getPreferences: () => prefs, savePreferences,
+const sitePermissions = createSitePermissions({ getPreferences: () => prefs, savePreferences: () => { savePreferences(); broadcast(); },
   canRequest: (wc) => {
     const tab = [...tabs.values()].find(item => item.view.webContents === wc);
     if (layout.obscured) return false;
@@ -71,7 +102,9 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
   }
 });
 const downloadStore = createDownloadStore({ getPreferences: () => prefs, savePreferences, onChanged: () => broadcast(),
-  shell, existsSync: fs.existsSync, downloadsPath: () => app.getPath('downloads') });
+  shell, existsSync: fs.existsSync, downloadsPath: () => app.getPath('downloads'),
+  confirmOpen: async (name) => (await dialog.showMessageBox(win, { type: 'warning', buttons: ['Cancel', 'Open anyway'], defaultId: 0, cancelId: 0,
+    message: `Open ${name}?`, detail: 'This file can run programs on your computer. Only open it if you trust where it came from.' })).response === 1 });
 let pointerTimer, activityTimer, idleTimer;
 
 function readPreferences() {
@@ -80,7 +113,11 @@ function readPreferences() {
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
   try { text = fs.readFileSync(file, 'utf8'); } catch { return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' }; }
-  try { return { ...defaults, ...JSON.parse(text) }; }
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Preferences are not an object.');
+    return normalizePreferences(parsed, defaults);
+  }
   catch {
     // Keep the unreadable file: the next save would otherwise erase every bot,
     // permission and extension record with defaults.
@@ -88,16 +125,22 @@ function readPreferences() {
     return { ...defaults, remoteUrl: process.env.HERMES_WORKSPACE_VPS_URL || '' };
   }
 }
-function writePrivateJson(file, data) {
-  fs.writeFileSync(`${file}.tmp`, JSON.stringify(data, null, 2), { mode: 0o600 });
-  fs.renameSync(`${file}.tmp`, file);
-}
-function savePreferences() {
-  if (!prefs) return;
-  if (win && !win.isDestroyed()) prefs.savedTabs = [...tabs.values()].filter(tab => !tab.extensionPage && tab.view?.webContents && !tab.view.webContents.isDestroyed()).map((tab) => ({ url: tab.view.webContents.getURL(), botId: tab.botId }));
-  fs.mkdirSync(app.getPath('userData'), { recursive: true });
-  writePrivateJson(path.join(app.getPath('userData'), 'preferences.json'), prefs);
-}
+// Explicit changes save at once; automatic ones (page loads, Telegram catalog
+// polls) are batched. Either way nothing is written when nothing changed.
+const prefsSaver = createSaver({
+  snapshot() {
+    if (!prefs) return null;
+    if (win && !win.isDestroyed()) prefs.savedTabs = [...tabs.values()].filter(tab => !tab.extensionPage && tab.view?.webContents && !tab.view.webContents.isDestroyed()).map((tab) => ({ url: tab.view.webContents.getURL(), botId: tab.botId }));
+    return prefs;
+  },
+  write(text) {
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    writePrivateJson(path.join(app.getPath('userData'), 'preferences.json'), text);
+  },
+  onError: (error) => logError('preferences', error),
+});
+function savePreferences() { prefsSaver.flush(); }
+function savePreferencesSoon() { prefsSaver.schedule(); }
 function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
@@ -110,16 +153,62 @@ function pageState(tab) {
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
   return { generation: tab.generation, url, title: tab.title || 'New tab', loading: !!tab.loading };
 }
+// Action replies repeat on every call, so the tab record keeps only what the
+// next call needs; url, title and loading already sit at the top level.
+const TAB_NOISE = new Set(['url', 'title', 'favicon', 'internal', 'agentHue', 'agentCursor', 'agentBusy', 'session', 'extensionPage', 'loading', 'botId']);
+function compactTab(info) {
+  return Object.fromEntries(Object.entries(info).filter(([key, value]) => !TAB_NOISE.has(key) && value !== '' && value !== null && value !== false && !(Array.isArray(value) && !value.length)));
+}
 function actionReply(tab, payload = {}) {
-  return { ...pageState(tab), ...payload, tab: describeTab(tab, true) };
+  return { ...pageState(tab), ...payload, tab: compactTab(describeTab(tab, true)) };
 }
 function isVpsTab(id) { return vpsTabs.has(id); }
 async function refreshVpsTabs() {
   if (!prefs?.vpsBrowser?.sshHost || vpsRefreshBusy) return;
   vpsRefreshBusy = true;
-  try { const wasVps=vpsTabs.has(activeTabId); const data = await vpsBrowser.request('/v1/tabs', 'GET', undefined, { human: true }); vpsTabs.clear(); data.tabs.forEach(tab => { vpsTabs.set(tab.id, tab); resolveFavicon(tab, [tab.favicon]).catch(() => {}); }); if(wasVps&&!vpsTabs.has(activeTabId)){prefs.remoteControl=false;activeTabId='home';applyLayout();} vpsBrowserStatus = 'connected'; }
-  catch { vpsBrowserStatus = 'disconnected'; }
+  try { const wasVps=vpsTabs.has(activeTabId); const data = await vpsBrowser.request('/v1/tabs', 'GET', undefined, { human: true }); vpsTabs.clear(); data.tabs.forEach(tab => { vpsTabs.set(tab.id, tab); resolveFavicon(tab, [tab.favicon]).catch(() => {}); }); if(wasVps&&!vpsTabs.has(activeTabId)){prefs.remoteControl=false;activeTabId='home';applyLayout();} vpsBrowserStatus = 'connected'; vpsBrowserError = ''; vpsFailures = 0; }
+  catch (error) { vpsBrowserStatus = 'disconnected'; vpsBrowserError = /^Invalid VPS browser/.test(error.message) ? error.message : ''; vpsFailures++; }
   finally { vpsRefreshBusy = false; broadcast(); }
+}
+// Agent-controlled Mac tabs are mirrored to the VM (URL, scroll, text drafts,
+// the page's cookies) so a failover can continue them signed in. Password
+// fields never leave: checkpointExpression skips them.
+const mirrorPages = new Map(), mirrorCapWarned = new Set();
+const pushVpsMirror = createMirrorPusher({
+  bots: () => (prefs?.bots || []).map((bot) => bot.id),
+  async collect() {
+    if (!prefs?.vpsBrowser?.sshHost || vpsBrowserStatus !== 'connected') return null;
+    const jar = session.fromPartition('persist:browser').cookies;
+    const agentTabs = [...tabs.values()].filter((tab) => {
+      const wc = tab.view?.webContents;
+      return tab.controller === 'agent' && !tab.extensionPage && tab.botId !== 'shared' && wc && !wc.isDestroyed() && /^https?:\/\//.test(wc.getURL());
+    }).slice(0, 20);
+    // A tab stuck on a dialog or a hung renderer keeps its last read instead of stalling every bot's push.
+    const read = await Promise.all(agentTabs.map(async (tab) => {
+      const wc = tab.view.webContents;
+      const page = await settleWithin(wc.executeJavaScript(checkpointExpression(true)), 2000, null) || mirrorPages.get(tab.id);
+      if (!page) return null;
+      mirrorPages.set(tab.id, page);
+      const cookies = (await settleWithin(jar.get({ url: page.url }), 2000, [])).slice(0, 100).map(toCdpCookie);
+      return { botId: tab.botId, tab: { id: tab.id, ...page, cookies } };
+    }));
+    for (const id of mirrorPages.keys()) if (!tabs.has(id)) mirrorPages.delete(id);
+    const bots = new Map();
+    for (const item of read) if (item) bots.set(item.botId, [...(bots.get(item.botId) || []), item.tab]);
+    for (const [bot, list] of bots) {
+      const { tabs: fitted, dropped } = prepareMirrorTabs(list);
+      bots.set(bot, fitted);
+      if (dropped && !mirrorCapWarned.has(bot)) { mirrorCapWarned.add(bot); console.warn(`VPS mirror for bot ${bot} is over the size cap; the ${dropped} oldest agent tab(s) are left out.`); }
+    }
+    return bots;
+  },
+  push: (bot, mirrorTabs) => vpsBrowser.request('/v1/mirror', 'POST', { bot, tabs: mirrorTabs }, { human: true, botId: bot }),
+});
+function scheduleVpsMirror() {
+  if (!prefs?.vpsBrowser?.sshHost) return;
+  clearTimeout(vpsMirrorDebounce);
+  vpsMirrorDebounce = setTimeout(pushVpsMirror, 1500);
+  vpsMirrorDebounce.unref();
 }
 const nameForBot = (id) => prefs?.bots.find((bot) => bot.id === id)?.name || '';
 const isOverseer = (botId) => Array.isArray(prefs?.overseerBots) && prefs.overseerBots.includes(botId);
@@ -143,15 +232,17 @@ function selectAgent(id) {
   applyLayout();
 }
 function getState() {
-  return { name: app.getName(), version: app.getVersion(), bots: prefs.bots.map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
+  return { name: app.getName(), version: app.getVersion(), build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)),
-    vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
+    vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
+    update: { available: update.available, ready: update.ready, busy: update.busy, error: update.error, justUpdatedFrom: update.justUpdatedFrom },
+    onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? app.isInApplicationsFolder() : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
     autoOpenLinks: prefs.autoOpenLinks !== false,
-    activeTabId, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.library(), avatarPreferences: prefs.avatarPreferences,
+    activeTabId, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
 }
@@ -173,14 +264,24 @@ function sendBotWork() {
   lastBotWorkSignature = JSON.stringify(working);
   if (telegramView && !telegramView.webContents.isDestroyed()) telegramView.webContents.send('workspace:bot-activity', working);
 }
-function broadcast() {
+let lastStateSignature = '';
+function sendState() {
   if (!win || win.isDestroyed() || !prefs) return;
   const state = getState();
-  win.webContents.send('workspace:state', state);
-  if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:state', state);
+  const stateSignature = JSON.stringify(state);
+  if (stateSignature !== lastStateSignature) {
+    lastStateSignature = stateSignature;
+    win.webContents.send('workspace:state', state);
+    if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:state', state);
+  }
   const signature = JSON.stringify(computeBotWork());
   if (signature !== lastBotWorkSignature) sendBotWork();
 }
+// Tab titles, loading and activity fire in bursts; at most one send per frame.
+const scheduleState = coalesce(sendState, 16);
+function broadcast() { scheduleState(); }
+// A command's reply must find the renderer already showing its result.
+function broadcastNow() { scheduleState(); scheduleState.flush(); }
 function fit(view, rect) {
   if (!view || view.webContents.isDestroyed()) return;
   if (!rect || rect.width < 1 || rect.height < 1 || layout.obscured) { if (view.getVisible()) view.setVisible(false); return; }
@@ -355,10 +456,10 @@ function createTab({ url = 'about:blank', botId = prefs.selectedBotId || 'shared
   });
   view.webContents.on('page-title-updated', (_event, title) => { tab.title = title; broadcast(); });
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
-  view.webContents.on('did-stop-loading', () => { tab.loading = false; savePreferences(); broadcast(); });
-  view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.generation++; if (tab.controller === 'agent') view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); broadcast(); });
+  view.webContents.on('did-stop-loading', () => { tab.loading = false; savePreferencesSoon(); broadcast(); });
+  view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.snapshotStamp = null; tab.generation++; if (tab.controller === 'agent') { view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); scheduleVpsMirror(); } broadcast(); });
   view.webContents.on('page-favicon-updated', (event, favicons) => { resolveFavicon(tab, favicons).catch(() => {}); });
-  view.webContents.on('did-navigate-in-page', () => { tab.refs.clear(); tab.generation++; broadcast(); });
+  view.webContents.on('did-navigate-in-page', () => { tab.refs.clear(); tab.generation++; if (tab.controller === 'agent') scheduleVpsMirror(); broadcast(); });
   view.webContents.on('did-fail-load', (_e, code, description, _url, isMainFrame) => {
     if (isMainFrame && code !== -3) { tab.error = description; tab.loading = false; broadcast(); }
   });
@@ -405,6 +506,7 @@ function changeController(id, controller, source = 'human') {
   tab.epoch++;
   tab.refs.clear();
   agentInput.clear(tab).catch(() => {});
+  scheduleVpsMirror();
   broadcast();
   return describeTab(tab);
 }
@@ -423,10 +525,11 @@ async function openExtension(key, anchor) {
 }
 function trustSender(event) {
   // Reading .webContents or .getURL() on a torn-down view throws; a destroyed
-  // sender is simply untrusted.
+  // sender is simply untrusted. Each bridge-bearing page is trusted only at its
+  // own exact file, never at "any file:" a drop or link could navigate to.
   try {
-    const trusted = [win?.webContents, remoteView?.webContents];
-    if (!trusted.includes(event.sender) || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith('file:')) throw new Error('untrusted');
+    const expected = event.sender === win?.webContents ? INDEX_FILE : event.sender === remoteView?.webContents ? REMOTE_FILE : '';
+    if (!expected || event.senderFrame !== event.sender.mainFrame || !fileUrlMatches(event.sender.getURL(), expected)) throw new Error('untrusted');
   } catch { throw new Error('Untrusted workspace request.'); }
 }
 async function openBot(id) {
@@ -441,10 +544,44 @@ async function openBot(id) {
       link.click(); return true;
     } return false;
   })()`).catch(() => false);
-  if (!selected) {
-    await telegramView.webContents.loadURL(`${TELEGRAM}#${id}`).catch(() => {});
-    telegramView.webContents.reload();
-  }
+  if (!selected) await openTelegramHash(id);
+}
+// Changing only the hash keeps Telegram's session loaded; a full reload is for
+// when the hash already matches and the page is stuck.
+async function openTelegramHash(hash) {
+  const wc = telegramView.webContents, target = `${TELEGRAM}#${hash}`;
+  if (wc.getURL() === target) { wc.reload(); return; }
+  // If Telegram ignores the hash change (the open chat does not move), reload once.
+  const read = () => wc.executeJavaScript(`(document.querySelector('#MiddleColumn .MiddleHeader')?.textContent || '') + '|' + !!document.querySelector('#MiddleColumn .Composer')`);
+  // The baseline read goes out before the navigation so it sees the old chat.
+  watchChange({ read, delayMs: 1500, onStuck: () => { if (!wc.isDestroyed() && wc.getURL() === target) wc.reload(); } });
+  await wc.loadURL(target).catch(() => {});
+}
+// Offline or rate-limited checks stay quiet for the user; only the first failure is logged, and the next check retries.
+function startUpdates() {
+  if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
+  if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
+  if (!app.isPackaged) return;
+  let check;
+  if (process.platform === 'win32') {
+    const { autoUpdater } = require('electron-updater');
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('update-downloaded', (info) => { update.available = info.version; update.ready = true; broadcast(); });
+    const feed = windowsFeed(fs.existsSync(path.join(process.resourcesPath, 'app-update.yml')), require('../package.json'));
+    if (feed) autoUpdater.setFeedURL(feed);
+    let logged = false;
+    const failed = (error) => { if (!logged) { logged = true; logError('updater', error); } };
+    autoUpdater.on('error', failed);
+    check = () => autoUpdater.checkForUpdates().catch(failed);
+  } else if (process.platform === 'darwin') {
+    check = async () => {
+      try {
+        const latest = await macUpdate.checkLatest();
+        if (latest && macUpdate.isNewer(latest.version, app.getVersion())) { update.available = latest.version; update.tag = latest.tag; broadcast(); }
+      } catch {}
+    };
+  } else return;
+  check(); setInterval(check, 6 * 60 * 60 * 1000);
 }
 function registerIpc() {
   ipcMain.handle('workspace:get', (event) => { trustSender(event); return getState(); });
@@ -491,12 +628,12 @@ function registerIpc() {
         const url = tab ? tab.view.webContents.getURL() : '';
         if (!tab || !/^https?:\/\//i.test(url)) throw new Error('Open a web page first.');
         const title = (tab.view.webContents.getTitle() || url).slice(0, 300);
-        if (!prefs.selectedBotId) throw new Error('Select a bot in the sidebar first — that is who the page goes to.');
+        if (!prefs.selectedBotId) throw new Error('Select a bot in the sidebar first. That is who the page goes to.');
         if (!telegramView || telegramView.webContents.isDestroyed()) throw new Error('Telegram is not loaded.');
         const tg = telegramView.webContents;
         const chatHash = new RegExp(`#${prefs.selectedBotId.replace(/\W/g, '')}(?:_|/|$)`);
         if (!chatHash.test(tg.getURL())) await openBot(prefs.selectedBotId);
-        if (tg.isLoading()) throw new Error('Telegram is still loading — try again in a moment.');
+        if (tg.isLoading()) throw new Error('Telegram is still loading. Try again in a moment.');
         let point = null;
         for (let i = 0; i < 16 && !point; i++) {
           // A stopped or never-committed page can leave executeJavaScript pending
@@ -586,7 +723,9 @@ function registerIpc() {
         if (value.vpsBrowser && typeof value.vpsBrowser === 'object') {
           const sshHost = String(value.vpsBrowser.sshHost || '').trim();
           if (sshHost && !isSshTarget(sshHost)) throw new Error('Enter the VPS SSH address as user@host or host, with no spaces or symbols.');
-          prefs.vpsBrowser={sshHost,scriptPath:String(value.vpsBrowser.scriptPath || '').trim(),sudo:value.vpsBrowser.sudo===true}; vpsBrowserStatus='connecting'; refreshVpsTabs();
+          const scriptPath = String(value.vpsBrowser.scriptPath || '').trim();
+          if (scriptPath && checkScriptPath(scriptPath)) throw new Error(checkScriptPath(scriptPath));
+          prefs.vpsBrowser={sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}; vpsBrowserStatus='connecting'; refreshVpsTabs();
         }
         if (Number.isFinite(value.agentIdleMinutes)) prefs.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
@@ -623,13 +762,13 @@ function registerIpc() {
       case 'copy-connection': clipboard.writeText(JSON.stringify({ url: `http://127.0.0.1:${apiPort}`, token: API_TOKEN }, null, 2)); break;
       case 'agent-setup': {
         const botId = String(value?.botId || prefs.selectedBotId || '').replace(/[^0-9A-Za-z_-]/g, '');
-        if (!botId) throw new Error('Select a bot first — its ID goes in the agent config.');
+        if (!botId) throw new Error('Select a bot first. Its ID goes in the agent config.');
         const bot = prefs.bots.find(item => item.id === botId);
         const macSsh = (prefs.macSshHost || '').trim();
         const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
         clipboard.writeText([
-          "# Alan's Way setup — paste into a terminal on the host running your Hermes gateway",
-          `curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/setup.sh | bash -s -- --bot-id ${q(botId)}${bot ? ` --bot-name ${q(bot.name.replace(/'/g, ''))}` : ''}${macSsh ? ` --mac-ssh ${q(macSsh)}` : ''}${HOST_LABEL === 'windows' ? ' --host-os windows' : ''} --timezone ${q(Intl.DateTimeFormat().resolvedOptions().timeZone)} --restart`,
+          "# Alan's Way setup: paste into a terminal on the host running your Hermes gateway",
+          `curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/setup.sh | bash -s -- --bot-id ${q(botId)}${bot ? ` --bot-name ${q(bot.name.replace(/'/g, ''))}` : ''}${macSsh ? ` --mac-ssh ${q(macSsh)}` : ''}${HOST_LABEL === 'mac' ? '' : ` --host-os ${HOST_LABEL}`} --timezone ${q(Intl.DateTimeFormat().resolvedOptions().timeZone)} --restart`,
           '# The bootstrap installs the plugin + hook, configures the browser connector,',
           '# offers to bind the primary route, restarts the gateway, and verifies itself.',
         ].join('\n'));
@@ -637,18 +776,10 @@ function registerIpc() {
       }
       case 'agent-prompt': {
         const botId = String(value?.botId || prefs.selectedBotId || '').replace(/[^0-9A-Za-z_-]/g, '');
-        const macSsh = (prefs.macSshHost || '').trim();
-        clipboard.writeText([
-          "Set up Alan's Way for me by following the prompt in https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-prompt.md exactly (fetch it and treat its text block as my instructions).",
-          'Values I already know, so skip discovering them:',
-          botId && `- BOT_ID=${botId}`,
-          macSsh && `- MAC_SSH=${macSsh}`,
-          `- MAC_TZ=${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-          HOST_LABEL === 'windows'
-            ? '- The Alan\'s Way app is already installed and open on my PC, so add --skip-install and --host-os windows to the Windows command in step 4.'
-            : '- The Alan\'s Way app is already installed and open on my Mac, so add --skip-install to the Mac command in step 4.',
-        ].filter(Boolean).join('\n'));
-        break;
+        const text = buildAgentPrompt({ kind: value?.kind === 'update' ? 'update' : 'setup', hostLabel: HOST_LABEL, version: app.getVersion(),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, botId, sshHost: (prefs.macSshHost || '').trim() });
+        if (value?.copy !== false) clipboard.writeText(text);
+        return text;
       }
       case 'test-agent-path': {
         const host = (prefs.vpsBrowser?.sshHost || '').trim();
@@ -663,32 +794,48 @@ function registerIpc() {
           let out = '';
           child.stdout.on('data', chunk => { out += chunk; });
           child.stderr.on('data', chunk => { out += chunk; });
-          child.on('error', () => resolve({ ok: false, detail: 'Could not start ssh — check local ssh access.' }));
+          child.on('error', () => resolve({ ok: false, detail: 'Could not start ssh. Check local ssh access.' }));
           child.on('close', code => resolve(out.includes('AGENT_PATH_OK')
-            ? { ok: true, detail: `VPS reaches this ${HOST_LABEL === 'mac' ? 'Mac' : HOST_LABEL === 'windows' ? 'PC' : 'computer'} over ssh — agents can route here.` }
+            ? { ok: true, detail: `VPS reaches this ${HOST_LABEL === 'mac' ? 'Mac' : HOST_LABEL === 'windows' ? 'PC' : 'computer'} over ssh, so agents can route here.` }
             : out.includes('Tailscale SSH requires an additional check')
               ? { ok: false, detail: 'Tailscale SSH on the VPS wants a browser check for this login, which unattended agents cannot pass. In the Tailscale admin console → Access controls, change the SSH rule for this user from "check" to "accept".' }
               : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
         });
       }
       case 'show-data': shell.openPath(app.getPath('userData')); break;
+      case 'mac-permissions': return process.platform === 'darwin' ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null;
+      case 'open-mac-privacy': if (process.platform === 'darwin') shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${value.pane === 'screen' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility'}`); break;
+      case 'update-now': {
+        if (process.platform === 'win32') { if (update.ready) require('electron-updater').autoUpdater.quitAndInstall(); break; }
+        if (!update.tag) break;
+        update.busy = true; update.error = ''; broadcast();
+        try { await macUpdate.installMacUpdate({ tag: update.tag, bundlePath: path.resolve(process.execPath, '../../..') }); }
+        catch (error) { update.busy = false; update.error = error.message; broadcast(); throw error; }
+        savePreferences(); app.relaunch(); app.exit(0); break;
+      }
+      case 'open-download-page': shell.openExternal(`https://openalan.com/download/${HOST_LABEL === 'windows' ? 'windows' : 'mac'}`); break;
+      case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/v${app.getVersion()}`); break;
+      case 'dismiss-updated': update.justUpdatedFrom = ''; break;
+      case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;
+      case 'onboarding-open': prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; savePreferences(); applyLayout(); break;
+      case 'move-to-applications': return app.moveToApplicationsFolder();
       case 'sync-telegram': telegramView.webContents.reload(); break;
       case 'open-username': {
         const username = String(value.username || '').replace(/^@/, '');
         if (!/^[A-Za-z][\w]{3,31}$/.test(username)) throw new Error('Enter a Telegram bot username.');
         const link = `tg://resolve?domain=${username}`;
         prefs.selectedBotId = '';
-        await telegramView.webContents.loadURL(`${TELEGRAM}#?tgaddr=${encodeURIComponent(link)}`).catch(() => {});
-        telegramView.webContents.reload(); break;
+        await openTelegramHash(`?tgaddr=${encodeURIComponent(link)}`); break;
       }
       default: throw new Error('Unknown workspace command.');
     }
-    broadcast(); return getState();
+    broadcastNow(); return getState();
   });
   ipcMain.on('telegram:catalog', (event, value) => {
     if (event.sender !== telegramView?.webContents || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith(TELEGRAM)) return;
     if (!value || typeof value !== 'object') return;
-    telegramStatus = ['connected', 'login', 'locked', 'loading'].includes(value.status) ? value.status : 'loading';
+    telegramStatus = ['connected', 'login', 'locked', 'loading', 'layout-changed'].includes(value.status) ? value.status : 'loading';
+    if (['connected', 'login', 'locked'].includes(telegramStatus)) telegramRecovery?.reset();
     telegramDiagnostics = value.diagnostics || {};
     if (value.accountId && /^\d+$/.test(value.accountId)) {
       if (prefs.accountId && prefs.accountId !== value.accountId) { prefs.bots = []; prefs.order = []; prefs.hidden = []; prefs.selectedBotId = ''; prefs.avatarPreferences = {}; }
@@ -702,7 +849,7 @@ function registerIpc() {
         const bot = prefs.bots.find((item) => !prefs.hidden.includes(item.id));
         if (bot) openBot(bot.id).catch(() => {});
       }
-      savePreferences();
+      savePreferencesSoon();
     }
     activity.setContext({ accountId: prefs.accountId, bots: prefs.bots, connected: telegramStatus === 'connected' });
     broadcast();
@@ -713,6 +860,10 @@ function registerIpc() {
   });
   // The preload pulls the work map after attaching its listener so a send that
   // raced a reload can never wedge the signature dedup.
+  ipcMain.on('workspace:poll-tier-pull', (event) => {
+    if (event.sender !== telegramView?.webContents || event.senderFrame !== event.sender.mainFrame) return;
+    sendPollTier(true);
+  });
   ipcMain.on('workspace:bot-activity-pull', (event) => {
     if (event.sender !== telegramView?.webContents || event.senderFrame !== event.sender.mainFrame) return;
     sendBotWork();
@@ -750,7 +901,7 @@ async function snapshot(tab, opts = {}) {
     // A wedged renderer leaves executeJavaScript pending forever; bound it so
     // a snapshot can never outlive the connector's own timeout.
     const result = await Promise.race([
-      tab.view.webContents.executeJavaScript(snapshotExpression(generation, { ...opts, keep: tab.snapshotStamp?.base })),
+      readJs(tab.view.webContents, snapshotExpression(generation, { parseWaitMs: SNAPSHOT_PARSE_MS, ...opts, keep: tab.snapshotStamp?.base, restamp: tab.snapshotStamp?.base }), 20000),
       new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000); }),
     ]).finally(() => clearTimeout(timer));
     if (!result || !Array.isArray(result.elements)) throw Object.assign(new Error('Snapshot returned no page data.'), { status: 503 });
@@ -784,7 +935,7 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   } else {
     target=createTab({url:checkpoint.url,botId:source.botId,controller:'human',activate:false});target.handoff=handoff;
     for(let n=0;n<100;n++){if(!target.view.webContents.isLoading()&&target.view.webContents.getURL()!=='about:blank')break;await new Promise(r=>setTimeout(r,100));}
-    if(target.view.webContents.isLoading()){try{closeTab(target.id)}catch{}throw new Error(`${HOST_LABEL==='windows'?'PC':'Mac'} destination is still loading. Its tab was closed — retry the handoff.`);}
+    if(target.view.webContents.isLoading()){try{closeTab(target.id)}catch{}throw new Error(`${HOST_LABEL==='windows'?'PC':'Mac'} destination is still loading. Its tab was closed. Retry the handoff.`);}
     result=await target.view.webContents.executeJavaScript(restoreExpression(checkpoint));
   }
   const record={...handoff,destinationTabId:target.id,verification:result.verification,restoredDrafts:result.restored,skippedDrafts:result.skipped};
@@ -808,36 +959,29 @@ function settleNavigation(wc, trigger, timeout = 15000) {
     try { trigger(); } catch { done(); }
   });
 }
+// Resolves { state, error }; error carries Chromium's net error name
+// (ERR_NAME_NOT_RESOLVED and friends) when the load failed.
 function waitForNavigationCommit(wc, load, timeout = 15000) {
   return new Promise((resolve) => {
-    const done = (result) => {
+    const done = (state, error = '') => {
       clearTimeout(timer);
       wc.removeListener('did-navigate', onNav).removeListener('did-fail-load', onFail).removeListener('destroyed', onDestroy);
-      resolve(result);
+      resolve({ state, error });
     };
     const onNav = () => done('committed');
-    const onFail = (_e, _c, _d, _u, main) => { if (main) done('failed'); };
+    const onFail = (_e, _code, description, _u, main) => { if (main) done('failed', description); };
     const onDestroy = () => done('destroyed');
     const timer = setTimeout(() => done('timeout'), timeout);
     wc.once('did-navigate', onNav);
     wc.on('did-fail-load', onFail);
     wc.once('destroyed', onDestroy);
-    Promise.resolve(load()).catch(() => done('failed'));
+    Promise.resolve(load()).catch((error) => done('failed', /ERR_[A-Z0-9_]+/.exec(String(error?.message))?.[0] || ''));
   });
 }
 function browserCommand(tab, method, params) {
   const wc = tab.view.webContents;
   if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
   return wc.debugger.sendCommand(method, params);
-}
-// A wedged renderer leaves executeJavaScript pending forever and would
-// wedge tab.queue behind it. Bound every probe like snapshot's 10s race.
-function boundedJs(wc, code, ms = 5000) {
-  let timer;
-  return Promise.race([
-    wc.executeJavaScript(code),
-    new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('The page stopped responding.'), { status: 503 })), ms); }),
-  ]).finally(() => clearTimeout(timer));
 }
 async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = {}) {
   const capture = backgroundCaptureQueue.then(async () => {
@@ -875,10 +1019,10 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = 
   backgroundCaptureQueue = capture.catch(() => {});
   return capture;
 }
-async function actionControls(tab) {
+async function actionControls(tab, opts) {
   try {
     requireAgentRead(tab);
-    const controls = await readControls((code) => tab.view.webContents.executeJavaScript(code), tab);
+    const controls = await readControls((code) => readJs(tab.view.webContents, code, 12000), tab, opts);
     requireAgentRead(tab);
     return controls;
   } catch (error) {
@@ -886,10 +1030,13 @@ async function actionControls(tab) {
     return null;
   }
 }
-async function performAction(tab, body, botId, depth = 0) {
+// A batch step answers with its own payload only: the page state, controls and
+// tab record ride once on the batch reply instead of once per step.
+async function performAction(tab, body, botId, depth = 0, isAborted = () => false) {
   const overseer = isOverseer(botId);
   requireActor(tab, botId, body.epoch, true, overseer);
   const wc = tab.view.webContents;
+  const reply = (payload) => depth > 0 ? payload : actionReply(tab, payload);
   if (body.action === 'batch') {
     if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
     const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
@@ -898,7 +1045,8 @@ async function performAction(tab, body, botId, depth = 0) {
     for (const step of steps) {
       if (!step || typeof step !== 'object') { results.push({ error: 'Invalid step.' }); break; }
       if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
-      try { results.push(await performAction(tab, { ...step, epoch: body.epoch }, botId, 1)); }
+      if (isAborted()) { results.push({ error: 'The request was closed; remaining steps were not run.' }); break; }
+      try { results.push(await performAction(tab, { ...step, epoch: body.epoch }, botId, 1, isAborted)); }
       catch (error) { results.push({ error: error.message }); break; }
     }
     // A takeover mid-batch seals the accumulated step results too.
@@ -910,16 +1058,17 @@ async function performAction(tab, body, botId, depth = 0) {
     const code = String(body.code || '');
     if (!code || code.length > 16384) throw Object.assign(new Error('eval needs a code string (max 16KB).'), { status: 400 });
     const wc = tab.view.webContents;
+    let evalTimer;
     let value = await Promise.race([
-      wc.executeJavaScript(code, true),
-      new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('eval timed out after 15s.'), { status: 408 })), 15000)),
-    ]);
+      frameOf(wc).executeJavaScript(code, true),
+      new Promise((_, reject) => { evalTimer = setTimeout(() => reject(Object.assign(new Error('eval timed out after 15s.'), { status: 408 })), 15000); }),
+    ]).finally(() => clearTimeout(evalTimer));
     // A takeover while the eval ran seals the result: the human's page state
     // is not returned to the bot.
     requireActor(tab, botId, body.epoch, true, overseer);
     const serialized = typeof value === 'string' ? value : JSON.stringify(value);
     if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
-    return actionReply(tab, { value, dispatched: true });
+    return reply({ value, dispatched: true });
   }
   if (body.action === 'wait') {
     const selector = String(body.selector || '').slice(0, 2000);
@@ -958,25 +1107,29 @@ async function performAction(tab, body, botId, depth = 0) {
     let value = null;
     while (Date.now() - hostStart < timeout + 1000) {
       requireAgentRead(tab);
+      // Short slices let a hung-up client stop a long wait instead of polling to its timeout.
+      if (isAborted()) throw Object.assign(new Error('The request was closed before the wait finished.'), { status: 499 });
       const remaining = Math.max(400, timeout - (Date.now() - hostStart));
+      const slice = Math.min(remaining, WAIT_SLICE_MS);
       const attempt = await Promise.race([
-        wc.executeJavaScript(waitCode(remaining), true).catch(() => ({ navRetry: true })),
-        new Promise((r) => setTimeout(() => r({ navRetry: true }), remaining + 1500)),
+        frameOf(wc).executeJavaScript(waitCode(slice), true).catch(() => ({ navRetry: true })),
+        new Promise((r) => setTimeout(() => r({ navRetry: true }), slice + 1500)),
       ]);
-      if (attempt && !attempt.navRetry) { value = attempt; break; }
-      if (urlPart && wc.getURL().includes(urlPart)) { value = { found: true, waited: Date.now() - hostStart }; break; }
-      await new Promise((r) => setTimeout(r, 250));
+      const elapsed = Date.now() - hostStart;
+      if (attempt && !attempt.navRetry && (attempt.found || elapsed >= timeout)) { value = { found: attempt.found, waited: elapsed }; break; }
+      if (urlPart && wc.getURL().includes(urlPart)) { value = { found: true, waited: elapsed }; break; }
+      if (!attempt || attempt.navRetry) await new Promise((r) => setTimeout(r, 250));
     }
     if (!value || !value.found) throw Object.assign(new Error(`wait timed out after ${value ? value.waited : Date.now() - hostStart}ms for ${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`), { status: 408 });
     requireActor(tab, botId, body.epoch, true, overseer);
-    return actionReply(tab, { waited: value.waited, dispatched: true });
+    return reply({ waited: value.waited, dispatched: true });
   }
   if (body.action === 'viewport') {
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     if (body.clear === true) {
       await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
       delete tab.viewport;
-      return actionReply(tab, { viewport: null, dispatched: true });
+      return reply({ viewport: null, dispatched: true });
     }
     const width = Math.round(Number(body.width)), height = Math.round(Number(body.height));
     const scale = Math.min(Math.max(Number(body.scale) || 1, 0.1), 5);
@@ -985,7 +1138,7 @@ async function performAction(tab, body, botId, depth = 0) {
     await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
     tab.viewport = { width, height, scale };
     broadcast();
-    return actionReply(tab, { viewport: tab.viewport, dispatched: true });
+    return reply({ viewport: tab.viewport, dispatched: true });
   }
   if (body.action === 'cdp') {
     const method = String(body.method || '');
@@ -1000,33 +1153,36 @@ async function performAction(tab, body, botId, depth = 0) {
       params.url = agentPageUrl(params.url);
     }
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    let cdpTimer;
     let value = await Promise.race([
       wc.debugger.sendCommand(method, params),
-      new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('cdp timed out after 20s.'), { status: 408 })), 20000)),
-    ]);
+      new Promise((_, reject) => { cdpTimer = setTimeout(() => reject(Object.assign(new Error('cdp timed out after 20s.'), { status: 408 })), 20000); }),
+    ]).finally(() => clearTimeout(cdpTimer));
     // Seal mid-flight takeovers: the result is the human's page state then.
     requireActor(tab, botId, body.epoch, true, overseer);
     const cdpSerialized = typeof value === 'string' ? value : JSON.stringify(value);
     if (cdpSerialized && cdpSerialized.length > 48000) value = cdpSerialized.slice(0, 48000) + '…[truncated]';
-    return actionReply(tab, { value, dispatched: true });
+    return reply({ value, dispatched: true });
   }
-  if (['click', 'type', 'press', 'scroll', 'move'].includes(body.action)) {
-    const result = await agentInput.perform(tab, body, botId);
+  if (INPUT_ACTIONS.has(body.action)) {
+    const { input, cursor, ...result } = await agentInput.perform(tab, body, botId);
     if (depth === 0 && body.action !== 'move') tab.refs.clear();
     broadcast();
     const controls = depth === 0 && body.action !== 'move' ? await actionControls(tab) : null;
-    return actionReply(tab, { ...result, ...(controls || {}), dispatched: true });
+    return reply({ ...result, ...(depth === 0 && cursor ? { cursor: { x: cursor.x, y: cursor.y } } : {}), ...(controls || {}), dispatched: true });
   }
+  let parseWaitMs = 0;
   if (body.action === 'navigate') {
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
     const target = pageUrl(agentPageUrl(body.url));
     const commit = await waitForNavigationCommit(wc, () => wc.loadURL(target));
-    if (commit === 'failed' || commit === 'destroyed') throw Object.assign(new Error('Navigation failed.'), { status: 400 });
+    if (commit.state === 'failed' || commit.state === 'destroyed') throw Object.assign(new Error(commit.error ? `Navigation failed: ${commit.error}.` : 'Navigation failed.'), { status: 400 });
     tab.refs.clear();
-    if (commit === 'timeout' || wc.isLoading()) { requireActor(tab, botId, body.epoch, true, overseer); broadcast(); return actionReply(tab, { loading: true, dispatched: true }); }
-    const loaded = await new Promise(resolve => { if (!wc.isLoading()) return resolve(true); wc.once('did-stop-loading', () => resolve(true)); setTimeout(() => resolve(false), 12000); });
-    if (!loaded) { requireActor(tab, botId, body.epoch, true, overseer); broadcast(); return actionReply(tab, { loading: true, dispatched: true }); }
+    if (commit.state === 'timeout') { requireActor(tab, botId, body.epoch, true, overseer); broadcast(); return reply({ loading: true, dispatched: true }); }
+    // Controls are ready once the document has parsed; the rest of the page
+    // keeps loading and `loading` says so.
+    parseWaitMs = NAVIGATE_PARSE_MS;
   } else if (['back', 'forward', 'reload'].includes(body.action)) {
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
@@ -1044,13 +1200,17 @@ async function performAction(tab, body, botId, depth = 0) {
         throw Object.assign(error, { status: 400 });
       }
     }
-  } else throw Object.assign(new Error('Supported actions: navigate, click, type, press, move, scroll, back, forward, reload, batch, eval, wait, viewport, cdp.'), { status: 400 });
+  } else throw Object.assign(new Error('Supported actions: navigate, click, double_click, right_click, drag, select, type, press, move, scroll, back, forward, reload, batch, eval, wait, viewport, cdp.'), { status: 400 });
   // Seal navigation-family results too: a takeover while the page settled
   // makes this response the human's page state.
   requireActor(tab, botId, body.epoch, true, overseer);
   tab.refs.clear(); broadcast();
-  const controls = await actionControls(tab);
-  return actionReply(tab, { ...(controls || {}), dispatched: true });
+  if (depth > 0) {
+    if (parseWaitMs) await boundedJs(wc, `document.readyState === 'loading' ? new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${parseWaitMs}); }) : 0`, parseWaitMs + 2000).catch(() => {});
+    return reply({ dispatched: true });
+  }
+  const controls = await actionControls(tab, parseWaitMs ? { parseWaitMs } : undefined);
+  return reply({ ...(controls || {}), dispatched: true });
 }
 async function readJson(req) {
   let size = 0; const chunks = [];
@@ -1062,12 +1222,12 @@ function startApi() {
   apiServer = http.createServer(async (req, res) => {
     const send = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
     // No browser-origin requests or CORS: this endpoint is for the paired native connector.
-    if (req.headers.origin || !isAuthorized(req.headers.authorization, API_TOKEN)) return send(401, { error: 'Unauthorized' });
+    if (req.headers.origin || !hostAllowed(req.headers.host, apiPort) || !isAuthorized(req.headers.authorization, API_TOKEN)) return send(401, { error: 'Unauthorized' });
     try {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
       const overseer = isOverseer(botId);
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'type', 'press', 'move', 'scroll', 'batch', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs'], tabCount: tabs.size+vpsTabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await Promise.race([
           telegramView.webContents.executeJavaScript(`(() => ({
@@ -1114,41 +1274,25 @@ function startApi() {
       // Host computer use is served here so an SSH-spawned connector never
       // drives the desktop itself — on Windows that process would sit in
       // Session 0 and see no windows. Same verbs the MCP connector wraps.
-      const computerMatch = /^\/v1\/computer\/(apps|\d{1,10})(?:\/(snapshot|screenshot|action))?$/.exec(url.pathname);
+      const computerMatch = /^\/v1\/computer\/(apps|\d{1,10})(?:\/(snapshot|screenshot|action|menu))?$/.exec(url.pathname);
       if (computerMatch) {
         if (!hostComputer) return send(400, { error: 'Computer use is not available on this host.' });
         if (computerMatch[1] === 'apps') {
           if (computerMatch[2] || req.method !== 'GET') return send(405, { error: 'Use GET /v1/computer/apps.' });
-          return send(200, { apps: hostComputer.apps() });
+          return send(200, { apps: await hostComputer.apps() });
         }
         const pid = Number(computerMatch[1]);
         if (!Number.isInteger(pid) || pid < 0) return send(400, { error: 'App pid must be a non-negative integer.' });
         if (req.method === 'GET' && computerMatch[2] === 'snapshot')
-          return send(200, hostComputerSnapshots(pid, hostComputer.snapshot(pid), intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER)));
+          return send(200, await hostComputer.snapshot(botId, pid, { since: intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER), menubar: url.searchParams.get('menubar') === '1' }));
         if (req.method === 'GET' && computerMatch[2] === 'screenshot')
-          return send(200, hostComputer.screenshot(pid, intParam(url, 'maxWidth', 1, 10000)));
-        if (req.method === 'POST' && computerMatch[2] === 'action') {
-          const body = await readJson(req);
-          const step = (item) => {
-            if (item.action === 'press') return hostComputer.press(pid, item.ref);
-            if (item.action === 'click') return hostComputer.click(pid, item.x, item.y);
-            if (item.action === 'drag') return hostComputer.drag(pid, item.x, item.y, item.x2, item.y2);
-            if (item.action === 'type') return hostComputer.type(pid, item.ref, item.text);
-            throw new Error('Computer action must be press, click, drag, type, or batch.');
-          };
-          let result;
-          if (body.action === 'batch') {
-            const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
-            const results = [];
-            for (const item of steps) { try { results.push(step(item || {})); } catch (error) { results.push({ error: error.message }); break; } }
-            result = { results };
-          } else result = step(body);
-          try {
-            const observed = hostComputerSnapshots.observe(pid, hostComputer.snapshot(pid));
-            result = observed.unchanged ? { ...result, unchanged: true, generation: observed.generation } : { ...result, generation: observed.generation, elements: observed.elements };
-          } catch { /* the action stands even when a follow-up read is refused */ }
-          return send(200, result);
+          return send(200, await hostComputer.screenshot(pid, intParam(url, 'maxWidth', 1, 10000)));
+        if (req.method === 'GET' && computerMatch[2] === 'menu') {
+          let menuPath; try { menuPath = JSON.parse(url.searchParams.get('path') || '[]'); } catch { throw Object.assign(new Error('path must be a JSON array of menu titles.'), { status: 400 }); }
+          return send(200, await hostComputer.menu(pid, menuPath));
         }
+        if (req.method === 'POST' && computerMatch[2] === 'action')
+          return send(200, await hostComputer.action(botId, pid, await readJson(req)));
         return send(405, { error: 'Method not supported.' });
       }
       const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions|control))?$/.exec(url.pathname);
@@ -1196,7 +1340,14 @@ function startApi() {
       if (req.method === 'POST' && match[2] === 'actions') {
         const body = await readJson(req);
         tab.pendingActions = (tab.pendingActions || 0) + 1;
-        const action = tab.queue.then(() => performAction(tab, body, botId))
+        // A client that gave up (its connector timed out) must not have its
+        // queued action run later against whatever the page became.
+        let closed = false;
+        res.on('close', () => { if (!res.writableFinished) closed = true; });
+        const action = tab.queue.then(() => {
+          if (closed) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
+          return performAction(tab, body, botId, 0, () => closed);
+        })
           .finally(() => { tab.pendingActions--; tab.lastAgentActivity = Date.now(); });
         tab.queue = action.catch(() => {});
         return send(200, await action);
@@ -1212,13 +1363,14 @@ function startApi() {
       }
       if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true, overseer); closeTab(tab.id); return send(200, { closed: true }); }
       return send(405, { error: 'Method not supported.' });
-    } catch (error) { send(error.status || 400, { error: error.message }); }
+    } catch (error) { send(error.status || (error.code === 'stale_ref' ? 409 : 400), { error: error.message, ...(error.code ? { code: error.code } : {}) }); }
   });
   apiServer.requestTimeout = 30000;
   apiServer.on('listening', () => {
     apiPort = apiServer.address().port;
     apiError = '';
-    writePrivateJson(path.join(app.getPath('userData'), 'connection.json'), { url: `http://127.0.0.1:${apiPort}`, token: API_TOKEN, protocol: 1 });
+    try { writePrivateJson(path.join(app.getPath('userData'), 'connection.json'), { url: `http://127.0.0.1:${apiPort}`, token: API_TOKEN, protocol: 1 }); }
+    catch (error) { apiError = `Could not write the connection file: ${error.message}`; logError('connection.json', error); }
     broadcast();
   });
   apiServer.on('error', (error) => {
@@ -1230,6 +1382,98 @@ function startApi() {
   const envPort = Number(process.env.HERMES_WORKSPACE_PORT);
   apiServer.listen(Number.isInteger(envPort) && envPort >= 0 && envPort < 65536 ? envPort : 9464, '127.0.0.1');
 }
+// The two bridge-bearing pages never navigate or open windows: a dropped HTML
+// file or injected link would otherwise inherit the preload bridge.
+function lockDown(contents, expectedFile) {
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  contents.on('will-navigate', (event, url) => { if (!fileUrlMatches(url, expectedFile)) event.preventDefault(); });
+  contents.on('will-redirect', (event) => event.preventDefault());
+  contents.on('will-attach-webview', (event) => event.preventDefault());
+}
+// Telegram's page cannot tell a tray-hidden window from a visible one, so the
+// main process tells it how hard to poll. While hidden, main drives the poll
+// itself: a hidden page's own timers are throttled to about once a minute.
+let hiddenPoll, lastPollTier = '';
+// webContents.send logs instead of throwing when the frame is gone, so the
+// frame is probed first; reading any property of a disposed frame throws.
+function sendToTelegram(channel, ...args) {
+  try {
+    const wc = telegramView.webContents;
+    if (wc.isDestroyed() || wc.isCrashed()) return;
+    void wc.mainFrame.url;
+    wc.send(channel, ...args);
+  } catch { /* the frame was disposed */ }
+}
+function sendPollTier(force = false) {
+  if (!win || win.isDestroyed() || !telegramView || telegramView.webContents.isDestroyed()) return;
+  const tier = pollTier({ visible: win.isVisible(), minimized: win.isMinimized(), focused: win.isFocused() });
+  if (tier === lastPollTier && !force) return;
+  lastPollTier = tier;
+  sendToTelegram('workspace:poll-tier', tier);
+  clearInterval(hiddenPoll);
+  if (tier === 'hidden') {
+    hiddenPoll = setInterval(() => { if (telegramView && !telegramView.webContents.isDestroyed()) sendToTelegram('telegram:poll'); }, 15000);
+    hiddenPoll.unref();
+  }
+}
+function showWindow() {
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show(); win.focus();
+}
+// Windows and Linux hide to the tray on close, as macOS hides to the dock, so
+// bots keep their browser. Without a visible tray the window could never come
+// back, so closing only hides once a tray exists.
+function statusNotifierHost() {
+  try {
+    return /boolean true/.test(execFileSync('dbus-send', ['--session', '--dest=org.freedesktop.DBus', '--type=method_call', '--print-reply', '/org/freedesktop/DBus', 'org.freedesktop.DBus.NameHasOwner', 'string:org.kde.StatusNotifierWatcher'], { encoding: 'utf8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch { return false; }
+}
+function createTray() {
+  if (process.platform === 'darwin' || tray) return;
+  if (process.platform === 'linux' && !linuxTrayUsable({ desktop: process.env.XDG_CURRENT_DESKTOP || '', hasWatcher: statusNotifierHost() })) return;
+  try {
+    const icon = process.platform === 'win32' ? path.join(ROOT, '../assets/icon.ico')
+      : nativeImage.createFromPath(path.join(ROOT, '../assets/icon.png')).resize({ width: 24, height: 24 });
+    tray = new Tray(icon);
+    tray.setToolTip(`${app.getName()} is running. Bots keep their browser while this icon is here.`);
+    tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Show Alan’s Way', click: showWindow }, { type: 'separator' }, { label: 'Quit', click: () => app.quit() }]));
+    tray.on('click', showWindow);
+  } catch (error) { tray = undefined; logError('tray', error); }
+}
+// Telegram's page can crash, fail to load, hang, or sit offline across a
+// sleep. Without this the sidebar stays on "offline" until the user restarts.
+function watchTelegram(wc) {
+  const target = () => prefs.selectedBotId ? `${TELEGRAM}#${prefs.selectedBotId}` : TELEGRAM;
+  telegramRecovery = createRetry({ run: () => { if (!isQuitting && !wc.isDestroyed()) wc.loadURL(target()).catch(() => {}); } });
+  const offline = () => { telegramStatus = 'offline'; activity.clear(); broadcast(); };
+  let hangTimer, lastInput = 0;
+  wc.on('before-input-event', () => { lastInput = Date.now(); });
+  wc.on('did-start-loading', () => { lastBotWorkSignature = ''; activity.clear(); broadcast(); });
+  wc.on('render-process-gone', (_event, details) => { offline(); if (details.reason !== 'clean-exit') telegramRecovery.schedule(); });
+  wc.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => { if (isMainFrame && code !== -3) { offline(); telegramRecovery.schedule(); } });
+  // Killing a page that is merely busy loses what the user is typing, so wait
+  // a minute and never while they are actively using this window.
+  const watchHang = () => {
+    hangTimer = setTimeout(() => {
+      if (wc.isDestroyed()) return;
+      if (win?.isFocused() && Date.now() - lastInput < 30000) return watchHang();
+      wc.forcefullyCrashRenderer();
+    }, 60000);
+    hangTimer.unref?.();
+  };
+  wc.on('unresponsive', () => { clearTimeout(hangTimer); watchHang(); });
+  wc.on('responsive', () => clearTimeout(hangTimer));
+  const stuck = () => telegramStatus === 'offline' || telegramStatus === 'loading';
+  powerMonitor.on('resume', () => { const timer = setTimeout(() => { if (stuck()) telegramRecovery.now(); }, 3000); timer.unref?.(); });
+  let wasOnline = net.isOnline();
+  const timer = setInterval(() => {
+    const online = net.isOnline();
+    if (online && !wasOnline && telegramStatus === 'offline') telegramRecovery.now();
+    wasOnline = online;
+  }, 3000);
+  timer.unref();
+}
 function createWindow() {
   nativeTheme.themeSource = 'dark';
   win = new BrowserWindow({ width: 1550, height: 980, minWidth: 1120, minHeight: 680, backgroundColor: '#09090a', title: app.getName(),
@@ -1237,17 +1481,15 @@ function createWindow() {
       ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 } }
       : { titleBarStyle: 'hidden', titleBarOverlay: { color: '#111112', symbolColor: '#e7e7eb', height: 40 } }),
     webPreferences: { preload: path.join(ROOT, 'preload.bundle.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  lockDown(win.webContents, INDEX_FILE);
   telegramView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'telegram-preload.bundle.cjs'), partition: 'persist:telegram', contextIsolation: true, nodeIntegration: false, sandbox: true } });
   telegramView.setBackgroundColor('#09090a');
   configureContents(telegramView.webContents, true);
-  telegramView.webContents.on('did-start-loading', () => { lastBotWorkSignature = ''; activity.clear(); broadcast(); });
-  telegramView.webContents.on('render-process-gone', () => { telegramStatus = 'offline'; activity.clear(); broadcast(); });
-  telegramView.webContents.on('did-fail-load', (_e, code, _desc, _url, main) => { if (main && code !== -3) { telegramStatus = 'offline'; activity.clear(); broadcast(); } });
+  watchTelegram(telegramView.webContents);
   win.contentView.addChildView(telegramView);
   remoteView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'preload.bundle.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   remoteView.setBackgroundColor('#101011');
-  remoteView.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  remoteView.webContents.on('will-navigate', (event) => event.preventDefault());
+  lockDown(remoteView.webContents, REMOTE_FILE);
   remoteView.webContents.on('before-input-event',(event,input)=>{
     const hostModifier = process.platform === 'darwin' ? input.meta : input.control;
     if(prefs.remoteControl && remoteStatus==='connected' && hostModifier && input.type==='keyDown' && /^[altrwf]$/i.test(input.key)){
@@ -1262,9 +1504,14 @@ function createWindow() {
   for (const item of prefs.savedTabs.slice(0, 12)) { try { createTab({ url: item.url, botId: item.botId, activate: false }); } catch {} }
   activeTabId = 'home';
   win.on('enter-full-screen', broadcast); win.on('leave-full-screen', broadcast);
-  // macOS convention keeps the app alive after close; Windows has no dock to
-  // restore from, so closing the window quits (window-all-closed handles it).
-  win.on('close', (event) => { if (process.platform === 'darwin' && !isQuitting) { event.preventDefault(); win.hide(); } });
+  createTray();
+  win.on('session-end', () => { isQuitting = true; prefsSaver.flush(); });
+  win.on('close', (event) => {
+    if (isQuitting) return;
+    if (process.platform === 'darwin' || tray) { event.preventDefault(); win.hide(); }
+    else if (process.platform === 'linux') { event.preventDefault(); win.minimize(); }
+  });
+  for (const name of ['show', 'hide', 'minimize', 'restore', 'focus', 'blur']) win.on(name, () => sendPollTier());
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
     { label: 'File', submenu: [{ label: 'New Browser Tab', accelerator: 'CmdOrCtrl+T', click: () => createTab({}) }, { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(activeTabId) }, ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, { role: 'quit' }])] },
@@ -1291,12 +1538,18 @@ function createWindow() {
       if (now - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) > idleMs) changeController(tab.id, 'human', 'idle');
     }
   }, 30000).unref();
-  vpsTimer=setInterval(refreshVpsTabs,5000);vpsTimer.unref();refreshVpsTabs();
+  const vpsTick = async () => { await refreshVpsTabs(); vpsTimer = setTimeout(vpsTick, backoffDelay(vpsFailures)); vpsTimer.unref(); };
+  vpsTick();
+  vpsMirrorTimer = setInterval(pushVpsMirror, 10000); vpsMirrorTimer.unref();
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(async () => {
-    app.setAccessibilitySupportEnabled(true); prefs = readPreferences(); prefs.remoteControl = false;
+    prefs = readPreferences(); prefs.remoteControl = false; pinOnboarding(prefs);
+    session.defaultSession.protocol.handle(AVATAR_SCHEME, (request) => {
+      const image = avatarStore.imageFor(request.url);
+      return image ? new Response(image.data, { headers: { 'Content-Type': image.mime, 'Cache-Control': 'private, max-age=3600' } }) : new Response('', { status: 404 });
+    });
     try { parseRemoteUrl(prefs.remoteUrl); } catch { prefs.remoteUrl = ''; }
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
     const browserSession = session.fromPartition('persist:browser');
@@ -1342,9 +1595,10 @@ else {
     extensionStore = createExtensionStore({ root: app.getPath('userData'), session: browserSession, dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences, onChanged: broadcast,
       canInstall: frame => [...tabs.values()].some(tab => tab.id === activeTabId && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
     await extensionStore.installStore(); createWindow(); await extensionStore.restore(); broadcast();
+    startUpdates();
   });
-  app.on('second-instance', () => { win?.show(); win?.focus(); });
-  app.on('activate', () => { win?.show(); win?.focus(); });
-  app.on('before-quit', () => { isQuitting = true; clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(vpsTimer); savePreferences(); apiServer?.close(); });
+  app.on('second-instance', showWindow);
+  app.on('activate', showWindow);
+  app.on('before-quit', () => { isQuitting = true; hostComputer?.close(); clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

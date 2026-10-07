@@ -68,3 +68,25 @@ test('outgoing flag follows sender', () => {
   assert.equal(fx.sentMessages[0].outgoing, false);
   assert.equal(fx.sentMessages[1].outgoing, true);
 });
+
+test('a link is not lost when the last id is known before its message body', () => {
+  const fx = fixture();
+  scan(fx, 7, { 7: msg('hi') });
+  scan(fx, 8, { 7: msg('hi') });
+  assert.equal(fx.sentMessages.length, 0);
+  scan(fx, 8, { 7: msg('hi'), 8: msg('look https://late.example') });
+  assert.deepEqual(fx.sentMessages.map(m => m.url), ['https://late.example']);
+  scan(fx, 8, { 8: msg('look https://late.example') });
+  assert.equal(fx.sentMessages.length, 1, 'still emitted once');
+});
+
+test('the watermark advances only past ids whose message is present', () => {
+  const fx = fixture();
+  scan(fx, 5, { 5: msg('x') });
+  scan(fx, 9, { 6: msg('a https://six.example') });
+  assert.deepEqual(fx.sentMessages.map(m => m.url), ['https://six.example']);
+  assert.equal(fx.seen.get('42'), 6);
+  scan(fx, 9, { 6: msg('a https://six.example'), 9: msg('b https://nine.example') });
+  assert.deepEqual(fx.sentMessages.map(m => m.url), ['https://six.example', 'https://nine.example']);
+  assert.equal(fx.seen.get('42'), 9);
+});

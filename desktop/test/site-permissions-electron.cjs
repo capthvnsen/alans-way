@@ -32,7 +32,7 @@ app.whenReady().then(async () => {
   assert.equal(JSON.parse(fs.readFileSync(path.join(profile,'preferences.json'))).sitePermissions.browser[origin].geolocation, 'block');
   await evaluate('document.getElementById("settings-button").click()');
   assert.equal(await evaluate('document.getElementById("permission-origin").placeholder'), 'https://www.google.com');
-  assert.equal(await evaluate(`document.querySelector('#site-permissions select').value`), 'block');
+  assert.equal(await until(() => evaluate(`document.querySelector('#site-permissions select')?.value`), Boolean), 'block');
   await evaluate('document.getElementById("modal-close").click()');
   await new Promise(resolve => setTimeout(resolve, 100));
   await invoke('set-site-permission', {origin, permission:'geolocation', decision:'allow'});

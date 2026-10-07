@@ -30,7 +30,7 @@ function NodeOk {
   $node = Get-Command node -ErrorAction SilentlyContinue
   $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
   if (-not $node -or -not $npm) { return $false }
-  try { return [int](node -p 'process.versions.node.split(".")[0]') -ge 20 } catch { return $false }
+  try { return [version](node -p 'process.versions.node') -ge [version]'22.12' } catch { return $false }
 }
 if (-not (NodeOk)) {
   if (-not (Test-Path (Join-Path $NodeDir 'node.exe'))) {
@@ -85,9 +85,9 @@ Say 'Installing dependencies'
 npm ci --no-audit --no-fund --loglevel=error
 if ($LASTEXITCODE -ne 0) { Die 'npm ci failed' }
 Say 'Building the app'
-npm run package:win --silent
+npm run package:win --silent -- --dir
 if ($LASTEXITCODE -ne 0) { Die 'npm run package:win failed' }
-$Built = Join-Path $Dir "desktop\dist\$AppName-win32-x64"
+$Built = Join-Path $Dir "desktop\dist\win-unpacked"
 if (-not (Test-Path (Join-Path $Built "$AppName.exe"))) { Die "build finished but $Built\$AppName.exe is missing" }
 
 $running = Get-Process -Name $AppName -ErrorAction SilentlyContinue

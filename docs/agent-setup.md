@@ -18,7 +18,7 @@ It does not add tools or broaden an approval policy.
 Configure the browser connectors following the [desktop guide](../desktop/README.md)
 and [native VPS browser guide](../desktop/docs/vps-browser.md).
 Each independent bot uses its own `--bot-id`, matching its assigned tabs. Use
-the existing verified private SSH route for VPS-to-Mac tools. Preserve bounded
+the existing verified Tailscale SSH route for VPS-to-computer tools. Preserve bounded
 timeouts and lazy connection where supported, so an offline Mac does not
 prevent the VPS gateway from starting.
 

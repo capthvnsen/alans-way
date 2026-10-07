@@ -129,3 +129,12 @@ real subprocess startup-denial test runs instead. SDK-free runs skip SDK-based
 success tests while still exercising the standard-library policy. Test skips
 must be reported; simulated platform guards do not establish a real Linux
 subprocess result on a Mac.
+
+## Desktop control permissions
+
+Controlling other apps is a separate path from this server: the Alan's Way app
+on the Mac runs the helper, so macOS Accessibility and Screen Recording belong
+to `alans-way-localapp` itself. Grant both at the Mac, in System Settings >
+Privacy & Security. The agent's SSH session needs no grant of its own, because
+it only relays requests to the app over its loopback API. Grant nothing to
+Terminal, `sshd` or Node.

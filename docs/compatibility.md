@@ -8,14 +8,28 @@ Two machines are involved and their OS choices are independent:
 |---|---|---|
 | User's computer (the app) | macOS, Apple Silicon | verified — `install-mac`/`connect-mac.sh`, Swift accessibility driver |
 | User's computer (the app) | Windows 10/11 x64 | supported — `install-windows.ps1`/`connect-windows.ps1`, UI Automation driver; CI-verified on `windows-latest`, not yet exercised on owned hardware |
+| User's computer (the app) | Linux x64, systemd | supported, new: `connect-linux.sh` (builds with `npm run package:linux`); not yet exercised on owned hardware. Closing the window hides it to the tray |
 | Hermes' home (agent side) | Linux VPS | verified — primary target; systemd units, X11/VNC desktop |
 | Hermes' home (agent side) | macOS VM via Tart | supported — `scripts/mac-vm-setup.sh` + `mac-guest-services.sh` (launchd); preview via `tart --vnc-experimental` + `mac-vm-preview.sh`; manual TCC grants required once |
 
+Networking: every SSH address is a Tailscale name or IP. The connect scripts refuse anything else and authorize the VPS key only from `100.64.0.0/10` and `fd7a:115c:a1e0::/48`.
+
+macOS notes: desktop-app control needs Accessibility and Screen Recording granted to `alans-way-localapp` on the Mac itself (see the README). Remote SSH sessions need no grant, because computer use runs through the app's loopback API. Browser tabs need neither.
+
 Windows notes: computer-use runs through the app's authenticated loopback API
-(`/v1/computer/*`) because an SSH session cannot reach the interactive desktop
+(`/v1/computer/*`, as it does on macOS and Linux hosts) because an SSH session cannot reach the interactive desktop
 — the app must be running for desktop control. Elevated apps are unreachable
 by design (UIPI), matching the existing refusal policy. The file-workspace MCP
 on Windows is `hermes-companion serve-windows`.
+
+Linux host notes: desktop control needs an X11 session (Wayland is not
+supported) and these packages: `python3 python3-gi gir1.2-atspi-2.0
+at-spi2-core xdotool imagemagick` (on Debian or Ubuntu,
+`sudo apt-get install -y python3 python3-gi gir1.2-atspi-2.0 at-spi2-core xdotool imagemagick`).
+GTK apps expose their controls only when accessibility is on, so start them
+with `GTK_A11Y=atspi` if a snapshot comes back empty. Browser tabs need none
+of this. The Electron sandbox can be blocked by AppArmor on Ubuntu 24.04;
+`connect-linux.sh` prints the `--no-sandbox` fallback when the app does not stay open.
 
 macOS guest notes: accessibility and screen recording grants cannot be
 scripted (SIP-protected); grant them once, suspend the VM and clone the image

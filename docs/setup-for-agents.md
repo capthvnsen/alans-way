@@ -10,7 +10,15 @@ This guide is written for a Mac as the user's computer. When it is a Windows
 PC instead (Windows 10/11 x64), substitute per stage: `install-windows.ps1`
 for stage 1, `connect-windows.ps1` for stage 2 (elevated PowerShell — it
 installs OpenSSH Server itself), `--host-os windows` on `setup.sh` in stage 3,
-and the PC-side check commands noted inline. Everything else is identical.
+and the PC-side check commands noted inline. When it is a Linux computer
+(x64, systemd, desktop session), skip the stage 1 installer, run
+`connect-linux.sh` in stage 2 (it builds and installs the app), and pass
+`--host-os linux` in stage 3. Everything else is identical.
+
+Everything runs over the user's Tailscale network. The VPS and the user's
+computer must be signed in to the same tailnet, and every SSH address you pass
+is a Tailscale name (`*.ts.net`) or IP (`100.64.0.0/10`). The connect scripts
+refuse any other address.
 When Hermes runs on a macOS VM instead of a Linux VPS, see
 [macOS guest VM](mac-vm-guest.md) for the guest-side differences.
 
@@ -30,13 +38,18 @@ Ask the human for anything here you cannot discover yourself:
 | Shell on the user's computer | You are running on it, or have SSH to it |
 | Shell on the VPS | `ssh <vps>` works, or you are running on it |
 | Numeric Telegram bot ID | Digits only. The part before `:` in the bot token, or `getMe` on the token |
-| User's computer | Mac: Apple Silicon (`uname -m` prints `arm64`), or Windows 10/11 x64. git and Node are optional: the installers fetch what they need |
+| User's computer | Mac: Apple Silicon (`uname -m` prints `arm64`), Windows 10/11 x64, or Linux x64 with systemd (needs Node 22.12+ and git). On Mac and Windows git and Node are optional: the installers fetch what they need |
 | VPS | Linux, Hermes 0.21+ (`hermes --version`), Node 22+, python3, git — or a macOS VM (see [mac-vm-guest.md](mac-vm-guest.md)) |
 
 Optional: the human's Telegram bot already answers messages through Hermes. If
 not, stage 3 offers to set that up.
 
 ## Stage 1 — Desktop app
+
+If the person downloaded the app from https://openalan.com (Mac:
+`/download/mac`, Windows: `/download/windows`) and it is open, skip this
+stage and pass `--skip-install` / `-SkipInstall` to the connect script.
+Otherwise build it on their computer:
 
 On a Mac:
 
@@ -54,7 +67,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
 The Mac installer clones the repo into `~/alans-way`, builds the app, installs
 it to `/Applications/alans-way-localapp.app`, opens it, and ends with
 `install-mac: running — local browser API answers (mac <version>)`. Without
-git it downloads the source as a tarball; without Node 20+ it downloads a
+git it downloads the source as a tarball; without Node 22.12+ it downloads a
 checksum-verified Node 22 into `~/.alans-way/node` for the build. A locally
 built app is not quarantined, so macOS shows no Gatekeeper
 warning. On Windows the script builds with `npm run package:win` and installs
@@ -65,6 +78,19 @@ sign-ins and settings live outside the app bundle and are kept on both OSes.
 **Human step — tell them:** "The Alan's Way app is open. Sign in to Telegram in
 the left pane with the QR code (Telegram on your phone → Settings → Devices →
 Link Desktop Device). Tell me when your bots appear in the sidebar."
+
+**Human step, Mac only, at the Mac itself and not over SSH. Tell them:**
+"Open System Settings → Privacy & Security → Accessibility and turn on
+**alans-way-localapp**. Then open Screen Recording (called Screen & System
+Audio Recording on macOS 15 and later) and turn it on there too. If it is not
+listed, click + and choose `/Applications/alans-way-localapp.app`." These two
+grants are what let the agent read and operate other apps. They belong to the
+app, not to Terminal, `sshd` or Node: the SSH connector only relays, and the
+app starts the helper (`mac-computer`) that macOS credits to it. If a prompt
+names `mac-computer`, allow that too. After an upgrade macOS can treat the
+rebuilt app as new; if desktop control stops, switch both entries off and on
+again. Browser tabs work without either grant. On a macOS guest VM the grants
+go to `mac-computer` inside the VM, see [macOS guest VM](mac-vm-guest.md).
 
 **Check:** the app's local browser API answers. This runs the app's own
 runtime, so it works without Node:
@@ -86,7 +112,7 @@ Expect `mac` or `windows` and a version number.
 The VPS drives the host browser through SSH, so the user's computer needs an
 SSH server — Remote Login on a Mac; the connect script installs OpenSSH Server
 on Windows — and a private network address the VPS can reach (Tailscale
-recommended).
+required: every SSH address is a tailnet name or IP).
 
 **Human step — tell them:**
 1. On a Mac: "Open System Settings → General → Sharing and turn on **Remote
@@ -122,10 +148,17 @@ powershell -ExecutionPolicy Bypass -File scripts\connect-windows.ps1 `
   -Vps "$VPS_SSH" -VpsHostKey "$VPS_HOST_KEY" -VpsKey "$VPS_KEY"
 ```
 
-Either script checks connectivity and its SSH server, installs or upgrades the
+```sh
+# Linux (builds and installs the app itself; needs Node 22.12+ and git)
+curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-linux.sh | sh -s -- \
+  --vps "$VPS_SSH" --vps-host-key "$VPS_HOST_KEY" --vps-key "$VPS_KEY"
+```
+
+Each script checks connectivity and its SSH server, installs or upgrades the
 app (skip with `--skip-install`/`-SkipInstall` if stage 1 just ran),
-authorizes the VPS key, pins the VPS
-host key and prints `MAC_SSH`, `MAC_TZ`, `MAC_HOST_KEY` and `MAC_KEY`. Back on
+authorizes the VPS key (only from your tailnet: the line in
+`authorized_keys` carries `from="100.64.0.0/10,fd7a:115c:a1e0::/48"`), pins the
+VPS host key and prints `MAC_SSH`, `MAC_TZ`, `MAC_HOST_KEY` and `MAC_KEY`. Back on
 the VPS, trust the computer with those values:
 
 ```sh
@@ -138,6 +171,8 @@ grep -qxF "$MAC_KEY" ~/.ssh/authorized_keys 2>/dev/null || echo "$MAC_KEY" >> ~/
 ```sh
 # macOS target
 timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" 'test -x /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp && echo MAC_OK'
+# Linux target
+timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" 'test -x "$HOME/.local/share/alans-way-localapp/alans-way-localapp" && echo MAC_OK'
 # Windows target (PowerShell is the sshd default shell after connect-windows.ps1)
 timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" 'if (Test-Path "$env:LOCALAPPDATA\Programs\alans-way-localapp\alans-way-localapp.exe") { "MAC_OK" }'
 # either OS
@@ -158,7 +193,7 @@ On the VPS:
 ```sh
 git clone https://github.com/capthvnsen/alans-way-agents ~/alans-way-agents || git -C ~/alans-way-agents pull
 ~/alans-way-agents/setup.sh --bot-id <BOT_ID> --mac-ssh "$MAC_SSH" --timezone "$MAC_TZ" --restart
-# add `--host-os windows` when the user's computer is a PC
+# add `--host-os windows` when the user's computer is a PC, `--host-os linux` for Linux
 ```
 
 The script is safe to re-run. If `hermes plugins list` already shows
@@ -168,7 +203,8 @@ without a terminal (most agents), add `--non-interactive --bind --proactive
 `--profile <name>` for any profile other than `default`. It installs the
 plugin and gateway hook, clones
 this repository for the cloud browser, writes the browser services, configures
-the `cua_alans_way` connector, restarts the gateway and offers to bind the
+the `workspace_browser` MCP server (browser tools named `cua_alans_way_*`,
+desktop tools named `workspace_computer_*`), restarts the gateway and offers to bind the
 primary bot. Answer its prompts:
 
 - "Run 'hermes gateway setup' now?" appears only when no Telegram bot token is
@@ -228,8 +264,10 @@ desktop connection** in the app.
 | Stage 1 check: `Cannot find module …connection.json` | The app is not running or never started its API. Open it and retry. |
 | Mac → VPS check prints `Tailscale SSH requires an additional check` or hangs | The VPS runs Tailscale SSH, so the tailnet's SSH rules (not keys) decide logins, and "check" mode needs a browser. Have the human change the rule for that user to "accept" in the Tailscale admin console → Access controls, or run `tailscale set --ssh=false` if they don't use Tailscale SSH. |
 | `Host key verification failed` | A host key is not pinned on the side that connects. Re-run the stage 2 `connect-mac.sh` line (pins the VPS on the Mac) and the `known_hosts` line on the VPS. |
-| Verify says `cua_alans_way timeout …s is below 120s` | Long browser actions get cut off. Re-run stage 3 setup, or set `timeout: 120` on the block and restart the gateway. |
-| Bot opens tabs on the VPS while the Mac is awake | The Mac app is closed, or SSH from the VPS fails. Re-run the stage 2 check. |
+| Verify says `workspace_browser timeout …s is below 120s` | Long browser actions get cut off. Re-run stage 3 setup, or set `timeout: 120` on the block and restart the gateway. |
+| Bot opens tabs on the VPS while the Mac is awake | The Mac app is closed, or SSH from the VPS fails. Re-run the stage 2 check. On Windows and Linux, closing the app window hides it to the tray; use the tray icon's Show, and Quit only when you want the app stopped. |
+| A connect script says the address is not a Tailscale address | The VPS address must be a Tailscale name or `100.x.y.z` IP. On the VPS run `tailscale ip -4` and use that. |
+| Desktop control fails on a Mac with "Accessibility is off" or "Screen Recording is off" | Grant both to `alans-way-localapp` at the Mac itself, as in stage 1. After an app upgrade, switch them off and on again. |
 | Browser tool errors right after setup | The gateway is still running old code. `hermes gateway restart`. |
 | `handoff_review_required` | A page moved between computers needs the human to check it, for example a login. Ask them. |
 
