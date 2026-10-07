@@ -18,6 +18,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: node desktop/scripts/check-version.cjs "$GITHUB_REF_NAME"
       - run: |
           draft=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
           case "$draft" in
@@ -60,7 +64,9 @@ jobs:
       - if: runner.os == 'macOS'
         run: npm run check
       - if: github.event_name == 'push'
-        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+        run: |
+          version=$(node scripts/check-version.cjs "$GITHUB_REF_NAME")
+          npm version "$version" --no-git-tag-version --allow-same-version
       - run: npm run ${{ matrix.script }}
       - if: runner.os == 'macOS'
         run: shasum -a 512 dist/OpenAlan-mac.dmg | cut -d' ' -f1 > dist/OpenAlan-mac.dmg.sha512
