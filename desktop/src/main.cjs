@@ -102,11 +102,11 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
   }
 });
 const downloadStore = createDownloadStore({ getPreferences: () => prefs, savePreferences, onChanged: () => broadcast(),
-  shell, existsSync: fs.existsSync, downloadsPath: () => app.getPath('downloads'),
+  shell, existsSync: fs.existsSync, downloadsPath: () => app.getPath('downloads'), realpath: fs.realpathSync,
   // Recorded downloads are the only files a tab may open: the path always
   // comes from a store record, and agent tabs can never reach file: URLs
   // (agentPageUrl rejects them and will-navigate blocks in-page file: jumps).
-  openInTab: async (record) => { createTab({ filePath: record.path }); },
+  openInTab: async (record, { activate = true } = {}) => { createTab({ filePath: record.path, activate }); },
   confirmOpen: async (name) => (await dialog.showMessageBox(win, { type: 'warning', buttons: ['Cancel', 'Open anyway'], defaultId: 0, cancelId: 0,
     message: `Open ${name}?`, detail: 'This file can run programs on your computer. Only open it if you trust where it came from.' })).response === 1 });
 let pointerTimer, activityTimer, idleTimer;

@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { createDownloadStore, isPdf, MAX_DOWNLOADS } = require('../src/download-store.cjs');
+const { createDownloadStore, isPdf, decideAutoOpen, insideDownloads, AUTO_OPEN_LIMIT, MAX_DOWNLOADS } = require('../src/download-store.cjs');
 
 function fakeItem(fields = {}) {
   const listeners = {};
@@ -27,13 +27,13 @@ function fakeItem(fields = {}) {
   };
 }
 
-function fixture(initial = [], files = { '/tmp/report.pdf': true }, confirmOpen, openInTab, scope = 'browser') {
+function fixture(initial = [], files = { '/tmp/report.pdf': true }, confirmOpen, openInTab, scope = 'browser', extra = {}) {
   let prefs = { downloads: initial.map(item => ({ ...item })) }, saved = 0, notices = 0;
   const opened = [], shown = [], session = { handlers: {}, on(name, fn) { (this.handlers[name] ||= []).push(fn); } };
   const store = createDownloadStore({ getPreferences: () => prefs, savePreferences: () => saved++, onChanged: () => notices++, progressMs: 0,
-    downloadsPath: () => '/tmp/downloads',
+    downloadsPath: () => '/tmp/downloads', realpath: (file) => file,
     shell: { openPath: async (file) => { opened.push(file); return ''; }, showItemInFolder: (file) => shown.push(file) },
-    existsSync: (file) => files[file] === true, ...(confirmOpen ? { confirmOpen } : {}), ...(openInTab ? { openInTab } : {}) });
+    existsSync: (file) => files[file] === true, ...(confirmOpen ? { confirmOpen } : {}), ...(openInTab ? { openInTab } : {}), ...extra });
   store.install(session, scope);
   return { store, prefs, opened, shown,
     get saved() { return saved; }, get notices() { return notices; },
@@ -156,12 +156,15 @@ test('a risky file is never opened when nothing can ask the user', async () => {
   assert.deepEqual(f.opened, []);
 });
 
-test('PDF detection trusts the recorded mime, filename or saved path', () => {
-  assert.equal(isPdf({ mime: 'application/pdf', name: 'file.bin' }), true);
-  assert.equal(isPdf({ mime: 'Application/PDF; charset=binary' }), true);
-  assert.equal(isPdf({ name: 'Report.PDF' }), true);
-  assert.equal(isPdf({ path: 'C:\\Users\\user\\Downloads\\scan.pdf' }), true);
-  assert.equal(isPdf({ mime: 'application/octet-stream', name: 'setup.exe' }), false);
+test('PDF detection requires a real .pdf file on disk plus a PDF name or mime', () => {
+  assert.equal(isPdf({ mime: 'application/pdf', name: 'file.bin', path: '/tmp/report.pdf' }), true);
+  assert.equal(isPdf({ name: 'Report.PDF', path: 'C:\\Users\\user\\Downloads\\scan.pdf' }), true);
+  assert.equal(isPdf({ mime: 'Application/PDF; charset=binary', name: 'doc', path: '/tmp/doc.PDF' }), true);
+  assert.equal(isPdf({ mime: 'application/pdf', name: 'invoice.pdf', path: '/tmp/invoice.html' }), false, 'a spoofed mime cannot rescue a non-pdf save path');
+  assert.equal(isPdf({ mime: 'application/pdf', name: 'file.bin' }), false, 'mime alone is not enough');
+  assert.equal(isPdf({ name: 'Report.PDF' }), false, 'name alone is not enough');
+  assert.equal(isPdf({ path: '/tmp/scan.pdf' }), false, 'the saved path alone is not enough');
+  assert.equal(isPdf({ mime: 'application/octet-stream', name: 'setup.exe', path: '/tmp/setup.pdf' }), false);
   assert.equal(isPdf({ name: 'report.pdf.exe', path: '/tmp/report.pdf.exe' }), false);
   assert.equal(isPdf({}), false);
   assert.equal(isPdf(null), false);
@@ -169,16 +172,16 @@ test('PDF detection trusts the recorded mime, filename or saved path', () => {
 
 test('a completed Telegram download opens a PDF in a tab, never as a dialog or external app', () => {
   const inTab = [];
-  const f = fixture([], { '/tmp/report.pdf': true, '/tmp/photos.zip': true }, undefined,
+  const f = fixture([], { '/tmp/downloads/report.pdf': true, '/tmp/downloads/photos.zip': true }, undefined,
     async (record) => { inTab.push(record.path); }, 'telegram');
-  const pdf = f.start({ url: 'blob:https://web.telegram.org/doc' });
+  const pdf = f.start({ url: 'blob:https://web.telegram.org/doc', savePath: '/tmp/downloads/report.pdf' });
   pdf.emit('done', 'completed');
-  assert.deepEqual(inTab, ['/tmp/report.pdf']);
-  const zip = f.start({ filename: 'photos.zip', savePath: '/tmp/photos.zip', mimeType: 'application/zip' });
+  assert.deepEqual(inTab, ['/tmp/downloads/report.pdf']);
+  const zip = f.start({ filename: 'photos.zip', savePath: '/tmp/downloads/photos.zip', mimeType: 'application/zip' });
   zip.emit('done', 'completed');
-  const cancelled = f.start({ filename: 'later.pdf' });
+  const cancelled = f.start({ filename: 'later.pdf', savePath: '/tmp/downloads/later.pdf' });
   cancelled.emit('done', 'cancelled');
-  assert.deepEqual(inTab, ['/tmp/report.pdf'], 'only the completed PDF opened a tab');
+  assert.deepEqual(inTab, ['/tmp/downloads/report.pdf'], 'only the completed PDF opened a tab');
   assert.equal(f.prefs.downloads.find(item => item.name === 'report.pdf').source, 'Telegram', 'a blob: download names its session, not a fake host');
 });
 
@@ -204,4 +207,112 @@ test('Open on a PDF download goes to an in-app tab, other files keep the system 
   assert.deepEqual(f.opened, [], 'no PDF reached the external viewer');
   await f.store.open('zip-entry-01');
   assert.deepEqual(f.opened, ['/tmp/photo.zip'], 'non-PDF files still open externally');
+});
+
+test('a Telegram download claiming PDF mime but saved as markup never opens a tab', () => {
+  const inTab = [];
+  const f = fixture([], { '/tmp/downloads/invoice.html': true, '/tmp/downloads/vector.svg': true }, undefined,
+    async (record) => { inTab.push(record.path); }, 'telegram');
+  const html = f.start({ filename: 'invoice.html', savePath: '/tmp/downloads/invoice.html' });
+  html.emit('done', 'completed');
+  const svg = f.start({ filename: 'vector.svg', savePath: '/tmp/downloads/vector.svg' });
+  svg.emit('done', 'completed');
+  assert.deepEqual(inTab, [], 'a sender-controlled mime cannot put a file:// page in a tab');
+});
+
+test('Open on a spoofed PDF record asks before the system browser runs the markup', async () => {
+  const asked = [], inTab = [];
+  const files = { '/tmp/downloads/invoice.html': true, '/tmp/downloads/vector.svg': true, '/tmp/downloads/page.mhtml': true };
+  const f = fixture([
+    { id: 'html-entry-1', name: 'invoice.html', path: '/tmp/downloads/invoice.html', mime: 'application/pdf', state: 'completed', startedAt: 1 },
+    { id: 'svg-entry-01', name: 'vector.svg', path: '/tmp/downloads/vector.svg', mime: 'application/pdf', state: 'completed', startedAt: 1 },
+    { id: 'mht-entry-01', name: 'page.mhtml', path: '/tmp/downloads/page.mhtml', state: 'completed', startedAt: 1 },
+  ], files, async (name) => { asked.push(name); return true; }, async (record) => { inTab.push(record.path); });
+  await f.store.open('html-entry-1');
+  await f.store.open('svg-entry-01');
+  await f.store.open('mht-entry-01');
+  assert.deepEqual(inTab, [], 'a spoofed mime still cannot reach a tab');
+  assert.deepEqual(asked, ['invoice.html', 'vector.svg', 'page.mhtml'], 'markup asks before the system browser runs it');
+  assert.deepEqual(f.opened, ['/tmp/downloads/invoice.html', '/tmp/downloads/vector.svg', '/tmp/downloads/page.mhtml']);
+});
+
+test('auto-open only fires for files inside the downloads directory', () => {
+  const inTab = [];
+  const files = { '/tmp/report.pdf': true, '/tmp/downloads/report.pdf': true };
+  const f = fixture([], files, undefined, async (record) => { inTab.push(record.path); }, 'telegram');
+  const outside = f.start({ filename: 'report.pdf', savePath: '/tmp/report.pdf' });
+  outside.emit('done', 'completed');
+  const inside = f.start({ filename: 'report.pdf', savePath: '/tmp/downloads/report.pdf' });
+  inside.emit('done', 'completed');
+  assert.deepEqual(inTab, ['/tmp/downloads/report.pdf'], 'a save path outside the downloads directory stays put');
+});
+
+test('a save path that resolves outside the downloads directory never auto-opens', () => {
+  const inTab = [];
+  const realpath = (file) => file === '/tmp/downloads/link.pdf' ? '/tmp/elsewhere/real.pdf' : file;
+  const f = fixture([], { '/tmp/downloads/link.pdf': true }, undefined,
+    async (record) => { inTab.push(record.path); }, 'telegram', { realpath });
+  const item = f.start({ filename: 'link.pdf', savePath: '/tmp/downloads/link.pdf' });
+  item.emit('done', 'completed');
+  assert.deepEqual(inTab, [], 'the resolved path decides, not the literal one');
+});
+
+test('insideDownloads compares resolved paths against the downloads directory', () => {
+  const real = (file) => file === '/tmp/downloads/link.pdf' ? '/tmp/elsewhere/real.pdf' : file;
+  assert.equal(insideDownloads('/tmp/downloads/a.pdf', '/tmp/downloads', real), true);
+  assert.equal(insideDownloads('/tmp/downloads/sub/a.pdf', '/tmp/downloads', real), true);
+  assert.equal(insideDownloads('/tmp/downloads', '/tmp/downloads', real), false, 'the directory itself is not a file inside it');
+  assert.equal(insideDownloads('/tmp/a.pdf', '/tmp/downloads', real), false);
+  assert.equal(insideDownloads('/tmp/downloads/../a.pdf', '/tmp/downloads', (f) => f), false);
+  assert.equal(insideDownloads('/tmp/downloads/link.pdf', '/tmp/downloads', real), false, 'a symlink resolving outside is rejected');
+  assert.equal(insideDownloads('/tmp/downloads/a.pdf', '', real), false, 'no downloads directory means no auto-open');
+});
+
+test('the auto-open decision activates the first of a burst and caps at five a minute', () => {
+  let recent = [], decision = decideAutoOpen(recent, 0);
+  recent = decision.recent;
+  assert.deepEqual([decision.open, decision.activate], [true, true], 'a lone download activates');
+  decision = decideAutoOpen(recent, 1_000); recent = decision.recent;
+  assert.deepEqual([decision.open, decision.activate], [true, false], 'a burst opens behind');
+  decision = decideAutoOpen(recent, 10_000); recent = decision.recent;
+  assert.deepEqual([decision.open, decision.activate], [true, true], 'a quiet gap activates again');
+  while (recent.length < AUTO_OPEN_LIMIT) { decision = decideAutoOpen(recent, 20_000); recent = decision.recent; }
+  decision = decideAutoOpen(recent, 20_001);
+  assert.equal(decision.open, false, 'the sixth inside a minute stays in the list');
+  decision = decideAutoOpen(recent, 61_000);
+  assert.deepEqual([decision.open, decision.activate], [true, true], 'the cap resets with the window');
+});
+
+test('a dump of Telegram PDFs activates one tab, then stops at the per-minute cap', () => {
+  const inTab = [];
+  let now = 1_000_000;
+  const files = {};
+  const f = fixture([], files, undefined,
+    async (record, options) => { inTab.push({ path: record.path, activate: options?.activate }); }, 'telegram', { now: () => now });
+  const complete = (name) => {
+    const savePath = `/tmp/downloads/${name}`;
+    files[savePath] = true;
+    const item = f.start({ filename: name, savePath });
+    item.emit('done', 'completed');
+  };
+  complete('a.pdf');
+  complete('b.pdf');
+  now += 1_000;
+  complete('c.pdf');
+  assert.deepEqual(inTab, [
+    { path: '/tmp/downloads/a.pdf', activate: true },
+    { path: '/tmp/downloads/b.pdf', activate: false },
+    { path: '/tmp/downloads/c.pdf', activate: false },
+  ], 'only the first tab of a burst comes forward');
+  now += 6_000;
+  complete('d.pdf');
+  complete('e.pdf');
+  assert.equal(inTab.length, 5);
+  assert.equal(inTab[3].activate, true, 'a quiet gap lets the next PDF activate again');
+  complete('f.pdf');
+  assert.equal(inTab.length, 5, 'the sixth inside a minute waits in the downloads list');
+  assert.equal(f.store.list().length, 6, 'the skipped download is still recorded');
+  now += 60_000;
+  complete('g.pdf');
+  assert.equal(inTab.length, 6, 'the cap resets with the window');
 });

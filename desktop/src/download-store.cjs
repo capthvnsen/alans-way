@@ -1,17 +1,39 @@
 const crypto = require('node:crypto');
+const path = require('node:path');
 
 const MAX_DOWNLOADS = 50;
 const STATES = new Set(['progressing', 'completed', 'cancelled', 'interrupted']);
 
 // Opening one of these runs code (or installs it) with the user's privileges,
-// so the user is asked first. Documents and media open without a prompt.
-const RISKY = /\.(app|bat|cmd|com|command|cpl|dll|dmg|exe|hta|inf|jar|js|jse|lnk|msc|msi|msp|pkg|ps1|psm1|py|reg|scpt|scr|sh|url|vb|vbe|vbs|webloc|workflow|ws|wsf|wsh|appimage|desktop|deb|rpm)$/i;
+// so the user is asked first. Markup counts too: the system browser would run
+// its script. Documents and media open without a prompt.
+const RISKY = /\.(app|bat|cmd|com|command|cpl|dll|dmg|exe|hta|inf|jar|js|jse|lnk|msc|msi|msp|pkg|ps1|psm1|py|reg|scpt|scr|sh|url|vb|vbe|vbs|webloc|workflow|ws|wsf|wsh|appimage|desktop|deb|rpm|html|htm|svg|xhtml|xml|mht|mhtml)$/i;
 
-// A download is a PDF when the server or blob said so, or when the saved name
-// says so; a name like report.pdf.exe still fails both ends of the check.
+// The saved path decides: Chromium serves a file by its on-disk extension, so
+// a sender-controlled mime or attachment name claiming invoice.html is a PDF
+// must never reach a file:// tab. Name or mime only backs up a real .pdf file.
 function isPdf(record) {
   const mime = String(record?.mime || '').split(';')[0].trim().toLowerCase();
-  return mime === 'application/pdf' || /\.pdf$/i.test(String(record?.name || '')) || /\.pdf$/i.test(String(record?.path || ''));
+  return /\.pdf$/i.test(String(record?.path || '')) && (mime === 'application/pdf' || /\.pdf$/i.test(String(record?.name || '')));
+}
+
+// Auto-open only trusts files under the downloads directory; resolving both
+// ends keeps a symlinked or dot-dot save path from pointing elsewhere.
+function insideDownloads(file, dir, realpath) {
+  try {
+    const relative = path.relative(realpath(dir), realpath(file));
+    return relative !== '' && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+  } catch { return false; }
+}
+
+// A dump of chat PDFs must not keep grabbing focus: only the first tab of a
+// burst activates, and past a few per minute the files wait in the list.
+const AUTO_OPEN_LIMIT = 5, AUTO_OPEN_WINDOW_MS = 60_000, AUTO_OPEN_BURST_MS = 5_000;
+
+function decideAutoOpen(times, at) {
+  const recent = times.filter(opened => at - opened < AUTO_OPEN_WINDOW_MS);
+  if (recent.length >= AUTO_OPEN_LIMIT) return { open: false, activate: false, recent };
+  return { open: true, activate: !recent.some(opened => at - opened < AUTO_OPEN_BURST_MS), recent: [...recent, at] };
 }
 
 function describe(record) {
@@ -37,9 +59,9 @@ function sanitize(entry) {
   return /^[\w-]{8,64}$/.test(record.id) ? record : null;
 }
 
-function createDownloadStore({ getPreferences, savePreferences, onChanged = () => {}, shell, existsSync = () => false, downloadsPath = () => '', progressMs = 250, confirmOpen = async () => false, openInTab = null }) {
+function createDownloadStore({ getPreferences, savePreferences, onChanged = () => {}, shell, existsSync = () => false, downloadsPath = () => '', progressMs = 250, confirmOpen = async () => false, openInTab = null, realpath = (file) => file, now = () => Date.now() }) {
   const live = new Map();
-  let progressTimer, restored = false;
+  let progressTimer, restored = false, autoOpens = [];
   function records() {
     const prefs = getPreferences();
     if (!prefs) return [];
@@ -95,9 +117,12 @@ function createDownloadStore({ getPreferences, savePreferences, onChanged = () =
       savePreferences();
       notify(true);
       // Chat attachments arrive through the Telegram session; a finished PDF
-      // opens in a workspace tab instead of surfacing a native dialog.
-      if (record.state === 'completed' && scope === 'telegram' && record.path && openInTab && isPdf(record)) {
-        Promise.resolve(openInTab(record)).catch(() => {});
+      // saved under the downloads directory opens in a workspace tab instead
+      // of surfacing a native dialog.
+      if (record.state === 'completed' && scope === 'telegram' && record.path && openInTab && isPdf(record) && insideDownloads(record.path, downloadsPath(), realpath)) {
+        const decision = decideAutoOpen(autoOpens, now());
+        autoOpens = decision.recent;
+        if (decision.open) Promise.resolve(openInTab(record, { activate: decision.activate })).catch(() => {});
       }
     });
     if (item.getState() !== 'interrupted') item.setSaveDialogOptions?.({ title: 'Save download' });
@@ -141,4 +166,4 @@ function createDownloadStore({ getPreferences, savePreferences, onChanged = () =
   }
   return { install, list: () => records().map(describe), open, showInFolder, pause, cancel, clear, openFolder };
 }
-module.exports = { createDownloadStore, isPdf, MAX_DOWNLOADS };
+module.exports = { createDownloadStore, isPdf, insideDownloads, decideAutoOpen, AUTO_OPEN_LIMIT, MAX_DOWNLOADS };

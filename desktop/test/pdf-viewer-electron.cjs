@@ -43,7 +43,7 @@ const PDF = buildPdf();
 const PDF_EXTENSION = 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/';
 // Extension guest views can share the URL space; real tabs only.
 const tabContents = (url) => webContents.getAllWebContents().filter(item => item.getURL() === url && !['webview', 'guestView'].includes(item.getType()));
-let server;
+let server, fixtureDir;
 app.whenReady().then(async () => {
   const win = await waitFor(() => BrowserWindow.getAllWindows()[0], win => !!win);
   const wc = win.webContents;
@@ -108,7 +108,9 @@ app.whenReady().then(async () => {
 
   // A PDF that finished downloading from the Telegram session saves through
   // the store, then opens the saved file in a new human tab on a file: URL.
-  const savedPdf = path.join(profile, 'chat attachment.pdf');
+  // The store only auto-opens files inside the real downloads directory.
+  fixtureDir = fs.mkdtempSync(path.join(app.getPath('downloads'), 'hermes-pdf-fixture-'));
+  const savedPdf = path.join(fixtureDir, 'chat attachment.pdf');
   fs.writeFileSync(savedPdf, PDF);
   const listeners = {};
   const fakeItem = {
@@ -146,5 +148,5 @@ app.whenReady().then(async () => {
   assert.equal(refused.status, 400, 'agent navigation to a file: URL is refused');
   console.log('PASS: agent navigation to file: is refused.');
 
-  server.close(); app.quit();
-}).catch(error => { console.error(error.stack); server?.close(); app.exit(1); });
+  server.close(); fs.rmSync(fixtureDir, { recursive: true, force: true }); app.quit();
+}).catch(error => { console.error(error.stack); server?.close(); if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true }); app.exit(1); });
