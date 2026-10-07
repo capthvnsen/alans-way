@@ -12,7 +12,13 @@ function snapshotExpression(generation, opts = {}) {
   const keep = int(opts.keep, 0, Number.MAX_SAFE_INTEGER, -1);
   const restamp = int(opts.restamp, 0, Number.MAX_SAFE_INTEGER, -1);
   const parseWaitMs = int(opts.parseWaitMs, 0, 5000, 400);
+  // effect reads also report which control holds focus and the value of the
+  // element the action just touched (a ref token or a selector).
+  const valueRef = opts.valueFor && typeof opts.valueFor.ref === 'string' ? opts.valueFor.ref : null;
+  const valueSel = opts.valueFor && typeof opts.valueFor.selector === 'string' ? opts.valueFor.selector : null;
   return `(async () => {
+    const wantEffect = ${opts.effect === true}, valueRef = ${JSON.stringify(valueRef)}, valueSel = ${JSON.stringify(valueSel)};
+    let focused = null, acted = null;
     // The parser yields between chunks, so a snapshot can land mid-document;
     // give a still-parsing page a moment and report it if it is not done.
     if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${parseWaitMs}); });
@@ -133,6 +139,18 @@ function snapshotExpression(generation, opts = {}) {
       if (href) item.href = href;
       if (el.disabled) item.disabled = true;
       items.push(item);
+      if (wantEffect && !focused && el.getRootNode && el.getRootNode().activeElement === el) focused = { index: items.length, name };
+      if (wantEffect && !acted && (valueRef !== null || valueSel !== null)) {
+        let hit = false;
+        if (valueRef !== null && tokens.has(valueRef)) hit = true;
+        else if (valueSel !== null) { try { hit = el.matches(valueSel); } catch {} }
+        if (hit) {
+          const kind = (el.type || '').toLowerCase();
+          if (/^(checkbox|radio)$/.test(kind)) acted = el.checked ? 'checked' : 'unchecked';
+          else if (el.isContentEditable) acted = (el.innerText || '').trim().slice(0, 1000);
+          else if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) acted = String(el.value == null ? '' : el.value).slice(0, 1000);
+        }
+      }
     }
     // body.innerText pays a full-document render pass regardless of the slice;
     // a bounded walker stops at the char cap or the time budget instead.
@@ -166,7 +184,7 @@ function snapshotExpression(generation, opts = {}) {
       }
       text = text.slice(0, ${maxChars});
     } else textCut = ${maxChars} <= 0 && !!document.body?.textContent?.trim();
-    return {title:document.title,url:location.href,loading:document.readyState === 'loading',text,elements:items,truncated:{text:textCut,elements:more || scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8)};
+    return {title:document.title,url:location.href,loading:document.readyState === 'loading',text,elements:items,truncated:{text:textCut,elements:more || scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted};
   })()`;
 }
 
@@ -183,6 +201,11 @@ function snapshotHash(data) {
   for (const part of [data.url, data.title, data.text]) hash.update(part || '').update('\0');
   return hash.update(elementFingerprint(data.elements)).digest('hex');
 }
+const EFFECT_MAX_LINES = 400;
+const EFFECT_TEXT_CHARS = 600;
+function linesOf(text) {
+  return String(text || '').split('\n').filter(Boolean).slice(0, EFFECT_MAX_LINES);
+}
 // An unchanged reply carries no elements, so the agent keeps acting on refs
 // from its last full snapshot (`base`); the page keeps those tokens too.
 function settleSnapshot(tab, data, generation, since) {
@@ -190,34 +213,52 @@ function settleSnapshot(tab, data, generation, since) {
   const unchanged = !!previous && since !== undefined && previous.generation === since && previous.hash === hash;
   const base = unchanged ? previous.base : generation;
   tab.snapshotStamp = { generation, hash, base, url: data.url, elementsHash: elementsHash(data.elements) };
+  tab.lastRead = { url: data.url, lines: linesOf(data.text) };
   tab.refs = new Set(data.elements.map((item) => item.ref));
   if (unchanged) for (let index = 1; index <= data.elements.length; index++) tab.refs.add(`s${base}-${index}`);
   return unchanged ? { unchanged: true, generation } : { ...data, generation };
 }
-// After an action, return the controls the model can act on next. Page text
-// stays out of the reply. A page that did not change keeps the generation
-// and refs the model already holds, so a later since= check still dedupes.
-async function readControls(execute, tab, { parseWaitMs } = {}) {
+// After an action, describe what it did to the page. The effect carries the
+// new visible text lines since the model's last read (bounded, capped at 600
+// chars) so a click answers with the state it produced; controls are sent
+// only when they changed, and an unchanged page keeps the generation and refs
+// the model already holds, so a later since= check still dedupes.
+async function readEffect(execute, tab, { parseWaitMs, urlBefore, navigated, target } = {}) {
   const previous = tab.snapshotStamp;
   const generation = Math.max(previous && Number.isInteger(previous.generation) ? previous.generation : 0, Number.isInteger(tab.generation) ? tab.generation : 0) + 1;
   let timer;
   const result = await Promise.race([
-    Promise.resolve(execute(snapshotExpression(generation, { maxChars: 0, maxElements: 150, parseWaitMs, keep: previous ? previous.base : undefined, restamp: previous ? previous.base : undefined }))),
+    Promise.resolve(execute(snapshotExpression(generation, { maxChars: 8000, maxElements: 150, parseWaitMs, keep: previous ? previous.base : undefined, restamp: previous ? previous.base : undefined, effect: true, valueFor: target }))),
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('controls')), 8000 + (parseWaitMs || 0)); }),
   ]).finally(() => clearTimeout(timer));
   if (!result || !Array.isArray(result.elements)) return null;
-  // Controls are enough to know the page the agent can click. Skipping the
-  // text walk keeps a click from rereading the whole document. Identical
-  // controls on another URL are another document: the old refs point nowhere.
-  const same = previous && previous.url === result.url && (elementsHash(result.elements) === previous.elementsHash || snapshotHash(result) === previous.hash);
-  if (same) {
+  const priorRead = tab.lastRead || null;
+  const priorLines = new Set(priorRead ? priorRead.lines : []);
+  const freshLines = linesOf(result.text);
+  const freshSet = new Set(freshLines);
+  const added = [];
+  for (const line of freshLines) if (!priorLines.has(line) && !added.includes(line)) added.push(line);
+  const removed = !result.truncated?.text && priorRead !== null && priorRead.lines.some((line) => !freshSet.has(line));
+  const controlsSame = !!previous && previous.url === result.url && elementsHash(result.elements) === previous.elementsHash;
+  const nav = navigated === true
+    || (typeof urlBefore === 'string' && urlBefore !== result.url)
+    || (priorRead !== null && priorRead.url !== result.url);
+  const changed = !controlsSame || nav || added.length > 0 || removed;
+  tab.lastRead = { url: result.url, lines: freshLines };
+  const effect = { navigated: nav, url: result.url, title: result.title, changed, text: added.join('\n').slice(0, EFFECT_TEXT_CHARS) };
+  if (result.acted !== undefined && result.acted !== null) effect.value = result.acted;
+  if (result.focused) {
+    effect.focused = { ref: `s${controlsSame ? previous.base : generation}-${result.focused.index}` };
+    if (result.focused.name) effect.focused.name = result.focused.name;
+  }
+  if (controlsSame) {
     tab.refs = new Set();
     for (let index = 1; index <= result.elements.length; index++) tab.refs.add(`s${previous.base}-${index}`);
-    return { unchanged: true, generation: previous.generation };
+    return { generation: previous.generation, effect };
   }
   tab.generation = generation;
   const settled = settleSnapshot(tab, result, generation);
-  return { elements: settled.elements.slice(0, 40), generation: settled.generation };
+  return { elements: settled.elements.slice(0, 40), generation: settled.generation, effect };
 }
 
 function checkpointExpression(includeDrafts) {
@@ -257,4 +298,4 @@ function restoreExpression(checkpoint) {
     return {verification:restored === c.drafts.length ? 'ready' : 'review_required',restored,skipped:c.drafts.length-restored};
   })()`;
 }
-module.exports = { snapshotExpression, settleSnapshot, readControls, checkpointExpression, restoreExpression };
+module.exports = { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression };

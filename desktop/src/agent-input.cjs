@@ -285,22 +285,27 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
 // Picks an option the way an assistive tool would: Chromium's native popup
 // cannot be driven through the tab's input events, so the option is selected
 // directly and the same input and change events a person would cause fire.
-function selectScript(target, { value, label }) {
+// The option may arrive under any of value, label, option, text or choice;
+// it matches a value first, then an exact label, then a folded one.
+function selectScript(target, body) {
+  const tries = [body.value, body.label, body.option, body.text, body.choice].filter(item => typeof item === 'string').map(item => item.slice(0, 1000));
   return `(() => {
     const el = ${locateElement(selectorFor(target))};
     if (!el || el.tagName !== 'SELECT') return { fail: 'is not a select' };
     if (el.disabled) return { fail: 'disabled' };
-    const value = ${JSON.stringify(value ?? null)}, label = ${JSON.stringify(label ?? null)};
+    const tries = ${JSON.stringify(tries)};
     const text = (o) => (o.label || o.text || '').trim();
     const options = [...el.options];
-    const pick = options.find(o => !o.disabled && (value !== null ? o.value === value : text(o) === label))
-      || (label !== null && options.find(o => !o.disabled && text(o).toLowerCase() === label.trim().toLowerCase()));
+    let pick = null, by = '';
+    for (const t of tries) { pick = options.find(o => !o.disabled && o.value === t); if (pick) { by = 'value'; break; } }
+    if (!pick) for (const t of tries) { pick = options.find(o => !o.disabled && text(o) === t); if (pick) { by = 'label'; break; } }
+    if (!pick) for (const t of tries) { const low = t.trim().toLowerCase(); pick = options.find(o => !o.disabled && text(o).toLowerCase() === low); if (pick) { by = 'label-fold'; break; } }
     if (!pick) return { fail: 'has no option matching that value or label', options: options.slice(0, 30).map(o => ({ value: o.value, label: text(o) })) };
     el.focus({ preventScroll: true });
     for (const o of options) o.selected = o === pick;
     el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
-    return { selected: { value: pick.value, label: text(pick) } };
+    return { matched: { by, value: pick.value, label: text(pick) } };
   })()`;
 }
 
@@ -376,7 +381,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     if ((action === 'type' || action === 'select') && !body.ref && !body.selector) throw fail(`${action === 'type' ? 'Typing' : 'Selecting'} requires an element reference or selector.`);
     if (POINTER_ACTIONS.has(action) && !body.ref && !body.selector && (!Number.isFinite(body.x) || !Number.isFinite(body.y))) throw fail('Provide a fresh element reference, selector, or viewport x and y coordinates.');
     if (action === 'scroll' && [body.x, body.y].some(value => value !== undefined && !Number.isFinite(value))) throw fail('Scroll deltas must be finite numbers.');
-    if (action === 'select' && ![body.value, body.label].some(item => typeof item === 'string' && item.length <= 1000)) throw fail('Provide the option value or label (up to 1,000 characters).');
+    if (action === 'select' && ![body.value, body.label, body.option, body.text, body.choice].some(item => typeof item === 'string' && item.length <= 1000)) throw fail('Provide the option value, label, option, text or choice (up to 1,000 characters).');
     let to = null;
     if (action === 'drag') {
       if (body.toRef !== undefined && !knownRef(body.toRef)) throw fail('Stale or unknown destination reference. Request a fresh snapshot.', 409);
@@ -491,7 +496,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         const picked = await boundedJs(wc, selectScript(body, body));
         check();
         if (!picked || picked.fail) throw fail(`Element ${picked ? picked.fail : 'is unavailable'}${picked?.options ? ': ' + JSON.stringify(picked.options) : ''}.`);
-        extra = { selected: picked.selected };
+        extra = { matched: picked.matched };
         cursor(point, 'click', hl);
       } else if (action === 'type') {
         // insertText is actual Chromium input (including input/beforeinput).
