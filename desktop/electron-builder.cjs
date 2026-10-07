@@ -35,6 +35,7 @@ function createConfig(env) {
       '!test{,/**}',
       '!dist{,/**}',
       '!screenshots{,/**}',
+      '!scripts/setup-signing-secrets.sh',
     ],
     publish: PUBLISH,
     mac: {

@@ -58,7 +58,10 @@ function makeCompile({ hasDevTools, build }) {
 
 async function pickHelper({ binary, source, bundled, exists, current, compile }) {
   if (current(source, binary)) return binary;
-  if (exists(source) && await compile()) return binary;
+  // Rewriting a file inside a .app breaks its code signature, so a packaged
+  // app only ever uses the helper it shipped with.
+  const sealed = binary.includes('.app/Contents/');
+  if (!sealed && exists(source) && await compile()) return binary;
   if (exists(bundled)) return bundled;
   if (exists(binary)) return binary;
   throw new Error('Could not build the Mac computer helper, and no prebuilt one ships with this app.');

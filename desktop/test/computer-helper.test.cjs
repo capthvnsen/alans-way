@@ -178,6 +178,11 @@ test('without swiftc the app bundle helper is used', async () => {
 test('without swiftc a stale local helper beats nothing', async () => {
   assert.equal(await pickHelper({ ...base, ...files(['/c/mac-computer', '/c/mac-computer.swift']), compile: async () => false }), '/c/mac-computer');
 });
+test('a helper inside a packaged app is never recompiled, so a signed bundle keeps its seal', async () => {
+  const sealed = { binary: '/A.app/Contents/Resources/app/scripts/mac-computer', source: '/A.app/Contents/Resources/app/scripts/mac-computer.swift', bundled: '/A.app/Contents/Resources/mac-computer' };
+  const exists = (p) => p === sealed.binary || p === sealed.source;
+  assert.equal(await pickHelper({ ...sealed, exists, current: () => false, compile: async () => assert.fail('no compile inside the bundle') }), sealed.binary);
+});
 test('no helper and no compiler is an error', async () => {
   await assert.rejects(pickHelper({ ...base, ...files(['/c/mac-computer.swift']), compile: async () => false }), /Mac computer helper/);
 });
