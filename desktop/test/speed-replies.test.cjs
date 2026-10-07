@@ -271,10 +271,10 @@ test('the follow-up window stays open until the page sees the dispatched input',
     const evalOnTab = (expr) => direct.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }, sessionId).then((r) => r.result && r.result.value);
     const cur = `(() => { const c = window[Symbol.for('hw.followUp')] && window[Symbol.for('hw.followUp')].cur; return c ? { open: c.open, until: Math.round(c.until), pending: c.pending, total: c.total, delivered: !!c.delivered, now: Math.round(performance.now()) } : null; })()`;
     await evalOnTab(followUpArmExpression());
-    await evalOnTab(followUpCloseExpression());
-    const closed = await evalOnTab(cur);
+    // Close and read in one evaluate, so no runner stall can land between them.
+    const closed = await evalOnTab(`(${followUpCloseExpression()}, ${cur})`);
     assert.equal(closed.delivered, false, 'no input reached the page yet');
-    assert.ok(closed.open === true || closed.until > closed.now - 500, `the window stays open while the input is in flight: ${JSON.stringify(closed)}`);
+    assert.equal(closed.open, true, `the window stays open while the input is in flight: ${JSON.stringify(closed)}`);
     // The "event" lands inside the delivery bound, late like on a starved CI
     // runner, and its handler schedules the page's follow-up.
     await wait(50);
