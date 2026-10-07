@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "test": "npm run check",
-    "check": "node --check src/cdp.cjs && node --check src/browser-page.cjs && node --check src/vps-browser.cjs && node --check scripts/vps-browser-host.cjs && node --check scripts/vps-chromium-host.cjs && node --check src/extension-namespace-preload.cjs && node --check scripts/build-preload.cjs && node --check src/extension-store.cjs && node --check src/main.cjs && node --check src/preload.cjs && node --check src/telegram-preload.cjs && node --check src/renderer.js && node --check src/avatars.js && node --check src/link-share.cjs && node --check src/agent-prompt.cjs && node --check src/onboarding.cjs && node --check src/mac-update.cjs && node --check src/win-update.cjs && node --check src/activity.cjs && node --check src/avatar-store.cjs && node --check src/agent-input.cjs && node --check src/site-permissions.cjs && node --check src/download-store.cjs && node --check src/remote.js && node --check scripts/browser-mcp.cjs && node --check src/win-computer.cjs && node --check src/computer.cjs && node --check src/vps-computer.cjs && node --check src/computer-helper.cjs && node --check src/computer-policy.cjs && node --check src/mac-permissions.cjs && node --check src/computer-snapshot.cjs && node --check scripts/build-computer.cjs && node --check scripts/build-info.cjs && node --check src/build-channel.cjs && node --test test/*.test.cjs",
+    "check": "node --check electron-builder.cjs && node --check src/cdp.cjs && node --check src/browser-page.cjs && node --check src/vps-browser.cjs && node --check scripts/vps-browser-host.cjs && node --check scripts/vps-chromium-host.cjs && node --check src/extension-namespace-preload.cjs && node --check scripts/build-preload.cjs && node --check src/extension-store.cjs && node --check src/main.cjs && node --check src/preload.cjs && node --check src/telegram-preload.cjs && node --check src/renderer.js && node --check src/avatars.js && node --check src/link-share.cjs && node --check src/agent-prompt.cjs && node --check src/onboarding.cjs && node --check src/mac-update.cjs && node --check src/win-update.cjs && node --check src/activity.cjs && node --check src/avatar-store.cjs && node --check src/agent-input.cjs && node --check src/site-permissions.cjs && node --check src/download-store.cjs && node --check src/remote.js && node --check scripts/browser-mcp.cjs && node --check src/win-computer.cjs && node --check src/computer.cjs && node --check src/vps-computer.cjs && node --check src/computer-helper.cjs && node --check src/computer-policy.cjs && node --check src/mac-permissions.cjs && node --check src/computer-snapshot.cjs && node --check scripts/build-computer.cjs && node --check scripts/build-info.cjs && node --check src/build-channel.cjs && node --test test/*.test.cjs",
     "package:mac": "electron-builder --mac --publish never",
     "package:win": "electron-builder --win --publish never",
     "package:linux": "electron-builder --linux --x64 --publish never",
@@ -53,74 +53,5 @@
   },
   "overrides": {
     "adm-zip": "0.6.1"
-  },
-  "build": {
-    "appId": "app.alans-way.localapp",
-    "productName": "alans-way-localapp",
-    "asar": false,
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "**/*",
-      "!test{,/**}",
-      "!dist{,/**}",
-      "!screenshots{,/**}"
-    ],
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "capthvnsen",
-        "repo": "alans-way",
-        "releaseType": "draft"
-      }
-    ],
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64"
-          ]
-        }
-      ],
-      "icon": "assets/icon.icns",
-      "identity": "-",
-      "category": "public.app-category.productivity",
-      "artifactName": "OpenAlan-mac.${ext}",
-      "hardenedRuntime": false
-    },
-    "dmg": {
-      "artifactName": "OpenAlan-mac.${ext}"
-    },
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "assets/icon.ico"
-    },
-    "nsis": {
-      "oneClick": true,
-      "perMachine": false,
-      "artifactName": "OpenAlan-windows-setup.${ext}"
-    },
-    "linux": {
-      "target": [
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "assets/icon.png",
-      "category": "Network",
-      "artifactName": "OpenAlan-linux.${ext}"
-    }
   }
 }

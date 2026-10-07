@@ -1,13 +1,14 @@
 'use strict';
 
-// Squirrel.Mac needs a Developer ID signature, so until the app is signed it
-// updates itself: download, verify, swap the bundle, relaunch. Switch to
-// electron-updater and delete this module once signing exists.
+// Squirrel.Mac needs a Developer ID signature, so an unsigned app updates
+// itself: download, verify, swap the bundle, relaunch. A signed app lets
+// electron-updater take over; isDeveloperIdSigned picks the path per install,
+// so unsigned 0.3.x releases can still swap onto the first signed one.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 const REPO = 'capthvnsen/alans-way';
 const BUNDLE_ID = 'app.alans-way.localapp';
@@ -25,6 +26,22 @@ function isNewer(latest, current) {
 }
 function canSelfUpdate(bundlePath) {
   return /\.app$/.test(bundlePath || '') && !bundlePath.startsWith('/Volumes/') && !bundlePath.includes('/AppTranslocation/');
+}
+
+// codesign -dv prints the authority chain on stderr; an ad-hoc signature has
+// "Signature=adhoc" and no Authority lines at all.
+function isDeveloperIdSigned(bundlePath, run = spawnSync) {
+  const res = run('codesign', ['-dv', '--verbose=2', bundlePath], { encoding: 'utf8' });
+  const info = `${res && res.stdout || ''}\n${res && res.stderr || ''}`;
+  return info.includes('Authority=Developer ID Application:');
+}
+
+// 'electron-updater' drives autoUpdater (Windows, and macOS once signed);
+// 'self' is the dmg swap above; 'none' means no app updates.
+function updaterDriver(platform, signed) {
+  if (platform === 'win32') return 'electron-updater';
+  if (platform === 'darwin') return signed ? 'electron-updater' : 'self';
+  return 'none';
 }
 
 async function checkLatest() {
@@ -76,4 +93,4 @@ async function installMacUpdate({ tag, bundlePath }) {
   }
 }
 
-module.exports = { isNewer, canSelfUpdate, checkLatest, installMacUpdate };
+module.exports = { isNewer, canSelfUpdate, isDeveloperIdSigned, updaterDriver, checkLatest, installMacUpdate };

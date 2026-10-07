@@ -11,7 +11,8 @@ const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRet
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding } = require('./onboarding.cjs');
 const macUpdate = require('./mac-update.cjs');
-const { windowsFeed } = require('./win-update.cjs');
+const { githubFeed } = require('./win-update.cjs');
+const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, shouldShowUpdatePopup } = require('./vm-update.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
@@ -610,24 +611,29 @@ async function checkVmVersions() {
   savePreferencesSoon(); broadcast();
 }
 // Offline or rate-limited checks stay quiet for the user; only the first failure is logged, and the next check retries.
+let updateDriver = 'none';
 function startUpdates() {
   if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
   if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
   if (prefs.updateSnoozedUntil) { prefs.updateSnoozedUntil = 0; savePreferencesSoon(); }
   checkVmVersions().catch((error) => logError('vm-check', error));
   if (!app.isPackaged) return;
+  // Only a Developer ID signed Mac app can use electron-updater (Squirrel
+  // verifies the update signature); unsigned installs keep swapping the dmg.
+  const signed = process.platform === 'darwin' && macUpdate.isDeveloperIdSigned(path.resolve(process.execPath, '../../..'));
+  updateDriver = macUpdate.updaterDriver(process.platform, signed);
   let check;
-  if (process.platform === 'win32') {
+  if (updateDriver === 'electron-updater') {
     const { autoUpdater } = require('electron-updater');
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.on('update-downloaded', (info) => { update.available = info.version; update.ready = true; broadcast(); });
-    const feed = windowsFeed(fs.existsSync(path.join(process.resourcesPath, 'app-update.yml')), require('../package.json'));
+    const feed = githubFeed(fs.existsSync(path.join(process.resourcesPath, 'app-update.yml')), PUBLISH);
     if (feed) autoUpdater.setFeedURL(feed);
     let logged = false;
     const failed = (error) => { if (!logged) { logged = true; logError('updater', error); } };
     autoUpdater.on('error', failed);
     check = () => autoUpdater.checkForUpdates().catch(failed);
-  } else if (process.platform === 'darwin') {
+  } else if (updateDriver === 'self') {
     check = async () => {
       try {
         const latest = await macUpdate.checkLatest();
@@ -861,8 +867,9 @@ function registerIpc() {
       case 'open-mac-privacy': if (process.platform === 'darwin') shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${value.pane === 'screen' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility'}`); break;
       case 'update-now': {
         if (update.busy) break;
-        const tag = process.platform === 'win32' ? `v${update.available}` : update.tag;
-        if (process.platform === 'win32' ? !update.ready : !tag) break;
+        const autoUpdate = updateDriver === 'electron-updater';
+        const tag = autoUpdate ? `v${update.available}` : update.tag;
+        if (autoUpdate ? !update.ready : !tag) break;
         update.busy = true; update.error = ''; broadcast();
         const targets = vmTargets(prefs);
         for (const target of targets) vmProgress[target.id] = { state: 'updating' };
@@ -875,7 +882,7 @@ function registerIpc() {
             noteVmResult(result); broadcast();
           }
           savePreferences();
-          if (process.platform === 'win32') { require('electron-updater').autoUpdater.quitAndInstall(); break; }
+          if (autoUpdate) { require('electron-updater').autoUpdater.quitAndInstall(); break; }
           await macUpdate.installMacUpdate({ tag: update.tag, bundlePath: path.resolve(process.execPath, '../../..') });
         }
         catch (error) { update.busy = false; update.error = error.message; broadcast(); throw error; }

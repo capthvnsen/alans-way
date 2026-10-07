@@ -15,6 +15,11 @@ const target = `${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-apple-macos13`;
 
 // The prebuilt helper ships in the app bundle; a connector copy pushed to the
 // home directory runs under that app's Electron, so execPath finds it.
+// In a signed release the helper is Developer ID signed like every other
+// binary in the bundle. TCC grants stay with the app either way: the helper
+// is its child process, so Accessibility and Screen Recording are credited to
+// the app. A runtime rebuild only happens for a stale shipped helper on a Mac
+// with the Command Line Tools, and it rewrites the sealed bundle in place.
 const bundled = path.join(path.dirname(process.execPath), '..', 'Resources', 'app', 'scripts', 'mac-computer');
 
 function build() {
