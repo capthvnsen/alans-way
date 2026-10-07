@@ -65,6 +65,18 @@ function makeDataDir(port) {
   fs.writeFileSync(path.join(dir, 'app-token.json'), JSON.stringify({ token: 'fixture-token' }));
   return dir;
 }
+// A data dir laid out the way a configured install can leave it: the port is
+// only on connection.json's url and the token only in a relocated file named
+// by config.appTokenFile (vps-browser-host.cjs supports both).
+function makeRelocatedDataDir(port) {
+  const dir = mktemp('vm-update-data-');
+  const tokenFile = path.join(dir, 'moved', 'token.json');
+  fs.mkdirSync(path.dirname(tokenFile), { recursive: true });
+  fs.writeFileSync(tokenFile, JSON.stringify({ token: 'fixture-token' }));
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ appTokenFile: tokenFile }));
+  fs.writeFileSync(path.join(dir, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${port}`, protocol: 1, host: 'vps' }));
+  return dir;
+}
 const lastJson = (res) => {
   const lines = res.stdout.trim().split('\n').filter((line) => line.startsWith('{'));
   assert.ok(lines.length, `no JSON result line in:\n${res.stdout}\n${res.stderr}`);
@@ -190,4 +202,81 @@ test('a host that stays busy is skipped without touching the checkout', async ()
   assert.equal(result.ok, false);
   assert.match(result.error, /busy/i);
   assert.equal(git(checkout, 'describe', '--tags', 'HEAD').trim(), 'v0.3.1', 'the checkout was not moved');
+});
+
+test('a same-named local branch cannot stand in for a missing tag', async () => {
+  const lonely = makeRemote();
+  git(lonely, 'tag', '-d', 'v0.3.2');
+  const checkout = makeCheckout(lonely);
+  git(checkout, 'branch', 'v0.3.2', 'origin/main');
+  const { bin, marker } = makeBin();
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin));
+  const result = lastJson(res);
+  assert.notEqual(res.status, 0, res.stdout);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /tag v0\.3\.2/i);
+  assert.equal(git(checkout, 'rev-parse', 'HEAD'), git(checkout, 'rev-parse', 'v0.3.1^{commit}'), 'the checkout was not moved');
+  assert.equal(fs.existsSync(marker), false, 'no service was touched');
+});
+
+test('a same-named local branch does not shadow a real tag', async () => {
+  const checkout = makeCheckout(remote);
+  git(checkout, 'branch', 'v0.3.2', 'v0.3.1');
+  const { bin } = makeBin();
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.ok, true);
+  assert.equal(git(checkout, 'rev-parse', 'HEAD'), git(checkout, 'rev-parse', 'refs/tags/v0.3.2^{commit}'));
+});
+
+test('--help prints usage even when the script is piped over ssh stdin', () => {
+  const res = spawnSync('sh', ['-s', '--', '--help'], { input: fs.readFileSync(SCRIPT, 'utf8'), encoding: 'utf8' });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /vm-update\.sh/);
+  assert.match(res.stdout, /--check/);
+  assert.doesNotMatch(res.stdout, /—/);
+});
+
+test('error strings carrying backslashes or quotes stay valid JSON', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const res = await runScript(['v1.2.3\\x"y'], envFor(checkout, makeDataDir(9), bin));
+  assert.notEqual(res.status, 0);
+  const result = lastJson(res);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /v1\.2\.3\\x"y/);
+});
+
+test('the status read follows connection.json and a relocated token file', async () => {
+  const checkout = makeCheckout(remote);
+  const port = await makeStatus({ version: '0.3.1', busy: false });
+  const res = await runScript(['--check'], envFor(checkout, makeRelocatedDataDir(port), makeBin().bin));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.ok, true);
+  assert.equal(result.hostVersion, '0.3.1');
+});
+
+test('the busy gate still applies when the data dir was relocated', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const port = await makeStatus({ version: '0.3.1', busy: true });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeRelocatedDataDir(port), bin));
+  const result = lastJson(res);
+  assert.notEqual(res.status, 0);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /busy/i);
+  assert.equal(git(checkout, 'describe', '--tags', 'HEAD').trim(), 'v0.3.1', 'the checkout was not moved');
+});
+
+test('the Windows twin pins full tag refs and retries the fetch like the POSIX script', () => {
+  const ps1 = fs.readFileSync(WINDOWS_SCRIPT, 'utf8');
+  assert.match(ps1, /refs\/tags\//, 'resolves refs/tags/<tag>, never a loose name');
+  assert.doesNotMatch(ps1, /rev-parse --verify -q "\$Tag\^\{commit\}"/, 'no loose tag lookup left');
+  assert.match(ps1, /--unshallow/, 'keeps the shallow-fetch fallback');
+  assert.match(ps1, /--depth=1000000/, 'keeps the deep-fetch fallback');
+  assert.match(ps1, /connection\.json/, 'reads the broker-written connection file');
 });

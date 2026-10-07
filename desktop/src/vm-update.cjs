@@ -15,6 +15,10 @@ const TAG_RE = /^v\d+\.\d+\.\d+$/;
 const SSH_OPTIONS = ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes'];
 const VM_TIMEOUT_MS = 300000;
 const CHECK_TIMEOUT_MS = 30000;
+// A remote-side cap a little under VM_TIMEOUT_MS: killing the local ssh does
+// not reliably kill a piped `sh -s` (no TTY, no SIGHUP), so where timeout(1)
+// exists the guest run terminates instead of orphaning an npm ci.
+const VM_TIMEOUT_REMOTE_S = 285;
 const SNOOZE_MS = 24 * 60 * 60 * 1000;
 const SCRIPTS = { posix: 'vm-update.sh', windows: 'vm-update.ps1' };
 
@@ -70,7 +74,10 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
       // cmd exists under every Windows sshd shell (cmd, PowerShell, Git Bash).
       return { script: SCRIPTS.windows, remote: `cmd /d /c "set ${setting}&& powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command -"` };
     }
-    return { script: SCRIPTS.posix, remote: check ? 'sh -s -- --check' : `sh -s -- ${tag}` };
+    if (check) return { script: SCRIPTS.posix, remote: 'sh -s -- --check' };
+    const timeoutJson = `printf '%s\\n' '{"ok":false,"version":"","restarted":false,"error":"the update timed out on the VM"}'`;
+    return { script: SCRIPTS.posix,
+      remote: `if command -v timeout >/dev/null 2>&1; then timeout ${VM_TIMEOUT_REMOTE_S} sh -s -- ${tag}; rc=$?; if [ "$rc" -eq 124 ]; then ${timeoutJson}; fi; exit "$rc"; else exec sh -s -- ${tag}; fi` };
   }
 
   async function runGuest(vm, { tag, check = false, timeoutMs = VM_TIMEOUT_MS }) {
@@ -132,13 +139,26 @@ function shouldShowUpdatePopup({ available, snoozedUntil, now, busy } = {}) {
 const snoozeUntil = (now) => Number(now) + SNOOZE_MS;
 
 // The persistent banner shown after relaunch while any saved VM still runs an
-// older host than the app, or its last update failed.
-function vmRetryState(appVersion, vms) {
-  for (const entry of Object.values(vms || {})) {
+// older host than the app, or its last update failed. Only currently
+// configured targets count: a record for a VM whose address was removed must
+// not wedge the banner.
+function vmRetryState(appVersion, vms, targets) {
+  for (const target of targets || []) {
+    const entry = vms?.[target.id];
     if (entry?.failed) return { show: true, version: String(entry.version || ''), failed: String(entry.failed) };
     if (entry?.version && isNewer(appVersion, entry.version)) return { show: true, version: String(entry.version), failed: '' };
   }
   return { show: false, version: '', failed: '' };
 }
 
-module.exports = { createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil, vmRetryState, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS, TAG_RE };
+// A version check reports what the VM runs now; it must not erase a newer
+// recorded result (an update that landed while the check was in flight).
+// Returns the vmUpdates entry to store, or null to keep the existing one.
+function vmCheckEntry(previous, check) {
+  const reported = String(check?.version || check?.hostVersion || '');
+  const known = String(previous?.version || '');
+  if (known && (!reported || !isNewer(reported, known))) return null;
+  return { version: reported, failed: '' };
+}
+
+module.exports = { createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil, vmRetryState, vmCheckEntry, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS, TAG_RE };

@@ -13,7 +13,7 @@ const { shouldOnboard, pinOnboarding } = require('./onboarding.cjs');
 const macUpdate = require('./mac-update.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
-const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, shouldShowUpdatePopup } = require('./vm-update.cjs');
+const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, shouldShowUpdatePopup } = require('./vm-update.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -251,7 +251,7 @@ function getState() {
       popup: shouldShowUpdatePopup({ available: update.available, snoozedUntil: prefs.updateSnoozedUntil, now: Date.now(), busy: update.busy }),
       snoozedUntil: prefs.updateSnoozedUntil || 0,
       vms: vmTargets(prefs).map((target) => ({ id: target.id, label: target.label, ...(vmProgress[target.id] || {}) })),
-      vmRetry: vmRetryState(app.getVersion(), prefs.vmUpdates), vmRetrying },
+      vmRetry: vmRetryState(app.getVersion(), prefs.vmUpdates, vmTargets(prefs)), vmRetrying },
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? app.isInApplicationsFolder() : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
@@ -606,7 +606,8 @@ async function checkVmVersions() {
   for (const target of vmTargets(prefs)) {
     const result = await vmUpdater.checkVm(target);
     if (!result.ok) continue;
-    prefs.vmUpdates = { ...(prefs.vmUpdates || {}), [target.id]: { version: result.version || result.hostVersion || '', failed: '' } };
+    const entry = vmCheckEntry(prefs.vmUpdates?.[target.id], result);
+    if (entry) prefs.vmUpdates = { ...(prefs.vmUpdates || {}), [target.id]: entry };
   }
   savePreferencesSoon(); broadcast();
 }
@@ -785,7 +786,7 @@ function registerIpc() {
           if (sshHost && !isSshTarget(sshHost)) throw new Error('Enter the VPS SSH address as user@host or host, with no spaces or symbols.');
           const scriptPath = String(value.vpsBrowser.scriptPath || '').trim();
           if (scriptPath && checkScriptPath(scriptPath)) throw new Error(checkScriptPath(scriptPath));
-          prefs.vpsBrowser={sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}; vpsBrowserStatus='connecting'; refreshVpsTabs();
+          prefs.vpsBrowser={sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}; if(!sshHost)prefs.vmUpdates={}; vpsBrowserStatus='connecting'; refreshVpsTabs();
         }
         if (Number.isFinite(value.agentIdleMinutes)) prefs.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
@@ -890,7 +891,7 @@ function registerIpc() {
       }
       case 'update-later': prefs.updateSnoozedUntil = snoozeUntil(Date.now()); savePreferences(); broadcast(); break;
       case 'vm-update-retry': {
-        if (vmRetrying) break;
+        if (vmRetrying || update.busy) break;
         vmRetrying = true; broadcast();
         const tag = `v${app.getVersion()}`;
         try {

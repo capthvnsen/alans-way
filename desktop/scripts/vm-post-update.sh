@@ -1,5 +1,5 @@
 #!/bin/sh
-# vm-post-update.sh — optional per-release migration hook for the VM browser
+# vm-post-update.sh - optional per-release migration hook for the VM browser
 # host. vm-update.sh runs this from the NEW checkout right after the tag is
 # pinned and dependencies are installed, before services restart. It receives
 # the release tag as $1 (for example "v0.3.2").
