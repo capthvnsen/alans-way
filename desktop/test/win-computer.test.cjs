@@ -98,6 +98,12 @@ test('the Windows helper compiles and drives notepad', async (t) => {
   assert.equal(typeof app.bundleId, 'string');
   assert.equal(typeof app.frontmost, 'boolean');
   assert.notEqual(app.bundleId, '', 'the helper could not read notepad.exe\'s name, so every action on it is refused as off limits');
+  // CI runners run everything as administrator, and elevated apps are off limits by design.
+  const elevated = spawnSync('whoami', ['/groups'], { encoding: 'utf8' }).stdout.includes('S-1-16-12288');
+  if (elevated) {
+    await assert.rejects(win.service.snapshot('bot', notepad.pid), /runs as administrator/);
+    return;
+  }
   if (app.frontmost) {
     await assert.rejects(win.service.snapshot('bot', notepad.pid), /in front/);
     return;
