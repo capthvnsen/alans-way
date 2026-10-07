@@ -18,10 +18,14 @@ function snapshotExpression(generation, opts = {}) {
   const valueSel = opts.valueFor && typeof opts.valueFor.selector === 'string' ? opts.valueFor.selector : null;
   return `(async () => {
     const wantEffect = ${opts.effect === true}, wantSettle = ${opts.effect === true && opts.settle === true}, valueRef = ${JSON.stringify(valueRef)}, valueSel = ${JSON.stringify(valueSel)};
-    let focused = null, acted = null;
+    let focused = null, acted = null, settledMs;
+    // The tracker's raw timers keep this read's own scheduling out of the
+    // count: the settle lands inside the arm grace and must not track itself.
+    const followUp = window[${JSON.stringify(FOLLOW_UP_KEY)}];
+    const setT = followUp && followUp.setT || setTimeout, clearT = followUp && followUp.clearT || clearTimeout;
     // The parser yields between chunks, so a snapshot can land mid-document;
     // give a still-parsing page a moment and report it if it is not done.
-    if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${parseWaitMs}); });
+    if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setT(done, ${parseWaitMs}); });
     // Marks the document: a cross-document navigation swaps the window and
     // drops the marker, which is how a read tells it from a same-document one.
     const sameDoc = window.__hermesWorkspaceDoc === 1;
@@ -31,26 +35,56 @@ function snapshotExpression(generation, opts = {}) {
     // land, then settles once the DOM has stayed quiet, bounded so a busy
     // page cannot hold the reply. The cursor overlay does not count.
     if (wantSettle && document.documentElement && document.readyState !== 'loading') {
+      const settleStart = performance.now();
+      // Dispatch is over by the time this read runs; a close probe lost to a
+      // failed dispatch leaves the window open, so close it here with the
+      // same grace.
+      const armed = followUp && followUp.cur;
+      if (armed && armed.open) { armed.open = false; if (!armed.until) armed.until = performance.now() + ${FOLLOW_UP_GRACE_MS}; }
       await new Promise((finish) => {
         const own = (node) => {
           const el = node && node.nodeType === 1 ? node : node && node.parentElement;
           return !!(el && typeof el.id === 'string' && el.id.indexOf('hermes-workspace-agent-cursor') === 0);
         };
-        let quiet;
-        const done = () => { mo.disconnect(); clearTimeout(quiet); clearTimeout(cap); finish(); };
+        // Work the action itself started is counted by the page-side tracker
+        // (see followUpArmExpression): an open arm window or a pending item
+        // keeps the settle alive past the first quiet moment.
+        const busy = () => {
+          const c = followUp && followUp.cur;
+          return !!c && performance.now() < c.expires && (c.open || performance.now() < c.until || c.pending > 0);
+        };
+        const sawWork = () => { const c = followUp && followUp.cur; return !!c && c.total > 0; };
+        let quiet, cap, drain;
+        const done = () => { mo.disconnect(); clearT(quiet); clearT(cap); clearInterval(drain); finish(); };
+        const check = () => {
+          if (!busy()) return done();
+          if (drain) return;
+          // Once the tracked work is done, a fresh quiet window still applies.
+          drain = setInterval(() => {
+            if (busy()) return;
+            clearInterval(drain); drain = null;
+            clearT(quiet); quiet = setT(check, ${EFFECT_QUIET_MS});
+          }, 30);
+        };
         const mo = new MutationObserver((list) => {
           for (const m of list) {
             if (own(m.target)) continue;
             if (m.type === 'childList' && [...m.addedNodes, ...m.removedNodes].every(own)) continue;
-            clearTimeout(quiet);
-            quiet = setTimeout(done, ${EFFECT_QUIET_MS});
+            clearT(quiet);
+            quiet = setT(check, ${EFFECT_QUIET_MS});
             return;
           }
         });
-        const cap = setTimeout(done, ${EFFECT_SETTLE_MS});
+        // Only work the action started stretches the bound; a page that stays
+        // noisy on its own keeps the same budget it always had.
+        cap = setT(() => {
+          if (sawWork()) cap = setT(done, ${FOLLOW_UP_CAP_MS - EFFECT_SETTLE_MS});
+          else done();
+        }, ${EFFECT_SETTLE_MS});
         mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
-        quiet = setTimeout(done, ${EFFECT_WATCH_MS});
+        quiet = setT(check, ${EFFECT_WATCH_MS});
       });
+      settledMs = Math.round(performance.now() - settleStart);
     }
     const shortHref = (raw) => {
       if (!raw) return '';
@@ -262,7 +296,7 @@ function snapshotExpression(generation, opts = {}) {
       text = text.slice(0, ${maxChars});
       textSig = sigNodes + ':' + (sigHash >>> 0).toString(36);
     } else textCut = ${maxChars} <= 0 && !!document.body?.textContent?.trim();
-    return {title:document.title,url:location.href,sameDoc,loading:document.readyState === 'loading',text,textSig,elements:items,truncated:{text:textCut,elements:more || scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted};
+    return {title:document.title,url:location.href,sameDoc,loading:document.readyState === 'loading',text,textSig,elements:items,truncated:{text:textCut,elements:more || scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
   })()`;
 }
 
@@ -289,6 +323,97 @@ const EFFECT_SETTLE_MS = 400;
 // beat after the action; once anything mutates, the shorter quiet window is
 // all a settled page pays.
 const EFFECT_WATCH_MS = 250;
+// Consequence tracking: followUpArmExpression wraps the page's setTimeout,
+// fetch and XMLHttpRequest.send once and opens a counting window around each
+// action's dispatch, so the effect settle can wait out work the action itself
+// started (a short timer, a request) instead of answering mid-update.
+const FOLLOW_UP_KEY = '__hermesFollowUp';
+// The window covers the dispatch plus a beat after: a handler can schedule
+// its follow-up a tick later than the input ack.
+const FOLLOW_UP_GRACE_MS = 50;
+// Timers this far out are background work, not consequences of the click.
+const FOLLOW_UP_TIMER_MS = 1000;
+// An arm left open by a failed dispatch self-expires so it cannot pin a
+// later read.
+const FOLLOW_UP_ARM_EXPIRY_MS = 15000;
+// The settle bound stretches to this only while tracked work is in flight.
+const FOLLOW_UP_CAP_MS = 1500;
+function followUpArmExpression() {
+  return `(() => {
+    const w = window, key = ${JSON.stringify(FOLLOW_UP_KEY)};
+    const S = w[key] || (w[key] = { cur: null, inside: 0, timers: new Map(), installed: false });
+    if (!S.installed) {
+      const armed = () => { const c = S.cur; return S.inside > 0 || !!c && performance.now() < c.expires && (c.open || performance.now() < c.until); };
+      const setT = w.setTimeout, clearT = w.clearTimeout, fetch0 = w.fetch;
+      const send0 = w.XMLHttpRequest && w.XMLHttpRequest.prototype && w.XMLHttpRequest.prototype.send;
+      // Our own in-page timers (the settle's quiet windows, the cursor tween)
+      // schedule through the originals, or they would count against the arm.
+      S.setT = setT; S.clearT = clearT;
+      try {
+        w.setTimeout = function (callback, delay, ...rest) {
+          const c = S.cur, ms = typeof delay === 'number' ? delay : 0;
+          if (!c || !armed() || ms > ${FOLLOW_UP_TIMER_MS}) return setT.call(this, callback, delay, ...rest);
+          c.pending++; c.total++;
+          let id = 0;
+          const run = function (...args) {
+            if (S.timers.delete(id)) c.pending--;
+            S.inside++;
+            try {
+              return typeof callback === 'function' ? callback.apply(this, args) : (0, eval)(String(callback));
+            } finally { S.inside--; }
+          };
+          try { id = setT.call(this, run, delay, ...rest); }
+          catch (e) { c.pending--; c.total--; throw e; }
+          S.timers.set(id, c);
+          return id;
+        };
+        w.clearTimeout = function (id) {
+          const owner = S.timers.get(id);
+          if (owner) { S.timers.delete(id); owner.pending--; }
+          return clearT.call(this, id);
+        };
+        if (fetch0) w.fetch = function (...args) {
+          const c = S.cur;
+          if (!c || !armed()) return fetch0.apply(this, args);
+          c.pending++; c.total++;
+          let sent;
+          try { sent = fetch0.apply(this, args); }
+          catch (e) { c.pending--; c.total--; throw e; }
+          // The returned promise re-rejects rather than lending the page's
+          // own promise a handler, so an unhandled rejection reports exactly
+          // as it would have without the tracker.
+          return new Promise((resolve, reject) => Promise.resolve(sent).then(
+            (value) => { c.pending--; resolve(value); },
+            (error) => { c.pending--; reject(error); }));
+        };
+        if (send0) w.XMLHttpRequest.prototype.send = function (...args) {
+          const c = S.cur;
+          if (!c || !armed()) return send0.apply(this, args);
+          c.pending++; c.total++;
+          const drop = () => { c.pending--; };
+          try {
+            this.addEventListener('loadend', drop, { once: true });
+            return send0.apply(this, args);
+          } catch (e) {
+            this.removeEventListener('loadend', drop);
+            c.pending--; c.total--;
+            throw e;
+          }
+        };
+      } catch { /* a sealed page gets no tracking and the old timing */ }
+      S.installed = true;
+    }
+    S.cur = { open: true, until: 0, expires: performance.now() + ${FOLLOW_UP_ARM_EXPIRY_MS}, pending: 0, total: 0 };
+    return true;
+  })()`;
+}
+function followUpCloseExpression() {
+  return `(() => {
+    const s = window[${JSON.stringify(FOLLOW_UP_KEY)}], c = s && s.cur;
+    if (c) { c.open = false; c.until = performance.now() + ${FOLLOW_UP_GRACE_MS}; }
+    return true;
+  })()`;
+}
 function linesOf(text) {
   return String(text || '').split('\n').filter(Boolean).slice(0, EFFECT_MAX_LINES);
 }
@@ -359,6 +484,7 @@ async function readEffect(execute, tab, { parseWaitMs, navigated, target, settle
   tab.docMarked = true;
   tab.lastRead = lastReadOf(result);
   const effect = { navigated: nav, url: result.url, title: result.title, changed, text: added.join('\n').slice(0, EFFECT_TEXT_CHARS) };
+  if (typeof result.settledMs === 'number') effect.settledMs = result.settledMs;
   if (result.acted !== undefined && result.acted !== null) effect.value = result.acted;
   if (result.focused) {
     const ref = controlsSame ? result.focused.kept || result.focused.ref : result.focused.ref;
@@ -413,4 +539,4 @@ function restoreExpression(checkpoint) {
     return {verification:restored === c.drafts.length ? 'ready' : 'review_required',restored,skipped:c.drafts.length-restored};
   })()`;
 }
-module.exports = { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression };
+module.exports = { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, FOLLOW_UP_KEY };

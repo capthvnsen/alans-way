@@ -1,12 +1,12 @@
 // The one-turn benchmark contract: a page that mimics ten sequential tasks.
 // Like the real benchmark page, a correct answer first shows "✓ Correct"
-// feedback and about 800ms later swaps in the next instruction and its
-// controls, so the one-call pattern is act, wait for the current prompt's
-// phrase to be gone, read: the reply then already carries the next state and
-// fresh refs, so no follow-up snapshot is needed. A password-manager style
-// announcement sits on the page the whole time and must stay out of the text.
-// Runs the real VPS host against a real headless Chromium; skipped when no
-// Chrome is found (set HERMES_TEST_CHROME).
+// feedback and 450ms later swaps in the next instruction and its controls.
+// The action reply settles after the work the action itself started (short
+// timers, requests), so a bare click already carries the next state and fresh
+// refs; no wait, read or follow-up snapshot is needed. A password-manager
+// style announcement sits on the page the whole time and must stay out of
+// the text. Runs the real VPS host against a real headless Chromium; skipped
+// when no Chrome is found (set HERMES_TEST_CHROME).
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -31,9 +31,9 @@ const chrome = findChrome();
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Ten tasks: button click, link click, checkbox, select and type+submit run
-// twice each. Each batch acts on a ref taken from the previous reply's
-// elements, then waits for the current prompt's phrase to disappear, then
-// reads, exactly the pattern the tool description teaches.
+// twice each. Each call acts on a ref taken from the previous reply's
+// elements and nothing else: the settle waits out the follow-up render the
+// action started, so the reply's effect already carries the next state.
 const pick = (els, pred, hint) => {
   const el = els.find(pred);
   assert.ok(el && el.ref, `no fresh ref for ${hint}: ${JSON.stringify(els)}`);
@@ -80,7 +80,7 @@ function advance(done) {
     document.getElementById('fb').classList.add('hidden');
     document.getElementById('task' + done).classList.add('hidden');
     document.getElementById(done === 10 ? 'done' : 'task' + (done + 1)).classList.remove('hidden');
-  }, 800);
+  }, 450);
 }
 </script>`;
 
@@ -92,7 +92,22 @@ const asyncPage = `<!doctype html><title>async</title><button id="ab" onclick="s
 const navA = `<!doctype html><title>navA</title><p>Shared header</p><p>Page A body</p><a id="l" href="/nav-b">Next</a><a id="h" href="#frag">Jump</a><p id="frag">anchor</p>`;
 const navB = `<!doctype html><title>navB</title><p>Shared header</p><p>Page B body</p>`;
 const focusPage = `<!doctype html><title>focus</title><div id="f" tabindex="0">Plain focusable</div>`;
-const routes = { '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage };
+// Consequence-settle fixtures: work the click itself starts.
+const fetchPage = `<!doctype html><title>fetchp</title><button id="fb">Load</button><div id="out"></div><script>
+document.getElementById('fb').onclick = function () {
+  fetch('/slow-json').then(function (r) { return r.text(); }).then(function (t) { document.getElementById('out').textContent = t; });
+};
+</script>`;
+const hangPage = `<!doctype html><title>hang</title><button id="hb">Hang</button><script>
+document.getElementById('hb').onclick = function () { fetch('/hang').then(function () { document.body.append('landed'); }, function () {}); };
+</script>`;
+// A poller and a long timer armed before the click are not its follow-up.
+const noisePage = `<!doctype html><title>noise</title><button id="nb">Quiet</button><div id="tick">0</div><script>
+setInterval(function () { const d = document.getElementById('tick'); d.textContent = String(Number(d.textContent) + 1); }, 100);
+setTimeout(function () { document.body.appendChild(document.createElement('hr')); }, 5000);
+</script>`;
+const quietPage = `<!doctype html><title>quiet</title><button id="qb">Noop</button>`;
+const routes = { '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '';
 const api = (route, method = 'GET', body, epoch) =>
@@ -104,7 +119,15 @@ const api = (route, method = 'GET', body, epoch) =>
 
 before(async () => {
   if (!chrome) return;
-  site = http.createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end(routes[new URL(req.url, 'http://x').pathname] || 'nf'); });
+  site = http.createServer((req, res) => {
+    const pathname = new URL(req.url, 'http://x').pathname;
+    // A slow endpoint and a never-answering one stand in for a page's own
+    // requests: the tracker counts them only when the action started them.
+    if (pathname === '/slow-json') return setTimeout(() => { res.setHeader('content-type', 'text/plain'); res.end('Fetched payload text'); }, 300);
+    if (pathname === '/hang') return;
+    res.setHeader('content-type', 'text/html');
+    res.end(routes[pathname] || 'nf');
+  });
   await new Promise((resolve) => site.listen(0, '127.0.0.1', resolve));
   port = site.address().port;
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-bench-'));
@@ -147,11 +170,8 @@ test('ten sequential tasks each complete in one action call', { skip: !chrome &&
   let calls = 0;
   for (let i = 0; i < tasks.length; i++) {
     const task = tasks[i];
-    const steps = [
-      ...task.steps(elements),
-      { action: 'wait', text: task.prompt, gone: true, timeout: 10000 },
-      { action: 'read' },
-    ];
+    // A single action call: no wait or read steps, no snapshot between tasks.
+    const steps = task.steps(elements);
     const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'batch', epoch: tab.epoch, steps });
     calls++;
     assert.equal(reply.status, 200, `task ${i + 1} call failed: ${JSON.stringify(reply.data)}\n${stderr}`);
@@ -160,9 +180,7 @@ test('ten sequential tasks each complete in one action call', { skip: !chrome &&
     assert.equal(reply.data.effect.changed, true, `task ${i + 1} changed nothing`);
     assert.ok(reply.data.effect.text.includes(task.next), `task ${i + 1} effect.text lacks ${JSON.stringify(task.next)}: ${JSON.stringify(reply.data.effect)}`);
     assert.ok(!/1Password|Bitwarden|AcmeVault/.test(reply.data.effect.text), `task ${i + 1} effect.text leaked extension text`);
-    const read = reply.data.results[steps.length - 1];
-    assert.ok(read.text.includes(task.next), `task ${i + 1} read lacks ${JSON.stringify(task.next)}`);
-    assert.ok(!/1Password|down arrow|Bitwarden|AcmeVault/.test(read.text), `task ${i + 1} read leaked extension text: ${read.text}`);
+    assert.ok(Number.isFinite(reply.data.effect.settledMs), `task ${i + 1} effect lacks settledMs: ${JSON.stringify(reply.data.effect)}`);
     // The controls changed with the task, so the reply carries fresh refs the
     // next call acts on directly, with no snapshot in between. The final task
     // leaves no controls behind, so its list is empty.
@@ -174,7 +192,9 @@ test('ten sequential tasks each complete in one action call', { skip: !chrome &&
       assert.equal(reply.data.effect.navigated, false);
       assert.equal(reply.data.effect.url, `http://bench.example:${port}/bench`);
       assert.equal(reply.data.effect.title, 'bench');
-      assert.ok(reply.data.results[1].waited >= 0, 'the gone wait reports its time');
+      // The reply waited out the 450ms render timer the click started.
+      assert.ok(reply.data.effect.settledMs >= 300, `task 1 settledMs: ${reply.data.effect.settledMs}`);
+      console.log(`single-action settle: task 1 waited ${reply.data.effect.settledMs}ms for its own follow-up render; effect.text=${JSON.stringify(reply.data.effect.text.slice(0, 120))}`);
     }
     if (i === 3 || i === 8) assert.match(reply.data.results[0].matched.by, /label/, `task ${i + 1} select matched by label`);
   }
@@ -246,4 +266,85 @@ test('effect reports focus on any element and move skips the page read', { skip:
   const move = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'move', x: 40, y: 40, epoch: tab.epoch });
   assert.equal(move.status, 200, JSON.stringify(move.data));
   assert.deepEqual(move.data.effect, { navigated: false, changed: false, text: '' });
+});
+
+test('a click reply waits out the request the click started', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/fetchp` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  await api(`/v1/tabs/${tab.id}/snapshot`);
+  const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#fb', epoch: tab.epoch });
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.ok(reply.data.effect.text.includes('Fetched payload text'), `effect.text: ${JSON.stringify(reply.data.effect.text)}`);
+  assert.ok(reply.data.effect.settledMs >= 300, `settledMs: ${reply.data.effect.settledMs}`);
+});
+
+test('work the click did not start holds no reply', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/noise` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  await api(`/v1/tabs/${tab.id}/snapshot`);
+  const started = Date.now();
+  const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#nb', epoch: tab.epoch });
+  const elapsed = Date.now() - started;
+  console.log(`unrelated-work click reply: ${elapsed}ms, settledMs=${reply.data.effect && reply.data.effect.settledMs}`);
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.ok(elapsed < 600, `the interval and the 5s timer held the reply ${elapsed}ms`);
+});
+
+test('a request that never finishes ends the reply at the cap', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/hang-page` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  await api(`/v1/tabs/${tab.id}/snapshot`);
+  const started = Date.now();
+  const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#hb', epoch: tab.epoch });
+  const elapsed = Date.now() - started;
+  console.log(`capped click reply: ${elapsed}ms, settledMs=${reply.data.effect && reply.data.effect.settledMs}`);
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.ok(reply.data.effect.settledMs >= 1400, `settledMs: ${reply.data.effect.settledMs}`);
+  assert.ok(elapsed < 4000, `the cap is a bound, not a stall: ${elapsed}ms`);
+});
+
+test('a quiet click keeps the pre-tracker timing', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/quiet` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  await api(`/v1/tabs/${tab.id}/snapshot`);
+  const started = Date.now();
+  const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#qb', epoch: tab.epoch });
+  const elapsed = Date.now() - started;
+  console.log(`quiet click reply: ${elapsed}ms, settledMs=${reply.data.effect && reply.data.effect.settledMs}`);
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.ok(elapsed < 400, `a click that starts nothing answered in ${elapsed}ms`);
+});
+
+test('wrapped setTimeout, clearTimeout, fetch and XHR behave normally', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/quiet` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  await api(`/v1/tabs/${tab.id}/snapshot`);
+  // The click installs and arms the page wrappers; they stay wrapped after.
+  const click = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#qb', epoch: tab.epoch });
+  assert.equal(click.status, 200, JSON.stringify(click.data));
+  const probe = await api(`/v1/tabs/${tab.id}/actions`, 'POST', {
+    action: 'eval', epoch: tab.epoch,
+    code: `(async () => {
+      const fired = [];
+      const id = setTimeout(function () { fired.push('fired'); }, 0);
+      const skipped = setTimeout(function () { fired.push('bad'); }, 0);
+      clearTimeout(skipped);
+      await new Promise(function (r) { setTimeout(r, 30); });
+      const text = await fetch('/slow-json').then(function (r) { return r.text(); });
+      const xhrText = await new Promise(function (resolve, reject) {
+        const x = new XMLHttpRequest();
+        x.addEventListener('load', function () { resolve(x.responseText); });
+        x.addEventListener('error', function () { reject(new Error('xhr failed')); });
+        x.open('GET', '/slow-json');
+        x.send();
+      });
+      return JSON.stringify({ idType: typeof id, fired, text, xhrText });
+    })()`,
+  });
+  assert.equal(probe.status, 200, JSON.stringify(probe.data));
+  const out = JSON.parse(probe.data.value);
+  assert.equal(out.idType, 'number');
+  assert.deepEqual(out.fired, ['fired'], 'setTimeout returns a usable id and clearTimeout cancels');
+  assert.equal(out.text, 'Fetched payload text');
+  assert.equal(out.xhrText, 'Fetched payload text');
 });

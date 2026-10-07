@@ -115,7 +115,7 @@ const tools = [
   }, ['pid', 'action']), annotations: { readOnlyHint: false } },
   { name: 'cua_alans_way_action', description: `Act in the bot's own Chromium tab; pass the current epoch.
 - To act and see what comes next in one call, use a batch: steps [<your action>, {action:"wait", text:"<a phrase from the current prompt>", gone:true}, {action:"read"}]. The reply then holds the next state: the read text and fresh element refs.
-- Every reply carries effect ({navigated, url, title, changed, text}, plus value and focused when an element took input) and elements[] when the controls changed, so do not snapshot after acting.
+- Every reply carries effect ({navigated, url, title, changed, text}, plus value and focused when an element took input) and elements[] when the controls changed, so do not snapshot after acting. It reflects the page after the updates the action started (short timers, requests), so a separate read is rarely needed.
 - click and friends take a ref, a selector, or x,y; drag ends at toRef, toSelector, or toX,toY; press sends a key.
 - select takes the option by any of value, label, option, text or choice and answers matched; a miss lists the options.
 - wait takes a selector, text or url, and gone:true waits until it disappears. read returns {text} capped by maxChars (default 600). batch runs up to 25 steps; its reply has results[] per step plus one final effect.

@@ -268,7 +268,7 @@ test('an action read reports the value and focus of the element it touched', asy
 test('snapshot bounds clamp and never splice caller text into page code', () => {
   assert.match(snapshotExpression(3), /text\.slice\(0, 6000\)/);
   assert.match(snapshotExpression(3, { maxChars: 999999 }), /text\.slice\(0, 20000\)/);
-  assert.match(snapshotExpression(3), /setTimeout\(done, 400\)/);
+  assert.match(snapshotExpression(3), /setT\(done, 400\)/);
   assert.match(snapshotExpression(3), /seenParent/);
   assert.match(snapshotExpression(3), /checkVisibilityCSS: true/);
   assert.match(snapshotExpression(3), /utm_/);

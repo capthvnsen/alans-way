@@ -73,7 +73,7 @@ test('a tab the human is not watching skips the glide and its pacing', async () 
   assert.equal(f.scripts.filter(code => code.includes('"path":[')).length, 0, 'no tween for a hidden tab');
   assert.equal(pointer(f).filter(call => call.type === 'mouseMoved').length, 1);
   assert.equal(f.scripts.filter(code => code.includes('requestSubmit')).length, 0, 'a plain click needs no submit probe');
-  assert.ok(f.scripts.length <= 3, 'one locate plus fire-and-forget overlay updates');
+  assert.ok(f.scripts.length <= 5, 'one locate plus fire-and-forget overlay and tracker updates');
 });
 
 test('the locate script scrolls only when out of view and never waits on rAF alone', async () => {

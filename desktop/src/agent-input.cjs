@@ -1,5 +1,6 @@
 // All input stays inside this tab's Chromium target. Never focus a native view,
 // activate a window, use the clipboard for typing, or move the system pointer.
+const { followUpArmExpression, followUpCloseExpression, FOLLOW_UP_KEY } = require('./browser-page.cjs');
 const INPUT_ACTIONS = new Set(['move', 'click', 'double_click', 'right_click', 'drag', 'type', 'press', 'scroll', 'select']);
 const CLICKS = { click: { button: 'left', buttons: 1, count: 1 }, double_click: { button: 'left', buttons: 1, count: 2 }, right_click: { button: 'right', buttons: 2, count: 1 } };
 const POINTER_ACTIONS = new Set(['move', 'drag', ...Object.keys(CLICKS)]);
@@ -107,6 +108,10 @@ function cursorScript(cursor) {
   // A closed shadow tree keeps the decorative label out of page snapshots.
   return `(() => {
     const id = ${JSON.stringify(CURSOR_ID)}, value = ${JSON.stringify(cursor)};
+    // The overlay lands inside the action's arm window; its own timers must
+    // not count as follow-up work the action started.
+    const track = window[${JSON.stringify(FOLLOW_UP_KEY)}];
+    const setT = track && track.setT || setTimeout, clearT = track && track.clearT || clearTimeout;
     let host = document.getElementById(id);
     if (!value) { host?.remove(); document.getElementById(id + '-hl')?.remove(); return; }
     if (host && !host._root) { host.remove(); host = null; }
@@ -142,14 +147,14 @@ function cursorScript(cursor) {
       outline.style.left = value.hl.x + 'px'; outline.style.top = value.hl.y + 'px';
       outline.style.width = value.hl.width + 'px'; outline.style.height = value.hl.height + 'px';
       outline.classList.add('on');
-      clearTimeout(box._hlTimer); box._hlTimer = setTimeout(() => outline.classList.remove('on'), 1600);
+      clearT(box._hlTimer); box._hlTimer = setT(() => outline.classList.remove('on'), 1600);
     }
     // A passed path tweens the overlay on local rAF while the real pointer
     // stream dispatches separately — per-step evals multiplied renderer
     // round-trips by path length for identical visuals. The returned promise
     // resolves when the glide lands, so callers can order a follow-up click.
     const pts = value.path;
-    cancelAnimationFrame(host._raf); clearTimeout(host._glideTimer);
+    cancelAnimationFrame(host._raf); clearT(host._glideTimer);
     host._glideResolve?.(); host._glideResolve = null;
     if (pts && pts.length > 1) {
       host.style.setProperty('transition', 'none');
@@ -157,13 +162,13 @@ function cursorScript(cursor) {
       const start = performance.now(), last = pts[pts.length - 1];
       return new Promise(resolve => {
         const land = () => {
-          clearTimeout(host._glideTimer); host._glideResolve = null;
+          clearT(host._glideTimer); host._glideResolve = null;
           host.style.setProperty('transform', 'translate(' + last.x + 'px,' + last.y + 'px)', 'important');
           host.style.removeProperty('transition'); resolve();
         };
         // Hidden tabs never fire rAF; the timer still lands the overlay on the
         // pointer so a later captureTab screenshot shows the right position.
-        host._glideTimer = setTimeout(land, pts.length * 16 + 100);
+        host._glideTimer = setT(land, pts.length * 16 + 100);
         host._glideResolve = resolve;
         const tick = () => {
           if (!host.isConnected) return land();
@@ -439,6 +444,11 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       if (!found || found.fail) throw fail(`Element is ${found ? found.fail : 'unavailable'}. Request a fresh snapshot or use a different selector.`);
       return found;
     }
+    // The page-side tracker counts the follow-up work the action starts (its
+    // short timers and requests) so the effect read can wait it out. Arm just
+    // before the real dispatch; a failed probe must not stall the action.
+    const armFollowUp = () => boundedJs(wc, followUpArmExpression(), 3000).catch(() => {});
+    const closeFollowUp = () => boundedJs(wc, followUpCloseExpression(), 3000).catch(() => {});
     const watching = watchNavigation(wc, delay);
     own.active++;
     if (own.active === 1) onBusy(tab, true);
@@ -461,6 +471,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         await moveCursor(point, hl);
         if (CLICKS[action]) {
           const kind = CLICKS[action];
+          await armFollowUp();
           for (let count = 1; count <= kind.count; count++) {
             mouseDown = { point, button: kind.button };
             await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: kind.button, buttons: kind.buttons, clickCount: count });
@@ -482,6 +493,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       } else if (action === 'drag') {
         const { hl: endHl, submit, nav, ...target } = end || await viewportPoint(to.x, to.y);
         await moveCursor(point, hl);
+        await armFollowUp();
         const path = cursorPath(point, target);
         mouseDown = { point, button: 'left' };
         await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
@@ -496,6 +508,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         cursor(target, 'move', endHl);
       } else if (action === 'select') {
         await moveCursor(point, hl);
+        await armFollowUp();
         const picked = await boundedJs(wc, selectScript(body, body));
         check();
         if (!picked || picked.fail) throw fail(`Element ${picked ? picked.fail : 'is unavailable'}${picked?.options ? ': ' + JSON.stringify(picked.options) : ''}.`);
@@ -504,10 +517,12 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       } else if (action === 'type') {
         // insertText is actual Chromium input (including input/beforeinput).
         // The selection belongs to the agent tab, never the human's focused tab.
+        await armFollowUp();
         if (body.text) await send('Input.insertText', { text: body.text });
         else await keys(keyboardEvent({ key: 'Backspace' }));
         cursor(point, 'type', hl);
       } else if (action === 'press') {
+        await armFollowUp();
         await keys(keyEvent);
         likelyNavigation = keyEvent.key === 'Enter';
         if (point || tab.agentCursor) cursor(point || { x: tab.agentCursor.x, y: tab.agentCursor.y }, 'press', hl);
@@ -515,9 +530,11 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         const viewport = await boundedJs(wc, '({ width: innerWidth, height: innerHeight })');
         check();
         point = { x: Math.max(0, Math.min(tab.agentCursor?.x ?? 100, viewport.width - 1)), y: Math.max(0, Math.min(tab.agentCursor?.y ?? 100, viewport.height - 1)) };
+        await armFollowUp();
         await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: Math.max(-2000, Math.min(2000, body.x || 0)), deltaY: Math.max(-2000, Math.min(2000, body.y || 0)) });
         cursor(point, 'scroll');
       }
+      if (action !== 'move') await closeFollowUp();
       await watching.settle(likelyNavigation);
       check();
       succeeded = true;
