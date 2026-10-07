@@ -326,10 +326,14 @@ function renderUpdatePopup() {
   const single = (u.vms || []).length === 1;
   for (const vm of u.vms || []) {
     if (!vm.state) continue;
+    const detail = vm.state === 'updating' ? String(vm.detail || '') : '';
     const line = single
-      ? (vm.state === 'updating' ? 'Updating your VM…' : vm.state === 'ok' ? 'VM updated' : `VM not updated: ${vm.error || 'unknown reason'}`)
-      : `${vm.label}: ${vm.state === 'updating' ? 'updating…' : vm.state === 'ok' ? 'updated' : `not updated: ${vm.error || 'unknown reason'}`}`;
+      ? (vm.state === 'updating' ? detail || 'Updating your VM…' : vm.state === 'ok' ? 'VM updated' : `VM not updated: ${vm.error || 'unknown reason'}`)
+      : `${vm.label}: ${vm.state === 'updating' ? detail || 'updating…' : vm.state === 'ok' ? 'updated' : `not updated: ${vm.error || 'unknown reason'}`}`;
     progress.append(element('p', `update-line ${vm.state}`, line));
+    for (const pl of vm.pluginLines || []) {
+      progress.append(element('p', `update-line plugin-line ${pl.tone === 'warn' ? 'warn' : pl.tone === 'ok' ? 'ok' : ''}`, String(pl.text || '')));
+    }
   }
   if (u.error) progress.append(element('p', 'update-line failed', `Update failed: ${u.error}`));
   const now = $('update-now'), later = $('update-later');

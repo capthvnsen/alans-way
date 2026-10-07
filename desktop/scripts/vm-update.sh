@@ -1,14 +1,21 @@
 #!/bin/sh
 # vm-update.sh - bring this machine's Alan's Way browser host checkout to a
-# release tag, restart the tab broker and verify it answers with that version.
+# release tag, restart the tab broker and verify it answers with that version,
+# then update each Hermes profile's alans-way plugins through `hermes plugins
+# update` and drain-restart the gateway once when any plugin changed.
 #
 # The desktop app pipes this script over SSH (ssh <host> 'sh -s -- v0.3.2'),
 # so nothing is installed on the VM and no file is left behind. It only ever
-# touches the checkout setup.sh created, that checkout's node_modules, and the
-# browser services named below. Hermes, the alans-way-agents plugin and the
-# user's other files are never touched.
+# touches the checkout setup.sh created, that checkout's node_modules, the
+# browser services named below, and the Hermes plugins listed below - and the
+# plugins only through `hermes -p <profile> plugins update <name>`. Consent
+# gates (a re-pin that widens the plugin, new dependencies) can never be
+# answered here: hermes runs with stdin closed and those plugins come back as
+# needs_approval. Installs recorded with a file:// source re-clone it, so the
+# alans-way-agents clone is first advanced to its newest release tag - forward
+# only, never a branch tip, never over local changes.
 #
-#   sh vm-update.sh v0.3.2    update to the tag and restart the browser host
+#   sh vm-update.sh v0.3.2    update to the tag, restart broker + plugins
 #   sh vm-update.sh --check   read-only: print the checkout/live versions
 #
 # Checkout discovery matches setup.sh: a root install lives at
@@ -19,7 +26,8 @@
 # Chromium is deliberately not restarted so open tabs and sign-ins survive.
 #
 # The last stdout line is one JSON result: {"ok":bool,"version":"x.y.z",
-# "restarted":bool,"error":"..."}. Everything above it is progress.
+# "restarted":bool,"error":"...","plugins":[...],"gatewayRestarted":bool}.
+# Everything above it is progress; "vm-update: <phase>" lines map to UI text.
 set -u
 
 TAG="" CHECK=0
@@ -37,7 +45,8 @@ release tag, restart the tab broker and verify it answers with that version.
 
 The desktop app pipes this script over SSH, so nothing is installed on the VM
 and no file is left behind. It only ever touches the checkout setup.sh
-created, that checkout's node_modules, and the browser services it manages.
+created, that checkout's node_modules, the browser services it manages, and
+the Hermes plugins it updates through `hermes plugins update`.
 EOF
     exit 0;;
   *) TAG="${1:-}";;
@@ -49,13 +58,19 @@ GUEST_OS="${ALANS_WAY_VM_OS:-$(uname -s 2>/dev/null || echo Linux)}"
 BUSY_WAIT="${ALANS_WAY_VM_BUSY_WAIT:-60}"
 BUSY_POLL="${ALANS_WAY_VM_BUSY_POLL:-5}"
 HEALTH_WAIT="${ALANS_WAY_VM_HEALTH_WAIT:-45}"
-VERSION="" RESTARTED=false
+PLUGIN_TIMEOUT="${ALANS_WAY_VM_PLUGIN_TIMEOUT:-90}"
+GATEWAY_TIMEOUT="${ALANS_WAY_VM_GATEWAY_TIMEOUT:-180}"
+# A run budget under the app's remote cap so the result line is always reached.
+VM_BUDGET="${ALANS_WAY_VM_BUDGET:-270}"
+VERSION="" RESTARTED=false PLUGINS_JSON="" GATEWAY_RESTARTED=false
+START_S="$(date +%s)"
 
 say() { printf 'vm-update: %s\n' "$*"; }
 json_string() { printf '%s' "$1" | tr '\n\t' '  ' | tr -d '\000-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-300; }
-json() { printf '{"ok":%s,"version":"%s","restarted":%s,"error":"%s"}\n' "$1" "$2" "$3" "$(json_string "$4")"; }
-fail() { json false "$VERSION" "$RESTARTED" "$1"; exit 1; }
+json() { printf '{"ok":%s,"version":"%s","restarted":%s,"error":"%s","plugins":[%s],"gatewayRestarted":%s}\n' "$1" "$2" "$3" "$(json_string "$4")" "$5" "$6"; }
+fail() { json false "$VERSION" "$RESTARTED" "$1" "$PLUGINS_JSON" "$GATEWAY_RESTARTED"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+budget_left() { printf '%s' "$(( VM_BUDGET - ($(date +%s) - START_S) ))"; }
 
 find_checkout() {
   if [ -n "${ALANS_WAY_DESKTOP_DIR:-}" ]; then
@@ -130,6 +145,205 @@ status_body() {
   fi
 }
 json_field() { sed -n 's/.*"'"$1"'"[^"]*"\([^"]*\)".*/\1/p' | head -1; }
+
+# --- Hermes plugins ---------------------------------------------------------
+# Each profile's alans-way / alans-way-computer plugin updates through
+# `hermes -p <profile> plugins update <name>` and nothing else. Consent gates
+# (a re-pin that widens the plugin, newly declared dependencies) are reported
+# needs_approval - never forced, never answered, never --yes.
+
+HERMES_BIN=""
+hermes_bin() {
+  [ -n "$HERMES_BIN" ] && return 0
+  HERMES_BIN="$(command -v hermes 2>/dev/null || true)"
+  for h in "$HOME/.local/bin/hermes" "${HERMES_HOME:-$HOME/.hermes}/bin/hermes" \
+      /usr/local/bin/hermes /opt/homebrew/bin/hermes; do
+    [ -z "$HERMES_BIN" ] && [ -x "$h" ] && HERMES_BIN="$h"
+  done
+  [ -n "$HERMES_BIN" ]
+}
+
+# One bounded hermes call: stdin is /dev/null so a consent prompt can only ever
+# read EOF ("no"), and `timeout` (when the guest has it) caps the call inside
+# the run's remaining budget so the JSON result line is always reached.
+run_hermes() {
+  _secs="$1"; shift
+  _left=$(( $(budget_left) - 8 ))
+  [ "$_left" -gt 0 ] || return 124
+  [ "$_secs" -le "$_left" ] || _secs="$_left"
+  if have timeout; then timeout "$_secs" "$HERMES_BIN" "$@" </dev/null 2>&1
+  else "$HERMES_BIN" "$@" </dev/null 2>&1; fi
+}
+
+# The profiles hermes counts: the default home plus every profile dir with the
+# canonical name grammar, an identity marker and no .deleted tombstone - the
+# same rules hermes_cli uses to enumerate them.
+list_profiles() {
+  [ -d "$HHOME" ] && printf 'default %s\n' "$HHOME"
+  for d in "$HHOME"/profiles/*/; do
+    [ -d "$d" ] || continue
+    _n="$(basename "$d")"
+    case "$_n" in ''|[!a-z0-9]*|*[!a-z0-9_-]*) continue;; esac
+    [ "${#_n}" -le 63 ] || continue
+    if [ -e "$HHOME/profiles/.deleted/$_n" ] || [ -L "$HHOME/profiles/.deleted/$_n" ]; then continue; fi
+    _ok=0
+    for _m in config.yaml .env SOUL.md profile.yaml auth.json state.db; do
+      if [ -f "$d$_m" ] || [ -L "$d$_m" ]; then _ok=1; break; fi
+    done
+    [ "$_ok" = 1 ] && printf '%s %s\n' "$_n" "${d%/}"
+  done
+}
+
+# $1 = plugin manifest dir; prints its declared version ("" when unreadable).
+plugin_version() {
+  sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"]\{1,\}\)"\{0,1\}[[:space:]]*$/\1/p' "$1/plugin.yaml" 2>/dev/null | head -1
+}
+# $1 = install-metadata entry; prints its recorded revision ("" when absent).
+plugin_rev() {
+  printf '%s\n' "$1" | sed -n 's/.*"revision"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
+# $1 = plugins dir, $2 = plugin name; prints the plugin's .install-metadata.json
+# entry. Braces are counted so pretty-printed and compact JSON both resolve to
+# the one block for that plugin name.
+plugin_meta() {
+  [ -f "$1/.install-metadata.json" ] || return 0
+  awk -v key="$2" '
+    !inblk && match($0, "\"" key "\"[ \t]*:[ \t]*{") { inblk=1; n=0 }
+    inblk { print; n += gsub(/{/, "{") - gsub(/}/, "}"); if (n <= 0) exit }
+  ' "$1/.install-metadata.json" 2>/dev/null
+}
+
+# $1 = clone dir. Advances an alans-way-agents clone to its newest release tag,
+# forward only - the tag is resolved as refs/tags/<tag>^{commit} so a branch
+# can never stand in for it. Prints "<outcome> <detail>": moved|ahead <ref>,
+# skipped <reason>, or none (not our clone / no release tags to aim at).
+clone_refresh() {
+  _cr="$1"
+  [ -d "$_cr/.git" ] || { echo "none"; return 0; }
+  _cr_url="$("$GIT" -C "$_cr" remote get-url origin 2>/dev/null || true)"
+  case "$_cr_url" in *alans-way-agents*) ;; *) echo "none"; return 0;; esac
+  "$GIT" -C "$_cr" fetch --tags origin >/dev/null 2>&1 \
+    || "$GIT" -C "$_cr" fetch --unshallow --tags origin >/dev/null 2>&1 \
+    || say "plugin clone fetch reported a problem; using the refs already in $_cr"
+  _cr_tag="$("$GIT" -C "$_cr" tag -l 'v*' 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1.2n -k2n -k3n | tail -1)"
+  [ -n "$_cr_tag" ] || { echo "none"; return 0; }
+  _cr_want="$("$GIT" -C "$_cr" rev-parse --verify -q "refs/tags/$_cr_tag^{commit}" 2>/dev/null || true)"
+  _cr_head="$("$GIT" -C "$_cr" rev-parse HEAD 2>/dev/null || true)"
+  [ -n "$_cr_want" ] && [ -n "$_cr_head" ] || { echo "none"; return 0; }
+  if "$GIT" -C "$_cr" merge-base --is-ancestor "$_cr_want" "$_cr_head" 2>/dev/null; then
+    echo "ahead $("$GIT" -C "$_cr" describe --tags --always 2>/dev/null || printf '%s' "$_cr_head" | cut -c1-12)"
+    return 0
+  fi
+  if [ -n "$("$GIT" -C "$_cr" status --porcelain 2>/dev/null | head -1)" ]; then
+    echo "skipped local changes"; return 0
+  fi
+  "$GIT" -C "$_cr" merge-base --is-ancestor "$_cr_head" "$_cr_want" 2>/dev/null \
+    || { echo "skipped not an ancestor of $_cr_tag"; return 0; }
+  if "$GIT" -C "$_cr" -c advice.detachedHead=false checkout -q "refs/tags/$_cr_tag" 2>/dev/null \
+      && [ "$("$GIT" -C "$_cr" rev-parse HEAD 2>/dev/null)" = "$_cr_want" ]; then
+    echo "moved $_cr_tag"; return 0
+  fi
+  echo "skipped could not check out $_cr_tag"
+}
+
+# $1 = cached clone record path - echoes its recorded outcome or "".
+clone_seen() {
+  printf '%s\n' "$CLONES" | while IFS='|' read -r _cp _co; do
+    [ "$_cp" = "$1" ] && { printf '%s' "$_co"; break; }
+  done
+}
+
+# $1..$7 = profile name before after status error repoRef; one JSON entry.
+plugin_entry() {
+  _extra=""
+  [ -n "${6:-}" ] && _extra="$_extra,\"error\":\"$(json_string "$6")\""
+  [ -n "${7:-}" ] && _extra="$_extra,\"repoRef\":\"$(json_string "$7")\""
+  printf '{"profile":"%s","name":"%s","before":"%s","after":"%s","status":"%s"%s}' \
+    "$(json_string "$1")" "$(json_string "$2")" "$(json_string "$3")" "$(json_string "$4")" "$5" "$_extra"
+}
+
+update_hermes_plugins() {
+  if ! hermes_bin; then say "no hermes CLI on this VM; skipping plugin updates"; return 0; fi
+  HHOME="${HERMES_HOME:-$HOME/.hermes}"
+  say "updating Hermes plugins"
+  CLONES="" CHANGED=false
+  while read -r _pname _phome; do
+    [ -n "$_pname" ] || continue
+    _pdir="$_phome/plugins"
+    for _name in alans-way alans-way-computer; do
+      [ -d "$_pdir/$_name" ] || continue
+      _meta="$(plugin_meta "$_pdir" "$_name")"
+      _before="$(plugin_version "$_pdir/$_name")"
+      [ -n "$_before" ] || _before="$(plugin_rev "$_meta")"
+      _repo_ref=""
+      # Catalog installs carry a "catalog" block (and a .hermes-catalog.json
+      # marker): their reviewed pin is moved by `plugins update`, never here.
+      _src="$(printf '%s\n' "$_meta" | sed -n 's/.*"source"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+      case "$_meta" in *'"catalog"'*) _src="";; esac
+      [ -f "$_pdir/$_name/.hermes-catalog.json" ] && _src=""
+      case "$_src" in
+        file://*)
+          _clone="$(printf '%s' "${_src#file://}" | cut -d# -f1)"
+          _outcome="$(clone_seen "$_clone")"
+          if [ -z "$_outcome" ]; then
+            _outcome="$(clone_refresh "$_clone")"
+            CLONES="${CLONES}${CLONES:+
+}$_clone|$_outcome"
+          fi
+          _co="${_outcome%% *}"; _cd="${_outcome#"$_co"}"; _cd="${_cd# }"
+          case "$_co" in
+            moved|ahead) _repo_ref="$_cd";;
+            skipped)
+              say "plugin $_name ($_pname): clone left alone: $_cd"
+              PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$_pname" "$_name" "$_before" "$_before" skipped "$_cd")"
+              continue;;
+          esac;;
+      esac
+      [ "$(budget_left)" -gt 15 ] || { say "plugin phase ran out of the time budget; remaining plugins will retry next update"; break 2; }
+      if [ "$_pname" = default ]; then
+        _out="$(run_hermes "$PLUGIN_TIMEOUT" plugins update "$_name")"
+      else
+        _out="$(run_hermes "$PLUGIN_TIMEOUT" -p "$_pname" plugins update "$_name")"
+      fi; _rc=$?
+      _after="$(plugin_version "$_pdir/$_name")"
+      [ -n "$_after" ] || _after="$(plugin_rev "$(plugin_meta "$_pdir" "$_name")")"
+      if [ "$_rc" -eq 124 ]; then
+        _st=failed; _err="the hermes update timed out"
+      elif printf '%s' "$_out" | grep -Eiq 'not applied|declined|confirm to continue|fail.?closed|not granted|new capabilities'; then
+        _st=needs_approval; _err=""
+      elif [ "$_rc" -ne 0 ]; then
+        _st=failed; _err="$(printf '%s\n' "$_out" | tail -2 | tr '\n' ' ')"
+      elif printf '%s' "$_out" | grep -Eiq 'already (up to date|at catalog pin)'; then
+        _st=current; _err=""
+      else
+        _st=updated; _err=""
+      fi
+      case "$_st" in
+        updated) CHANGED=true;;
+        needs_approval)
+          # The code moved but new capabilities stay ungranted until reviewed.
+          printf '%s' "$_out" | grep -Eq 'updated|Re-installed' && CHANGED=true;;
+      esac
+      say "plugin $_name ($_pname): $_st"
+      PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$_pname" "$_name" "$_before" "$_after" "$_st" "$_err" "$_repo_ref")"
+    done
+  done <<EOF
+$(list_profiles)
+EOF
+  # The gateway loads plugin code at start, so one drain-restart when anything
+  # actually changed (hermes gateway restart: SIGUSR1 drain, the supervisor or
+  # service manager owns the relaunch).
+  if [ "$CHANGED" = true ]; then
+    say "restarting the agent gateway"
+    if run_hermes "$GATEWAY_TIMEOUT" gateway restart >/dev/null 2>&1; then
+      GATEWAY_RESTARTED=true
+      say "agent gateway restarted"
+    else
+      say "gateway restart did not finish; on the VM run: hermes gateway restart"
+    fi
+  fi
+}
 
 # ---------------------------------------------------------------- main
 DIR="$(find_checkout)" \
@@ -236,4 +450,6 @@ if [ "$HEALTHY" != true ]; then
     fail "updated but the broker did not report v${TAG#v}; restart it with the command above"
   fi
 fi
-json true "${TAG#v}" "$RESTARTED" ""
+
+update_hermes_plugins
+json true "${TAG#v}" "$RESTARTED" "" "$PLUGINS_JSON" "$GATEWAY_RESTARTED"

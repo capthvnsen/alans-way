@@ -2,7 +2,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil,
-  vmRetryState, vmCheckEntry, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS,
+  vmRetryState, vmCheckEntry, vmPhaseText, pluginStatusText, vmPluginLines,
+  VM_TIMEOUT_MS, CHECK_TIMEOUT_MS,
 } = require('../src/vm-update.cjs');
 
 const SCRIPTS = { 'vm-update.sh': '#!/bin/sh\n# fake posix payload\n', 'vm-update.ps1': '# fake windows payload\n' };
@@ -194,4 +195,94 @@ test('the update popup shows only for an available, unsnoozed, idle update', () 
 
 test('Later snoozes for twenty four hours', () => {
   assert.equal(snoozeUntil(1000), 1000 + 24 * 60 * 60 * 1000);
+});
+
+// --- plugin phase -----------------------------------------------------------
+
+test('plugin results and the gateway restart flag ride along on the VM result', async () => {
+  const plugins = [
+    { profile: 'default', name: 'alans-way', before: '0.6.1', after: '0.6.2', status: 'updated', repoRef: 'v0.6.2' },
+    { profile: 'alpha', name: 'alans-way', before: '0.5.0', after: '0.5.0', status: 'needs_approval' },
+  ];
+  const { run } = fakeRun({ code: 0, out: okLine({ plugins, gatewayRestarted: true }), err: '' });
+  const updater = createVmUpdater({ run, readScript });
+  const result = await updater.updateVm(vm(), 'v0.3.2');
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.plugins, plugins);
+  assert.equal(result.gatewayRestarted, true);
+});
+
+test('an older guest script without plugin support still parses', async () => {
+  const { run } = fakeRun({ code: 0, out: okLine(), err: '' });
+  const updater = createVmUpdater({ run, readScript });
+  const result = await updater.updateVm(vm(), 'v0.3.2');
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.plugins, []);
+  assert.equal(result.gatewayRestarted, false);
+});
+
+test('a plugin failure never turns a VM result into a failure', async () => {
+  const { run } = fakeRun({
+    code: 0,
+    out: okLine({ plugins: [{ profile: 'default', name: 'alans-way', before: '0.6.1', after: '0.6.1', status: 'failed', error: 'registry unreachable' }] }),
+    err: '',
+  });
+  const updater = createVmUpdater({ run, readScript });
+  const result = await updater.updateVm(vm(), 'v0.3.2');
+  assert.equal(result.ok, true);
+  assert.equal(result.state, 'ok');
+  assert.equal(result.plugins[0].status, 'failed');
+});
+
+test('guest progress lines stream back through onProgress', async () => {
+  const { run } = fakeRun((call) => {
+    call.opts.onStdout('vm-update: checkout pinned at v0.3.2\nvm-update: updating Hermes plugins\nvm-update: restarting the');
+    call.opts.onStdout(' agent gateway\n');
+    return { code: 0, out: okLine(), err: '' };
+  });
+  const seen = [];
+  const updater = createVmUpdater({ run, readScript });
+  await updater.updateVm(vm(), 'v0.3.2', (id, text) => seen.push(`${id}:${text}`));
+  assert.deepEqual(seen, ['agent:Updating agent plugins…', 'agent:Restarting your agent…']);
+});
+
+test('vmPhaseText translates script progress into UI text', () => {
+  assert.equal(vmPhaseText('restarting the agent gateway'), 'Restarting your agent…');
+  assert.equal(vmPhaseText('updating Hermes plugins'), 'Updating agent plugins…');
+  assert.equal(vmPhaseText('checkout pinned at v0.3.2'), '');
+  assert.equal(vmPhaseText(''), '');
+});
+
+test('pluginStatusText covers every per-plugin UI state', () => {
+  const p = { profile: 'default', name: 'alans-way', before: '0.6.1', after: '0.6.2' };
+  assert.equal(pluginStatusText({ ...p, status: 'updated' }), 'Plugin updated (v0.6.1 to v0.6.2)');
+  assert.equal(pluginStatusText({ ...p, status: 'updated' }, { qualified: true }), 'Plugin alans-way updated (v0.6.1 to v0.6.2)');
+  assert.equal(pluginStatusText({ ...p, status: 'current' }), 'Plugin is current');
+  assert.equal(
+    pluginStatusText({ ...p, status: 'needs_approval' }),
+    'Plugin update needs your approval. On your VM run: hermes plugins update alans-way');
+  assert.equal(
+    pluginStatusText({ ...p, profile: 'alpha', status: 'needs_approval' }),
+    'Plugin update needs your approval. On your VM run: hermes -p alpha plugins update alans-way');
+  assert.equal(pluginStatusText({ ...p, status: 'failed', error: 'registry unreachable' }), 'Plugin update failed: registry unreachable');
+  assert.equal(pluginStatusText({ ...p, status: 'skipped', error: 'local changes' }), 'Plugin update skipped: local changes');
+});
+
+test('vmPluginLines prefixes entries when a VM reports more than one and warns on a missed restart', () => {
+  const lines = vmPluginLines({
+    gatewayRestarted: false,
+    plugins: [
+      { profile: 'default', name: 'alans-way', before: '0.6.1', after: '0.6.2', status: 'updated' },
+      { profile: 'alpha', name: 'alans-way', before: '0.5.0', after: '0.5.0', status: 'needs_approval' },
+    ],
+  });
+  assert.equal(lines.length, 3);
+  assert.match(lines[0].text, /alans-way updated/);
+  assert.equal(lines[0].tone, 'ok');
+  assert.equal(lines[1].tone, 'warn');
+  assert.match(lines[1].text, /hermes -p alpha plugins update alans-way/);
+  assert.match(lines[2].text, /hermes gateway restart/);
+  assert.equal(lines[2].tone, 'warn');
+  assert.equal(vmPluginLines({ gatewayRestarted: true, plugins: [{ status: 'current' }] }).length, 1);
+  assert.equal(vmPluginLines({}).length, 0);
 });

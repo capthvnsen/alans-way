@@ -11,6 +11,11 @@ const { spawnSync, execFileSync, spawn } = require('node:child_process');
 const SCRIPT = path.join(__dirname, '../scripts/vm-update.sh');
 const POST_HOOK = path.join(__dirname, '../scripts/vm-post-update.sh');
 const WINDOWS_SCRIPT = path.join(__dirname, '../scripts/vm-update.ps1');
+// /usr/bin/git is a license-gated stub until Xcode's license is accepted;
+// the Command Line Tools git is not.
+if (process.platform === 'darwin' && fs.existsSync('/Library/Developer/CommandLineTools/usr/bin/git')) {
+  process.env.DEVELOPER_DIR = '/Library/Developer/CommandLineTools';
+}
 const REAL_GIT = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim() || '/usr/bin/git';
 const tmpdirs = [], servers = [];
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
@@ -96,7 +101,10 @@ const runScript = (args, env) => new Promise((resolve, reject) => {
 const envFor = (checkout, data, bin, extra = {}) => ({
   ALANS_WAY_DESKTOP_DIR: checkout,
   ALANS_WAY_VM_DATA: data,
-  PATH: `${bin}:${process.env.PATH}`,
+  // A closed PATH and HOME so the script under test can never reach the real
+  // hermes CLI, ~/.local/bin/hermes or ~/.hermes on the machine running them.
+  PATH: `${bin}:/usr/bin:/bin`,
+  HOME: data,
   ALANS_WAY_VM_OS: 'Linux',
   ALANS_WAY_VM_BUSY_WAIT: '2',
   ALANS_WAY_VM_BUSY_POLL: '1',
@@ -127,7 +135,7 @@ test('a tag update fetches, pins the checkout, restarts the broker and answers J
   const hookLog = path.join(data, 'hook.log');
   const res = await runScript(['v0.3.2'], envFor(checkout, data, bin, { ALANS_WAY_VM_HOOK_LOG: hookLog }));
   const result = lastJson(res);
-  assert.deepEqual(result, { ok: true, version: '0.3.2', restarted: true, error: '' });
+  assert.deepEqual(result, { ok: true, version: '0.3.2', restarted: true, error: '', plugins: [], gatewayRestarted: false });
   assert.equal(res.status, 0, res.stderr);
   assert.equal(git(checkout, 'rev-parse', 'HEAD'), git(checkout, 'rev-parse', 'v0.3.2^{commit}'));
   assert.match(fs.readFileSync(marker, 'utf8'), /restart hermes-alans-way-browser\.service/);
@@ -279,4 +287,291 @@ test('the Windows twin pins full tag refs and retries the fetch like the POSIX s
   assert.match(ps1, /--unshallow/, 'keeps the shallow-fetch fallback');
   assert.match(ps1, /--depth=1000000/, 'keeps the deep-fetch fallback');
   assert.match(ps1, /connection\.json/, 'reads the broker-written connection file');
+  assert.match(ps1, /'plugins', 'update'/, 'plugin updates go through hermes plugins update');
+  assert.match(ps1, /'gateway', 'restart'/, 'one drain-restart through hermes gateway restart');
+  assert.match(ps1, /RedirectStandardInput/, 'hermes runs with stdin closed so no consent prompt can be answered');
+  assert.match(ps1, /needs_approval/, 'consent gates surface as needs_approval');
+  assert.doesNotMatch(ps1, /--yes|--force/, 'no consent bypass flags');
+});
+
+// --- Hermes plugin phase --------------------------------------------------
+// A fake `hermes` on PATH. Control files under the state dir decide outcomes:
+//   $STATE/mode.<profile>.<name>  update|current|consent|fail|caps
+//   $STATE/gwfail                  makes `gateway restart` exit 1
+//   $STATE/updated-version         the version "update" writes to plugin.yaml
+//   $STATE/hermes.log              one line per invocation
+//   $STATE/restarts.log            one line per `gateway restart`
+const FAKE_HERMES = `#!/bin/sh
+STATE="$FAKE_HERMES_STATE"
+P=default
+if [ "\${1:-}" = "-p" ]; then P="$2"; shift 2; fi
+printf 'hermes -p %s %s\\n' "$P" "$*" >> "$STATE/hermes.log"
+if [ "$1" = gateway ] && [ "$2" = restart ]; then
+  if [ -f "$STATE/gwfail" ]; then echo 'gateway restart refused'; exit 1; fi
+  printf 'restart\\n' >> "$STATE/restarts.log"; exit 0
+fi
+if [ "$1" = plugins ] && [ "$2" = update ]; then
+  name="$3"
+  if [ "$P" = default ]; then PH="$HERMES_HOME"; else PH="$HERMES_HOME/profiles/$P"; fi
+  mode="$(cat "$STATE/mode.$P.$name" 2>/dev/null || echo update)"
+  case "$mode" in
+    current) echo "Plugin $name is already up to date."; exit 0;;
+    consent) echo 'Non-interactive session: update NOT applied (fail closed).'
+             echo "Update of $name not applied: Updating '$name' to abc1234 adds tools.new; Confirm to continue."
+             exit 1;;
+    fail) echo 'Error: plugin registry unreachable'; exit 1;;
+    *) v="$(cat "$STATE/updated-version" 2>/dev/null || echo 9.9.9)"
+       sed "s/^version:.*/version: \\"$v\\"/" "$PH/plugins/$name/plugin.yaml" > "$PH/plugins/$name/plugin.yaml.tmp" \\
+         && mv "$PH/plugins/$name/plugin.yaml.tmp" "$PH/plugins/$name/plugin.yaml"
+       echo "Plugin $name updated."
+       if [ "$mode" = caps ]; then
+         echo "Plugin $name has new capabilities; review them with hermes plugins capabilities $name."
+         echo 'Non-interactive session: capabilities NOT granted (fail closed).'
+       fi
+       exit 0;;
+  esac
+fi
+echo "unexpected call: $*"; exit 2
+`;
+function makeHermesState() {
+  const state = mktemp('vm-update-hermes-state-');
+  fs.writeFileSync(path.join(state, 'updated-version'), '0.6.2');
+  return state;
+}
+function addHermes(bin, state) {
+  fs.writeFileSync(path.join(bin, 'hermes'), FAKE_HERMES, { mode: 0o755 });
+  return { log: () => (fs.existsSync(path.join(state, 'hermes.log')) ? fs.readFileSync(path.join(state, 'hermes.log'), 'utf8') : ''),
+    restarts: () => (fs.existsSync(path.join(state, 'restarts.log')) ? fs.readFileSync(path.join(state, 'restarts.log'), 'utf8').trim().split('\n').length : 0) };
+}
+function makeHermesHome() {
+  const home = mktemp('vm-update-hermes-home-');
+  fs.mkdirSync(path.join(home, 'plugins'), { recursive: true });
+  return home;
+}
+function addProfile(home, name) {
+  const dir = path.join(home, 'profiles', name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'config.yaml'), 'model: fixture\n');
+}
+// A plugin install: <home>/plugins/<name>/plugin.yaml plus an entry in the
+// profile's .install-metadata.json (the file `hermes plugins update` reads).
+function addPlugin(home, profile, name, version, entry) {
+  const ph = profile === 'default' ? home : path.join(home, 'profiles', profile);
+  const dir = path.join(ph, 'plugins', name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'plugin.yaml'), `name: ${name}\nversion: "${version}"\n`);
+  const metaPath = path.join(ph, 'plugins', '.install-metadata.json');
+  const meta = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8')) : {};
+  meta[name] = entry || { pinned: false, revision: 'aaa111', source: 'https://example.com/repo.git' };
+  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+}
+// An alans-way-agents clone (what `file://` plugin sources point at) pinned to
+// the older release tag v0.6.0; the remote also carries v0.6.2.
+function makePluginClone() {
+  const remoteDir = mktemp('alans-way-agents-remote-');
+  execFileSync('git', ['init', '--bare', '-q', remoteDir]);
+  const work = mktemp('alans-way-agents-seed-');
+  execFileSync('git', ['init', '-b', 'main', '-q', work]);
+  git(work, 'config', 'user.email', 'fixture@example.com');
+  git(work, 'config', 'user.name', 'fixture');
+  fs.mkdirSync(path.join(work, 'alans-way'), { recursive: true });
+  fs.writeFileSync(path.join(work, 'alans-way', 'plugin.yaml'), 'name: alans-way\nversion: "0.6.0"\n');
+  git(work, 'add', '.'); git(work, 'commit', '-q', '-m', 'v0.6.0'); git(work, 'tag', 'v0.6.0');
+  fs.writeFileSync(path.join(work, 'alans-way', 'plugin.yaml'), 'name: alans-way\nversion: "0.6.2"\n');
+  git(work, 'add', '.'); git(work, 'commit', '-q', '-m', 'v0.6.2'); git(work, 'tag', 'v0.6.2');
+  git(work, 'remote', 'add', 'origin', remoteDir);
+  git(work, 'push', '-q', 'origin', 'main', '--tags');
+  const clone = mktemp('alans-way-agents-clone-');
+  execFileSync('git', ['clone', '-q', remoteDir, clone]);
+  git(clone, 'config', 'user.email', 'fixture@example.com');
+  git(clone, 'config', 'user.name', 'fixture');
+  git(clone, 'checkout', '-q', 'refs/tags/v0.6.0');
+  return clone;
+}
+const pluginEnv = (home, state) => ({ HERMES_HOME: home, FAKE_HERMES_STATE: state });
+
+test('a VM without hermes still updates and reports an empty plugin list', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(makeHermesHome(), mktemp('vm-update-hermes-state-'))));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.plugins, []);
+  assert.equal(result.gatewayRestarted, false);
+});
+
+test('a file-sourced plugin advances its clone to the newest tag, updates and restarts the gateway once', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const state = makeHermesState();
+  const { log, restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  const clone = makePluginClone();
+  addPlugin(home, 'default', 'alans-way', '0.6.1', { pinned: false, revision: 'aaa111', source: `file://${clone}#alans-way` });
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.plugins, [
+    { profile: 'default', name: 'alans-way', before: '0.6.1', after: '0.6.2', status: 'updated', repoRef: 'v0.6.2' }]);
+  assert.equal(result.gatewayRestarted, true);
+  assert.equal(restarts(), 1);
+  assert.equal(git(clone, 'rev-parse', 'HEAD'), git(clone, 'rev-parse', 'refs/tags/v0.6.2^{commit}'), 'clone pinned to the newest tag');
+  assert.match(log(), /plugins update alans-way/, 'update went through hermes');
+});
+
+test('plugin updates across profiles restart the gateway a single time', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const state = makeHermesState();
+  const { restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  const clone = makePluginClone();
+  const entry = { pinned: false, revision: 'aaa111', source: `file://${clone}#alans-way` };
+  addPlugin(home, 'default', 'alans-way', '0.6.1', entry);
+  addProfile(home, 'alpha');
+  addPlugin(home, 'alpha', 'alans-way', '0.5.0', entry);
+  addPlugin(home, 'alpha', 'alans-way-computer', '0.5.0', { ...entry, source: `file://${clone}#alans-way-computer` });
+  addProfile(home, 'beta');
+  addPlugin(home, 'beta', 'alans-way', '0.5.0', entry);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins.length, 4);
+  for (const p of result.plugins) assert.equal(p.status, 'updated', JSON.stringify(p));
+  assert.equal(result.gatewayRestarted, true);
+  assert.equal(restarts(), 1, 'one gateway restart per VM');
+});
+
+test('a current plugin means no gateway restart', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const state = makeHermesState();
+  const { restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.2');
+  fs.writeFileSync(path.join(state, 'mode.default.alans-way'), 'current');
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(result.plugins[0], { profile: 'default', name: 'alans-way', before: '0.6.2', after: '0.6.2', status: 'current' });
+  assert.equal(result.gatewayRestarted, false);
+  assert.equal(restarts(), 0);
+});
+
+test('a consent-gated update reports needs_approval, never answers a prompt and never restarts', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const state = makeHermesState();
+  const { log, restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(state, 'mode.default.alans-way'), 'consent');
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.ok, true, 'a plugin consent gate is never a VM failure');
+  assert.equal(result.plugins[0].status, 'needs_approval');
+  assert.equal(result.plugins[0].after, '0.6.1', 'nothing was applied');
+  assert.equal(result.gatewayRestarted, false);
+  assert.equal(restarts(), 0);
+  assert.doesNotMatch(log(), /--yes|--force/, 'no consent bypass flags');
+});
+
+test('a plugin update failure is a warning, not a VM failure', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const state = makeHermesState();
+  addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(state, 'mode.default.alans-way'), 'fail');
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.ok, true);
+  assert.equal(result.plugins[0].status, 'failed');
+  assert.match(result.plugins[0].error, /registry unreachable/);
+  assert.equal(result.gatewayRestarted, false);
+});
+
+test('a plugin clone with local changes is left alone and the plugin reported skipped', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const state = makeHermesState();
+  const { log, restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  const clone = makePluginClone();
+  fs.writeFileSync(path.join(clone, 'dirty.txt'), 'local edit\n');
+  addPlugin(home, 'default', 'alans-way', '0.6.1', { pinned: false, revision: 'aaa111', source: `file://${clone}#alans-way` });
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'skipped');
+  assert.match(result.plugins[0].error, /local changes/);
+  assert.equal(git(clone, 'rev-parse', 'HEAD'), git(clone, 'rev-parse', 'refs/tags/v0.6.0^{commit}'), 'clone untouched');
+  assert.doesNotMatch(log(), /plugins update/, 'a dirty clone skips the plugin update');
+  assert.equal(restarts(), 0);
+});
+
+test('a plugin clone on a diverged commit is left alone and reported skipped', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const state = makeHermesState();
+  const { log } = addHermes(bin, state);
+  const home = makeHermesHome();
+  const clone = makePluginClone();
+  fs.writeFileSync(path.join(clone, 'dev.txt'), 'dev commit\n');
+  git(clone, 'add', 'dev.txt'); git(clone, 'commit', '-q', '-m', 'diverged');
+  addPlugin(home, 'default', 'alans-way', '0.6.1', { pinned: false, revision: 'aaa111', source: `file://${clone}#alans-way` });
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'skipped');
+  assert.doesNotMatch(log(), /plugins update/);
+});
+
+test('a catalog-installed plugin updates through hermes and never consults a clone', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const state = makeHermesState();
+  const { log, restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1', {
+    catalog: { name: 'alans-way', pin: 'bbb222', repo: 'https://example.com/alans-way-agents', sha: 'bbb222', tier: 'official' },
+    pinned: true, revision: 'bbb222', source: 'https://example.com/alans-way-agents',
+  });
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'updated');
+  assert.match(log(), /plugins update alans-way/);
+  assert.equal(restarts(), 1);
+});
+
+test('a VM with hermes but no managed plugins reports an empty plugin list', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const state = makeHermesState();
+  const { restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addProfile(home, 'alpha');
+  addPlugin(home, 'alpha', 'unrelated-plugin', '1.0.0');
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(result.plugins, []);
+  assert.equal(result.gatewayRestarted, false);
+  assert.equal(restarts(), 0);
 });

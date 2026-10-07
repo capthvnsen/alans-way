@@ -593,6 +593,18 @@ async function openTelegramHash(hash) {
   watchChange({ read, delayMs: 1500, onStuck: () => { if (!wc.isDestroyed() && wc.getURL() === target) wc.reload(); } });
   await wc.loadURL(target).catch(() => {});
 }
+// The guest script narrates phases ("Updating agent plugins…"); fold them
+// into the VM's detail line so the popup shows what it is doing.
+function noteVmProgress(id, text) {
+  vmProgress[id] = { ...(vmProgress[id] || {}), state: 'updating', detail: String(text || '') };
+  broadcast();
+}
+// A finished VM update carries per-plugin lines; they are warnings, never a
+// change to the VM's ok/failed state.
+function vmProgressResult(result) {
+  return { state: result.state, error: result.error || '', version: result.version || '',
+    pluginLines: result.pluginLines || [] };
+}
 // Record what a VM update attempt produced so a relaunch can offer retry.
 function noteVmResult(result) {
   const previous = prefs.vmUpdates?.[result.id] || {};
@@ -878,8 +890,8 @@ function registerIpc() {
         // Every saved VM first, then this app. A VM failure or timeout is
         // recorded for the retry banner and never blocks the app update.
         try {
-          for (const result of await vmUpdater.updateAll(tag, targets)) {
-            vmProgress[result.id] = { state: result.state, error: result.error || '', version: result.version || '' };
+          for (const result of await vmUpdater.updateAll(tag, targets, noteVmProgress)) {
+            vmProgress[result.id] = vmProgressResult(result);
             noteVmResult(result); broadcast();
           }
           savePreferences();
@@ -899,8 +911,8 @@ function registerIpc() {
             const entry = prefs.vmUpdates?.[target.id] || {};
             if (!entry.failed && !(entry.version && macUpdate.isNewer(app.getVersion(), entry.version))) continue;
             vmProgress[target.id] = { state: 'updating' }; broadcast();
-            const result = await vmUpdater.updateVm(target, tag);
-            vmProgress[target.id] = { state: result.state, error: result.error || '', version: result.version || '' };
+            const result = await vmUpdater.updateVm(target, tag, noteVmProgress);
+            vmProgress[target.id] = vmProgressResult(result);
             noteVmResult(result); broadcast();
           }
           savePreferences();
