@@ -297,6 +297,7 @@ function render(next) {
   $('telegram-note').classList.toggle('warn', state.telegramStatus === 'layout-changed');
   scheduleLayout();
 }
+let updatePopupPinned = false, updatePopupFocused = false;
 function renderUpdate() {
   const version = $('version-label'); version.textContent = `v${state.version}`; version.title = `Release notes for v${state.version}`; version.onclick = () => command('open-release-notes');
   const badge = $('build-badge'), b = state.buildBadge;
@@ -304,8 +305,49 @@ function renderUpdate() {
   const note = $('update-note'), u = state.update || {};
   const label = u.busy ? 'Updating…' : u.error ? 'Update failed · Open download page' : u.ready ? `Restart to update to v${u.available}` : u.available ? `Update to v${u.available}` : '';
   note.classList.toggle('hidden', !label); note.textContent = label; note.disabled = !!u.busy;
-  note.onclick = () => command(u.error ? 'open-download-page' : 'update-now');
-  if (u.justUpdatedFrom) { toast(`Updated to v${state.version}. Send your agent the update prompt: Settings → Agent setup → Copy agent update prompt.${state.platform === 'darwin' ? ' If your agent can no longer use this Mac, turn alans-way-localapp off and on again in System Settings → Privacy & Security → Accessibility.' : ''}`); command('dismiss-updated'); }
+  note.onclick = () => { if (u.error) command('open-download-page'); else { updatePopupPinned = true; renderUpdatePopup(); } };
+  renderUpdatePopup();
+  renderVmBanner();
+  if (u.justUpdatedFrom) {
+    toast(`Updated to v${state.version}.${u.vmRetry?.show ? ' A VM update did not finish: use Retry above, or send your agent the update prompt from Settings → Agent setup.' : ''}${state.platform === 'darwin' ? ' If your agent can no longer use this Mac, turn alans-way-localapp off and on again in System Settings → Privacy & Security → Accessibility.' : ''}`);
+    command('dismiss-updated');
+  }
+}
+// The dialog stays while an update runs so per-VM progress is visible. Escape
+// and Later both mean "not now" and only snooze before the update starts.
+function renderUpdatePopup() {
+  const u = state.update || {}, popup = $('update-popup');
+  const show = Boolean(u.popup || u.busy || (updatePopupPinned && u.available));
+  popup.classList.toggle('hidden', !show);
+  if (!show) { updatePopupPinned = false; updatePopupFocused = false; return; }
+  $('update-popup-title').textContent = u.busy ? 'Updating' : 'Update available';
+  $('update-popup-copy').textContent = u.busy ? 'Your VMs update first, then this app.' : `Alan’s Way v${u.available} is ready. You have v${state.version}.`;
+  const progress = $('update-progress'); progress.replaceChildren();
+  const single = (u.vms || []).length === 1;
+  for (const vm of u.vms || []) {
+    if (!vm.state) continue;
+    const detail = vm.state === 'updating' ? String(vm.detail || '') : '';
+    const line = single
+      ? (vm.state === 'updating' ? detail || 'Updating your VM…' : vm.state === 'ok' ? 'VM updated' : `VM not updated: ${vm.error || 'unknown reason'}`)
+      : `${vm.label}: ${vm.state === 'updating' ? detail || 'updating…' : vm.state === 'ok' ? 'updated' : `not updated: ${vm.error || 'unknown reason'}`}`;
+    progress.append(element('p', `update-line ${vm.state}`, line));
+    for (const pl of vm.pluginLines || []) {
+      progress.append(element('p', `update-line plugin-line ${pl.tone === 'warn' ? 'warn' : pl.tone === 'ok' ? 'ok' : ''}`, String(pl.text || '')));
+    }
+  }
+  if (u.error) progress.append(element('p', 'update-line failed', `Update failed: ${u.error}`));
+  const now = $('update-now'), later = $('update-later');
+  now.disabled = !!u.busy; later.disabled = !!u.busy;
+  now.textContent = u.busy ? 'Updating…' : 'Update now';
+  if (!updatePopupFocused) { updatePopupFocused = true; now.focus(); }
+}
+function renderVmBanner() {
+  const u = state.update || {}, retry = u.vmRetry || {};
+  const banner = $('vm-banner');
+  banner.classList.toggle('hidden', !retry.show);
+  if (!retry.show) return;
+  $('vm-banner-text').textContent = u.vmRetrying ? 'Updating your VM…' : retry.version ? `Your VM is on v${retry.version}.` : 'Your VM is not up to date.';
+  $('vm-banner-retry').disabled = !!(u.vmRetrying || u.busy);
 }
 let onboardingStep = 1, onboardingSignature = '';
 function renderOnboarding(show) {
@@ -666,6 +708,22 @@ $('ask-bot').onclick = () => command('share-page');
 
 $('modal-close').onclick = closeModal;
 $('modal').onclick = (event) => { if (event.target === $('modal')) closeModal(); };
+$('update-now').onclick = () => command('update-now');
+$('update-later').onclick = () => { updatePopupPinned = false; command('update-later'); };
+$('vm-banner-retry').onclick = () => command('vm-update-retry');
+$('update-popup').onclick = (event) => { if (event.target === $('update-popup') && !state?.update?.busy) $('update-later').click(); };
+$('update-popup').addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.stopPropagation();
+    if (!state?.update?.busy) $('update-later').click();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const items = [...$('update-popup').querySelectorAll('button:not(:disabled)')];
+  if (!items.length) return;
+  const first = items[0], last = items.at(-1);
+  if (event.shiftKey ? document.activeElement === first : document.activeElement === last) { (event.shiftKey ? last : first).focus(); event.preventDefault(); }
+});
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { if (modalOpen) closeModal(); else closeDownloads(); } });
 $('splitter').onpointerdown = (event) => {
   const startX = event.clientX, startWidth = state.chatWidth; $('splitter').setPointerCapture(event.pointerId); $('splitter').classList.add('active');

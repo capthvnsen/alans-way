@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- V8 compiles JS to memory the hardened runtime would otherwise refuse to execute. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <!-- V8/WASM still take paths that write executable pages without MAP_JIT. -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- Site permissions can grant a tab the camera (meetings, calls). -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
+    <!-- Site permissions can grant a tab the microphone. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+  </dict>
+</plist>

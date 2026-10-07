@@ -65,6 +65,11 @@ const agentUrlProblem = (url) => {
   if (!/^https?:$/.test(u.protocol)) return '';
   try { agentPageUrl(`http://${u.host}/`); return ''; } catch (e) { return e.message; }
 };
+// The release the checkout was installed from; vm-update.sh verifies the
+// broker reports this after a tag switch, so it must come from package.json,
+// never a literal.
+let hostVersion = '';
+try { hostVersion = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version || ''; } catch {}
 const overseerBots = new Set(
   String(process.env.HERMES_OVERSEER_BOT_IDS || '')
     .split(',')
@@ -297,6 +302,9 @@ async function serve() {
         agentSince: human ? undefined : Date.now(),
         hostOpened: true,
         humanHeld: human === true,
+        // A tab is not idle while it is still opening, and its idle clock
+        // starts when the open finishes rather than when it was requested.
+        opening: true,
       });
       await persist();
       await tab.view.webContents.command('Page.enable');
@@ -314,13 +322,15 @@ async function serve() {
       if (body.settle === false) {
         tab.url = url;
         if (tab.controller === 'agent') tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
-        await persist();
       } else {
         await loaded(tab, url);
         if (tab.controller === 'agent') await tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
-        await persist();
       }
+      tab.opening = false;
+      tab.lastUsedAt = Date.now();
+      await persist();
     } catch (e) {
+      if (tab) tab.opening = false;
       throw fail('VPS tab opened but navigation needs review. List its state before retrying.', 502);
     }
     // A mirror restore opens its own fan-out; capping mid-flight would close
@@ -334,7 +344,7 @@ async function serve() {
     const now = Date.now();
     const held = [...tabs.values()].filter((t) => t.botId === botId && t.hostOpened === true && t.humanHeld !== true);
     const newest = held.reduce((a, t) => (!a || (t.lastUsedAt || 0) > (a.lastUsedAt || 0) ? t : a), null);
-    const closable = held.filter((t) => t !== keep && t !== newest && !(t.pendingActions > 0) && !input.isDispatching(t));
+    const closable = held.filter((t) => t !== keep && t !== newest && t.opening !== true && !(t.pendingActions > 0) && !input.isDispatching(t));
     const doomed = new Set(closable.filter((t) => now - (t.lastUsedAt || 0) > tabIdleMs));
     const lru = closable.filter((t) => !doomed.has(t)).sort((a, b) => (a.lastUsedAt || 0) - (b.lastUsedAt || 0));
     while (held.length - doomed.size > maxBotTabs && lru.length) doomed.add(lru.shift());
@@ -811,11 +821,26 @@ async function serve() {
     const isApp = isAuthorized(req.headers.authorization, appToken);
     if (req.headers.origin || !(isApp || isAuthorized(req.headers.authorization, token)))
       return send(401, { error: 'Unauthorized' });
+    const url = new URL(req.url, 'http://127.0.0.1');
+    // Status must answer even while Chromium is down: it is the liveness,
+    // version and busy readout the updater and the router both depend on.
+    if (url.pathname === '/v1/status')
+      return send(200, {
+        name: 'Hermes VPS browser',
+        version: hostVersion,
+        host: 'vps',
+        platform: process.platform,
+        protocol: 1,
+        session: 'shared-vps',
+        capabilities: ['tabs', 'snapshot', 'screenshot', 'background-input', 'control-epochs', 'checkpoint'],
+        tabCount: tabs.size,
+        browserUp: cdp.socket.readyState === 1,
+        busy: [...tabs.values()].some((t) => (t.pendingActions || 0) > 0 || input.isDispatching(t)),
+      });
     if (cdp.socket.readyState !== 1)
       return send(503, { error: 'VPS Chromium disconnected. Inspect task state before retrying.' });
     try {
-      const url = new URL(req.url, 'http://127.0.0.1'),
-        botId = String(req.headers['x-hermes-bot'] || ''),
+      const botId = String(req.headers['x-hermes-bot'] || ''),
         human = req.headers['x-hermes-human'] === '1',
         overseer = overseerBots.has(botId);
       if (human && !isApp) throw fail('Human-only operations need the app token.', 403);
@@ -823,16 +848,6 @@ async function serve() {
         const botName = decodeURIComponent(String(req.headers['x-hermes-bot-name'] || '')).slice(0, 80);
         if (botId && botName) botNames.set(botId, botName);
       } catch {}
-      if (url.pathname === '/v1/status')
-        return send(200, {
-          name: 'Hermes VPS browser',
-          version: '0.1.5',
-          host: 'vps',
-          protocol: 1,
-          session: 'shared-vps',
-          capabilities: ['tabs', 'snapshot', 'screenshot', 'background-input', 'control-epochs', 'checkpoint'],
-          tabCount: tabs.size,
-        });
       if (url.pathname === '/v1/tabs' && req.method === 'GET')
         return send(200, {
           tabs: [...tabs.values()]

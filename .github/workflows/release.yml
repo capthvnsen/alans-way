@@ -67,7 +67,15 @@ jobs:
         run: |
           version=$(node scripts/check-version.cjs "$GITHUB_REF_NAME")
           npm version "$version" --no-git-tag-version --allow-same-version
+      # macOS signs when the signing secrets exist and stays ad-hoc otherwise,
+      # so forks build unchanged. Notarization only runs on tag builds.
       - run: npm run ${{ matrix.script }}
+        env:
+          CSC_LINK: ${{ runner.os == 'macOS' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.CSC_KEY_PASSWORD || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && github.event_name == 'push' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ runner.os == 'macOS' && github.event_name == 'push' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && github.event_name == 'push' && secrets.APPLE_TEAM_ID || '' }}
       - if: runner.os == 'macOS'
         run: shasum -a 512 dist/OpenAlan-mac.dmg | cut -d' ' -f1 > dist/OpenAlan-mac.dmg.sha512
       - uses: actions/upload-artifact@v4
@@ -77,8 +85,10 @@ jobs:
           path: |
             desktop/dist/OpenAlan-mac.dmg
             desktop/dist/OpenAlan-mac.dmg.sha512
+            desktop/dist/OpenAlan-mac.zip
             desktop/dist/OpenAlan-windows-setup.exe
             desktop/dist/latest.yml
+            desktop/dist/latest-mac.yml
 
   upload:
     needs: [build]
@@ -91,7 +101,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - run: gh release upload "$GITHUB_REF_NAME" dist/OpenAlan-mac.dmg dist/OpenAlan-mac.dmg.sha512 dist/OpenAlan-windows-setup.exe dist/latest.yml --clobber -R "$GITHUB_REPOSITORY"
+      - run: gh release upload "$GITHUB_REF_NAME" dist/OpenAlan-mac.dmg dist/OpenAlan-mac.dmg.sha512 dist/OpenAlan-mac.zip dist/OpenAlan-windows-setup.exe dist/latest.yml dist/latest-mac.yml --clobber -R "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ github.token }}
 

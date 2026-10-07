@@ -24,6 +24,16 @@ The Electron integration tests (`npm run test:desktop`, `test:agent-input`, `tes
 2. Merge to `main`, then tag that commit `v<x.y.z>` and push the tag. The release workflow fails if the tag differs from `package.json`.
 3. For a trial build, tag `v<x.y.z>-rc.<n>` instead. It uses the same base version, stays a draft, and is never offered to users.
 
+### macOS signing
+
+Tag builds are Developer ID signed, notarized and stapled when the signing secrets are set on the repo; without them the workflow still builds the same ad-hoc dmg, so forks and pull requests work unchanged. The maintainer sets this up once on a Mac that has the "Developer ID Application" certificate in the login keychain and `gh` logged in:
+
+```sh
+desktop/scripts/setup-signing-secrets.sh
+```
+
+The script exports the identity, reads the Team ID from the certificate, asks for the Apple ID and an app-specific password, and stores the five secrets (`CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`) on capthvnsen/alans-way. It prints only the secret names. Signed installs update through electron-updater; unsigned ones keep the in-app dmg swap, so both paths must keep working.
+
 ## Companion CLI (`src/hermes_companion/`)
 
 Use Python 3.11+ and a fresh virtual environment. Install `-e '.[mcp]'`, run `python -m unittest discover -s tests -v`, and build the distribution with `python -m build`.
