@@ -15,7 +15,7 @@ native Desktop/Telegram conversation merging remain outside this release.
 | Real native-model appraisal | One structured completion returned valid silent appraisal; no event injection |
 | Existing gateway restart | Same default profile restarted while idle; Telegram connected; check-in schedule resumed with no startup hook |
 | Durable pause | Paused state and bound route survived a subsequent gateway restart |
-| Actual Telegram command | Primary replied to `/proactivity status` with bound route, enabled state, active hours and the next check-in time |
+| Actual Telegram command | `/proactivity` in the bound chat replied with the check-in wait and level, active hours and timezone, and the next check-in time |
 | Automatic pilot | One admitted test event was claimed and ended silently; no draft or completion was claimed. Test watch cancelled; no pending/uncertain events remained |
 | Desktop source check | Six core checks and all JavaScript syntax checks passed |
 | Live background-browser MCP | Replacement typing, click, screenshot and Enter passed against a local fixture |
