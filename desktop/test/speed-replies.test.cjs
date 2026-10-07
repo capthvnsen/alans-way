@@ -14,6 +14,8 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { CDP } = require('../src/cdp.cjs');
+const { followUpArmExpression, followUpCloseExpression } = require('../src/browser-page.cjs');
 
 function findChrome() {
   const home = os.homedir();
@@ -107,6 +109,15 @@ setInterval(function () { const d = document.getElementById('tick'); d.textConte
 setTimeout(function () { document.body.appendChild(document.createElement('hr')); }, 5000);
 </script>`;
 const quietPage = `<!doctype html><title>quiet</title><button id="qb">Noop</button>`;
+// A main thread this busy is what a slow machine's renderer looks like: the
+// dispatched click queues behind work and its handler runs well after the
+// host was acked.
+const busyPage = `<!doctype html><title>busy</title><button id="rb">Go</button><div id="out"></div><script>
+setInterval(function () { var t = Date.now(); while (Date.now() - t < 150) {} }, 160);
+document.getElementById('rb').onclick = function () {
+  setTimeout(function () { document.getElementById('out').textContent = 'Busy follow-up landed'; }, 300);
+};
+</script>`;
 // A page's own hint is not extension noise: the phrase only gets filtered
 // inside a node the structural extension heuristics already flagged.
 const hintPage = `<!doctype html><title>hint</title><label for="c">Fruit</label><input id="c" role="combobox" aria-expanded="true"><p id="hint">Press down arrow to select a suggestion.</p>`;
@@ -118,9 +129,9 @@ document.getElementById('bb').onclick = function () {
   capturedFetch('/slow-json').then(function (r) { return r.text(); }).then(function (t) { document.getElementById('out').textContent = t; });
 };
 </script>`;
-const routes = { '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage };
+const routes = { '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
 
-let dir, profile, browser, host, site, port, connection, stderr = '';
+let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
 const api = (route, method = 'GET', body, epoch) =>
   fetch(connection.url + route, {
     method,
@@ -147,7 +158,7 @@ before(async () => {
     '--host-resolver-rules=MAP bench.example 127.0.0.1', 'about:blank'], { stdio: 'ignore' });
   const portFile = path.join(profile, 'DevToolsActivePort');
   for (let i = 0; i < 100 && !fs.existsSync(portFile); i++) await wait(100);
-  const cdpPort = fs.readFileSync(portFile, 'utf8').split('\n')[0];
+  cdpPort = fs.readFileSync(portFile, 'utf8').split('\n')[0];
   const data = path.join(dir, 'data');
   fs.mkdirSync(data);
   fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify({ cdpUrl: `http://127.0.0.1:${cdpPort}`, port: await new Promise((r) => { const p = http.createServer(); p.listen(0, '127.0.0.1', () => { const n = p.address().port; p.close(() => r(n)); }); }) }));
@@ -210,6 +221,61 @@ test('ten sequential tasks each complete in one action call', { skip: !chrome &&
     if (i === 3 || i === 8) assert.match(reply.data.results[0].matched.by, /label/, `task ${i + 1} select matched by label`);
   }
   assert.equal(calls, 10, 'one action call per task');
+});
+
+test('a busy renderer still counts the work its own click started', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 120000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/busy` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  const snap = await api(`/v1/tabs/${tab.id}/snapshot`);
+  assert.equal(snap.status, 200);
+  const direct = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+  try {
+    const { sessionId } = await direct.send('Target.attachToTarget', { targetId: tab.targetId, flatten: true });
+    // A slow machine delivers the dispatched input well after the host is
+    // acked: the follow-up window must stay open until the page saw the
+    // event, or the click's own render timer escapes the settle.
+    await direct.send('Emulation.setCPUThrottlingRate', { rate: 6 }, sessionId);
+    const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#rb', epoch: tab.epoch });
+    assert.equal(reply.status, 200, JSON.stringify(reply.data));
+    assert.equal(reply.data.effect.changed, true, `effect: ${JSON.stringify(reply.data.effect)}`);
+    assert.ok(reply.data.effect.text.includes('Busy follow-up landed'), `busy-renderer click lost its follow-up render: ${JSON.stringify(reply.data.effect)}`);
+    console.log(`busy click settle: waited ${reply.data.effect.settledMs}ms for the follow-up render`);
+    await direct.send('Emulation.clearCPUThrottlingRate', {}, sessionId).catch(() => {});
+  } finally {
+    direct.socket.close();
+  }
+});
+
+// The CI flake behind this test: on a starved runner the dispatched input
+// reached the page ~90ms after the host's close landed, so the click's own
+// render timer slipped past the follow-up window and the reply settled early.
+// This drives that exact state - arm, close, then a late event - in the page.
+test('the follow-up window stays open until the page sees the dispatched input', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/quiet` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  await api(`/v1/tabs/${tab.id}/snapshot`);
+  const direct = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+  try {
+    const { sessionId } = await direct.send('Target.attachToTarget', { targetId: tab.targetId, flatten: true });
+    const evalOnTab = (expr) => direct.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }, sessionId).then((r) => r.result && r.result.value);
+    const cur = `(() => { const c = window[Symbol.for('hw.followUp')] && window[Symbol.for('hw.followUp')].cur; return c ? { open: c.open, until: Math.round(c.until), pending: c.pending, total: c.total, delivered: !!c.delivered, now: Math.round(performance.now()) } : null; })()`;
+    await evalOnTab(followUpArmExpression());
+    await evalOnTab(followUpCloseExpression());
+    const closed = await evalOnTab(cur);
+    assert.equal(closed.delivered, false, 'no input reached the page yet');
+    assert.equal(closed.open, true, 'the window stays open while the input is in flight');
+    // Well past the old fixed grace now; the "event" lands late, like on a
+    // starved CI runner, and its handler schedules the page's follow-up.
+    await wait(150);
+    await evalOnTab(`(() => { const b = document.getElementById('qb'); b.addEventListener('click', () => setTimeout(() => { window.__followUp = 1; }, 30), { once: true }); b.dispatchEvent(new Event('click', { bubbles: true })); return 1; })()`);
+    const armed = await evalOnTab(cur);
+    assert.equal(armed.delivered, true, 'the page saw the event');
+    assert.equal(armed.total, 1, `the late handler's timer must be tracked: ${JSON.stringify(armed)}`);
+    await wait(120);
+    assert.equal(await evalOnTab('window.__followUp'), 1, 'the follow-up timer ran');
+  } finally {
+    direct.socket.close();
+  }
 });
 
 test('an unchanged long page does not report its unseen tail as new text', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {

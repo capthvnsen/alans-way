@@ -302,6 +302,9 @@ async function serve() {
         agentSince: human ? undefined : Date.now(),
         hostOpened: true,
         humanHeld: human === true,
+        // A tab is not idle while it is still opening, and its idle clock
+        // starts when the open finishes rather than when it was requested.
+        opening: true,
       });
       await persist();
       await tab.view.webContents.command('Page.enable');
@@ -319,13 +322,15 @@ async function serve() {
       if (body.settle === false) {
         tab.url = url;
         if (tab.controller === 'agent') tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
-        await persist();
       } else {
         await loaded(tab, url);
         if (tab.controller === 'agent') await tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
-        await persist();
       }
+      tab.opening = false;
+      tab.lastUsedAt = Date.now();
+      await persist();
     } catch (e) {
+      if (tab) tab.opening = false;
       throw fail('VPS tab opened but navigation needs review. List its state before retrying.', 502);
     }
     // A mirror restore opens its own fan-out; capping mid-flight would close
@@ -339,7 +344,7 @@ async function serve() {
     const now = Date.now();
     const held = [...tabs.values()].filter((t) => t.botId === botId && t.hostOpened === true && t.humanHeld !== true);
     const newest = held.reduce((a, t) => (!a || (t.lastUsedAt || 0) > (a.lastUsedAt || 0) ? t : a), null);
-    const closable = held.filter((t) => t !== keep && t !== newest && !(t.pendingActions > 0) && !input.isDispatching(t));
+    const closable = held.filter((t) => t !== keep && t !== newest && t.opening !== true && !(t.pendingActions > 0) && !input.isDispatching(t));
     const doomed = new Set(closable.filter((t) => now - (t.lastUsedAt || 0) > tabIdleMs));
     const lru = closable.filter((t) => !doomed.has(t)).sort((a, b) => (a.lastUsedAt || 0) - (b.lastUsedAt || 0));
     while (held.length - doomed.size > maxBotTabs && lru.length) doomed.add(lru.shift());

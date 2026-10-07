@@ -42,7 +42,7 @@ function snapshotExpression(generation, opts = {}) {
       // failed dispatch leaves the window open, so close it here with the
       // same grace.
       const armed = followUp && followUp.cur;
-      if (armed && armed.open) { armed.open = false; if (!armed.until) armed.until = performance.now() + ${FOLLOW_UP_GRACE_MS}; }
+      if (armed && armed.open) { armed.closing = true; armed.open = false; if (!armed.until) armed.until = performance.now() + ${FOLLOW_UP_GRACE_MS}; }
       await new Promise((finish) => {
         const own = (node) => {
           const el = node && node.nodeType === 1 ? node : node && node.parentElement;
@@ -344,6 +344,9 @@ const FOLLOW_UP_TIMER_MS = 1000;
 // An arm left open by a failed dispatch self-expires so it cannot pin a
 // later read.
 const FOLLOW_UP_ARM_EXPIRY_MS = 15000;
+// A close waits this long for the page to confirm the input arrived; a
+// dispatch lost on the way still seals on this bound.
+const FOLLOW_UP_DELIVERY_MS = 300;
 // The settle bound stretches to this only while tracked work is in flight.
 const FOLLOW_UP_CAP_MS = 1500;
 function followUpInstallExpression() {
@@ -438,6 +441,25 @@ function followUpInstallExpression() {
       if (fetch0) w.fetch = disguise(wrapped.fetch, fetch0);
       if (send0) w.XMLHttpRequest.prototype.send = disguise(wrapped.send, send0);
     } catch { /* a sealed page gets no tracking and the old timing */ }
+    // The events the dispatched input produces are how the page confirms it
+    // arrived. While an arm is closing, each observed event holds the window
+    // open so that event's own handlers still count, and the seal lands one
+    // macrotask after the burst ends; a dispatch lost on the way seals on
+    // the delivery bound the close scheduled.
+    S.seal = (c) => {
+      if (S.cur === c && c.open) { c.open = false; c.until = performance.now() + ${FOLLOW_UP_GRACE_MS}; }
+    };
+    const seen = () => {
+      const c = S.cur;
+      if (!c || performance.now() >= c.expires) return;
+      c.delivered = true;
+      if (!c.closing) return;
+      clearT(c.sealT);
+      c.open = true; c.until = 0;
+      c.sealT = setT(() => S.seal(c), 0);
+    };
+    for (const type of ['mousedown', 'mouseup', 'mousemove', 'click', 'dblclick', 'contextmenu', 'wheel', 'keydown', 'keypress', 'keyup', 'input', 'change', 'pointerdown', 'pointerup', 'pointermove', 'touchstart', 'touchend'])
+      w.addEventListener(type, seen, true);
     S.installed = true;
     return true;
   })()`;
@@ -447,14 +469,23 @@ function followUpArmExpression() {
     const installed = ${followUpInstallExpression()};
     const S = window[Symbol.for(${JSON.stringify(FOLLOW_UP_KEY)})];
     if (!installed || !S) return false;
-    S.cur = { open: true, until: 0, expires: performance.now() + ${FOLLOW_UP_ARM_EXPIRY_MS}, pending: 0, total: 0 };
+    S.cur = { open: true, until: 0, expires: performance.now() + ${FOLLOW_UP_ARM_EXPIRY_MS}, pending: 0, total: 0, delivered: false, closing: false, sealT: 0 };
     return true;
   })()`;
 }
 function followUpCloseExpression() {
   return `(() => {
     const s = window[Symbol.for(${JSON.stringify(FOLLOW_UP_KEY)})], c = s && s.cur;
-    if (c) { c.open = false; c.until = performance.now() + ${FOLLOW_UP_GRACE_MS}; }
+    if (!c) return true;
+    // The input may still sit in the renderer's queue on a slow machine: the
+    // window seals a macrotask after the page's last observed event, or on
+    // the delivery bound if nothing ever arrived. Trackers predating the
+    // delivery check keep the old fixed grace.
+    c.closing = true;
+    if (typeof s.seal !== 'function') { c.open = false; c.until = performance.now() + ${FOLLOW_UP_GRACE_MS}; return true; }
+    const setT = s.setT || setTimeout, clearT = s.clearT || clearTimeout;
+    clearT(c.sealT);
+    c.sealT = setT(() => s.seal(c), c.delivered ? 0 : ${FOLLOW_UP_DELIVERY_MS});
     return true;
   })()`;
 }

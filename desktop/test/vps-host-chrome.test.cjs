@@ -191,15 +191,28 @@ test('real Chromium: opening past a bot\'s tab cap closes its least recently use
   }
 });
 
-test('real Chromium: agent tabs idle past the limit are closed lazily on the bot\'s next open', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 30000 }, async () => {
-  const h = await spawnHost({ ALANS_WAY_VM_MAX_TABS: '9', ALANS_WAY_VM_TAB_IDLE_MINUTES: '0.02' });
+test('real Chromium: agent tabs idle past the limit are closed lazily on the bot\'s next open', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  // The limit is wide next to a slow open: lastUsedAt is stamped when an open
+  // finishes, so the two sequential opens must not age a fresh tab past it.
+  const idleMs = 3000;
+  const h = await spawnHost({ ALANS_WAY_VM_MAX_TABS: '9', ALANS_WAY_VM_TAB_IDLE_MINUTES: '0.05' });
   const ha = h.api;
   const open = () => ha('/v1/tabs', 'POST', { url: `http://test.example:${pa}/ok` }, { bot: 'idle-bot' });
   const i1 = (await open()).data;
   const i2 = (await open()).data;
   const i3 = (await open()).data;
-  assert.equal(i3.closedTabs, undefined, 'fresh tabs are never idle-reaped');
-  await wait(1500);
+  // The reaper reads the same persisted lastUsedAt stamps the test waits on,
+  // so idleness is awaited as a condition rather than guessed with a sleep.
+  const idleAge = (id) => {
+    try {
+      const saved = JSON.parse(fs.readFileSync(path.join(h.dir, 'data', 'tabs.json'), 'utf8'));
+      const t = saved.find((s) => s.id === id);
+      return t ? Date.now() - (t.lastUsedAt || 0) : 0;
+    } catch { return 0; }
+  };
+  for (const closed of i3.closedTabs || []) assert.ok(idleAge(closed.tabId) > idleMs, `only idle tabs may be reaped, not ${closed.tabId}`);
+  for (let i = 0; i < 300 && !(idleAge(i1.id) > idleMs && idleAge(i2.id) > idleMs); i++) await wait(100);
+  assert.ok(idleAge(i1.id) > idleMs && idleAge(i2.id) > idleMs, 'the first two tabs never went idle');
   assert.equal((await ha(`/v1/tabs/${i3.id}/snapshot`, 'GET', undefined, { bot: 'idle-bot' })).status, 200, 'a snapshot counts as use');
   const reaped = await open();
   assert.deepEqual((reaped.data.closedTabs || []).map((t) => t.tabId).sort(), [i1.id, i2.id].sort(), 'both idle tabs close on the next open');
