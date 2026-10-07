@@ -369,7 +369,8 @@ app.whenReady().then(async () => {
   const remountSnap = await waitFor(() => api(`/v1/tabs/${remount.id}/snapshot`), snap => (snap.elements || []).some(item => item.name === 'Beta'));
   await api(`/v1/tabs/${remount.id}/actions`, 'POST', { action: 'eval', code: 'render()', epoch: remount.epoch });
   const rescanned = await api(`/v1/tabs/${remount.id}/actions`, 'POST', { action: 'scroll', y: 0, epoch: remount.epoch });
-  assert.equal(rescanned.unchanged, true, 'the re-rendered tree reads as unchanged');
+  assert.equal(rescanned.effect.changed, false, 'the re-rendered tree reads as unchanged');
+  assert.equal(rescanned.elements, undefined, 'unchanged controls are not resent');
   await api(`/v1/tabs/${remount.id}/actions`, 'POST', { action: 'click', ref: remountSnap.elements.find(item => item.name === 'Beta').ref, epoch: remount.epoch });
   assert.deepEqual((await api(`/v1/tabs/${remount.id}/actions`, 'POST', { action: 'eval', code: 'hits', epoch: remount.epoch })).value, [2], 'a held ref clicks the re-rendered node');
   // A page whose image never answers still reads, evaluates and waits.

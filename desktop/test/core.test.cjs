@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload } = require('../src/core.cjs');
-const { snapshotExpression, settleSnapshot, readControls } = require('../src/browser-page.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload } = require('../src/core.cjs');
+const { snapshotExpression, settleSnapshot, readEffect } = require('../src/browser-page.cjs');
 const { locateElement } = require('../src/agent-input.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
 
@@ -156,46 +156,65 @@ test('web snapshot names say on, off, and disabled', () => {
   assert.match(source, /el\.tagName === 'INPUT' && type !== 'text'/);
   assert.match(source, /\.slice\(0, 300\)/);
 });
-test('an action read returns controls and leaves the page text out', async () => {
+test('an action read returns the new state and fresh controls', async () => {
   const tab = { refs: new Set(), generation: 4 };
   let code = '';
-  const reply = await readControls((expression) => {
+  const reply = await readEffect((expression) => {
     code = expression;
-    return { url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's5-1', role: 'button', name: 'Go' }] };
+    return { url: 'https://a.example/', title: 'A', text: 'Task 2: click Go', elements: [{ ref: 's5-1', role: 'button', name: 'Go' }], truncated: { text: false } };
   }, tab);
-  assert.match(code, /text\.slice\(0, 0\)/);
+  assert.match(code, /text\.slice\(0, 8000\)/, 'the effect read walks bounded page text');
   assert.match(code, /items\.length >= 150/);
-  assert.equal(reply.text, undefined);
   assert.deepEqual(reply.elements, [{ ref: 's5-1', role: 'button', name: 'Go' }]);
   assert.equal(reply.generation, 5);
   assert.ok(tab.refs.has('s5-1'));
+  assert.equal(reply.effect.changed, true);
+  assert.equal(reply.effect.url, 'https://a.example/');
+  assert.equal(reply.effect.text, 'Task 2: click Go');
+});
+test('an action read reports only the text lines it added', async () => {
+  const tab = { refs: new Set(), generation: 1 };
+  const first = 'step 1\nstep 2', second = 'step 1\nstep 2\nstep 3 appears';
+  settleSnapshot(tab, { url: 'https://a.example/', title: 'A', text: first, elements: [{ ref: 's1-1', role: 'button', name: 'Go' }] }, 1);
+  const reply = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: second, elements: [{ ref: 's2-1', role: 'button', name: 'Go' }] }), tab);
+  assert.equal(reply.effect.text, 'step 3 appears');
+  assert.equal(reply.effect.changed, true);
+  const quiet = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: second, elements: [{ ref: 's3-1', role: 'button', name: 'Go' }] }), tab);
+  assert.equal(quiet.effect.text, '', 'a second identical read adds nothing');
+  assert.equal(quiet.effect.changed, false);
 });
 test('an action read keeps the last generation when the page did not change', async () => {
   const tab = { refs: new Set(), generation: 1 };
   const page = { url: 'https://a.example/', title: 'A', text: 'hello', elements: [{ ref: 's1-1', role: 'button', name: 'Go' }] };
   settleSnapshot(tab, page, 1);
   tab.refs.clear();
-  const reply = await readControls(() => ({ ...page, elements: [{ ref: 's9-1', role: 'button', name: 'Go' }] }), tab);
-  assert.deepEqual(reply, { unchanged: true, generation: 1 });
+  const reply = await readEffect(() => ({ ...page, elements: [{ ref: 's9-1', role: 'button', name: 'Go' }] }), tab);
+  assert.equal(reply.generation, 1);
+  assert.equal(reply.elements, undefined);
+  assert.equal(reply.effect.changed, false);
+  assert.equal(reply.effect.text, '');
   assert.ok(tab.refs.has('s1-1'));
   assert.equal(tab.generation, 1);
 });
-test('an action read does not walk page text or replace the snapshot when controls match', async () => {
+test('an action read keeps the snapshot baseline when controls match', async () => {
   const tab = { refs: new Set(), generation: 2 };
   const page = { url: 'https://a.example/', title: 'A', text: 'a long document', elements: [{ ref: 's2-1', role: 'button', name: 'Go' }] };
   const settled = settleSnapshot(tab, page, 2);
   const stamp = tab.snapshotStamp.hash;
   let code = '';
-  const reply = await readControls((expression) => {
+  const reply = await readEffect((expression) => {
     code = expression;
-    return { url: page.url, title: page.title, text: '', elements: [{ ref: 's9-1', role: 'button', name: 'Go' }] };
+    return { url: page.url, title: page.title, text: page.text, elements: [{ ref: 's9-1', role: 'button', name: 'Go' }], truncated: { text: false } };
   }, tab);
-  assert.match(code, /text\.slice\(0, 0\)/);
-  assert.deepEqual(reply, { unchanged: true, generation: settled.generation });
+  assert.match(code, /const wantEffect = true/, 'effect reads collect focus and value');
+  assert.equal(reply.generation, settled.generation);
+  assert.equal(reply.elements, undefined);
+  assert.equal(reply.effect.changed, false);
   assert.equal(tab.snapshotStamp.hash, stamp);
   assert.ok(tab.refs.has('s2-1'));
-  const changed = await readControls(() => ({ url: page.url, title: page.title, text: '', elements: [{ ref: 's3-1', role: 'button', name: 'Sent' }] }), tab);
+  const changed = await readEffect(() => ({ url: page.url, title: page.title, text: page.text, elements: [{ ref: 's3-1', role: 'button', name: 'Sent' }] }), tab);
   assert.equal(changed.elements[0].name, 'Sent');
+  assert.equal(changed.effect.changed, true);
   assert.notEqual(tab.snapshotStamp.hash, stamp, 'a changed read becomes the new baseline');
   assert.equal(tab.snapshotStamp.generation, changed.generation);
   assert.equal(tab.snapshotStamp.base, changed.generation);
@@ -205,23 +224,46 @@ test('two changed action reads never reuse a generation or revive older refs', a
   const tab = { refs: new Set(), generation: 1 };
   const url = 'https://a.example/', title = 'A';
   settleSnapshot(tab, { url, title, text: '', elements: [{ ref: 's1-1', role: 'button', name: 'One' }] }, 1);
-  const first = await readControls(() => ({ url, title, text: '', elements: [{ ref: 's2-1', role: 'button', name: 'Two' }] }), tab);
-  const second = await readControls(() => ({ url, title, text: '', elements: [{ ref: 's3-1', role: 'button', name: 'Three' }] }), tab);
+  const first = await readEffect(() => ({ url, title, text: '', elements: [{ ref: 's2-1', role: 'button', name: 'Two' }] }), tab);
+  const second = await readEffect(() => ({ url, title, text: '', elements: [{ ref: 's3-1', role: 'button', name: 'Three' }] }), tab);
   assert.ok(second.generation > first.generation);
   assert.deepEqual([...tab.refs], ['s3-1']);
-  const again = await readControls(() => ({ url, title, text: '', elements: [{ ref: 's4-1', role: 'button', name: 'Three' }] }), tab);
-  assert.deepEqual(again, { unchanged: true, generation: second.generation });
+  const again = await readEffect(() => ({ url, title, text: '', elements: [{ ref: 's4-1', role: 'button', name: 'Three' }] }), tab);
+  assert.equal(again.elements, undefined);
+  assert.equal(again.generation, second.generation);
+  assert.equal(again.effect.changed, false);
   assert.deepEqual([...tab.refs], ['s3-1']);
   assert.deepEqual(settleSnapshot(tab, { url, title, text: '', elements: [{ ref: 's5-1', role: 'button', name: 'Three' }] }, 5, second.generation), { unchanged: true, generation: 5 });
 });
-test('identical controls on a different page are a change, not an unchanged reply', async () => {
+test('identical controls on a different page are a navigation, not an unchanged reply', async () => {
   const tab = { refs: new Set(), generation: 1 };
   const controls = (ref) => [{ ref, role: 'button', name: 'Continue' }];
   settleSnapshot(tab, { url: 'https://a.example/1', title: 'Step', text: '', elements: controls('s1-1') }, 1);
-  const moved = await readControls(() => ({ url: 'https://a.example/2', title: 'Step', text: '', elements: controls('s2-1') }), tab);
-  assert.equal(moved.unchanged, undefined);
+  const moved = await readEffect(() => ({ url: 'https://a.example/2', title: 'Step', text: '', elements: controls('s2-1'), sameDoc: false }), tab);
+  assert.equal(moved.effect.navigated, true);
+  assert.equal(moved.effect.changed, true);
   assert.equal(moved.elements[0].ref, 's2-1');
   assert.deepEqual([...tab.refs], ['s2-1']);
+  // A same-document URL change (pushState, hash) is not a navigation.
+  const rerouted = await readEffect(() => ({ url: 'https://a.example/2#frag', title: 'Step', text: '', elements: controls('s3-1'), sameDoc: true }), tab);
+  assert.equal(rerouted.effect.navigated, false);
+  assert.equal(rerouted.effect.url, 'https://a.example/2#frag');
+});
+test('an action read reports the value and focus of the element it touched', async () => {
+  const tab = { refs: new Set(), generation: 1 };
+  const code = snapshotExpression(2, { effect: true, valueFor: { ref: 's1-1' } });
+  assert.match(code, /const wantEffect = true, wantSettle = false, valueRef = "s1-1"/);
+  assert.match(snapshotExpression(2, { effect: true, settle: true }), /wantSettle = true/, 'only settling reads watch for late mutations');
+  assert.match(code, /activeElement === el\)/);
+  assert.match(code, /el\.matches\(valueSel\)/);
+  const reply = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's2-1', role: 'input', name: 'Box' }], acted: 'typed text', focused: { ref: 's2-1', kept: '', name: 'Box' } }), tab);
+  assert.equal(reply.effect.value, 'typed text');
+  assert.deepEqual(reply.effect.focused, { ref: 's2-1', name: 'Box' });
+  const same = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's3-1', role: 'input', name: 'Box' }], focused: { ref: 's3-1', kept: 's2-1', name: 'Box' } }), tab);
+  assert.equal(same.effect.focused.ref, 's2-1', 'an unchanged read names the held base ref');
+  // Focus outside the picked controls still reports, with a name only.
+  const plain = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's4-1', role: 'input', name: 'Box' }], focused: { ref: '', kept: '', name: 'Plain div' } }), tab);
+  assert.deepEqual(plain.effect.focused, { name: 'Plain div' });
 });
 test('snapshot bounds clamp and never splice caller text into page code', () => {
   assert.match(snapshotExpression(3), /text\.slice\(0, 6000\)/);
@@ -250,10 +292,22 @@ test('tool results drop favicon images and keep the fields a model acts on', () 
   assert.equal(reply.tabs[0].tab.url, 'https://a.example/');
   assert.match(reply.note, /favicon/);
 });
-test('opening a tab does not let the model pick the machine', () => {
+test('opening a tab passes a normalized host to the app', () => {
+  assert.equal(normalizeHost('computer'), 'computer');
+  assert.equal(normalizeHost('local'), 'computer');
+  assert.equal(normalizeHost('mac'), 'computer');
+  assert.equal(normalizeHost(' Windows '), 'computer');
+  assert.equal(normalizeHost('vps'), 'vm');
+  assert.equal(normalizeHost('remote'), 'vm');
+  assert.equal(normalizeHost('server'), 'vm');
+  assert.equal(normalizeHost('bogus'), undefined);
+  assert.equal(normalizeHost(undefined), undefined);
+  assert.equal(normalizeHost(''), undefined);
   const mcp = require('node:fs').readFileSync(require('node:path').join(__dirname, '../scripts/browser-mcp.cjs'), 'utf8');
-  assert.doesNotMatch(mcp, /host:args\.host/);
-  assert.match(mcp, /Do not pass host/);
+  assert.match(mcp, /normalizeHost\(args\.host\)/);
+  assert.match(mcp, /host === 'vm' \? 'vps' : 'local'/);
+  assert.doesNotMatch(mcp, /enum:\s*\['mac'/);
+  assert.doesNotMatch(mcp, /Ignored/);
   assert.match(mcp, /args\.maxChars : 2000/);
   assert.match(mcp, /400ms grace/);
   assert.match(mcp, /args\.quality : 50/);
@@ -267,6 +321,9 @@ test('opening a tab does not let the model pick the machine', () => {
   assert.match(mcp, /maxChars=0&maxElements=40/);
   assert.match(mcp, /--continued-tab/);
   assert.match(mcp, /same machine as the browser/);
+  const main = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/main.cjs'), 'utf8');
+  assert.match(main, /normalizeHost\(body\.host\)/);
+  assert.doesNotMatch(main, /isLocalHost/);
 });
 test('a missing Mac tab is carried onto the continued VPS tab', () => {
   const page = { tabId: 'tab-9' };
@@ -313,8 +370,10 @@ test('a page exception reaches the agent with its message', async () => {
 test('control fingerprints ignore the key order the executor happens to return', async () => {
   const tab = { refs: new Set(), generation: 1 };
   settleSnapshot(tab, { url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's1-1', role: 'button', name: 'Go' }] }, 1);
-  const reply = await readControls(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ name: 'Go', ref: 's2-1', role: 'button' }] }), tab);
-  assert.deepEqual(reply, { unchanged: true, generation: 1 });
+  const reply = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ name: 'Go', ref: 's2-1', role: 'button' }] }), tab);
+  assert.equal(reply.elements, undefined);
+  assert.equal(reply.generation, 1);
+  assert.equal(reply.effect.changed, false);
 });
 
 test('an unchanged read restamps the held refs onto the current nodes', () => {

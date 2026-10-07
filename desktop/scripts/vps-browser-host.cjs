@@ -7,12 +7,12 @@ const fs = require('node:fs'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
-const { normalizeUrl, agentPageUrl, cdpMethodError, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
 const { createAgentInput, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
 const INPUT_ACTIONS = agentInputModule.INPUT_ACTIONS || new Set(['click', 'type', 'press', 'move', 'scroll']);
-const { snapshotExpression, settleSnapshot, readControls, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
+const { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression } = require('../src/browser-page.cjs');
 const root =
   process.env.HERMES_VPS_BROWSER_DATA ||
   (process.platform === 'darwin'
@@ -36,6 +36,7 @@ function write(file, data) {
   fs.renameSync(file + '.tmp', file);
 }
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
+const EMPTY_EFFECT = { navigated: false, changed: false, text: '' };
 const intParam = (url, key, min, max) => {
   const raw = url.searchParams.get(key);
   if (raw === null) return undefined;
@@ -235,7 +236,7 @@ async function serve() {
     process.exit(1);
   });
   async function open(body, botId, human, prepare) {
-    if (body.host !== undefined && body.host !== 'vps')
+    if (body.host !== undefined && normalizeHost(body.host) !== 'vm')
       throw fail('This connection serves only the VPS browser. Use the Mac connector for Mac tasks.', 503);
     if (!botId || botId.length > 100) throw fail('X-Hermes-Bot is required.');
     if (tabs.size >= 40) throw fail('Close a VPS browser tab before opening another.');
@@ -303,10 +304,13 @@ async function serve() {
   async function settle(tab, trigger) {
     const wc = tab.view.webContents;
     await wc.command('Page.enable').catch(() => {});
-    let listener, timer;
+    let listener, timer, crossDoc = false;
     const settled = new Promise((resolve) => {
       listener = (m) => {
         if (m.sessionId !== wc.sessionId) return;
+        // A main-frame frameNavigated means the document was swapped; a
+        // same-document step (pushState, hash) only fires navigatedWithinDocument.
+        if (m.method === 'Page.frameNavigated' && m.params?.frame && !m.params.frame.parentId) crossDoc = true;
         if (m.method === 'Page.loadEventFired' || m.method === 'Page.navigatedWithinDocument' ||
           (m.method === 'Page.frameNavigated' && m.params?.type === 'BackForwardCacheRestore')) resolve();
       };
@@ -322,41 +326,57 @@ async function serve() {
     }
     const s = await wc.executeJavaScript('({url:location.href,title:document.title})').catch(() => null);
     if (s) Object.assign(tab, s);
+    return crossDoc;
   }
   async function history(tab, action) {
     const wc = tab.view.webContents;
     if (action === 'reload') return settle(tab, () => wc.command('Page.reload'));
     const h = await wc.command('Page.getNavigationHistory');
     const e = h.entries[h.currentIndex + (action === 'back' ? -1 : 1)];
-    if (e) await settle(tab, () => wc.command('Page.navigateToHistoryEntry', { entryId: e.id }));
+    if (!e) return false;
+    return settle(tab, () => wc.command('Page.navigateToHistoryEntry', { entryId: e.id }));
   }
-  async function actionControls(tab) {
+  async function actionEffect(tab, opts) {
     try {
       requireAgentRead(tab);
-      const controls = await readControls((code) => tab.view.webContents.executeJavaScript(code), tab);
+      const effect = await readEffect((code) => tab.view.webContents.executeJavaScript(code), tab, opts);
       requireAgentRead(tab);
-      return controls;
+      if (effect) return effect;
+      return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.' };
     } catch (error) {
       if (error && error.status === 409) throw error;
-      return null;
+      return { effect: { ...EMPTY_EFFECT }, error: String(error && error.message || error) };
     }
   }
   async function vpsPerform(tab, body, botId, overseer, depth = 0) {
     const wc = tab.view.webContents;
     requireActor(tab, botId, body.epoch, true, overseer);
+    const finish = async (payload, opts) => depth > 0 ? payload : { ...payload, ...(await actionEffect(tab, opts)) };
     if (body.action === 'batch') {
       if (depth > 0) throw fail('Batches cannot nest.');
       const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
       if (!steps.length) throw fail('batch needs a non-empty steps array (max 25).');
       const results = [], started = Date.now();
+      let lastTarget, sawInput = false;
       for (const step of steps) {
-        if (!step || typeof step !== 'object') { results.push({ error: 'Invalid step.' }); break; }
-        if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
-        try { results.push(await vpsPerform(tab, { ...step, epoch: body.epoch }, botId, overseer, 1)); }
-        catch (error) { results.push({ error: error.message }); break; }
+        if (!step || typeof step !== 'object') { results.push({ ok: false, error: 'Invalid step.' }); break; }
+        if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ ok: false, error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
+        try { results.push({ ok: true, ...(await vpsPerform(tab, { ...step, epoch: body.epoch }, botId, overseer, 1)) }); }
+        catch (error) { results.push({ ok: false, error: error.message }); break; }
+        if (step.ref !== undefined || step.selector !== undefined) lastTarget = { ref: step.ref, selector: step.selector };
+        if (INPUT_ACTIONS.has(step.action) && step.action !== 'move') sawInput = true;
       }
-      const controls = await actionControls(tab);
-      return { results, ...(controls || {}), dispatched: true };
+      // A takeover mid-batch seals the accumulated step results too.
+      requireActor(tab, botId, body.epoch, true, overseer);
+      return { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput })), dispatched: true };
+    }
+    if (body.action === 'read') {
+      const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
+      requireAgentRead(tab);
+      const data = await wc.executeJavaScript(snapshotExpression(tab.generation || 0, { maxChars, maxElements: 0, elementMs: 5 })).catch(() => null);
+      requireActor(tab, botId, body.epoch, true, overseer);
+      if (data) tab.docMarked = true;
+      return finish({ text: (data && typeof data.text === 'string' ? data.text : ''), dispatched: true });
     }
     if (body.action === 'eval') {
       const code = String(body.code || '');
@@ -365,19 +385,22 @@ async function serve() {
         wc.executeJavaScript(code),
         new Promise((_, reject) => setTimeout(() => reject(fail('eval timed out after 15s.', 408)), 15000)),
       ]);
+      // A takeover while the eval ran seals the result.
+      requireActor(tab, botId, body.epoch, true, overseer);
       const serialized = typeof value === 'string' ? value : JSON.stringify(value);
       if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
-      return { value, dispatched: true };
+      return finish({ value, dispatched: true });
     }
     if (body.action === 'wait') {
       const selector = String(body.selector || '').slice(0, 2000);
       const text = String(body.text || '').slice(0, 2000);
       const urlPart = String(body.url || '').slice(0, 2000);
       const visible = body.visible === true;
+      const gone = body.gone === true;
       const timeout = Math.min(Math.max(Number(body.timeout) || 10000, 100), 30000);
       if (!selector && !text && !urlPart) throw fail('wait needs a selector, text, or url to wait for.');
       const waitCode = (ms) => `new Promise((resolve) => {
-        const sel = ${JSON.stringify(selector)}, txt = ${JSON.stringify(text)}, urlP = ${JSON.stringify(urlPart)}, vis = ${visible};
+        const sel = ${JSON.stringify(selector)}, txt = ${JSON.stringify(text)}, urlP = ${JSON.stringify(urlPart)}, vis = ${visible}, gone = ${gone};
         const deadline = Date.now() + ${ms};
         const check = () => {
           if (urlP && !location.href.includes(urlP)) return false;
@@ -393,14 +416,15 @@ async function serve() {
           if (txt && !(document.body && document.body.innerText.includes(txt))) return false;
           return true;
         };
+        const met = () => check() !== gone;
         const t0 = Date.now();
         let mo, poll;
         const done = (found) => { clearInterval(poll); if (mo) mo.disconnect(); resolve({ found, waited: Date.now() - t0 }); };
-        if (check()) return done(true);
-        mo = new MutationObserver(() => { if (check()) done(true); });
+        if (met()) return done(true);
+        mo = new MutationObserver(() => { if (met()) done(true); });
         mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
-        poll = setInterval(() => { if (check() || Date.now() > deadline) done(check()); }, 100);
-        setTimeout(() => done(check()), ${ms});
+        poll = setInterval(() => { if (met() || Date.now() > deadline) done(met()); }, 100);
+        setTimeout(() => done(met()), ${ms});
       })`;
       const hostStart = Date.now();
       let value = null;
@@ -411,17 +435,17 @@ async function serve() {
           new Promise((r) => setTimeout(() => r({ navRetry: true }), remaining + 1500)),
         ]);
         if (attempt && !attempt.navRetry) { value = attempt; break; }
-        if (urlPart && tab.url.includes(urlPart)) { value = { found: true, waited: Date.now() - hostStart }; break; }
+        if (urlPart && tab.url.includes(urlPart) !== gone) { value = { found: true, waited: Date.now() - hostStart }; break; }
         await new Promise((r) => setTimeout(r, 250));
       }
-      if (!value || !value.found) throw fail(`wait timed out after ${value ? value.waited : Date.now() - hostStart}ms for ${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`, 408);
-      return { waited: value.waited, dispatched: true };
+      if (!value || !value.found) throw fail(`wait timed out after ${value ? value.waited : Date.now() - hostStart}ms for ${gone ? 'absence of ' : ''}${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`, 408);
+      return finish({ waited: value.waited, dispatched: true });
     }
     if (body.action === 'viewport') {
       if (body.clear === true) {
         await wc.command('Emulation.clearDeviceMetricsOverride');
         delete tab.viewport;
-        return { viewport: null, dispatched: true };
+        return finish({ viewport: null, dispatched: true });
       }
       const width = Math.round(Number(body.width)), height = Math.round(Number(body.height));
       const scale = Math.min(Math.max(Number(body.scale) || 1, 0.1), 5);
@@ -429,7 +453,7 @@ async function serve() {
         throw fail('viewport needs width 100-7680 and height 100-4320, or clear:true.');
       await wc.command('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
       tab.viewport = { width, height, scale };
-      return { viewport: tab.viewport, dispatched: true };
+      return finish({ viewport: tab.viewport, dispatched: true });
     }
     if (body.action === 'cdp') {
       const method = String(body.method || '');
@@ -447,23 +471,31 @@ async function serve() {
       ]);
       const serialized = typeof value === 'string' ? value : JSON.stringify(value);
       if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
-      return { value, dispatched: true };
+      return finish({ value, dispatched: true });
     }
-    if (INPUT_ACTIONS.has(body.action)) await input.perform(tab, body, botId);
-    else if (body.action === 'navigate') {
+    let result = {}, didNavigate;
+    if (INPUT_ACTIONS.has(body.action)) {
+      const { input: _input, cursor, navigated, ...performed } = await input.perform(tab, body, botId);
+      result = { ...performed, ...(depth === 0 && cursor ? { cursor: { x: cursor.x, y: cursor.y } } : {}) };
+      didNavigate = navigated;
+    } else if (body.action === 'navigate') {
       await input.clear(tab);
       requireActor(tab, botId, body.epoch, true, overseer);
       const target = agentPageUrl(body.url);
       await wc.command('Page.navigate', { url: target });
       await loaded(tab, target);
+      didNavigate = true;
     } else if (['back', 'forward', 'reload'].includes(body.action)) {
       await input.clear(tab);
       requireActor(tab, botId, body.epoch, true, overseer);
-      await history(tab, body.action);
+      didNavigate = await history(tab, body.action);
     } else throw fail('Unsupported VPS action.');
     if (body.action !== 'move') tab.refs.clear();
-    const controls = depth === 0 && body.action !== 'move' ? await actionControls(tab) : null;
-    return { ...(controls || {}), dispatched: true };
+    result.dispatched = true;
+    // A move changes no page state; report it without paying for a read.
+    if (body.action === 'move') return depth > 0 ? result : { ...result, effect: { ...EMPTY_EFFECT } };
+    return finish(result,
+      { navigated: didNavigate, settle: INPUT_ACTIONS.has(body.action), target: body.ref !== undefined || body.selector !== undefined ? { ref: body.ref, selector: body.selector } : undefined });
   }
   const mirror = (() => { try { return JSON.parse(fs.readFileSync(mirrorFile)).bots || {}; } catch { return {}; } })();
   const saveMirror = () => write(mirrorFile, { bots: mirror });

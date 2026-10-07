@@ -12,10 +12,46 @@ function snapshotExpression(generation, opts = {}) {
   const keep = int(opts.keep, 0, Number.MAX_SAFE_INTEGER, -1);
   const restamp = int(opts.restamp, 0, Number.MAX_SAFE_INTEGER, -1);
   const parseWaitMs = int(opts.parseWaitMs, 0, 5000, 400);
+  // effect reads also report which control holds focus and the value of the
+  // element the action just touched (a ref token or a selector).
+  const valueRef = opts.valueFor && typeof opts.valueFor.ref === 'string' ? opts.valueFor.ref : null;
+  const valueSel = opts.valueFor && typeof opts.valueFor.selector === 'string' ? opts.valueFor.selector : null;
   return `(async () => {
+    const wantEffect = ${opts.effect === true}, wantSettle = ${opts.effect === true && opts.settle === true}, valueRef = ${JSON.stringify(valueRef)}, valueSel = ${JSON.stringify(valueSel)};
+    let focused = null, acted = null;
     // The parser yields between chunks, so a snapshot can land mid-document;
     // give a still-parsing page a moment and report it if it is not done.
     if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${parseWaitMs}); });
+    // Marks the document: a cross-document navigation swaps the window and
+    // drops the marker, which is how a read tells it from a same-document one.
+    const sameDoc = window.__hermesWorkspaceDoc === 1;
+    try { window.__hermesWorkspaceDoc = 1; } catch {}
+    // An action's effect often lands a beat after it (XHR, setTimeout ~150ms
+    // is common), so an action read first gives late reactions a moment to
+    // land, then settles once the DOM has stayed quiet, bounded so a busy
+    // page cannot hold the reply. The cursor overlay does not count.
+    if (wantSettle && document.documentElement && document.readyState !== 'loading') {
+      await new Promise((finish) => {
+        const own = (node) => {
+          const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+          return !!(el && typeof el.id === 'string' && el.id.indexOf('hermes-workspace-agent-cursor') === 0);
+        };
+        let quiet;
+        const done = () => { mo.disconnect(); clearTimeout(quiet); clearTimeout(cap); finish(); };
+        const mo = new MutationObserver((list) => {
+          for (const m of list) {
+            if (own(m.target)) continue;
+            if (m.type === 'childList' && [...m.addedNodes, ...m.removedNodes].every(own)) continue;
+            clearTimeout(quiet);
+            quiet = setTimeout(done, ${EFFECT_QUIET_MS});
+            return;
+          }
+        });
+        const cap = setTimeout(done, ${EFFECT_SETTLE_MS});
+        mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+        quiet = setTimeout(done, ${EFFECT_WATCH_MS});
+      });
+    }
     const shortHref = (raw) => {
       if (!raw) return '';
       try {
@@ -133,10 +169,38 @@ function snapshotExpression(generation, opts = {}) {
       if (href) item.href = href;
       if (el.disabled) item.disabled = true;
       items.push(item);
+      if (wantEffect && !focused && el.getRootNode && el.getRootNode().activeElement === el) focused = { ref, kept: kept[0] || '', name };
+      if (wantEffect && !acted && (valueRef !== null || valueSel !== null)) {
+        let hit = false;
+        if (valueRef !== null && tokens.has(valueRef)) hit = true;
+        else if (valueSel !== null) { try { hit = el.matches(valueSel); } catch {} }
+        if (hit) {
+          const kind = (el.type || '').toLowerCase();
+          if (/^(checkbox|radio)$/.test(kind)) acted = el.checked ? 'checked' : 'unchecked';
+          else if (el.isContentEditable) acted = (el.innerText || '').trim().slice(0, 1000);
+          else if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) acted = String(el.value == null ? '' : el.value).slice(0, 1000);
+        }
+      }
+    }
+    // Focus can sit on an element the controls pick skipped (a tabindex div,
+    // a link under the scan cap). Report it anyway; only a still-valid ref
+    // token travels with it.
+    if (wantEffect && !focused) {
+      let active = document.activeElement;
+      while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+      if (active && active !== document.body && active !== document.documentElement) {
+        const tokens = (typeof active.getAttribute === 'function' ? active.getAttribute('data-hermes-workspace-ref') || '' : '').split(' ');
+        const keptRef = tokens.find((token) => token.startsWith('s${keep}-')) || '';
+        let name = (typeof active.getAttribute === 'function' ? (active.getAttribute('aria-label') || active.title || '') : '').trim();
+        if (!name) name = (active.innerText || '').trim();
+        focused = { ref: '', kept: keptRef, name: name.slice(0, 200) };
+      }
     }
     // body.innerText pays a full-document render pass regardless of the slice;
-    // a bounded walker stops at the char cap or the time budget instead.
-    let text = '', textCut = false;
+    // a bounded walker stops at the char cap or the time budget instead. The
+    // walk keeps going past the cap to hash every visible text node, so a
+    // change beyond the window still shows up in textSig.
+    let text = '', textCut = false, textSig = '';
     if (${maxChars} > 0 && document.body) {
       const textDeadline = performance.now() + ${textMs};
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -144,7 +208,8 @@ function snapshotExpression(generation, opts = {}) {
       // keep their line breaks without a style read per text node.
       const blockTag = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|BODY|CAPTION|DD|DETAILS|DIALOG|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H[1-6]|HEADER|HR|LEGEND|LI|MAIN|NAV|OL|P|PRE|SECTION|SUMMARY|TABLE|TR|UL)$/;
       let node, lastBlock = null, seenParent = null, parentVisible = true, parentBlock = null;
-      while ((node = walker.nextNode())) {
+      let sigHash = 0x811c9dc5, sigNodes = 0;
+      while ((node = walker.nextNode()) && sigNodes < 30000) {
         const p = node.parentElement;
         if (!p || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(p.tagName)) continue;
         // Sibling text nodes share a parent. One style check covers the run.
@@ -158,15 +223,21 @@ function snapshotExpression(generation, opts = {}) {
         if (!parentVisible) continue;
         const chunk = node.nodeValue.replace(/\\s+/g, ' ').trim();
         if (!chunk) continue;
-        text += (text ? (parentBlock === lastBlock ? ' ' : '\\n') : '') + chunk;
-        lastBlock = parentBlock;
-        // The time budget never cuts the first screenful: a slow renderer
-        // must still return enough text for the agent to orient itself.
-        if (text.length >= ${maxChars} || (text.length >= ${Math.min(1000, maxChars)} && performance.now() > textDeadline)) { textCut = true; break; }
+        for (let i = 0; i < chunk.length; i++) { sigHash ^= chunk.charCodeAt(i); sigHash = Math.imul(sigHash, 0x01000193); }
+        sigHash ^= 0x9d; sigHash = Math.imul(sigHash, 0x01000193);
+        sigNodes++;
+        if (!textCut) {
+          text += (text ? (parentBlock === lastBlock ? ' ' : '\\n') : '') + chunk;
+          lastBlock = parentBlock;
+          // The time budget never cuts the first screenful: a slow renderer
+          // must still return enough text for the agent to orient itself.
+          if (text.length >= ${maxChars} || (text.length >= ${Math.min(1000, maxChars)} && performance.now() > textDeadline)) textCut = true;
+        }
       }
       text = text.slice(0, ${maxChars});
+      textSig = sigNodes + ':' + (sigHash >>> 0).toString(36);
     } else textCut = ${maxChars} <= 0 && !!document.body?.textContent?.trim();
-    return {title:document.title,url:location.href,loading:document.readyState === 'loading',text,elements:items,truncated:{text:textCut,elements:more || scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8)};
+    return {title:document.title,url:location.href,sameDoc,loading:document.readyState === 'loading',text,textSig,elements:items,truncated:{text:textCut,elements:more || scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted};
   })()`;
 }
 
@@ -183,6 +254,26 @@ function snapshotHash(data) {
   for (const part of [data.url, data.title, data.text]) hash.update(part || '').update('\0');
   return hash.update(elementFingerprint(data.elements)).digest('hex');
 }
+const EFFECT_MAX_LINES = 400;
+const EFFECT_TEXT_CHARS = 600;
+// An action's DOM settles when nothing mutates for this long; the cap keeps a
+// busy page from holding the reply.
+const EFFECT_QUIET_MS = 60;
+const EFFECT_SETTLE_MS = 400;
+// The first window stays open long enough to catch a reaction scheduled a
+// beat after the action; once anything mutates, the shorter quiet window is
+// all a settled page pays.
+const EFFECT_WATCH_MS = 250;
+function linesOf(text) {
+  return String(text || '').split('\n').filter(Boolean).slice(0, EFFECT_MAX_LINES);
+}
+// The coverage of a read is how much of the page's text it scanned: null when
+// it saw the whole document, otherwise the characters it reached. Diffing a
+// fresh read against a narrower one must stay inside that window or text the
+// prior read never saw is reported as new.
+function lastReadOf(data) {
+  return { url: data.url, lines: linesOf(data.text), coverage: data.truncated?.text ? data.text.length : null, sig: data.textSig || '' };
+}
 // An unchanged reply carries no elements, so the agent keeps acting on refs
 // from its last full snapshot (`base`); the page keeps those tokens too.
 function settleSnapshot(tab, data, generation, since) {
@@ -190,34 +281,74 @@ function settleSnapshot(tab, data, generation, since) {
   const unchanged = !!previous && since !== undefined && previous.generation === since && previous.hash === hash;
   const base = unchanged ? previous.base : generation;
   tab.snapshotStamp = { generation, hash, base, url: data.url, elementsHash: elementsHash(data.elements) };
+  tab.lastRead = lastReadOf(data);
+  tab.docMarked = true;
   tab.refs = new Set(data.elements.map((item) => item.ref));
   if (unchanged) for (let index = 1; index <= data.elements.length; index++) tab.refs.add(`s${base}-${index}`);
-  return unchanged ? { unchanged: true, generation } : { ...data, generation };
+  // sameDoc and textSig feed the diff baseline, not the reply.
+  const { sameDoc, textSig, ...page } = data;
+  return unchanged ? { unchanged: true, generation } : { ...page, generation };
 }
-// After an action, return the controls the model can act on next. Page text
-// stays out of the reply. A page that did not change keeps the generation
-// and refs the model already holds, so a later since= check still dedupes.
-async function readControls(execute, tab, { parseWaitMs } = {}) {
+// After an action, describe what it did to the page. The effect carries the
+// new visible text lines since the model's last read (bounded, capped at 600
+// chars) so a click answers with the state it produced; controls are sent
+// only when they changed, and an unchanged page keeps the generation and refs
+// the model already holds, so a later since= check still dedupes.
+async function readEffect(execute, tab, { parseWaitMs, navigated, target, settle } = {}) {
   const previous = tab.snapshotStamp;
   const generation = Math.max(previous && Number.isInteger(previous.generation) ? previous.generation : 0, Number.isInteger(tab.generation) ? tab.generation : 0) + 1;
   let timer;
   const result = await Promise.race([
-    Promise.resolve(execute(snapshotExpression(generation, { maxChars: 0, maxElements: 150, parseWaitMs, keep: previous ? previous.base : undefined, restamp: previous ? previous.base : undefined }))),
+    Promise.resolve(execute(snapshotExpression(generation, { maxChars: 8000, maxElements: 150, parseWaitMs, keep: previous ? previous.base : undefined, restamp: previous ? previous.base : undefined, effect: true, settle, valueFor: target }))),
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('controls')), 8000 + (parseWaitMs || 0)); }),
   ]).finally(() => clearTimeout(timer));
   if (!result || !Array.isArray(result.elements)) return null;
-  // Controls are enough to know the page the agent can click. Skipping the
-  // text walk keeps a click from rereading the whole document. Identical
-  // controls on another URL are another document: the old refs point nowhere.
-  const same = previous && previous.url === result.url && (elementsHash(result.elements) === previous.elementsHash || snapshotHash(result) === previous.hash);
-  if (same) {
+  // The marker planted by the previous read is gone: a cross-document
+  // navigation committed in between, so the old document's lines do not mask
+  // the new one's.
+  const freshDoc = result.sameDoc === false && tab.docMarked === true;
+  const priorRead = freshDoc ? null : (tab.lastRead || null);
+  const priorLines = new Set(priorRead ? priorRead.lines : []);
+  const coverage = priorRead && Number.isFinite(priorRead.coverage) ? priorRead.coverage : Number.MAX_SAFE_INTEGER;
+  const freshLines = linesOf(result.text);
+  const freshSet = new Set(freshLines);
+  const added = [];
+  let at = 0;
+  for (const line of freshLines) {
+    const start = at;
+    at += line.length + 1;
+    // A line reaching past the previous read's coverage was cut in half there;
+    // it is not new.
+    if (start + line.length > coverage) break;
+    if (!priorLines.has(line) && !added.includes(line)) added.push(line);
+  }
+  const removed = !result.truncated?.text && priorRead !== null && priorRead.lines.some((line) => !freshSet.has(line));
+  const controlsSame = !!previous && previous.url === result.url && elementsHash(result.elements) === previous.elementsHash;
+  // navigated is certain when the caller watched the navigation events; when
+  // it is unknown, the missing document marker is the evidence.
+  const nav = navigated === true || (navigated !== false && freshDoc);
+  // The whole-page signature catches what the bounded diff cannot: added or
+  // removed text beyond the walk's coverage.
+  const deepChange = !!priorRead && !!priorRead.sig && !!result.textSig && priorRead.sig !== result.textSig;
+  const changed = !controlsSame || nav || added.length > 0 || removed || deepChange;
+  tab.docMarked = true;
+  tab.lastRead = lastReadOf(result);
+  const effect = { navigated: nav, url: result.url, title: result.title, changed, text: added.join('\n').slice(0, EFFECT_TEXT_CHARS) };
+  if (result.acted !== undefined && result.acted !== null) effect.value = result.acted;
+  if (result.focused) {
+    const ref = controlsSame ? result.focused.kept || result.focused.ref : result.focused.ref;
+    effect.focused = {};
+    if (ref) effect.focused.ref = ref;
+    if (result.focused.name) effect.focused.name = result.focused.name;
+  }
+  if (controlsSame) {
     tab.refs = new Set();
     for (let index = 1; index <= result.elements.length; index++) tab.refs.add(`s${previous.base}-${index}`);
-    return { unchanged: true, generation: previous.generation };
+    return { generation: previous.generation, effect };
   }
   tab.generation = generation;
   const settled = settleSnapshot(tab, result, generation);
-  return { elements: settled.elements.slice(0, 40), generation: settled.generation };
+  return { elements: settled.elements.slice(0, 40), generation: settled.generation, effect };
 }
 
 function checkpointExpression(includeDrafts) {
@@ -257,4 +388,4 @@ function restoreExpression(checkpoint) {
     return {verification:restored === c.drafts.length ? 'ready' : 'review_required',restored,skipped:c.drafts.length-restored};
   })()`;
 }
-module.exports = { snapshotExpression, settleSnapshot, readControls, checkpointExpression, restoreExpression };
+module.exports = { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression };

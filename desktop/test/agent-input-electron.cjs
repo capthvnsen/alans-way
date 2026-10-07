@@ -121,7 +121,7 @@ app.whenReady().then(async () => {
   assert.equal(await value(view.webContents, 't.value'), "hello world.'", 'punctuation types its character');
   assert.deepEqual((await log()).keys.slice(-2), [['.', 'Period', 190], ["'", 'Quote', 222]], 'punctuation keys report their real key, code and keyCode');
   const picked = await perform({ action: 'select', ref: 's1-2', label: 'Beta' });
-  assert.deepEqual(picked.selected, { value: 'b', label: 'Beta' });
+  assert.deepEqual(picked.matched, { by: 'label', value: 'b', label: 'Beta' });
   await perform({ action: 'select', selector: '#sel', value: 'c' });
   assert.deepEqual((await log()).selChange, [['b', false], ['c', false]]);
   assert.equal(await value(view.webContents, 'sel.value'), 'c');
@@ -146,7 +146,7 @@ app.whenReady().then(async () => {
   await assert.rejects(perform({ action: 'click', ref: 's1-12' }), /missing or disabled/);
   assert.equal((await value(view.webContents, 'submits')).length, 1, 'a button in a disabled fieldset does not submit');
   const hidden = await perform({ action: 'select', ref: 's1-13', value: 'y' });
-  assert.deepEqual(hidden.selected, { value: 'y', label: 'Y' }, 'a hidden native select can still be chosen');
+  assert.deepEqual(hidden.matched, { by: 'value', value: 'y', label: 'Y' }, 'a hidden native select can still be chosen');
   console.log('PASS: macOS editing commands, punctuation key codes, select, double/right click, mouse and HTML5 drag by ref and coordinates.');
   tab.controller = 'human'; tab.epoch++;
   await agent.clear(tab);

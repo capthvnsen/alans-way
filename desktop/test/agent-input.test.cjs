@@ -11,7 +11,7 @@ function fixture(options = {}) {
   const tab = { botId: 'bot', controller: 'agent', epoch: 1, refs: new Set(['s1-1', 's1-2']), view: { webContents: Object.assign(new EventEmitter(), {
     isDestroyed: () => false,
     setIgnoreMenuShortcuts: value => shortcuts.push(value),
-    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('elementFromPoint') ? found : code.includes('__hermesSubmit') ? (options.submitted ?? null) : code.includes('has no option matching') ? (options.select || { selected: { value: 'b', label: 'Beta' } }) : found; },
+    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('elementFromPoint') ? found : code.includes('__hermesSubmit') ? (options.submitted ?? null) : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : found; },
     focus: () => { throw new Error('Native focus must never be used.'); },
     sendInputEvent: () => { throw new Error('Native input must never be used.'); },
   }) } };
@@ -284,11 +284,11 @@ test('drag to an element resolves the destination before the source', async () =
 test('select picks an option by value or label and reports it', async () => {
   const f = fixture();
   const result = await f.perform({ action: 'select', ref: 's1-1', label: 'Beta' });
-  assert.deepEqual(result.selected, { value: 'b', label: 'Beta' });
+  assert.deepEqual(result.matched, { by: 'label', value: 'b', label: 'Beta' });
   const script = f.scripts.find(code => code.includes('has no option matching'));
   assert.ok(script.includes('"Beta"') && script.includes("dispatchEvent(new Event('change'"));
-  await assert.rejects(f.perform({ action: 'select', ref: 's1-1' }), /option value or label/);
-  await assert.rejects(f.perform({ action: 'select', text: 'x', label: 'Beta' }), /requires an element/);
+  await assert.rejects(f.perform({ action: 'select', ref: 's1-1' }), /value, label, option, text or choice/);
+  await assert.rejects(f.perform({ action: 'select', x: 1, label: 'Beta' }), /requires an element/);
   const loose = fixture();
   await loose.perform({ action: 'select', ref: 's1-1', value: 'b' });
   assert.match(loose.scripts.find(code => code.includes('elementFromPoint')), /const loose = true && el\.tagName === 'SELECT'/, 'select resolves without a hit test');
