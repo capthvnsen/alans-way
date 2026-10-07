@@ -35,7 +35,9 @@ if (-not $Checkout -or -not (Test-Path "$Checkout\desktop\package.json") -or -no
 }
 $script:Version = [string](Get-Content "$Checkout\desktop\package.json" -Raw | ConvertFrom-Json).version
 
-# The broker's loopback status port and bearer token come from its data dir.
+# The broker's loopback status url and bearer token come from its data dir.
+# connection.json is authoritative: the broker writes its own url and token
+# there, so a relocated port or token file still resolves.
 function Get-Status {
     $data = $env:ALANS_WAY_VM_DATA
     if (-not $data) { $data = $env:HERMES_VPS_BROWSER_DATA }
@@ -43,13 +45,25 @@ function Get-Status {
         $data = "$env:USERPROFILE\.local\share\hermes-alans-way\browser"
         if (-not (Test-Path "$data\config.json")) { return $null }
     }
-    $port = [int](Get-Content "$data\config.json" -Raw | ConvertFrom-Json).port; if (-not $port) { $port = 9465 }
-    $token = $null
-    foreach ($tf in @("$data\app-token.json", "$data\connection.json")) {
-        if (Test-Path $tf) { $token = [string](Get-Content $tf -Raw | ConvertFrom-Json).token; if ($token) { break } }
+    $url = ''; $token = ''
+    try { $conn = Get-Content "$data\connection.json" -Raw | ConvertFrom-Json
+          $url = [string]$conn.url; $token = [string]$conn.token } catch {}
+    if (-not $token) {
+        $tf = "$data\app-token.json"
+        if (-not (Test-Path $tf)) {
+            try { $moved = [string](Get-Content "$data\config.json" -Raw | ConvertFrom-Json).appTokenFile } catch { $moved = '' }
+            if ($moved) { $tf = $moved }
+        }
+        try { $token = [string](Get-Content $tf -Raw | ConvertFrom-Json).token } catch {}
     }
     if (-not $token) { return $null }
-    try { return Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/status" -Headers @{ Authorization = "Bearer $token" } -TimeoutSec 4 }
+    if ($url -notmatch '^http://(127\.0\.0\.1|localhost|\[::1\]):') {
+        $port = 0
+        try { $port = [int](Get-Content "$data\config.json" -Raw | ConvertFrom-Json).port } catch {}
+        if (-not $port) { $port = 9465 }
+        $url = "http://127.0.0.1:$port"
+    }
+    try { return Invoke-RestMethod -Uri "$url/v1/status" -Headers @{ Authorization = "Bearer $token" } -TimeoutSec 4 }
     catch { return $null }
 }
 
@@ -80,9 +94,14 @@ while ($true) {
 Push-Location $Checkout
 try {
     git fetch --tags origin 2>&1 | Out-Null
-    $want = (git rev-parse --verify -q "$Tag^{commit}" 2>$null)
+    if ($LASTEXITCODE -ne 0) { git fetch --unshallow --tags origin 2>&1 | Out-Null }
+    if ($LASTEXITCODE -ne 0) { git fetch --depth=1000000 --tags origin 2>&1 | Out-Null }
+    if ($LASTEXITCODE -ne 0) { Write-Output 'vm-update: git fetch reported a problem; trying the objects already in the checkout' }
+    # Only a real tag may satisfy the pin: resolve refs/tags/$Tag fully so a
+    # same-named branch or lightweight ref can never stand in for it.
+    $want = (git rev-parse --verify -q "refs/tags/${Tag}^{commit}" 2>$null)
     if (-not $want) { Fail "tag $Tag is not in the checkout and could not be fetched" }
-    git -c advice.detachedHead=false checkout -q $Tag 2>&1 | Out-Null
+    git -c advice.detachedHead=false checkout -q "refs/tags/$Tag" 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail "could not check out $Tag" }
     $head = (git rev-parse HEAD 2>$null)
     if ($head -ne $want) { Fail "checkout did not land on $Tag; refusing to run it" }

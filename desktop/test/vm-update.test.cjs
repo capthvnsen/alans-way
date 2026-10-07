@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil,
-  vmRetryState, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS,
+  vmRetryState, vmCheckEntry, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS,
 } = require('../src/vm-update.cjs');
 
 const SCRIPTS = { 'vm-update.sh': '#!/bin/sh\n# fake posix payload\n', 'vm-update.ps1': '# fake windows payload\n' };
@@ -67,7 +67,8 @@ test('the bundled POSIX script is piped over ssh stdin with the tag as its only 
   assert.equal(call.bin, 'ssh');
   assert.deepEqual(call.args.slice(0, -2), ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes']);
   assert.equal(call.args.at(-2), 'user@vm.example');
-  assert.equal(call.args.at(-1), 'sh -s -- v0.3.2');
+  assert.match(call.args.at(-1), /sh -s -- v0\.3\.2/);
+  assert.match(call.args.at(-1), /timeout \d+ sh -s/, 'a remote-side cap bounds a run whose ssh dies');
   assert.equal(call.opts.input, SCRIPTS['vm-update.sh']);
   assert.equal(call.opts.timeoutMs, VM_TIMEOUT_MS);
 });
@@ -157,12 +158,30 @@ test('checkVm asks the guest for checkout and live versions under a short cap', 
 });
 
 test('the retry banner shows while a saved VM lags the app or failed, and clears once it matches', () => {
-  assert.deepEqual(vmRetryState('0.3.2', { agent: { version: '0.3.1', failed: '' } }), { show: true, version: '0.3.1', failed: '' });
-  assert.deepEqual(vmRetryState('0.3.2', { agent: { version: '', failed: 'disk full' } }), { show: true, version: '', failed: 'disk full' });
-  assert.equal(vmRetryState('0.3.2', { agent: { version: '0.3.2' } }).show, false);
-  assert.equal(vmRetryState('0.3.2', {}).show, false);
-  assert.equal(vmRetryState('0.3.2', undefined).show, false);
-  assert.equal(vmRetryState('0.3.2', { agent: { version: '0.4.0' } }).show, false);
+  const targets = [{ id: 'agent' }];
+  assert.deepEqual(vmRetryState('0.3.2', { agent: { version: '0.3.1', failed: '' } }, targets), { show: true, version: '0.3.1', failed: '' });
+  assert.deepEqual(vmRetryState('0.3.2', { agent: { version: '', failed: 'disk full' } }, targets), { show: true, version: '', failed: 'disk full' });
+  assert.equal(vmRetryState('0.3.2', { agent: { version: '0.3.2' } }, targets).show, false);
+  assert.equal(vmRetryState('0.3.2', {}, targets).show, false);
+  assert.equal(vmRetryState('0.3.2', undefined, targets).show, false);
+  assert.equal(vmRetryState('0.3.2', { agent: { version: '0.4.0' } }, targets).show, false);
+});
+
+test('the retry banner ignores a VM whose address was removed', () => {
+  const stale = { agent: { version: '0.3.1', failed: 'disk full' } };
+  assert.equal(vmRetryState('0.3.2', stale, []).show, false);
+  assert.equal(vmRetryState('0.3.2', stale, undefined).show, false);
+  assert.equal(vmRetryState('0.3.2', stale, [{ id: 'other' }]).show, false);
+  assert.equal(vmRetryState('0.3.2', stale, [{ id: 'agent' }]).show, true);
+});
+
+test('a stale version check never overwrites a fresher recorded result', () => {
+  assert.equal(vmCheckEntry({ version: '0.3.2', failed: '' }, { version: '0.3.1' }), null);
+  assert.equal(vmCheckEntry({ version: '0.3.1', failed: 'disk full' }, { version: '0.3.1' }), null);
+  assert.equal(vmCheckEntry({ version: '0.3.1' }, { version: '' }), null);
+  assert.deepEqual(vmCheckEntry({ version: '0.3.1' }, { version: '0.3.2' }), { version: '0.3.2', failed: '' });
+  assert.deepEqual(vmCheckEntry(undefined, { version: '0.3.1' }), { version: '0.3.1', failed: '' });
+  assert.deepEqual(vmCheckEntry({ failed: 'disk full' }, { hostVersion: '0.3.1' }), { version: '0.3.1', failed: '' });
 });
 
 test('the update popup shows only for an available, unsnoozed, idle update', () => {

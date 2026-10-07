@@ -1,5 +1,5 @@
 #!/bin/sh
-# vm-update.sh — bring this machine's Alan's Way browser host checkout to a
+# vm-update.sh - bring this machine's Alan's Way browser host checkout to a
 # release tag, restart the tab broker and verify it answers with that version.
 #
 # The desktop app pipes this script over SSH (ssh <host> 'sh -s -- v0.3.2'),
@@ -25,7 +25,21 @@ set -u
 TAG="" CHECK=0
 case "${1:-}" in
   --check) CHECK=1;;
-  -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+  -h|--help)
+    # $0 is 'sh' when the app pipes this script via 'sh -s', so the usage text
+    # is embedded rather than read back out of the script file.
+    cat <<'EOF'
+vm-update.sh - bring this machine's Alan's Way browser host checkout to a
+release tag, restart the tab broker and verify it answers with that version.
+
+  sh vm-update.sh v0.3.2    update to the tag and restart the browser host
+  sh vm-update.sh --check   read-only: print the checkout/live versions
+
+The desktop app pipes this script over SSH, so nothing is installed on the VM
+and no file is left behind. It only ever touches the checkout setup.sh
+created, that checkout's node_modules, and the browser services it manages.
+EOF
+    exit 0;;
   *) TAG="${1:-}";;
 esac
 
@@ -38,7 +52,7 @@ HEALTH_WAIT="${ALANS_WAY_VM_HEALTH_WAIT:-45}"
 VERSION="" RESTARTED=false
 
 say() { printf 'vm-update: %s\n' "$*"; }
-json_string() { printf '%s' "$1" | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-300; }
+json_string() { printf '%s' "$1" | tr '\n\t' '  ' | tr -d '\000-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-300; }
 json() { printf '{"ok":%s,"version":"%s","restarted":%s,"error":"%s"}\n' "$1" "$2" "$3" "$(json_string "$4")"; }
 fail() { json false "$VERSION" "$RESTARTED" "$1"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -87,21 +101,30 @@ node_bin() {
 
 # Prints the broker's /v1/status body, or nothing when it cannot be asked
 # (no data dir, no readable token, broker down). Only loopback is contacted.
+# connection.json is authoritative: the broker writes its own url and token
+# there, so a relocated port or token file still resolves.
 status_body() {
   DATA="$(find_data_dir)" || return 1
-  PORT="$(sed -n 's/.*"port"[^0-9]*\([0-9][0-9]*\).*/\1/p' "$DATA/config.json" | head -1)"
-  PORT="${PORT:-9465}"
-  TOKEN=""
-  for tf in "$DATA/app-token.json" "$DATA/connection.json"; do
-    TOKEN="$(sed -n 's/.*"token"[^"]*"\([^"]*\)".*/\1/p' "$tf" 2>/dev/null | head -1)"
-    [ -n "$TOKEN" ] && break
-  done
+  URL="$(sed -n 's/.*"url"[^"]*"\([^"]*\)".*/\1/p' "$DATA/connection.json" 2>/dev/null | head -1)"
+  TOKEN="$(sed -n 's/.*"token"[^"]*"\([^"]*\)".*/\1/p' "$DATA/connection.json" 2>/dev/null | head -1)"
+  if [ -z "$TOKEN" ]; then
+    TOKEN="$(sed -n 's/.*"token"[^"]*"\([^"]*\)".*/\1/p' "$DATA/app-token.json" 2>/dev/null | head -1)"
+  fi
+  if [ -z "$TOKEN" ]; then
+    TF="$(sed -n 's/.*"appTokenFile"[^"]*"\([^"]*\)".*/\1/p' "$DATA/config.json" | head -1)"
+    [ -n "$TF" ] && TOKEN="$(sed -n 's/.*"token"[^"]*"\([^"]*\)".*/\1/p' "$TF" 2>/dev/null | head -1)"
+  fi
   [ -n "$TOKEN" ] || return 1
+  case "$URL" in
+    http://127.0.0.1:*|http://localhost:*|http://\[::1\]:*) ;;
+    *) PORT="$(sed -n 's/.*"port"[^0-9]*\([0-9][0-9]*\).*/\1/p' "$DATA/config.json" | head -1)"
+       URL="http://127.0.0.1:${PORT:-9465}";;
+  esac
   if have curl; then
-    curl -fsS --max-time 4 -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/v1/status" 2>/dev/null
+    curl -fsS --max-time 4 -H "Authorization: Bearer $TOKEN" "$URL/v1/status" 2>/dev/null
   elif node_bin; then
     "$NODE_BIN" -e 'fetch(process.argv[1],{headers:{authorization:"Bearer "+process.argv[2]}}).then(r=>r.text()).then(t=>process.stdout.write(t)).catch(()=>process.exit(1))' \
-      "http://127.0.0.1:$PORT/v1/status" "$TOKEN" 2>/dev/null
+      "$URL/v1/status" "$TOKEN" 2>/dev/null
   else
     return 1
   fi
@@ -154,9 +177,11 @@ $SUDO "$GIT" -C "$DIR" fetch --tags origin >/dev/null 2>&1 \
   || $SUDO "$GIT" -C "$DIR" fetch --unshallow --tags origin >/dev/null 2>&1 \
   || $SUDO "$GIT" -C "$DIR" fetch --depth=1000000 --tags origin >/dev/null 2>&1 \
   || say "git fetch reported a problem; trying the objects already in the checkout"
-WANT="$($SUDO "$GIT" -C "$DIR" rev-parse --verify -q "$TAG^{commit}" 2>/dev/null || true)"
+# Only a real tag may satisfy the pin: resolve refs/tags/$TAG fully so a
+# same-named branch or lightweight ref can never stand in for it.
+WANT="$($SUDO "$GIT" -C "$DIR" rev-parse --verify -q "refs/tags/$TAG^{commit}" 2>/dev/null || true)"
 [ -n "$WANT" ] || fail "tag $TAG is not in the checkout and could not be fetched"
-$SUDO "$GIT" -C "$DIR" -c advice.detachedHead=false checkout -q "$TAG" \
+$SUDO "$GIT" -C "$DIR" -c advice.detachedHead=false checkout -q "refs/tags/$TAG" \
   || fail "could not check out $TAG"
 HEAD_NOW="$($SUDO "$GIT" -C "$DIR" rev-parse HEAD 2>/dev/null || true)"
 [ "$HEAD_NOW" = "$WANT" ] || fail "checkout did not land on $TAG; refusing to run it"
@@ -194,15 +219,18 @@ esac
 # The broker must answer loopback /v1/status with the tag's version before the
 # update is called done; a restart that never comes up is a failure.
 deadline=$(( $(date +%s) + HEALTH_WAIT ))
-HEALTHY=false
+HEALTHY=false ASKED=false
 while [ "$(date +%s)" -lt "$deadline" ]; do
   BODY="$(status_body)" || BODY=""
+  [ -n "$BODY" ] && ASKED=true
   HOST_VERSION="$(printf '%s' "$BODY" | json_field version)"
   [ "$HOST_VERSION" = "${TAG#v}" ] && { HEALTHY=true; break; }
   sleep 2
 done
 if [ "$HEALTHY" != true ]; then
-  if [ "$RESTARTED" = true ]; then
+  if [ "$ASKED" != true ]; then
+    fail "updated but the broker status could not be read; verify $TAG on the VM and restart the broker with the command above"
+  elif [ "$RESTARTED" = true ]; then
     fail "the browser host did not come back on $TAG"
   else
     fail "updated but the broker did not report v${TAG#v}; restart it with the command above"

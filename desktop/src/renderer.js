@@ -309,9 +309,7 @@ function renderUpdate() {
   renderUpdatePopup();
   renderVmBanner();
   if (u.justUpdatedFrom) {
-    toast(u.vmRetry?.show
-      ? `Updated to v${state.version}. A VM update did not finish: use Retry above, or send your agent the update prompt from Settings → Agent setup.${state.platform === 'darwin' ? ' If your agent can no longer use this Mac, turn alans-way-localapp off and on again in System Settings → Privacy & Security → Accessibility.' : ''}`
-      : `Updated to v${state.version}.`);
+    toast(`Updated to v${state.version}.${u.vmRetry?.show ? ' A VM update did not finish: use Retry above, or send your agent the update prompt from Settings → Agent setup.' : ''}${state.platform === 'darwin' ? ' If your agent can no longer use this Mac, turn alans-way-localapp off and on again in System Settings → Privacy & Security → Accessibility.' : ''}`);
     command('dismiss-updated');
   }
 }
@@ -345,7 +343,7 @@ function renderVmBanner() {
   banner.classList.toggle('hidden', !retry.show);
   if (!retry.show) return;
   $('vm-banner-text').textContent = u.vmRetrying ? 'Updating your VM…' : retry.version ? `Your VM is on v${retry.version}.` : 'Your VM is not up to date.';
-  $('vm-banner-retry').disabled = !!u.vmRetrying;
+  $('vm-banner-retry').disabled = !!(u.vmRetrying || u.busy);
 }
 let onboardingStep = 1, onboardingSignature = '';
 function renderOnboarding(show) {
