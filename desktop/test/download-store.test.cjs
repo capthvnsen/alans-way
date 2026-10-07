@@ -26,13 +26,13 @@ function fakeItem(fields = {}) {
   };
 }
 
-function fixture(initial = [], files = { '/tmp/report.pdf': true }) {
+function fixture(initial = [], files = { '/tmp/report.pdf': true }, confirmOpen) {
   let prefs = { downloads: initial.map(item => ({ ...item })) }, saved = 0, notices = 0;
   const opened = [], shown = [], session = { handlers: {}, on(name, fn) { (this.handlers[name] ||= []).push(fn); } };
   const store = createDownloadStore({ getPreferences: () => prefs, savePreferences: () => saved++, onChanged: () => notices++, progressMs: 0,
     downloadsPath: () => '/tmp/downloads',
     shell: { openPath: async (file) => { opened.push(file); return ''; }, showItemInFolder: (file) => shown.push(file) },
-    existsSync: (file) => files[file] === true });
+    existsSync: (file) => files[file] === true, ...(confirmOpen ? { confirmOpen } : {}) });
   store.install(session);
   return { store, prefs, opened, shown,
     get saved() { return saved; }, get notices() { return notices; },
@@ -125,4 +125,32 @@ test('downloads folder opens via the injected shell', async () => {
   const f = fixture();
   await f.store.openFolder();
   assert.deepEqual(f.opened, ['/tmp/downloads']);
+});
+
+test('executables and scripts need confirmation before they open, documents do not', async () => {
+  const asked = [];
+  let answer = false;
+  const files = { '/tmp/setup.exe': true, '/tmp/run.PS1': true, '/tmp/report.pdf': true, '/tmp/tool.app': true };
+  const f = fixture([
+    { id: 'risky-exe-1', name: 'setup.exe', path: '/tmp/setup.exe', state: 'completed', startedAt: 1 },
+    { id: 'risky-ps1-1', name: 'run.PS1', path: '/tmp/run.PS1', state: 'completed', startedAt: 1 },
+    { id: 'safe-pdf-01', name: 'report.pdf', path: '/tmp/report.pdf', state: 'completed', startedAt: 1 },
+    { id: 'risky-app-1', name: 'tool.app', path: '/tmp/tool.app', state: 'completed', startedAt: 1 },
+  ], files, async (name) => { asked.push(name); return answer; });
+  await f.store.open('safe-pdf-01');
+  assert.deepEqual(asked, []);
+  await f.store.open('risky-exe-1');
+  assert.deepEqual(asked, ['setup.exe']);
+  assert.deepEqual(f.opened, ['/tmp/report.pdf'], 'declined, so it did not open');
+  answer = true;
+  await f.store.open('risky-exe-1');
+  await f.store.open('risky-ps1-1');
+  await f.store.open('risky-app-1');
+  assert.deepEqual(f.opened, ['/tmp/report.pdf', '/tmp/setup.exe', '/tmp/run.PS1', '/tmp/tool.app']);
+});
+
+test('a risky file is never opened when nothing can ask the user', async () => {
+  const f = fixture([{ id: 'risky-exe-1', name: 'setup.exe', path: '/tmp/setup.exe', state: 'completed', startedAt: 1 }], { '/tmp/setup.exe': true });
+  await f.store.open('risky-exe-1');
+  assert.deepEqual(f.opened, []);
 });

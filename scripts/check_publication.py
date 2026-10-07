@@ -20,11 +20,25 @@ RULES = (
         "/" + r"Users/(?!user/|macuser/|your-name/|you/)[^/\s'\"<>]+/"
         + "|/" + r"home/(?!user/|macuser/|your-name/|you/)[^/\s'\"<>]+/")),
 )
-IPV4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
+IPV4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.]|/\d)")
 TAILNET = ipaddress.ip_network((0x64400000, 10))
 EXAMPLE_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
     (0xC0000200, 24), (0xC6336400, 24), (0xCB007100, 24),
 ))
+# Tailnet-range boundary addresses that connect-*.sh document and test_connect_scripts.py
+# feeds to the tailnet-host validator. They are range edges, not machines. Written as
+# octets so this file does not trip its own check.
+def _ips(*addresses):
+    return frozenset(".".join(map(str, octets)) for octets in addresses)
+
+
+_RANGE_EDGES = _ips((100, 64, 0, 0), (100, 127, 255, 255))
+ALLOWED_ADDRESSES = {
+    "scripts/connect-linux.sh": _RANGE_EDGES,
+    "scripts/connect-mac.sh": _RANGE_EDGES,
+    "scripts/connect-windows.ps1": _RANGE_EDGES,
+    "tests/test_connect_scripts.py": _ips((100, 64, 0, 1), (100, 100, 1, 2), (100, 127, 255, 254)),
+}
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pem", ".key", ".patch", ".diff", ".log"}
 FORBIDDEN_IMPORTS = {"gateway", "tui_gateway", "hermes_cli", "hermes_state", "run_agent", "model_tools", "tools", "agent"}
 BINARY_ASSETS = {"desktop/assets/icon.png": b"\x89PNG\r\n\x1a\n", "desktop/assets/icon.icns": b"icns",
@@ -62,6 +76,8 @@ def inspect_text(path: str, text: str) -> list[dict]:
             except ValueError:
                 continue
             if address.is_loopback or address.is_unspecified or address.is_link_local or any(address in network for network in EXAMPLE_NETWORKS):
+                continue
+            if match.group() in ALLOWED_ADDRESSES.get(path, ()):
                 continue
             if address.is_private or address in TAILNET:
                 # Security tests name RFC1918 ranges on purpose. A tailnet

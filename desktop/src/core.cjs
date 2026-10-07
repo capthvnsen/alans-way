@@ -30,7 +30,7 @@ function ipv4Bytes(hostname) {
   return bytes.every((byte) => byte <= 255) ? bytes : null;
 }
 function agentHostBarrier(hostname) {
-  const host = String(hostname || '').toLowerCase();
+  const host = String(hostname || '').toLowerCase().replace(/\.+$/, '');
   if (host === 'localhost' || host.endsWith('.localhost')) return 'loopback';
   let v4 = ipv4Bytes(host);
   if (host.startsWith('[') && host.endsWith(']')) {
@@ -91,7 +91,7 @@ const CDP_BLOCKED = new Set([
   'Page.setInterceptFileChooserDialog', 'Page.handleFileChooser', 'Page.setDownloadBehavior', 'Page.getCookies',
   'Page.navigateToHistoryEntry',
   'DOM.setFileInputFiles',
-  'Network.getCookies', 'Network.getAllCookies', 'Network.setCookie', 'Network.setCookies',
+  'Network.getCookies', 'Network.getAllCookies', 'Network.setCookie', 'Network.setCookies', 'Network.deleteCookies', 'Storage.clearCookies',
   'Network.clearBrowserCookies', 'Network.clearBrowserCache', 'Network.loadNetworkResource',
   'Network.setRequestInterception', 'Network.continueInterceptedRequest',
 ]);
@@ -178,16 +178,20 @@ function sanitizeBots(value) {
 }
 
 // A laptop-close leaves the model holding a Mac tab id. Carry the read or
-// action onto the VPS tab the connector already opened. Never carry a close:
-// that would shut the page the task just moved to.
+// action onto the VPS tab the connector already opened. page.map (old tab id
+// to VPS tab id, from a mirror restore) retargets each id on its own; without
+// a map every missing id falls back to the single continued tab. Never carry
+// a close: that would shut the page the task just moved to.
 function retargetMissingTab(endpoint, method, page) {
-  if (!page || !page.tabId || method === 'DELETE') return null;
+  if (!page || method === 'DELETE') return null;
   const match = /^\/v1\/tabs\/([^/?]+)(.*)$/.exec(String(endpoint || ''));
   if (!match) return null;
   let requested = match[1];
   try { requested = decodeURIComponent(requested); } catch { return null; }
-  if (requested === page.tabId) return null;
-  return '/v1/tabs/' + encodeURIComponent(page.tabId) + match[2];
+  const mapped = page.map && Object.keys(page.map).length > 0;
+  const target = mapped ? (Object.hasOwn(page.map, requested) ? page.map[requested] : '') : page.tabId;
+  if (!target || requested === target) return null;
+  return '/v1/tabs/' + encodeURIComponent(target) + match[2];
 }
 
 // The new VPS tab starts at its own control epoch. A Mac epoch must not be

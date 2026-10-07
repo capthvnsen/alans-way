@@ -3,14 +3,15 @@
 # public keys filled in:
 #
 #   powershell -ExecutionPolicy Bypass -File connect-windows.ps1 `
-#     --vps root@<vps-tailscale-ip> `
-#     --vps-host-key 'ssh-ed25519 AAAA...' `
-#     --vps-key 'ssh-ed25519 AAAA... root@vps'
+#     -Vps root@<vps-tailscale-ip> `
+#     -VpsHostKey 'ssh-ed25519 AAAA...' `
+#     -VpsKey 'ssh-ed25519 AAAA... root@vps'
 #
 # It installs or upgrades the Alan's Way app, lets that key log in to this PC
-# over SSH, pins the remote host key so this PC can reach it without a
-# trust-on-first-use prompt, and prints the values the agent needs next. Only
-# public keys are printed. Safe to re-run.
+# over SSH (only from your Tailscale network), pins the remote host key so
+# this PC can reach it without a trust-on-first-use prompt, and prints the
+# values the agent needs next. The -Vps address must be a Tailscale name or
+# IP. Only public keys are printed. Safe to re-run.
 #
 # Windows notes vs the Mac version:
 #  - OpenSSH Server is an optional Windows capability; installing it needs an
@@ -37,15 +38,32 @@ function Die([string]$m) { Write-Host "connect-windows: $m" -ForegroundColor Red
 
 if ($env:OS -notmatch 'Windows') { Die 'run this on your Windows PC' }
 if (-not $Vps -or -not $VpsHostKey -or -not $VpsKey) {
-  Die 'needs --vps, --vps-host-key and --vps-key; ask your setup agent for the full command'
+  Die 'needs -Vps, -VpsHostKey and -VpsKey; ask your setup agent for the full command'
 }
 
 # Strict shapes: these values land in authorized_keys and known_hosts.
-if ($Vps -notmatch '^([A-Za-z0-9._-]+@)?[A-Za-z0-9.:-]+$') { Die 'bad --vps (expected user@host)' }
+if ($Vps -notmatch '^([A-Za-z0-9._-]+@)?[A-Za-z0-9.:-]+$') { Die 'bad -Vps (expected user@host)' }
 $keyRe = '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/]+=*'
-if ($VpsHostKey -notmatch "$keyRe`$") { Die "bad --vps-host-key (expected 'ssh-ed25519 AAAA...')" }
-if ($VpsKey -notmatch "$keyRe( [A-Za-z0-9@._-]+)?`$") { Die "bad --vps-key (expected 'ssh-ed25519 AAAA... comment')" }
+if ($VpsHostKey -notmatch "$keyRe`$") { Die "bad -VpsHostKey (expected 'ssh-ed25519 AAAA...')" }
+if ($VpsKey -notmatch "$keyRe( [A-Za-z0-9@._-]+)?`$") { Die "bad -VpsKey (expected 'ssh-ed25519 AAAA... comment')" }
 $VpsHost = ($Vps -split '@')[-1]
+
+# Tailscale addresses are 100.64.0.0/10 (100.64.0.0 to 100.127.255.255) and
+# fd7a:115c:a1e0::/48. Names are MagicDNS (*.ts.net) or a short single label.
+function Test-TailnetIp([string]$h) {
+  if ($h -match '^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}$') {
+    $o = @($h -split '\.' | ForEach-Object { [int]$_ })
+    return (@($o | Where-Object { $_ -gt 255 }).Count -eq 0) -and $o[0] -eq 100 -and $o[1] -ge 64 -and $o[1] -le 127
+  }
+  return $h -match '^fd7a:115c:a1e0:'
+}
+function Test-TailnetHost([string]$h) {
+  if (Test-TailnetIp $h) { return $true }
+  return ($h -match '^([A-Za-z0-9][A-Za-z0-9-]*\.)+ts\.net$') -or ($h -match '^[A-Za-z0-9][A-Za-z0-9-]*$')
+}
+if (-not (Test-TailnetHost $VpsHost)) {
+  Die "$VpsHost is not a Tailscale address. Alan's Way connects over your Tailscale network only. On the agent machine run 'tailscale ip -4' and use that 100.x.y.z address (or its name ending in .ts.net), then re-run this command."
+}
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
@@ -57,6 +75,11 @@ if (-not (Test-Path $ts)) {
 }
 $pcIp = if ($ts) { (& $ts ip -4 2>$null | Select-Object -First 1) } else { '' }
 if (-not $pcIp) { Die 'Tailscale is not connected on this PC. Install it from https://tailscale.com/download, sign in with the same account as your agent machine, then re-run this command.' }
+if (-not (Test-TailnetIp $VpsHost)) {
+  $resolved = $false
+  try { & $ts ip -4 $VpsHost 2>$null | Out-Null; $resolved = ($LASTEXITCODE -eq 0) } catch { }
+  if (-not $resolved) { Die "$VpsHost is not on your tailnet. Check the name with 'tailscale status', or use the agent machine's 100.x.y.z address, then re-run this command." }
+}
 
 # OpenSSH Server. Capability install and service setup require elevation.
 $cap = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -115,21 +138,25 @@ $userIsAdmin = $isAdmin
 New-Item -ItemType Directory -Path "$HOME\.ssh" -Force | Out-Null
 if ($userIsAdmin) {
   $keysFile = 'C:\ProgramData\ssh\administrators_authorized_keys'
-  New-Item -ItemType File -Path $keysFile -Force -ErrorAction SilentlyContinue | Out-Null
+  if (-not (Test-Path $keysFile)) { New-Item -ItemType File -Path $keysFile -ErrorAction SilentlyContinue | Out-Null }
   # The file must be owned/locked to Administrators + SYSTEM or sshd ignores it.
   icacls $keysFile /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F' | Out-Null
 } else {
   $keysFile = "$HOME\.ssh\authorized_keys"
-  New-Item -ItemType File -Path $keysFile -Force | Out-Null
+  if (-not (Test-Path $keysFile)) { New-Item -ItemType File -Path $keysFile | Out-Null }
 }
 
-if (-not ((Get-Content $keysFile -ErrorAction SilentlyContinue) -contains $VpsKey)) {
-  Add-Content $keysFile "`n$VpsKey"
-}
-Say "connect-windows: the agent machine's key can log in to this PC ($keysFile)"
+# Limit the key to the tailnet. An existing line carrying the same key (for
+# example an earlier unrestricted one) is replaced, so re-running tightens an
+# old install and never duplicates the line.
+$fromTailnet = 'from="100.64.0.0/10,fd7a:115c:a1e0::/48"'
+$keyBlob = ($VpsKey -split ' ')[1]
+$kept = @(Get-Content $keysFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -and (($_ -split '\s+') -notcontains $keyBlob) })
+[System.IO.File]::WriteAllLines($keysFile, [string[]]($kept + "$fromTailnet $VpsKey"), (New-Object System.Text.UTF8Encoding($false)))
+Say "connect-windows: the agent machine's key can log in to this PC, from your tailnet only ($keysFile)"
 
 $knownHosts = "$HOME\.ssh\known_hosts"
-New-Item -ItemType File -Path $knownHosts -Force | Out-Null
+if (-not (Test-Path $knownHosts)) { New-Item -ItemType File -Path $knownHosts | Out-Null }
 $pinned = & ssh-keygen -F $VpsHost -f $knownHosts 2>$null | Where-Object { $_ -notmatch '^#' }
 if (-not $pinned) {
   Add-Content $knownHosts "$VpsHost $VpsHostKey"

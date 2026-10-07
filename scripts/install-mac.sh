@@ -25,7 +25,7 @@ die() { printf 'install-mac: %s\n' "$*" >&2; exit 1; }
 # an official build (checksum-verified) into a private folder rather than
 # asking the user to install a toolchain.
 NODE_DIR="$HOME/.alans-way/node"
-node_ok() { command -v node >/dev/null && command -v npm >/dev/null && [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 20 ]; }
+node_ok() { command -v node >/dev/null && command -v npm >/dev/null && node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 12) ? 0 : 1)'; }
 if ! node_ok; then
   [ -x "$NODE_DIR/bin/node" ] || {
     say "Downloading Node 22 for the build (into $NODE_DIR)"
@@ -68,8 +68,8 @@ cd "$DIR/desktop"
 say "Installing dependencies"
 npm ci --no-audit --no-fund --loglevel=error >/dev/null
 say "Building the app"
-npm run package:mac --silent >/dev/null 2>&1 || npm run package:mac
-BUILT="$DIR/desktop/dist/$APP_NAME-darwin-arm64/$APP_NAME.app"
+npm run package:mac --silent -- --dir >/dev/null 2>&1 || npm run package:mac -- --dir
+BUILT="$DIR/desktop/dist/mac-arm64/$APP_NAME.app"
 [ -d "$BUILT" ] || die "build finished but $BUILT is missing"
 
 if pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1; then

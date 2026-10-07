@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const LIMIT = 40;
+const AVATAR_SCHEME = 'hw-avatar';
 function normalizeEyes(value) {
   const number = (value, fallback, min, max) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
   const point = (value, x) => ({ x: number(value?.x, x, 0, 1), y: number(value?.y, 0.4, 0, 1), scaleX: number(value?.scaleX, 1, 0.5, 1.5) });
@@ -19,6 +20,32 @@ function createAvatarStore({ root, nativeImage, dialog, getWindow, getPreference
         dataUrl: `../assets/avatars/${path.basename(item.file)}`, eyes: normalizeEyes(item.eyes) }));
     }
     return [...builtins, ...(getPreferences().avatarLibrary || [])];
+  }
+  // State goes to two renderers on every change, so images stay out of it:
+  // they are served once per id by the hw-avatar protocol and cached by the
+  // renderer.
+  function publicLibrary() {
+    return library().map(item => item.builtIn ? item : { ...item, dataUrl: `${AVATAR_SCHEME}://library/${item.id}` });
+  }
+  const botVersions = new Map();
+  function publicBots() {
+    return (getPreferences().bots || []).map(bot => {
+      if (!bot.avatar) { botVersions.delete(bot.id); return bot; }
+      let known = botVersions.get(bot.id);
+      if (known?.avatar !== bot.avatar) { known = { avatar: bot.avatar, version: crypto.createHash('sha1').update(bot.avatar).digest('hex').slice(0, 10) }; botVersions.set(bot.id, known); }
+      return { ...bot, avatar: `${AVATAR_SCHEME}://bot/${bot.id}?v=${known.version}` };
+    });
+  }
+  function imageFor(href) {
+    let url;
+    try { url = new URL(href); } catch { return null; }
+    if (url.protocol !== `${AVATAR_SCHEME}:`) return null;
+    const id = decodeURIComponent(url.pathname.replace(/^\//, ''));
+    const prefs = getPreferences();
+    const stored = url.hostname === 'library' ? prefs.avatarLibrary?.find(item => item.id === id)?.dataUrl
+      : url.hostname === 'bot' ? prefs.bots?.find(bot => bot.id === id)?.avatar : '';
+    const match = /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(stored || '');
+    return match ? { mime: match[1], data: Buffer.from(match[2], 'base64') } : null;
   }
   function set(value) {
     const prefs = getPreferences(), id = String(value.id);
@@ -57,6 +84,6 @@ function createAvatarStore({ root, nativeImage, dialog, getWindow, getPreference
       if (config.selectedId === avatarId) delete prefs.avatarPreferences[id];
     }
   }
-  return { library, set, importFiles, remove };
+  return { library, publicLibrary, publicBots, imageFor, set, importFiles, remove };
 }
-module.exports = { createAvatarStore, normalizeEyes };
+module.exports = { createAvatarStore, normalizeEyes, AVATAR_SCHEME };

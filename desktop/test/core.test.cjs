@@ -12,7 +12,7 @@ test('browser URLs reject executable and credential-bearing schemes', () => {
   assert.match(normalizeUrl('browser task handoff'), /^https:\/\/www.google.com\/search\?/);
 });
 test('agent navigations refuse loopback, link-local and metadata addresses in every spelling', () => {
-  for (const value of ['http://127.0.0.1:3000/', 'http://localhost:3000/', 'http://0x7f000001/', 'http://2130706433/', 'http://127.1/', 'http://[::1]/', 'http://[::ffff:7f00:1]/', 'http://0.0.0.0/', 'http://[::]/', 'http://169.254.169.254/latest/meta-data', 'http://169.254.1.1/', 'http://sub.localhost:8080/'])
+  for (const value of ['http://127.0.0.1:3000/', 'http://localhost:3000/', 'http://0x7f000001/', 'http://2130706433/', 'http://127.1/', 'http://[::1]/', 'http://[::ffff:7f00:1]/', 'http://0.0.0.0/', 'http://[::]/', 'http://169.254.169.254/latest/meta-data', 'http://169.254.1.1/', 'http://sub.localhost:8080/', 'http://localhost./', 'http://a.localhost./', 'http://LOCALHOST../', 'http://127.0.0.1./'])
     assert.throws(() => agentPageUrl(value), /loopback|link-local|metadata/, value);
   for (const value of ['http://192.168.1.20:3000/', 'http://10.0.0.4/', 'http://172.16.5.4/', 'https://dev.internal.example/'])
     assert.doesNotThrow(() => agentPageUrl(value), value);
@@ -46,7 +46,7 @@ test('bot-visible tab metadata seals url, title, icon and note on human-controll
   assert.equal(redactTabForBot({ ...info, url: 'file:///private/x' }).url, '', 'non-web urls blank out fully');
 });
 test('the cdp allowlist denies storage, cookie, file and interception methods', () => {
-  for (const method of ['Page.addScriptToEvaluateOnNewDocument', 'Page.removeScriptToEvaluateOnNewDocument', 'Page.setInterceptFileChooserDialog', 'Page.handleFileChooser', 'Page.navigateToHistoryEntry', 'Page.setDownloadBehavior', 'Page.getCookies', 'DOM.setFileInputFiles', 'Network.getCookies', 'Network.getAllCookies', 'Network.setCookie', 'Network.setCookies', 'Network.clearBrowserCookies', 'Network.clearBrowserCache', 'Network.loadNetworkResource', 'Network.setRequestInterception', 'Network.continueInterceptedRequest', 'Fetch.enable', 'Fetch.continueRequest', 'Storage.getCookies', 'Storage.setCookies', 'Storage.clearDataForOrigin', 'Target.createTarget', 'Browser.getCookies'])
+  for (const method of ['Page.addScriptToEvaluateOnNewDocument', 'Page.removeScriptToEvaluateOnNewDocument', 'Page.setInterceptFileChooserDialog', 'Page.handleFileChooser', 'Page.navigateToHistoryEntry', 'Page.setDownloadBehavior', 'Page.getCookies', 'DOM.setFileInputFiles', 'Network.getCookies', 'Network.getAllCookies', 'Network.setCookie', 'Network.setCookies', 'Network.clearBrowserCookies', 'Network.deleteCookies', 'Storage.clearCookies', 'Network.clearBrowserCache', 'Network.loadNetworkResource', 'Network.setRequestInterception', 'Network.continueInterceptedRequest', 'Fetch.enable', 'Fetch.continueRequest', 'Storage.getCookies', 'Storage.setCookies', 'Storage.clearDataForOrigin', 'Target.createTarget', 'Browser.getCookies'])
     assert.match(cdpMethodError(method), /./, method);
   for (const method of ['Runtime.evaluate', 'Page.navigate', 'Page.captureScreenshot', 'Input.dispatchMouseEvent', 'Emulation.setDeviceMetricsOverride', 'DOM.querySelector', 'Network.enable', 'Accessibility.getFullAXTree'])
     assert.equal(cdpMethodError(method), '', method);
@@ -87,7 +87,7 @@ test('API authentication rejects missing, truncated and different tokens', () =>
 });
 test('saved SSH addresses accept user@host or an alias and nothing a shell would interpret', () => {
   for (const value of ['me@mac.example.ts.net', 'mymac', 'me@192.0.2.7', 'a_b-c.d']) assert.equal(isSshTarget(value), true, value);
-  for (const value of ['', 'mac; rm -rf ~', 'mac$(id)', 'mac`id`', '-oProxyCommand=id', 'alex@mac other', 'mac\nid', 'mac|id', "mac'x", 'a@b@c', '-x@mac'])
+  for (const value of ['', 'mac; rm -rf ~', 'mac$(id)', 'mac`id`', '-oProxyCommand=id', 'me@mac other', 'mac\nid', 'mac|id', "mac'x", 'a@b@c', '-x@mac'])
     assert.equal(isSshTarget(value), false, JSON.stringify(value));
 });
 test('a handoff source and an unverified destination refuse agent claims until the human gives them over', () => {
@@ -152,6 +152,8 @@ test('web snapshot names say on, off, and disabled', () => {
   assert.match(source, /name \+= ' selected'/);
   assert.match(source, /name \+= ' current'/);
   assert.match(source, /item\.disabled = true/);
+  assert.match(source, /if \(name\) item\.name = name;/);
+  assert.match(source, /el\.tagName === 'INPUT' && type !== 'text'/);
   assert.match(source, /\.slice\(0, 300\)/);
 });
 test('an action read returns controls and leaves the page text out', async () => {
@@ -192,9 +194,34 @@ test('an action read does not walk page text or replace the snapshot when contro
   assert.deepEqual(reply, { unchanged: true, generation: settled.generation });
   assert.equal(tab.snapshotStamp.hash, stamp);
   assert.ok(tab.refs.has('s2-1'));
-  const changed = await readControls(() => ({ url: page.url, title: page.title, text: '', elements: [{ ref: 's9-1', role: 'button', name: 'Sent' }] }), tab);
+  const changed = await readControls(() => ({ url: page.url, title: page.title, text: '', elements: [{ ref: 's3-1', role: 'button', name: 'Sent' }] }), tab);
   assert.equal(changed.elements[0].name, 'Sent');
-  assert.equal(tab.snapshotStamp.hash, stamp);
+  assert.notEqual(tab.snapshotStamp.hash, stamp, 'a changed read becomes the new baseline');
+  assert.equal(tab.snapshotStamp.generation, changed.generation);
+  assert.equal(tab.snapshotStamp.base, changed.generation);
+  assert.ok(tab.refs.has('s3-1') && !tab.refs.has('s2-1'), 'refs from the older generation are rejected');
+});
+test('two changed action reads never reuse a generation or revive older refs', async () => {
+  const tab = { refs: new Set(), generation: 1 };
+  const url = 'https://a.example/', title = 'A';
+  settleSnapshot(tab, { url, title, text: '', elements: [{ ref: 's1-1', role: 'button', name: 'One' }] }, 1);
+  const first = await readControls(() => ({ url, title, text: '', elements: [{ ref: 's2-1', role: 'button', name: 'Two' }] }), tab);
+  const second = await readControls(() => ({ url, title, text: '', elements: [{ ref: 's3-1', role: 'button', name: 'Three' }] }), tab);
+  assert.ok(second.generation > first.generation);
+  assert.deepEqual([...tab.refs], ['s3-1']);
+  const again = await readControls(() => ({ url, title, text: '', elements: [{ ref: 's4-1', role: 'button', name: 'Three' }] }), tab);
+  assert.deepEqual(again, { unchanged: true, generation: second.generation });
+  assert.deepEqual([...tab.refs], ['s3-1']);
+  assert.deepEqual(settleSnapshot(tab, { url, title, text: '', elements: [{ ref: 's5-1', role: 'button', name: 'Three' }] }, 5, second.generation), { unchanged: true, generation: 5 });
+});
+test('identical controls on a different page are a change, not an unchanged reply', async () => {
+  const tab = { refs: new Set(), generation: 1 };
+  const controls = (ref) => [{ ref, role: 'button', name: 'Continue' }];
+  settleSnapshot(tab, { url: 'https://a.example/1', title: 'Step', text: '', elements: controls('s1-1') }, 1);
+  const moved = await readControls(() => ({ url: 'https://a.example/2', title: 'Step', text: '', elements: controls('s2-1') }), tab);
+  assert.equal(moved.unchanged, undefined);
+  assert.equal(moved.elements[0].ref, 's2-1');
+  assert.deepEqual([...tab.refs], ['s2-1']);
 });
 test('snapshot bounds clamp and never splice caller text into page code', () => {
   assert.match(snapshotExpression(3), /text\.slice\(0, 6000\)/);
@@ -249,6 +276,13 @@ test('a missing Mac tab is carried onto the continued VPS tab', () => {
   assert.equal(retargetMissingTab('/v1/status', 'GET', page), null);
   assert.equal(retargetMissingTab('/v1/tabs/mac-tab/actions', 'POST', page), '/v1/tabs/tab-9/actions');
   assert.equal(retargetMissingTab('/v1/tabs/a%2Fb/snapshot', 'GET', page), '/v1/tabs/tab-9/snapshot');
+  const map = { map: { 'mac-a': 'vm-1', 'mac-b': 'vm-2' }, tabId: 'tab-9' };
+  assert.equal(retargetMissingTab('/v1/tabs/mac-a/snapshot', 'GET', map), '/v1/tabs/vm-1/snapshot');
+  assert.equal(retargetMissingTab('/v1/tabs/mac-b/actions', 'POST', map), '/v1/tabs/vm-2/actions');
+  assert.equal(retargetMissingTab('/v1/tabs/mac-c/snapshot', 'GET', map), null, 'an id the map does not know is not sent to some other tab');
+  assert.equal(retargetMissingTab('/v1/tabs/vm-1/snapshot', 'GET', map), null);
+  assert.equal(retargetMissingTab('/v1/tabs/mac-a', 'DELETE', map), null);
+  assert.equal(retargetMissingTab('/v1/tabs/mac-c/snapshot', 'GET', { map: {}, tabId: 'tab-9' }), '/v1/tabs/tab-9/snapshot', 'an empty map keeps the single-tab fallback');
   assert.equal(needsContinuedEpoch('stale_control_epoch: read the tab state and retry after a fresh snapshot.', 'POST'), true);
   assert.equal(needsContinuedEpoch('stale_control_epoch', 'GET'), false);
   assert.equal(needsContinuedEpoch('tab not found', 'POST'), false);
@@ -256,9 +290,34 @@ test('a missing Mac tab is carried onto the continued VPS tab', () => {
   assert.equal(hostShouldReload(20, 10, 1), false);
   assert.equal(hostShouldReload(10, 10, 0), false);
   const host = require('node:fs').readFileSync(require('node:path').join(__dirname, '../scripts/vps-browser-host.cjs'), 'utf8');
-  assert.match(host, /script replaced — exiting so the service loads it/);
+  assert.match(host, /script replaced; exiting so the service loads it/);
 });
 test('only positively identified direct bot IDs enter the catalog', () => {
   const bots = sanitizeBots([{ id: '123', isBot: true, name: 'Agent' }, { id: '456', name: 'Human' }, { id: '-100123', isBot: true }, { id: '789', isBot: false }]);
   assert.deepEqual(bots.map((bot) => bot.id), ['123']);
+});
+
+test('a page exception reaches the agent with its message', async () => {
+  const { CDP } = require('../src/cdp.cjs');
+  const handlers = {};
+  const socket = { readyState: 1, addEventListener: (name, fn) => { handlers[name] = fn; },
+    send(raw) {
+      const { id, method } = JSON.parse(raw);
+      const result = method === 'Target.attachToTarget' ? { sessionId: 's' } : { exceptionDetails: { text: 'Uncaught', exception: { description: 'ReferenceError: nope is not defined\n    at <anonymous>:1:1' } } };
+      setImmediate(() => handlers.message({ data: JSON.stringify({ id, result }) }));
+    } };
+  const page = await new CDP(socket).page('t');
+  await assert.rejects(page.executeJavaScript('nope'), /Unable to inspect browser page: ReferenceError: nope is not defined$/);
+});
+
+test('control fingerprints ignore the key order the executor happens to return', async () => {
+  const tab = { refs: new Set(), generation: 1 };
+  settleSnapshot(tab, { url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's1-1', role: 'button', name: 'Go' }] }, 1);
+  const reply = await readControls(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ name: 'Go', ref: 's2-1', role: 'button' }] }), tab);
+  assert.deepEqual(reply, { unchanged: true, generation: 1 });
+});
+
+test('an unchanged read restamps the held refs onto the current nodes', () => {
+  assert.match(snapshotExpression(5, { keep: 2, restamp: 2 }), /if \(2 >= 0\) tokens\.add\('s2-' \+ \(items\.length \+ 1\)\)/);
+  assert.match(snapshotExpression(5, { keep: 2 }), /if \(-1 >= 0\) tokens/, 'no restamp unless asked');
 });

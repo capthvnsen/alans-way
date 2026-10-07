@@ -1,20 +1,76 @@
 'use strict';
 
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { computerDecision } = require('./computer-policy.cjs');
+const { createComputer, binaryCurrent, recordBuild } = require('./computer-helper.cjs');
 
 const source = path.join(__dirname, '..', 'scripts', 'mac-computer.swift');
 const binary = path.join(__dirname, '..', 'scripts', 'mac-computer');
+let building = null;
 
+// The deployment target is the oldest macOS the app supports, so the helper
+// must keep its newer-API calls behind availability checks.
+const target = `${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-apple-macos13`;
+
+// The prebuilt helper ships in the app bundle; a connector copy pushed to the
+// home directory runs under that app's Electron, so execPath finds it.
+const bundled = path.join(path.dirname(process.execPath), '..', 'Resources', 'app', 'scripts', 'mac-computer');
+
+function build() {
+  return new Promise((resolve, reject) => {
+    let stderr = '';
+    const compiler = spawn('swiftc', ['-O', '-target', target, '-o', binary, source], { stdio: ['ignore', 'ignore', 'pipe'] });
+    compiler.stderr.on('data', (chunk) => { stderr += chunk; });
+    compiler.on('error', (error) => reject(new Error(`Could not build the Mac computer helper: ${error.message}`)));
+    compiler.on('close', (code) => {
+      if (code !== 0) return reject(new Error(stderr.trim() || 'Could not build the Mac computer helper.'));
+      recordBuild(source, binary);
+      resolve(binary);
+    });
+  });
+}
+
+function hasDevTools() {
+  return new Promise((resolve) => {
+    spawn('xcode-select', ['-p'], { stdio: 'ignore' }).on('error', () => resolve(false)).on('close', (code) => resolve(code === 0));
+  });
+}
+
+// Without the Command Line Tools, /usr/bin/swiftc is a stub that pops an
+// install dialog, so check xcode-select first and try at most once per process.
+function makeCompile({ hasDevTools, build }) {
+  let failed = false;
+  return async () => {
+    if (failed) return false;
+    if (await hasDevTools()) {
+      try { await build(); return true; } catch { /* fall through to a prebuilt helper */ }
+    }
+    failed = true;
+    return false;
+  };
+}
+
+async function pickHelper({ binary, source, bundled, exists, current, compile }) {
+  if (current(source, binary)) return binary;
+  if (exists(source) && await compile()) return binary;
+  if (exists(bundled)) return bundled;
+  if (exists(binary)) return binary;
+  throw new Error('Could not build the Mac computer helper, and no prebuilt one ships with this app.');
+}
+
+const compile = makeCompile({ hasDevTools, build });
+
+// Packaging builds the helper ahead of time (scripts/build-computer.cjs); this
+// is the fallback for a checkout that was never packaged or a Mac without the
+// compiler, where an older or bundled build is better than nothing.
 function ensureBinary() {
   if (process.platform !== 'darwin') throw new Error('Mac computer use only runs on the Mac.');
-  const stale = !fs.existsSync(binary) || fs.statSync(source).mtimeMs > fs.statSync(binary).mtimeMs;
-  if (!stale) return binary;
-  const built = spawnSync('swiftc', ['-O', '-o', binary, source], { encoding: 'utf8' });
-  if (built.status !== 0) throw new Error((built.stderr || 'Could not build the Mac computer helper.').trim());
-  return binary;
+  if (!building) {
+    building = pickHelper({ binary, source, bundled, compile, exists: (p) => fs.existsSync(p), current: binaryCurrent })
+      .finally(() => { building = null; });
+  }
+  return building;
 }
 
 // A connector spawned over SSH lives outside the guest's Aqua session, where
@@ -27,68 +83,6 @@ function driverCommand(helper, args) {
   return [helper, ...args];
 }
 
-function run(args) {
-  const [command, ...rest] = driverCommand(ensureBinary(), args);
-  const result = spawnSync(command, rest, { encoding: 'utf8', timeout: 20000 });
-  let parsed;
-  try { parsed = JSON.parse(result.stdout || '{}'); } catch { parsed = null; }
-  if (!parsed) throw new Error((result.stderr || result.stdout || 'Computer helper failed.').trim().slice(0, 300));
-  if (!parsed.ok) throw new Error(parsed.error || 'Computer action failed.');
-  return parsed;
-}
+const { service, close } = createComputer({ command: async (mode) => driverCommand(await ensureBinary(), [mode]) });
 
-function apps() {
-  return run(['apps']).apps || [];
-}
-
-function requireApp(pid) {
-  const list = apps();
-  const app = list.find((item) => item.pid === pid);
-  const front = list.find((item) => item.frontmost);
-  const decision = computerDecision(app, front ? front.pid : null);
-  if (!decision.ok) throw new Error(decision.reason);
-  return app;
-}
-
-function snapshot(pid) {
-  requireApp(pid);
-  return run(['snapshot', String(pid)]);
-}
-
-function press(pid, ref) {
-  requireApp(pid);
-  return run(['press', String(pid), ref]);
-}
-
-function click(pid, x, y) {
-  requireApp(pid);
-  return run(['click', String(pid), String(x), String(y)]);
-}
-
-function drag(pid, x, y, x2, y2) {
-  requireApp(pid);
-  return run(['drag', String(pid), String(x), String(y), String(x2), String(y2)]);
-}
-
-function type(pid, ref, text) {
-  requireApp(pid);
-  if (typeof text !== 'string' || text.length > 2000) throw new Error('Text must be a string of at most 2000 characters.');
-  return run(['type', String(pid), ref, text]);
-}
-
-function screenshot(pid, maxWidth) {
-  requireApp(pid);
-  const cap = Number.isInteger(maxWidth) ? Math.min(Math.max(maxWidth, 320), 1280) : 960;
-  const shot = run(['shot', String(pid), String(cap)]);
-  return {
-    image: shot.image,
-    imageWidth: shot.imageWidth,
-    imageHeight: shot.imageHeight,
-    windowX: shot.windowX,
-    windowY: shot.windowY,
-    windowWidth: shot.windowWidth,
-    windowHeight: shot.windowHeight,
-  };
-}
-
-module.exports = { apps, snapshot, press, click, drag, type, screenshot, ensureBinary, driverCommand };
+module.exports = { service, close, ensureBinary, pickHelper, makeCompile, driverCommand, target };

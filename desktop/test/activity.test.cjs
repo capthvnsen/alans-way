@@ -91,7 +91,8 @@ test('silent or destroyed preload loses availability and cannot leave an active 
 function workerObserver() {
   let source;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/telegram-preload.cjs'), 'utf8'), {
-    require: () => ({ ipcRenderer: { on() {}, send() {} }, contextBridge: { executeInMainWorld(script) { source = script.func.toString(); } } }),
+    require: (name) => name === './telegram-contract.cjs' ? require('../src/telegram-contract.cjs')
+      : ({ ipcRenderer: { on() {}, send() {} }, contextBridge: { executeInMainWorld(script) { source = script.func.toString(); } } }),
     location: { origin: 'https://web.telegram.org', pathname: '/a/' },
     window: { addEventListener() {} },
   });

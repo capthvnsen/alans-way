@@ -10,6 +10,7 @@ function snapshotExpression(generation, opts = {}) {
   // buttons, so the scan gets a wider budget than the text walk.
   const elementMs = int(opts.elementMs, 5, 2000, 200);
   const keep = int(opts.keep, 0, Number.MAX_SAFE_INTEGER, -1);
+  const restamp = int(opts.restamp, 0, Number.MAX_SAFE_INTEGER, -1);
   const parseWaitMs = int(opts.parseWaitMs, 0, 5000, 400);
   return `(async () => {
     // The parser yields between chunks, so a snapshot can land mid-document;
@@ -76,7 +77,11 @@ function snapshotExpression(generation, opts = {}) {
       if (!r.width || !r.height) continue;
       const ref = 's${generation}-' + (items.length + 1);
       const kept = (el.getAttribute('data-hermes-workspace-ref') || '').split(' ').filter(token => token.startsWith('s${keep}-'));
-      el.setAttribute('data-hermes-workspace-ref', [...kept, ref].join(' '));
+      // Held refs stay usable if the page re-rendered an identical tree: the
+      // caller drops them from its valid set unless the read comes back unchanged.
+      const tokens = new Set([...kept, ref]);
+      if (${restamp} >= 0) tokens.add('s${restamp}-' + (items.length + 1));
+      el.setAttribute('data-hermes-workspace-ref', [...tokens].join(' '));
       let name = '';
       const labelledby = el.getAttribute('aria-labelledby');
       if (labelledby) {
@@ -119,9 +124,12 @@ function snapshotExpression(generation, opts = {}) {
       const value = type === 'password' ? '[password]' : String(el.value || '').slice(0, 200);
       const rawHref = typeof el.href === 'string' ? el.href : (el.getAttribute('href') || '');
       const href = shortHref(rawHref);
-      const item = { ref, role, name };
-      if (type) item.type = type;
-      if (value) item.value = value;
+      // Defaults stay out of the reply: an empty name, the implied type of a
+      // non-input, 'text', and the constant value of a checkbox or radio.
+      const item = { ref, role };
+      if (name) item.name = name;
+      if (type && el.tagName === 'INPUT' && type !== 'text') item.type = type;
+      if (value && !/^(checkbox|radio)$/.test(type)) item.value = value;
       if (href) item.href = href;
       if (el.disabled) item.disabled = true;
       items.push(item);
@@ -163,7 +171,9 @@ function snapshotExpression(generation, opts = {}) {
 }
 
 function elementFingerprint(elements) {
-  return JSON.stringify((elements || []).map(({ ref, ...rest }) => rest));
+  // webContents and frame execution hand back the same object with its keys
+  // in a different order, so the order must not matter.
+  return JSON.stringify((elements || []).map(({ ref, ...rest }) => JSON.stringify(rest, Object.keys(rest).sort())));
 }
 function elementsHash(elements) {
   return crypto.createHash('sha1').update(elementFingerprint(elements)).digest('hex');
@@ -179,7 +189,7 @@ function settleSnapshot(tab, data, generation, since) {
   const hash = snapshotHash(data), previous = tab.snapshotStamp;
   const unchanged = !!previous && since !== undefined && previous.generation === since && previous.hash === hash;
   const base = unchanged ? previous.base : generation;
-  tab.snapshotStamp = { generation, hash, base, elementsHash: elementsHash(data.elements) };
+  tab.snapshotStamp = { generation, hash, base, url: data.url, elementsHash: elementsHash(data.elements) };
   tab.refs = new Set(data.elements.map((item) => item.ref));
   if (unchanged) for (let index = 1; index <= data.elements.length; index++) tab.refs.add(`s${base}-${index}`);
   return unchanged ? { unchanged: true, generation } : { ...data, generation };
@@ -187,34 +197,26 @@ function settleSnapshot(tab, data, generation, since) {
 // After an action, return the controls the model can act on next. Page text
 // stays out of the reply. A page that did not change keeps the generation
 // and refs the model already holds, so a later since= check still dedupes.
-async function readControls(execute, tab) {
+async function readControls(execute, tab, { parseWaitMs } = {}) {
   const previous = tab.snapshotStamp;
-  const generation = (previous && Number.isInteger(previous.generation) ? previous.generation : (Number.isInteger(tab.generation) ? tab.generation : 0)) + 1;
+  const generation = Math.max(previous && Number.isInteger(previous.generation) ? previous.generation : 0, Number.isInteger(tab.generation) ? tab.generation : 0) + 1;
   let timer;
   const result = await Promise.race([
-    Promise.resolve(execute(snapshotExpression(generation, { maxChars: 0, maxElements: 150, keep: previous ? previous.base : undefined }))),
-    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('controls')), 8000); }),
+    Promise.resolve(execute(snapshotExpression(generation, { maxChars: 0, maxElements: 150, parseWaitMs, keep: previous ? previous.base : undefined, restamp: previous ? previous.base : undefined }))),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('controls')), 8000 + (parseWaitMs || 0)); }),
   ]).finally(() => clearTimeout(timer));
   if (!result || !Array.isArray(result.elements)) return null;
   // Controls are enough to know the page the agent can click. Skipping the
-  // text walk keeps a click from rereading the whole document.
-  if (previous && previous.elementsHash && elementsHash(result.elements) === previous.elementsHash) {
-    tab.refs = new Set();
-    for (let index = 1; index <= result.elements.length; index++) tab.refs.add(`s${previous.base}-${index}`);
-    return { unchanged: true, generation: previous.generation };
-  }
-  if (previous && snapshotHash(result) === previous.hash) {
+  // text walk keeps a click from rereading the whole document. Identical
+  // controls on another URL are another document: the old refs point nowhere.
+  const same = previous && previous.url === result.url && (elementsHash(result.elements) === previous.elementsHash || snapshotHash(result) === previous.hash);
+  if (same) {
     tab.refs = new Set();
     for (let index = 1; index <= result.elements.length; index++) tab.refs.add(`s${previous.base}-${index}`);
     return { unchanged: true, generation: previous.generation };
   }
   tab.generation = generation;
-  if (previous) {
-    tab.refs = new Set(result.elements.map((item) => item.ref));
-    return { elements: result.elements.slice(0, 40), generation };
-  }
   const settled = settleSnapshot(tab, result, generation);
-  if (!Array.isArray(settled.elements)) return { unchanged: true, generation: settled.generation };
   return { elements: settled.elements.slice(0, 40), generation: settled.generation };
 }
 

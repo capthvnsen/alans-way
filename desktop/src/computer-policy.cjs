@@ -1,19 +1,24 @@
 'use strict';
 
-// Apps the agent must never drive. Password UI and the login window sit here
-// even when they are not the frontmost app.
-const BLOCKED_BUNDLES = new Set([
+// Apps the agent must never drive, on every OS. The helpers receive this list
+// and enforce it themselves, so one request is also the policy check.
+// Ids are the mac bundle id, the lowercase Windows exe name, or the lowercase
+// Linux process name. Terminal and System Settings are deliberately allowed.
+const BLOCKED_IDS = new Set([
+  // Keychains, the login window, and this app itself.
   'com.apple.keychainaccess',
-  'com.apple.SecurityAgent',
-  'com.apple.security.SecurityAgent',
-  'com.apple.LocalAuthentication.UIAgent',
+  'com.apple.securityagent',
+  'com.apple.security.securityagent',
+  'com.apple.localauthentication.uiagent',
   'com.apple.loginwindow',
-]);
-
-// On Windows the driver reports the lowercase exe basename as bundleId.
-// consent.exe/LogonUI/LockApp live on the secure desktop — UIA cannot reach
-// them anyway; listing them makes the refusal explicit rather than silent.
-const BLOCKED_PROCESSES = new Set([
+  'com.apple.passwords',
+  'app.alans-way.localapp',
+  'alans-way-localapp.exe',
+  'alans-way-localapp',
+  'seahorse',
+  'keeper.exe',
+  // consent.exe/LogonUI/LockApp live on the secure desktop; UIA cannot reach
+  // them anyway, listing them makes the refusal explicit rather than silent.
   'consent.exe',
   'logonui.exe',
   'lockapp.exe',
@@ -22,18 +27,21 @@ const BLOCKED_PROCESSES = new Set([
   'sechealthui.exe',
 ]);
 
-function isBlocked(bundleId, platform = process.platform) {
-  const id = String(bundleId || '');
-  return platform === 'win32' ? BLOCKED_PROCESSES.has(id.toLowerCase()) : BLOCKED_BUNDLES.has(id);
+// Substrings, so every vendor's bundle id, exe, and process name is covered
+// without listing each variant.
+const BLOCKED_KEYWORDS = [
+  '1password', 'agilebits', 'bitwarden', 'dashlane', 'keepass', 'lastpass', 'enpass',
+  'proton.pass', 'proton pass', 'proton-pass', 'protonpass', 'nordpass', 'roboform',
+  'keepersecurity', 'callpod', 'keeperpassword',
+];
+
+function isBlocked(id) {
+  const value = String(id || '').toLowerCase();
+  return BLOCKED_IDS.has(value) || BLOCKED_KEYWORDS.some((word) => value.includes(word));
 }
 
-function computerDecision(app, frontmostPid, platform = process.platform) {
-  if (!app || !Number.isInteger(app.pid)) return { ok: false, reason: 'App not found.' };
-  if (isBlocked(app.bundleId, platform)) return { ok: false, reason: 'That app is off limits.' };
-  if (Number.isInteger(frontmostPid) && app.pid === frontmostPid) {
-    return { ok: false, reason: 'That app is the one in front. Leave it in the background; the real cursor stays yours.' };
-  }
-  return { ok: true };
+function helperPolicy() {
+  return { exact: [...BLOCKED_IDS], contains: [...BLOCKED_KEYWORDS] };
 }
 
-module.exports = { BLOCKED_BUNDLES, BLOCKED_PROCESSES, isBlocked, computerDecision };
+module.exports = { BLOCKED_IDS, BLOCKED_KEYWORDS, isBlocked, helperPolicy };

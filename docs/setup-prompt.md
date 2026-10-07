@@ -8,7 +8,7 @@ their computer; everything else is automatic.
 
 ```text
 Set up Alan's Way for me. This server runs my Hermes gateway; connect it to my
-<Mac | Windows PC> over Tailscale, install the Alan's Way app on it and the
+<Mac | Windows PC | Linux computer> over Tailscale, install the Alan's Way app on it and the
 alans-way Hermes plugin here, and prove it works. Do not modify Hermes itself.
 Reference: https://github.com/capthvnsen/alans-way/blob/main/docs/setup-for-agents.md
 
@@ -22,9 +22,12 @@ Rules for the whole job:
 - Commands here run without a terminal, so pass --non-interactive to setup.sh
   and ask me any question it would have asked.
 
-1. Preflight, on this server. Confirm Linux, `hermes --version` (0.21 or
-   newer), `node -v` (22 or newer), git and python3. Install whatever is
-   missing except Hermes. Find the Hermes home ($HERMES_HOME, default
+1. Preflight, on this server. Confirm the OS: Linux (the usual case), or macOS
+   if this is a Tart guest (then follow
+   https://github.com/capthvnsen/alans-way/blob/main/docs/mac-vm-guest.md for
+   the guest-side steps). Check `hermes --version` (0.21 or newer),
+   `node -v` (22 or newer), git and python3. Install whatever is missing
+   except Hermes. Find the Hermes home ($HERMES_HOME, default
    ~/.hermes) and which profile this bot is (`hermes profile list`). The
    default profile's files are in the Hermes home; others are in
    <home>/profiles/<name>/. Note BOT_ID, the digits before ":" in that
@@ -37,7 +40,8 @@ Rules for the whole job:
    connected: install it (curl -fsSL https://tailscale.com/install.sh | sh),
    run `nohup tailscale up --hostname=hermes-vps > /tmp/tailscale-up.log 2>&1 &`,
    send me the login URL from that log to open, and poll `tailscale status`
-   until it is connected. Do not ask me for an auth key. Then note
+   until it is connected. Do not ask me for an auth key. My computer must join
+   the same tailnet; nothing here works over a public address. Then note
    VPS_SSH = <this user>@<first line of `tailscale ip -4`>.
    If `tailscale debug prefs` shows "RunSSH": true, Tailscale SSH answers
    port 22 on that address: my tailnet's SSH rules decide who may log in and
@@ -49,9 +53,16 @@ Rules for the whole job:
    VPS_KEY = `cut -d' ' -f1,2 ~/.ssh/id_ed25519.pub` plus " <this user>@vps",
    and VPS_HOST_KEY = `cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub`.
 
-4. My computer. Ask me first whether it is a Mac or a Windows PC — the steps
+4. My computer. If my message already says whether it is a Mac, a Windows PC
+   or a Linux computer, use that; otherwise ask me first, because the steps
    differ. On a Mac it must be Apple Silicon; on Windows it must be Windows
-   10/11 x64.
+   10/11 x64; on Linux it must be x64 with systemd and a desktop session,
+   plus Node 22.12 or newer and git.
+   If my message says the Open Alan app is already installed and open, it
+   came from openalan.com: leave out the "builds the app" wording below and
+   add --skip-install to the Mac or Linux command or -SkipInstall to the
+   Windows command. If it says MAC_SSH, still run the connect script; it
+   prints the keys you need.
    On a Mac send me these steps with the command filled in, then wait:
    1. Install Tailscale from https://tailscale.com/download and sign in with
       the same account as this server.
@@ -62,6 +73,10 @@ Rules for the whole job:
    4. Copy the lines it prints between the ===== markers and send them to me.
    5. In the Alan's Way app that opened, sign in to Telegram with the QR code
       (on your phone: Telegram → Settings → Devices → Link Desktop Device).
+   6. At the Mac itself (not over SSH), open System Settings → Privacy &
+      Security. Under Accessibility, and again under Screen Recording, turn on
+      alans-way-localapp. This lets your agent control other apps; browser
+      tabs work without it.
    If the script stops, it says why in one line; tell me that line.
    On a Windows PC send me these steps instead:
    1. Install Tailscale from https://tailscale.com/download and sign in with
@@ -70,12 +85,22 @@ Rules for the whole job:
       the OpenSSH Server Windows feature, sets PowerShell as the default SSH
       shell, builds the app with `npm run package:win`, and wires both key
       directions:
-      powershell -ExecutionPolicy Bypass -File <path to connect-windows.ps1> -Vps '<VPS_SSH>' -VpsHostKey '<VPS_HOST_KEY>' -VpsKey '<VPS_KEY>'
-      (fetch the script from the repo first if needed: scripts/connect-windows.ps1)
+      irm https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-windows.ps1 -OutFile $env:TEMP\connect-windows.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\connect-windows.ps1 -Vps '<VPS_SSH>' -VpsHostKey '<VPS_HOST_KEY>' -VpsKey '<VPS_KEY>'
    3. Copy the lines it prints between the ===== markers and send them to me.
    4. In the Alan's Way app that opened, sign in to Telegram as above.
    Note: on Windows the SSH session cannot drive the desktop — computer-use
    calls run through the app's local API, so the app must stay running.
+   On a Linux computer send me these steps instead:
+   1. Install Tailscale from https://tailscale.com/download and run
+      `sudo tailscale up` with the same account as this server.
+   2. Make sure an SSH server is installed (Ubuntu or Debian: `sudo apt-get
+      install -y openssh-server`). The script starts it if it is stopped.
+   3. Open a terminal in your desktop session, paste this line and press
+      Return. The first run builds the app and takes a few minutes:
+      curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-linux.sh | sh -s -- --vps '<VPS_SSH>' --vps-host-key '<VPS_HOST_KEY>' --vps-key '<VPS_KEY>'
+   4. Copy the lines it prints between the ===== markers and send them to me.
+   5. In the Alan's Way app that opened, sign in to Telegram as above. Closing
+      its window keeps it running in the tray; choose Quit there to stop it.
 
 5. Trust both ways, on this server, using MAC_SSH, MAC_HOST_KEY and MAC_KEY
    from my reply (the same variable names are printed by both connect
@@ -84,6 +109,7 @@ Rules for the whole job:
    already there. Check both directions:
    - Mac:  timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<MAC_SSH>' 'test -x /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp && echo MAC_OK'
    - PC:   timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<MAC_SSH>' 'if (Test-Path "$env:LOCALAPPDATA\Programs\alans-way-localapp\alans-way-localapp.exe") { "MAC_OK" }'
+   - Linux: timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<MAC_SSH>' 'test -x "$HOME/.local/share/alans-way-localapp/alans-way-localapp" && echo MAC_OK'
    - then: timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes '<MAC_SSH>' "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes '<VPS_SSH>' echo VPS_OK"
    Expect MAC_OK, then VPS_OK. If the second prints "Tailscale SSH requires an
    additional check" or times out, ask me to open the Tailscale admin console →
@@ -98,7 +124,7 @@ Rules for the whole job:
      # If `hermes plugins list` already shows alans-way, add --skip-plugin so
      # that catalogue copy stays. If it does not, omit --skip-plugin and
      # setup.sh installs the plugin.
-     ~/alans-way-agents/setup.sh --non-interactive --bot-id <BOT_ID> --mac-ssh '<MAC_SSH>' --host-os <mac|windows> --timezone '<MAC_TZ>' --bind --proactive <yes|no> [--skip-plugin] [--profile <profile> unless it is default]
+     ~/alans-way-agents/setup.sh --non-interactive --bot-id <BOT_ID> --mac-ssh '<MAC_SSH>' --host-os <mac|windows|linux> --timezone '<MAC_TZ>' --bind --proactive <yes|no> [--skip-plugin] [--profile <profile> unless it is default]
    If it says there are no Telegram DM sessions yet, ask me to message the bot
    once, then run the same command again. If it prints an apt-get line for a
    display stack, show me that line and ask before installing anything.
@@ -125,13 +151,18 @@ anything you skipped or that still needs me.
 
 1. Approve the Tailscale login link on the server, if Tailscale was not set up.
 2. Install Tailscale on your computer and turn on its SSH server (Remote Login
-   on a Mac; the connect script installs OpenSSH Server on Windows).
+   on a Mac; the connect script installs OpenSSH Server on Windows; the Linux
+   script starts the one you have installed).
 3. Paste one command into Terminal/PowerShell on your computer and send back
    what it prints.
 4. Sign in to Telegram in the app, then answer whether the bot may message you
    first.
 
-The command in step 3 is [scripts/connect-mac.sh](../scripts/connect-mac.sh) on
-a Mac or [scripts/connect-windows.ps1](../scripts/connect-windows.ps1) on
-Windows. Each only adds the server's public key to your computer and pins the
-server's host key, so neither side ever accepts an unknown key.
+On a Mac, also turn on Accessibility and Screen Recording for the app, at the
+Mac itself. The command in step 3 is
+[scripts/connect-mac.sh](../scripts/connect-mac.sh) on a Mac,
+[scripts/connect-windows.ps1](../scripts/connect-windows.ps1) on Windows or
+[scripts/connect-linux.sh](../scripts/connect-linux.sh) on Linux. Each refuses a
+server address that is not a Tailscale name or IP, adds the server's public key
+to your computer allowed only from your tailnet, and pins the server's host key,
+so neither side ever accepts an unknown key.

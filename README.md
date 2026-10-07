@@ -5,7 +5,9 @@
 JOIN THE DISCORD TO CONTRIBUTE OR SUBMIT BUGS: https://discord.gg/jBQCPUsVE
 Follow and DM the creator here: https://x.com/alexhvnsen
 
-A desktop app for people running [Hermes Agent](https://github.com/NousResearch/hermes-agent) on a server (Linux VPS, or a macOS VM via [Tart](https://tart.run)) who want to watch, steer, and lend their agents a local browser — without giving up the keyboard. The app itself runs on macOS (Apple Silicon) or Windows 10/11.
+A desktop app for people running [Hermes Agent](https://github.com/NousResearch/hermes-agent) on a server (Linux VPS, or a macOS VM via [Tart](https://tart.run)) who want to watch, steer, and lend their agents a local browser, without giving up the keyboard. The app itself runs on macOS (Apple Silicon), Windows 10/11 x64 or Linux x64.
+
+**Tailscale is required.** Your computer and your server talk over your Tailscale network and nothing else. Install Tailscale on both and sign in to the same account. SSH addresses must be Tailscale names (`*.ts.net`) or Tailscale IPs (`100.64.0.0/10`); the setup scripts refuse public addresses, and the server's SSH key can log in to your computer only from the tailnet.
 
 
 
@@ -22,7 +24,7 @@ A desktop app for people running [Hermes Agent](https://github.com/NousResearch/
 
 | Repo | What it is | Who installs it |
 |---|---|---|
-| **alans-way** (this one) | The desktop app (macOS/Windows) + companion CLI | You, on your computer |
+| **alans-way** (this one) | The desktop app (macOS/Windows/Linux) + companion CLI | You, on your computer |
 | [alans-way-agents](https://github.com/capthvnsen/alans-way-agents) | The plugin: proactivity, workspace skill, auto-routing | Your Hermes gateway (VPS or macOS VM) |
 
 The app works without the plugin (manual tab sharing), and the plugin falls back to VPS-only browsing when the app isn't running.
@@ -40,7 +42,20 @@ The app works without the plugin (manual tab sharing), and the plugin falls back
 
 **Setting this up with an AI agent?** Point it at [docs/setup-for-agents.md](docs/setup-for-agents.md) — one page covering the desktop app, the server and the Hermes plugin, with a check after every stage and the exact steps that need you.
 
-On a Mac (Apple Silicon) one command builds the app, installs it to
+**Download it:** [Mac (Apple Silicon)](https://openalan.com/download/mac) ·
+[Windows 10/11 x64](https://openalan.com/download/windows). Both links always
+serve the newest release. Open it and the setup wizard walks you through
+Telegram sign-in and hands you one prompt for your Hermes agent. The app
+updates itself after that.
+
+The builds are not code-signed yet, so the first launch needs one extra click:
+
+- **Mac:** open the `.dmg` and drag the app to Applications, then open it. When
+  macOS blocks it, go to **System Settings → Privacy & Security** and click
+  **Open Anyway**.
+- **Windows:** if SmartScreen appears, click **More info → Run anyway**.
+
+**Or build from source.** On a Mac one command builds the app, installs it to
 `/Applications` and opens it; re-run it to upgrade. Without git or Node it
 downloads the source and a private, checksum-verified Node for the build:
 
@@ -48,24 +63,37 @@ downloads the source and a private, checksum-verified Node for the build:
 curl -fsSL https://openalan.com/install-mac | sh
 ```
 
-On Windows 10/11 x64, run `scripts/install-windows.ps1` from a clone of this
-repo in PowerShell — it builds the app with `npm run package:win` into
+On Windows, run `scripts/install-windows.ps1` from a clone of this repo in
+PowerShell: it builds the app into
 `%LOCALAPPDATA%\Programs\alans-way-localapp` and opens it. Local builds skip
-SmartScreen/signing prompts by construction.
+the Gatekeeper and SmartScreen prompts by construction.
+
+On Linux (x64, systemd, with a desktop session), run `scripts/connect-linux.sh` from the command in [docs/setup-prompt.md](docs/setup-prompt.md). It checks Tailscale and the SSH server, builds the app with `npm run package:linux` into `~/.local/share/alans-way-localapp`, and starts it. It needs Node 22.12+ and git.
 
 Sign into Telegram inside the app, and your existing bots appear in the sidebar.
+
+**Mac permissions (once, on the Mac itself).** Controlling other desktop apps needs two macOS permissions for the Alan's Way app:
+
+1. Open System Settings, Privacy & Security, Accessibility, and turn on **alans-way-localapp**. If it is not listed, click +, choose `/Applications/alans-way-localapp.app`, and turn it on.
+2. In Privacy & Security, Screen Recording (named Screen & System Audio Recording on macOS 15 and later), turn on **alans-way-localapp** the same way.
+
+Do this at the Mac itself: macOS only creates these entries from a real login session. Grant the app, not Terminal, `sshd` or Node. The agent's SSH session only relays requests to the app, and the app runs the helper (`desktop/scripts/mac-computer`) that reads other apps, so remote SSH sessions need no grant of their own. The first time an agent is refused, macOS shows its own prompt for the app; Settings in the app also shows both statuses with buttons that open the right System Settings panes. After you reinstall or upgrade, macOS can treat the rebuilt app as new: if desktop control stops working, switch both entries off and on again. Browser tabs need neither permission. A macOS VM guest is different: grant `mac-computer` inside the VM, as described in [macOS guest VM](mac-vm-guest.md).
+
+On Windows and Linux, closing the window keeps the app running in the system tray so your bots keep their browser, as it does on a Mac. Use the tray icon's **Quit** to stop it. GNOME needs the AppIndicator extension to show a tray icon.
 
 For development, run from source instead: `cd desktop && npm ci && npm start`
 (see the [desktop guide](desktop/README.md)).
 
 ## Connect your agents
 
-**Let your cloud agent do it (recommended).** Paste this to the agent that has a terminal on the server running your Hermes gateway. Your Hermes bot itself works. The steps live in the repo, so the prompt stays short.
+**Let your cloud agent do it (recommended).** The app's setup wizard (or **Settings → Agent setup → Copy setup prompt**) gives you a prompt to paste to your Hermes bot. It points at [docs/setup-prompt.md](docs/setup-prompt.md) through `openalan.com/agent-prompt`, so it stays current as setup changes. Without the app open, this works too:
 
 ```text
 Set up Alan's Way. Repo: https://github.com/capthvnsen/alans-way
 Fetch https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-prompt.md and follow the text block in it exactly. Do not modify Hermes. Never print secrets.
 ```
+
+**Updating your agent.** After the app updates, send your bot the prompt from **Settings → Agent setup → Copy agent update prompt**. It follows [docs/update-for-agents.md](docs/update-for-agents.md): pull the plugin, re-run its setup with the same values, verify, restart.
 
 **Or by hand, in the app:** **Settings → Agent setup** — the checklist shows what's already done.
 
@@ -73,7 +101,7 @@ Fetch https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-pro
 2. Click **Copy setup command** and paste it in a terminal on the VPS — one bootstrap installs the plugin, wires the browser, restarts the gateway, and offers to bind your primary bot. (Never configured Telegram on Hermes? The bootstrap walks you through the QR-code setup.)
 3. Click **Test agent path** — the app verifies VPS → this computer over SSH end-to-end.
 
-The bot then has a `cua_alans_way` tool that opens tabs you can watch.
+The bot then has browser tools (`cua_alans_way_*`) that open tabs you can watch, and desktop tools (`workspace_computer_*`) for background apps.
 The plugin's `workspace-setup` skill teaches installed agents the same playbook.
 
 ## Upgrading

@@ -2,8 +2,11 @@
 
 This is a manual setup today, with a stock Hermes gateway and an optional Mac
 profile. It does not require a Hermes fork. Desktop packaging targets Apple
-Silicon Macs and Windows 10/11 x64 (`npm run package:win`); Linux desktops and
-Intel Mac distributions have not been verified. The Hermes side can also live
+Silicon Macs, Windows 10/11 x64 (`npm run package:win`) and Linux x64
+(`npm run package:linux`, installed by `scripts/connect-linux.sh`); Intel Mac
+distributions have not been verified. Your computer and the Hermes host must
+share a Tailscale network: every SSH address in this guide is a Tailscale name
+or IP. The Hermes side can also live
 on a macOS VM (see [the macOS guest guide](mac-vm-guest.md)) instead of a
 Linux VPS.
 
@@ -17,9 +20,9 @@ Linux VPS.
    registration. Start with manual status/handoff verification before enabling
    optional proactive behavior. Each installation has its own credentials and
    device trust; do not distribute a user's app data or Hermes state directory.
-4. Install Hermes- Alan's way on the Mac. Sign into Telegram locally and choose the bot
+4. Install Hermes- Alan's way on your computer. Sign into Telegram locally and choose the bot
    visibility/order in Settings. App browser logins belong to that installation.
-5. Configure a verified private SSH route from the VPS to that Mac. Launch
+5. Configure a verified SSH route over Tailscale from the VPS to that computer (the connect scripts add the VPS key restricted to the tailnet). Launch
    `desktop/scripts/browser-mcp.cjs` on the Mac with this profile's numeric bot ID,
    using Node and the local connection file. Keep the app's HTTP endpoint on
    loopback. Set timeouts/lazy startup where supported so a sleeping Mac does not

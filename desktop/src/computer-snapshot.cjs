@@ -1,31 +1,32 @@
 'use strict';
 
-function fingerprint(snapshot) {
-  const elements = Array.isArray(snapshot && snapshot.elements) ? snapshot.elements : [];
-  return JSON.stringify(elements.map((element) => [
-    element.ref, element.role, element.name, element.x, element.y, element.width, element.height,
-  ]));
-}
+const MAX_TRACKED = 500;
 
+// Generation is a hash of the tree, so it is the same for every bot. What is
+// per bot is the last generation that bot was sent: a reply is "unchanged"
+// only relative to what that bot has already seen.
 function createComputerSnapshots() {
-  const seen = new Map();
-  function observe(pid, snapshot) {
-    const next = fingerprint(snapshot);
-    const prior = seen.get(pid);
-    if (prior && prior.fingerprint === next) return { unchanged: true, generation: prior.generation };
-    const generation = (prior ? prior.generation : 0) + 1;
-    seen.set(pid, { fingerprint: next, generation });
-    return { unchanged: false, generation, elements: Array.isArray(snapshot.elements) ? snapshot.elements : [] };
+  const sent = new Map();
+  const remember = (bot, pid, generation) => {
+    const key = `${bot}\u0000${pid}`;
+    const same = sent.get(key) === generation;
+    sent.delete(key);
+    sent.set(key, generation);
+    if (sent.size > MAX_TRACKED) sent.delete(sent.keys().next().value);
+    return same;
+  };
+  function snapshot(bot, pid, tree, since) {
+    remember(bot, pid, tree.generation);
+    if (Number.isInteger(since) && since === tree.generation) return { unchanged: true, generation: tree.generation };
+    return tree;
   }
-  function reply(pid, snapshot, since) {
-    const observed = observe(pid, snapshot);
-    if (observed.unchanged && Number.isInteger(since) && since === observed.generation) {
-      return { unchanged: true, generation: observed.generation };
-    }
-    return { ...snapshot, generation: observed.generation };
+  function action(bot, pid, result) {
+    if (!Number.isInteger(result.generation) || !Array.isArray(result.elements)) return result;
+    if (!remember(bot, pid, result.generation)) return result;
+    const { elements, truncated, ...rest } = result;
+    return { ...rest, unchanged: true, generation: result.generation };
   }
-  reply.observe = observe;
-  return reply;
+  return { snapshot, action };
 }
 
-module.exports = { createComputerSnapshots, fingerprint };
+module.exports = { createComputerSnapshots };

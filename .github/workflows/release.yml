@@ -1,0 +1,102 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Assets upload into a draft, so releases/latest never points at a release
+  # whose installers are still building. A published release is never
+  # re-uploaded into.
+  draft:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - run: |
+          draft=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          case "$draft" in
+            none) gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --title "$TAG" --generate-notes --verify-tag ;;
+            false) echo "::error::$TAG is already published; tag a new version instead"; exit 1 ;;
+          esac
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+
+  # Builds run every dependency's install scripts, so they get no write token.
+  build:
+    needs: [draft]
+    if: ${{ !cancelled() && (needs.draft.result == 'success' || github.event_name == 'workflow_dispatch') }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-latest
+            script: package:mac
+          - os: windows-latest
+            script: package:win
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: desktop
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      # The suite has Mac/Linux-only tests; tests.yml covers the Windows driver.
+      - if: runner.os == 'macOS'
+        run: npm run check
+      - if: github.event_name == 'push'
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+      - run: npm run ${{ matrix.script }}
+      - if: runner.os == 'macOS'
+        run: shasum -a 512 dist/OpenAlan-mac.dmg | cut -d' ' -f1 > dist/OpenAlan-mac.dmg.sha512
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            desktop/dist/OpenAlan-mac.dmg
+            desktop/dist/OpenAlan-mac.dmg.sha512
+            desktop/dist/OpenAlan-windows-setup.exe
+            desktop/dist/latest.yml
+
+  upload:
+    needs: [build]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: gh release upload "$GITHUB_REF_NAME" dist/OpenAlan-mac.dmg dist/OpenAlan-mac.dmg.sha512 dist/OpenAlan-windows-setup.exe dist/latest.yml --clobber -R "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  publish:
+    needs: [upload]
+    # Release candidates (tags with '-') stay drafts: never public, safe for testing.
+    if: github.event_name == 'push' && !contains(github.ref_name, '-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - run: gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft=false --latest
+        env:
+          GH_TOKEN: ${{ github.token }}

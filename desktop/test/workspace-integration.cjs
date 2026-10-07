@@ -52,7 +52,9 @@ app.whenReady().then(async () => {
   dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path.join(__dirname, '../assets/avatars/hermes.png')] });
   state = await invoke('import-avatars');
   const imported = state.avatarLibrary.find(item => !item.builtIn);
-  assert.ok(imported.dataUrl.startsWith('data:image/png;base64,'));
+  assert.match(imported.dataUrl, /^hw-avatar:\/\/library\/custom-/);
+  assert.equal(JSON.stringify(state).includes('base64'), false, 'broadcast state carries no image bytes');
+  assert.equal(await evaluate(`(async () => { const img = new Image(); img.src = ${JSON.stringify(imported.dataUrl)}; await img.decode(); return img.naturalWidth > 0; })()`), true, 'the avatar protocol serves the imported image');
   await invoke('set-bot-avatar', { id: '123', selectedId: imported.id, eyes: { enabled: false } });
   state = await invoke('remove-avatar', { avatarId: imported.id });
   assert.equal(state.avatarPreferences['123'], undefined);
@@ -101,6 +103,12 @@ app.whenReady().then(async () => {
     if (req.url === '/form') return res.end('<!doctype html><title>form</title><form id="f"><input name="a" aria-label="Field A"><input name="b" aria-label="Field B"><input name="c" aria-label="Field C"><button type="submit">Send form</button></form><p id="out">idle</p><script>f.onsubmit=e=>{e.preventDefault();out.textContent=[f.a.value,f.b.value,f.c.value].join("|")}</script>');
     if (req.url === '/nav-a') return res.end('<title>nav-a</title><body>Nav A');
     if (req.url === '/nav-b') return res.end('<title>nav-b</title><body>Nav B');
+    if (req.url === '/remount') return res.end('<!doctype html><title>remount</title><div id="root"><button onclick="hits.push(1)">Alpha</button><button onclick="hits.push(2)">Beta</button></div><script>window.hits=[];window.render=()=>{root.innerHTML=\'<button onclick="hits.push(1)">Alpha</button><button onclick="hits.push(2)">Beta</button>\'}</script>');
+    if (req.url === '/hang-img') return res.end('<!doctype html><title>hang</title><button>Ready</button><img src="/never-answers">');
+    if (req.url === '/never-answers') return;
+    if (req.url === '/link') return res.end('<title>link</title><a href="/nav-b">Next page</a>');
+    if (req.url === '/slow-load') return res.end('<title>slow-load</title><button>Early control</button><img src="/slow-img">');
+    if (req.url === '/slow-img') return void setTimeout(() => { res.setHeader('Content-Type', 'image/png'); res.end(PNG_ICON); }, 2500);
     if (req.url === '/blocks') return res.end('<title>blocks</title><h1>Order 42</h1><ul><li>Apples <b>3</b></li><li>Pears 5</li></ul><table><tr><td>Total</td><td>8</td></tr></table><p>Due <i>today</i></p>');
     if (req.url === '/red' || req.url === '/blue') return res.end(`<style>html{background:${req.url.slice(1)}}</style><title>${req.url.slice(1)}</title><button onclick="window.open('/popup')">Open fixture popup</button>`);
     res.end('<!doctype html><title>Human focus fixture</title><input id="human" aria-label="Human input" value="Keep my draft"><script>human.focus()</script>');
@@ -132,6 +140,14 @@ app.whenReady().then(async () => {
     const { status, data } = await apiRaw(route, method, body, actor);
     assert.ok(status < 300, data.error); return data;
   };
+  // Host computer use validates a request before any helper runs, so this holds without Accessibility.
+  const noGeneration = await apiRaw('/v1/computer/1/action', 'POST', { action: 'press', ref: 'c1' });
+  assert.equal(noGeneration.status, 409);
+  assert.equal(noGeneration.data.code, 'stale_ref');
+  const badComputerAction = await apiRaw('/v1/computer/1/action', 'POST', { action: 'teleport' });
+  assert.equal(badComputerAction.status, 400);
+  assert.equal(badComputerAction.data.code, 'bad_request');
+  console.log('PASS: computer actions that use a ref need the snapshot generation, and unknown actions are refused.');
   const colored = [];
   for (const color of ['red', 'blue']) {
     const tab = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/${color}` });
@@ -327,6 +343,64 @@ app.whenReady().then(async () => {
   assert.equal(navBatch.results.length, 2);
   assert.ok(navBatch.results[1].waited >= 0 && navBatch.url.includes('/nav-b'), 'wait after navigate evaluates the new document');
   console.log('PASS: batch refs for multi-field forms, closed-tab 404, navigate-then-wait, and action page state.');
+  // Batch replies carry the tab record once, and only the steps' own output.
+  assert.equal(navBatch.results[0].tab, undefined, 'batch steps do not repeat the tab record');
+  assert.equal(navBatch.results[0].url, undefined, 'batch steps do not repeat page state');
+  assert.equal(navBatch.tab.epoch, navTab.epoch);
+  assert.equal(navBatch.tab.agentCursor, undefined);
+  assert.equal(navBatch.tab.favicon, undefined);
+  // navigate answers with controls once the document parsed, while the page keeps loading.
+  const slowStarted = Date.now();
+  const navigated = await api(`/v1/tabs/${navTab.id}/actions`, 'POST', { action: 'navigate', url: `http://127.0.0.1:${server.address().port}/slow-load`, epoch: navTab.epoch });
+  assert.ok(Date.now() - slowStarted < 2300, 'navigate did not wait for the slow image');
+  assert.ok(navigated.elements.some(item => item.name === 'Early control'), 'navigate returns controls after DOMContentLoaded');
+  assert.equal(navigated.loading, true, 'the reply says the page is still loading');
+  // A failed load names Chromium's error.
+  const unresolved = await apiRaw(`/v1/tabs/${navTab.id}/actions`, 'POST', { action: 'navigate', url: 'http://no-such-host.invalid/', epoch: navTab.epoch });
+  assert.equal(unresolved.status, 400);
+  assert.match(unresolved.data.error, /^Navigation failed: ERR_[A-Z_]+\.$/);
+  // A click that navigates answers from the new page.
+  const linkTab = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/link` });
+  const linkSnap = await waitFor(() => api(`/v1/tabs/${linkTab.id}/snapshot`), snap => (snap.elements || []).some(item => item.name === 'Next page'));
+  const followed = await api(`/v1/tabs/${linkTab.id}/actions`, 'POST', { action: 'click', ref: linkSnap.elements.find(item => item.name === 'Next page').ref, epoch: linkTab.epoch });
+  assert.deepEqual([followed.url.endsWith('/nav-b'), followed.title], [true, 'nav-b'], 'a click that navigates answers after the new document parsed');
+  // An identical tree re-rendered under the agent keeps its refs usable.
+  const remount = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/remount` });
+  const remountSnap = await waitFor(() => api(`/v1/tabs/${remount.id}/snapshot`), snap => (snap.elements || []).some(item => item.name === 'Beta'));
+  await api(`/v1/tabs/${remount.id}/actions`, 'POST', { action: 'eval', code: 'render()', epoch: remount.epoch });
+  const rescanned = await api(`/v1/tabs/${remount.id}/actions`, 'POST', { action: 'scroll', y: 0, epoch: remount.epoch });
+  assert.equal(rescanned.unchanged, true, 'the re-rendered tree reads as unchanged');
+  await api(`/v1/tabs/${remount.id}/actions`, 'POST', { action: 'click', ref: remountSnap.elements.find(item => item.name === 'Beta').ref, epoch: remount.epoch });
+  assert.deepEqual((await api(`/v1/tabs/${remount.id}/actions`, 'POST', { action: 'eval', code: 'hits', epoch: remount.epoch })).value, [2], 'a held ref clicks the re-rendered node');
+  // A page whose image never answers still reads, evaluates and waits.
+  const hang = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/hang-img` });
+  const hangStarted = Date.now();
+  const hangSnap = await api(`/v1/tabs/${hang.id}/snapshot`);
+  assert.ok(hangSnap.elements.some(item => item.name === 'Ready'), 'snapshot does not wait for the stalled image');
+  assert.equal((await api(`/v1/tabs/${hang.id}/actions`, 'POST', { action: 'eval', code: 'document.title', epoch: hang.epoch })).value, 'hang');
+  assert.equal((await api(`/v1/tabs/${hang.id}/actions`, 'POST', { action: 'wait', selector: 'button', timeout: 3000, epoch: hang.epoch })).dispatched, true);
+  assert.ok(Date.now() - hangStarted < 5000, 'snapshot, eval and wait finished well inside the stalled load');
+  // A wait whose client hung up stops polling and frees the queue.
+  const patient = (body, signal) => fetch(new URL(`/v1/tabs/${hang.id}/actions`, connection.url), { method: 'POST', signal, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'capture-regression', 'Content-Type': 'application/json' }, body: JSON.stringify({ epoch: hang.epoch, ...body }) });
+  const walkAway = new AbortController();
+  const longWait = patient({ action: 'wait', selector: '#nothing', timeout: 30000 }, walkAway.signal).catch(() => {});
+  await new Promise(resolve => setTimeout(resolve, 300));
+  walkAway.abort(); await longWait;
+  const freed = Date.now();
+  assert.equal((await api(`/v1/tabs/${hang.id}/actions`, 'POST', { action: 'eval', code: '1 + 1', epoch: hang.epoch })).value, 2);
+  assert.ok(Date.now() - freed < 4000, 'the queue is free again soon after the client left a long wait');
+  // An action whose client already hung up never runs.
+  const queueTab = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/nav-a` });
+  await waitFor(() => api(`/v1/tabs/${queueTab.id}/snapshot`), snap => snap.title === 'nav-a');
+  const post = (body, signal) => fetch(new URL(`/v1/tabs/${queueTab.id}/actions`, connection.url), { method: 'POST', signal, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'capture-regression', 'Content-Type': 'application/json' }, body: JSON.stringify({ epoch: queueTab.epoch, ...body }) });
+  const blocker = post({ action: 'wait', text: 'never appears', timeout: 1200 });
+  await new Promise(resolve => setTimeout(resolve, 150));
+  const hangup = new AbortController();
+  const abandoned = post({ action: 'eval', code: 'window.__abandoned = 1' }, hangup.signal).catch(() => {});
+  await new Promise(resolve => setTimeout(resolve, 150));
+  hangup.abort(); await abandoned; await blocker;
+  assert.equal((await api(`/v1/tabs/${queueTab.id}/actions`, 'POST', { action: 'eval', code: 'window.__abandoned === undefined', epoch: queueTab.epoch })).value, true, 'a queued action from an aborted request is skipped');
+  console.log('PASS: compact batch replies, navigate controls after DOMContentLoaded, net error detail, click-initiated navigation, and aborted queue skipping.');
   // wait honors a visibility requirement and a url condition; clicks hit a
   // covered element through an alternate point and name the blocker when it
   // cannot be clicked at all.
@@ -463,8 +537,56 @@ app.whenReady().then(async () => {
   fakeDownload.received = 2048; fakeDownload.state = 'completed'; fakeDownload.path = path.join(profile, 'fixture-report.pdf');
   (downloadListeners.done || []).forEach(fn => fn({}, 'completed'));
   state = await waitFor(() => evaluate('window.workspace.getState()'), value => value.downloads[0]?.state === 'completed');
-  assert.equal(await evaluate('document.getElementById("downloads-button").classList.contains("active")'), false, 'Finished downloads clear the button badge.');
+  assert.equal(await waitFor(() => evaluate('document.getElementById("downloads-button").classList.contains("active")'), active => active === false), false, 'Finished downloads clear the button badge.');
   assert.ok((await evaluate('document.querySelector("#downloads-menu .download-status")?.textContent || ""')).includes('KB'), 'A finished download shows its size.');
   console.log('PASS: downloads bubble lists a live download, pauses it, then shows the finished size.');
+
+  // The app's own page is the only thing the bridge-bearing window may show.
+  const indexUrl = wc.getURL();
+  await evaluate(`location.href = 'file:///etc/hosts'`).catch(() => {});
+  await new Promise(r => setTimeout(r, 400));
+  assert.equal(wc.getURL(), indexUrl, 'renderer-initiated navigation away from the app page is cancelled');
+  const windowsBefore = BrowserWindow.getAllWindows().length;
+  await evaluate(`window.open('https://example.com/'); 0`);
+  await new Promise(r => setTimeout(r, 400));
+  assert.equal(BrowserWindow.getAllWindows().length, windowsBefore, 'the main window cannot open windows');
+  const strangerFile = path.join(profile, 'stranger.html');
+  fs.writeFileSync(strangerFile, '<!doctype html><title>stranger</title>');
+  await wc.loadFile(strangerFile);
+  assert.equal(await evaluate('typeof window.workspace'), 'object', 'the preload bridge is present on any file page');
+  assert.match(await evaluate('window.workspace.getState().then(() => "allowed", error => error.message)'), /Untrusted workspace request/, 'a dropped local file cannot use the bridge');
+  await wc.loadFile(path.join(__dirname, '../src/index.html'));
+  await waitFor(() => evaluate('window.workspace.getState().then(() => true, () => false)').catch(() => false), Boolean);
+  console.log('PASS: app window refuses navigation and popups, and the IPC bridge trusts only the exact app page.');
+
+  // Connector requests need a loopback Host header as well as the token.
+  const connectionFile = JSON.parse(fs.readFileSync(path.join(profile, 'connection.json'), 'utf8'));
+  const hostStatus = (hostHeader) => new Promise((resolve, reject) => {
+    const request = http.request({ host: '127.0.0.1', port: new URL(connectionFile.url).port, path: '/v1/status', headers: { Authorization: `Bearer ${connectionFile.token}`, ...(hostHeader ? { Host: hostHeader } : {}) } },
+      response => { response.resume(); resolve(response.statusCode); });
+    request.on('error', reject); request.end();
+  });
+  const apiPort = new URL(connectionFile.url).port;
+  assert.equal(await hostStatus(), 200);
+  assert.equal(await hostStatus(`localhost:${apiPort}`), 200);
+  assert.equal(await hostStatus(`rebind.example:${apiPort}`), 401, 'a non-loopback Host header is refused even with the token');
+  assert.equal(await hostStatus('127.0.0.1:1'), 401);
+  console.log('PASS: connector enforces a loopback Host header.');
+
+  // Telegram keeps normal throttling, so a tray-hidden window really goes idle.
+  if (telegram && !telegram.isDestroyed()) {
+    win.hide();
+    assert.equal(await waitFor(() => telegram.executeJavaScript('document.hidden'), value => value === true), true, 'a hidden window leaves Telegram hidden (throttling stays on)');
+    win.show();
+    console.log('PASS: hiding the window hides Telegram too, with throttling left on.');
+  }
+
+  // A crashed Telegram renderer is reloaded with backoff instead of staying offline.
+  if (telegram && !telegram.isDestroyed()) {
+    telegram.forcefullyCrashRenderer();
+    await waitFor(() => evaluate('window.workspace.getState()'), value => value.telegramStatus === 'offline');
+    await waitFor(() => telegram.isDestroyed() ? 'gone' : telegram.getURL(), url => url.startsWith('https://web.telegram.org'), 15000);
+    console.log('PASS: crashed Telegram view is marked offline and reloaded automatically.');
+  }
   server.close(); portBlocker.close(); app.quit();
 }).catch(error => { console.error(error.stack); server?.close(); app.exit(1); });

@@ -77,7 +77,10 @@ class CDP {
       command,
       executeJavaScript: async (expression) => {
         const r = await command('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-        if (r.exceptionDetails) throw new Error('Unable to inspect browser page.');
+        if (r.exceptionDetails) {
+          const detail = String(r.exceptionDetails.exception?.description || r.exceptionDetails.text || '').split('\n')[0].slice(0, 300);
+          throw new Error(detail ? `Unable to inspect browser page: ${detail}` : 'Unable to inspect browser page.');
+        }
         return r.result.value;
       },
       isDestroyed: () => this.socket.readyState !== 1,

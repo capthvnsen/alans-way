@@ -25,21 +25,26 @@ function firstLink(message) {
 // Scans messages (previousSeen+1 .. lastId, at most the last 10) of one chat for
 // new links. `seen`/`sent` are Maps/Sets owned by the caller; `send` delivers
 // {chatId, url, outgoing}. First call only seeds the watermark — chat history
-// is never opened retroactively.
+// is never opened retroactively. Telegram publishes a chat's last id before the
+// message body reaches the cache, so the watermark moves only past ids whose
+// message is present; a late body is still scanned on a later tick.
 function scanLinks({ userId, byId, lastId, currentUserId, seen, sent, send }) {
   if (!lastId) return;
   const previousSeen = seen.get(userId);
   if (previousSeen === undefined) { seen.set(userId, lastId); return; }
   if (lastId === previousSeen) return;
-  seen.set(userId, lastId);
+  let advanced = previousSeen;
   for (let id = Math.max(previousSeen + 1, lastId - 9); id <= lastId; id++) {
     const message = byId?.[id], key = `${userId}:${id}`, url = firstLink(message);
-    if (!message || !url || sent.has(key)) continue;
+    if (!message) continue;
+    advanced = id;
+    if (!url || sent.has(key)) continue;
     sent.add(key);
     if (sent.size > 400) sent.clear();
     send({ chatId: String(userId), url,
       outgoing: message.isOutgoing === true || String(message.senderId || '') === String(currentUserId || '') });
   }
+  seen.set(userId, advanced);
 }
 
 module.exports = { firstLink, scanLinks };

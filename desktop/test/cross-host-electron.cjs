@@ -1,5 +1,6 @@
 // Opt-in real Mac app + configured VPS browser. Uses disposable bots and a local fixture.
 const assert = require('node:assert/strict'),
+  { spawnSync } = require('node:child_process'),
   fs = require('node:fs'),
   os = require('node:os'),
   path = require('node:path');
@@ -160,6 +161,46 @@ app
       await invoke('open-bot', { id: '123' });
       assert.equal((await evaluate('window.workspace.getState()')).activeTabId, roundtrip.destinationTabId);
       console.log('PASS: shared live VPS cookies, separate agent tool ownership, and local-only app workspaces.');
+      // Failover: the app mirrors an agent-controlled Mac tab to the VM, and the
+      // router's restore call reopens it there signed in, with scroll and drafts.
+      // This runs before mac_ready is set, which the mirror would carry to the VM
+      // and defeat the login-redirect check below on a reused VM profile.
+      const marker = `mirror-${Date.now()}`;
+      const agentMac = await invoke('create-tab', { url: fixture });
+      own.push(agentMac.id);
+      const agentWc = await until(
+        () => webContents.getAllWebContents().find((w) => w.getURL() === fixture + '/' && w !== macWc && w !== returned),
+        Boolean,
+      );
+      await until(() => agentWc.isLoading(), (v) => !v);
+      await agentWc.executeJavaScript(`document.cookie='mirror_marker=${marker};path=/';draft.value='MIRROR-DRAFT';password.value='NEVER-MIRRORED'`);
+      await invoke('control', { id: agentMac.id, controller: 'agent' });
+      const vm = (route, body, bot = '123') => {
+        const run = spawnSync('ssh', ['-T', '-o', 'BatchMode=yes', sshHost, `${process.env.HERMES_CROSS_HOST_SUDO === '1' ? 'sudo -n ' : ''}node '${scriptPath}' request`],
+          { input: JSON.stringify({ path: route, method: 'POST', body, botId: bot }), encoding: 'utf8' });
+        return JSON.parse(run.stdout);
+      };
+      let restored;
+      for (let i = 0; i < 40 && !restored; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        const cleared = vm('/v1/restore', { bot: '123' });
+        if (cleared.data.map && cleared.data.map[agentMac.id]) restored = cleared.data;
+        else if (cleared.status >= 400) throw new Error('restore failed: ' + JSON.stringify(cleared));
+      }
+      assert.ok(restored, 'the mirror push reached the VM within 20s');
+      own.push(restored.map[agentMac.id]);
+      await until(async () => (await api('/v1/tabs')).data.tabs.some((t) => t.id === restored.map[agentMac.id]), Boolean);
+      const mirroredReply = await api(`/v1/tabs/${restored.map[agentMac.id]}/snapshot`);
+      const mirrored = mirroredReply.data;
+      assert.equal(mirroredReply.status, 200, JSON.stringify(mirroredReply.data));
+      assert.ok(mirrored.text.includes(`mirror_marker=${marker}`), 'the Mac cookie is live in the VM tab');
+      assert.equal(mirrored.elements.find((e) => e.name === 'Task draft').value, 'MIRROR-DRAFT');
+      assert.notEqual(mirrored.elements.find((e) => e.name === 'Password').value, 'NEVER-MIRRORED');
+      assert.equal(mirrored.tab.controller, 'agent');
+      assert.deepEqual(vm('/v1/restore', { bot: '123' }).data.map[agentMac.id], restored.map[agentMac.id], 'a second restore reuses the tab');
+      assert.equal(vm('/v1/mirror', { bot: '123', tabs: [] }, '123').status, 200, 'the app token reaches the mirror over ssh');
+      assert.equal((await api('/v1/mirror', 'POST', { bot: '123', tabs: [] })).status, 404, 'the Mac connector exposes no mirror route');
+      console.log('PASS: agent-controlled Mac tab mirrored to the VM and restored there with cookies, drafts and agent control, once.');
       await macWc.executeJavaScript(`document.cookie='mac_ready=1;path=/'`);
       await invoke('navigate', { id: mac.id, url: fixture + '/needs-login' });
       await until(

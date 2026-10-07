@@ -1,5 +1,6 @@
 const { ipcRenderer, contextBridge } = require('electron');
 const { firstLink, scanLinks } = require('./link-share.cjs');
+const { contractHolds, createContractMonitor } = require('./telegram-contract.cjs');
 
 // Read only the API worker's actual chat-action updates. Do not infer work from
 // outgoing messages, previews, unread counts, or the persisted Telegram cache.
@@ -191,7 +192,8 @@ const CSS = `
     animation: hwOrbit 2.7s linear infinite; filter: drop-shadow(0 0 7px rgba(168,233,204,.5)); }
   @keyframes hwOrbit { to { --hw-oa: 360deg; } }
 `;
-let busy = false, db, previous = '', timer, dbDiag = 'init';
+let busy = false, db, previous = '', timer, heartbeat, dbDiag = 'init', lastFingerprint = '', knownBotIds = [];
+const avatarCache = new Map(), contract = createContractMonitor();
 function readDatabase() {
   return new Promise((resolve) => {
     if (db) return read(db);
@@ -217,33 +219,47 @@ async function sync() {
   try {
     const cached = await readDatabase();
     const authVisible = !!document.querySelector('#auth-pages, #auth-qr-form, #auth-phone-number-form');
+    const hasLeftColumn = !!document.getElementById('LeftColumn');
+    // Telegram Web A is third-party. If its database shape or anchors move, say
+    // so rather than quietly showing an empty bot list.
+    const loggedIn = !!cached?.currentUserId;
+    const holds = contractHolds({ dbDiag, cached, authVisible, hasLeftColumn });
+    if (contract.observe(holds, { full: holds && loggedIn && !authVisible && !cached?.passcode?.isScreenLocked, loggedIn })) {
+      const broken = { status: 'layout-changed', accountId: '', bots: [], selectedId: '', diagnostics: { dbDiag, storeKeys: cached ? Object.keys(cached) : [], hasLeftColumn } };
+      const brokenSignature = JSON.stringify(broken);
+      if (brokenSignature !== previous) { previous = brokenSignature; lastFingerprint = ''; ipcRenderer.send('telegram:catalog', broken); }
+      return;
+    }
     const locked = cached?.passcode?.isScreenLocked;
     const status = locked ? 'locked' : authVisible ? 'login' : cached?.currentUserId ? 'connected' : 'loading';
     activityAccountId = cached?.currentUserId ? String(cached.currentUserId) : '';
     activityConnected = status === 'connected';
     const users = cached?.users?.byId || {};
     const chats = cached?.chats?.byId || {};
-    const bots = [];
     const links = [...document.querySelectorAll('#LeftColumn a[href]')];
+    const lastIdOf = (id) => chats[id]?.lastMessageId || cached?.chats?.lastMessageIds?.all?.[id];
+    // Cheap fingerprint of everything the packet derives from. When it matches
+    // the previous poll the bot list, avatars and link scan are skipped.
+    const fingerprint = JSON.stringify([status, activityAccountId, links.length, location.hash, Object.keys(users).length, Object.keys(chats).length,
+      links.filter((link) => link.closest('.selected')).map((link) => link.hash), links.map((link) => { const img = link.querySelector('img'); return img?.complete && img.naturalWidth ? (img.currentSrc || img.src).slice(-48) : ''; }),
+      knownBotIds.map((id) => [id, lastIdOf(id), cached?.messages?.byChatId?.[id]?.byId?.[lastIdOf(id)]?.content?.text?.text?.length, cached?.messages?.byChatId?.[id]?.threadsById?.[-1]?.readState?.unreadCount, users[id]?.firstName, users[id]?.lastName])]);
+    if (fingerprint === lastFingerprint) { watchTypingStatus(); publishActivityAvailability(); renderAgentBubble(); return; }
+    const bots = [];
     for (const user of Object.values(users)) {
       if (!(user?.isBot === true || user?.type === 'userTypeBot' || user?.type === 'bot') || !chats[user.id]) continue;
-      const chat = chats[user.id];
       const username = user.usernames?.find((item) => item.isActive)?.username || user.username || '';
       const link = links.find(el => el.hash?.slice(1).split('_')[0] === String(user.id));
       const row = link?.closest('.Chat, .ListItem') || link;
-      const lastId = chat.lastMessageId || cached.chats?.lastMessageIds?.all?.[user.id];
+      const lastId = lastIdOf(user.id);
       const last = cached.messages?.byChatId?.[user.id]?.byId?.[lastId];
       if (status === 'connected') scanLinks({ userId: user.id, byId: cached.messages?.byChatId?.[user.id]?.byId,
         lastId, currentUserId: cached?.currentUserId, seen: seenLinks, sent: sentLinkIds,
         send: (value) => ipcRenderer.send('telegram:link', value) });
-      let avatar = '';
-      const image = row?.querySelector('.Avatar img, .avatar img, img');
-      if (image?.complete && image.naturalWidth) {
-        try { const canvas = document.createElement('canvas'); canvas.width = 64; canvas.height = 64; canvas.getContext('2d').drawImage(image, 0, 0, 64, 64); avatar = canvas.toDataURL('image/png'); } catch {}
-      }
       bots.push({ id: String(user.id), isBot: true, name: [user.firstName, user.lastName].filter(Boolean).join(' ') || username || 'Telegram bot', username,
-        unread: cached?.messages?.byChatId?.[user.id]?.threadsById?.[-1]?.readState?.unreadCount || 0, preview: row?.querySelector('.last-message, .subtitle')?.textContent?.trim() || last?.content?.text?.text || '', avatar, lastId: Number(lastId) || 0 });
+        unread: cached?.messages?.byChatId?.[user.id]?.threadsById?.[-1]?.readState?.unreadCount || 0, preview: row?.querySelector('.last-message, .subtitle')?.textContent?.trim() || last?.content?.text?.text || '', avatar: avatarFor(row?.querySelector('.Avatar img, .avatar img, img')), lastId: Number(lastId) || 0 });
     }
+    knownBotIds = bots.map((bot) => bot.id);
+    lastFingerprint = fingerprint;
     const selectedLink = links.find(el => el.closest('.selected'));
     const selectedId = selectedLink?.hash?.slice(1).split('_')[0] || location.hash.slice(1).split('_')[0];
     const selectedBot = bots.some((bot) => bot.id === selectedId);
@@ -267,14 +283,39 @@ async function sync() {
     renderAgentBubble();
   } catch {} finally { busy = false; }
 }
+// Re-encoding every avatar each poll was the costliest part of a poll; the
+// picture only changes when the <img> source does.
+function avatarFor(image) {
+  if (!image?.complete || !image.naturalWidth) return '';
+  const src = image.currentSrc || image.src;
+  if (!avatarCache.has(src)) {
+    let data = '';
+    try { const canvas = document.createElement('canvas'); canvas.width = 64; canvas.height = 64; canvas.getContext('2d').drawImage(image, 0, 0, 64, 64); data = canvas.toDataURL('image/png'); } catch {}
+    if (avatarCache.size > 300) avatarCache.clear();
+    avatarCache.set(src, data);
+  }
+  return avatarCache.get(src);
+}
+// The main process says how hard to poll: 'active' (window focused), 'idle'
+// (visible but unfocused) or 'hidden' (tray or minimized), where main sends
+// telegram:poll itself because a hidden page's timers are throttled.
+let pollTier = 'active';
+const pollDelay = { active: 2500, idle: 5000 };
+function schedulePoll() {
+  clearTimeout(timer);
+  if (pollTier === 'hidden') return;
+  timer = setTimeout(async () => { await sync(); schedulePoll(); }, pollDelay[pollTier]);
+}
 window.addEventListener('DOMContentLoaded', () => {
   const style = document.createElement('style'); style.textContent = CSS; document.head.appendChild(style);
-  sync(); timer = setInterval(sync, 2500);
+  sync(); schedulePoll(); heartbeat = setInterval(publishActivityAvailability, 2500);
 });
-ipcRenderer.on('telegram:sync', sync);
+ipcRenderer.on('workspace:poll-tier', (_event, tier) => { pollTier = tier in pollDelay || tier === 'hidden' ? tier : 'active'; schedulePoll(); if (pollTier !== 'hidden') sync(); });
+ipcRenderer.on('telegram:poll', sync);
+ipcRenderer.send('workspace:poll-tier-pull');
 ipcRenderer.on('workspace:bot-activity', (_event, working) => { workActivity = working && typeof working === 'object' ? working : {}; renderAgentBubble(); });
 ipcRenderer.send('workspace:bot-activity-pull');
 window.addEventListener('hashchange', renderAgentBubble);
 window.addEventListener('offline', publishActivityAvailability);
 window.addEventListener('online', publishActivityAvailability);
-window.addEventListener('beforeunload', () => { sendActivity('unavailable'); clearInterval(timer); db?.close(); });
+window.addEventListener('beforeunload', () => { sendActivity('unavailable'); clearTimeout(timer); clearInterval(heartbeat); db?.close(); });

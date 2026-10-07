@@ -20,7 +20,7 @@ All requests use bearer authentication and `X-Hermes-Bot`. The current protocol 
 | Close assigned agent tab | `DELETE /v1/tabs/:id` with `X-Control-Epoch` |
 | Release or retake a tab | `POST /v1/tabs/:id/control` with `controller` (owning bot or overseer) |
 
-Allowed actions: navigate, move, click, type, press, scroll, back, forward, reload, batch, eval, wait, viewport, cdp. Move/click accept a fresh snapshot ref, a CSS `selector`, or viewport x,y; type and press accept a ref or selector; scroll x,y are deltas. Move provides real pointer hover. `batch` runs up to 25 steps per call and stops on the first error; `wait` blocks until a selector exists, text appears, or the URL contains a substring (`visible: true` requires a rendered element), and survives a navigation that lands mid-wait; `eval` evaluates JS in the page and returns the JSON result; `viewport` sets a per-tab device-metrics override (`clear: true` resets); `cdp` sends an allowlisted DevTools command (Page, Runtime, Input, Emulation, Network, DOM, DOMSnapshot, Accessibility, CSS, Log) for anything the named actions do not cover. Cookie and storage access, file inputs and choosers, downloads, request interception, browser-privileged fetches and persistent script injection are denied inside those domains, and `Page.navigate` goes through the same address validation as `navigate`. Snapshots cover the top document; nested frame reference traversal, file uploads, and drag are not implemented. A screenshot can show frame content and coordinate input targets the tab viewport.
+Allowed actions: navigate, move, click, double_click, right_click, drag, select, type, press, scroll, back, forward, reload, batch, eval, wait, viewport, cdp. Move, click, double_click and right_click accept a fresh snapshot ref, a CSS `selector`, or viewport x,y; drag presses at that source and releases at `toRef`, `toSelector`, or `toX`,`toY`; select picks an option of a `<select>` by `value` or `label`; type and press accept a ref or selector; scroll x,y are deltas. Move provides real pointer hover. `batch` runs up to 25 steps per call and stops on the first error; `wait` blocks until a selector exists, text appears, or the URL contains a substring (`visible: true` requires a rendered element), and survives a navigation that lands mid-wait; `eval` evaluates JS in the page and returns the JSON result; `viewport` sets a per-tab device-metrics override (`clear: true` resets); `cdp` sends an allowlisted DevTools command (Page, Runtime, Input, Emulation, Network, DOM, DOMSnapshot, Accessibility, CSS, Log) for anything the named actions do not cover. Cookie and storage access, file inputs and choosers, downloads, request interception, browser-privileged fetches and persistent script injection are denied inside those domains, and `Page.navigate` goes through the same address validation as `navigate`. Snapshots cover the top document, its shadow roots and same-origin iframes. Cross-origin iframes are listed under `iframes` (title and src) but their contents are not traversed, and file uploads are not implemented. A screenshot can show frame content and coordinate input targets the tab viewport.
 
 Agent tabs open in the background unless explicitly requested otherwise. Input travels through the tab’s Chromium DevTools target, with a decorative Agent cursor at dispatched coordinates. It does not use OS input, the clipboard, native window activation, or the human’s keyboard focus. Agent page popups preserve the selected human tab. Application menu shortcuts are suppressed during agent key dispatch.
 
@@ -66,15 +66,38 @@ Its Chromium/CDP endpoints stay on loopback. See [VPS setup](vps-browser.md).
 Browser IDs are trusted routing identities, not a security boundary against
 an agent with the host user's shell access. Overseer IDs share that model:
 anyone holding `connection.json` can assert an overseer bot ID, so keep the
-list short. The same is true of the
-`X-Hermes-Human` flag on the VPS broker: anyone holding `connection.json`
-can assert it to reach `control`, `grant`, `human-actions`, and `checkpoint`
-on any tab, including human-controlled ones (a checkpoint can carry form
-drafts). Per-tab ownership and control epochs are cooperative policy for
-agents — protection against accidental cross-bot interference and stale
-actions — not a cryptographic boundary between mutually distrusting callers
-that already share the bearer token. Keep `connection.json` at mode 0600 and
-rotate the token (restart the app/host) to revoke.
+list short.
+
+The VPS broker keeps two tokens. `connection.json` carries the agent token,
+which never grants human operations: a request with `X-Hermes-Human: 1` and the
+agent token gets 403. Human-only operations (`control` for another bot, `grant`,
+`human-actions`, `checkpoint`, `restore`, `activate`, listing every bot's tabs)
+and `POST /v1/mirror` need the app token, which the broker writes to
+`app-token.json` (mode 0600) or to the absolute path in `config.json`'s
+`appTokenFile`. The app's SSH `request` helper reads it automatically for those
+calls. The app token only separates the human from the agent when the broker
+and the app's SSH login run as a different user than the agent, with
+`appTokenFile` pointing somewhere the agent user cannot read (and `sudo` set in
+the VPS settings). In the common single-user setup the agent can read the file,
+so the split guards against forged headers and mistakes, not a hostile agent
+with shell access. Per-tab ownership and control epochs are cooperative policy
+for agents, not a cryptographic boundary between callers that already share a
+token. Restart the app or host to rotate both tokens.
+
+Agent navigation is held to the same address rules everywhere: `open`,
+`navigate`, `cdp Page.navigate`, redirects, pop-ups, frames, workers and
+script-driven requests. On the VPS broker every request an agent-held tab makes
+(including its pop-ups, cross-process frames and dedicated workers, which start
+paused until the filter is on) is checked before it leaves, and one that names
+a loopback, link-local or metadata address, in any spelling or with userinfo, is
+failed. A tab that still lands on one is sent back to `about:blank` and a
+pop-up is closed. The tab's `blocked` field says which URL was refused. Human
+tabs are not intercepted. Measured on a 300-image page against headless Chrome,
+the filter adds about 10 ms plus 0.1 ms per request. Known gaps: WebSocket
+handshakes (the DevTools Fetch domain never sees them), service workers and
+shared workers (not tied to one tab), and public hostnames that merely resolve
+to a private or loopback address (there is no DNS check). Running Chromium
+behind a local egress filter closes all three.
 
 On `human_has_control`, wait for an explicit release. On `stale_control_epoch`, inspect current state and take a fresh snapshot before deciding whether to proceed. A timed-out form submission is uncertain; inspect the page rather than automatically repeat it. The UI must be the authority for tab access grants and human control.
 
