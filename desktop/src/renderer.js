@@ -299,6 +299,8 @@ function render(next) {
 }
 function renderUpdate() {
   const version = $('version-label'); version.textContent = `v${state.version}`; version.title = `Release notes for v${state.version}`; version.onclick = () => command('open-release-notes');
+  const badge = $('build-badge'), b = state.buildBadge;
+  badge.classList.toggle('hidden', !b); if (b) { badge.textContent = b.text; badge.title = b.title; badge.className = `build-badge ${b.tone}`; }
   const note = $('update-note'), u = state.update || {};
   const label = u.busy ? 'Updating…' : u.error ? 'Update failed · Open download page' : u.ready ? `Restart to update to v${u.available}` : u.available ? `Update to v${u.available}` : '';
   note.classList.toggle('hidden', !label); note.textContent = label; note.disabled = !!u.busy;

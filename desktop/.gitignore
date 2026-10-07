@@ -12,3 +12,4 @@ src/preload.bundle.cjs
 src/telegram-preload.bundle.cjs
 scripts/mac-computer.src
 scripts/win-computer.exe.src
+build-info.json
