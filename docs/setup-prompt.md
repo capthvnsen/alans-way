@@ -117,8 +117,8 @@ Rules for the whole job:
    "check" to "accept" for <this user>. Only if I say I don't use Tailscale SSH
    to reach this server, run `tailscale set --ssh=false` instead.
 
-6. Ask me first: "Should your bot be allowed to message you first, with
-   check-ins and follow-ups (at most a few a day, never 22:00–08:00)?" Then
+6. Ask me first: "Should your bot be allowed to message you first, with an
+   occasional check-in while the chat is idle (only 08:00–22:00 my time)?" Then
    install the plugin:
      git clone https://github.com/capthvnsen/alans-way-agents ~/alans-way-agents 2>/dev/null || git -C ~/alans-way-agents pull --ff-only
      # If `hermes plugins list` already shows alans-way, add --skip-plugin so

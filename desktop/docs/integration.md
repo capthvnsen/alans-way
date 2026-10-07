@@ -132,12 +132,13 @@ handoff is not yet connected to the companion's task event system.
 ## Shared repository
 
 The UI is `desktop/` within the companion repository. The Python Mac endpoint,
-the native proactivity plugin/startup hook, and this Electron browser connector
+the native proactivity plugin, and this Electron browser connector
 remain separate modules. They use the same existing VPS primary and Telegram
 conversation. CI checks the Python package and desktop code independently.
 
 Proactivity controls use the native `/proactivity` commands in the Telegram chat.
-Status comes from the plugin's response. VPS **Take control** enables input
+Status comes from the plugin's response; `hermes proactivity status|bind|set`
+is the operator CLI. VPS **Take control** enables input
 through the desktop picture; **Stop control** disables it. These viewer
 controls do not pause browser or desktop agents. Coordinate shared desktop
 work separately. Local **Take over / Give to agent** still enforces browser
