@@ -12,6 +12,7 @@ const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding } = require('./onboarding.cjs');
 const macUpdate = require('./mac-update.cjs');
 const { windowsFeed } = require('./win-update.cjs');
+const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, shouldShowUpdatePopup } = require('./vm-update.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -65,6 +66,11 @@ let win, backgroundWindow, telegramView, remoteView, apiServer, prefs, layout = 
 let extensionStore, extensionHost, extensionPopup, extensionPopupTabId, extensionActiveContentsId;
 let registeringExtensionTab = false;
 const update = { available: '', tag: '', ready: false, busy: false, error: '', justUpdatedFrom: '' };
+const vmUpdater = createVmUpdater({ log: (label, error) => logError(label, error) });
+// Per-VM progress while an update or retry runs; prefs.vmUpdates holds the
+// persistent record (known VM version / last failure) the retry banner reads.
+const vmProgress = {};
+let vmRetrying = false;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 const tabs = new Map();
 const vpsTabs = new Map();
@@ -111,7 +117,7 @@ const downloadStore = createDownloadStore({ getPreferences: () => prefs, savePre
 let pointerTimer, activityTimer, idleTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [],
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, vmUpdates: {},
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -240,7 +246,11 @@ function getState() {
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
-    update: { available: update.available, ready: update.ready, busy: update.busy, error: update.error, justUpdatedFrom: update.justUpdatedFrom },
+    update: { available: update.available, ready: update.ready, busy: update.busy, error: update.error, justUpdatedFrom: update.justUpdatedFrom,
+      popup: shouldShowUpdatePopup({ available: update.available, snoozedUntil: prefs.updateSnoozedUntil, now: Date.now(), busy: update.busy }),
+      snoozedUntil: prefs.updateSnoozedUntil || 0,
+      vms: vmTargets(prefs).map((target) => ({ id: target.id, label: target.label, ...(vmProgress[target.id] || {}) })),
+      vmRetry: vmRetryState(app.getVersion(), prefs.vmUpdates), vmRetrying },
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? app.isInApplicationsFolder() : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
@@ -582,10 +592,29 @@ async function openTelegramHash(hash) {
   watchChange({ read, delayMs: 1500, onStuck: () => { if (!wc.isDestroyed() && wc.getURL() === target) wc.reload(); } });
   await wc.loadURL(target).catch(() => {});
 }
+// Record what a VM update attempt produced so a relaunch can offer retry.
+function noteVmResult(result) {
+  const previous = prefs.vmUpdates?.[result.id] || {};
+  prefs.vmUpdates = { ...(prefs.vmUpdates || {}), [result.id]: result.ok
+    ? { version: result.version || '', failed: '' }
+    : { version: result.version || previous.version || '', failed: result.error || 'The VM update failed.' } };
+}
+// After relaunch (and at every start) each saved VM reports its checkout
+// version; a VM behind the app surfaces through update.vmRetry.
+async function checkVmVersions() {
+  for (const target of vmTargets(prefs)) {
+    const result = await vmUpdater.checkVm(target);
+    if (!result.ok) continue;
+    prefs.vmUpdates = { ...(prefs.vmUpdates || {}), [target.id]: { version: result.version || result.hostVersion || '', failed: '' } };
+  }
+  savePreferencesSoon(); broadcast();
+}
 // Offline or rate-limited checks stay quiet for the user; only the first failure is logged, and the next check retries.
 function startUpdates() {
   if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
   if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
+  if (prefs.updateSnoozedUntil) { prefs.updateSnoozedUntil = 0; savePreferencesSoon(); }
+  checkVmVersions().catch((error) => logError('vm-check', error));
   if (!app.isPackaged) return;
   let check;
   if (process.platform === 'win32') {
@@ -831,12 +860,44 @@ function registerIpc() {
       case 'mac-permissions': return process.platform === 'darwin' ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null;
       case 'open-mac-privacy': if (process.platform === 'darwin') shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${value.pane === 'screen' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility'}`); break;
       case 'update-now': {
-        if (process.platform === 'win32') { if (update.ready) require('electron-updater').autoUpdater.quitAndInstall(); break; }
-        if (!update.tag) break;
+        if (update.busy) break;
+        const tag = process.platform === 'win32' ? `v${update.available}` : update.tag;
+        if (process.platform === 'win32' ? !update.ready : !tag) break;
         update.busy = true; update.error = ''; broadcast();
-        try { await macUpdate.installMacUpdate({ tag: update.tag, bundlePath: path.resolve(process.execPath, '../../..') }); }
+        const targets = vmTargets(prefs);
+        for (const target of targets) vmProgress[target.id] = { state: 'updating' };
+        if (targets.length) broadcast();
+        // Every saved VM first, then this app. A VM failure or timeout is
+        // recorded for the retry banner and never blocks the app update.
+        try {
+          for (const result of await vmUpdater.updateAll(tag, targets)) {
+            vmProgress[result.id] = { state: result.state, error: result.error || '', version: result.version || '' };
+            noteVmResult(result); broadcast();
+          }
+          savePreferences();
+          if (process.platform === 'win32') { require('electron-updater').autoUpdater.quitAndInstall(); break; }
+          await macUpdate.installMacUpdate({ tag: update.tag, bundlePath: path.resolve(process.execPath, '../../..') });
+        }
         catch (error) { update.busy = false; update.error = error.message; broadcast(); throw error; }
         savePreferences(); app.relaunch(); app.exit(0); break;
+      }
+      case 'update-later': prefs.updateSnoozedUntil = snoozeUntil(Date.now()); savePreferences(); broadcast(); break;
+      case 'vm-update-retry': {
+        if (vmRetrying) break;
+        vmRetrying = true; broadcast();
+        const tag = `v${app.getVersion()}`;
+        try {
+          for (const target of vmTargets(prefs)) {
+            const entry = prefs.vmUpdates?.[target.id] || {};
+            if (!entry.failed && !(entry.version && macUpdate.isNewer(app.getVersion(), entry.version))) continue;
+            vmProgress[target.id] = { state: 'updating' }; broadcast();
+            const result = await vmUpdater.updateVm(target, tag);
+            vmProgress[target.id] = { state: result.state, error: result.error || '', version: result.version || '' };
+            noteVmResult(result); broadcast();
+          }
+          savePreferences();
+        } finally { vmRetrying = false; broadcast(); }
+        break;
       }
       case 'open-download-page': shell.openExternal(`https://openalan.com/download/${HOST_LABEL === 'windows' ? 'windows' : 'mac'}`); break;
       case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/v${app.getVersion()}`); break;
