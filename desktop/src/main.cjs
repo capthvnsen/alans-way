@@ -6,9 +6,9 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
-const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange } = require('./shell-support.cjs');
+const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
@@ -166,6 +166,17 @@ const prefsSaver = createSaver({
 });
 function savePreferences() { prefsSaver.flush(); }
 function savePreferencesSoon() { prefsSaver.schedule(); }
+// Onboarding and the path check need this computer's SSH address as the agent
+// machine reaches it; derive it from Tailscale while the field was never set
+// so a fresh install starts with a working answer. A saved value is never
+// touched, including a deliberately cleared one.
+function seedMacSshHost() {
+  if (typeof prefs.macSshHost === 'string') return;
+  let username = '';
+  try { username = os.userInfo().username; } catch {}
+  const host = tailscaleSshHost({ username });
+  if (host) prefs.macSshHost = host;
+}
 function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
@@ -839,16 +850,13 @@ async function authorizeComputerKey(host) {
   if (!helpers) return { ok: false, detail: 'The connect helper script is missing, so the computer key cannot be authorized on this computer.' };
   const run = await localRun('sh', ['-c', cloudConnect.authorizeKeyCommand(helpers), 'sh', key]);
   if (run.code !== 0) return { ok: false, detail: 'Could not authorize the computer key on this computer.' };
-  if (!(prefs.macSshHost || '').trim()) {
-    const cli = cloudConnect.tailscaleCli();
-    const ip = cli ? (await localRun(cli, ['ip', '-4'], { timeoutMs: 8000 })).out.trim().split('\n')[0] : '';
-    const user = process.env.USER || os.userInfo().username || '';
-    if (ip && user && isSshTarget(`${user}@${ip}`)) { prefs.macSshHost = `${user}@${ip}`; savePreferencesSoon(); }
-  }
+  seedMacSshHost();
+  savePreferencesSoon();
   return { ok: true };
 }
 // The saved VPS SSH path check, shared by Settings and the connect step.
 function testAgentPath() {
+  seedMacSshHost();
   const host = (prefs.vpsBrowser?.sshHost || '').trim();
   const mac = (prefs.macSshHost || '').trim();
   if (!host) throw new Error('Save a VPS browser SSH host first.');
@@ -1085,7 +1093,11 @@ function registerIpc() {
           if (sshHost && !isSshTarget(sshHost)) throw new Error('Enter the VPS SSH address as user@host or host, with no spaces or symbols.');
           const scriptPath = String(value.vpsBrowser.scriptPath || '').trim();
           if (scriptPath && checkScriptPath(scriptPath)) throw new Error(checkScriptPath(scriptPath));
+          // When the VM's SSH address moves to a different host, the noVNC
+          // viewer follows unless remoteUrl was deliberately pointed elsewhere.
+          const followed = followVmRemoteUrl(prefs.vpsBrowser.sshHost, sshHost, prefs.remoteUrl);
           prefs.vpsBrowser={sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}; if(!sshHost)prefs.vmUpdates={}; vpsBrowserStatus='connecting'; refreshVpsTabs();
+          if (followed) { prefs.remoteUrl = followed; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         }
         if (Number.isFinite(value.agentIdleMinutes)) prefs.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
@@ -1124,6 +1136,7 @@ function registerIpc() {
         const botId = String(value?.botId || prefs.selectedBotId || '').replace(/[^0-9A-Za-z_-]/g, '');
         if (!botId) throw new Error('Select a bot first. Its ID goes in the agent config.');
         const bot = prefs.bots.find(item => item.id === botId);
+        seedMacSshHost();
         const macSsh = (prefs.macSshHost || '').trim();
         const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
         clipboard.writeText([
@@ -1136,6 +1149,7 @@ function registerIpc() {
       }
       case 'agent-prompt': {
         const botId = String(value?.botId || prefs.selectedBotId || '').replace(/[^0-9A-Za-z_-]/g, '');
+        seedMacSshHost();
         const text = buildAgentPrompt({ kind: value?.kind === 'update' ? 'update' : 'setup', hostLabel: HOST_LABEL, version: app.getVersion(),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, botId, sshHost: (prefs.macSshHost || '').trim() });
         if (value?.copy !== false) clipboard.writeText(text);
@@ -1190,7 +1204,7 @@ function registerIpc() {
       case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/v${app.getVersion()}`); break;
       case 'dismiss-updated': update.justUpdatedFrom = ''; break;
       case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;
-      case 'onboarding-open': prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; savePreferences(); applyLayout(); break;
+      case 'onboarding-open': prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; seedMacSshHost(); savePreferences(); applyLayout(); break;
       case 'cloud-claim-code': {
         const token = cloudClaim.claimToken(value.code);
         if (!token) throw new Error('That does not look like a claim code or claim link.');
@@ -2143,7 +2157,7 @@ function createWindow() {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(async () => {
-    prefs = readPreferences(); prefs.remoteControl = false; pinOnboarding(prefs);
+    prefs = readPreferences(); prefs.remoteControl = false; pinOnboarding(prefs); seedMacSshHost();
     // A cold start launched by the claim link (Windows/Linux) carries the URL in argv.
     for (const arg of process.argv) claimTokens.push(cloudClaim.parseClaimUrl(arg));
     // A session already stored means onboarding was in progress: resume it.
