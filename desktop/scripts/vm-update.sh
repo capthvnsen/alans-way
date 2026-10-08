@@ -484,7 +484,12 @@ EOF
 
 PLUGIN_REMOTE="${ALANS_WAY_VM_PLUGIN_REMOTE:-https://github.com/capthvnsen/alans-way-agents}"
 
-bounded() { _s="$1"; shift; if have timeout; then timeout "$_s" "$@"; else "$@"; fi; }
+bounded() {
+  _s="$1"; shift
+  if have timeout; then timeout "$_s" "$@"
+  elif have perl; then perl -e 'alarm shift; exec @ARGV' "$_s" "$@"
+  else "$@"; fi
+}
 
 # The setup.sh a profile was installed with: ~/alans-way-agents first (where
 # the setup prompt clones it), else the clone its file:// plugin source names.
@@ -513,8 +518,11 @@ const profiles = dirs.map((d) => {
   });
   const backend = read(`${d}/backend`);
   const lines = read(`${d}/verify`).split("\n");
-  const verify = has(`${d}/out-of-time`) ? { ran: false, reason: "time" }
-    : has(`${d}/verify`) ? { ran: true, fails: pick(lines, "FAIL"), warns: pick(lines, "warn") }
+  const code = Number(read(`${d}/verify-exit`)) || 0;
+  const fails = pick(lines, "FAIL");
+  if (code && !fails.length && code !== 124 && code !== 142) fails.push(`setup.sh --verify stopped early (exit ${code})`);
+  const verify = has(`${d}/out-of-time`) || code === 124 || code === 142 ? { ran: false, reason: "time" }
+    : has(`${d}/verify`) ? { ran: true, fails, warns: pick(lines, "warn") }
     : { ran: false, reason: "no-setup" };
   return { profile: read(`${d}/name`), computerBackend: /^[a-z0-9_-]+$/i.test(backend) && !/^(none|null)$/i.test(backend) ? backend : "", plugins, verify };
 });
@@ -551,6 +559,7 @@ doctor() {
       if [ "$(budget_left)" -le 10 ]; then touch "$_d/out-of-time"; continue; fi
       if [ "$_pname" = default ]; then set -- --verify --hermes-home "$HHOME"; else set -- --verify --hermes-home "$HHOME" --profile "$_pname"; fi
       bounded "$(( $(budget_left) - 5 ))" sh "$_setup" "$@" > "$_d/verify" 2>&1 </dev/null
+      printf '%s' "$?" > "$_d/verify-exit"
     done <<EOF
 $(list_profiles)
 EOF

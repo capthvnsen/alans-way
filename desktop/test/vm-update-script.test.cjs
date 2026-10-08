@@ -951,12 +951,12 @@ echo "unexpected call: $*"; exit 2
 `;
 // A setup.sh at $HOME/alans-way-agents (HOME is the data dir in envFor) that
 // prints the given lines and records its arguments.
-function addSetupScript(homeDir, lines) {
+function addSetupScript(homeDir, lines, exitCode = 0) {
   const dir = path.join(homeDir, 'alans-way-agents');
   fs.mkdirSync(dir, { recursive: true });
   const log = path.join(dir, 'calls.log');
   fs.writeFileSync(path.join(dir, 'setup.sh'),
-    `#!/bin/sh\necho "$@" >> "${log}"\n${lines.map((line) => `echo '${line}'`).join('\n')}\n`, { mode: 0o755 });
+    `#!/bin/sh\necho "$@" >> "${log}"\n${lines.map((line) => `echo '${line}'`).join('\n')}\nexit ${exitCode}\n`, { mode: 0o755 });
   return () => fs.readFileSync(log, 'utf8');
 }
 function doctorFixture() {
@@ -981,7 +981,7 @@ test('--doctor reports versions, plugin rows, the newest plugin tag and the setu
   fs.writeFileSync(path.join(state, 'noise'), '');
   const port = await makeStatus({ version: '0.3.1', busy: false });
   const data = makeDataDir(port);
-  const setupCalls = addSetupScript(data, ['  ok   plugin enabled', '  FAIL browser host not running', '  warn no primary route bound']);
+  const setupCalls = addSetupScript(data, ['  ok   plugin enabled', '  FAIL browser host not running', '  warn no primary route bound'], 1);
   const pluginRemote = git(makePluginClone(), 'remote', 'get-url', 'origin').trim();
   const res = await runScript(['--doctor'], envFor(checkout, data, bin, { ...pluginEnv(home, state), ALANS_WAY_VM_PLUGIN_REMOTE: pluginRemote }));
   assert.equal(res.status, 0, res.stderr);
@@ -1033,3 +1033,21 @@ test('--doctor without setup.sh says so, and an unset backend printed as None co
   assert.equal(result.profiles[0].computerBackend, '');
   assert.deepEqual(result.profiles[0].verify, { ran: false, reason: 'no-setup' });
 });
+
+for (const [label, lines, code, expected] of [
+  ['exits 124 (timed out)', ['  ok   plugin enabled'], 124, { ran: false, reason: 'time' }],
+  ['exits non-zero without a FAIL line', ['  ok   plugin enabled'], 3, { ran: true, fails: ['setup.sh --verify stopped early (exit 3)'], warns: [] }],
+]) {
+  test(`--doctor: a setup.sh --verify that ${label} is not reported as a clean pass`, async () => {
+    const checkout = makeCheckout(remote);
+    const { bin, state, home } = doctorFixture();
+    addPlugin(home, 'default', 'alans-way', '0.6.0');
+    const port = await makeStatus({ version: '0.3.1', busy: false });
+    const data = makeDataDir(port);
+    addSetupScript(data, lines, code);
+    const res = await runScript(['--doctor'], envFor(checkout, data, bin, {
+      ...pluginEnv(home, state), ALANS_WAY_VM_PLUGIN_REMOTE: path.join(os.tmpdir(), 'no-such-remote') }));
+    assert.equal(res.status, 0, res.stderr);
+    assert.deepEqual(lastJson(res).profiles[0].verify, expected);
+  });
+}
