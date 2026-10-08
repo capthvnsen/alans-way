@@ -17,6 +17,7 @@
 #
 #   sh vm-update.sh v0.3.2    update to the tag, restart broker + plugins
 #   sh vm-update.sh --check   read-only: print the checkout/live versions
+#   sh vm-update.sh --doctor  read-only: one JSON health report for Check setup
 #
 # Checkout discovery matches setup.sh: a root install lives at
 # /opt/hermes-alans-way/browser, a user install at
@@ -34,9 +35,10 @@
 # Everything above it is progress; "vm-update: <phase>" lines map to UI text.
 set -u
 
-TAG="" CHECK=0
+TAG="" CHECK=0 DOCTOR=0
 case "${1:-}" in
   --check) CHECK=1;;
+  --doctor) DOCTOR=1;;
   -h|--help)
     # $0 is 'sh' when the app pipes this script via 'sh -s', so the usage text
     # is embedded rather than read back out of the script file.
@@ -46,6 +48,7 @@ release tag, restart the tab broker and verify it answers with that version.
 
   sh vm-update.sh v0.3.2    update to the tag and restart the browser host
   sh vm-update.sh --check   read-only: print the checkout/live versions
+  sh vm-update.sh --doctor  read-only: a health report for the app's Check setup
 
 The desktop app pipes this script over SSH, so nothing is installed on the VM
 and no file is left behind. It only ever touches the checkout setup.sh
@@ -473,6 +476,102 @@ EOF
   fi
 }
 
+# --- doctor -------------------------------------------------------------------
+# Read-only health report for the app's Check setup. Nothing here changes the
+# machine: hermes only gets `plugins check-updates --json` and `config get`,
+# setup.sh only runs --verify, git only lists remote tags. The shell gathers
+# raw pieces into a temp dir and node turns them into the one JSON line.
+
+PLUGIN_REMOTE="${ALANS_WAY_VM_PLUGIN_REMOTE:-https://github.com/capthvnsen/alans-way-agents}"
+
+bounded() {
+  _s="$1"; shift
+  if have timeout; then timeout "$_s" "$@"
+  elif have perl; then perl -e 'alarm shift; exec @ARGV' "$_s" "$@"
+  else "$@"; fi
+}
+
+# The setup.sh the server was installed with: ~/alans-way-agents first (where
+# the setup prompt clones it), else the clone a profile's file:// plugin source names.
+doctor_setup_script() {
+  if [ -f "$HOME/alans-way-agents/setup.sh" ]; then printf '%s' "$HOME/alans-way-agents/setup.sh"; return 0; fi
+  _ds="$(plugin_meta "$1/plugins" alans-way | sed -n 's|.*"source"[[:space:]]*:[[:space:]]*"file://\([^"#]*\).*|\1|p' | head -1)"
+  [ -n "$_ds" ] && [ -f "$_ds/setup.sh" ] && printf '%s' "$_ds/setup.sh"
+}
+
+DOCTOR_JS='
+const fs = require("fs"), path = require("path");
+const [work, version] = process.argv.slice(1);
+const has = (f) => fs.existsSync(path.join(work, f));
+const read = (f) => { try { return fs.readFileSync(path.join(work, f), "utf8").trim(); } catch { return ""; } };
+const array = (text) => {
+  const a = text.search(/^\[/m), b = text.lastIndexOf("]");
+  try { return a < 0 || b < a ? [] : JSON.parse(text.slice(a, b + 1)); } catch { return []; }
+};
+const pick = (lines, tag) => lines.map((l) => l.match(new RegExp("^\\s*" + tag + " (.*)$"))).filter(Boolean).map((m) => m[1].trim());
+const dirs = fs.readdirSync(work).filter((d) => /^p\d+$/.test(d)).sort((a, b) => a.slice(1) - b.slice(1));
+const profiles = dirs.map((d) => {
+  const updates = array(read(`${d}/updates.json`));
+  const plugins = ["alans-way", "alans-way-computer"].filter((n) => has(`${d}/version.${n}`)).map((name) => {
+    const row = updates.find((u) => u && u.name === name) || {};
+    return { name, version: read(`${d}/version.${name}`), class: String(row.class || ""), updateAvailable: typeof row.update_available === "boolean" ? row.update_available : null };
+  });
+  const backend = read(`${d}/backend`);
+  return { profile: read(`${d}/name`), computerBackend: /^[a-z0-9_-]+$/i.test(backend) && !/^(none|null)$/i.test(backend) ? backend : "", plugins, checked: !has(`${d}/out-of-time`) };
+});
+const lines = read("verify").split("\n");
+const code = Number(read("verify-exit")) || 0;
+const fails = pick(lines, "FAIL");
+if (code && !fails.length && code !== 124 && code !== 142) fails.push(`setup.sh --verify stopped early (exit ${code})`);
+const verify = has("verify-out-of-time") || code === 124 || code === 142 ? { ran: false, reason: "time" }
+  : has("verify") ? { ran: true, fails, warns: pick(lines, "warn") }
+  : { ran: false, reason: "no-setup" };
+process.stdout.write(JSON.stringify({ ok: true, version, hostVersion: read("hostVersion"), pluginTag: read("pluginTag"), error: "", verify, profiles }) + "\n");
+'
+
+doctor() {
+  VM_BUDGET="${ALANS_WAY_VM_DOCTOR_BUDGET:-100}"
+  node_bin || fail "node is not installed on this server"
+  WORK="$(mktemp -d)" || fail "could not create a temp dir"
+  trap 'rm -rf "$WORK"' EXIT
+  BODY="$(status_body)" || BODY=""
+  printf '%s' "$BODY" | json_field version > "$WORK/hostVersion"
+  bounded 15 "$GIT" ls-remote --tags --refs "$PLUGIN_REMOTE" 2>/dev/null \
+    | sed -n 's|.*refs/tags/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$|\1|p' \
+    | sort -t. -k1.2n -k2n -k3n | tail -1 > "$WORK/pluginTag"
+  if hermes_bin; then
+    HHOME="${HERMES_HOME:-$HOME/.hermes}"
+    _i=0
+    _setup="$(doctor_setup_script "$HHOME")"
+    while read -r _pname _phome; do
+      [ -n "$_pname" ] || continue
+      [ -d "$_phome/plugins/alans-way" ] || [ -d "$_phome/plugins/alans-way-computer" ] || continue
+      _i=$((_i + 1)); _d="$WORK/p$_i"; mkdir -p "$_d"
+      printf '%s' "$_pname" > "$_d/name"
+      for _name in alans-way alans-way-computer; do
+        [ -d "$_phome/plugins/$_name" ] && plugin_version "$_phome/plugins/$_name" > "$_d/version.$_name"
+      done
+      [ -n "$_setup" ] || _setup="$(doctor_setup_script "$_phome")"
+      if [ "$(budget_left)" -le 20 ]; then touch "$_d/out-of-time"; continue; fi
+      if [ "$_pname" = default ]; then set --; else set -- -p "$_pname"; fi
+      run_hermes 30 "$@" plugins check-updates --json > "$_d/updates.json"
+      run_hermes 15 "$@" config get computer_use.backend | tail -1 > "$_d/backend"
+    done <<EOF
+$(list_profiles)
+EOF
+    # One audit for the whole server: without --profile, setup.sh --verify
+    # already covers the default home and every profile that has a bot.
+    if [ -n "$_setup" ]; then
+      if [ "$(budget_left)" -le 10 ]; then touch "$WORK/verify-out-of-time"
+      else
+        bounded "$(( $(budget_left) - 5 ))" sh "$_setup" --verify --hermes-home "$HHOME" > "$WORK/verify" 2>&1 </dev/null
+        printf '%s' "$?" > "$WORK/verify-exit"
+      fi
+    fi
+  fi
+  "$NODE_BIN" -e "$DOCTOR_JS" "$WORK" "$VERSION"
+}
+
 # ---------------------------------------------------------------- main
 DIR="$(find_checkout)" \
   || fail "no browser host checkout found (expected /opt/hermes-alans-way/browser or ~/.local/share/hermes-alans-way/app)"
@@ -486,6 +585,7 @@ if [ "$CHECK" = 1 ]; then
   printf '{"ok":true,"version":"%s","hostVersion":"%s","busy":%s,"error":""}\n' "$VERSION" "$HOST_VERSION" "$HOST_BUSY"
   exit 0
 fi
+if [ "$DOCTOR" = 1 ]; then doctor; exit 0; fi
 
 printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
   || fail "refusing non-release tag '$TAG' (need vX.Y.Z)"

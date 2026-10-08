@@ -15,6 +15,7 @@ const TAG_RE = /^v\d+\.\d+\.\d+$/;
 const SSH_OPTIONS = ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes'];
 const VM_TIMEOUT_MS = 300000;
 const CHECK_TIMEOUT_MS = 30000;
+const DOCTOR_TIMEOUT_MS = 120000;
 // A remote-side cap a little under VM_TIMEOUT_MS: killing the local ssh does
 // not reliably kill a piped `sh -s` (no TTY, no SIGHUP), so where timeout(1)
 // exists the guest run terminates instead of orphaning an npm ci.
@@ -71,24 +72,26 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
     return /win32/.test(probe.out) ? 'windows' : 'posix';
   }
 
-  function remoteFor(kind, { tag, check }) {
+  function remoteFor(kind, { tag, check, doctor }) {
     if (kind === 'windows') {
       const setting = check ? 'ALANS_WAY_VM_CHECK=1' : `ALANS_WAY_VM_TAG=${tag}`;
       // cmd exists under every Windows sshd shell (cmd, PowerShell, Git Bash).
       return { script: SCRIPTS.windows, remote: `cmd /d /c "set ${setting}&& powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command -"` };
     }
+    if (doctor) return { script: SCRIPTS.posix, remote: 'sh -s -- --doctor' };
     if (check) return { script: SCRIPTS.posix, remote: 'sh -s -- --check' };
     const timeoutJson = `printf '%s\\n' '{"ok":false,"version":"","restarted":false,"error":"the update timed out on the VM"}'`;
     return { script: SCRIPTS.posix,
       remote: `if command -v timeout >/dev/null 2>&1; then timeout ${VM_TIMEOUT_REMOTE_S} sh -s -- ${tag}; rc=$?; if [ "$rc" -eq 124 ]; then ${timeoutJson}; fi; exit "$rc"; else exec sh -s -- ${tag}; fi` };
   }
 
-  async function runGuest(vm, { tag, check = false, timeoutMs = VM_TIMEOUT_MS, onProgress } = {}) {
+  async function runGuest(vm, { tag, check = false, doctor = false, timeoutMs = VM_TIMEOUT_MS, onProgress } = {}) {
     const host = String(vm.sshHost || '').trim();
     if (!isSshTarget(host)) return { ok: false, state: 'failed', error: 'The saved VM SSH address is invalid. Re-enter it as user@host or host.' };
-    if (!check && !TAG_RE.test(String(tag))) return { ok: false, state: 'failed', error: `Refusing non-release tag "${tag}".` };
+    if (!check && !doctor && !TAG_RE.test(String(tag))) return { ok: false, state: 'failed', error: `Refusing non-release tag "${tag}".` };
     const kind = await guestKind(vm);
-    const { script, remote } = remoteFor(kind, { tag, check });
+    if (doctor && kind === 'windows') return { ok: false, error: 'windows' };
+    const { script, remote } = remoteFor(kind, { tag, check, doctor });
     let text;
     try { text = readScript(script); } catch { return { ok: false, state: 'failed', error: `The bundled ${script} is missing; reinstall the app.` }; }
     // The guest script narrates phases as "vm-update: <text>" lines; forward the
@@ -105,6 +108,8 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
     } : undefined;
     const res = await ssh(host, remote, { input: text, timeoutMs, onStdout });
     const result = parseResultLine(res.out) || {};
+    if (doctor && !Object.keys(result).length) return { ok: false, error: res.code === null ? 'The server check ran out of time.'
+      : `The server check stopped without a report: ${tail(`${res.out}\n${res.err}`) || `exit ${res.code}`}` };
     if (res.code !== 0 && !Object.keys(result).length)
       return { ok: false, state: 'failed', error: `Could not reach the VM over SSH. ${tail(res.err) || `exit ${res.code}`}` };
     return result;
@@ -138,6 +143,17 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
     }
   }
 
+  // Read-only health report for Check setup. Never throws: a failure is a result.
+  async function doctorVm(vm) {
+    try {
+      const result = await runGuest(vm, { doctor: true, timeoutMs: DOCTOR_TIMEOUT_MS });
+      return result.ok === true ? result : { ok: false, error: String(result.error || 'The server check failed.') };
+    } catch (error) {
+      log('vm-doctor', error);
+      return { ok: false, error: tail(error.message) || 'The server check failed.' };
+    }
+  }
+
   async function updateAll(tag, targets, onProgress) {
     return Promise.all((targets || []).map(async (vm) => ({ id: vm.id, label: vm.label, ...(await updateVm(vm, tag, onProgress)) })));
   }
@@ -150,7 +166,7 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
     return { vms, app };
   }
 
-  return { updateVm, checkVm, updateAll, updateAppAndVms };
+  return { updateVm, checkVm, doctorVm, updateAll, updateAppAndVms };
 }
 
 function shouldShowUpdatePopup({ available, snoozedUntil, now, busy } = {}) {
@@ -243,4 +259,4 @@ function vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd } = {}) {
   return lines;
 }
 
-module.exports = { createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, vmPhaseText, pluginStatusText, vmPluginLines, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS, TAG_RE };
+module.exports = { createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, vmPhaseText, pluginStatusText, vmPluginLines, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS, DOCTOR_TIMEOUT_MS, TAG_RE };
