@@ -12,6 +12,7 @@ import os
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from collections import OrderedDict
 
@@ -941,20 +942,160 @@ def cmd_menu(req):
     return {'ok': True, 'items': out}
 
 
-def capture(wid, cap):
-    base = ['import', '-window', wid]
+def pnm_size(data):
+    """(width, height) of a PBM/PGM/PPM stream, or None."""
+    tokens, i = [], 0
+    while len(tokens) < 4 and i < len(data):
+        if data[i:i + 1].isspace():
+            i += 1
+        elif data[i:i + 1] == b'#':
+            i = data.find(b'\n', i)
+            if i < 0:
+                return None
+        else:
+            end = i
+            while end < len(data) and not data[end:end + 1].isspace():
+                end += 1
+            tokens.append(data[i:end])
+            i = end
+    if len(tokens) == 4 and tokens[0] in (b'P5', b'P6'):
+        try:
+            return int(tokens[1]), int(tokens[2])
+        except ValueError:
+            pass
+    return None
+
+
+def to_jpeg(raw, kind, cap):
+    """Capture bytes to a capped JPEG via Pillow, netpbm, or ffmpeg; None when none can."""
     try:
-        data = subprocess.check_output(base + ['-resize', f'{cap}x>', '-quality', '55', 'jpeg:-'], stderr=subprocess.DEVNULL, timeout=10)
+        import io
+        from PIL import Image
+        image = Image.open(io.BytesIO(raw)).convert('RGB')
+        if image.width > cap:
+            image = image.resize((cap, max(1, round(image.height * cap / image.width))))
+        out = io.BytesIO()
+        image.save(out, 'JPEG', quality=55)
+        return out.getvalue()
+    except Exception:
+        pass
+    decoder = {'png': 'pngtopnm', 'xwd': 'xwdtopnm'}.get(kind)
+    if decoder:
+        try:
+            pnm = subprocess.run([decoder], input=raw, stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, timeout=10, check=True).stdout
+            size = pnm_size(pnm)
+            if size and size[0] > cap:
+                try:
+                    pnm = subprocess.run(['pnmscale', '-width', str(cap)], input=pnm,
+                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10, check=True).stdout
+                except (subprocess.SubprocessError, OSError):
+                    pass
+            data = subprocess.run(['pnmtojpeg', '-quality=55'], input=pnm,
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10, check=True).stdout
+            if jpeg_size(data):
+                return data
+        except (subprocess.SubprocessError, OSError):
+            pass
+    if kind == 'png':
+        try:
+            done = subprocess.run(
+                ['ffmpeg', '-loglevel', 'error', '-f', 'png_pipe', '-i', 'pipe:0',
+                 '-frames:v', '1', '-vf', f"scale='min(iw,{cap})':-2", '-f', 'mjpeg', 'pipe:1'],
+                input=raw, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15)
+            if done.returncode == 0 and jpeg_size(done.stdout):
+                return done.stdout
+        except (subprocess.SubprocessError, OSError):
+            pass
+    return None
+
+
+def magick_capture(wid, cap):
+    try:
+        return subprocess.check_output(
+            ['import', '-window', wid, '-resize', f'{cap}x>', '-quality', '55', 'jpeg:-'],
+            stderr=subprocess.DEVNULL, timeout=10)
     except FileNotFoundError:
-        fail('ImageMagick is not installed.', 'unsupported_action')
+        return None
     except (subprocess.SubprocessError, OSError):
         try:
-            png = subprocess.check_output(base + ['png:-'], stderr=subprocess.DEVNULL, timeout=10)
-            data = subprocess.run(['convert', 'png:-', '-resize', f'{cap}x>', '-quality', '55', 'jpeg:-'],
+            png = subprocess.check_output(['import', '-window', wid, 'png:-'], stderr=subprocess.DEVNULL, timeout=10)
+            return subprocess.run(['convert', 'png:-', '-resize', f'{cap}x>', '-quality', '55', 'jpeg:-'],
                                   input=png, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10, check=True).stdout
         except (subprocess.SubprocessError, OSError):
-            fail('Could not capture that window.')
-    size = jpeg_size(data)
+            return None
+
+
+def xwd_capture(wid, cap):
+    """xwd reads the window by id, so it still works on an offscreen window."""
+    try:
+        raw = subprocess.check_output(['xwd', '-silent', '-id', str(wid)], stderr=subprocess.DEVNULL, timeout=10)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return to_jpeg(raw, 'xwd', cap)
+
+
+def screen_box(geo):
+    """The window's on-screen rectangle for grab tools that cannot read a window id."""
+    try:
+        x, y, w, h = (int(float(geo[key])) for key in ('X', 'Y', 'WIDTH', 'HEIGHT'))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if x < 0:
+        w, x = w + x, 0
+    if y < 0:
+        h, y = h + y, 0
+    return (x, y, w, h) if w > 0 and h > 0 else None
+
+
+def scrot_capture(box, cap):
+    fd, tmp = tempfile.mkstemp(suffix='.png')
+    try:
+        os.close(fd)
+        try:
+            subprocess.run(['scrot', '-a', ','.join(map(str, box)), '-o', tmp],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=True)
+            with open(tmp, 'rb') as handle:
+                raw = handle.read()
+        except (subprocess.SubprocessError, OSError):
+            return None
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    return to_jpeg(raw, 'png', cap)
+
+
+def ffmpeg_capture(box, cap):
+    """x11grab the window's screen rectangle when scrot is absent too."""
+    display = os.environ.get('DISPLAY', '')
+    host, sep, num = display.rpartition(':')
+    if not sep or not num:
+        return None
+    if '.' not in num:
+        num += '.0'
+    x, y, w, h = box
+    try:
+        done = subprocess.run(
+            ['ffmpeg', '-loglevel', 'error', '-f', 'x11grab', '-video_size', f'{w}x{h}',
+             '-i', f'{host}:{num}+{x},{y}', '-frames:v', '1', '-vf', f"scale='min(iw,{cap})':-2",
+             '-f', 'mjpeg', 'pipe:1'],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15)
+        return done.stdout if done.returncode == 0 else None
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
+def capture(wid, cap, geo):
+    data = magick_capture(wid, cap)
+    if not jpeg_size(data or b''):
+        data = xwd_capture(wid, cap)
+    if not jpeg_size(data or b''):
+        box = screen_box(geo or {})
+        if box:
+            data = scrot_capture(box, cap) or ffmpeg_capture(box, cap)
+    size = jpeg_size(data or b'')
     if not size:
         fail('Could not capture that window.')
     return data, size
@@ -971,7 +1112,7 @@ def cmd_shot(req):
         cap = min(max(int(req.get('maxWidth', 960)), 320), 1280)
     except (TypeError, ValueError):
         cap = 960
-    data, (width, height) = capture(wid, cap)
+    data, (width, height) = capture(wid, cap, geo)
     return {
         'ok': True, 'image': base64.b64encode(data).decode('ascii'), 'imageWidth': width, 'imageHeight': height,
         'windowX': float(geo.get('X', '0')), 'windowY': float(geo.get('Y', '0')),
@@ -1005,6 +1146,8 @@ def cmd_selftest(req):
     check(xdotool_key('n', ['control', 'shift']) == 'ctrl+shift+n' and xdotool_key('pagedown', []) == 'Next', 'keys')
     check(menu_norm('&Save As…') == 'save as' and menu_norm('Open...') == 'open', 'menu titles')
     check(jpeg_size(b'\xff\xd8\xff\xc0\x00\x11\x08\x00\x10\x00\x20' + b'\x00' * 12) == (32, 16), 'jpeg size')
+    check(pnm_size(b'P6\n4 2\n255\n') == (4, 2) and pnm_size(b'P6\n4 2\n255\n#comment\n') == (4, 2)
+          and pnm_size(b'junk') is None, 'pnm size')
     check(fair_take([[1, 2, 3], [4], [5, 6]], 5) == [[1, 2], [4], [5, 6]], 'fair take')
     check(len(role_rule()) == 4, 'role rule')
     store = OrderedDict()
