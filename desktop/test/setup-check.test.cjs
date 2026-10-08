@@ -25,16 +25,16 @@ test('an older connector copy is stale; same, newer, missing and unreadable copi
 });
 
 test('the bundled connector counts as reachable only where the router looks for it', () => {
-  const reachable = (platform, execPath, isPackaged = true) => bundledConnectorReachable({ platform, isPackaged, execPath, home: '/home/me' });
+  const reachable = (platform, execPath, isPackaged = true) => bundledConnectorReachable({ platform, isPackaged, execPath, home: '/home/you' });
   assert.equal(reachable('darwin', '/Applications/Open Alan.app/Contents/MacOS/Open Alan'), true);
   assert.equal(reachable('darwin', '/Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp'), true);
-  assert.equal(reachable('darwin', '/Users/me/Downloads/Open Alan.app/Contents/MacOS/Open Alan'), false);
-  assert.equal(reachable('darwin', '/Users/me/Applications/Open Alan.app/Contents/MacOS/Open Alan'), false, '~/Applications is not on the router list');
+  assert.equal(reachable('darwin', '/Users/you/Downloads/Open Alan.app/Contents/MacOS/Open Alan'), false);
+  assert.equal(reachable('darwin', '/Users/you/Applications/Open Alan.app/Contents/MacOS/Open Alan'), false, '~/Applications is not on the router list');
   assert.equal(reachable('darwin', '/Applications/Open Alan 2.app/Contents/MacOS/Open Alan'), false, 'a renamed bundle');
   assert.equal(reachable('darwin', '/Applications/Open Alan.app/Contents/MacOS/Open Alan', false), false, 'a dev run');
   assert.equal(reachable('linux', '/opt/alans-way-localapp-linux-x64/alans-way-localapp'), true);
-  assert.equal(reachable('linux', '/home/me/.local/share/alans-way-localapp/alans-way-localapp'), true);
-  assert.equal(reachable('linux', '/home/me/Downloads/alans-way-localapp-linux-x64/alans-way-localapp'), false);
+  assert.equal(reachable('linux', '/home/you/.local/share/alans-way-localapp/alans-way-localapp'), true);
+  assert.equal(reachable('linux', '/home/you/Downloads/alans-way-localapp-linux-x64/alans-way-localapp'), false);
   assert.equal(reachable('linux', '/opt/alans-way-localapp/alans-way-localapp', false), false, 'a dev run');
   assert.equal(reachable('win32', 'C:\\Program Files\\Open Alan\\Open Alan.exe'), false);
 });
@@ -164,7 +164,7 @@ test('a server without the app installed points at the setup prompt', () => {
 const { redactReport, buildReport } = require('../src/setup-check.cjs');
 
 test('redactReport removes each secret shape and keeps addresses, versions and hashes', () => {
-  const token = '123456789:AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc';
+  const token = '123456789:AAFakeTokenForRedactionTestsOnly_123';
   const text = [
     `GET https://api.telegram.org/bot${token}/getUpdates failed`,
     `TELEGRAM_BOT_TOKEN=${token}`,
@@ -172,13 +172,13 @@ test('redactReport removes each secret shape and keeps addresses, versions and h
     'Authorization: Bearer abc.def.ghi',
     'curl -H "Bearer zzz-123"',
     'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwx',
-    '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----',
-    'server root@100.64.0.5, app 0.4.0, plugin ce51733b66291e69f616db48ae8799c0de50db43',
+    '-----BEGIN OPENSSH ' + 'PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----',
+    'server root@192.0.2.5, app 0.4.0, plugin ce51733b66291e69f616db48ae8799c0de50db43',
   ].join('\n');
   const out = redactReport(text);
   for (const secret of [token, 'e3b0c44298fc1c149afb', 'abc.def.ghi', 'zzz-123', 'sk-proj-abcdefghijklmnopqrstuvwx', 'b3BlbnNzaC1rZXk'])
     assert.equal(out.includes(secret), false, `${secret} leaked`);
-  assert.match(out, /root@100\.64\.0\.5/);
+  assert.match(out, /root@192\.0\.2\.5/);
   assert.match(out, /app 0\.4\.0/);
   assert.match(out, /ce51733b66291e69f616db48ae8799c0de50db43/);
 });
@@ -197,7 +197,7 @@ test('redactReport removes the token, password, key and header shapes that slipp
     ['{"Authorization": "token json-auth-secret"}', 'json-auth-secret'],
     ['curl -H "authorization: bearer lower-auth-secret"', 'lower-auth-secret'],
     ['fetch failed with bearer lower-bearer-secret', 'lower-bearer-secret'],
-    ['bot12345678901234:AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc/getMe', 'AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc'],
+    ['bot12345678901234:AAFakeTokenForRedactionTestsOnly_123/getMe', 'AAFakeTokenForRedactionTestsOnly_123'],
   ]) {
     const out = redactReport(text);
     for (const secret of secrets) assert.equal(out.includes(secret), false, `${secret} leaked from ${text} as ${out}`);
@@ -215,25 +215,25 @@ test('redactReport leaves the next line and plain words about keys and tokens al
 const appInfo = { version: '0.4.0', platform: 'darwin', arch: 'arm64', osVersion: '15.6', signed: true };
 
 test('buildReport lists the setup, the last check and the newest log lines, redacted', () => {
-  const log = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n') + '\nbot123456789:AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc oops';
+  const log = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n') + '\nbot123456789:AAFakeTokenForRedactionTestsOnly_123 oops';
   const findings = [
     { group: 'computer', level: 'ok', title: 'Signed in to Telegram', fix: '', action: null },
     { group: 'server', level: 'fail', title: 'The server is on an older version', fix: 'Server 0.3.2, this app 0.4.0.', action: 'update-server' }];
-  const report = buildReport({ now: new Date('2026-10-08T16:00:00Z'), app: appInfo, serverAddress: 'root@100.64.0.5', computerAddress: 'me@100.64.0.6',
+  const report = buildReport({ now: new Date('2026-10-08T16:00:00Z'), app: appInfo, serverAddress: 'root@192.0.2.5', computerAddress: 'me@192.0.2.6',
     findings, checkedAt: '2026-10-08T15:59:00Z', server: { ok: true, version: '0.3.2' }, errorLog: log });
   assert.match(report, /^Open Alan report, 2026-10-08T16:00:00\.000Z$/m);
   assert.match(report, /App 0\.4\.0 on darwin arm64 \(15\.6\), signed build/);
-  assert.match(report, /Server address: root@100\.64\.0\.5/);
+  assert.match(report, /Server address: root@192\.0\.2\.5/);
   assert.match(report, /✓ This computer: Signed in to Telegram$/m);
   assert.match(report, /✗ Server: The server is on an older version \(Server 0\.3\.2, this app 0\.4\.0\.\)/);
   assert.match(report, /"version":"0\.3\.2"/);
   assert.doesNotMatch(report, /line 11$/m, 'only the last 50 log lines');
   assert.match(report, /line 12$/m);
-  assert.doesNotMatch(report, /AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc/);
+  assert.doesNotMatch(report, /AAFakeTokenForRedactionTestsOnly_123/);
 });
 
 test('buildReport removes a private key that straddles the 50-line cut', () => {
-  const log = [...Array.from({ length: 5 }, (_, i) => `before ${i}`), '-----BEGIN OPENSSH PRIVATE KEY-----',
+  const log = [...Array.from({ length: 5 }, (_, i) => `before ${i}`), '-----BEGIN OPENSSH ' + 'PRIVATE KEY-----',
     ...Array.from({ length: 5 }, (_, i) => `keybody${i}secret`), '-----END OPENSSH PRIVATE KEY-----',
     ...Array.from({ length: 45 }, (_, i) => `after ${i}`)].join('\n');
   const report = buildReport({ app: appInfo, serverAddress: '', computerAddress: '', errorLog: log });

@@ -4,7 +4,7 @@
 
 **Goal:** A **Check setup** button and a **Copy report** button in the desktop app. Check setup lists every
 setup problem on the user's computer, the connection and the server, each with a fix. Copy report produces a
-redacted text report the user can send to Alex. The app also removes a stale connector copy at launch.
+redacted text report the user can send to support. The app also removes a stale connector copy at launch.
 
 **Architecture:** The server is checked by a new read-only `--doctor` mode in the existing
 `desktop/scripts/vm-update.sh`. The app pipes that script over SSH, the way it already runs updates, and gets
@@ -345,7 +345,7 @@ test('doctorVm pipes the bundled script with --doctor under the doctor cap and r
 
 test('doctorVm never runs against a Windows server', async () => {
   const { calls, run } = fakeRun({ code: 0, out: '', err: '' });
-  const result = await createVmUpdater({ run, readScript }).doctorVm(vm({ scriptPath: 'C:/Users/me/app/vps-browser-host.cjs' }));
+  const result = await createVmUpdater({ run, readScript }).doctorVm(vm({ scriptPath: 'C:/Users/you/app/vps-browser-host.cjs' }));
   assert.deepEqual(result, { ok: false, error: 'windows' });
   assert.equal(calls.length, 0);
 });
@@ -735,7 +735,7 @@ Append to `desktop/test/setup-check.test.cjs`:
 const { redactReport, buildReport } = require('../src/setup-check.cjs');
 
 test('redactReport removes each secret shape and keeps addresses, versions and hashes', () => {
-  const token = '123456789:AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc';
+  const token = '123456789:AAFakeTokenForRedactionTestsOnly_123';
   const text = [
     `GET https://api.telegram.org/bot${token}/getUpdates failed`,
     `TELEGRAM_BOT_TOKEN=${token}`,
@@ -743,13 +743,13 @@ test('redactReport removes each secret shape and keeps addresses, versions and h
     'Authorization: Bearer abc.def.ghi',
     'curl -H "Bearer zzz-123"',
     'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwx',
-    '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----',
-    'server root@100.64.0.5, app 0.4.0, plugin ce51733b66291e69f616db48ae8799c0de50db43',
+    '-----BEGIN OPENSSH ' + 'PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----',
+    'server root@192.0.2.5, app 0.4.0, plugin ce51733b66291e69f616db48ae8799c0de50db43',
   ].join('\n');
   const out = redactReport(text);
   for (const secret of [token, 'e3b0c44298fc1c149afb', 'abc.def.ghi', 'zzz-123', 'sk-proj-abcdefghijklmnopqrstuvwx', 'b3BlbnNzaC1rZXk'])
     assert.equal(out.includes(secret), false, `${secret} leaked`);
-  assert.match(out, /root@100\.64\.0\.5/);
+  assert.match(out, /root@192\.0\.2\.5/);
   assert.match(out, /app 0\.4\.0/);
   assert.match(out, /ce51733b66291e69f616db48ae8799c0de50db43/);
 });
@@ -757,21 +757,21 @@ test('redactReport removes each secret shape and keeps addresses, versions and h
 const appInfo = { version: '0.4.0', platform: 'darwin', arch: 'arm64', osVersion: '15.6', signed: true };
 
 test('buildReport lists the setup, the last check and the newest log lines, redacted', () => {
-  const log = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n') + '\nbot123456789:AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc oops';
+  const log = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n') + '\nbot123456789:AAFakeTokenForRedactionTestsOnly_123 oops';
   const findings = [
     { group: 'computer', level: 'ok', title: 'Signed in to Telegram', fix: '', action: null },
     { group: 'server', level: 'fail', title: 'The server is on an older version', fix: 'Server 0.3.2, this app 0.4.0.', action: 'update-server' }];
-  const report = buildReport({ now: new Date('2026-10-08T16:00:00Z'), app: appInfo, serverAddress: 'root@100.64.0.5', computerAddress: 'me@100.64.0.6',
+  const report = buildReport({ now: new Date('2026-10-08T16:00:00Z'), app: appInfo, serverAddress: 'root@192.0.2.5', computerAddress: 'me@192.0.2.6',
     findings, checkedAt: '2026-10-08T15:59:00Z', server: { ok: true, version: '0.3.2' }, errorLog: log });
   assert.match(report, /^Open Alan report, 2026-10-08T16:00:00\.000Z$/m);
   assert.match(report, /App 0\.4\.0 on darwin arm64 \(15\.6\), signed build/);
-  assert.match(report, /Server address: root@100\.64\.0\.5/);
+  assert.match(report, /Server address: root@192\.0\.2\.5/);
   assert.match(report, /✓ This computer: Signed in to Telegram$/m);
   assert.match(report, /✗ Server: The server is on an older version \(Server 0\.3\.2, this app 0\.4\.0\.\)/);
   assert.match(report, /"version":"0\.3\.2"/);
   assert.doesNotMatch(report, /line 11$/m, 'only the last 50 log lines');
   assert.match(report, /line 12$/m);
-  assert.doesNotMatch(report, /AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc/);
+  assert.doesNotMatch(report, /AAFakeTokenForRedactionTestsOnly_123/);
 });
 
 test('buildReport says when no check ran and when there are no errors', () => {
@@ -1123,12 +1123,12 @@ HERMES_WORKSPACE_DATA="$TMPDIR/setup-check-app" npm start
 ```
 
 Then, using the `computer-use` skill to click and take screenshots:
-1. Edge case: open Settings, enter `root@100.64.0.99` as the server address and `me@100.64.0.98` as this
+1. Edge case: open Settings, enter `root@192.0.2.99` as the server address and `me@192.0.2.98` as this
    computer's address, click **Save addresses**, then **Check setup**. Expected: the This computer rows show;
    Connection shows ✗ "This computer can't reach the server"; Server shows the single ✗ "Server checks
    skipped". Click **Copy report** and paste the clipboard (`pbpaste`). Expected: it starts with
    `Open Alan report,`, lists those rows and contains no token.
-2. Golden path: enter the test server's address (`root@100.74.3.5`, the old Hetzner box), then
+2. Golden path: enter the test server's address (`root@<test-server>`, any server this Mac's SSH key can reach), then
    **Check setup**. Expected: Connection ✓ "This computer reaches the server", and Server rows from a real
    `--doctor` run. Until the new-user test has run setup on that box, the run reports ✗ "Open Alan isn't
    installed on the server". After that, it shows versions, plugin rows and the setup audit. The made-up
@@ -1161,7 +1161,7 @@ Expected: PASS. Paste the final summary lines (`# pass N`, `# fail 0`) into the 
 - [ ] **Step 2: Run `--doctor` against a real server**
 
 From the repo root:
-`ssh root@100.74.3.5 'HERMES_HOME=/root/hermes-newuser sh -s -- --doctor' < desktop/scripts/vm-update.sh`
+`ssh root@<test-server> 'HERMES_HOME=<test-hermes-home> sh -s -- --doctor' < desktop/scripts/vm-update.sh`
 Expected: one JSON line. Until the new-user test has run setup there, that line is `"ok":false` with
 `no browser host checkout found`. After setup, it is `"ok":true` with the profile's plugin rows. The run is
 read-only, so running it twice gives the same output.

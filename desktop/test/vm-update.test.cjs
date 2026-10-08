@@ -330,7 +330,7 @@ test('doctorVm pipes the bundled script with --doctor under the doctor cap and r
 
 test('doctorVm never runs against a Windows server', async () => {
   const { calls, run } = fakeRun({ code: 0, out: '', err: '' });
-  const result = await createVmUpdater({ run, readScript }).doctorVm(vm({ scriptPath: 'C:/Users/me/app/vps-browser-host.cjs' }));
+  const result = await createVmUpdater({ run, readScript }).doctorVm(vm({ scriptPath: 'C:/Users/you/app/vps-browser-host.cjs' }));
   assert.deepEqual(result, { ok: false, error: 'windows' });
   assert.equal(calls.length, 0);
 });

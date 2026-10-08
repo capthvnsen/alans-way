@@ -98,8 +98,8 @@ copy has no `package.json`, so it is left alone (out of scope).
 
 ## Copy report
 
-The goal is something a user can send to Alex when they're stuck. He either fixes the bug or tells them what to
-change on their side.
+The goal is something a user can send to support when they're stuck. Support either fixes the bug or tells them
+what to change on their side.
 
 - A **Copy report** button next to **Check setup**, and again under the results. Next to it is a
   **Get help on Discord** link, which opens the public invite from the README (`https://discord.gg/jBQCPUsVE`).
