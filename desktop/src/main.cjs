@@ -880,10 +880,16 @@ async function cloudConnectRun(diyHost) {
 }
 async function claimWithToken(token) {
   if (!token) return;
-  if (cloudSession()) { startCloudOnboarding(); return; }
+  // A stored session means this token (or an earlier one) already claimed the
+  // computer: resume the wizard, or ignore a stale link once setup is done.
+  if (cloudSession()) { if (prefs.cloud?.step !== 'done') startCloudOnboarding(); return; }
   try {
-    const result = await cloudClaim.claim(cloudClaim.apiBase(), token, cloudClaim.ensureInstallId(prefs));
+    // Encryption is checked before the POST: the token is single-use, so a
+    // machine that cannot store the session must fail before consuming it.
     if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is unavailable on this computer.');
+    const installId = cloudClaim.ensureInstallId(prefs);
+    savePreferencesSoon();
+    const result = await cloudClaim.claim(cloudClaim.apiBase(), token, installId);
     const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
     prefs.cloud = { ...cloud, sessionEnc: safeStorage.encryptString(result.session).toString('base64'), sessionExpiresAt: result.expiresAt, step: 'cloud-wait' };
     cloudError = '';

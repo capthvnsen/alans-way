@@ -355,7 +355,7 @@ function renderOnboarding(show) {
   panel.classList.toggle('hidden', !show);
   if (!show) { onboardingSignature = ''; return; }
   const cloud = state.cloud || {};
-  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications] : [onboardingStep]);
+  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
   if (signature === onboardingSignature) return;
   onboardingSignature = signature;
   const go = (step) => { onboardingStep = step; renderOnboarding(true); };
@@ -373,6 +373,9 @@ function renderOnboarding(show) {
   card.append(element('p', 'onboarding-step', `Step ${onboardingStep} of 3`));
   if (onboardingStep === 1) {
     card.append(element('h2', '', 'Welcome to Open Alan'), element('p', 'settings-note', 'Three short steps connect your Hermes agent to this computer.'));
+    // A failed deep-link claim lands here: explain it instead of showing a
+    // silent ordinary wizard.
+    if (cloud.error) card.append(element('p', 'settings-note', cloud.error));
     const signedIn = state.telegramStatus === 'connected';
     card.append(element('p', `check-item${signedIn ? ' done' : ''}`, signedIn ? '✓ Signed in to Telegram' : '○ Scan the QR code on the left with your phone: Telegram → Settings → Devices → Link Desktop Device.'));
     if (state.inApplications === false) {

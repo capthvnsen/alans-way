@@ -34,11 +34,18 @@ class ClaimError extends Error {
 }
 
 async function claim(base, token, installId, fetchImpl = fetch) {
-  const response = await fetchImpl(`${String(base || apiBase()).replace(/\/+$/, '')}/api/claim`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, install_id: installId }),
-  });
+  let response;
+  try {
+    response = await fetchImpl(`${String(base || apiBase()).replace(/\/+$/, '')}/api/claim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, install_id: installId }),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (error) {
+    if (error?.name === 'TimeoutError' || error?.name === 'AbortError') throw new ClaimError('timeout', 'The claim request timed out. Check your connection and try again.');
+    throw error;
+  }
   if (response.status === 409) throw new ClaimError('claimed', 'This computer was already claimed by another installation.');
   if (response.status === 404) throw new ClaimError('unknown', 'This claim link is not valid. Ask for a new one.');
   if (!response.ok) throw new ClaimError('http', `The claim failed (${response.status}). Try again in a moment.`);

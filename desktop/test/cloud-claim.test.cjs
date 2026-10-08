@@ -42,6 +42,15 @@ test('a claimed token and an unknown token map to typed errors', async () => {
   await assert.rejects(claim('https://api.example', goodToken, 'i', respond(200, {})), (error) => error instanceof ClaimError && error.code === 'bad-response');
 });
 
+test('the claim request carries a timeout and an abort maps to a typed error', async () => {
+  let seen;
+  const fetchImpl = async (url, init) => { seen = init; return respond(200, { session: 's', expires_at: '' })(url, init); };
+  await claim('https://api.example', goodToken, 'i', fetchImpl);
+  assert.ok(seen.signal instanceof AbortSignal, 'fetch must carry an abort signal so a hung POST cannot stall the wizard');
+  const aborting = () => Promise.reject(Object.assign(new Error('The operation timed out.'), { name: 'TimeoutError' }));
+  await assert.rejects(claim('https://api.example', goodToken, 'i', aborting), (error) => error instanceof ClaimError && error.code === 'timeout');
+});
+
 test('tokens queue until the window is ready, then the newest wins', () => {
   const queue = createTokenQueue();
   const delivered = [];
