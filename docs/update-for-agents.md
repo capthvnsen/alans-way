@@ -57,7 +57,13 @@ Rules for the whole job:
 6. Restart the gateway so it loads the update. If you are this Hermes bot,
    first tell me "Restarting now; send me any message in a minute to
    continue", then run `hermes gateway restart`. Otherwise run it and wait
-   until `hermes gateway status` reports it running.
+   until `hermes gateway status` reports it running. On a server without
+   systemd (services under supervisord) `hermes gateway restart` cannot see
+   the supervisor; instead run `supervisorctl signal USR1 <program>` for the
+   program that runs `hermes gateway run` (find it via `supervisorctl status`
+   and the `command=` lines in `/etc/supervisor/conf.d/*.conf`), which drains
+   active turns before the supervisor relaunches it. If the program is
+   stopped, `supervisorctl start <program>`.
 
 Finish with a short report: OLD → NEW (or "already up to date" if they are
 equal), what passed, every warning from setup.sh, and anything that still

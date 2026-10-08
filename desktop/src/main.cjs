@@ -20,7 +20,7 @@ const cloudTelegram = require('./cloud-telegram.cjs');
 const macUpdate = require('./mac-update.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
-const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, shouldShowUpdatePopup } = require('./vm-update.cjs');
+const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup } = require('./vm-update.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -630,7 +630,11 @@ function noteVmResult(result) {
 // After relaunch (and at every start) each saved VM reports its checkout
 // version; a VM behind the app surfaces through update.vmRetry.
 async function checkVmVersions() {
-  for (const target of vmTargets(prefs)) {
+  // Records outlive their VM when a target is removed or an older build wrote
+  // a bad id; drop them so only live VMs can ever steer the retry banner.
+  const targets = vmTargets(prefs);
+  prefs.vmUpdates = pruneVmUpdates(prefs.vmUpdates, targets);
+  for (const target of targets) {
     const result = await vmUpdater.checkVm(target);
     if (!result.ok) continue;
     const entry = vmCheckEntry(prefs.vmUpdates?.[target.id], result);
