@@ -27,12 +27,12 @@ const status = `hermes-db                         EXITED    Oct 07 10:38 PM\nher
 test('the gateway program is read from supervisorctl output, else hermes-gateway', () => {
   assert.equal(gatewayProgram(status), 'hermes-gateway');
   assert.equal(gatewayProgram('sshd                            RUNNING\n'), 'hermes-gateway');
-  assert.equal(gatewayRestartCommand(status), `supervisorctl restart 'hermes-gateway'`);
-  assert.equal(gatewayRestartCommand(''), `supervisorctl restart 'hermes-gateway'`);
+  assert.equal(gatewayRestartCommand(status), `supervisorctl signal USR1 'hermes-gateway' || supervisorctl restart 'hermes-gateway'`);
+  assert.equal(gatewayRestartCommand(''), `supervisorctl signal USR1 'hermes-gateway' || supervisorctl restart 'hermes-gateway'`);
 });
 
 test('a hostile program name is single-quoted before it reaches the remote shell', () => {
-  assert.equal(gatewayRestartCommand('gateway$(rm -rf ~)              RUNNING\n'), `supervisorctl restart 'gateway$(rm'`);
+  assert.equal(gatewayRestartCommand('gateway$(rm -rf ~)              RUNNING\n'), `supervisorctl signal USR1 'gateway$(rm' || supervisorctl restart 'gateway$(rm'`);
 });
 
 test('the subscription login is the hermes oauth flow', () => {
