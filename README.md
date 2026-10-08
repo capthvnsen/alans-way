@@ -16,6 +16,24 @@ A desktop app for people running [Hermes Agent](https://github.com/NousResearch/
 
 **Tailscale is required.** Your computer and your server talk over your Tailscale network and nothing else. Install Tailscale on both and sign in to the same account. SSH addresses must be Tailscale names (`*.ts.net`) or Tailscale IPs (`100.64.0.0/10`); the setup scripts refuse public addresses, and the server's SSH key can log in to your computer only from the tailnet.
 
+## Quick start
+
+On your Mac, in Terminal:
+
+```sh
+curl -fsSL https://openalan.com/install-mac | sh
+```
+
+It builds and opens the app, then asks to connect your Hermes server. Type the server's SSH address (for example `root@hermes-vps`) and it does the rest from your computer: trusts both machines' keys, installs the plugin on the server, restarts the gateway and checks SSH both ways. The plugin's setup asks its own questions as it goes. Re-run it any time to upgrade or reconnect.
+
+On Linux (x64, systemd, desktop session, Node 22.12+ and git), the same flow builds the app too:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-server.sh | sh
+```
+
+Before you start: Tailscale on both machines with the same account, Remote Login on (Mac: System Settings, General, Sharing) or an SSH server (Linux), and `ssh <server>` working from this terminal. On Windows, or with no SSH access to the server, use [Connect your agents](#connect-your-agents) instead.
+
 ## What you get
 
 - **See every bot's cursor.** Each agent gets a colored, named cursor in its tabs. You can literally watch it click around.
@@ -55,7 +73,7 @@ updates itself after that.
 
 Mac release builds are Developer ID signed and notarized, so they open like any other app. Windows builds are unsigned: if SmartScreen appears, click **More info → Run anyway**.
 
-**Or build from source.** On a Mac one command builds the app, installs it to `/Applications` and opens it; re-run it to upgrade. Without git or Node it downloads the source and a private, checksum-verified Node for the build:
+**Or build from source.** On a Mac one command builds the app, installs it to `/Applications` and opens it; re-run it to upgrade. Without git or Node it downloads the source and a private, checksum-verified Node for the build. In a terminal it then offers to connect your server (see [Quick start](#quick-start)):
 
 ```sh
 curl -fsSL https://openalan.com/install-mac | sh
@@ -69,7 +87,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://openalan.com/install-windows 
 
 It builds the app into `%LOCALAPPDATA%\Programs\alans-way-localapp` and opens it. Or run `scripts/install-windows.ps1` from a clone of this repo. Local and fork builds are ad-hoc signed (Mac) or unsigned (Windows), but they are built on your machine, so they skip the Gatekeeper and SmartScreen prompts.
 
-On Linux (x64, systemd, with a desktop session), run `scripts/connect-linux.sh` from the command in [docs/setup-prompt.md](docs/setup-prompt.md). It checks Tailscale and the SSH server, builds the app with `npm run package:linux` into `~/.local/share/alans-way-localapp`, and starts it. It needs Node 22.12+ and git.
+On Linux (x64, systemd, with a desktop session), run the [Quick start](#quick-start) command, or `scripts/connect-linux.sh` from the command in [docs/setup-prompt.md](docs/setup-prompt.md). It checks Tailscale and the SSH server, builds the app with `npm run package:linux` into `~/.local/share/alans-way-localapp`, and starts it. It needs Node 22.12+ and git.
 
 Sign into Telegram inside the app, and your existing bots appear in the sidebar.
 

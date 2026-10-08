@@ -190,5 +190,62 @@ class ScriptShapeTests(unittest.TestCase):
         self.assertTrue((SCRIPTS / "connect-linux.sh").stat().st_mode & 0o111)
 
 
+# A fake ssh runs the remote command locally with sh, so the quoting that
+# connect-server.sh builds goes through a real shell round trip. lsh stands in
+# for the login shell, which would reset PATH and lose the fake curl.
+FAKE_SSH = r"""#!/bin/sh
+while [ $# -gt 0 ]; do case "$1" in -o|-O) shift 2;; -t) shift;; *) break;; esac; done
+shift
+case "$*" in
+  "") exit 0;;
+  "sh -s") cat >/dev/null; printf 'VPS_SSH=root@hermes-vps\nVPS_KEY=%s\nVPS_HOST_KEY=ssh-ed25519 AAAAhost\n' "$VPS_KEY";;
+  test\ -e*) echo ok;;
+  true|exit) exit 0;;
+  *) SHELL="$(dirname "$0")/lsh" sh -c "$*";;
+esac
+"""
+FAKE_CONNECT = r"""#!/bin/sh
+printf '%s\n' "$*" > "$HOME/connect-args"
+echo "connect: pinned"
+echo "===== Copy everything between these lines and send it to your agent ====="
+echo "MAC_SSH=me@my-mac.ts.net"
+echo "MAC_TZ=America/Denver"
+echo "MAC_HOST_KEY=ssh-ed25519 AAAAmachost"
+echo "MAC_KEY=ssh-ed25519 AAAAmac me@mac"
+echo "===== end ====="
+"""
+
+
+class ConnectServerTests(unittest.TestCase):
+    def test_server_setup_gets_this_computers_values_through_the_quoting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            for name, body in (("bin/ssh", FAKE_SSH), ("bin/curl", '#!/bin/sh\ncp "$HOME/setup.sh" "$4"\n'),
+                               ("bin/lsh", '#!/bin/sh\nexec sh -c "$2"\n'),
+                               ("scripts/connect-mac.sh", FAKE_CONNECT), ("scripts/connect-linux.sh", FAKE_CONNECT),
+                               ("setup.sh", '#!/bin/sh\nprintf "%s\\n" "$@" > "$HOME/setup-args"\n')):
+                (tmp / name).parent.mkdir(parents=True, exist_ok=True)
+                (tmp / name).write_text(body, encoding="utf-8")
+                (tmp / name).chmod(0o755)
+            (tmp / "scripts/connect-server.sh").write_text((SCRIPTS / "connect-server.sh").read_text(encoding="utf-8"))
+            # A new session has no /dev/tty, as when an agent runs the script.
+            result = subprocess.run(
+                ["sh", str(tmp / "scripts/connect-server.sh"), "--server", "root@hermes-vps", "--", "--profile", "it's"],
+                env={"HOME": str(tmp), "PATH": f"{tmp}/bin:/usr/bin:/bin", "VPS_KEY": KEY},
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, start_new_session=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("send it to your agent", result.stdout)
+            self.assertIn(f"--vps root@hermes-vps --vps-host-key ssh-ed25519 AAAAhost --vps-key {KEY}",
+                          (tmp / "connect-args").read_text())
+            self.assertEqual((tmp / "setup-args").read_text().splitlines(), [
+                "--mac-ssh", "me@my-mac.ts.net", "--host-os", "mac" if "Darwin" in subprocess.check_output(["uname", "-s"], text=True) else "linux",
+                "--timezone", "America/Denver", "--mac-key", "ssh-ed25519 AAAAmac me@mac",
+                "--mac-host-key", "ssh-ed25519 AAAAmachost", "--restart", "--profile", "it's"])
+
+    def test_connect_mac_keeps_the_installer_from_asking(self):
+        self.assertIn("ALANS_WAY_SKIP_CONNECT=1 sh", (SCRIPTS / "connect-mac.sh").read_text(encoding="utf-8"))
+        self.assertIn("ALANS_WAY_SKIP_CONNECT", (SCRIPTS / "install-mac.sh").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()
