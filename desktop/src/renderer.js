@@ -292,7 +292,10 @@ function render(next) {
   // The retired local copy of a handed-off tab is the way back: it offers to
   // pull the remote tab's current page state onto this computer again.
   const handedOff = tab?.handoff?.phase === 'handed_off' && tab.handoff.destinationTabId ? tab.handoff.destinationTabId : '';
-  const canHandoff = state.vpsBrowserStatus === 'connected' && !!tab && !tab.extensionPage && (tab.controller === 'agent' || !!handedOff);
+  // A handed-off source stays retired once its remote copy came back: the new
+  // local tab carries a handoff record pointing at that remote tab id.
+  const movedBack = !!handedOff && state.tabs.some((item) => item !== tab && item.handoff?.sourceTabId === handedOff);
+  const canHandoff = state.vpsBrowserStatus === 'connected' && !!tab && !tab.extensionPage && !tab.internal && (tab.controller === 'agent' || (!!handedOff && !movedBack));
   const handoffButton = $('handoff-button');
   handoffButton.classList.toggle('hidden', !canHandoff);
   handoffButton.disabled = !canHandoff || handoffBusy;

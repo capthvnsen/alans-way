@@ -298,13 +298,19 @@ app.whenReady().then(async () => {
       const down = shown();
       render(connected([tab({ controller: 'human' })], ${JSON.stringify(colored[0].id)}));
       const human = shown();
+      render(connected([tab({ controller: 'agent', internal: true })], ${JSON.stringify(colored[0].id)}));
+      const internal = shown();
       render(connected([tab({ controller: 'human', handoff: { phase: 'handed_off', destinationHost: 'vps', destinationTabId: 'vps-ghost' } })], ${JSON.stringify(colored[0].id)}));
       const back = shown();
       document.getElementById('handoff-button').click();
       await new Promise((resolve) => setTimeout(resolve, 1200));
       const backToast = document.getElementById('toast').textContent;
+      const returned = tab({ controller: 'human', handoff: { phase: 'handed_off', destinationHost: 'vps', destinationTabId: 'vps-ghost' } });
+      const copy = { ...tab({}), id: 'local-returned', handoff: { phase: 'review_required', sourceTabId: 'vps-ghost', destinationHost: 'mac' } };
+      render(connected([returned, copy], returned.id));
+      const movedBack = shown();
       render(real);
-      return { up, down, human, back, forwardToast, backToast };
+      return { up, down, human, internal, back, movedBack, forwardToast, backToast };
     })()`);
   } finally { wc.send = keepStateOut; }
   assert.equal(handoffCheck.up.hidden, false, 'agent tab shows the move control');
@@ -312,9 +318,11 @@ app.whenReady().then(async () => {
   assert.match(handoffCheck.forwardToast, /Configure the VPS browser connection/, `the click reached the handoff IPC: ${handoffCheck.forwardToast}`);
   assert.equal(handoffCheck.down.hidden, true, 'hidden while the VM browser is not connected');
   assert.equal(handoffCheck.human.hidden, true, 'hidden for a human-owned tab');
+  assert.equal(handoffCheck.internal.hidden, true, 'hidden for an internal page that cannot checkpoint');
   assert.equal(handoffCheck.back.hidden, false, 'a handed-off source offers the way back');
   assert.match(handoffCheck.back.text, /^Move back/);
   assert.match(handoffCheck.backToast, /Source tab not found/, `the way back hands off the remote copy: ${handoffCheck.backToast}`);
+  assert.equal(handoffCheck.movedBack.hidden, true, 'hidden once the remote copy already moved back to a local tab');
   await invoke('control', { id: colored[0].id, controller: 'agent' });
   console.log('PASS: handoff button follows agent control and VM link state, and both directions drive the real IPC.');
   // batch runs a multi-step sequence in one request and eval executes page JS;
