@@ -183,6 +183,35 @@ test('redactReport removes each secret shape and keeps addresses, versions and h
   assert.match(out, /ce51733b66291e69f616db48ae8799c0de50db43/);
 });
 
+test('redactReport removes the token, password, key and header shapes that slipped through', () => {
+  for (const [text, ...secrets] of [
+    ['{"access_token":"ya29-access-secret","bot_token":"bot-json-secret","refresh_token":"refresh-json-secret"}',
+      'ya29-access-secret', 'bot-json-secret', 'refresh-json-secret'],
+    ['{"apiKey":"camel-key-secret","x-api-key":"json-header-secret"}', 'camel-key-secret', 'json-header-secret'],
+    ['{"token":"head-secret\\"tail-secret"}', 'head-secret', 'tail-secret'],
+    [JSON.stringify({ fails: ['bad config {"token":"nested-secret"}'] }), 'nested-secret'],
+    ['GET https://broker.example/cb?code=oauth-code-secret&access_token=query-secret&state=1 failed', 'oauth-code-secret', 'query-secret'],
+    ['db password=hunter2-secret, retrying', 'hunter2-secret'],
+    ['hermes login --token flag-secret --verbose', 'flag-secret'],
+    ['curl -H "x-api-key: header-key-secret" https://api.example', 'header-key-secret'],
+    ['{"Authorization": "token json-auth-secret"}', 'json-auth-secret'],
+    ['curl -H "authorization: bearer lower-auth-secret"', 'lower-auth-secret'],
+    ['fetch failed with bearer lower-bearer-secret', 'lower-bearer-secret'],
+    ['bot12345678901234:AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc/getMe', 'AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc'],
+  ]) {
+    const out = redactReport(text);
+    for (const secret of secrets) assert.equal(out.includes(secret), false, `${secret} leaked from ${text} as ${out}`);
+    assert.equal(redactReport(out), out, 'buildReport redacts twice, so a second pass changes nothing');
+  }
+});
+
+test('redactReport leaves the next line and plain words about keys and tokens alone', () => {
+  assert.equal(redactReport('Authorization:\nnext-line-kept'), 'Authorization:\nnext-line-kept');
+  const prose = 'the key step is to check the token count, then the secret word and the password prompt';
+  assert.equal(redactReport(prose), prose);
+  assert.equal(redactReport('monkey business at 0.4.0'), 'monkey business at 0.4.0');
+});
+
 const appInfo = { version: '0.4.0', platform: 'darwin', arch: 'arm64', osVersion: '15.6', signed: true };
 
 test('buildReport lists the setup, the last check and the newest log lines, redacted', () => {
@@ -201,6 +230,16 @@ test('buildReport lists the setup, the last check and the newest log lines, reda
   assert.doesNotMatch(report, /line 11$/m, 'only the last 50 log lines');
   assert.match(report, /line 12$/m);
   assert.doesNotMatch(report, /AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc/);
+});
+
+test('buildReport removes a private key that straddles the 50-line cut', () => {
+  const log = [...Array.from({ length: 5 }, (_, i) => `before ${i}`), '-----BEGIN OPENSSH PRIVATE KEY-----',
+    ...Array.from({ length: 5 }, (_, i) => `keybody${i}secret`), '-----END OPENSSH PRIVATE KEY-----',
+    ...Array.from({ length: 45 }, (_, i) => `after ${i}`)].join('\n');
+  const report = buildReport({ app: appInfo, serverAddress: '', computerAddress: '', errorLog: log });
+  assert.doesNotMatch(report, /keybody\dsecret/);
+  assert.match(report, /\[private key removed\]/);
+  assert.match(report, /after 44$/);
 });
 
 test('buildReport says when no check ran and when there are no errors', () => {

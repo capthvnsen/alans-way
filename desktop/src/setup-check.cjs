@@ -122,12 +122,19 @@ function buildFindings(input) {
 
 // Secrets that can end up in logs or doctor output. SSH addresses, usernames
 // and versions stay: a report without them can't be acted on.
+// Every rule keeps its own output unchanged, so redacting twice is safe.
 const SECRETS = [
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[private key removed]'],
-  [/(?<!\d)\d{6,12}:[A-Za-z0-9_-]{30,}/g, '[bot token removed]'],
-  [/("(?:token|apiKey|api_key|secret|password)"\s*:\s*")[^"]*(")/gi, '$1[removed]$2'],
-  [/(Authorization:\s*)\S+(\s+\S+)?/gi, '$1[removed]'],
-  [/\bBearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [removed]'],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----|[\s\S]*$)/g, '[private key removed]'],
+  // "…token…": "value" in JSON, then the same pair escaped inside stringified JSON.
+  [/("[\w-]*(?:token|secret|password|api[_-]?key|authorization)"\s*:\s*")(?:[^"\\]|\\.)*"/gi, '$1[removed]"'],
+  [/(\\"[\w-]*(?:token|secret|password|api[_-]?key|authorization)\\"\s*:\s*\\")(?:[^"\\]|\\[^"])*\\"/gi, '$1[removed]\\"'],
+  // --token value, key=value, key: value and URL queries. A plain word needs
+  // =, : or a -- flag after it, so prose about keys and tokens stays.
+  [/((?<![\w-])(?:--[\w-]*(?:token|secret|password|key)[ \t]+|[\w-]*(?:token|secret|password|key)[ \t]*[=:][ \t]*)["']?)[^\s"'&]+/gi, '$1[removed]'],
+  [/([?&]code=)[^\s&#"']+/g, '$1[removed]'],
+  [/(Authorization[ \t]*:[ \t]*)(?:[A-Za-z]+[ \t]+)?[^\s"']+/gi, '$1[removed]'],
+  [/\b(Bearer)[ \t]+[A-Za-z0-9._~+/=-]+/gi, '$1 [removed]'],
+  [/(?<!\d)\d{6,15}:[A-Za-z0-9_-]{30,}/g, '[bot token removed]'],
   [/\bsk-[A-Za-z0-9_-]{16,}/g, '[api key removed]'],
 ];
 function redactReport(text) {
@@ -151,7 +158,8 @@ function buildReport({ now = new Date(), app, serverAddress, computerAddress, fi
     for (const f of findings) lines.push(`${MARKS[f.level]} ${GROUPS[f.group]}: ${f.title}${f.level !== 'ok' && f.fix ? ` (${f.fix})` : ''}`);
   } else lines.push('Check setup not run yet.');
   if (server) lines.push('', 'Server report:', JSON.stringify(server));
-  const log = String(errorLog || '').trimEnd().split('\n').slice(-50).join('\n');
+  // Redact before the cut so a secret spanning it can't lose its start marker.
+  const log = redactReport(String(errorLog || '')).trimEnd().split('\n').slice(-50).join('\n');
   lines.push('', 'Recent app errors:', log || 'none');
   return redactReport(lines.join('\n'));
 }
