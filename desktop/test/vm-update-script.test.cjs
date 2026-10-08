@@ -987,12 +987,13 @@ test('--doctor reports versions, plugin rows, the newest plugin tag and the setu
   assert.equal(res.status, 0, res.stderr);
   assert.deepEqual(lastJson(res), {
     ok: true, version: '0.3.1', hostVersion: '0.3.1', pluginTag: 'v0.6.2', error: '',
+    verify: { ran: true, fails: ['browser host not running'], warns: ['no primary route bound'] },
     profiles: [{
       profile: 'default', computerBackend: 'alans-way-computer',
       plugins: [
         { name: 'alans-way', version: '0.6.0', class: 'catalog', updateAvailable: true },
         { name: 'alans-way-computer', version: '0.6.0', class: 'manual', updateAvailable: false }],
-      verify: { ran: true, fails: ['browser host not running'], warns: ['no primary route bound'] },
+      checked: true,
     }],
   });
   assert.equal(git(checkout, 'rev-parse', 'HEAD'), before, 'the checkout did not move');
@@ -1005,7 +1006,9 @@ test('--doctor reports a profile the time budget does not reach instead of runni
   const { bin, state, home, hermesLog } = doctorFixture();
   addPlugin(home, 'default', 'alans-way', '0.6.0');
   const port = await makeStatus({ version: '0.3.1', busy: false });
-  const res = await runScript(['--doctor'], envFor(checkout, makeDataDir(port), bin, {
+  const data = makeDataDir(port);
+  addSetupScript(data, ['  ok   plugin enabled']);
+  const res = await runScript(['--doctor'], envFor(checkout, data, bin, {
     ...pluginEnv(home, state), ALANS_WAY_VM_DOCTOR_BUDGET: '0', ALANS_WAY_VM_PLUGIN_REMOTE: path.join(os.tmpdir(), 'no-such-remote') }));
   const result = lastJson(res);
   assert.equal(res.status, 0, res.stderr);
@@ -1013,8 +1016,10 @@ test('--doctor reports a profile the time budget does not reach instead of runni
   assert.deepEqual(result.profiles, [{
     profile: 'default', computerBackend: '',
     plugins: [{ name: 'alans-way', version: '0.6.0', class: '', updateAvailable: false }],
-    verify: { ran: false, reason: 'time' } }]);
+    checked: false }]);
+  assert.deepEqual(result.verify, { ran: false, reason: 'time' });
   assert.deepEqual(hermesLog(), [], 'hermes was never called');
+  assert.equal(fs.existsSync(path.join(data, 'alans-way-agents', 'calls.log')), false, 'setup.sh was never run');
 });
 
 test('--doctor without setup.sh says so, and an unset backend printed as None counts as none', async () => {
@@ -1031,7 +1036,29 @@ test('--doctor without setup.sh says so, and an unset backend printed as None co
   assert.equal(result.profiles.length, 1);
   assert.equal(result.profiles[0].profile, 'alpha');
   assert.equal(result.profiles[0].computerBackend, '');
-  assert.deepEqual(result.profiles[0].verify, { ran: false, reason: 'no-setup' });
+  assert.equal(result.profiles[0].checked, true);
+  assert.deepEqual(result.verify, { ran: false, reason: 'no-setup' });
+});
+
+test('--doctor runs the setup audit once per server, after every profile, and reports it at the top level', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, state, home, hermesLog } = doctorFixture();
+  addPlugin(home, 'default', 'alans-way', '0.6.0');
+  addProfile(home, 'work');
+  addPlugin(home, 'work', 'alans-way', '0.6.1');
+  const port = await makeStatus({ version: '0.3.1', busy: false });
+  const data = makeDataDir(port);
+  const setupCalls = addSetupScript(data, ['  FAIL work: plugin disabled'], 1);
+  const res = await runScript(['--doctor'], envFor(checkout, data, bin, {
+    ...pluginEnv(home, state), ALANS_WAY_VM_PLUGIN_REMOTE: path.join(os.tmpdir(), 'no-such-remote') }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(setupCalls().trim().split('\n'), [`--verify --hermes-home ${home}`], 'one audit, no --profile');
+  assert.deepEqual(result.profiles.map((p) => [p.profile, p.checked]), [['default', true], ['work', true]]);
+  assert.deepEqual(result.verify, { ran: true, fails: ['work: plugin disabled'], warns: [] });
+  assert.equal(result.profiles.some((p) => 'verify' in p), false);
+  assert.deepEqual(hermesLog(), ['hermes -p default plugins check-updates --json', 'hermes -p default config get computer_use.backend',
+    'hermes -p work plugins check-updates --json', 'hermes -p work config get computer_use.backend']);
 });
 
 for (const [label, lines, code, expected] of [
@@ -1048,6 +1075,6 @@ for (const [label, lines, code, expected] of [
     const res = await runScript(['--doctor'], envFor(checkout, data, bin, {
       ...pluginEnv(home, state), ALANS_WAY_VM_PLUGIN_REMOTE: path.join(os.tmpdir(), 'no-such-remote') }));
     assert.equal(res.status, 0, res.stderr);
-    assert.deepEqual(lastJson(res).profiles[0].verify, expected);
+    assert.deepEqual(lastJson(res).verify, expected);
   });
 }

@@ -491,8 +491,8 @@ bounded() {
   else "$@"; fi
 }
 
-# The setup.sh a profile was installed with: ~/alans-way-agents first (where
-# the setup prompt clones it), else the clone its file:// plugin source names.
+# The setup.sh the server was installed with: ~/alans-way-agents first (where
+# the setup prompt clones it), else the clone a profile's file:// plugin source names.
 doctor_setup_script() {
   if [ -f "$HOME/alans-way-agents/setup.sh" ]; then printf '%s' "$HOME/alans-way-agents/setup.sh"; return 0; fi
   _ds="$(plugin_meta "$1/plugins" alans-way | sed -n 's|.*"source"[[:space:]]*:[[:space:]]*"file://\([^"#]*\).*|\1|p' | head -1)"
@@ -517,16 +517,16 @@ const profiles = dirs.map((d) => {
     return { name, version: read(`${d}/version.${name}`), class: String(row.class || ""), updateAvailable: row.update_available === true };
   });
   const backend = read(`${d}/backend`);
-  const lines = read(`${d}/verify`).split("\n");
-  const code = Number(read(`${d}/verify-exit`)) || 0;
-  const fails = pick(lines, "FAIL");
-  if (code && !fails.length && code !== 124 && code !== 142) fails.push(`setup.sh --verify stopped early (exit ${code})`);
-  const verify = has(`${d}/out-of-time`) || code === 124 || code === 142 ? { ran: false, reason: "time" }
-    : has(`${d}/verify`) ? { ran: true, fails, warns: pick(lines, "warn") }
-    : { ran: false, reason: "no-setup" };
-  return { profile: read(`${d}/name`), computerBackend: /^[a-z0-9_-]+$/i.test(backend) && !/^(none|null)$/i.test(backend) ? backend : "", plugins, verify };
+  return { profile: read(`${d}/name`), computerBackend: /^[a-z0-9_-]+$/i.test(backend) && !/^(none|null)$/i.test(backend) ? backend : "", plugins, checked: !has(`${d}/out-of-time`) };
 });
-process.stdout.write(JSON.stringify({ ok: true, version, hostVersion: read("hostVersion"), pluginTag: read("pluginTag"), error: "", profiles }) + "\n");
+const lines = read("verify").split("\n");
+const code = Number(read("verify-exit")) || 0;
+const fails = pick(lines, "FAIL");
+if (code && !fails.length && code !== 124 && code !== 142) fails.push(`setup.sh --verify stopped early (exit ${code})`);
+const verify = has("verify-out-of-time") || code === 124 || code === 142 ? { ran: false, reason: "time" }
+  : has("verify") ? { ran: true, fails, warns: pick(lines, "warn") }
+  : { ran: false, reason: "no-setup" };
+process.stdout.write(JSON.stringify({ ok: true, version, hostVersion: read("hostVersion"), pluginTag: read("pluginTag"), error: "", verify, profiles }) + "\n");
 '
 
 doctor() {
@@ -542,6 +542,7 @@ doctor() {
   if hermes_bin; then
     HHOME="${HERMES_HOME:-$HOME/.hermes}"
     _i=0
+    _setup="$(doctor_setup_script "$HHOME")"
     while read -r _pname _phome; do
       [ -n "$_pname" ] || continue
       [ -d "$_phome/plugins/alans-way" ] || [ -d "$_phome/plugins/alans-way-computer" ] || continue
@@ -550,19 +551,23 @@ doctor() {
       for _name in alans-way alans-way-computer; do
         [ -d "$_phome/plugins/$_name" ] && plugin_version "$_phome/plugins/$_name" > "$_d/version.$_name"
       done
+      [ -n "$_setup" ] || _setup="$(doctor_setup_script "$_phome")"
       if [ "$(budget_left)" -le 20 ]; then touch "$_d/out-of-time"; continue; fi
       if [ "$_pname" = default ]; then set --; else set -- -p "$_pname"; fi
       run_hermes 30 "$@" plugins check-updates --json > "$_d/updates.json"
       run_hermes 15 "$@" config get computer_use.backend | tail -1 > "$_d/backend"
-      _setup="$(doctor_setup_script "$_phome")"
-      [ -n "$_setup" ] || continue
-      if [ "$(budget_left)" -le 10 ]; then touch "$_d/out-of-time"; continue; fi
-      if [ "$_pname" = default ]; then set -- --verify --hermes-home "$HHOME"; else set -- --verify --hermes-home "$HHOME" --profile "$_pname"; fi
-      bounded "$(( $(budget_left) - 5 ))" sh "$_setup" "$@" > "$_d/verify" 2>&1 </dev/null
-      printf '%s' "$?" > "$_d/verify-exit"
     done <<EOF
 $(list_profiles)
 EOF
+    # One audit for the whole server: without --profile, setup.sh --verify
+    # already covers the default home and every profile that has a bot.
+    if [ -n "$_setup" ]; then
+      if [ "$(budget_left)" -le 10 ]; then touch "$WORK/verify-out-of-time"
+      else
+        bounded "$(( $(budget_left) - 5 ))" sh "$_setup" --verify --hermes-home "$HHOME" > "$WORK/verify" 2>&1 </dev/null
+        printf '%s' "$?" > "$WORK/verify-exit"
+      fi
+    fi
   fi
   "$NODE_BIN" -e "$DOCTOR_JS" "$WORK" "$VERSION"
 }

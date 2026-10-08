@@ -103,14 +103,15 @@ function serverRows({ appVersion, server }) {
     rows.push(p.computerBackend === 'alans-way-computer'
       ? row(s, 'ok', `${prefix}Computer use goes through Alan’s Way`)
       : row(s, 'warn', `${prefix}Computer use runs on Hermes’s built-in backend`, 'Update Hermes to a build with the computer-use provider API, then paste the setup prompt to your bot again.'));
-    const v = p.verify || {};
-    if (!v.ran) rows.push(v.reason === 'time'
-      ? row(s, 'warn', `${prefix}Setup audit not run (out of time)`, 'Check again to audit the rest.')
-      : row(s, 'warn', `${prefix}Setup audit not available`, `The setup files are missing on the server. ${SETUP_PROMPT}`));
-    else if (!(v.fails || []).length && !(v.warns || []).length) rows.push(row(s, 'ok', `${prefix}Setup audit passed`));
-    for (const text of v.fails || []) rows.push(row(s, 'fail', `${prefix}${text}`, AUDIT_FIX));
-    for (const text of v.warns || []) rows.push(row(s, 'warn', `${prefix}${text}`, AUDIT_FIX));
   }
+  // One audit per server; setup.sh names the profile in its own lines.
+  const v = server.verify || {};
+  if (!v.ran) rows.push(v.reason === 'time'
+    ? row(s, 'warn', 'Setup audit not run (out of time)', 'Check again later.')
+    : row(s, 'warn', 'Setup audit not available', `The setup files are missing on the server. ${SETUP_PROMPT}`));
+  else if (!(v.fails || []).length && !(v.warns || []).length) rows.push(row(s, 'ok', 'Setup audit passed'));
+  for (const text of v.fails || []) rows.push(row(s, 'fail', text, AUDIT_FIX));
+  for (const text of v.warns || []) rows.push(row(s, 'warn', text, AUDIT_FIX));
   return rows;
 }
 

@@ -41,9 +41,9 @@ test('the bundled connector counts as reachable only where the router looks for 
 
 const healthyServer = (over = {}) => ({
   ok: true, version: '0.4.0', hostVersion: '0.4.0', pluginTag: 'v0.7.0', error: '',
+  verify: { ran: true, fails: [], warns: [] },
   profiles: [{ profile: 'default', computerBackend: 'alans-way-computer',
-    plugins: [{ name: 'alans-way', version: '0.7.0', class: 'catalog', updateAvailable: false }],
-    verify: { ran: true, fails: [], warns: [] } }],
+    plugins: [{ name: 'alans-way', version: '0.7.0', class: 'catalog', updateAvailable: false }], checked: true }],
   ...over,
 });
 const healthy = (over = {}) => ({
@@ -114,19 +114,28 @@ test('plugin freshness: the catalog pin is the published version, other installs
 });
 
 test('the built-in computer-use backend, the setup audit and the time budget each show up', () => {
-  const findings = buildFindings(healthy({ server: healthyServer({ profiles: [{ profile: 'default', computerBackend: '', plugins: [],
-    verify: { ran: true, fails: ['browser host not running'], warns: ['no primary route bound'] } }] }) }));
+  const findings = buildFindings(healthy({ server: healthyServer({ profiles: [{ profile: 'default', computerBackend: '', plugins: [], checked: true }],
+    verify: { ran: true, fails: ['browser host not running'], warns: ['no primary route bound'] } }) }));
   assert.equal(byTitle(findings, /built-in/).level, 'warn');
   assert.equal(byTitle(findings, /browser host not running/).level, 'fail');
   assert.equal(byTitle(findings, /no primary route bound/).level, 'warn');
-  const late = buildFindings(healthy({ server: healthyServer({ profiles: [{ ...healthyServer().profiles[0], verify: { ran: false, reason: 'time' } }] }) }));
-  assert.match(byTitle(late, /audit/).title, /out of time/);
+  const late = byTitle(buildFindings(healthy({ server: healthyServer({ verify: { ran: false, reason: 'time' } }) })), /audit/);
+  assert.equal(late.title, 'Setup audit not run (out of time)');
+  assert.equal(late.fix, 'Check again later.');
+  assert.match(byTitle(buildFindings(healthy({ server: healthyServer({ verify: { ran: false, reason: 'no-setup' } }) })), /audit/).title, /not available/);
 });
 
-test('several profiles prefix their rows, and a Windows server says its checks are not available', () => {
-  const two = healthyServer({ profiles: [healthyServer().profiles[0], { ...healthyServer().profiles[0], profile: 'work' }] });
+test('several profiles prefix their rows, and the setup audit shows once for the whole server', () => {
+  const two = healthyServer({ profiles: [healthyServer().profiles[0], { ...healthyServer().profiles[0], profile: 'work' }],
+    verify: { ran: true, fails: ['work: plugin disabled'], warns: [] } });
   const findings = buildFindings(healthy({ server: two }));
   assert.ok(findings.some((f) => f.title.startsWith('work: ')));
+  assert.deepEqual(findings.filter((f) => /plugin disabled/.test(f.title)).map((f) => f.title), ['work: plugin disabled']);
+  const passed = buildFindings(healthy({ server: healthyServer({ profiles: two.profiles }) }));
+  assert.deepEqual(passed.filter((f) => /audit/.test(f.title)).map((f) => f.title), ['Setup audit passed']);
+});
+
+test('a Windows server says its checks are not available', () => {
   const windows = buildFindings(healthy({ server: { ok: false, error: 'windows' } })).filter((f) => f.group === 'server');
   assert.deepEqual(windows.map((f) => f.level), ['warn']);
   assert.match(windows[0].title, /Windows servers/);
