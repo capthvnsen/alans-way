@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const path = require('node:path');
 const { fileURLToPath } = require('node:url');
+const { execFileSync } = require('node:child_process');
+const { isSshTarget } = require('./core.cjs');
 
 const RETRYABLE = new Set(['EPERM', 'EBUSY', 'EACCES', 'EMFILE']);
 function sleepSync(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
@@ -148,4 +150,29 @@ async function watchChange({ read, delayMs, onStuck }) {
   } catch {}
 }
 
-module.exports = { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange };
+// `tailscale ip -4` answers this computer's tailnet IPv4, which is the address
+// an agent VM uses to SSH back here. The CLI is not always on PATH: on macOS
+// it lives inside the app bundle, on Windows under Program Files.
+function tailscaleSshHost({ platform = process.platform, programFiles = process.env.ProgramFiles, username = '', run, exists = fs.existsSync } = {}) {
+  if (!username) return '';
+  const candidates = platform === 'darwin'
+    ? ['/Applications/Tailscale.app/Contents/MacOS/Tailscale', 'tailscale']
+    : platform === 'win32'
+      ? [`${programFiles || 'C:\\Program Files'}\\Tailscale\\tailscale.exe`, 'tailscale.exe']
+      : ['tailscale'];
+  const invoke = run || ((file, args) => execFileSync(file, args, { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }));
+  for (const cli of candidates) {
+    if ((cli.includes('/') || cli.includes('\\')) && !exists(cli)) continue;
+    let out;
+    try { out = invoke(cli, ['ip', '-4']); } catch { continue; }
+    const ip = String(out).split('\n').map((line) => line.trim()).find((line) =>
+      /^(\d{1,3}\.){3}\d{1,3}$/.test(line) && line.split('.').every((part) => Number(part) <= 255));
+    if (ip) {
+      const host = `${username}@${ip}`;
+      return isSshTarget(host) ? host : '';
+    }
+  }
+  return '';
+}
+
+module.exports = { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost };

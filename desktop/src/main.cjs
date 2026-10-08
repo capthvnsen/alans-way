@@ -1,5 +1,6 @@
 const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences } = require('electron');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
@@ -7,7 +8,7 @@ const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
-const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange } = require('./shell-support.cjs');
+const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding } = require('./onboarding.cjs');
 const macUpdate = require('./mac-update.cjs');
@@ -151,6 +152,16 @@ const prefsSaver = createSaver({
 });
 function savePreferences() { prefsSaver.flush(); }
 function savePreferencesSoon() { prefsSaver.schedule(); }
+// Onboarding and the path check need this computer's SSH address as the agent
+// machine reaches it; derive it from Tailscale while the field is empty so a
+// fresh install starts with a working answer. A set value is never touched.
+function seedMacSshHost() {
+  if (prefs.macSshHost) return;
+  let username = '';
+  try { username = os.userInfo().username; } catch {}
+  const host = tailscaleSshHost({ username });
+  if (host) prefs.macSshHost = host;
+}
 function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
@@ -837,6 +848,7 @@ function registerIpc() {
         const botId = String(value?.botId || prefs.selectedBotId || '').replace(/[^0-9A-Za-z_-]/g, '');
         if (!botId) throw new Error('Select a bot first. Its ID goes in the agent config.');
         const bot = prefs.bots.find(item => item.id === botId);
+        seedMacSshHost();
         const macSsh = (prefs.macSshHost || '').trim();
         const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
         clipboard.writeText([
@@ -849,12 +861,14 @@ function registerIpc() {
       }
       case 'agent-prompt': {
         const botId = String(value?.botId || prefs.selectedBotId || '').replace(/[^0-9A-Za-z_-]/g, '');
+        seedMacSshHost();
         const text = buildAgentPrompt({ kind: value?.kind === 'update' ? 'update' : 'setup', hostLabel: HOST_LABEL, version: app.getVersion(),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, botId, sshHost: (prefs.macSshHost || '').trim() });
         if (value?.copy !== false) clipboard.writeText(text);
         return text;
       }
       case 'test-agent-path': {
+        seedMacSshHost();
         const host = (prefs.vpsBrowser?.sshHost || '').trim();
         const mac = (prefs.macSshHost || '').trim();
         if (!host) throw new Error('Save a VPS browser SSH host first.');
@@ -923,7 +937,7 @@ function registerIpc() {
       case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/v${app.getVersion()}`); break;
       case 'dismiss-updated': update.justUpdatedFrom = ''; break;
       case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;
-      case 'onboarding-open': prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; savePreferences(); applyLayout(); break;
+      case 'onboarding-open': prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; seedMacSshHost(); savePreferences(); applyLayout(); break;
       case 'move-to-applications': return app.moveToApplicationsFolder();
       case 'sync-telegram': telegramView.webContents.reload(); break;
       case 'open-username': {
@@ -1690,7 +1704,7 @@ function createWindow() {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(async () => {
-    prefs = readPreferences(); prefs.remoteControl = false; pinOnboarding(prefs);
+    prefs = readPreferences(); prefs.remoteControl = false; pinOnboarding(prefs); seedMacSshHost();
     session.defaultSession.protocol.handle(AVATAR_SCHEME, (request) => {
       const image = avatarStore.imageFor(request.url);
       return image ? new Response(image.data, { headers: { 'Content-Type': image.mime, 'Cache-Control': 'private, max-age=3600' } }) : new Response('', { status: 404 });
