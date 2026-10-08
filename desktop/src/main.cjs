@@ -850,12 +850,8 @@ async function authorizeComputerKey(host) {
   if (!helpers) return { ok: false, detail: 'The connect helper script is missing, so the computer key cannot be authorized on this computer.' };
   const run = await localRun('sh', ['-c', cloudConnect.authorizeKeyCommand(helpers), 'sh', key]);
   if (run.code !== 0) return { ok: false, detail: 'Could not authorize the computer key on this computer.' };
-  if (!(prefs.macSshHost || '').trim()) {
-    const cli = cloudConnect.tailscaleCli();
-    const ip = cli ? (await localRun(cli, ['ip', '-4'], { timeoutMs: 8000 })).out.trim().split('\n')[0] : '';
-    const user = process.env.USER || os.userInfo().username || '';
-    if (ip && user && isSshTarget(`${user}@${ip}`)) { prefs.macSshHost = `${user}@${ip}`; savePreferencesSoon(); }
-  }
+  seedMacSshHost();
+  savePreferencesSoon();
   return { ok: true };
 }
 // The saved VPS SSH path check, shared by Settings and the connect step.
