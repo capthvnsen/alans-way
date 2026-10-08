@@ -331,14 +331,29 @@ def resolve_app(pid):
     return next(((dest, path) for dest, path, found in registry_apps(bus) if found == pid), None)
 
 
+def agent_desktop():
+    return os.environ.get('ALANS_WAY_AGENT_DESKTOP') == '1'
+
+
 def check_app(pid):
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+    """The app's AT-SPI handle. On the agent's own desktop it is None for pid 0 (the whole screen) and for apps AT-SPI cannot see."""
+    agent = agent_desktop()
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid < (0 if agent else 1):
         fail('App not found.', 'not_found')
-    app = resolve_app(pid)
-    if not app:
+    if pid == 0:
+        return None
+    try:
+        app = resolve_app(pid)
+    except Fail:
+        if not agent:
+            raise
+        app = None
+    if not app and not agent:
         fail('App not found.', 'not_found')
     if blocked(proc_name(pid)):
         fail('That app is off limits.', 'off_limits')
+    if agent:
+        return app
     front = active_pid()
     if front is None:
         fail('Could not see which window is in front.')
@@ -408,7 +423,13 @@ def bfs_windows(bus, roots, deadline):
     return lists, bool(frontier) or lossy
 
 
+def empty_walk():
+    return {'generation': generation_of(''), 'elements': [], 'handles': {}, 'truncated': False, 'focused': set()}
+
+
 def walk_app(pid, app, menubar=False, store=True):
+    if app is None:
+        return empty_walk()
     bus = get_bus()
     deadline = time.time() + BUDGET
     roots = children_of(bus, app)
@@ -569,6 +590,8 @@ class Target:
 
 def refuse_password_focus(bus, target):
     """Keys and pointer events land on the focused control, so a focused password field blocks them."""
+    if target.app is None:
+        return
     roots = children_of(bus, target.app)
     rule = ([1 << STATE_FOCUSED, 0], 1, {}, 1, [0, 0, 0, 0], 1, [], 1, False)
     args = bus.v('((aiia{ss}iaiiasib)uib)', (rule, 1, 8, True))
@@ -1033,6 +1056,9 @@ def cmd_selftest(req):
     remember(store, 2, 'again', 3)
     remember(store, 9, 9, 3)
     check(list(store) == [4, 2, 9], 'lru')
+    check(empty_walk() == {'generation': generation_of(''), 'elements': [], 'handles': {}, 'truncated': False, 'focused': set()}
+          and empty_walk()['elements'] is not empty_walk()['elements'], 'empty walk')
+    check(walk_app(5, None) == empty_walk() and refuse_password_focus(None, Target(5, None, None)) is None, 'no app, no tree')
     names = ('resolve_app', 'active_pid', 'proc_name')
     saved_fns = {name: globals()[name] for name in names}
     globals().update(resolve_app=lambda pid: ('d', '/p'), proc_name=lambda pid: 'gedit', active_pid=lambda: None)
@@ -1047,6 +1073,33 @@ def cmd_selftest(req):
             check(refused == code, f'check_app {front}')
         globals()['active_pid'] = lambda: 6
         check(check_app(5) == ('d', '/p'), 'check_app allows a background app')
+        try:
+            check_app(0)
+            refused = None
+        except Fail as exc:
+            refused = exc.code
+        check(refused == 'not_found', 'check_app refuses pid 0 on a user desktop')
+        os.environ['ALANS_WAY_AGENT_DESKTOP'] = '1'
+        try:
+            globals()['active_pid'] = lambda: 5
+            check(check_app(5) == ('d', '/p'), 'agent desktop allows the front app')
+            globals()['active_pid'] = lambda: None
+            check(check_app(5) == ('d', '/p'), 'agent desktop needs no front window')
+            check(check_app(0) is None, 'agent desktop allows the whole screen')
+            globals()['resolve_app'] = lambda pid: None
+            check(check_app(5) is None, 'agent desktop allows an app with no accessibility tree')
+            globals()['resolve_app'] = lambda pid: fail('No bus.')
+            check(check_app(5) is None, 'agent desktop allows a missing bus')
+            set_policy({'exact': ['gedit'], 'contains': []})
+            try:
+                check_app(5)
+                refused = None
+            except Fail as exc:
+                refused = exc.code
+            check(refused == 'off_limits', 'agent desktop keeps the policy')
+        finally:
+            del os.environ['ALANS_WAY_AGENT_DESKTOP']
+            POLICY.update(saved)
     finally:
         globals().update(saved_fns)
     return {'ok': True, 'checks': checks}

@@ -167,7 +167,7 @@ async function requestOnce(endpoint, method = 'GET', body, epoch) {
   if (!response.ok) throw new Error(data.error || `Browser request failed (${response.status}).`);
   return data;
 }
-let hostChoice = { key: '', app: false };
+let hostChoice = { key: '', app: false, agentDesktop: false };
 // null means use the app's API; otherwise the in-process driver. Decided per
 // connection (url + token), so an app restart or a host switch is re-checked.
 async function computerService() {
@@ -177,9 +177,12 @@ async function computerService() {
   if (!key || hostChoice.key !== key) {
     const status = await requestOnce('/v1/status');
     const capabilities = Array.isArray(status && status.capabilities) ? status.capabilities : [];
-    hostChoice = { key, app: capabilities.includes('computer') || capabilities.includes('computer-v2') };
+    hostChoice = { key, app: capabilities.includes('computer') || capabilities.includes('computer-v2'), agentDesktop: capabilities.includes('agent-desktop') };
   }
-  return hostChoice.app ? null : require(localDriver).service;
+  if (hostChoice.app) return null;
+  // The helper inherits this; only the agent's own VM host advertises it.
+  if (hostChoice.agentDesktop) process.env.ALANS_WAY_AGENT_DESKTOP = '1';
+  return require(localDriver).service;
 }
 async function request(endpoint, method = 'GET', body, epoch) {
   try {

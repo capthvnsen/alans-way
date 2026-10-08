@@ -266,6 +266,12 @@ test('computer tools use the in-process driver when the connected host has no co
   const text = (await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text;
   assert.match(text, /in-process-marker/);
   assert.doesNotMatch(text, /app-api-marker/);
+  assert.match(text, /"agentDesktop":""/);
   assert.match((await client.callTool({ name: 'workspace_computer_action', arguments: { pid: 1, action: 'press', ref: 'a', generation: 1 } })).content[0].text, /in-process-marker/);
   assert.ok(seen.every((entry) => !entry.line.startsWith('GET /v1/computer') && !entry.line.startsWith('POST /v1/computer')));
+});
+
+test('the in-process driver is told it owns the desktop when the host says agent-desktop', { timeout: 8000 }, async (t) => {
+  const { client } = await computerHost(t, ['tabs', 'agent-desktop']);
+  assert.match((await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text, /"agentDesktop":"1"/);
 });

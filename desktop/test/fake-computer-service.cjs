@@ -3,7 +3,7 @@ const path = require('node:path');
 for (const name of ['computer.cjs', 'vps-computer.cjs']) {
   const filename = path.join(__dirname, '..', 'src', name);
   const service = {
-    apps: async () => [{ pid: 1, name: 'in-process-marker' }],
+    apps: async () => [{ pid: 1, name: 'in-process-marker', agentDesktop: process.env.ALANS_WAY_AGENT_DESKTOP || '' }],
     snapshot: async () => ({ marker: 'in-process-marker' }),
     screenshot: async () => ({ image: '', marker: 'in-process-marker' }),
     menu: async () => ({ marker: 'in-process-marker' }),
