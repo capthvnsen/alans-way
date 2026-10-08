@@ -858,7 +858,7 @@ async function serve() {
         platform: process.platform,
         protocol: 1,
         session: 'shared-vps',
-        capabilities: ['tabs', 'snapshot', 'screenshot', 'background-input', 'control-epochs', 'checkpoint'],
+        capabilities: ['tabs', 'snapshot', 'screenshot', 'background-input', 'control-epochs', 'checkpoint', 'agent-desktop'],
         tabCount: tabs.size,
         browserUp: cdp.socket.readyState === 1,
         busy: [...tabs.values()].some((t) => (t.pendingActions || 0) > 0 || input.isDispatching(t)),

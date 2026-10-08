@@ -24,8 +24,8 @@ on Windows is `hermes-companion serve-windows`.
 
 Linux host notes: desktop control needs an X11 session (Wayland is not
 supported) and these packages: `python3 python3-gi gir1.2-atspi-2.0
-at-spi2-core xdotool` (on Debian or Ubuntu,
-`sudo apt-get install -y python3 python3-gi gir1.2-atspi-2.0 at-spi2-core xdotool`).
+at-spi2-core xdotool x11-utils` (on Debian or Ubuntu,
+`sudo apt-get install -y python3 python3-gi gir1.2-atspi-2.0 at-spi2-core xdotool x11-utils`).
 Screenshots use ImageMagick `import` when present and otherwise fall back
 to `xwd` (converted through netpbm or Pillow), `scrot -a`, or `ffmpeg`
 x11grab, so installing any one of `imagemagick`, `x11-apps`, `scrot`, or

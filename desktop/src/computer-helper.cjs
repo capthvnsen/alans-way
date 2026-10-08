@@ -212,7 +212,9 @@ function normalizeStep(item) {
   if (action === 'key' || action === 'hotkey') return normalizeKey(step);
   if (action === 'type' && (typeof step.text !== 'string' || step.text.length > 2000))
     throw fail('bad_request', 'Text must be a string of at most 2000 characters.');
-  if (REF_ACTIONS.has(action) && typeof step.ref !== 'string') throw fail('bad_request', `${action} needs a ref.`);
+  // Only a desktop the agent owns types at the focused window; elsewhere apps never take focus.
+  const focusType = action === 'type' && step.ref === undefined && process.env.ALANS_WAY_AGENT_DESKTOP === '1';
+  if (REF_ACTIONS.has(action) && !focusType && typeof step.ref !== 'string') throw fail('bad_request', `${action} needs a ref.`);
   if (action === 'menu' && !(Array.isArray(step.path) && step.path.length && step.path.every((part) => typeof part === 'string')))
     throw fail('bad_request', 'menu needs a path such as ["File","Save"].');
   if (action === 'scroll' && !['up', 'down', 'left', 'right'].includes(step.direction))

@@ -236,7 +236,7 @@ async function computerHost(t, capabilities) {
     fs.rmSync(profile, { recursive: true, force: true });
   });
   await client.connect(transport);
-  return { client, seen };
+  return { client, seen, profile };
 }
 
 test('computer tools go through the app API when the connected app advertises computer use', { timeout: 8000 }, async (t) => {
@@ -266,6 +266,26 @@ test('computer tools use the in-process driver when the connected host has no co
   const text = (await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text;
   assert.match(text, /in-process-marker/);
   assert.doesNotMatch(text, /app-api-marker/);
+  assert.match(text, /"agentDesktop":""/);
   assert.match((await client.callTool({ name: 'workspace_computer_action', arguments: { pid: 1, action: 'press', ref: 'a', generation: 1 } })).content[0].text, /in-process-marker/);
   assert.ok(seen.every((entry) => !entry.line.startsWith('GET /v1/computer') && !entry.line.startsWith('POST /v1/computer')));
+});
+
+test('the in-process driver is told it owns the desktop when the host says agent-desktop', { timeout: 8000 }, async (t) => {
+  const { client } = await computerHost(t, ['tabs', 'agent-desktop']);
+  assert.match((await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text, /"agentDesktop":"1"/);
+});
+
+test('the agent-desktop flag follows the host and restarts the helper when it changes', { timeout: 8000 }, async (t) => {
+  const capabilities = ['tabs', 'agent-desktop'];
+  const { client, profile } = await computerHost(t, capabilities);
+  const apps = async () => JSON.parse((await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text).apps[0];
+  assert.equal((await apps()).agentDesktop, '1');
+  capabilities.length = 0;
+  capabilities.push('tabs');
+  const connection = JSON.parse(fs.readFileSync(path.join(profile, 'connection.json'), 'utf8'));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ ...connection, token: 'other-token' }));
+  const after = await apps();
+  assert.equal(after.agentDesktop, '');
+  assert.equal(after.closed, '1');
 });
