@@ -1,5 +1,6 @@
-const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences } = require('electron');
+const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
@@ -9,7 +10,13 @@ const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabFo
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
-const { shouldOnboard, pinOnboarding } = require('./onboarding.cjs');
+const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
+const cloudClaim = require('./cloud-claim.cjs');
+const cloudStatus = require('./cloud-status.cjs');
+const cloudConnect = require('./cloud-connect.cjs');
+const cloudMigrate = require('./cloud-migrate.cjs');
+const cloudModel = require('./cloud-model.cjs');
+const cloudTelegram = require('./cloud-telegram.cjs');
 const macUpdate = require('./mac-update.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
@@ -38,6 +45,13 @@ app.enableSandbox();
 protocol.registerSchemesAsPrivileged([{ scheme: AVATAR_SCHEME, privileges: { secure: true, supportFetchAPI: true } }]);
 app.setName("alans-way-localapp");
 if (process.platform === 'win32') app.setAppUserModelId('app.alans-way.localapp');
+// The paid-computer link arrives as alansway://claim?token=… — on macOS via
+// open-url possibly before the window exists, on Windows in the launch or
+// second-instance argv. Either way the token waits in a queue until the
+// window can act on it, and only the newest is kept.
+app.setAsDefaultProtocolClient('alansway');
+const claimTokens = cloudClaim.createTokenQueue();
+app.on('open-url', (event, url) => { event.preventDefault(); claimTokens.push(cloudClaim.parseClaimUrl(url)); });
 // Keep existing sessions and connector discovery stable when the product name changes.
 app.setPath('userData', process.env.HERMES_WORKSPACE_DATA
   ? path.resolve(process.env.HERMES_WORKSPACE_DATA)
@@ -73,6 +87,7 @@ const vmUpdater = createVmUpdater({ log: (label, error) => logError(label, error
 const vmProgress = {};
 let vmRetrying = false;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
+let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
 const tabs = new Map();
 const vpsTabs = new Map();
 const recentLinkTabs = new Map();
@@ -244,7 +259,7 @@ function selectAgent(id) {
 function getState() {
   return { name: app.getName(), version: app.getVersion(), build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
-    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)),
+    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)), cloud: cloudView(),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
     update: { available: update.available, ready: update.ready, busy: update.busy, error: update.error, justUpdatedFrom: update.justUpdatedFrom,
@@ -656,6 +671,274 @@ function startUpdates() {
   } else return;
   check(); setInterval(check, 6 * 60 * 60 * 1000);
 }
+// The claimed session stays encrypted in preferences and is never logged or
+// sent anywhere but the cloud API, so a restart or a second click on the
+// claim link resumes onboarding instead of claiming the token again.
+function cloudSession() {
+  try {
+    const enc = prefs?.cloud?.sessionEnc;
+    if (!enc || !safeStorage.isEncryptionAvailable()) return '';
+    return safeStorage.decryptString(Buffer.from(enc, 'base64'));
+  } catch { return ''; }
+}
+function cloudView() {
+  const cloud = prefs?.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+  const session = cloudSession();
+  const computer = cloudComputer ? { state: cloudComputer.state || '', step: cloudComputer.step || '', error: cloudComputer.error || '',
+    name: cloudComputer.computer_name || cloud.computerName || '', tailscaleUrl: cloudComputer.tailscale_url || cloud.tailscaleUrl || '' } : null;
+  return { claimed: !!session || cloud.diy === true, diy: cloud.diy === true,
+    step: cloudStep(prefs, cloudComputer) || '',
+    migration: cloud.migration || '', tokenedProfiles: cloud.tokenedProfiles || [],
+    migrateCommand: cloud.migration === 'bring' && (prefs.vpsBrowser?.sshHost || '').trim() ? cloudMigrate.migrateCommand(prefs.vpsBrowser.sshHost.trim()) : '',
+    telegramFallback: cloud.telegramFallback === true, botUsername: cloud.botUsername || '',
+    computer, error: cloudError,
+    supportUrl: session ? `${cloudClaim.apiBase()}/api/discord/start?session=${encodeURIComponent(session)}` : `${cloudClaim.apiBase()}/api/discord/start` };
+}
+// The wait step polls the cloud API; each answer lands in cloudComputer for
+// cloudView and advances the stored step once pairing can start.
+function startCloudPolling() {
+  cloudPollAbort?.abort();
+  const session = cloudSession();
+  if (!session) return;
+  cloudPollAbort = new AbortController();
+  const signal = cloudPollAbort.signal;
+  cloudStatus.pollComputer(cloudClaim.apiBase(), session, {
+    signal,
+    onUpdate(data) {
+      cloudComputer = data;
+      const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+      if (data.computer_name && cloud.computerName !== data.computer_name) cloud.computerName = data.computer_name;
+      if (data.tailscale_url && cloud.tailscaleUrl !== data.tailscale_url) cloud.tailscaleUrl = data.tailscale_url;
+      if (data.state === 'ready' && cloud.step === 'cloud-wait') cloud.step = 'connect';
+      prefs.cloud = cloud;
+      savePreferencesSoon();
+      broadcast();
+    },
+  }).catch((error) => { if (!signal.aborted) { cloudError = error.message; broadcast(); } });
+}
+function startCloudOnboarding() {
+  prefs.onboarded = false;
+  activeTabId = 'home';
+  startCloudPolling();
+  showWindow();
+  broadcast();
+}
+// The account's first name comes out of Telegram's own IndexedDB state, the
+// same shape the preload polls, read directly when the wizard needs it.
+async function telegramFirstName() {
+  try {
+    if (!telegramView || telegramView.webContents.isDestroyed()) return '';
+    return await telegramView.webContents.executeJavaScript(`(async () => {
+      const request = indexedDB.open('tt-data');
+      const db = await new Promise((resolve) => { request.onsuccess = () => resolve(request.result); request.onerror = request.onupgradeneeded = () => resolve(null); });
+      if (!db || !db.objectStoreNames.contains('store')) return '';
+      const get = db.transaction('store', 'readonly').objectStore('store').get('tt-global-state');
+      const state = await new Promise((resolve) => { get.onsuccess = () => resolve(get.result || null); get.onerror = () => resolve(null); });
+      return String(state?.users?.byId?.[state?.currentUserId]?.firstName || '');
+    })()`);
+  } catch { return ''; }
+}
+// One env write + a gateway restart, shared by the API-key, model and bot-token
+// steps. The value travels over ssh stdin so it never shows in a process list.
+async function cloudWriteEnv(host, key, value, tokenedProfiles) {
+  const profiles = await sshRun(host, 'ls ~/.hermes/profiles 2>/dev/null');
+  const profile = key === 'TELEGRAM_BOT_TOKEN' ? cloudTelegram.untokenedProfile(profiles.out, tokenedProfiles) : cloudModel.chooseProfile(profiles.out);
+  const envPath = cloudModel.envPathFor(profile);
+  const current = await sshRun(host, cloudConnect.sshReadCommand(envPath));
+  // A failed read (missing file, ssh error) means an empty base — never feed
+  // error text into setEnvValue or the write would clobber the real .env.
+  const write = await sshWrite(host, envPath, cloudModel.setEnvValue(current.code === 0 ? current.out : '', key, value));
+  if (write.code !== 0) return { ok: false, detail: 'The computer refused the env file write.' };
+  const status = await sshRun(host, 'supervisorctl status 2>/dev/null');
+  await sshRun(host, cloudModel.gatewayRestartCommand(status.out), { timeoutMs: 30000 });
+  return { ok: true, profile };
+}
+// Minted or pasted, a good bot token finishes the wizard the same way: write
+// the env, open the bot chat and send /start so the pair meets.
+async function cloudFinishTelegram(token, username) {
+  const host = (prefs.vpsBrowser?.sshHost || '').trim();
+  const write = await cloudWriteEnv(host, 'TELEGRAM_BOT_TOKEN', token, prefs.cloud?.tokenedProfiles);
+  if (!write.ok) return { done: false, detail: write.detail };
+  const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+  prefs.cloud = { ...cloud, botUsername: username, step: 'done' };
+  prefs.onboarded = true;
+  savePreferences();
+  if (telegramView && !telegramView.webContents.isDestroyed()) {
+    const send = await telegramView.webContents.executeJavaScript(cloudTelegram.sendMessageScript(username, '/start')).catch(() => null);
+    if (send?.ok !== true) logError('cloud-telegram', new Error(`Opening the @${username} chat and sending /start did not complete.`));
+  }
+  broadcast();
+  return { done: true, username };
+}
+// Local and remote probes for the connect step. Both cap output so a chatty
+// remote can never grow memory without bound.
+function localRun(file, args, { timeoutMs = 10000 } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(file, args, { timeout: timeoutMs });
+    let out = '', err = '';
+    child.stdout.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
+    // stderr stays separate: a remote warning must not corrupt parsers that
+    // read stdout (JSON state files, `cat`-ed env files, tailscale --json).
+    child.stderr.on('data', (chunk) => { err = (err + chunk).slice(-20000); });
+    child.on('error', (error) => resolve({ code: -1, out, err: err || String(error?.message || error) }));
+    child.on('close', (code) => resolve({ code: code ?? -1, out, err }));
+  });
+}
+// accept-new pins the first-seen host key without prompting (BatchMode cannot
+// ask). The wizard assigns the ssh host itself, so =yes would fail every new
+// peer with "Host key verification failed."
+function sshRun(host, remote, { timeoutMs = 15000 } = {}) {
+  return localRun('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, remote], { timeoutMs });
+}
+// Writes a whole file over stdin so the content never lands in the remote
+// command line (keys would leak into ps otherwise). Leading ~ stays unquoted
+// so it expands; the rest of the path is single-quoted against remote-side
+// interpolation of profile names.
+function sshWrite(host, remotePath, content, { timeoutMs = 15000 } = {}) {
+  const p = String(remotePath);
+  const target = p.startsWith('~/') ? `"$HOME"/${cloudMigrate.shellQuote(p.slice(2))}` : cloudMigrate.shellQuote(p);
+  return new Promise((resolve) => {
+    const child = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, `cat > ${target}`], { timeout: timeoutMs });
+    let out = '', err = '';
+    child.stdout.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
+    child.stderr.on('data', (chunk) => { err = (err + chunk).slice(-20000); });
+    child.stdin.on('error', () => {});
+    child.on('error', () => resolve({ code: -1, out, err }));
+    child.on('close', (code) => resolve({ code: code ?? -1, out, err }));
+    child.stdin.end(content);
+  });
+}
+// scripts/connect-mac.sh keeps its authorized_keys editor between "tailnet
+// helpers" markers; read the real script (the packaged app carries it as an
+// extra resource) so the wizard installs keys exactly the way the script does.
+function connectMacHelpers() {
+  const candidates = [path.join(ROOT, '..', '..', 'scripts', 'connect-mac.sh')];
+  try { if (app.isPackaged) candidates.unshift(path.join(process.resourcesPath, 'connect-mac.sh')); } catch {}
+  for (const file of candidates) {
+    try {
+      const block = cloudConnect.tailnetHelpers(fs.readFileSync(file, 'utf8'));
+      if (block) return block;
+    } catch {}
+  }
+  return '';
+}
+// The computer must ssh back into this machine for AGENT_PATH_OK: ensure it
+// has a keypair, then authorize its public key here restricted to the tailnet.
+// While there, fill in this machine's ssh address when it is derivable, so the
+// path check can actually run in the claimed flow.
+async function authorizeComputerKey(host) {
+  if (process.platform === 'win32') return { ok: true };
+  const pub = await sshRun(host, cloudConnect.ensureKeypairCommand());
+  const key = pub.code === 0 ? cloudConnect.publicKeyLine(pub.out) : '';
+  if (!key) return { ok: false, detail: 'The computer did not produce an SSH key to authorize here.' };
+  const helpers = connectMacHelpers();
+  if (!helpers) return { ok: false, detail: 'The connect helper script is missing, so the computer key cannot be authorized on this computer.' };
+  const run = await localRun('sh', ['-c', cloudConnect.authorizeKeyCommand(helpers), 'sh', key]);
+  if (run.code !== 0) return { ok: false, detail: 'Could not authorize the computer key on this computer.' };
+  if (!(prefs.macSshHost || '').trim()) {
+    const cli = cloudConnect.tailscaleCli();
+    const ip = cli ? (await localRun(cli, ['ip', '-4'], { timeoutMs: 8000 })).out.trim().split('\n')[0] : '';
+    const user = process.env.USER || os.userInfo().username || '';
+    if (ip && user && isSshTarget(`${user}@${ip}`)) { prefs.macSshHost = `${user}@${ip}`; savePreferencesSoon(); }
+  }
+  return { ok: true };
+}
+// The saved VPS SSH path check, shared by Settings and the connect step.
+function testAgentPath() {
+  const host = (prefs.vpsBrowser?.sshHost || '').trim();
+  const mac = (prefs.macSshHost || '').trim();
+  if (!host) throw new Error('Save a VPS browser SSH host first.');
+  if (!isSshTarget(host)) throw new Error('The saved VPS SSH address is invalid. Re-enter it as user@host or host.');
+  if (!mac) throw new Error(`Enter this ${HOST_LABEL === 'windows' ? 'PC' : 'computer'}’s SSH address as your VPS reaches it.`);
+  if (!isSshTarget(mac)) throw new Error('The saved SSH address for this computer is invalid. Re-enter it as user@host or host.');
+  return new Promise((resolve) => {
+    const child = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host,
+      `ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new ${mac} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
+    let out = '';
+    child.stdout.on('data', chunk => { out += chunk; });
+    child.stderr.on('data', chunk => { out += chunk; });
+    child.on('error', () => resolve({ ok: false, detail: 'Could not start ssh. Check local ssh access.' }));
+    child.on('close', code => resolve(out.includes('AGENT_PATH_OK')
+      ? { ok: true, detail: `VPS reaches this ${HOST_LABEL === 'mac' ? 'Mac' : HOST_LABEL === 'windows' ? 'PC' : 'computer'} over ssh, so agents can route here.` }
+      : out.includes('Tailscale SSH requires an additional check')
+        ? { ok: false, detail: 'Tailscale SSH on the VPS wants a browser check for this login, which unattended agents cannot pass. In the Tailscale admin console → Access controls, change the SSH rule for this user from "check" to "accept".' }
+        : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
+  });
+}
+// The connect step advances as far as it can each click: CLI check, pairing
+// status, the computer's own state file, then the saved return path check.
+// {stage} tells the wizard which message to show; 'done' moves to migrate.
+async function cloudConnectRun(diyHost) {
+  const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+  if (diyHost) {
+    if (!isSshTarget(diyHost)) throw new Error('Enter the server SSH address as user@host or host, with no spaces or symbols.');
+    cloud.diy = true;
+    cloud.step = 'connect';
+    prefs.vpsBrowser = { ...(prefs.vpsBrowser || {}), sshHost: diyHost };
+    prefs.cloud = cloud;
+    savePreferences();
+  }
+  if (cloud.diy === true) {
+    const sshHost = (prefs.vpsBrowser?.sshHost || '').trim();
+    if (!sshHost) return { stage: 'host', ok: false, detail: 'Enter the server SSH address first.' };
+    const probe = await sshRun(sshHost, 'echo CONNECT_OK');
+    if (probe.code !== 0 || !probe.out.includes('CONNECT_OK')) return { stage: 'ssh', ok: false, detail: `Could not reach ${sshHost} over SSH. Check the address and your key, then try again.` };
+    const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
+    if (remote?.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the server failed.' };
+    const back = await authorizeComputerKey(sshHost);
+    if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
+    if ((prefs.macSshHost || '').trim()) {
+      const path = await testAgentPath();
+      if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
+    }
+    setCloudStep(prefs, 'migrate');
+    savePreferences();
+    return { stage: 'done', ok: true, detail: `Connected to ${sshHost}.` };
+  }
+  const cli = cloudConnect.tailscaleCli();
+  if (!cli) return { stage: 'cli', ok: false, detail: 'Tailscale is not installed on this computer. Install it, then check again.' };
+  const url = cloud.tailscaleUrl || cloudComputer?.tailscale_url || '';
+  if (url && !cloud.pairingOpened) { shell.openExternal(url).catch(() => {}); cloud.pairingOpened = true; prefs.cloud = cloud; savePreferencesSoon(); }
+  const status = await localRun(...cloudConnect.pairPollCommand(cli));
+  const name = cloud.computerName || cloudComputer?.computer_name || '';
+  const peer = status.code === 0 ? cloudConnect.findPeer(status.out, name) : null;
+  if (!peer) return { stage: 'pairing', ok: false, detail: url ? 'Waiting for the computer to join your tailnet. Finish the pairing page, then check again.' : 'Waiting for the computer to join your tailnet…' };
+  const sshHost = `root@${peer.ip}`;
+  if (prefs.vpsBrowser?.sshHost !== sshHost) { prefs.vpsBrowser = { ...(prefs.vpsBrowser || {}), sshHost }; savePreferences(); }
+  const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
+  if (!remote) return { stage: 'state', ok: false, detail: 'The computer joined Tailscale. Waiting for its setup to finish…' };
+  if (remote.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the computer failed.' };
+  if (remote.state !== 'ready' && remote.step !== 'paired') return { stage: 'state', ok: false, detail: 'The computer is still finishing its setup…' };
+  const back = await authorizeComputerKey(sshHost);
+  if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
+  if ((prefs.macSshHost || '').trim()) {
+    const path = await testAgentPath();
+    if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
+  }
+  setCloudStep(prefs, 'migrate');
+  savePreferences();
+  return { stage: 'done', ok: true, detail: `Connected to ${name || peer.hostName} at ${sshHost}.` };
+}
+async function claimWithToken(token) {
+  if (!token) return;
+  // A stored session means this token (or an earlier one) already claimed the
+  // computer: resume the wizard, or ignore a stale link once setup is done.
+  if (cloudSession()) { if (prefs.cloud?.step !== 'done') startCloudOnboarding(); return; }
+  try {
+    // Encryption is checked before the POST: the token is single-use, so a
+    // machine that cannot store the session must fail before consuming it.
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is unavailable on this computer.');
+    const installId = cloudClaim.ensureInstallId(prefs);
+    savePreferencesSoon();
+    const result = await cloudClaim.claim(cloudClaim.apiBase(), token, installId);
+    const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+    prefs.cloud = { ...cloud, sessionEnc: safeStorage.encryptString(result.session).toString('base64'), sessionExpiresAt: result.expiresAt, step: 'cloud-wait' };
+    cloudError = '';
+    savePreferences();
+    buildMenu();
+    startCloudOnboarding();
+  } catch (error) { cloudError = error.message; startCloudOnboarding(); }
+}
 function registerIpc() {
   ipcMain.handle('workspace:get', (event) => { trustSender(event); return getState(); });
   ipcMain.on('workspace:layout', (event, value) => { try { trustSender(event); layout = value || {}; applyLayout(); } catch {} });
@@ -854,27 +1137,7 @@ function registerIpc() {
         if (value?.copy !== false) clipboard.writeText(text);
         return text;
       }
-      case 'test-agent-path': {
-        const host = (prefs.vpsBrowser?.sshHost || '').trim();
-        const mac = (prefs.macSshHost || '').trim();
-        if (!host) throw new Error('Save a VPS browser SSH host first.');
-        if (!isSshTarget(host)) throw new Error('The saved VPS SSH address is invalid. Re-enter it as user@host or host.');
-        if (!mac) throw new Error(`Enter this ${HOST_LABEL === 'windows' ? 'PC' : 'computer'}’s SSH address as your VPS reaches it.`);
-        if (!isSshTarget(mac)) throw new Error('The saved SSH address for this computer is invalid. Re-enter it as user@host or host.');
-        return new Promise((resolve) => {
-          const child = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host,
-            `ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=yes ${mac} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
-          let out = '';
-          child.stdout.on('data', chunk => { out += chunk; });
-          child.stderr.on('data', chunk => { out += chunk; });
-          child.on('error', () => resolve({ ok: false, detail: 'Could not start ssh. Check local ssh access.' }));
-          child.on('close', code => resolve(out.includes('AGENT_PATH_OK')
-            ? { ok: true, detail: `VPS reaches this ${HOST_LABEL === 'mac' ? 'Mac' : HOST_LABEL === 'windows' ? 'PC' : 'computer'} over ssh, so agents can route here.` }
-            : out.includes('Tailscale SSH requires an additional check')
-              ? { ok: false, detail: 'Tailscale SSH on the VPS wants a browser check for this login, which unattended agents cannot pass. In the Tailscale admin console → Access controls, change the SSH rule for this user from "check" to "accept".' }
-              : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
-        });
-      }
+      case 'test-agent-path': return testAgentPath();
       case 'show-data': shell.openPath(app.getPath('userData')); break;
       case 'mac-permissions': return process.platform === 'darwin' ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null;
       case 'open-mac-privacy': if (process.platform === 'darwin') shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${value.pane === 'screen' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility'}`); break;
@@ -924,6 +1187,185 @@ function registerIpc() {
       case 'dismiss-updated': update.justUpdatedFrom = ''; break;
       case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;
       case 'onboarding-open': prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; savePreferences(); applyLayout(); break;
+      case 'cloud-claim-code': {
+        const token = cloudClaim.claimToken(value.code);
+        if (!token) throw new Error('That does not look like a claim code or claim link.');
+        await claimWithToken(token);
+        if (cloudError) throw new Error(cloudError);
+        break;
+      }
+      case 'cloud-goto': {
+        if (value.step === 'done' && prefs.cloud) { prefs.cloud.step = 'done'; prefs.onboarded = true; savePreferences(); break; }
+        if (!setCloudStep(prefs, String(value.step || ''))) throw new Error('Unknown setup step.');
+        savePreferences(); break;
+      }
+      case 'cloud-next': {
+        const next = nextCloudStep(prefs, prefs.cloud?.step);
+        if (next === 'done') { prefs.cloud.step = 'done'; prefs.onboarded = true; }
+        else setCloudStep(prefs, next);
+        savePreferences(); break;
+      }
+      case 'cloud-connect': return cloudConnectRun(String(value.host || '').trim());
+      case 'cloud-open-pairing': {
+        const url = prefs.cloud?.tailscaleUrl || cloudComputer?.tailscale_url || '';
+        if (url) await shell.openExternal(url);
+        break;
+      }
+      case 'cloud-tailscale-download': await shell.openExternal('https://tailscale.com/download'); break;
+      case 'cloud-diy': {
+        const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+        if (value.off === true) {
+          // Back out of the DIY connect card: leave cloud mode entirely so the
+          // normal wizard shows again.
+          prefs.cloud = { ...cloud, diy: false };
+          savePreferences();
+          broadcast();
+          break;
+        }
+        prefs.cloud = { ...cloud, diy: true, step: 'connect' };
+        prefs.onboarded = false;
+        savePreferences();
+        startCloudOnboarding();
+        break;
+      }
+      case 'cloud-migrate': {
+        if (value.choice !== 'bring') { setCloudStep(prefs, nextCloudStep(prefs, 'migrate')); if (nextCloudStep(prefs, 'migrate') === 'done') { prefs.cloud.step = 'done'; prefs.onboarded = true; } savePreferences(); break; }
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+        prefs.cloud = { ...cloud, migration: 'bring' };
+        savePreferences();
+        return { command: cloudMigrate.migrateCommand(host) };
+      }
+      case 'cloud-migrate-copy': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        clipboard.writeText(cloudMigrate.migrateCommand(host));
+        break;
+      }
+      case 'cloud-migrate-local': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        return new Promise((resolve) => {
+          // The migrate script runs in a hidden shell; each chunk is relayed to
+          // the wizard log so the run is visible without a terminal.
+          const child = spawn('bash', ['-lc', cloudMigrate.migrateCommand(host)]);
+          let out = '';
+          const feed = (chunk) => {
+            out = (out + chunk).slice(-60000);
+            try { if (win && !win.isDestroyed()) win.webContents.send('workspace:cloud-log', String(chunk)); } catch {}
+          };
+          child.stdout.on('data', feed);
+          child.stderr.on('data', feed);
+          child.on('error', () => resolve({ done: false, detail: 'Could not start the local migrate run.' }));
+          child.on('close', (code) => resolve({ done: code === 0, detail: code === 0 ? 'The local migrate run finished.' : `The migrate run exited with ${code}.` }));
+        });
+      }
+      case 'cloud-migrate-check': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        const marker = await sshRun(host, cloudMigrate.migrateCheckCommand());
+        // ls exits non-zero when one glob has no match even while printing the
+        // other — the stdout content alone carries the signal.
+        if (!marker.out.trim()) return { done: false, detail: 'No migration has landed on the computer yet.' };
+        const grep = await sshRun(host, cloudMigrate.profilesWithTokenCommand());
+        const profiles = await sshRun(host, 'ls ~/.hermes/profiles 2>/dev/null');
+        const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+        prefs.cloud = { ...cloud, profiles: cloudMigrate.profileNames(profiles.out), tokenedProfiles: cloudMigrate.profilesWithToken(grep.out) };
+        setCloudStep(prefs, 'model');
+        savePreferences();
+        return {
+          done: true,
+          profiles: cloudMigrate.namedTokenedProfiles(prefs.cloud.tokenedProfiles),
+          sharedToken: prefs.cloud.tokenedProfiles.includes(cloudMigrate.SHARED_TOKEN),
+        };
+      }
+      case 'cloud-model': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        const key = String(value.key || '').trim();
+        if (!/^sk-[\w-]{10,}$/.test(key)) throw new Error('Paste the Anthropic API key (it starts with sk-).');
+        const profile = cloudModel.chooseProfile((await sshRun(host, 'ls ~/.hermes/profiles 2>/dev/null')).out);
+        const envPath = cloudModel.envPathFor(profile);
+        const current = await sshRun(host, cloudConnect.sshReadCommand(envPath));
+        const write = await sshWrite(host, envPath, cloudModel.setEnvValue(current.code === 0 ? current.out : '', 'ANTHROPIC_API_KEY', key));
+        if (write.code !== 0) return { done: false, detail: 'The key could not be written on the computer.' };
+        const status = await sshRun(host, 'supervisorctl status 2>/dev/null');
+        await sshRun(host, cloudModel.gatewayRestartCommand(status.out), { timeoutMs: 30000 });
+        prefs.cloud = { ...(prefs.cloud || {}), model: 'apikey' };
+        const next = nextCloudStep(prefs, 'model');
+        if (next === 'done') { prefs.cloud.step = 'done'; prefs.onboarded = true; } else setCloudStep(prefs, next);
+        savePreferences();
+        return { done: true, detail: 'API key saved and the gateway restarted.' };
+      }
+      case 'cloud-model-subscribe': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        // The OAuth flow prints a URL once; it opens in the user's browser here
+        // while the remote waits, and cloud-model-check polls for the result.
+        if (!modelAuthChild) {
+          modelAuthChild = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, cloudModel.authLoginCommand()]);
+          let seen = '', opened = false;
+          const feed = (chunk) => {
+            seen = (seen + chunk).slice(-20000);
+            const url = cloudModel.extractAuthUrl(seen);
+            if (url && !opened) { opened = true; shell.openExternal(url).catch(() => {}); }
+            try { if (win && !win.isDestroyed()) win.webContents.send('workspace:cloud-log', String(chunk)); } catch {}
+          };
+          modelAuthChild.stdout.on('data', feed);
+          modelAuthChild.stderr.on('data', feed);
+          const clear = () => { modelAuthChild = null; };
+          modelAuthChild.on('close', clear);
+          modelAuthChild.on('error', clear);
+        }
+        return { done: false, detail: 'The sign-in page opened in your browser. Finish it there, then check again.' };
+      }
+      case 'cloud-model-check': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        const status = await sshRun(host, 'hermes auth status anthropic 2>/dev/null');
+        if (!cloudModel.authLoggedIn(status.out)) return { done: false, detail: 'Still waiting for the sign-in to finish.' };
+        const supervisor = await sshRun(host, 'supervisorctl status 2>/dev/null');
+        await sshRun(host, cloudModel.gatewayRestartCommand(supervisor.out), { timeoutMs: 30000 });
+        prefs.cloud = { ...(prefs.cloud || {}), model: 'subscription' };
+        const next = nextCloudStep(prefs, 'model');
+        if (next === 'done') { prefs.cloud.step = 'done'; prefs.onboarded = true; } else setCloudStep(prefs, next);
+        savePreferences();
+        return { done: true, detail: 'Signed in.' };
+      }
+      case 'cloud-telegram': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        if (!telegramView || telegramView.webContents.isDestroyed()) throw new Error('Telegram is not loaded.');
+        if (telegramStatus !== 'connected') return { done: false, detail: 'Sign in to Telegram on the left first.' };
+        const wc = telegramView.webContents, first = await telegramFirstName();
+        // Up to four tries: the first username plus three suffixed retries when
+        // BotFather says taken or rate-limits, then the paste-token fallback.
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const username = cloudTelegram.retryUsername(first, attempt);
+          const run = await wc.executeJavaScript(cloudTelegram.botFatherScript({ name: cloudTelegram.botName(first), username })).catch(() => null);
+          const reply = cloudTelegram.parseBotFatherReply(run?.reply || '');
+          if (reply.type !== 'token') continue;
+          const check = await cloudTelegram.validateToken(reply.token);
+          if (!check.ok) continue;
+          return cloudFinishTelegram(reply.token, check.username || username);
+        }
+        const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+        prefs.cloud = { ...cloud, telegramFallback: true };
+        savePreferences(); broadcast();
+        return { done: false, fallback: true, detail: 'BotFather did not mint a bot after a few tries. Paste a token below instead.' };
+      }
+      case 'cloud-telegram-paste': {
+        const host = (prefs.vpsBrowser?.sshHost || '').trim();
+        if (!host) throw new Error('Connect to the computer first.');
+        // The finish still needs the embedded Telegram: the bot chat opens and
+        // /start is sent through it, so a signed-out pane cannot complete.
+        if (telegramStatus !== 'connected') return { done: false, detail: 'Sign in to Telegram on the left first.' };
+        const check = await cloudTelegram.validateToken(String(value.token || '').trim());
+        if (!check.ok) return { done: false, detail: 'Telegram did not accept that token. Check it and try again.' };
+        return cloudFinishTelegram(String(value.token).trim(), check.username);
+      }
+      case 'cloud-discord': shell.openExternal(cloudView().supportUrl); break;
       case 'move-to-applications': return app.moveToApplicationsFolder();
       case 'sync-telegram': telegramView.webContents.reload(); break;
       case 'open-username': {
@@ -1614,6 +2056,18 @@ function watchTelegram(wc) {
   }, 3000);
   timer.unref();
 }
+// A claimed cloud computer keeps a permanent way back to support; the menu is
+// rebuilt when a session lands or clears so the item tracks cloud.sessionEnc.
+function buildMenu() {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
+    { label: 'File', submenu: [{ label: 'New Browser Tab', accelerator: 'CmdOrCtrl+T', click: () => createTab({}) }, { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(activeTabId) }, ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, { role: 'quit' }])] },
+    { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
+    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: 'CmdOrCtrl+R', click: () => tabs.get(activeTabId)?.view.webContents.reload() }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
+    ...(process.platform === 'darwin' ? [{ label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }] : []),
+    ...(prefs?.cloud?.sessionEnc ? [{ label: 'Help', submenu: [{ label: 'Get help', click: () => shell.openExternal(cloudView().supportUrl).catch(() => {}) }] }] : []),
+  ]));
+}
 function createWindow() {
   nativeTheme.themeSource = 'dark';
   win = new BrowserWindow({ width: 1550, height: 980, minWidth: 1120, minHeight: 680, backgroundColor: '#09090a', title: app.getName(),
@@ -1638,6 +2092,7 @@ function createWindow() {
   });
   win.contentView.addChildView(remoteView);
   registerIpc();
+  claimTokens.setReady(claimWithToken);
   win.loadFile(path.join(ROOT, 'index.html'));
   remoteView.webContents.loadFile(path.join(ROOT, 'remote.html'));
   telegramView.webContents.loadURL(prefs.selectedBotId ? `${TELEGRAM}#${prefs.selectedBotId}` : TELEGRAM).catch(() => {});
@@ -1657,13 +2112,7 @@ function createWindow() {
     else if (process.platform === 'linux') { event.preventDefault(); win.minimize(); }
   });
   for (const name of ['show', 'hide', 'minimize', 'restore', 'focus', 'blur']) win.on(name, () => sendPollTier());
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
-    { label: 'File', submenu: [{ label: 'New Browser Tab', accelerator: 'CmdOrCtrl+T', click: () => createTab({}) }, { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(activeTabId) }, ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, { role: 'quit' }])] },
-    { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: 'CmdOrCtrl+R', click: () => tabs.get(activeTabId)?.view.webContents.reload() }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
-    ...(process.platform === 'darwin' ? [{ label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }] : []),
-  ]));
+  buildMenu();
   startApi();
   // Read the real pointer position, even over native child views or another app.
   // This never installs a global input hook or moves the system cursor.
@@ -1691,6 +2140,10 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(async () => {
     prefs = readPreferences(); prefs.remoteControl = false; pinOnboarding(prefs);
+    // A cold start launched by the claim link (Windows/Linux) carries the URL in argv.
+    for (const arg of process.argv) claimTokens.push(cloudClaim.parseClaimUrl(arg));
+    // A session already stored means onboarding was in progress: resume it.
+    if (cloudSession() && prefs.cloud?.step && prefs.cloud.step !== 'done') prefs.onboarded = false;
     session.defaultSession.protocol.handle(AVATAR_SCHEME, (request) => {
       const image = avatarStore.imageFor(request.url);
       return image ? new Response(image.data, { headers: { 'Content-Type': image.mime, 'Cache-Control': 'private, max-age=3600' } }) : new Response('', { status: 404 });
@@ -1740,10 +2193,14 @@ else {
     extensionStore = createExtensionStore({ root: app.getPath('userData'), session: browserSession, dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences, onChanged: broadcast,
       canInstall: frame => [...tabs.values()].some(tab => tab.id === activeTabId && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
     await extensionStore.installStore(); createWindow(); await extensionStore.restore(); broadcast();
+    if (cloudSession() && prefs.cloud?.step && prefs.cloud.step !== 'done') startCloudPolling();
     startUpdates();
   });
-  app.on('second-instance', showWindow);
+  app.on('second-instance', (_event, argv) => {
+    for (const arg of argv || []) claimTokens.push(cloudClaim.parseClaimUrl(arg));
+    showWindow();
+  });
   app.on('activate', showWindow);
-  app.on('before-quit', () => { isQuitting = true; hostComputer?.close(); clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close(); });
+  app.on('before-quit', () => { isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

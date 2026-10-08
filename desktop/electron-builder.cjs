@@ -30,6 +30,9 @@ function createConfig(env) {
     productName: 'alans-way-localapp',
     asar: false,
     directories: { output: 'dist' },
+    // The cloud connect step reuses the tailnet key helpers from the repo's
+    // connect script at runtime, so it must ship inside the package.
+    extraResources: [{ from: '../scripts/connect-mac.sh', to: 'connect-mac.sh' }],
     files: [
       '**/*',
       '!test{,/**}',
@@ -38,6 +41,10 @@ function createConfig(env) {
       '!scripts/setup-signing-secrets.sh',
     ],
     publish: PUBLISH,
+    // The paid-computer link is alansway://claim?token=…; without a declared
+    // scheme the packaged macOS app is never a valid handler, so the runtime
+    // setAsDefaultProtocolClient call alone cannot deliver cold-start links.
+    protocols: [{ name: 'alansway', schemes: ['alansway'] }],
     mac: {
       target: [
         { target: 'dmg', arch: ['arm64'] },
