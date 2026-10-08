@@ -126,7 +126,7 @@ Short-term themes, all in progress or planned:
 
 DIY is free. Host Hermes on Orgo and get 25% off the first 3 months: [orgo.ai/?r=alan](https://orgo.ai/?r=alan).
 
-Or take the $49/mo Support Plan: setup done with you, priority hands-on support, an Orgo virtual computer with up to 8GB RAM, and you can bring your existing agent. Details at [openalan.com/#pricing](https://openalan.com/#pricing).
+Or take the $79.95/mo Support Plan: your own Orgo cloud computer (up to 8GB RAM), seamless automated setup, 1:1 support, 2,000+ fast browser and scraping tasks a month and 250 voice minutes. You can bring your existing agent. Details at [openalan.com/#pricing](https://openalan.com/#pricing).
 
 ## Honest boundaries
 
