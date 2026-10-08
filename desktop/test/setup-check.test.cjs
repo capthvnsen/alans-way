@@ -121,3 +121,53 @@ test('a server without the app installed points at the setup prompt', () => {
   const findings = buildFindings(healthy({ server: { ok: false, error: 'no browser host checkout found (expected …)' } }));
   assert.match(findings.find((f) => f.group === 'server').fix, /setup prompt/);
 });
+
+const { redactReport, buildReport } = require('../src/setup-check.cjs');
+
+test('redactReport removes each secret shape and keeps addresses, versions and hashes', () => {
+  const token = '123456789:AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc';
+  const text = [
+    `GET https://api.telegram.org/bot${token}/getUpdates failed`,
+    `TELEGRAM_BOT_TOKEN=${token}`,
+    '{"url":"http://127.0.0.1:9464","token":"e3b0c44298fc1c149afb"}',
+    'Authorization: Bearer abc.def.ghi',
+    'curl -H "Bearer zzz-123"',
+    'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwx',
+    '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----',
+    'server root@100.64.0.5, app 0.4.0, plugin ce51733b66291e69f616db48ae8799c0de50db43',
+  ].join('\n');
+  const out = redactReport(text);
+  for (const secret of [token, 'e3b0c44298fc1c149afb', 'abc.def.ghi', 'zzz-123', 'sk-proj-abcdefghijklmnopqrstuvwx', 'b3BlbnNzaC1rZXk'])
+    assert.equal(out.includes(secret), false, `${secret} leaked`);
+  assert.match(out, /root@100\.64\.0\.5/);
+  assert.match(out, /app 0\.4\.0/);
+  assert.match(out, /ce51733b66291e69f616db48ae8799c0de50db43/);
+});
+
+const appInfo = { version: '0.4.0', platform: 'darwin', arch: 'arm64', osVersion: '15.6', signed: true };
+
+test('buildReport lists the setup, the last check and the newest log lines, redacted', () => {
+  const log = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n') + '\nbot123456789:AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc oops';
+  const findings = [
+    { group: 'computer', level: 'ok', title: 'Signed in to Telegram', fix: '', action: null },
+    { group: 'server', level: 'fail', title: 'The server is on an older version', fix: 'Server 0.3.2, this app 0.4.0.', action: 'update-server' }];
+  const report = buildReport({ now: new Date('2026-10-08T16:00:00Z'), app: appInfo, serverAddress: 'root@100.64.0.5', computerAddress: 'me@100.64.0.6',
+    findings, checkedAt: '2026-10-08T15:59:00Z', server: { ok: true, version: '0.3.2' }, errorLog: log });
+  assert.match(report, /^Open Alan report, 2026-10-08T16:00:00\.000Z$/m);
+  assert.match(report, /App 0\.4\.0 on darwin arm64 \(15\.6\), signed build/);
+  assert.match(report, /Server address: root@100\.64\.0\.5/);
+  assert.match(report, /✓ This computer: Signed in to Telegram$/m);
+  assert.match(report, /✗ Server: The server is on an older version \(Server 0\.3\.2, this app 0\.4\.0\.\)/);
+  assert.match(report, /"version":"0\.3\.2"/);
+  assert.doesNotMatch(report, /line 11$/m, 'only the last 50 log lines');
+  assert.match(report, /line 12$/m);
+  assert.doesNotMatch(report, /AAEhBP0av28XaVDWSnoOUmUpUb2vzt4e9pc/);
+});
+
+test('buildReport says when no check ran and when there are no errors', () => {
+  const report = buildReport({ app: { ...appInfo, signed: false }, serverAddress: '', computerAddress: '', errorLog: '' });
+  assert.match(report, /unsigned build/);
+  assert.match(report, /Server address: not saved/);
+  assert.match(report, /Check setup not run yet\./);
+  assert.match(report, /Recent app errors:\nnone/);
+});

@@ -104,4 +104,40 @@ function buildFindings(input) {
   return [...computerRows(input), ...connectionRows(input), ...serverRows(input)];
 }
 
-module.exports = { staleConnectorCopy, buildFindings };
+// Secrets that can end up in logs or doctor output. SSH addresses, usernames
+// and versions stay: a report without them can't be acted on.
+const SECRETS = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[private key removed]'],
+  [/(?<!\d)\d{6,12}:[A-Za-z0-9_-]{30,}/g, '[bot token removed]'],
+  [/("(?:token|apiKey|api_key|secret|password)"\s*:\s*")[^"]*(")/gi, '$1[removed]$2'],
+  [/(Authorization:\s*)\S+(\s+\S+)?/gi, '$1[removed]'],
+  [/\bBearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [removed]'],
+  [/\bsk-[A-Za-z0-9_-]{16,}/g, '[api key removed]'],
+];
+function redactReport(text) {
+  return SECRETS.reduce((out, [pattern, replacement]) => out.replace(pattern, replacement), String(text));
+}
+
+const MARKS = { ok: '✓', warn: '!', fail: '✗' };
+const GROUPS = { computer: 'This computer', connection: 'Connection', server: 'Server' };
+
+// The plain-text report a user pastes to support. Built only on request.
+function buildReport({ now = new Date(), app, serverAddress, computerAddress, findings, checkedAt, server, errorLog }) {
+  const lines = [
+    `Open Alan report, ${now.toISOString()}`,
+    `App ${app.version} on ${app.platform} ${app.arch} (${app.osVersion}), ${app.signed ? 'signed' : 'unsigned'} build`,
+    `Server address: ${serverAddress || 'not saved'}`,
+    `This computer’s address: ${computerAddress || 'not saved'}`,
+    '',
+  ];
+  if (findings?.length) {
+    lines.push(`Check setup, ${checkedAt}:`);
+    for (const f of findings) lines.push(`${MARKS[f.level]} ${GROUPS[f.group]}: ${f.title}${f.level !== 'ok' && f.fix ? ` (${f.fix})` : ''}`);
+  } else lines.push('Check setup not run yet.');
+  if (server) lines.push('', 'Server report:', JSON.stringify(server));
+  const log = String(errorLog || '').trimEnd().split('\n').slice(-50).join('\n');
+  lines.push('', 'Recent app errors:', log || 'none');
+  return redactReport(lines.join('\n'));
+}
+
+module.exports = { staleConnectorCopy, buildFindings, redactReport, buildReport };
