@@ -1165,7 +1165,7 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
       if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ ok: false, error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
       if (isAborted()) { results.push({ ok: false, error: 'The request was closed; remaining steps were not run.' }); break; }
       try { results.push({ ok: true, ...(await performAction(tab, { ...step, epoch: body.epoch }, botId, 1, isAborted)) }); }
-      catch (error) { results.push({ ok: false, error: error.message }); break; }
+      catch (error) { results.push({ ok: false, error: errorMessage(error) }); break; }
       if (step.ref !== undefined || step.selector !== undefined) lastTarget = { ref: step.ref, selector: step.selector };
       if (INPUT_ACTIONS.has(step.action) && step.action !== 'move') sawInput = true;
     }
@@ -1503,7 +1503,7 @@ function startApi() {
       }
       if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true, overseer); closeTab(tab.id); return send(200, { closed: true }); }
       return send(405, { error: 'Method not supported.' });
-    } catch (error) { send(error.status || (error.code === 'stale_ref' ? 409 : 400), { error: errorMessage(error), ...(error.code ? { code: error.code } : {}) }); }
+    } catch (error) { send((error && error.status) || (error && error.code === 'stale_ref' ? 409 : 400), { error: errorMessage(error), ...(error && error.code ? { code: error.code } : {}) }); }
   });
   apiServer.requestTimeout = 30000;
   apiServer.on('listening', () => {
