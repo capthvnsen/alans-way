@@ -29,16 +29,23 @@ function peerNameMatches(hostName, name) {
 }
 // A connect target can be a MagicDNS name (bare or the full
 // name.tailnet.ts.net from DNSName) or a tailnet address in TailscaleIPs.
-// Self never counts: the user's own machine cannot be the server.
+// Self never counts: the user's own machine cannot be the server. Neither does
+// a node someone else shared into this tailnet: a link could name it, and
+// connecting authorizes its key on this machine, so only the user's own
+// devices qualify.
+function ownPeer(p, self) {
+  if (!p || p.ShareeNode === true) return false;
+  return !(self && self.UserID != null && p.UserID != null && p.UserID !== self.UserID);
+}
 function findPeerForTarget(statusJson, target) {
   let data;
   try { data = typeof statusJson === 'string' ? JSON.parse(statusJson) : statusJson; } catch { return null; }
   if (!data || typeof data !== 'object') return null;
-  const name = String(target || '').replace(/\.$/, '');
+  const name = String(target || '').replace(/\.$/, '').toLowerCase();
   if (!name) return null;
   const bare = !name.includes('.') && !name.includes(':');
   const peer = Object.values(data.Peer || {}).find((p) => {
-    if (!p || p.Online !== true) return false;
+    if (!ownPeer(p, data.Self) || p.Online !== true) return false;
     const ips = Array.isArray(p.TailscaleIPs) ? p.TailscaleIPs : [];
     if (ips.includes(name)) return true;
     const dns = String(p.DNSName || '').replace(/\.$/, '');

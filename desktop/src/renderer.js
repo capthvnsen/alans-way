@@ -429,20 +429,28 @@ function renderOnboarding(show) {
   card.append(actions);
   panel.replaceChildren(card);
 }
+let lastConnectDetail = '';
 function renderCloudOnboarding(card, actions, cloud) {
   const button = (label, className, onclick) => { const el = element('button', className, label); el.onclick = onclick; return el; };
   const next = () => command('cloud-next');
   if (cloud.step === 'connect') {
-    const status = element('p', 'settings-note', '');
+    // The connect run changes the stored host, which re-renders this card:
+    // keep the outcome outside the card so it survives the rebuild.
+    const status = element('p', 'settings-note', lastConnectDetail);
     const check = async (extra = {}) => {
-      status.textContent = 'Checking…';
+      lastConnectDetail = 'Checking…';
+      status.textContent = lastConnectDetail;
       const result = await command('cloud-connect', extra);
-      status.textContent = result?.detail || '';
+      lastConnectDetail = result?.detail || '';
+      const live = document.getElementById('ob-connect-status');
+      if (live) live.textContent = lastConnectDetail;
     };
-    card.append(element('h2', '', 'Set up a server'), element('p', 'settings-note', 'Enter the SSH address of the machine that will run your agent. A Tailscale name or address works too; the app pairs it over your tailnet first.'));
+    status.id = 'ob-connect-status';
+    card.append(element('h2', '', 'Set up a server'), element('p', 'settings-note', 'Enter the SSH address of the machine that will run your agent. A Tailscale name or address works too; Alan’s Workspace pairs it over your tailnet first.'));
     const field = element('div', 'field'), lab = element('label', '', 'Server SSH address'); lab.htmlFor = 'ob-setup-host';
     const input = element('input'); input.id = 'ob-setup-host'; input.placeholder = 'you@your-server'; input.autocomplete = 'off'; input.value = cloud.setupHost || state.vpsBrowser?.sshHost || '';
     field.append(lab, input); card.append(field);
+    if (cloud.error) card.append(element('p', 'settings-note', cloud.error));
     actions.append(button('Back', 'secondary-button', () => command('setup-server', { off: true })),
       button('Install Tailscale', 'secondary-button', () => command('cloud-tailscale-download')),
       button('Connect', 'primary-button', () => check({ host: input.value.trim() })));

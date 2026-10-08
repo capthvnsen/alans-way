@@ -10,7 +10,7 @@ const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabFo
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
-const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep, startServerSetup } = require('./onboarding.cjs');
+const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep, startServerSetup, leaveServerSetup, dropLegacyCloud } = require('./onboarding.cjs');
 const { parseSetupUrl, splitTailnetTarget, createLinkQueue } = require('./setup-link.cjs');
 const cloudConnect = require('./cloud-connect.cjs');
 const cloudMigrate = require('./cloud-migrate.cjs');
@@ -1226,7 +1226,7 @@ function registerIpc() {
         if (value.off === true) {
           // Back out of the connect step: leave the setup wizard so the
           // ordinary onboarding shows again.
-          prefs.cloud = {};
+          leaveServerSetup(prefs);
           savePreferences();
           broadcast();
           break;
@@ -2148,6 +2148,7 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(async () => {
     prefs = readPreferences(); prefs.remoteControl = false; pinOnboarding(prefs); seedMacSshHost();
+    if (dropLegacyCloud(prefs)) savePreferencesSoon();
     // A cold start launched by the setup link (Windows/Linux) carries the URL in argv.
     for (const arg of process.argv) setupLinks.push(parseSetupUrl(arg));
     // A stored setup step means the wizard was in progress: resume it.

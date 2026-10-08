@@ -12,7 +12,8 @@ const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 function tailnetName(host) {
   const labels = String(host).split('.');
   if (labels.length === 1) return LABEL.test(host);
-  return host.endsWith('.ts.net') && labels.every((label) => LABEL.test(label));
+  // machine.tailnet.ts.net: a bare tailnet.ts.net is the tailnet itself, not a machine.
+  return labels.length >= 4 && host.endsWith('.ts.net') && labels.every((label) => LABEL.test(label));
 }
 
 // Tailscale v4 addresses come from the CGNAT range 100.64.0.0/10.
@@ -26,7 +27,8 @@ function tailnetV4(host) {
 // the shape; expanding the :: shorthand is what makes the prefix comparable.
 function tailnetV6(host) {
   const text = String(host).toLowerCase();
-  if (!net.isIPv6(text) || text.includes('.')) return false;
+  // Tailscale never reports a zone id, so fe80-style %eth0 suffixes can never match.
+  if (!net.isIPv6(text) || text.includes('.') || text.includes('%')) return false;
   const sides = text.split('::');
   const head = sides[0] ? sides[0].split(':') : [];
   const tail = sides.length === 2 ? (sides[1] ? sides[1].split(':') : []) : [];
@@ -45,7 +47,8 @@ function splitTailnetTarget(sshHost) {
   if (!text || text.indexOf('@') !== text.lastIndexOf('@')) return null;
   const at = text.indexOf('@');
   const user = at === -1 ? '' : text.slice(0, at);
-  const host = at === -1 ? text : text.slice(at + 1);
+  // Tailscale reports names and addresses in lowercase; match that.
+  const host = (at === -1 ? text : text.slice(at + 1)).toLowerCase();
   if (!host || (at !== -1 && !USER_RE.test(user))) return null;
   if (!(tailnetName(host) || tailnetV4(host) || tailnetV6(host))) return null;
   return { user, host };

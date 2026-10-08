@@ -35,8 +35,28 @@ function startServerSetup(prefs, host) {
   const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
   prefs.cloud = { ...cloud, step: 'connect' };
   if (host) prefs.cloud.setupHost = host;
+  else delete prefs.cloud.setupHost;
   prefs.onboarded = false;
   return prefs.cloud;
+}
+
+// Back from the connect step leaves the wizard but keeps what earlier steps
+// learned (profiles, tokens, bot name) for the next run.
+function leaveServerSetup(prefs) {
+  const { step, setupHost, ...rest } = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+  prefs.cloud = rest;
+  return prefs.cloud;
+}
+
+// Keys a 0.4.0 install stored for a flow this build no longer has; the
+// encrypted session in particular is dead credential material.
+const LEGACY_CLOUD_KEYS = ['sessionEnc', 'sessionExpiresAt', 'installId', 'computerName', 'tailscaleUrl', 'diy', 'pairingOpened'];
+function dropLegacyCloud(prefs) {
+  const cloud = prefs?.cloud;
+  if (!cloud || typeof cloud !== 'object') return false;
+  let changed = false;
+  for (const key of LEGACY_CLOUD_KEYS) if (key in cloud) { delete cloud[key]; changed = true; }
+  return changed;
 }
 
 // The telegram step mints a bot only for profiles that lack one: skip it when
@@ -69,4 +89,4 @@ function setCloudStep(prefs, step) {
   return true;
 }
 
-module.exports = { shouldOnboard, pinOnboarding, cloudStep, startServerSetup, nextCloudStep, setCloudStep, CLOUD_STEPS };
+module.exports = { leaveServerSetup, dropLegacyCloud, shouldOnboard, pinOnboarding, cloudStep, startServerSetup, nextCloudStep, setCloudStep, CLOUD_STEPS };

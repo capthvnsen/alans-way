@@ -181,3 +181,19 @@ test('the authorize chain creates authorized_keys at 600 restricted to the tailn
   assert.deepEqual(fs.readFileSync(keys, 'utf8').split('\n').filter(Boolean),
     ['from="100.64.0.0/10,fd7a:115c:a1e0::/48" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample']);
 });
+
+test('a node shared in from another tailnet, or owned by another user, never matches', () => {
+  const status = JSON.stringify({
+    Self: { HostName: 'my-mac', UserID: 1, TailscaleIPs: ['192.0.2.1'], Online: true },
+    Peer: {
+      shared: { HostName: 'alan-1', ShareeNode: true, UserID: 9, TailscaleIPs: ['192.0.2.5'], Online: true },
+      other: { HostName: 'alan-2', UserID: 7, TailscaleIPs: ['192.0.2.6'], Online: true },
+      mine: { HostName: 'alan-3', UserID: 1, TailscaleIPs: ['192.0.2.7'], Online: true },
+    },
+  });
+  assert.equal(findPeerForTarget(status, 'alan-1'), null, 'shared-in node');
+  assert.equal(findPeerForTarget(status, '192.0.2.5'), null, 'shared-in node by address');
+  assert.equal(findPeerForTarget(status, 'alan-2'), null, 'another user on the tailnet');
+  assert.deepEqual(findPeerForTarget(status, 'alan-3'), { hostName: 'alan-3', ip: '192.0.2.7' });
+  assert.deepEqual(findPeerForTarget(status, 'ALAN-3'), { hostName: 'alan-3', ip: '192.0.2.7' }, 'case-insensitive');
+});

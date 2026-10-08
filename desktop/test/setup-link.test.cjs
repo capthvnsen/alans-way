@@ -34,7 +34,6 @@ test('other schemes, paths and hosts are rejected', () => {
     'alansway://setup?host=example.com',
     'alansway://setup?host=alan-7.ts.net.evil.com',
     'alansway://setup?host=ts.net',
-    'alansway://setup?host=Alan-7',
     'alansway://setup?host=100.63.255.255',
     'alansway://setup?host=100.128.0.1',
     'alansway://setup?host=10.0.0.1',
@@ -108,4 +107,36 @@ test('a later link re-prefills the host and restarts at connect', () => {
   assert.equal(cloudStep(prefs), 'connect');
   assert.equal(prefs.cloud.setupHost, 'alan-2');
   assert.equal(prefs.cloud.botUsername, 'x_bot', 'earlier setup state survives');
+});
+
+test('setup link hosts are canonicalized to what Tailscale reports, and dead forms are refused', () => {
+  assert.equal(parseSetupUrl('alansway://setup?host=FD7A:115C:A1E0::1'), 'fd7a:115c:a1e0::1');
+  assert.equal(parseSetupUrl('alansway://setup?host=Alan-1'), 'alan-1');
+  assert.equal(parseSetupUrl('alansway://setup?host=fd7a:115c:a1e0::1%25eth0'), null, 'zone id');
+  assert.equal(parseSetupUrl('alansway://setup?host=a.ts.net'), null, 'tailnet apex is not a machine');
+  assert.equal(parseSetupUrl('alansway://setup?host=box.tail1234.ts.net'), 'box.tail1234.ts.net');
+});
+
+test('Back leaves the wizard but keeps what earlier steps learned', () => {
+  const { leaveServerSetup } = require('../src/onboarding.cjs');
+  const prefs = { cloud: { step: 'connect', setupHost: 'alan-1', tokenedProfiles: ['a'], botUsername: 'x_bot' } };
+  leaveServerSetup(prefs);
+  assert.deepEqual(prefs.cloud, { tokenedProfiles: ['a'], botUsername: 'x_bot' });
+  assert.equal(cloudStep(prefs), null);
+});
+
+test('entering the wizard without a link clears a stale prefilled host', () => {
+  const prefs = { cloud: { step: 'migrate', setupHost: 'alan-old' } };
+  startServerSetup(prefs);
+  assert.equal(prefs.cloud.setupHost, undefined);
+  assert.equal(prefs.cloud.step, 'connect');
+});
+
+test('0.4.0 cloud keys are dropped on upgrade, other progress kept', () => {
+  const { dropLegacyCloud } = require('../src/onboarding.cjs');
+  const prefs = { cloud: { sessionEnc: 'enc', sessionExpiresAt: 1, computerName: 'alan-1', tailscaleUrl: 'u', diy: true, step: 'cloud-wait', botUsername: 'b' } };
+  assert.equal(dropLegacyCloud(prefs), true);
+  assert.deepEqual(prefs.cloud, { step: 'cloud-wait', botUsername: 'b' });
+  assert.equal(dropLegacyCloud(prefs), false);
+  assert.equal(dropLegacyCloud({}), false);
 });
