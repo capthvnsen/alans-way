@@ -392,7 +392,9 @@ EOF
     GW_PROG="$(supervisor_program 'gateway run')"
     [ -n "$GW_PROG" ] && GW_CMD="supervisorctl restart $GW_PROG"
     [ "$GW_CMD" = "hermes gateway restart" ] || GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_CMD")\""
-    if [ -n "$GW_PROG" ] && supervisorctl restart "$GW_PROG" >/dev/null 2>&1; then
+    if [ -n "$GW_PROG" ] \
+        && { supervisorctl restart "$GW_PROG" >/dev/null 2>&1 \
+          || sudo -n supervisorctl restart "$GW_PROG" >/dev/null 2>&1; }; then
       GATEWAY_RESTARTED=true
     elif run_hermes "$GATEWAY_TIMEOUT" gateway restart >/dev/null 2>&1; then
       GATEWAY_RESTARTED=true
@@ -486,6 +488,7 @@ case "$GUEST_OS" in
     _prog="$(supervisor_program 'vps-browser-host.cjs')"
     if [ -n "$_prog" ]; then
       supervisorctl restart "$_prog" >/dev/null 2>&1 && RESTARTED=true \
+        || sudo -n supervisorctl restart "$_prog" >/dev/null 2>&1 && RESTARTED=true \
         || say "could not restart the broker; run: supervisorctl restart $_prog"
     elif ! systemd_live; then
       if have supervisorctl; then
