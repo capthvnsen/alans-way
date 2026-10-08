@@ -434,8 +434,8 @@ function renderOnboarding(show) {
       if (!await command('settings', { macSshHost: mine.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } })) return;
       await runSetupCheck(checkButton, results);
     });
-    card.append(checkButton, results);
-    actions.append(button('Copy report', 'secondary-button', copyReport), button('Back', 'secondary-button', () => go(2)), button('Done', 'primary-button', finish));
+    card.append(checkButton, button('Copy report', 'secondary-button', copyReport), results);
+    actions.append(button('Back', 'secondary-button', () => go(2)), button('Done', 'primary-button', finish));
   }
   card.append(actions);
   panel.replaceChildren(card);
@@ -738,6 +738,10 @@ function renderFindings(container, findings) {
       container.append(item);
     }
   }
+  const footer = element('div', 'check-footer');
+  const report = element('button', 'secondary-button', 'Copy report'); report.onclick = copyReport;
+  const support = element('button', 'link-button', 'Get help on Discord ↗'); support.onclick = () => command('open-support');
+  footer.append(report, support); container.append(footer);
 }
 async function runSetupCheck(trigger, container) {
   trigger.disabled = true; trigger.textContent = 'Checking…';
