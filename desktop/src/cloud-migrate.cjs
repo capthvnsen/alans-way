@@ -40,9 +40,15 @@ function profilesWithToken(grepOutput) {
     .map((line) => /profiles\/(.+)\/\.env$/.exec(line)?.[1] || SHARED_TOKEN))];
 }
 
+// The '*' sentinel marks a shared-env token, not a profile — keep it out of
+// any "N profiles" count shown to the user.
+function namedTokenedProfiles(tokened) {
+  return (Array.isArray(tokened) ? tokened : []).filter((name) => name !== SHARED_TOKEN);
+}
+
 // `ls ~/.hermes/profiles` gives one profile name per line.
 function profileNames(lsOutput) {
   return String(lsOutput || '').split('\n').map((line) => line.trim()).filter(Boolean).sort();
 }
 
-module.exports = { shellQuote, migrateCommand, migrateCheckCommand, profilesWithTokenCommand, profilesWithToken, profileNames, MIGRATED_MARKER, SHARED_TOKEN };
+module.exports = { shellQuote, migrateCommand, migrateCheckCommand, profilesWithTokenCommand, profilesWithToken, namedTokenedProfiles, profileNames, MIGRATED_MARKER, SHARED_TOKEN };

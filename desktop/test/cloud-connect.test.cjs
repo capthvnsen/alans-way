@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { tailscaleCli, findPeer, parseComputerState, pairPollCommand, sshReadCommand, ensureKeypairCommand, publicKeyLine, tailnetHelpers } = require('../src/cloud-connect.cjs');
+const { tailscaleCli, findPeer, parseComputerState, pairPollCommand, sshReadCommand, ensureKeypairCommand, publicKeyLine, tailnetHelpers, authorizeKeyCommand } = require('../src/cloud-connect.cjs');
 
 const fixture = JSON.stringify({
   Self: { HostName: 'my-mac', TailscaleIPs: ['100.64.0.1'], Online: true },
@@ -88,11 +88,28 @@ test('the keypair command generates only when missing, then prints the pubkey', 
   assert.match(cmd, /ssh-keygen -t ed25519 -N '' -f ~\/.ssh\/id_ed25519/);
   assert.match(cmd, /cat ~\/.ssh\/id_ed25519\.pub/);
   assert.match(cmd, /\[ -f ~\/.ssh\/id_ed25519\.pub \]/, 'generate only when the key is absent');
+  assert.match(cmd, /mkdir -p ~\/.ssh/, 'ssh-keygen fails when ~/.ssh does not exist yet');
 });
 
-test('the first real key line is lifted from remote output', () => {
-  assert.equal(publicKeyLine(`noise\n${COMPUTER_KEY} \n`), COMPUTER_KEY);
+test('the keypair command works against a home with no .ssh dir at all', (t) => {
+  if (process.platform === 'win32') return t.skip('posix sh only');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-home-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const res = spawnSync('sh', ['-c', ensureKeypairCommand()], { env: { ...process.env, HOME: home } });
+  assert.equal(res.status, 0, res.stderr.toString());
+  assert.match(fs.readFileSync(path.join(home, '.ssh', 'id_ed25519.pub'), 'utf8'), /^ssh-ed25519 /);
+});
+
+test('the first real key line is lifted from remote output, reduced to type and blob', () => {
+  assert.equal(publicKeyLine(`noise\n${COMPUTER_KEY} \n`), 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample');
   assert.equal(publicKeyLine('no keys here'), '');
+});
+
+test('the key comment is untrusted remote text and never reaches authorized_keys', () => {
+  const blob = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample';
+  assert.equal(publicKeyLine(`${blob} \\ncommand="id" ssh-rsa CCC`), blob, 'the awk -v escape injection stays in the dropped comment');
+  assert.equal(publicKeyLine(`${blob}\tevil`), blob);
+  assert.equal(publicKeyLine('ssh-ed25519 AAAA=xBBB rest'), '', 'a blob that does not end in whitespace is not a key line');
 });
 
 test('connect-mac.sh helper block is reused verbatim to restrict the key to the tailnet', (t) => {
@@ -109,4 +126,49 @@ test('connect-mac.sh helper block is reused verbatim to restrict the key to the 
   }
   assert.deepEqual(fs.readFileSync(file, 'utf8').split('\n').filter(Boolean),
     ['ssh-ed25519 AAAAOther someone@else', `from="100.64.0.0/10,fd7a:115c:a1e0::/48" ${COMPUTER_KEY}`]);
+});
+
+test('the wanted line reaches awk through the environment, never through -v escapes', () => {
+  const helpers = tailnetHelpers(fs.readFileSync(CONNECT_MAC, 'utf8'));
+  const body = helpers.split('install_tailnet_key() {')[1] || '';
+  assert.match(body, /ENVIRON\["WANT"\]/);
+  assert.doesNotMatch(body, /awk -v/);
+});
+
+test('a key with a backslash escape cannot smuggle an unrestricted line in', (t) => {
+  if (process.platform === 'win32') return t.skip('posix sh only');
+  const helpers = tailnetHelpers(fs.readFileSync(CONNECT_MAC, 'utf8'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-keys-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'authorized_keys');
+  fs.writeFileSync(file, 'ssh-ed25519 AAAAOther someone@else\n');
+  // A literal backslash-n in the key: awk -v would have printed it as a real
+  // newline, splitting an unrestricted `command="id" ssh-rsa CCC` line out of
+  // the tailnet-restricted one. The helper must refuse the key outright.
+  const hostile = 'ssh-ed25519 AAAABBB \\ncommand="id" ssh-rsa CCC';
+  const res = spawnSync('sh', ['-c', `${helpers}\ninstall_tailnet_key "$1" "$2"`, 'sh', file, hostile]);
+  assert.notEqual(res.status, 0, 'a key with escapes must be rejected');
+  assert.deepEqual(fs.readFileSync(file, 'utf8').split('\n').filter(Boolean),
+    ['ssh-ed25519 AAAAOther someone@else'], 'the file is untouched');
+});
+
+test('install_tailnet_key reports a failed write instead of masking it', (t) => {
+  if (process.platform === 'win32') return t.skip('posix sh only');
+  const helpers = tailnetHelpers(fs.readFileSync(CONNECT_MAC, 'utf8'));
+  const res = spawnSync('sh', ['-c', `${helpers}\ninstall_tailnet_key "$1" "$2"`, 'sh', '/no/such/dir/authorized_keys', COMPUTER_KEY]);
+  assert.notEqual(res.status, 0, 'rm must not hide the awk/cat exit code');
+});
+
+test('the authorize chain creates authorized_keys at 600 restricted to the tailnet', (t) => {
+  if (process.platform === 'win32') return t.skip('posix sh only');
+  const helpers = tailnetHelpers(fs.readFileSync(CONNECT_MAC, 'utf8'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'auth-home-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const res = spawnSync('sh', ['-c', authorizeKeyCommand(helpers), 'sh', 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample'],
+    { env: { ...process.env, HOME: home } });
+  assert.equal(res.status, 0, res.stderr.toString());
+  const keys = path.join(home, '.ssh', 'authorized_keys');
+  assert.equal(fs.statSync(keys).mode & 0o777, 0o600, 'sshd StrictModes would ignore a permissive file');
+  assert.deepEqual(fs.readFileSync(keys, 'utf8').split('\n').filter(Boolean),
+    ['from="100.64.0.0/10,fd7a:115c:a1e0::/48" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample']);
 });

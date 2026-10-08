@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { shellQuote, migrateCommand, migrateCheckCommand, profilesWithTokenCommand, profilesWithToken, profileNames, MIGRATED_MARKER, SHARED_TOKEN } = require('../src/cloud-migrate.cjs');
+const { shellQuote, migrateCommand, migrateCheckCommand, profilesWithTokenCommand, profilesWithToken, profileNames, namedTokenedProfiles, MIGRATED_MARKER, SHARED_TOKEN } = require('../src/cloud-migrate.cjs');
 
 test('the migrate command quotes the destination host for the local shell', () => {
   assert.equal(migrateCommand('me@vps'), "curl -fsSL https://openalan.com/migrate | bash -s -- --to 'me@vps'");
@@ -52,6 +52,13 @@ test('grep output lists profile names; tokens elsewhere report the shared sentin
   assert.deepEqual(profilesWithToken('/home/u/.hermes/profiles/a b/.env'), ['a b']);
   assert.deepEqual(profilesWithToken('/root/.hermes/.env\n'), [SHARED_TOKEN]);
   assert.deepEqual(profilesWithToken('/root/.hermes/.secrets/telegram-bots.env\n/root/.hermes/profiles/work/.env\n'), [SHARED_TOKEN, 'work']);
+});
+
+test('the shared-env sentinel is not counted as a profile', () => {
+  assert.deepEqual(namedTokenedProfiles([SHARED_TOKEN, 'work']), ['work']);
+  assert.deepEqual(namedTokenedProfiles([SHARED_TOKEN]), []);
+  assert.deepEqual(namedTokenedProfiles(['work']), ['work']);
+  assert.deepEqual(namedTokenedProfiles(undefined), []);
 });
 
 test('profileNames parses the remote ls of the profiles dir', () => {

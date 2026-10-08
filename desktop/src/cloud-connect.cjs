@@ -61,15 +61,22 @@ function sshReadCommand(remotePath) {
 }
 
 // The computer must be able to ssh back into this machine. It may have no
-// keypair yet, so create one only when missing, then print the public key.
+// keypair yet — and no ~/.ssh at all — so create the dir first, generate a
+// key only when missing, then print the public key.
 function ensureKeypairCommand() {
-  return `[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519 >/dev/null; cat ~/.ssh/id_ed25519.pub`;
+  return `mkdir -p ~/.ssh && chmod 700 ~/.ssh; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519 >/dev/null; cat ~/.ssh/id_ed25519.pub`;
 }
 
-// The first real public-key line in remote output; anything else is junk.
+// The first real public-key line in remote output, reduced to `type blob`.
+// The comment is untrusted remote text and never reaches authorized_keys —
+// a backslash-n in it was enough to smuggle an unrestricted second line past
+// awk -v. The blob must end at whitespace or end of line.
 function publicKeyLine(text) {
-  return String(text || '').split('\n').map((line) => line.trim())
-    .find((line) => /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/]+=*/.test(line)) || '';
+  for (const line of String(text || '').split('\n')) {
+    const match = /^((?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)) [A-Za-z0-9+/]+=*)(?:[ \t]|$)/.exec(line.trim());
+    if (match) return match[1];
+  }
+  return '';
 }
 
 // scripts/connect-mac.sh keeps its authorized_keys editor between markers —
@@ -80,4 +87,12 @@ function tailnetHelpers(scriptText) {
   return /# --- tailnet helpers begin[\s\S]*?# --- tailnet helpers end/.exec(String(scriptText || ''))?.[0] || '';
 }
 
-module.exports = { MAC_CLI, tailscaleCli, peerNameMatches, findPeer, pairPollCommand, parseComputerState, sshReadCommand, ensureKeypairCommand, publicKeyLine, tailnetHelpers };
+// The local half of authorizeComputerKey: create ~/.ssh, let the shared
+// helper install the key tailnet-restricted, then pin authorized_keys to 600
+// — sshd's StrictModes ignores a permissive file and the ssh-back path would
+// fail silently after reporting ok.
+function authorizeKeyCommand(helpers) {
+  return `${helpers}\nmkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh" && touch "$HOME/.ssh/authorized_keys" && install_tailnet_key "$HOME/.ssh/authorized_keys" "$1" && chmod 600 "$HOME/.ssh/authorized_keys"`;
+}
+
+module.exports = { MAC_CLI, tailscaleCli, peerNameMatches, findPeer, pairPollCommand, parseComputerState, sshReadCommand, ensureKeypairCommand, publicKeyLine, tailnetHelpers, authorizeKeyCommand };

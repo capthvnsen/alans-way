@@ -833,9 +833,7 @@ async function authorizeComputerKey(host) {
   if (!key) return { ok: false, detail: 'The computer did not produce an SSH key to authorize here.' };
   const helpers = connectMacHelpers();
   if (!helpers) return { ok: false, detail: 'The connect helper script is missing, so the computer key cannot be authorized on this computer.' };
-  const run = await localRun('sh', ['-c',
-    `${helpers}\nmkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh" && touch "$HOME/.ssh/authorized_keys" && install_tailnet_key "$HOME/.ssh/authorized_keys" "$1"`,
-    'sh', key]);
+  const run = await localRun('sh', ['-c', cloudConnect.authorizeKeyCommand(helpers), 'sh', key]);
   if (run.code !== 0) return { ok: false, detail: 'Could not authorize the computer key on this computer.' };
   if (!(prefs.macSshHost || '').trim()) {
     const cli = cloudConnect.tailscaleCli();
@@ -1276,7 +1274,11 @@ function registerIpc() {
         prefs.cloud = { ...cloud, profiles: cloudMigrate.profileNames(profiles.out), tokenedProfiles: cloudMigrate.profilesWithToken(grep.out) };
         setCloudStep(prefs, 'model');
         savePreferences();
-        return { done: true, profiles: prefs.cloud.tokenedProfiles };
+        return {
+          done: true,
+          profiles: cloudMigrate.namedTokenedProfiles(prefs.cloud.tokenedProfiles),
+          sharedToken: prefs.cloud.tokenedProfiles.includes(cloudMigrate.SHARED_TOKEN),
+        };
       }
       case 'cloud-model': {
         const host = (prefs.vpsBrowser?.sshHost || '').trim();

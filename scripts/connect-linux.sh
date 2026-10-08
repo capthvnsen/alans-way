@@ -72,16 +72,23 @@ is_tailnet_host() {
 }
 # Add KEY to FILE limited to the tailnet. Any existing line carrying the same
 # key (for example an earlier unrestricted one) is replaced, so re-running
-# tightens an old install and never duplicates the line.
+# tightens an old install and never duplicates the line. The wanted line rides
+# into awk through the environment: awk -v would interpret backslash escapes
+# in the key, so keys carrying escapes, newlines or quotes are refused instead.
 FROM_TAILNET='from="100.64.0.0/10,fd7a:115c:a1e0::/48"'
 install_tailnet_key() {
   _file="$1"; _key="$2"; _tmp="$_file.tmp.$$"
+  case "$_key" in *\\*|*'"'*|*"'"*|*'
+'*) return 1;;
+  esac
   _blob="$(printf '%s' "$_key" | awk '{print $2}')"
-  awk -v blob="$_blob" -v want="$FROM_TAILNET $_key" '
-    { hit = 0; n = split($0, f, " "); for (i = 1; i <= n; i++) if (f[i] == blob) hit = 1
-      if (hit) { if (!done) print want; done = 1; next }
+  [ -n "$_blob" ] || return 1
+  WANT="$FROM_TAILNET $_key" BLOB="$_blob" awk '
+    { hit = 0; n = split($0, f, " "); for (i = 1; i <= n; i++) if (f[i] == ENVIRON["BLOB"]) hit = 1
+      if (hit) { if (!done) print ENVIRON["WANT"]; done = 1; next }
       print }
-    END { if (!done) print want }' "$_file" > "$_tmp" && cat "$_tmp" > "$_file"
+    END { if (!done) print ENVIRON["WANT"] }' "$_file" > "$_tmp" \
+    && cat "$_tmp" > "$_file" || { rm -f "$_tmp"; return 1; }
   rm -f "$_tmp"
 }
 # Append LINE to FILE on its own line, even when FILE lacks a trailing newline.

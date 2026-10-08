@@ -53,6 +53,13 @@ test('auth status answers whether the login finished', () => {
   assert.equal(authLoggedIn(''), false);
 });
 
+test('only the exact provider form counts, not prose that mentions logging in', () => {
+  assert.equal(authLoggedIn('logged in, do not close this window'), false);
+  assert.equal(authLoggedIn('anthropic: logged in, do not restart'), false);
+  assert.equal(authLoggedIn('all providers logged in'), false);
+  assert.equal(authLoggedIn('anthropic:logged in'), true);
+});
+
 test('the env file for a profile sits in its directory; bare home falls back', () => {
   assert.equal(envPathFor('personal'), '~/.hermes/profiles/personal/.env');
   assert.equal(envPathFor(''), '~/.hermes/.env');

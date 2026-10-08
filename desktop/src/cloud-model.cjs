@@ -39,11 +39,12 @@ function authLoginCommand() {
 function extractAuthUrl(output) {
   return /https?:\/\/[^\s'"]+/.exec(String(output || ''))?.[0] || '';
 }
-// "not logged in" and "never logged in" are the unauthenticated answers, so a
-// line only counts when the negation is absent.
+// Real output is exactly `provider: logged in` (for example
+// `anthropic: logged in`); the "not/never logged in" answers and any prose
+// that merely contains the words do not count.
 function authLoggedIn(statusOutput) {
   return String(statusOutput || '').split('\n')
-    .some((line) => /logged in/i.test(line) && !/\b(?:not|never)\b/i.test(line));
+    .some((line) => /^\s*[a-z0-9._-]+:\s*logged in\s*$/i.test(line));
 }
 
 // Profiles live at ~/.hermes/profiles/<name>/.env; a bare install keeps one

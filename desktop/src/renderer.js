@@ -473,7 +473,7 @@ function renderCloudOnboarding(card, actions, cloud) {
       const check = button('Check again', 'primary-button', async () => {
         status.textContent = 'Checking…';
         const result = await command('cloud-migrate-check');
-        status.textContent = result?.done ? `Migration found.${result.profiles?.length ? ` ${result.profiles.length} profile(s) already have a bot token.` : ''}` : result?.detail || '';
+        status.textContent = result?.done ? `Migration found.${result.sharedToken ? ' The shared env already has a bot token.' : ''}${result.profiles?.length ? ` ${result.profiles.length} profile(s) already have a bot token.` : ''}` : result?.detail || '';
       });
       actions.append(
         button('Copy command', 'secondary-button', async () => { await command('cloud-migrate-copy'); toast('Migrate command copied.'); }),

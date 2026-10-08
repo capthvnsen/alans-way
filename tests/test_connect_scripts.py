@@ -21,6 +21,13 @@ def sh(script):
     return subprocess.run(["sh", "-c", script], capture_output=True, text=True, check=False)
 
 
+def run_key_install(keys, key, name="connect-mac.sh"):
+    # The key travels as an argv word, the same way desktop/src/main.cjs passes it.
+    return subprocess.run(
+        ["sh", "-c", helpers(name) + '\ninstall_tailnet_key "$1" "$2"', "sh", str(keys), key],
+        capture_output=True, text=True, check=False)
+
+
 class TailnetHelperTests(unittest.TestCase):
     def accepts(self, host, name="connect-mac.sh"):
         return sh(f"{helpers(name)}\nis_tailnet_host '{host}'").returncode == 0
@@ -62,6 +69,35 @@ class TailnetHelperTests(unittest.TestCase):
             keys.touch()
             sh(f"{helpers()}\ninstall_tailnet_key '{keys}' '{KEY}'")
             self.assertEqual(keys.read_text(encoding="utf-8").splitlines(), [f"{FROM} {KEY}"])
+
+    def test_the_wanted_line_reaches_awk_through_the_environment(self):
+        # awk -v interprets backslash escapes, so a key containing \n could
+        # print an unrestricted second line into authorized_keys.
+        for name in ("connect-mac.sh", "connect-linux.sh"):
+            body = helpers(name).split("install_tailnet_key() {", 1)[1]
+            self.assertIn('ENVIRON["WANT"]', body)
+            self.assertNotIn("awk -v", body)
+
+    def test_a_key_with_escapes_or_quotes_is_rejected_outright(self):
+        hostile_keys = (
+            'ssh-ed25519 AAAABBB \\ncommand="id" ssh-rsa CCC',  # awk -v escape injection
+            "ssh-ed25519 AAAABBB\nssh-rsa CCC",  # a real newline
+            'ssh-ed25519 "AAAABBB"',
+            "ssh-ed25519 AA'AA'BBB",
+        )
+        for name in ("connect-mac.sh", "connect-linux.sh"):
+            with tempfile.TemporaryDirectory() as tmp:
+                keys = Path(tmp) / "authorized_keys"
+                keys.write_text(f"{OTHER}\n", encoding="utf-8")
+                for hostile in hostile_keys:
+                    result = run_key_install(keys, hostile, name)
+                    self.assertNotEqual(result.returncode, 0, (name, hostile))
+                self.assertEqual(keys.read_text(encoding="utf-8").splitlines(), [OTHER])
+
+    def test_a_failed_write_returns_nonzero(self):
+        for name in ("connect-mac.sh", "connect-linux.sh"):
+            result = run_key_install("/no/such/dir/authorized_keys", KEY, name)
+            self.assertNotEqual(result.returncode, 0, name)
 
 
 class KnownHostsTests(unittest.TestCase):
