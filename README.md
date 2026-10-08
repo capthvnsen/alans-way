@@ -19,7 +19,7 @@ A desktop app for people running [Hermes Agent](https://github.com/NousResearch/
 ## What you get
 
 - **See every bot's cursor.** Each agent gets a colored, named cursor in its tabs. You can literally watch it click around.
-- **Agents get their own browser, not yours.** Bot tabs are separate Chromium views, your mouse, keyboard, clipboard, and other apps are never touched.
+- **Agents get their own browser, not yours.** Bot tabs are separate Chromium views. Your mouse, keyboard, clipboard, and other apps are never touched.
 - **Grab the wheel anytime.** "Take over" a tab and every queued agent action on it is cancelled instantly.
 - **A window into the VPS.** A mini preview of your server's desktop floats in the corner. Drag it anywhere, hide it, or click to take control.
 - **Shut your laptop, keep working.** With the [agent plugin](https://github.com/capthvnsen/alans-way-agents), *new* browser work routes to the VPS when your computer is unreachable. An in-flight host action fails visibly; its live tab stays on the host and can be inspected or resumed after reconnecting. Work already running on the VPS continues. (Backend checkpoint/restore plumbing exists, but the app exposes no cross-host handoff button yet.)
@@ -36,9 +36,9 @@ The app works without the plugin (manual tab sharing), and the plugin falls back
 
 ## How the pieces fit
 
-- **Telegram stays stock.** Your existing Hermes gateway on the VPS keeps owning the bot conversation end to end. This app embeds the official Telegram Web client so you can chat and watch, it is not a second gateway and never polls the bot token.
+- **Telegram stays stock.** Your existing Hermes gateway on the VPS keeps owning the bot conversation end to end. This app embeds the official Telegram Web client so you can chat and watch. It is not a second gateway and never polls the bot token.
 - **Host browser.** The app's own Chromium tabs are the bots' window into your computer, driven per-tab through Chromium's debugger by a loopback-only connector.
-- **VPS browser.** A separate managed Chromium on the server handles cloud work and is the fallback for *new* tasks when your computer is asleep. It does not absorb in-flight host tabs, those block and resume.
+- **VPS browser.** A separate managed Chromium on the server handles cloud work and is the fallback for *new* tasks when your computer is asleep. It does not absorb in-flight host tabs: those block and resume.
 - **Remote desktop preview.** Optional. On a Linux server it needs a VNC server plus a noVNC (WebSocket) viewer you already run, the app only embeds the viewer URL you paste in. On a macOS guest VM, `scripts/mac-vm-preview.sh` bridges Tart's VNC display into the same view. Its **Take control** mode is the one place your input is forwarded to the remote desktop.
 - **Plugin proactivity is idle check-ins.** When the chat with the optional primary bot has been quiet for two hours, it checks in once: it does one safe, reversible thing toward your goals and reports it, suggests something it could do, or asks one useful question, or stays silent. Check-ins land only between 08:00 and 22:00 in your timezone and never mid-task; each one left unanswered doubles the wait (toward roughly weekly) and any reply resets it. Consequential actions (external messages, purchases, credential or permission changes, production changes, destructive operations) always require your approval.
 - **No bundled account connections.** Email, calendar, Notion and similar tools exist only if you install and authorize them separately in Hermes, nothing here provisions them.
@@ -115,9 +115,9 @@ Release installs update themselves. When an update is ready, the popup updates e
 
 The roadmap lives in the [GitHub project](https://github.com/users/capthvnsen/projects/5) for this repo. The fastest updates are on X: [@alexhvnsen](https://x.com/alexhvnsen).
 
-Short-term themes. All planned, none shipped yet:
+Short-term themes, all in progress or planned:
 
-- v0.3 stable on Mac and PC: remote computer polish, proactivity, smoother handoff.
+- Make v0.3 rock solid on Mac and PC: remote computer polish, proactivity, smoother handoff.
 - Network routing of remote tasks through your primary machine.
 - Faster and cheaper runs (optional).
 - Phone your agent with local voice models, without interrupting Telegram.
