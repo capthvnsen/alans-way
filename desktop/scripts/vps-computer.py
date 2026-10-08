@@ -893,7 +893,39 @@ STEPS = {
 
 # ---- commands --------------------------------------------------------------
 
+X_CHROME = {'xfwm4', 'xfce4-panel', 'xfdesktop', 'wrapper-2.0', 'panel-6-systray'}
+
+
+def x_apps(listed, pids, name_of):
+    """Apps with a visible window that AT-SPI did not list, plus the whole screen as pid 0."""
+    found, seen = [], set(listed)
+    for pid in pids:
+        name = name_of(pid) if pid > 0 and pid not in seen else ''
+        if name and name not in X_CHROME:
+            found.append({'name': name, 'bundleId': name, 'pid': pid, 'frontmost': False})
+        seen.add(pid)
+    return found + [{'name': 'Screen', 'bundleId': 'screen', 'pid': 0, 'frontmost': False}]
+
+
+def x_window_pids():
+    ids = xdotool('search', '--onlyvisible', '--name', '.').split()[:60]
+    # ponytail: one window without _NET_WM_PID fails the whole chain, leaving only the screen
+    out = xdotool(*[part for wid in ids for part in ('getwindowpid', wid)]) if ids else ''
+    return [int(line) for line in out.split() if line.isdigit()]
+
+
 def cmd_apps(req):
+    if not agent_desktop():
+        return {'ok': True, 'apps': atspi_apps()}
+    global BUS
+    try:
+        apps = atspi_apps()
+    except Exception:
+        BUS, apps = None, []
+    return {'ok': True, 'apps': apps + x_apps([item['pid'] for item in apps], x_window_pids(), proc_name)}
+
+
+def atspi_apps():
     bus = get_bus()
     entries = registry_apps(bus)
     roots = [(dest, path) for dest, path, _ in entries]
@@ -925,7 +957,7 @@ def cmd_apps(req):
             'name': label, 'bundleId': proc_name(pid) if pid > 0 else '', 'pid': pid,
             'frontmost': pid > 0 and pid == front,
         })
-    return {'ok': True, 'apps': apps}
+    return apps
 
 
 def cmd_snapshot(req):
@@ -1059,6 +1091,10 @@ def cmd_selftest(req):
     check(empty_walk() == {'generation': generation_of(''), 'elements': [], 'handles': {}, 'truncated': False, 'focused': set()}
           and empty_walk()['elements'] is not empty_walk()['elements'], 'empty walk')
     check(walk_app(5, None) == empty_walk() and refuse_password_focus(None, Target(5, None, None)) is None, 'no app, no tree')
+    shown = x_apps([7], [7, 5712, 5712, 627, 628, 9, 0], lambda pid: {5712: 'chrome', 627: 'xfwm4', 628: 'xfce4-panel', 9: ''}.get(pid, 'other'))
+    check(shown == [{'name': 'chrome', 'bundleId': 'chrome', 'pid': 5712, 'frontmost': False},
+                    {'name': 'Screen', 'bundleId': 'screen', 'pid': 0, 'frontmost': False}], 'x apps')
+    check(x_apps([], [], str) == [{'name': 'Screen', 'bundleId': 'screen', 'pid': 0, 'frontmost': False}], 'x apps always has the screen')
     names = ('resolve_app', 'active_pid', 'proc_name')
     saved_fns = {name: globals()[name] for name in names}
     globals().update(resolve_app=lambda pid: ('d', '/p'), proc_name=lambda pid: 'gedit', active_pid=lambda: None)
