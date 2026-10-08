@@ -12,21 +12,31 @@ function pinOnboarding(prefs) {
   if (prefs.onboarded === undefined && shouldOnboard(prefs)) prefs.onboarded = false;
 }
 
-// Cloud onboarding steps in order. 'support' sits outside the linear flow: a
-// failed computer lands there, and the user can skip it to finish.
-const CLOUD_STEPS = ['cloud-wait', 'connect', 'migrate', 'model', 'telegram', 'support', 'done'];
-const CLOUD_FLOW = ['cloud-wait', 'connect', 'migrate', 'model', 'telegram', 'done'];
+// "Set up a server" steps in order; the wizard resolves to the stored step so
+// a restart resumes where it left off.
+const CLOUD_STEPS = ['connect', 'migrate', 'model', 'telegram', 'done'];
+const CLOUD_FLOW = CLOUD_STEPS;
 
-// Which wizard step a stored (or absent) cloud onboarding resolves to. The
-// stored step wins so a restart resumes where it left off; a failed computer
-// always resolves to support instead of spinning.
-function cloudStep(prefs, computer) {
+// Which wizard step the stored setup state resolves to. A stored step wins so
+// a restart resumes where it left off; anything stale or unknown starts at
+// connect, which is safe to re-run.
+function cloudStep(prefs) {
   const cloud = prefs?.cloud;
-  if (!cloud || typeof cloud !== 'object' || (!cloud.sessionEnc && cloud.diy !== true)) return null;
+  if (!cloud || typeof cloud !== 'object' || typeof cloud.step !== 'string') return null;
   if (cloud.step === 'done') return null;
-  if (computer?.state === 'failed') return 'support';
-  if (cloud.step === 'cloud-wait' && computer?.state === 'ready') return 'connect';
-  return CLOUD_STEPS.includes(cloud.step) ? cloud.step : 'cloud-wait';
+  return CLOUD_STEPS.includes(cloud.step) ? cloud.step : 'connect';
+}
+
+// Entry points to the wizard: the "Set up a server" button and the
+// alansway://setup?host= deep link. A host from the link is already validated;
+// it only prefills the connect field — Connect still runs the first remote
+// command, and only when the user clicks it.
+function startServerSetup(prefs, host) {
+  const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+  prefs.cloud = { ...cloud, step: 'connect' };
+  if (host) prefs.cloud.setupHost = host;
+  prefs.onboarded = false;
+  return prefs.cloud;
 }
 
 // The telegram step mints a bot only for profiles that lack one: skip it when
@@ -59,4 +69,4 @@ function setCloudStep(prefs, step) {
   return true;
 }
 
-module.exports = { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep, CLOUD_STEPS };
+module.exports = { shouldOnboard, pinOnboarding, cloudStep, startServerSetup, nextCloudStep, setCloudStep, CLOUD_STEPS };

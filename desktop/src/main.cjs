@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
+const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -10,9 +10,8 @@ const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabFo
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
-const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
-const cloudClaim = require('./cloud-claim.cjs');
-const cloudStatus = require('./cloud-status.cjs');
+const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep, startServerSetup } = require('./onboarding.cjs');
+const { parseSetupUrl, splitTailnetTarget, createLinkQueue } = require('./setup-link.cjs');
 const cloudConnect = require('./cloud-connect.cjs');
 const cloudMigrate = require('./cloud-migrate.cjs');
 const cloudModel = require('./cloud-model.cjs');
@@ -46,13 +45,18 @@ app.enableSandbox();
 protocol.registerSchemesAsPrivileged([{ scheme: AVATAR_SCHEME, privileges: { secure: true, supportFetchAPI: true } }]);
 app.setName("alans-way-localapp");
 if (process.platform === 'win32') app.setAppUserModelId('app.alans-way.localapp');
-// The paid-computer link arrives as alansway://claim?token=… — on macOS via
+// The server-setup link arrives as alansway://setup?host=… — on macOS via
 // open-url possibly before the window exists, on Windows in the launch or
-// second-instance argv. Either way the token waits in a queue until the
+// second-instance argv. Either way the host waits in a queue until the
 // window can act on it, and only the newest is kept.
 app.setAsDefaultProtocolClient('alansway');
-const claimTokens = cloudClaim.createTokenQueue();
-app.on('open-url', (event, url) => { event.preventDefault(); claimTokens.push(cloudClaim.parseClaimUrl(url)); });
+const setupLinks = createLinkQueue();
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  const host = parseSetupUrl(url);
+  if (host) setupLinks.push(host);
+  else if (win && !win.isDestroyed() && /^alansway:/i.test(String(url))) { cloudError = 'That setup link was not a valid server address.'; broadcast(); }
+});
 // Keep existing sessions and connector discovery stable when the product name changes.
 app.setPath('userData', process.env.HERMES_WORKSPACE_DATA
   ? path.resolve(process.env.HERMES_WORKSPACE_DATA)
@@ -89,7 +93,7 @@ const vmProgress = {};
 let vmRetrying = false;
 let lastSetupCheck = null;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
-let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
+let cloudError = '', modelAuthChild = null;
 const tabs = new Map();
 const vpsTabs = new Map();
 const recentLinkTabs = new Map();
@@ -688,55 +692,20 @@ function startUpdates() {
   } else return;
   check(); setInterval(check, 6 * 60 * 60 * 1000);
 }
-// The claimed session stays encrypted in preferences and is never logged or
-// sent anywhere but the cloud API, so a restart or a second click on the
-// claim link resumes onboarding instead of claiming the token again.
-function cloudSession() {
-  try {
-    const enc = prefs?.cloud?.sessionEnc;
-    if (!enc || !safeStorage.isEncryptionAvailable()) return '';
-    return safeStorage.decryptString(Buffer.from(enc, 'base64'));
-  } catch { return ''; }
-}
 function cloudView() {
   const cloud = prefs?.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
-  const session = cloudSession();
-  const computer = cloudComputer ? { state: cloudComputer.state || '', step: cloudComputer.step || '', error: cloudComputer.error || '',
-    name: cloudComputer.computer_name || cloud.computerName || '', tailscaleUrl: cloudComputer.tailscale_url || cloud.tailscaleUrl || '' } : null;
-  return { claimed: !!session || cloud.diy === true, diy: cloud.diy === true,
-    step: cloudStep(prefs, cloudComputer) || '',
+  return {
+    step: cloudStep(prefs) || '', setupHost: cloud.setupHost || '',
     migration: cloud.migration || '', tokenedProfiles: cloud.tokenedProfiles || [],
     migrateCommand: cloud.migration === 'bring' && (prefs.vpsBrowser?.sshHost || '').trim() ? cloudMigrate.migrateCommand(prefs.vpsBrowser.sshHost.trim()) : '',
     telegramFallback: cloud.telegramFallback === true, botUsername: cloud.botUsername || '',
-    computer, error: cloudError,
-    supportUrl: session ? `${cloudClaim.apiBase()}/api/discord/start?session=${encodeURIComponent(session)}` : `${cloudClaim.apiBase()}/api/discord/start` };
+    error: cloudError };
 }
-// The wait step polls the cloud API; each answer lands in cloudComputer for
-// cloudView and advances the stored step once pairing can start.
-function startCloudPolling() {
-  cloudPollAbort?.abort();
-  const session = cloudSession();
-  if (!session) return;
-  cloudPollAbort = new AbortController();
-  const signal = cloudPollAbort.signal;
-  cloudStatus.pollComputer(cloudClaim.apiBase(), session, {
-    signal,
-    onUpdate(data) {
-      cloudComputer = data;
-      const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
-      if (data.computer_name && cloud.computerName !== data.computer_name) cloud.computerName = data.computer_name;
-      if (data.tailscale_url && cloud.tailscaleUrl !== data.tailscale_url) cloud.tailscaleUrl = data.tailscale_url;
-      if (data.state === 'ready' && cloud.step === 'cloud-wait') cloud.step = 'connect';
-      prefs.cloud = cloud;
-      savePreferencesSoon();
-      broadcast();
-    },
-  }).catch((error) => { if (!signal.aborted) { cloudError = error.message; broadcast(); } });
-}
-function startCloudOnboarding() {
-  prefs.onboarded = false;
+function openSetupWizard(host = '') {
+  startServerSetup(prefs, host);
+  cloudError = '';
   activeTabId = 'home';
-  startCloudPolling();
+  savePreferences();
   showWindow();
   broadcast();
 }
@@ -839,10 +808,10 @@ function connectMacHelpers() {
   }
   return '';
 }
-// The computer must ssh back into this machine for AGENT_PATH_OK: ensure it
+// The server must ssh back into this machine for AGENT_PATH_OK: ensure it
 // has a keypair, then authorize its public key here restricted to the tailnet.
 // While there, fill in this machine's ssh address when it is derivable, so the
-// path check can actually run in the claimed flow.
+// path check can actually run in the setup flow.
 async function authorizeComputerKey(host) {
   if (process.platform === 'win32') return { ok: true };
   const pub = await sshRun(host, cloudConnect.ensureKeypairCommand());
@@ -918,50 +887,47 @@ async function runSetupCheck() {
   lastSetupCheck = { at: new Date().toISOString(), findings, server };
   return findings;
 }
-// The connect step advances as far as it can each click: CLI check, pairing
-// status, the computer's own state file, then the saved return path check.
-// {stage} tells the wizard which message to show; 'done' moves to migrate.
-async function cloudConnectRun(diyHost) {
+// The connect step advances as far as it can each click: for a tailnet
+// address, find the peer first; then the ssh probe, the server's own state
+// file, the server's key authorized back here, and the saved return path
+// check. {stage} tells the wizard which message to show; 'done' moves to
+// migrate.
+async function cloudConnectRun(hostInput) {
   const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
-  if (diyHost) {
-    if (!isSshTarget(diyHost)) throw new Error('Enter the server SSH address as user@host or host, with no spaces or symbols.');
-    cloud.diy = true;
+  if (hostInput) {
+    if (!isSshTarget(hostInput) && !splitTailnetTarget(hostInput)) throw new Error('Enter the server address as user@host or host; a tailnet name or address works too.');
+    delete cloud.setupHost;
     cloud.step = 'connect';
-    prefs.vpsBrowser = { ...(prefs.vpsBrowser || {}), sshHost: diyHost };
+    prefs.vpsBrowser = { ...(prefs.vpsBrowser || {}), sshHost: hostInput };
     prefs.cloud = cloud;
     savePreferences();
   }
-  if (cloud.diy === true) {
-    const sshHost = (prefs.vpsBrowser?.sshHost || '').trim();
-    if (!sshHost) return { stage: 'host', ok: false, detail: 'Enter the server SSH address first.' };
-    const probe = await sshRun(sshHost, 'echo CONNECT_OK');
-    if (probe.code !== 0 || !probe.out.includes('CONNECT_OK')) return { stage: 'ssh', ok: false, detail: `Could not reach ${sshHost} over SSH. Check the address and your key, then try again.` };
-    const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
-    if (remote?.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the server failed.' };
-    const back = await authorizeComputerKey(sshHost);
-    if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
-    if ((prefs.macSshHost || '').trim()) {
-      const path = await testAgentPath();
-      if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
-    }
-    setCloudStep(prefs, 'migrate');
-    savePreferences();
-    return { stage: 'done', ok: true, detail: `Connected to ${sshHost}.` };
+  let sshHost = (prefs.vpsBrowser?.sshHost || '').trim();
+  if (!sshHost) return { stage: 'host', ok: false, detail: 'Enter the server SSH address first.' };
+  // A tailnet address pairs through Tailscale first: confirm the peer is
+  // online, then ssh to its tailnet IP so MagicDNS setup is never required.
+  const target = splitTailnetTarget(sshHost);
+  if (target) {
+    const cli = cloudConnect.tailscaleCli();
+    if (!cli) return { stage: 'cli', ok: false, detail: 'Tailscale is not installed on this computer. Install it, then check again.' };
+    const status = await localRun(...cloudConnect.pairPollCommand(cli));
+    const peer = status.code === 0 ? cloudConnect.findPeerForTarget(status.out, target.host) : null;
+    if (!peer) return { stage: 'pairing', ok: false, detail: `${target.host} is not on your tailnet yet. Share it to your tailnet, then check again.` };
+    sshHost = target.user ? `${target.user}@${peer.ip}` : peer.ip;
   }
-  const cli = cloudConnect.tailscaleCli();
-  if (!cli) return { stage: 'cli', ok: false, detail: 'Tailscale is not installed on this computer. Install it, then check again.' };
-  const url = cloud.tailscaleUrl || cloudComputer?.tailscale_url || '';
-  if (url && !cloud.pairingOpened) { shell.openExternal(url).catch(() => {}); cloud.pairingOpened = true; prefs.cloud = cloud; savePreferencesSoon(); }
-  const status = await localRun(...cloudConnect.pairPollCommand(cli));
-  const name = cloud.computerName || cloudComputer?.computer_name || '';
-  const peer = status.code === 0 ? cloudConnect.findPeer(status.out, name) : null;
-  if (!peer) return { stage: 'pairing', ok: false, detail: url ? 'Waiting for the computer to join your tailnet. Finish the pairing page, then check again.' : 'Waiting for the computer to join your tailnet…' };
-  const sshHost = `root@${peer.ip}`;
+  // A tailnet link without a user tries the local login first, then root —
+  // fresh agent hosts commonly accept only root.
+  const probes = [sshHost];
+  if (target && !target.user) probes.push(`root@${sshHost}`);
+  let probe = { code: -1, out: '' };
+  for (const candidate of probes) {
+    probe = await sshRun(candidate, 'echo CONNECT_OK');
+    if (probe.code === 0 && probe.out.includes('CONNECT_OK')) { sshHost = candidate; break; }
+  }
   if (prefs.vpsBrowser?.sshHost !== sshHost) { prefs.vpsBrowser = { ...(prefs.vpsBrowser || {}), sshHost }; savePreferences(); }
+  if (probe.code !== 0 || !probe.out.includes('CONNECT_OK')) return { stage: 'ssh', ok: false, detail: `Could not reach ${sshHost} over SSH. Check the address and your key, then try again.` };
   const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
-  if (!remote) return { stage: 'state', ok: false, detail: 'The computer joined Tailscale. Waiting for its setup to finish…' };
-  if (remote.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the computer failed.' };
-  if (remote.state !== 'ready' && remote.step !== 'paired') return { stage: 'state', ok: false, detail: 'The computer is still finishing its setup…' };
+  if (remote?.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the server failed.' };
   const back = await authorizeComputerKey(sshHost);
   if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
   if ((prefs.macSshHost || '').trim()) {
@@ -970,27 +936,7 @@ async function cloudConnectRun(diyHost) {
   }
   setCloudStep(prefs, 'migrate');
   savePreferences();
-  return { stage: 'done', ok: true, detail: `Connected to ${name || peer.hostName} at ${sshHost}.` };
-}
-async function claimWithToken(token) {
-  if (!token) return;
-  // A stored session means this token (or an earlier one) already claimed the
-  // computer: resume the wizard, or ignore a stale link once setup is done.
-  if (cloudSession()) { if (prefs.cloud?.step !== 'done') startCloudOnboarding(); return; }
-  try {
-    // Encryption is checked before the POST: the token is single-use, so a
-    // machine that cannot store the session must fail before consuming it.
-    if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is unavailable on this computer.');
-    const installId = cloudClaim.ensureInstallId(prefs);
-    savePreferencesSoon();
-    const result = await cloudClaim.claim(cloudClaim.apiBase(), token, installId);
-    const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
-    prefs.cloud = { ...cloud, sessionEnc: safeStorage.encryptString(result.session).toString('base64'), sessionExpiresAt: result.expiresAt, step: 'cloud-wait' };
-    cloudError = '';
-    savePreferences();
-    buildMenu();
-    startCloudOnboarding();
-  } catch (error) { cloudError = error.message; startCloudOnboarding(); }
+  return { stage: 'done', ok: true, detail: `Connected to ${sshHost}.` };
 }
 function registerIpc() {
   ipcMain.handle('workspace:get', (event) => { trustSender(event); return getState(); });
@@ -1263,13 +1209,6 @@ function registerIpc() {
       case 'dismiss-updated': update.justUpdatedFrom = ''; break;
       case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;
       case 'onboarding-open': prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; seedMacSshHost(); savePreferences(); applyLayout(); break;
-      case 'cloud-claim-code': {
-        const token = cloudClaim.claimToken(value.code);
-        if (!token) throw new Error('That does not look like a claim code or claim link.');
-        await claimWithToken(token);
-        if (cloudError) throw new Error(cloudError);
-        break;
-      }
       case 'cloud-goto': {
         if (value.step === 'done' && prefs.cloud) { prefs.cloud.step = 'done'; prefs.onboarded = true; savePreferences(); break; }
         if (!setCloudStep(prefs, String(value.step || ''))) throw new Error('Unknown setup step.');
@@ -1282,26 +1221,17 @@ function registerIpc() {
         savePreferences(); break;
       }
       case 'cloud-connect': return cloudConnectRun(String(value.host || '').trim());
-      case 'cloud-open-pairing': {
-        const url = prefs.cloud?.tailscaleUrl || cloudComputer?.tailscale_url || '';
-        if (url) await shell.openExternal(url);
-        break;
-      }
       case 'cloud-tailscale-download': await shell.openExternal('https://tailscale.com/download'); break;
-      case 'cloud-diy': {
-        const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+      case 'setup-server': {
         if (value.off === true) {
-          // Back out of the DIY connect card: leave cloud mode entirely so the
-          // normal wizard shows again.
-          prefs.cloud = { ...cloud, diy: false };
+          // Back out of the connect step: leave the setup wizard so the
+          // ordinary onboarding shows again.
+          prefs.cloud = {};
           savePreferences();
           broadcast();
           break;
         }
-        prefs.cloud = { ...cloud, diy: true, step: 'connect' };
-        prefs.onboarded = false;
-        savePreferences();
-        startCloudOnboarding();
+        openSetupWizard();
         break;
       }
       case 'cloud-migrate': {
@@ -1323,8 +1253,8 @@ function registerIpc() {
         const host = (prefs.vpsBrowser?.sshHost || '').trim();
         if (!host) throw new Error('Connect to the computer first.');
         return new Promise((resolve) => {
-          // The migrate script runs in a hidden shell; each chunk is relayed to
-          // the wizard log so the run is visible without a terminal.
+          // The migrate script runs in a hidden shell; each chunk is streamed
+          // to the wizard log so the run is visible without a terminal.
           const child = spawn('bash', ['-lc', cloudMigrate.migrateCommand(host)]);
           let out = '';
           const feed = (chunk) => {
@@ -1441,7 +1371,6 @@ function registerIpc() {
         if (!check.ok) return { done: false, detail: 'Telegram did not accept that token. Check it and try again.' };
         return cloudFinishTelegram(String(value.token).trim(), check.username);
       }
-      case 'cloud-discord': shell.openExternal(cloudView().supportUrl); break;
       case 'move-to-applications': return app.moveToApplicationsFolder();
       case 'sync-telegram': telegramView.webContents.reload(); break;
       case 'open-username': {
@@ -2138,8 +2067,6 @@ function watchTelegram(wc) {
   }, 3000);
   timer.unref();
 }
-// A claimed cloud computer keeps a permanent way back to support; the menu is
-// rebuilt when a session lands or clears so the item tracks cloud.sessionEnc.
 function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
@@ -2147,7 +2074,6 @@ function buildMenu() {
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { label: 'View', submenu: [{ label: 'Reload Page', accelerator: 'CmdOrCtrl+R', click: () => tabs.get(activeTabId)?.view.webContents.reload() }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
     ...(process.platform === 'darwin' ? [{ label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }] : []),
-    ...(prefs?.cloud?.sessionEnc ? [{ label: 'Help', submenu: [{ label: 'Get help', click: () => shell.openExternal(cloudView().supportUrl).catch(() => {}) }] }] : []),
   ]));
 }
 function createWindow() {
@@ -2174,7 +2100,7 @@ function createWindow() {
   });
   win.contentView.addChildView(remoteView);
   registerIpc();
-  claimTokens.setReady(claimWithToken);
+  setupLinks.setReady((host) => openSetupWizard(host));
   win.loadFile(path.join(ROOT, 'index.html'));
   remoteView.webContents.loadFile(path.join(ROOT, 'remote.html'));
   telegramView.webContents.loadURL(prefs.selectedBotId ? `${TELEGRAM}#${prefs.selectedBotId}` : TELEGRAM).catch(() => {});
@@ -2222,10 +2148,10 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(async () => {
     prefs = readPreferences(); prefs.remoteControl = false; pinOnboarding(prefs); seedMacSshHost();
-    // A cold start launched by the claim link (Windows/Linux) carries the URL in argv.
-    for (const arg of process.argv) claimTokens.push(cloudClaim.parseClaimUrl(arg));
-    // A session already stored means onboarding was in progress: resume it.
-    if (cloudSession() && prefs.cloud?.step && prefs.cloud.step !== 'done') prefs.onboarded = false;
+    // A cold start launched by the setup link (Windows/Linux) carries the URL in argv.
+    for (const arg of process.argv) setupLinks.push(parseSetupUrl(arg));
+    // A stored setup step means the wizard was in progress: resume it.
+    if (prefs.cloud?.step && prefs.cloud.step !== 'done') prefs.onboarded = false;
     session.defaultSession.protocol.handle(AVATAR_SCHEME, (request) => {
       const image = avatarStore.imageFor(request.url);
       return image ? new Response(image.data, { headers: { 'Content-Type': image.mime, 'Cache-Control': 'private, max-age=3600' } }) : new Response('', { status: 404 });
@@ -2279,11 +2205,10 @@ else {
     extensionStore = createExtensionStore({ root: app.getPath('userData'), session: browserSession, dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences, onChanged: broadcast,
       canInstall: frame => [...tabs.values()].some(tab => tab.id === activeTabId && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
     await extensionStore.installStore(); createWindow(); await extensionStore.restore(); broadcast();
-    if (cloudSession() && prefs.cloud?.step && prefs.cloud.step !== 'done') startCloudPolling();
     startUpdates();
   });
   app.on('second-instance', (_event, argv) => {
-    for (const arg of argv || []) claimTokens.push(cloudClaim.parseClaimUrl(arg));
+    for (const arg of argv || []) setupLinks.push(parseSetupUrl(arg));
     showWindow();
   });
   app.on('activate', showWindow);

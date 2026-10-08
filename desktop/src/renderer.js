@@ -367,7 +367,7 @@ function renderOnboarding(show) {
   panel.classList.toggle('hidden', !show);
   if (!show) { onboardingSignature = ''; return; }
   const cloud = state.cloud || {};
-  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
+  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.error, cloud.migration, cloud.telegramFallback, cloud.botUsername, cloud.setupHost, state.vpsBrowser?.sshHost] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
   if (signature === onboardingSignature) return;
   onboardingSignature = signature;
   const go = (step) => { onboardingStep = step; renderOnboarding(true); };
@@ -385,8 +385,8 @@ function renderOnboarding(show) {
   card.append(element('p', 'onboarding-step', `Step ${onboardingStep} of 3`));
   if (onboardingStep === 1) {
     card.append(element('h2', '', 'Welcome to Open Alan'), element('p', 'settings-note', 'Three short steps connect your Hermes agent to this computer.'));
-    // A failed deep-link claim lands here: explain it instead of showing a
-    // silent ordinary wizard.
+    // An invalid alansway://setup link lands here: explain it instead of
+    // showing a silent ordinary wizard.
     if (cloud.error) card.append(element('p', 'settings-note', cloud.error));
     const signedIn = state.telegramStatus === 'connected';
     card.append(element('p', `check-item${signedIn ? ' done' : ''}`, signedIn ? '✓ Signed in to Telegram' : '○ Scan the QR code on the left with your phone: Telegram → Settings → Devices → Link Desktop Device.'));
@@ -396,18 +396,7 @@ function renderOnboarding(show) {
         button('Move to Applications', 'secondary-button', () => command('move-to-applications')));
       card.append(move);
     }
-    const claimWrap = element('div', 'field'), claimLabel = element('label', '', 'Paid for a computer on openalan.com?');
-    claimLabel.htmlFor = 'ob-claim-code';
-    const claimInput = element('input');
-    claimInput.id = 'ob-claim-code'; claimInput.placeholder = 'Paste your claim code or link'; claimInput.autocomplete = 'off';
-    const claimButton = button('Claim computer', 'secondary-button', async () => {
-      claimButton.disabled = true;
-      await command('cloud-claim-code', { code: claimInput.value.trim() });
-      claimButton.disabled = false;
-    });
-    claimWrap.append(claimLabel, claimInput, claimButton);
-    card.append(claimWrap);
-    card.append(button('Use my own server', 'link-button', () => command('cloud-diy')));
+    card.append(button('Set up a server', 'link-button', () => command('setup-server')));
     actions.append(button('Skip setup', 'secondary-button', finish), button('Next', 'primary-button', () => go(2)));
   } else if (onboardingStep === 2) {
     card.append(element('h2', '', 'Give your agent this prompt'));
@@ -442,43 +431,28 @@ function renderOnboarding(show) {
 }
 function renderCloudOnboarding(card, actions, cloud) {
   const button = (label, className, onclick) => { const el = element('button', className, label); el.onclick = onclick; return el; };
-  const go = (step) => command('cloud-goto', { step });
   const next = () => command('cloud-next');
-  if (cloud.step === 'cloud-wait') {
-    const labels = { new: 'Creating your computer…', client_created: 'Creating your computer…', computer_created: 'Booting your computer…', bootstrapping: 'Installing your agent…' };
-    card.append(element('h2', '', 'Setting up your Alan computer'),
-      element('p', 'settings-note', labels[cloud.computer?.state] || 'Asking our servers for your computer…'),
-      element('p', 'settings-note', cloud.computer?.step ? `Status: ${cloud.computer.step}` : 'This usually takes a couple of minutes. Keep this window open.'));
-    if (cloud.error) card.append(element('p', 'settings-note', cloud.error));
-    actions.append(button('Get help', 'secondary-button', () => go('support')));
-  } else if (cloud.step === 'connect') {
+  if (cloud.step === 'connect') {
     const status = element('p', 'settings-note', '');
     const check = async (extra = {}) => {
       status.textContent = 'Checking…';
       const result = await command('cloud-connect', extra);
       status.textContent = result?.detail || '';
     };
-    if (cloud.diy) {
-      card.append(element('h2', '', 'Use your own server'), element('p', 'settings-note', 'Enter the SSH address of the machine that will run your agent.'));
-      const field = element('div', 'field'), lab = element('label', '', 'Server SSH address'); lab.htmlFor = 'ob-diy-host';
-      const input = element('input'); input.id = 'ob-diy-host'; input.placeholder = 'you@your-server'; input.autocomplete = 'off'; input.value = state.vpsBrowser?.sshHost || '';
-      field.append(lab, input); card.append(field);
-      actions.append(button('Back', 'secondary-button', () => command('cloud-diy', { off: true })),
-        button('Connect', 'primary-button', () => check({ host: input.value.trim() })));
-    } else {
-      card.append(element('h2', '', 'Connect to your computer'),
-        element('p', 'settings-note', `${cloud.computer?.name || 'Your computer'} pairs over Tailscale. Install Tailscale, open the pairing page, then check again.`));
-      actions.append(button('Install Tailscale', 'secondary-button', () => command('cloud-tailscale-download')),
-        button('Open pairing page', 'secondary-button', () => command('cloud-open-pairing')),
-        button('Check again', 'primary-button', () => check()));
-    }
+    card.append(element('h2', '', 'Set up a server'), element('p', 'settings-note', 'Enter the SSH address of the machine that will run your agent. A Tailscale name or address works too; the app pairs it over your tailnet first.'));
+    const field = element('div', 'field'), lab = element('label', '', 'Server SSH address'); lab.htmlFor = 'ob-setup-host';
+    const input = element('input'); input.id = 'ob-setup-host'; input.placeholder = 'you@your-server'; input.autocomplete = 'off'; input.value = cloud.setupHost || state.vpsBrowser?.sshHost || '';
+    field.append(lab, input); card.append(field);
+    actions.append(button('Back', 'secondary-button', () => command('setup-server', { off: true })),
+      button('Install Tailscale', 'secondary-button', () => command('cloud-tailscale-download')),
+      button('Connect', 'primary-button', () => check({ host: input.value.trim() })));
     card.append(status);
   } else if (cloud.step === 'migrate') {
-    card.append(element('h2', '', 'Bring your existing Hermes?'), element('p', 'settings-note', 'Move your old Hermes setup to the new computer, or start fresh.'));
+    card.append(element('h2', '', 'Bring your existing Hermes?'), element('p', 'settings-note', 'Move your old Hermes setup to the new server, or start fresh.'));
     const status = element('p', 'settings-note', '');
     if (cloud.migration === 'bring') {
       const box = element('textarea', 'onboarding-prompt'); box.readOnly = true; box.rows = 3; box.setAttribute('aria-label', 'Migrate command'); box.value = cloud.migrateCommand || '';
-      card.append(element('p', 'settings-note', 'Run this on the old machine, in a terminal. It packs up Hermes and ships it to the new computer.'), box, status);
+      card.append(element('p', 'settings-note', 'Run this on the old machine, in a terminal. It packs up Hermes and ships it to the new server.'), box, status);
       const log = element('pre', 'settings-note', '');
       const check = button('Check again', 'primary-button', async () => {
         status.textContent = 'Checking…';
@@ -545,14 +519,9 @@ function renderCloudOnboarding(card, actions, cloud) {
         status.textContent = result?.done ? 'Bot created.' : result?.detail || '';
       }));
     }
-  } else if (cloud.step === 'support') {
-    card.append(element('h2', '', 'We’re on it'),
-      element('p', 'settings-note', 'Something on our side needs a look. The support Discord has the team and your setup details handy.'));
-    if (cloud.computer?.error) card.append(element('p', 'settings-note', `Detail: ${cloud.computer.error}`));
-    actions.append(button('Join support Discord', 'primary-button', () => command('cloud-discord')), button('Skip', 'secondary-button', () => go('done')));
   } else {
     card.append(element('h2', '', 'Continue setup'), element('p', 'settings-note', `Step: ${cloud.step}`));
-    actions.append(button('Get help', 'secondary-button', () => go('support')), button('Continue', 'primary-button', next));
+    actions.append(button('Continue', 'primary-button', next));
   }
 }
 function rect(id) {

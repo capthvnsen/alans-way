@@ -38,6 +38,9 @@ ALLOWED_ADDRESSES = {
     "scripts/connect-mac.sh": _RANGE_EDGES,
     "scripts/connect-windows.ps1": _RANGE_EDGES,
     "tests/test_connect_scripts.py": _ips((100, 64, 0, 1), (100, 100, 1, 2), (100, 127, 255, 254)),
+    # Parser fixtures for the alansway://setup deep-link validator: boundary
+    # and in-range tailnet literals, not real machines.
+    "desktop/test/setup-link.test.cjs": _ips((100, 64, 0, 1), (100, 127, 255, 254)),
 }
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pem", ".key", ".patch", ".diff", ".log"}
 FORBIDDEN_IMPORTS = {"gateway", "tui_gateway", "hermes_cli", "hermes_state", "run_agent", "model_tools", "tools", "agent"}

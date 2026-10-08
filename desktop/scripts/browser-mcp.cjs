@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 // Computer drivers are per-OS. An SSH-spawned process cannot drive the
-// desktop: on Windows it sits in Session 0, and on macOS TCC credits
+// desktop: on Windows it sits in Session 0, and on macOS TCC attributes
 // Accessibility and Screen Recording to the SSH session, not the app. So when
 // the connected app advertises computer use, these tools go through its
 // loopback API on every OS. The in-process driver is only for a host with no

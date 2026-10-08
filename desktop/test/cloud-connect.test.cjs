@@ -4,39 +4,48 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { tailscaleCli, findPeer, parseComputerState, pairPollCommand, sshReadCommand, ensureKeypairCommand, publicKeyLine, tailnetHelpers, authorizeKeyCommand } = require('../src/cloud-connect.cjs');
+const { tailscaleCli, findPeerForTarget, parseComputerState, pairPollCommand, sshReadCommand, ensureKeypairCommand, publicKeyLine, tailnetHelpers, authorizeKeyCommand } = require('../src/cloud-connect.cjs');
 
 const fixture = JSON.stringify({
   Self: { HostName: 'my-mac', TailscaleIPs: ['192.0.2.1'], Online: true },
   Peer: {
-    'peer-1': { HostName: 'alan-42', TailscaleIPs: ['192.0.2.7', 'fd7a:115c:a1e0::7'], Online: true },
+    'peer-1': { HostName: 'alan-42', DNSName: 'alan-42.example-tailnet.ts.net.', TailscaleIPs: ['192.0.2.7', 'fd7a:115c:a1e0::7'], Online: true },
     'peer-2': { HostName: 'alan-99', TailscaleIPs: ['192.0.2.9'], Online: false },
   },
 });
 
 test('the matching online peer yields its tailnet address', () => {
-  assert.deepEqual(findPeer(fixture, 'alan-42'), { hostName: 'alan-42', ip: '192.0.2.7' });
+  assert.deepEqual(findPeerForTarget(fixture, 'alan-42'), { hostName: 'alan-42', ip: '192.0.2.7' });
 });
 
-test('a tailnet name-collision suffix (-1, -2…) still matches the computer', () => {
+test('a setup target can name the peer by MagicDNS name or tailnet address', () => {
+  assert.deepEqual(findPeerForTarget(fixture, 'alan-42.example-tailnet.ts.net'), { hostName: 'alan-42', ip: '192.0.2.7' }, 'full DNSName');
+  assert.deepEqual(findPeerForTarget(fixture, 'alan-42.example-tailnet.ts.net.'), { hostName: 'alan-42', ip: '192.0.2.7' }, 'trailing-dot DNSName');
+  assert.deepEqual(findPeerForTarget(fixture, '192.0.2.7'), { hostName: 'alan-42', ip: '192.0.2.7' }, 'tailnet v4');
+  assert.deepEqual(findPeerForTarget(fixture, 'fd7a:115c:a1e0::7'), { hostName: 'alan-42', ip: '192.0.2.7' }, 'tailnet v6 resolves to the v4');
+  const dnsOnly = JSON.stringify({ Peer: { p: { HostName: 'ubuntu-1', DNSName: 'server.tail-abc.ts.net.', TailscaleIPs: ['192.0.2.10'], Online: true } } });
+  assert.deepEqual(findPeerForTarget(dnsOnly, 'server'), { hostName: 'ubuntu-1', ip: '192.0.2.10' }, 'a bare MagicDNS name matches the DNSName label');
+});
+
+test('a tailnet name-collision suffix (-1, -2…) still matches the server', () => {
   const collided = JSON.stringify({ Peer: { p1: { HostName: 'alan-42-1', TailscaleIPs: ['192.0.2.7'], Online: true } } });
-  assert.deepEqual(findPeer(collided, 'alan-42'), { hostName: 'alan-42-1', ip: '192.0.2.7' });
+  assert.deepEqual(findPeerForTarget(collided, 'alan-42'), { hostName: 'alan-42-1', ip: '192.0.2.7' });
   const other = JSON.stringify({ Peer: {
     a: { HostName: 'alan-42-extra', TailscaleIPs: ['192.0.2.7'], Online: true },
     b: { HostName: 'alan-420', TailscaleIPs: ['192.0.2.8'], Online: true },
     c: { HostName: 'alan-42-x', TailscaleIPs: ['192.0.2.9'], Online: true },
   } });
-  assert.equal(findPeer(other, 'alan-42'), null, 'only a numeric suffix may match');
-  assert.equal(findPeer(other, 'alan-4'), null, 'a partial prefix is not the name');
+  assert.equal(findPeerForTarget(other, 'alan-42'), null, 'only a numeric suffix may match');
+  assert.equal(findPeerForTarget(other, 'alan-4'), null, 'a partial prefix is not the name');
   const prefixed = JSON.stringify({ Peer: { p: { HostName: 'alan-4x2', TailscaleIPs: ['192.0.2.7'], Online: true } } });
-  assert.equal(findPeer(prefixed, 'alan'), null, 'a non-numeric suffix is a different host');
+  assert.equal(findPeerForTarget(prefixed, 'alan'), null, 'a non-numeric suffix is a different host');
 });
 
-test('an offline or absent computer is not paired', () => {
-  assert.equal(findPeer(fixture, 'alan-99'), null, 'offline peer');
-  assert.equal(findPeer(fixture, 'alan-7'), null, 'missing peer');
-  assert.equal(findPeer('{bad json', 'alan-42'), null);
-  assert.equal(findPeer('{"Self":{"HostName":"alan-42","TailscaleIPs":["192.0.2.1"],"Online":true}}', 'alan-42'), null, 'Self needs the shared secret: our own machine never counts');
+test('an offline or absent peer does not match', () => {
+  assert.equal(findPeerForTarget(fixture, 'alan-99'), null, 'offline peer');
+  assert.equal(findPeerForTarget(fixture, 'alan-7'), null, 'missing peer');
+  assert.equal(findPeerForTarget('{bad json', 'alan-42'), null);
+  assert.equal(findPeerForTarget('{"Self":{"HostName":"alan-42","TailscaleIPs":["192.0.2.1"],"Online":true}}', 'alan-42'), null, 'our own machine never counts');
 });
 
 test('the macOS CLI lives inside the app bundle; everywhere else PATH decides', () => {

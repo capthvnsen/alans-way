@@ -86,7 +86,7 @@ Audio Recording on macOS 15 and later) and turn it on there too. If it is not
 listed, click + and choose `/Applications/alans-way-localapp.app`." These two
 grants are what let the agent read and operate other apps. They belong to the
 app, not to Terminal, `sshd` or Node: the SSH connector only relays, and the
-app starts the helper (`mac-computer`) that macOS credits to it. If a prompt
+app starts the helper (`mac-computer`) that macOS attributes to it. If a prompt
 names `mac-computer`, allow that too. After an upgrade macOS can treat the
 rebuilt app as new; if desktop control stops, switch both entries off and on
 again. Browser tabs work without either grant. On a macOS guest VM the grants

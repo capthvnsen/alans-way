@@ -1,7 +1,7 @@
-// Pairing the claimed computer over Tailscale: find the CLI, watch
-// `tailscale status --json` for the computer's hostname to come online, then
-// confirm the agent wrote its state file. Pure parsing lives here; spawning
-// stays in main.cjs where ssh and Electron already are.
+// Reaching a server over Tailscale: find the CLI, watch
+// `tailscale status --json` for the peer to come online, then confirm the
+// agent wrote its state file. Pure parsing lives here; spawning stays in
+// main.cjs where ssh and Electron already are.
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
@@ -22,19 +22,29 @@ function tailscaleCli({ platform = process.platform, existsSync = fs.existsSync,
 
 // Tailscale appends -<n> when a tailnet already has the hostname (a
 // reinstalled alan-42 comes back as alan-42-1), so an exact name or the name
-// plus a numeric suffix counts. Self never counts: the user's own machine
-// cannot be the computer.
+// plus a numeric suffix counts.
 function peerNameMatches(hostName, name) {
   const host = String(hostName || '');
   return host === name || (host.startsWith(`${name}-`) && /^\d+$/.test(host.slice(name.length + 1)));
 }
-function findPeer(statusJson, computerName) {
+// A connect target can be a MagicDNS name (bare or the full
+// name.tailnet.ts.net from DNSName) or a tailnet address in TailscaleIPs.
+// Self never counts: the user's own machine cannot be the server.
+function findPeerForTarget(statusJson, target) {
   let data;
   try { data = typeof statusJson === 'string' ? JSON.parse(statusJson) : statusJson; } catch { return null; }
   if (!data || typeof data !== 'object') return null;
-  const name = String(computerName || '');
+  const name = String(target || '').replace(/\.$/, '');
   if (!name) return null;
-  const peer = Object.values(data.Peer || {}).find((p) => p && p.Online === true && peerNameMatches(p.HostName, name));
+  const bare = !name.includes('.') && !name.includes(':');
+  const peer = Object.values(data.Peer || {}).find((p) => {
+    if (!p || p.Online !== true) return false;
+    const ips = Array.isArray(p.TailscaleIPs) ? p.TailscaleIPs : [];
+    if (ips.includes(name)) return true;
+    const dns = String(p.DNSName || '').replace(/\.$/, '');
+    return dns === name || peerNameMatches(p.HostName, name)
+      || (bare && peerNameMatches(dns.split('.')[0], name));
+  });
   const ip = peer && Array.isArray(peer.TailscaleIPs) ? peer.TailscaleIPs.find((v) => /^\d+\.\d+\.\d+\.\d+$/.test(v)) || peer.TailscaleIPs[0] : '';
   return peer && ip ? { hostName: peer.HostName, ip } : null;
 }
@@ -43,7 +53,7 @@ function pairPollCommand(cli) {
   return [cli, ['status', '--json']];
 }
 
-// The bootstrap on the computer records progress in a state file.
+// The bootstrap on the server records progress in a state file.
 function parseComputerState(text) {
   try {
     const data = JSON.parse(String(text || ''));
@@ -60,7 +70,7 @@ function sshReadCommand(remotePath) {
   return p.startsWith('~/') ? `cat ~/${safe}` : `cat ${safe}`;
 }
 
-// The computer must be able to ssh back into this machine. It may have no
+// The server must be able to ssh back into this machine. It may have no
 // keypair yet — and no ~/.ssh at all — so create the dir first, generate a
 // key only when missing, then print the public key.
 function ensureKeypairCommand() {
@@ -95,4 +105,4 @@ function authorizeKeyCommand(helpers) {
   return `${helpers}\nmkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh" && touch "$HOME/.ssh/authorized_keys" && install_tailnet_key "$HOME/.ssh/authorized_keys" "$1" && chmod 600 "$HOME/.ssh/authorized_keys"`;
 }
 
-module.exports = { MAC_CLI, tailscaleCli, peerNameMatches, findPeer, pairPollCommand, parseComputerState, sshReadCommand, ensureKeypairCommand, publicKeyLine, tailnetHelpers, authorizeKeyCommand };
+module.exports = { MAC_CLI, tailscaleCli, peerNameMatches, findPeerForTarget, pairPollCommand, parseComputerState, sshReadCommand, ensureKeypairCommand, publicKeyLine, tailnetHelpers, authorizeKeyCommand };

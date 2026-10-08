@@ -3,7 +3,7 @@
 const APP = 'alans-way-localapp';
 const VERBS = ['apps', 'snapshot', 'screenshot', 'menu', 'action'];
 
-// macOS credits Accessibility and Screen Recording to this app, never to the SSH
+// macOS attributes Accessibility and Screen Recording to this app, never to the SSH
 // session that relays the agent's request, so a failure here is always fixable
 // at the Mac. Say exactly where, and ask macOS to show its own prompt once.
 function createMacPermissionHelp({ systemPreferences, platform = process.platform }) {
