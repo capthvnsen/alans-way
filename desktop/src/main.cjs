@@ -153,10 +153,11 @@ const prefsSaver = createSaver({
 function savePreferences() { prefsSaver.flush(); }
 function savePreferencesSoon() { prefsSaver.schedule(); }
 // Onboarding and the path check need this computer's SSH address as the agent
-// machine reaches it; derive it from Tailscale while the field is empty so a
-// fresh install starts with a working answer. A set value is never touched.
+// machine reaches it; derive it from Tailscale while the field was never set
+// so a fresh install starts with a working answer. A saved value is never
+// touched, including a deliberately cleared one.
 function seedMacSshHost() {
-  if (prefs.macSshHost) return;
+  if (typeof prefs.macSshHost === 'string') return;
   let username = '';
   try { username = os.userInfo().username; } catch {}
   const host = tailscaleSshHost({ username });
