@@ -75,10 +75,10 @@ function spawnDaemon(...args) {
   fakeDaemons.push(child);
   return child.pid;
 }
-function addSupervisor(bin, marker, state) {
+function addSupervisor(bin, marker, state, sudoOnly = false) {
   fs.writeFileSync(path.join(bin, 'supervisorctl'), `#!/bin/sh
 STATE="$FAKE_SUPERVISOR_STATE"
-case "\${1:-}" in
+${sudoOnly ? '[ -n "${FAKE_SUDO:-}" ] || exit 1\n' : ''}case "\${1:-}" in
   status) cat "$STATE/status" 2>/dev/null; exit 0;;
   pid) cat "$STATE/pid.\${2:-}" 2>/dev/null; exit 0;;
   restart) echo "supervisorctl restart \${2:-}" >> "${marker}"
@@ -750,6 +750,27 @@ test('a stale supervisor conf does not win on a host with a live systemd', async
   const markerText = fs.readFileSync(marker, 'utf8');
   assert.match(markerText, /systemctl --user restart hermes-alans-way-browser\.service/);
   assert.doesNotMatch(markerText, /supervisorctl restart/, 'a leftover conf must not start a duplicate service');
+});
+
+test('a supervisor socket that needs root is still inspected through sudo -n', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  // A sudo that never asks: it tags the child so the fake supervisorctl can
+  // tell a privileged call from a plain one.
+  fs.writeFileSync(path.join(bin, 'sudo'), '#!/bin/sh\n[ "$1" = "-n" ] && shift\nexport FAKE_SUDO=1\nexec "$@"\n', { mode: 0o755 });
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('vps-browser-host.cjs', 'serve');
+  fs.writeFileSync(path.join(sstate, 'status'), `broker-svc RUNNING pid ${pid}, uptime 0:01:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.broker-svc'), `${pid}\n`);
+  addSupervisor(bin, marker, sstate, true);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ...pluginEnv(makeHermesHome(), mktemp('vm-update-hermes-state-')) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.restarted, true);
+  assert.match(fs.readFileSync(marker, 'utf8'), /supervisorctl restart broker-svc/);
 });
 
 test('a foreign "gateway run" program is never restarted for the agent gateway', async () => {

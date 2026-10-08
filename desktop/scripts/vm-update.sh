@@ -92,6 +92,10 @@ systemd_live() {
   [ -d /run/systemd/system ]
 }
 
+# supervisorctl as this user, then under passwordless sudo when the socket
+# needs root (sudo -n fails instead of ever asking for a password).
+_sp_ctl() { supervisorctl "$@" 2>/dev/null || sudo -n supervisorctl "$@" 2>/dev/null; }
+
 # Prints the supervisord program whose command line contains every pattern in
 # $*, or nothing. Programs are matched by live process argv (a wrapper that
 # execs shows the real command), so a renamed program still resolves.
@@ -100,8 +104,8 @@ systemd_live() {
 # never win over the real unit or start a duplicate stopped program.
 supervisor_program() {
   have supervisorctl || return 1
-  for _sp_name in $(supervisorctl status 2>/dev/null | awk '{print $1}'); do
-    _sp_pid="$(supervisorctl pid "$_sp_name" 2>/dev/null | tr -d '[:space:]')"
+  for _sp_name in $(_sp_ctl status | awk '{print $1}'); do
+    _sp_pid="$(_sp_ctl pid "$_sp_name" | tr -d '[:space:]')"
     case "$_sp_pid" in ''|0|*[!0-9]*) continue;; esac
     _sp_argv="$(ps -p "$_sp_pid" -o args= 2>/dev/null)"
     _sp_ok=1
@@ -404,9 +408,7 @@ EOF
     GW_PROG="$(supervisor_program 'hermes' 'gateway run')"
     [ -n "$GW_PROG" ] && GW_CMD="supervisorctl restart $GW_PROG"
     [ "$GW_CMD" = "hermes gateway restart" ] || GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_CMD")\""
-    if [ -n "$GW_PROG" ] \
-        && { supervisorctl restart "$GW_PROG" >/dev/null 2>&1 \
-          || sudo -n supervisorctl restart "$GW_PROG" >/dev/null 2>&1; }; then
+    if [ -n "$GW_PROG" ] && _sp_ctl restart "$GW_PROG" >/dev/null 2>&1; then
       GATEWAY_RESTARTED=true
     elif run_hermes "$GATEWAY_TIMEOUT" gateway restart >/dev/null 2>&1; then
       GATEWAY_RESTARTED=true
@@ -499,8 +501,7 @@ case "$GUEST_OS" in
     # remediation names the command that can work on this host.
     _prog="$(supervisor_program 'vps-browser-host.cjs')"
     if [ -n "$_prog" ]; then
-      supervisorctl restart "$_prog" >/dev/null 2>&1 && RESTARTED=true \
-        || sudo -n supervisorctl restart "$_prog" >/dev/null 2>&1 && RESTARTED=true \
+      _sp_ctl restart "$_prog" >/dev/null 2>&1 && RESTARTED=true \
         || say "could not restart the broker; run: supervisorctl restart $_prog"
     elif ! systemd_live; then
       if have supervisorctl; then
