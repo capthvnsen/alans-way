@@ -683,7 +683,7 @@ test('a plugin change restarts a supervisord-managed gateway through supervisorc
   const home = makeHermesHome();
   addPlugin(home, 'default', 'alans-way', '0.6.1');
   const sstate = mktemp('vm-update-supervisor-');
-  const pid = spawnDaemon('gateway', 'run', '--no-supervise');
+  const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
   fs.writeFileSync(path.join(sstate, 'status'), `gw-one RUNNING pid ${pid}, uptime 0:02:00\n`);
   fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
   addSupervisor(bin, marker, sstate);
@@ -710,7 +710,7 @@ test('a failed supervisord gateway restart names the working command, not a dead
   const home = makeHermesHome();
   addPlugin(home, 'default', 'alans-way', '0.6.1');
   const sstate = mktemp('vm-update-supervisor-');
-  const pid = spawnDaemon('gateway', 'run', '--no-supervise');
+  const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
   fs.writeFileSync(path.join(sstate, 'status'), `gw-one RUNNING pid ${pid}, uptime 0:02:00\n`);
   fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
   fs.writeFileSync(path.join(sstate, 'restart-fail'), 'gw-one\n');
@@ -725,4 +725,30 @@ test('a failed supervisord gateway restart names the working command, not a dead
   assert.match(res.stdout, /on the VM run: supervisorctl restart gw-one/);
   assert.doesNotMatch(res.stdout, /on the VM run: hermes gateway restart/);
   assert.match(log(), /hermes -p default gateway restart/, 'hermes gateway restart stays the last resort');
+});
+
+test('a foreign "gateway run" program is never restarted for the agent gateway', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  const { restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const sstate = mktemp('vm-update-supervisor-');
+  // An unrelated service that merely shares the words "gateway run".
+  const pid = spawnDaemon('api-gateway', 'run', '--port', '8800');
+  fs.writeFileSync(path.join(sstate, 'status'), `api-gateway RUNNING pid ${pid}, uptime 0:02:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.api-gateway'), `${pid}\n`);
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ...pluginEnv(home, state) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'updated');
+  assert.equal(result.gatewayRestarted, true);
+  assert.equal(result.gatewayRestartCmd, undefined);
+  assert.equal(restarts(), 1, 'the plain hermes gateway restart path runs');
+  assert.doesNotMatch(fs.readFileSync(marker, 'utf8'), /supervisorctl restart/, 'an unrelated program is left alone');
 });

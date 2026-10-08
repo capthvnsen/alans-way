@@ -92,25 +92,34 @@ systemd_live() {
   [ -d /run/systemd/system ]
 }
 
-# Prints the supervisord program whose command line contains $1, or nothing.
-# Programs are matched by live process argv (a wrapper that execs shows the
-# real command), so a renamed program still resolves; supervisor conf files
-# are the fallback for programs that are not running.
+# Prints the supervisord program whose command line contains every pattern in
+# $*, or nothing. Programs are matched by live process argv (a wrapper that
+# execs shows the real command), so a renamed program still resolves;
+# supervisor conf files are the fallback for programs that are not running.
 supervisor_program() {
   have supervisorctl || return 1
-  _sp_pat="$1"
   for _sp_name in $(supervisorctl status 2>/dev/null | awk '{print $1}'); do
     _sp_pid="$(supervisorctl pid "$_sp_name" 2>/dev/null | tr -d '[:space:]')"
     case "$_sp_pid" in ''|0|*[!0-9]*) continue;; esac
-    case "$(ps -p "$_sp_pid" -o args= 2>/dev/null)" in
-      *"$_sp_pat"*) printf '%s\n' "$_sp_name"; return 0;;
-    esac
+    _sp_argv="$(ps -p "$_sp_pid" -o args= 2>/dev/null)"
+    _sp_ok=1
+    for _sp_pat in "$@"; do
+      case "$_sp_argv" in *"$_sp_pat"*) ;; *) _sp_ok=0;; esac
+    done
+    [ "$_sp_ok" = 1 ] && { printf '%s\n' "$_sp_name"; return 0; }
   done
+  _sp_pats="$(printf '%s\034' "$@")"
   for _sp_conf in ${ALANS_WAY_VM_SUPERVISOR_CONFS:-/etc/supervisor/conf.d/*.conf /etc/supervisor/conf.d/*.ini /etc/supervisord.d/*.conf /etc/supervisord.d/*.ini /etc/supervisor/supervisord.conf /etc/supervisord.conf}; do
     [ -f "$_sp_conf" ] || continue
-    _sp_prog="$(awk -v pat="$_sp_pat" '
-      /^\[program:/ { n=$0; sub(/^\[program:[[:space:]]*/, "", n); sub(/[[:space:]]*\].*/, "", n) }
-      n != "" && /^[[:space:]]*command[[:space:]]*=/ && index($0, pat) { print n; exit }
+    _sp_prog="$(awk -v pats="$_sp_pats" '
+      BEGIN { np = split(pats, P, "\034") }
+      /^\[program:/ { n=$0; sub(/^\[program:[[:space:]]*/, "", n); sub(/[[:space:]]*\].*/, "", n); next }
+      /^\[/ { n="" }
+      n != "" && /^[[:space:]]*command[[:space:]]*=/ {
+        ok = 1
+        for (i = 1; i <= np; i++) if (P[i] != "" && index($0, P[i]) == 0) ok = 0
+        if (ok) { print n; exit }
+      }
     ' "$_sp_conf" 2>/dev/null)"
     [ -n "$_sp_prog" ] && { printf '%s\n' "$_sp_prog"; return 0; }
   done
@@ -389,7 +398,7 @@ EOF
     # "manual" process and takes its destructive stop/start path, which races
     # the supervisor's own respawn. The program is found by command line,
     # never by a hardcoded name; hermes stays the fallback.
-    GW_PROG="$(supervisor_program 'gateway run')"
+    GW_PROG="$(supervisor_program 'hermes' 'gateway run')"
     [ -n "$GW_PROG" ] && GW_CMD="supervisorctl restart $GW_PROG"
     [ "$GW_CMD" = "hermes gateway restart" ] || GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_CMD")\""
     if [ -n "$GW_PROG" ] \
