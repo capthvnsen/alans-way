@@ -930,3 +930,106 @@ test('a foreign "gateway run" program is never restarted for the agent gateway',
   assert.equal(restarts(), 1, 'the plain hermes gateway restart path runs');
   assert.doesNotMatch(fs.readFileSync(marker, 'utf8'), /supervisorctl restart/, 'an unrelated program is left alone');
 });
+
+// A read-only hermes for --doctor. Per profile P:
+//   $STATE/updates.P.json  what `plugins check-updates --json` prints ("[]" when absent)
+//   $STATE/backend.P       what `config get computer_use.backend` prints
+//   $STATE/noise           when present, a warning line comes before the JSON
+// Every call is logged; any other call fails, so a mutating call shows up.
+const DOCTOR_HERMES = `#!/bin/sh
+STATE="$FAKE_HERMES_STATE"
+P=default
+if [ "\${1:-}" = "-p" ]; then P="$2"; shift 2; fi
+printf 'hermes -p %s %s\\n' "$P" "$*" >> "$STATE/hermes.log"
+if [ "$1 $2 $3" = "plugins check-updates --json" ]; then
+  [ -f "$STATE/noise" ] && echo 'warning: catalog cache is 3 days old'
+  cat "$STATE/updates.$P.json" 2>/dev/null || echo '[]'
+  exit 0
+fi
+if [ "$1 $2 $3" = "config get computer_use.backend" ]; then cat "$STATE/backend.$P" 2>/dev/null; exit 0; fi
+echo "unexpected call: $*"; exit 2
+`;
+// A setup.sh at $HOME/alans-way-agents (HOME is the data dir in envFor) that
+// prints the given lines and records its arguments.
+function addSetupScript(homeDir, lines) {
+  const dir = path.join(homeDir, 'alans-way-agents');
+  fs.mkdirSync(dir, { recursive: true });
+  const log = path.join(dir, 'calls.log');
+  fs.writeFileSync(path.join(dir, 'setup.sh'),
+    `#!/bin/sh\necho "$@" >> "${log}"\n${lines.map((line) => `echo '${line}'`).join('\n')}\n`, { mode: 0o755 });
+  return () => fs.readFileSync(log, 'utf8');
+}
+function doctorFixture() {
+  const { bin } = makeBin();
+  const state = mktemp('vm-doctor-state-');
+  fs.writeFileSync(path.join(bin, 'hermes'), DOCTOR_HERMES, { mode: 0o755 });
+  const hermesLog = () => (fs.existsSync(path.join(state, 'hermes.log')) ? fs.readFileSync(path.join(state, 'hermes.log'), 'utf8').trim().split('\n') : []);
+  return { bin, state, home: makeHermesHome(), hermesLog };
+}
+
+test('--doctor reports versions, plugin rows, the newest plugin tag and the setup audit without changing anything', async () => {
+  const checkout = makeCheckout(remote);
+  const before = git(checkout, 'rev-parse', 'HEAD');
+  const { bin, state, home, hermesLog } = doctorFixture();
+  addPlugin(home, 'default', 'alans-way', '0.6.0', {
+    catalog: { name: 'alans-way', pin: 'bbb222', sha: 'bbb222' }, pinned: true, revision: 'bbb222', source: 'https://example.com/alans-way-agents' });
+  addPlugin(home, 'default', 'alans-way-computer', '0.6.0');
+  fs.writeFileSync(path.join(state, 'updates.default.json'), JSON.stringify([
+    { name: 'alans-way', class: 'catalog', current: 'bbb222', latest: 'ccc333', update_available: true },
+    { name: 'alans-way-computer', class: 'manual', current: null, latest: null, update_available: null }]));
+  fs.writeFileSync(path.join(state, 'backend.default'), 'alans-way-computer\n');
+  fs.writeFileSync(path.join(state, 'noise'), '');
+  const port = await makeStatus({ version: '0.3.1', busy: false });
+  const data = makeDataDir(port);
+  const setupCalls = addSetupScript(data, ['  ok   plugin enabled', '  FAIL browser host not running', '  warn no primary route bound']);
+  const pluginRemote = git(makePluginClone(), 'remote', 'get-url', 'origin').trim();
+  const res = await runScript(['--doctor'], envFor(checkout, data, bin, { ...pluginEnv(home, state), ALANS_WAY_VM_PLUGIN_REMOTE: pluginRemote }));
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(lastJson(res), {
+    ok: true, version: '0.3.1', hostVersion: '0.3.1', pluginTag: 'v0.6.2', error: '',
+    profiles: [{
+      profile: 'default', computerBackend: 'alans-way-computer',
+      plugins: [
+        { name: 'alans-way', version: '0.6.0', class: 'catalog', updateAvailable: true },
+        { name: 'alans-way-computer', version: '0.6.0', class: 'manual', updateAvailable: false }],
+      verify: { ran: true, fails: ['browser host not running'], warns: ['no primary route bound'] },
+    }],
+  });
+  assert.equal(git(checkout, 'rev-parse', 'HEAD'), before, 'the checkout did not move');
+  assert.deepEqual(hermesLog(), ['hermes -p default plugins check-updates --json', 'hermes -p default config get computer_use.backend']);
+  assert.equal(setupCalls().trim(), `--verify --hermes-home ${home}`);
+});
+
+test('--doctor reports a profile the time budget does not reach instead of running it', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, state, home, hermesLog } = doctorFixture();
+  addPlugin(home, 'default', 'alans-way', '0.6.0');
+  const port = await makeStatus({ version: '0.3.1', busy: false });
+  const res = await runScript(['--doctor'], envFor(checkout, makeDataDir(port), bin, {
+    ...pluginEnv(home, state), ALANS_WAY_VM_DOCTOR_BUDGET: '0', ALANS_WAY_VM_PLUGIN_REMOTE: path.join(os.tmpdir(), 'no-such-remote') }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.pluginTag, '', 'an unreachable remote gives no tag');
+  assert.deepEqual(result.profiles, [{
+    profile: 'default', computerBackend: '',
+    plugins: [{ name: 'alans-way', version: '0.6.0', class: '', updateAvailable: false }],
+    verify: { ran: false, reason: 'time' } }]);
+  assert.deepEqual(hermesLog(), [], 'hermes was never called');
+});
+
+test('--doctor without setup.sh says so, and an unset backend printed as None counts as none', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, state, home } = doctorFixture();
+  addProfile(home, 'alpha');
+  addPlugin(home, 'alpha', 'alans-way', '0.6.0');
+  fs.writeFileSync(path.join(state, 'backend.alpha'), 'None\n');
+  const port = await makeStatus({ version: '0.3.1', busy: false });
+  const res = await runScript(['--doctor'], envFor(checkout, makeDataDir(port), bin, {
+    ...pluginEnv(home, state), ALANS_WAY_VM_PLUGIN_REMOTE: path.join(os.tmpdir(), 'no-such-remote') }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.profiles.length, 1);
+  assert.equal(result.profiles[0].profile, 'alpha');
+  assert.equal(result.profiles[0].computerBackend, '');
+  assert.deepEqual(result.profiles[0].verify, { ran: false, reason: 'no-setup' });
+});
