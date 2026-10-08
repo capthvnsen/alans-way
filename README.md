@@ -113,7 +113,7 @@ Release installs update themselves. When an update is ready, the popup updates e
 
 ## Roadmap
 
-The roadmap lives in the [GitHub project](https://github.com/capthvnsen/alans-way/projects) for this repo. The fastest updates are on X: [@alexhvnsen](https://x.com/alexhvnsen).
+The roadmap lives in the [GitHub project](https://github.com/users/capthvnsen/projects/5) for this repo. The fastest updates are on X: [@alexhvnsen](https://x.com/alexhvnsen).
 
 Short-term themes. All planned, none shipped yet:
 
