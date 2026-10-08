@@ -505,7 +505,7 @@ const [work, version] = process.argv.slice(1);
 const has = (f) => fs.existsSync(path.join(work, f));
 const read = (f) => { try { return fs.readFileSync(path.join(work, f), "utf8").trim(); } catch { return ""; } };
 const array = (text) => {
-  const a = text.indexOf("["), b = text.lastIndexOf("]");
+  const a = text.search(/^\[/m), b = text.lastIndexOf("]");
   try { return a < 0 || b < a ? [] : JSON.parse(text.slice(a, b + 1)); } catch { return []; }
 };
 const pick = (lines, tag) => lines.map((l) => l.match(new RegExp("^\\s*" + tag + " (.*)$"))).filter(Boolean).map((m) => m[1].trim());
@@ -514,7 +514,7 @@ const profiles = dirs.map((d) => {
   const updates = array(read(`${d}/updates.json`));
   const plugins = ["alans-way", "alans-way-computer"].filter((n) => has(`${d}/version.${n}`)).map((name) => {
     const row = updates.find((u) => u && u.name === name) || {};
-    return { name, version: read(`${d}/version.${name}`), class: String(row.class || ""), updateAvailable: row.update_available === true };
+    return { name, version: read(`${d}/version.${name}`), class: String(row.class || ""), updateAvailable: typeof row.update_available === "boolean" ? row.update_available : null };
   });
   const backend = read(`${d}/backend`);
   return { profile: read(`${d}/name`), computerBackend: /^[a-z0-9_-]+$/i.test(backend) && !/^(none|null)$/i.test(backend) ? backend : "", plugins, checked: !has(`${d}/out-of-time`) };

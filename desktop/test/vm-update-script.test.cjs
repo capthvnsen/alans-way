@@ -934,7 +934,7 @@ test('a foreign "gateway run" program is never restarted for the agent gateway',
 // A read-only hermes for --doctor. Per profile P:
 //   $STATE/updates.P.json  what `plugins check-updates --json` prints ("[]" when absent)
 //   $STATE/backend.P       what `config get computer_use.backend` prints
-//   $STATE/noise           when present, a warning line comes before the JSON
+//   $STATE/noise           when present, a warning line with brackets comes before the JSON
 // Every call is logged; any other call fails, so a mutating call shows up.
 const DOCTOR_HERMES = `#!/bin/sh
 STATE="$FAKE_HERMES_STATE"
@@ -942,7 +942,7 @@ P=default
 if [ "\${1:-}" = "-p" ]; then P="$2"; shift 2; fi
 printf 'hermes -p %s %s\\n' "$P" "$*" >> "$STATE/hermes.log"
 if [ "$1 $2 $3" = "plugins check-updates --json" ]; then
-  [ -f "$STATE/noise" ] && echo 'warning: catalog cache is 3 days old'
+  [ -f "$STATE/noise" ] && echo 'warning: [catalog] cache is 3 days old'
   cat "$STATE/updates.$P.json" 2>/dev/null || echo '[]'
   exit 0
 fi
@@ -992,7 +992,7 @@ test('--doctor reports versions, plugin rows, the newest plugin tag and the setu
       profile: 'default', computerBackend: 'alans-way-computer',
       plugins: [
         { name: 'alans-way', version: '0.6.0', class: 'catalog', updateAvailable: true },
-        { name: 'alans-way-computer', version: '0.6.0', class: 'manual', updateAvailable: false }],
+        { name: 'alans-way-computer', version: '0.6.0', class: 'manual', updateAvailable: null }],
       checked: true,
     }],
   });
@@ -1015,7 +1015,7 @@ test('--doctor reports a profile the time budget does not reach instead of runni
   assert.equal(result.pluginTag, '', 'an unreachable remote gives no tag');
   assert.deepEqual(result.profiles, [{
     profile: 'default', computerBackend: '',
-    plugins: [{ name: 'alans-way', version: '0.6.0', class: '', updateAvailable: false }],
+    plugins: [{ name: 'alans-way', version: '0.6.0', class: '', updateAvailable: null }],
     checked: false }]);
   assert.deepEqual(result.verify, { ran: false, reason: 'time' });
   assert.deepEqual(hermesLog(), [], 'hermes was never called');
@@ -1049,6 +1049,8 @@ test('--doctor runs the setup audit once per server, after every profile, and re
   const port = await makeStatus({ version: '0.3.1', busy: false });
   const data = makeDataDir(port);
   const setupCalls = addSetupScript(data, ['  FAIL work: plugin disabled'], 1);
+  fs.writeFileSync(path.join(state, 'updates.work.json'), JSON.stringify([
+    { name: 'alans-way', class: 'catalog', current: 'aaa111', latest: null, update_available: null }]));
   const res = await runScript(['--doctor'], envFor(checkout, data, bin, {
     ...pluginEnv(home, state), ALANS_WAY_VM_PLUGIN_REMOTE: path.join(os.tmpdir(), 'no-such-remote') }));
   const result = lastJson(res);
@@ -1057,6 +1059,8 @@ test('--doctor runs the setup audit once per server, after every profile, and re
   assert.deepEqual(result.profiles.map((p) => [p.profile, p.checked]), [['default', true], ['work', true]]);
   assert.deepEqual(result.verify, { ran: true, fails: ['work: plugin disabled'], warns: [] });
   assert.equal(result.profiles.some((p) => 'verify' in p), false);
+  assert.deepEqual(result.profiles[1].plugins, [{ name: 'alans-way', version: '0.6.1', class: 'catalog', updateAvailable: null }],
+    'a catalog row hermes could not check stays unknown');
   assert.deepEqual(hermesLog(), ['hermes -p default plugins check-updates --json', 'hermes -p default config get computer_use.backend',
     'hermes -p work plugins check-updates --json', 'hermes -p work config get computer_use.backend']);
 });

@@ -111,6 +111,21 @@ test('plugin freshness: the catalog pin is the published version, other installs
   assert.equal(row(plugin({ name: 'alans-way', version: '0.7.1', class: '', updateAvailable: false })).level, 'ok',
     'a dev install newer than the newest tag is up to date');
   assert.match(row(plugin({ name: 'alans-way', version: '0.7.0', class: '', updateAvailable: false }, '')).title, /Couldn.t check/);
+  const unknown = row(plugin({ name: 'alans-way', version: '0.6.2', class: 'catalog', updateAvailable: null }));
+  assert.equal(unknown.title, 'Couldn’t check alans-way for updates');
+  assert.equal(unknown.level, 'warn');
+  assert.match(row(plugin({ name: 'alans-way', version: '0.6.2', class: 'catalog' })).title, /Couldn.t check/, 'no answer is not an answer');
+});
+
+test('a profile the time budget did not reach gets one row and no plugin or backend rows', () => {
+  const late = { profile: 'work', computerBackend: '', plugins: [{ name: 'alans-way', version: '0.6.0', class: '', updateAvailable: null }], checked: false };
+  const findings = buildFindings(healthy({ server: healthyServer({ profiles: [healthyServer().profiles[0], late] }) }));
+  const work = findings.filter((f) => f.title.startsWith('work: '));
+  assert.deepEqual(work.map(({ level, title, fix }) => ({ level, title, fix })),
+    [{ level: 'warn', title: 'work: Not checked (out of time)', fix: 'Check again later.' }]);
+  const only = buildFindings(healthy({ server: healthyServer({ profiles: [{ ...late, profile: 'default' }] }) }));
+  assert.equal(byTitle(only, /^Not checked/).level, 'warn');
+  assert.equal(byTitle(only, /alans-way|Computer use/), undefined);
 });
 
 test('the built-in computer-use backend, the setup audit and the time budget each show up', () => {

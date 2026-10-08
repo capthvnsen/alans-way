@@ -74,7 +74,7 @@ function connectionRows({ connection }) {
 
 function pluginRow(group, prefix, plugin, pluginTag) {
   const behind = plugin.class === 'catalog' ? plugin.updateAvailable : pluginTag ? isNewer(pluginTag, plugin.version) : null;
-  if (behind === null) return row(group, 'warn', `${prefix}Couldn’t check ${plugin.name} for updates`, 'The server couldn’t reach GitHub. Check again later.');
+  if (typeof behind !== 'boolean') return row(group, 'warn', `${prefix}Couldn’t check ${plugin.name} for updates`, 'The server couldn’t reach GitHub. Check again later.');
   return behind
     ? row(group, 'warn', `${prefix}${plugin.name} ${plugin.version} has an update`, UPDATE, 'update-server')
     : row(group, 'ok', `${prefix}${plugin.name} ${plugin.version} is the latest published version`);
@@ -99,6 +99,7 @@ function serverRows({ appVersion, server }) {
   if (!profiles.length) rows.push(row(s, 'warn', 'No Hermes profile on the server has the alans-way plugin', SETUP_PROMPT));
   for (const p of profiles) {
     const prefix = profiles.length > 1 ? `${p.profile}: ` : '';
+    if (p.checked === false) { rows.push(row(s, 'warn', `${prefix}Not checked (out of time)`, 'Check again later.')); continue; }
     for (const plugin of p.plugins || []) rows.push(pluginRow(s, prefix, plugin, server.pluginTag));
     rows.push(p.computerBackend === 'alans-way-computer'
       ? row(s, 'ok', `${prefix}Computer use goes through Alan’s Way`)
