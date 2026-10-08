@@ -32,6 +32,8 @@ Linux VPS.
    reachable viewer URL in Workspace settings. A headless automation browser has
    no visible window; launch the GUI browser in the same display the VNC server
    shares. Snap Chromium needs a profile path allowed by its package confinement.
+   On a VM that already serves a desktop through noVNC or websockify, skip this
+   step and enter the existing viewer URL.
 7. For managed cloud browser sessions, install the separate Chromium supervisor,
    tab broker and native MCP connector using the [VPS browser guide](../desktop/docs/vps-browser.md).
    Give each profile its own matching Telegram ID. The browser profile shares
@@ -50,6 +52,11 @@ and browser setup. The agents repo's `setup.sh` bootstrap covers the Hermes
 side — plugin, connector config, browser host units, gateway restart,
 and primary-route binding — and prints guided steps for the display/VNC stack
 it can't safely automate.
+
+On a VM without systemd (services under supervisord, for example an Orgo VM),
+restart the gateway through its supervisor instead of `hermes gateway restart`:
+`supervisorctl restart <program>` for the program in `supervisorctl status`
+whose command runs `hermes gateway run`.
 
 Chrome extensions are a separate browser capability. The current Electron app
 ships no extension installer or pinning bar. Electron supports a subset of

@@ -131,7 +131,10 @@ Rules for the whole job:
    Then restart the gateway so it loads the plugin. If you are this Hermes
    bot, first tell me "Restarting now; send me any message in a minute to
    continue", then run `hermes gateway restart`. Otherwise run it and wait
-   until `hermes gateway status` reports it running.
+   until `hermes gateway status` reports it running. On a server without
+   systemd (services under supervisord) `hermes gateway restart` cannot see
+   the supervisor; instead run `supervisorctl restart <program>` for the
+   program in `supervisorctl status` whose command runs `hermes gateway run`.
 
 7. Verify: `~/alans-way-agents/setup.sh --verify [--profile <profile>]` must
    end with "setup: all required checks passed". Then ask me to:
