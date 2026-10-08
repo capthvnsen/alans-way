@@ -106,7 +106,7 @@ nc -z -G 2 127.0.0.1 22 >/dev/null 2>&1 \
   || die "Remote Login is off. Turn it on in System Settings → General → Sharing → Remote Login, then re-run this command."
 
 if [ "$SKIP_INSTALL" = 0 ]; then
-  curl -fsSL "$INSTALL_URL" | sh || die "installing the app failed (see above)"
+  curl -fsSL "$INSTALL_URL" | ALANS_WAY_SKIP_CONNECT=1 sh || die "installing the app failed (see above)"
 fi
 
 mkdir -p "$HOME/.ssh"
