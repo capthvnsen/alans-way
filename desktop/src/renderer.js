@@ -429,15 +429,13 @@ function renderOnboarding(show) {
     };
     const vps = field('ob-vps-ssh-host', 'Agent machine SSH address', 'you@your-vps', state.vpsBrowser?.sshHost);
     const mine = field('ob-mac-ssh-host', `This ${windows ? 'PC' : 'Mac'}’s SSH address`, windows ? 'you@mypc' : 'you@mymac', state.macSshHost);
-    const result = element('p', 'settings-note', '');
-    const testButton = button('Test connection', 'secondary-button', async () => {
+    const results = element('div', 'checklist hidden');
+    const checkButton = button('Check setup', 'secondary-button', async () => {
       if (!await command('settings', { macSshHost: mine.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } })) return;
-      testButton.disabled = true; result.textContent = 'Checking…';
-      const check = await command('test-agent-path'); testButton.disabled = false;
-      result.textContent = check && typeof check === 'object' ? `${check.ok ? '✓' : '✗'} ${check.detail}` : '✗ The check could not run.';
+      await runSetupCheck(checkButton, results);
     });
-    card.append(testButton, result);
-    actions.append(button('Back', 'secondary-button', () => go(2)), button('Done', 'primary-button', finish));
+    card.append(checkButton, results);
+    actions.append(button('Copy report', 'secondary-button', copyReport), button('Back', 'secondary-button', () => go(2)), button('Done', 'primary-button', finish));
   }
   card.append(actions);
   panel.replaceChildren(card);
@@ -716,6 +714,42 @@ function showMacPermissions(body) {
   });
   command('mac-permissions').then((result) => { if (result) for (const { pane, label, status } of rows) status.textContent = `${label}: ${result[pane] === true || result[pane] === 'granted' ? 'on' : 'off'}`; });
 }
+const CHECK_GROUPS = [['computer', 'This computer'], ['connection', 'Connection'], ['server', 'Server']];
+const CHECK_MARKS = { ok: '✓', warn: '!', fail: '✗' };
+const CHECK_ACTIONS = {
+  'move-to-applications': ['Move to Applications', () => command('move-to-applications')],
+  'open-accessibility': ['Open settings', () => command('open-mac-privacy', { pane: 'accessibility' })],
+  'open-screen': ['Open settings', () => command('open-mac-privacy', { pane: 'screen' })],
+  'remove-old-connector': ['Remove old copy', async () => { if (await command('remove-old-connector')) toast('Old connector copy removed.'); }],
+  'update-server': ['Update server', async () => { toast('Updating the server…'); await command('vm-update-retry', { force: true }); }],
+};
+function renderFindings(container, findings) {
+  container.replaceChildren();
+  for (const [group, label] of CHECK_GROUPS) {
+    const rows = findings.filter((f) => f.group === group);
+    if (!rows.length) continue;
+    container.append(element('p', 'check-group', label));
+    for (const f of rows) {
+      const item = element('div', `check-row ${f.level}`);
+      item.append(element('p', 'check-item', `${CHECK_MARKS[f.level]} ${f.title}`));
+      if (f.level !== 'ok' && f.fix) item.append(element('p', 'settings-note', f.fix));
+      const action = f.level !== 'ok' && CHECK_ACTIONS[f.action];
+      if (action) { const fix = element('button', 'secondary-button', action[0]); fix.onclick = action[1]; item.append(fix); }
+      container.append(item);
+    }
+  }
+}
+async function runSetupCheck(trigger, container) {
+  trigger.disabled = true; trigger.textContent = 'Checking…';
+  container.classList.remove('hidden');
+  container.replaceChildren(element('p', 'settings-note', 'Checking this computer, the connection and the server. This can take up to two minutes.'));
+  const findings = await command('setup-check');
+  trigger.disabled = false; trigger.textContent = 'Check setup';
+  if (Array.isArray(findings)) renderFindings(container, findings); else container.classList.add('hidden');
+}
+async function copyReport() {
+  if (await command('copy-report')) toast('Report copied. Paste it in Discord so we can take a look.');
+}
 function showSettings() {
   openModal('Workspace settings');
   const body = $('modal-body'), field = element('div', 'field');
@@ -773,7 +807,12 @@ function showSettings() {
   const wizard = element('button', 'secondary-button', 'Run setup wizard'); wizard.onclick = async () => { closeModal(); await command('onboarding-open'); };
   const agentTest = element('button', 'secondary-button', 'Test agent path'); const agentResult = element('p', 'settings-note', '');
   agentTest.onclick = async () => { agentTest.disabled = true; agentResult.textContent = `Checking ${remoteName()} → computer ssh path…`; const result = await command('test-agent-path'); agentTest.disabled = false; agentResult.textContent = result && typeof result === 'object' ? `${result.ok ? '✓' : '✗'} ${result.detail}` : '✗ Path check failed.'; };
-  body.append(vpsField, sshField, element('div', 'setting-row'), sshSave, agentSetup, agentPrompt, agentUpdate, agentTest, wizard, agentResult);
+  const checkSetup = element('button', 'secondary-button', 'Check setup');
+  const checkResults = element('div', 'checklist hidden');
+  checkSetup.onclick = () => runSetupCheck(checkSetup, checkResults);
+  const report = element('button', 'secondary-button', 'Copy report'); report.onclick = copyReport;
+  const support = element('button', 'link-button', 'Get help on Discord ↗'); support.onclick = () => command('open-support');
+  body.append(vpsField, sshField, element('div', 'setting-row'), sshSave, agentSetup, agentPrompt, agentUpdate, agentTest, wizard, agentResult, checkSetup, report, support, checkResults);
   const primaryField = element('div', 'field'), primaryLabel = element('label', '', 'Primary bot'); primaryLabel.htmlFor = 'primary-bot';
   const primarySelect = element('select'); primarySelect.id = 'primary-bot';
   const none = element('option', '', 'None (defaults to the overseer bot)'); none.value = ''; primarySelect.append(none);
