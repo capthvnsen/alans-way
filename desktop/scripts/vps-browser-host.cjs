@@ -6,7 +6,7 @@ const fs = require('node:fs'),
   http = require('node:http'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
-const { CDP } = require('../src/cdp.cjs');
+const { CDP, AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
 const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
 const { createAgentInput, tintScript, botAccent } = agentInputModule;
@@ -113,7 +113,7 @@ async function serve() {
     cdp = await CDP.connect(cfg.cdpUrl);
   } catch (error) {
     if (!cfg.browserCommand) throw error;
-    const child = spawn(cfg.browserCommand, cfg.browserArgs || [], {
+    const child = spawn(cfg.browserCommand, [...(cfg.browserArgs || []), ...AGENT_BROWSER_FLAGS], {
       detached: true,
       stdio: 'ignore',
       env: process.env,
@@ -364,7 +364,7 @@ async function serve() {
       const s = await tab.view.webContents
         .executeJavaScript('({url:location.href,title:document.title,ready:document.readyState})')
         .catch(() => null);
-      if ((s && s.url !== 'about:blank' && s.url !== previous && s.ready === 'complete') || (s && url === 'about:blank')) {
+      if ((s && s.url !== 'about:blank' && s.url !== previous && s.ready !== 'loading') || (s && url === 'about:blank')) {
         tab.url = s.url;
         tab.title = s.title;
         tab.favicon = await tab.view.webContents
@@ -418,12 +418,17 @@ async function serve() {
       requireAgentRead(tab);
       const effect = await readEffect((code) => tab.view.webContents.executeJavaScript(code), tab, opts);
       requireAgentRead(tab);
-      if (effect) return effect;
-      return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.' };
+      if (effect) return { ...effect, ...takeDialogs(tab) };
+      return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.', ...takeDialogs(tab) };
     } catch (error) {
       if (error && error.status === 409) throw error;
-      return { effect: { ...EMPTY_EFFECT }, error: String(error && error.message || error) };
+      return { effect: { ...EMPTY_EFFECT }, error: String(error && error.message || error), ...takeDialogs(tab) };
     }
+  }
+  function takeDialogs(tab) {
+    const dialogs = tab.dialogs;
+    tab.dialogs = undefined;
+    return dialogs ? { dialogs } : {};
   }
   async function vpsPerform(tab, body, botId, overseer, depth = 0) {
     const wc = tab.view.webContents;
@@ -715,6 +720,16 @@ async function serve() {
     persist().catch(() => {});
   }
   cdp.listeners.add((event) => {
+    // An open dialog blocks every evaluate and input on its page. An agent tab
+    // accepts it at once and the next action reply carries what it said; a
+    // human's tab keeps its dialog for the human.
+    if (event.method === 'Page.javascriptDialogOpening') {
+      const tab = sessionOwner.get(event.sessionId)?.tab;
+      if (tab?.controller === 'agent') {
+        (tab.dialogs ||= []).push({ type: event.params.type, message: String(event.params.message || '').slice(0, 500) });
+        cdp.send('Page.handleJavaScriptDialog', { accept: true }, event.sessionId).catch(() => {});
+      }
+    }
     if (event.method === 'Fetch.requestPaused') {
       const owner = sessionOwner.get(event.sessionId)?.tab;
       const problem = owner?.controller === 'agent' ? agentUrlProblem(event.params.request?.url) : '';

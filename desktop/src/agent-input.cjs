@@ -264,14 +264,16 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     let point = null, coveredBy = '';
     for (const [fx, fy] of [[.5,.5],[.5,.25],[.5,.75],[.25,.5],[.75,.5],[.2,.2],[.8,.2],[.2,.8],[.8,.8]]) {
       const lx = Math.round(l + w * fx), ly = Math.round(t + h * fy);
-      const hit = view.document.elementFromPoint(lx, ly);
+      let hit = view.document.elementFromPoint(lx, ly);
+      // A point inside an open shadow root hits its host; descend to the real target.
+      for (let inner; hit && hit.shadowRoot && (inner = hit.shadowRoot.elementFromPoint(lx, ly)) && inner !== hit;) hit = inner;
       if (hit && (hit === el || el.contains(hit))) { point = { x: lx + ox, y: ly + oy }; break; }
       if (hit && !coveredBy && !el.contains(hit)) coveredBy = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/)[0] : '');
     }
     if (!point && loose) point = { x: Math.round(l + w / 2 + ox), y: Math.round(t + h / 2 + oy) };
     if (!point) return { fail: coveredBy ? 'covered by ' + coveredBy : 'no clickable point' };
     if (${focus}) {
-      if (${type} && !(el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(el.type)) || el.readOnly) return { fail: 'element cannot accept text' };
+      if (${type} && (!(el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(el.type)) || el.readOnly)) return { fail: 'element cannot accept text' };
       el.focus({ preventScroll: true });
       if (${type}) {
         if (typeof el.select === 'function') el.select();

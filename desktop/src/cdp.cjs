@@ -72,9 +72,28 @@ class CDP {
   async page(targetId) {
     const { sessionId } = await this.send('Target.attachToTarget', { targetId, flatten: true });
     const command = (method, params) => this.send(method, params, sessionId);
+    // The Electron webContents events watchNavigation listens for, from the
+    // main frame's CDP events (a page target's main frame id is its target id).
+    // frameStartedNavigating, unlike frameStartedLoading, says whether the step
+    // stays in the document (a hash link, history.pushState).
+    const events = { 'Page.frameStartedNavigating': 'did-start-navigation', 'Page.domContentEventFired': 'dom-ready', 'Page.frameStoppedLoading': 'did-stop-loading' };
+    const wrapped = [];
     return {
       sessionId,
       command,
+      on: (name, fn) => {
+        const listener = (m) => {
+          if (m.sessionId === sessionId && events[m.method] === name && (!m.params?.frameId || m.params.frameId === targetId))
+            fn({ isMainFrame: true, isSameDocument: /sameDocument/i.test(m.params?.navigationType || '') });
+        };
+        wrapped.push({ name, fn, listener });
+        this.listeners.add(listener);
+        command('Page.enable').catch(() => {});
+      },
+      removeListener: (name, fn) => {
+        const i = wrapped.findIndex((w) => w.name === name && w.fn === fn);
+        if (i >= 0) this.listeners.delete(wrapped.splice(i, 1)[0].listener);
+      },
       executeJavaScript: async (expression) => {
         const r = await command('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
         if (r.exceptionDetails) {
@@ -88,4 +107,8 @@ class CDP {
     };
   }
 }
-module.exports = { CDP };
+// Agent tabs open as background windows; a hidden page clamps its timers and
+// stops rAF, which stalls every settle wait. Appended to the configured args so
+// an app update applies them on the next Chromium start (the last copy wins).
+const AGENT_BROWSER_FLAGS = ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'];
+module.exports = { CDP, AGENT_BROWSER_FLAGS };
