@@ -112,6 +112,14 @@ before(async () => {
     '/pop-userinfo': page(`<script>setTimeout(()=>{window.open("http://u:p@127.0.0.1:${pb}/secret?popcred");fetch('/mark?pop-userinfo',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/pop-blank': page(`<script>setTimeout(()=>{var w=window.open("about:blank");if(w)w.location="${T}?popblank";fetch('${T}?popblank-fetch',{mode:'no-cors'}).catch(()=>{});fetch('/mark?pop-blank',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/ok': page('<p id=ok>ok</p>' + '<img src="/i.png?1"><img src="/i.png?2"><img src="/i.png?3">'),
+    '/link': page('<a id=go href="/slow">go</a>'),
+    '/slow': (res) => setTimeout(() => page('<h1>ARRIVED</h1>')(res), 800),
+    '/hang': page('<p>READY</p><img src="/never">'),
+    '/never': (res) => setTimeout(() => res.end(), 20000),
+    '/alert': page(`<button id=b onclick="alert('hello there');document.title='after'">b</button>`),
+    '/shadow': page(`<x-btn></x-btn><script>customElements.define('x-btn', class extends HTMLElement { connectedCallback() { const r = this.attachShadow({ mode: 'open' }); r.innerHTML = '<button>Shadow Go</button>'; r.querySelector('button').onclick = () => { document.title = 'shadow-clicked'; }; } });</script>`),
+    '/confirm': page(`<button id=b onclick="document.title = confirm('Delete everything?') ? 'yes' : 'no'">b</button>`),
+    '/readonly': page(`<input id=d readonly value=x><script>d.addEventListener('keydown', (e) => { if (e.key === 'Enter') document.title = 'entered'; });</script>`),
     '/i.png': (res) => { res.setHeader('content-type', 'image/png'); res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')); },
   };
   marks = new Set();
@@ -195,7 +203,8 @@ test('real Chromium: an agent page cannot reach loopback or metadata by redirect
   for (const tab of tabs) await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch);
 
   const ok = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/ok` })).data;
-  const loadedImages = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: "[...document.images].filter((i) => i.complete && i.naturalWidth).length", epoch: ok.epoch });
+  // open answers once the page is readable, so wait for its load event before counting images.
+  const loadedImages = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: "new Promise((r) => document.readyState === 'complete' ? r() : addEventListener('load', r)).then(() => [...document.images].filter((i) => i.complete && i.naturalWidth).length)", epoch: ok.epoch });
   assert.equal(loadedImages.data.value, 3, 'ordinary subresources still load through the filter');
   const viaEval = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: `location.href='http://u@127.0.0.1:${pb}/secret?eval';1`, epoch: ok.epoch });
   assert.equal(viaEval.status, 200);
@@ -324,4 +333,67 @@ test('real Chromium: the default cap is six agent tabs per bot', { skip: !chrome
   assert.deepEqual((seventh.data.closedTabs || []).map((t) => t.tabId), [opened[0].id], 'the seventh open retires the first tab');
   const listed = (await api('/v1/tabs')).data.tabs.map((t) => t.id);
   for (const t of [...opened.slice(1), seventh.data]) assert.ok(listed.includes(t.id), `${t.id} still open`);
+});
+
+const skipNoChrome = !chrome && 'no Chrome found (set HERMES_TEST_CHROME)';
+const act = (tab, body) => api(`/v1/tabs/${tab.id}/actions`, 'POST', { epoch: tab.epoch, ...body });
+const title = async (tab) => (await act(tab, { action: 'eval', code: 'document.title' })).data.value;
+
+test('real Chromium: a link click answers with the page it opened', { skip: skipNoChrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/link` })).data;
+  const clicked = await act(tab, { action: 'click', selector: '#go' });
+  assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
+  assert.equal(clicked.data.effect.navigated, true);
+  assert.match(clicked.data.effect.url, /\/slow$/);
+  assert.match(clicked.data.effect.text, /ARRIVED/);
+});
+
+test('real Chromium: open returns once the page is readable, not when every subresource finishes', { skip: skipNoChrome, timeout: 30000 }, async () => {
+  const started = Date.now();
+  const opened = await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/hang` });
+  assert.equal(opened.status, 201, JSON.stringify(opened.data));
+  assert.ok(Date.now() - started < 4000, `open took ${Date.now() - started}ms`);
+  assert.match(String((await act(opened.data, { action: 'read', maxChars: 200 })).data.text), /READY/);
+});
+
+test('real Chromium: an alert is accepted and reported instead of wedging the tab', { skip: skipNoChrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/alert` })).data;
+  const started = Date.now();
+  const clicked = await act(tab, { action: 'click', selector: '#b' });
+  assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
+  assert.ok(Date.now() - started < 5000, `click took ${Date.now() - started}ms`);
+  assert.match(JSON.stringify(clicked.data), /hello there/);
+  assert.equal(await title(tab), 'after');
+});
+
+test('real Chromium: a control inside an open shadow root is clickable by its ref', { skip: skipNoChrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/shadow` })).data;
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const button = snap.elements.find((e) => /Shadow Go/.test(e.name));
+  assert.ok(button, JSON.stringify(snap.elements));
+  const clicked = await act(tab, { action: 'click', ref: button.ref });
+  assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
+  assert.equal(await title(tab), 'shadow-clicked');
+});
+
+test('real Chromium: Enter reaches a read-only input', { skip: skipNoChrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/readonly` })).data;
+  const pressed = await act(tab, { action: 'press', key: 'Enter', selector: '#d' });
+  assert.equal(pressed.status, 200, JSON.stringify(pressed.data));
+  assert.equal(await title(tab), 'entered');
+});
+
+test('real Chromium: a custom element that hosts its own shadow root is clickable by selector', { skip: skipNoChrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/shadow` })).data;
+  const clicked = await act(tab, { action: 'click', selector: 'x-btn' });
+  assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
+  assert.equal(await title(tab), 'shadow-clicked');
+});
+
+test('real Chromium: a confirm is dismissed, never approved on the agent\'s behalf', { skip: skipNoChrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/confirm` })).data;
+  const clicked = await act(tab, { action: 'click', selector: '#b' });
+  assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
+  assert.deepEqual(clicked.data.dialogs.map((d) => [d.type, d.message, d.accepted]), [['confirm', 'Delete everything?', false]]);
+  assert.equal(await title(tab), 'no');
 });

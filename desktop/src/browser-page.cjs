@@ -94,7 +94,10 @@ function snapshotExpression(generation, opts = {}) {
           else done();
         }, ${EFFECT_SETTLE_MS});
         mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
-        quiet = setT(check, ${EFFECT_WATCH_MS});
+        // With the tracker armed for this action, its timers and requests hold
+        // the settle open themselves, so the first window only covers what the
+        // tracker cannot see (a microtask or message-channel render).
+        quiet = setT(check, armed && performance.now() < armed.expires ? ${EFFECT_TRACKED_WATCH_MS} : ${EFFECT_WATCH_MS});
       });
       settledMs = Math.round(performance.now() - settleStart);
     }
@@ -333,6 +336,7 @@ const EFFECT_SETTLE_MS = 400;
 // beat after the action; once anything mutates, the shorter quiet window is
 // all a settled page pays.
 const EFFECT_WATCH_MS = 250;
+const EFFECT_TRACKED_WATCH_MS = 100;
 // Consequence tracking: followUpInstallExpression wraps the page's setTimeout,
 // fetch and XMLHttpRequest.send once — planted on agent tabs at document start
 // (so a bundled page that bound the originals at module init still routes

@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
 const root =
   process.env.HERMES_VPS_BROWSER_DATA ||
   (process.platform === 'darwin'
@@ -25,7 +26,7 @@ async function available() {
 async function ensure() {
   if (await available()) return;
   if (!config.browserCommand) throw new Error('Configure browserCommand and browserArgs for the managed Chromium.');
-  const child = spawn(config.browserCommand, config.browserArgs || [], { stdio: 'ignore' });
+  const child = spawn(config.browserCommand, [...(config.browserArgs || []), ...AGENT_BROWSER_FLAGS], { stdio: 'ignore' });
   let launchError = false;
   child.on('error', () => {
     launchError = true;

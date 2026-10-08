@@ -292,7 +292,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     if (!point && loose) point = { x: Math.round(l + w / 2 + ox), y: Math.round(t + h / 2 + oy) };
     if (!point) return { fail: coveredBy ? 'covered by ' + coveredBy : 'no clickable point' };
     if (${focus}) {
-      if (${type} && !(el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(el.type)) || el.readOnly) return { fail: 'element cannot accept text' };
+      if (${type} && (!(el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(el.type)) || el.readOnly)) return { fail: 'element cannot accept text' };
       el.focus({ preventScroll: true });
       if (${type}) {
         if (typeof el.select === 'function') el.select();
