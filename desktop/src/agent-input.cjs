@@ -264,12 +264,28 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     let point = null, coveredBy = '';
     for (const [fx, fy] of [[.5,.5],[.5,.25],[.5,.75],[.25,.5],[.75,.5],[.2,.2],[.8,.2],[.2,.8],[.8,.8]]) {
       const lx = Math.round(l + w * fx), ly = Math.round(t + h * fy);
-      const hit = view.document.elementFromPoint(lx, ly);
+      let hit = view.document.elementFromPoint(lx, ly);
       // elementFromPoint retargets a hit inside a shadow root to its host and
       // Node.contains stops at the shadow boundary, so only a walk up the
       // composed tree sees a host or wrapper ancestor as the target itself.
       let own = false;
       for (let n = el; n && !own; n = n.parentNode || n.host) own = n === hit;
+      // A retargeted host hit can equally be a sibling overlay inside the
+      // same root, so it only counts when each open root's own hit test
+      // resolves down to el or something inside it.
+      if (hit && own && hit !== el && hit.shadowRoot) {
+        let inner = hit;
+        while (inner.shadowRoot) {
+          const deeper = inner.shadowRoot.elementFromPoint(lx, ly);
+          if (!deeper || deeper === inner) break;
+          inner = deeper;
+        }
+        if (inner !== hit) {
+          hit = inner;
+          own = false;
+          for (let n = inner; n && !own; n = n.parentNode || n.host) own = n === el;
+        }
+      }
       if (hit && (own || el.contains(hit))) { point = { x: lx + ox, y: ly + oy }; break; }
       if (hit && !coveredBy && !own && !el.contains(hit)) coveredBy = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/)[0] : '');
     }
@@ -280,7 +296,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
       el.focus({ preventScroll: true });
       if (${type}) {
         if (typeof el.select === 'function') el.select();
-        else { const doc = el.ownerDocument; const range = doc.createRange(); range.selectNodeContents(el); const s = doc.getSelection(); s.removeAllRanges(); s.addRange(range); }
+        else { const doc = el.ownerDocument; const range = doc.createRange(); range.selectNodeContents(el); const s = el.getRootNode().getSelection?.() || doc.getSelection(); s.removeAllRanges(); s.addRange(range); }
       }
     }
     const kind = (el.type || '').toLowerCase();

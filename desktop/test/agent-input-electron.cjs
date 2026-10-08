@@ -170,7 +170,11 @@ app.whenReady().then(async () => {
   await perform({ action: 'click', ref: 's1-2' });
   await eventuallyEquals(() => value(view.webContents, 'result.textContent'), 'Sent: Shadow agent text');
   await assert.rejects(perform({ action: 'click', ref: 's1-3' }), /covered by div#veil/);
-  console.log('PASS: type and click by ref reach into an open shadow root, and a real sibling overlay is still reported as covered.');
+  // An overlay inside the same shadow root retargets to the host just like the
+  // target does, but the root's own hit test still names it as the cover.
+  await view.webContents.executeJavaScript('(() => { const shroud = document.createElement("div"); shroud.id = "shroud"; shroud.style.cssText = "position:fixed;inset:0;background:#dde"; host.shadowRoot.appendChild(shroud); })()');
+  await assert.rejects(perform({ action: 'click', ref: 's1-1' }), /covered by div#shroud/);
+  console.log('PASS: type and click by ref reach into an open shadow root, and sibling overlays in the page and the same root are reported as covered.');
   tab.controller = 'human'; tab.epoch++;
   await agent.clear(tab);
   assert.equal(await value(view.webContents, '!!document.getElementById("hermes-workspace-agent-cursor")'), false);
