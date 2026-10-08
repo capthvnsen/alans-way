@@ -56,6 +56,15 @@ test('the publish config feeds GitHub releases', () => {
   assert.deepEqual(createConfig({}).publish, [{ provider: 'github', owner: 'capthvnsen', repo: 'alans-way', releaseType: 'draft' }]);
 });
 
+test('the release workflow ships the blockmaps electron-updater diffs against', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'release.yml'), 'utf8');
+  const releaseUpload = workflow.split('\n').find((line) => line.includes('gh release upload'));
+  for (const name of ['OpenAlan-mac.zip.blockmap', 'OpenAlan-windows-setup.exe.blockmap']) {
+    assert.ok(workflow.includes(`desktop/dist/${name}`), `${name} is missing from the build artifacts`);
+    assert.ok(releaseUpload.includes(`dist/${name}`), `${name} is missing from the release upload`);
+  }
+});
+
 test('the feed helper uses that publish config for builds without app-update.yml', () => {
   const feed = githubFeed(false, createConfig({}).publish);
   assert.deepEqual(feed, { provider: 'github', owner: 'capthvnsen', repo: 'alans-way' });

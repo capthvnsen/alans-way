@@ -52,11 +52,87 @@ function makeCheckout(remote, ref = 'v0.3.1') {
 function makeBin() {
   const bin = mktemp('vm-update-bin-');
   const marker = path.join(bin, 'services.log');
-  for (const name of ['systemctl', 'launchctl']) {
-    fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho "${name} $@" >> "${marker}"\nexit 0\n`, { mode: 0o755 });
-  }
+  // The fake systemctl answers is-system-running from bin/systemd-state; no
+  // file means a live systemd, which is what most fixtures stand in for.
+  fs.writeFileSync(path.join(bin, 'systemctl'), `#!/bin/sh
+echo "systemctl $@" >> "${marker}"
+if [ "\${1:-}" = "is-system-running" ]; then cat "${bin}/systemd-state" 2>/dev/null || echo running; fi
+exit 0
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'launchctl'), `#!/bin/sh\necho "launchctl $@" >> "${marker}"\nexit 0\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'npm'), `#!/bin/sh\necho "npm $@" >> "${marker}"\nexit 0\n`, { mode: 0o755 });
   return { bin, marker };
+}
+// A fake supervisorctl driven by files under $FAKE_SUPERVISOR_STATE:
+//   status           printed verbatim by `supervisorctl status` (the matching
+//                    line only when a program name is passed)
+//   pid.<name>       the pid `supervisorctl pid <name>` answers
+//   next-pid.<name>  the pid `signal`/`start` promotes: the relaunched process
+//   signal-fail      names whose `signal` exits 1 (a verb the host lacks)
+//   no-relaunch      names that stay STOPPED after `signal` (no autorestart)
+//   restart-fail     names whose `restart` exits 1
+// Like the real supervisorctl, status exits nonzero when any listed program
+// is not RUNNING and pid exits nonzero for a program that is not RUNNING.
+// A long-lived process whose argv carries the given words, so the script's
+// program-by-command-line detection has something real to find.
+const fakeDaemons = [];
+function spawnDaemon(...args) {
+  const child = spawn('node', ['-e', 'setInterval(()=>{}, 1000)', ...args], { stdio: 'ignore' });
+  fakeDaemons.push(child);
+  return child.pid;
+}
+function addSupervisor(bin, marker, state, sudoOnly = false) {
+  fs.writeFileSync(path.join(bin, 'supervisorctl'), `#!/bin/sh
+STATE="$FAKE_SUPERVISOR_STATE"
+${sudoOnly ? '[ -n "${FAKE_SUDO:-}" ] || exit 1\n' : ''}case "\${1:-}" in
+  status) if [ -n "\${2:-}" ]; then
+            grep "^\${2} " "$STATE/status" 2>/dev/null
+            awk -v n="\${2:-}" '$1 == n && $2 != "RUNNING" { bad = 1 } END { exit bad+0 }' "$STATE/status" 2>/dev/null || exit 3
+            exit 0
+          fi
+          cat "$STATE/status" 2>/dev/null
+          [ -f "$STATE/status" ] || exit 0
+          awk 'NF > 1 && $2 != "RUNNING" { bad = 1 } END { exit bad+0 }' "$STATE/status" || exit 3
+          exit 0;;
+  pid) cat "$STATE/pid.\${2:-}" 2>/dev/null
+       awk -v n="\${2:-}" '$1 == n { found = ($2 == "RUNNING") } END { exit !found }' "$STATE/status" 2>/dev/null || exit 7
+       exit 0;;
+  signal) n="\${3:-}"
+          [ "\${2:-}" = "USR1" ] || [ "\${2:-}" = "SIGUSR1" ] || exit 1
+          grep -qxF "$n" "$STATE/signal-fail" 2>/dev/null && exit 1
+          cur="$(cat "$STATE/pid.$n" 2>/dev/null | tr -d '[:space:]')"
+          case "$cur" in ''|0|*[!0-9]*) exit 1;; esac
+          echo "supervisorctl signal \${2:-} $n" >> "${marker}"
+          kill "$cur" 2>/dev/null
+          newp="$(cat "$STATE/next-pid.$n" 2>/dev/null | tr -d '[:space:]')"
+          grep -qxF "$n" "$STATE/no-relaunch" 2>/dev/null && newp=""
+          case "$newp" in
+            ''|*[!0-9]*)
+              printf '0\\n' > "$STATE/pid.$n"
+              awk -v n="$n" '$1 == n { $0 = n " STOPPED Oct 08 12:00 AM" } { print }' "$STATE/status" > "$STATE/status.tmp" \\
+                && mv "$STATE/status.tmp" "$STATE/status";;
+            *)
+              printf '%s\\n' "$newp" > "$STATE/pid.$n"
+              awk -v n="$n" -v p="$newp" '$1 == n { sub(/pid [0-9]+/, "pid " p) } { print }' "$STATE/status" > "$STATE/status.tmp" \\
+                && mv "$STATE/status.tmp" "$STATE/status";;
+          esac
+          exit 0;;
+  start) n="\${2:-}"
+         cur="$(cat "$STATE/pid.$n" 2>/dev/null | tr -d '[:space:]')"
+         case "$cur" in ''|0|*[!0-9]*) ;; *) exit 1;; esac
+         newp="$(cat "$STATE/next-pid.$n" 2>/dev/null | tr -d '[:space:]')"
+         case "$newp" in ''|*[!0-9]*) exit 1;; esac
+         echo "supervisorctl start $n" >> "${marker}"
+         printf '%s\\n' "$newp" > "$STATE/pid.$n"
+         awk -v n="$n" -v p="$newp" '$1 == n { $0 = n " RUNNING pid " p ", uptime 0:00:01" } { print }' "$STATE/status" > "$STATE/status.tmp" \\
+           && mv "$STATE/status.tmp" "$STATE/status"
+         exit 0;;
+  restart) echo "supervisorctl restart \${2:-}" >> "${marker}"
+           grep -qxF "\${2:-}" "$STATE/restart-fail" 2>/dev/null && exit 1
+           exit 0;;
+esac
+exit 0
+`, { mode: 0o755 });
 }
 async function makeStatus(body) {
   const server = http.createServer((_req, res) => res.end(JSON.stringify(typeof body === 'function' ? body() : body)));
@@ -116,6 +192,7 @@ let remote;
 before(() => { remote = makeRemote(); });
 after(() => {
   for (const server of servers) server.close();
+  for (const child of fakeDaemons) { try { child.kill('SIGKILL'); } catch {} }
   for (const dir of tmpdirs) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -574,4 +651,282 @@ test('a VM with hermes but no managed plugins reports an empty plugin list', asy
   assert.deepEqual(result.plugins, []);
   assert.equal(result.gatewayRestarted, false);
   assert.equal(restarts(), 0);
+});
+
+// --- guests without systemd ------------------------------------------------
+// A VM image can ship a systemctl binary that answers "offline"; the services
+// then live under supervisord and restart through supervisorctl.
+
+test('a guest without systemd restarts the broker through its supervisord program', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('vps-browser-host.cjs', 'serve');
+  fs.writeFileSync(path.join(sstate, 'status'), `worker-one RUNNING pid ${pid}, uptime 0:01:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.worker-one'), `${pid}\n`);
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ...pluginEnv(makeHermesHome(), mktemp('vm-update-hermes-state-')) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.ok, true);
+  assert.equal(result.restarted, true);
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.match(markerText, /supervisorctl restart worker-one/);
+  assert.doesNotMatch(markerText, /systemctl (--user )?restart/);
+});
+
+test('a stopped broker program resolves through its supervisor conf command line', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const sstate = mktemp('vm-update-supervisor-');
+  fs.writeFileSync(path.join(sstate, 'status'), 'unrelated RUNNING pid 1, uptime 9:09:09\n');
+  fs.writeFileSync(path.join(sstate, 'pid.unrelated'), '1\n');
+  addSupervisor(bin, marker, sstate);
+  const confdir = mktemp('vm-update-confd-');
+  fs.writeFileSync(path.join(confdir, 'apps.conf'),
+    '[program:browser-svc]\ncommand=/usr/bin/node /opt/x/vps-browser-host.cjs serve\nautorestart=unexpected\n');
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SUPERVISOR_STATE: sstate,
+    ALANS_WAY_VM_SUPERVISOR_CONFS: `${confdir}/*.conf`,
+    ...pluginEnv(makeHermesHome(), mktemp('vm-update-hermes-state-')),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.restarted, true);
+  assert.match(fs.readFileSync(marker, 'utf8'), /supervisorctl restart browser-svc/);
+});
+
+test('an unresolvable broker program names supervisorctl, never a dead systemctl', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const sstate = mktemp('vm-update-supervisor-');
+  fs.writeFileSync(path.join(sstate, 'status'), '');
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ALANS_WAY_VM_SUPERVISOR_CONFS: `${mktemp('vm-update-confd-')}/*.conf`,
+      ...pluginEnv(makeHermesHome(), mktemp('vm-update-hermes-state-')) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.restarted, false);
+  assert.match(res.stdout, /supervisorctl status/);
+  assert.doesNotMatch(res.stdout, /run: systemctl/);
+  assert.doesNotMatch(fs.readFileSync(marker, 'utf8'), /systemctl (--user )?restart/);
+});
+
+test('a plugin change drains a supervisord-managed gateway through SIGUSR1', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  const { log, restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  const pid2 = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  fs.writeFileSync(path.join(sstate, 'status'), `gw-one RUNNING pid ${pid}, uptime 0:02:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
+  fs.writeFileSync(path.join(sstate, 'next-pid.gw-one'), `${pid2}\n`);
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ...pluginEnv(home, state) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'updated');
+  assert.equal(result.gatewayRestarted, true);
+  assert.equal(result.gatewayRestartCmd, 'supervisorctl signal USR1 gw-one');
+  assert.equal(restarts(), 0, 'no hermes gateway restart on a supervisord guest');
+  assert.doesNotMatch(log(), /gateway restart/);
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.match(markerText, /supervisorctl signal USR1 gw-one/);
+  assert.doesNotMatch(markerText, /supervisorctl restart/, 'a drain restart never escalates to SIGKILL');
+});
+
+test('a gateway still down after the drain is started through supervisorctl', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  const { restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  const pid2 = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  fs.writeFileSync(path.join(sstate, 'status'), `gw-one RUNNING pid ${pid}, uptime 0:02:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
+  fs.writeFileSync(path.join(sstate, 'next-pid.gw-one'), `${pid2}\n`);
+  fs.writeFileSync(path.join(sstate, 'no-relaunch'), 'gw-one\n');
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ALANS_WAY_VM_GATEWAY_TIMEOUT: '2',
+      ...pluginEnv(home, state) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.gatewayRestarted, true);
+  assert.equal(result.gatewayRestartCmd, 'supervisorctl start gw-one');
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.match(markerText, /supervisorctl signal USR1 gw-one/);
+  assert.match(markerText, /supervisorctl start gw-one/);
+  assert.equal(restarts(), 0);
+});
+
+test('a supervisor without the signal verb falls back to supervisorctl restart', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  const { restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  fs.writeFileSync(path.join(sstate, 'status'), `gw-one RUNNING pid ${pid}, uptime 0:02:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
+  fs.writeFileSync(path.join(sstate, 'signal-fail'), 'gw-one\n');
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ...pluginEnv(home, state) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.gatewayRestarted, true);
+  assert.equal(result.gatewayRestartCmd, 'supervisorctl restart gw-one');
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.match(markerText, /supervisorctl restart gw-one/);
+  assert.doesNotMatch(markerText, /supervisorctl signal/, 'the signal verb itself was never usable');
+  assert.equal(restarts(), 0);
+});
+
+test('a failed supervisord gateway restart names the working command, not a dead one', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwfail'), '');
+  const { log } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  fs.writeFileSync(path.join(sstate, 'status'), `gw-one RUNNING pid ${pid}, uptime 0:02:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
+  fs.writeFileSync(path.join(sstate, 'signal-fail'), 'gw-one\n');
+  fs.writeFileSync(path.join(sstate, 'restart-fail'), 'gw-one\n');
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ...pluginEnv(home, state) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.gatewayRestarted, false);
+  assert.equal(result.gatewayRestartCmd, 'supervisorctl restart gw-one');
+  assert.match(res.stdout, /on the VM run: supervisorctl restart gw-one/);
+  assert.doesNotMatch(res.stdout, /on the VM run: hermes gateway restart/);
+  assert.match(log(), /hermes -p default gateway restart/, 'hermes gateway restart stays the last resort');
+});
+
+test('a stale supervisor conf does not win on a host with a live systemd', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  // No systemd-state file: the fake systemctl answers "running".
+  const sstate = mktemp('vm-update-supervisor-');
+  fs.writeFileSync(path.join(sstate, 'status'), 'web RUNNING pid 1, uptime 9:09:09\n');
+  fs.writeFileSync(path.join(sstate, 'pid.web'), '1\n');
+  addSupervisor(bin, marker, sstate);
+  const confdir = mktemp('vm-update-confd-');
+  fs.writeFileSync(path.join(confdir, 'leftover.conf'),
+    '[program:browser-svc]\ncommand=/usr/bin/node /opt/x/vps-browser-host.cjs serve\n');
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SUPERVISOR_STATE: sstate,
+    ALANS_WAY_VM_SUPERVISOR_CONFS: `${confdir}/*.conf`,
+    ...pluginEnv(makeHermesHome(), mktemp('vm-update-hermes-state-')),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.restarted, true);
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.match(markerText, /systemctl --user restart hermes-alans-way-browser\.service/);
+  assert.doesNotMatch(markerText, /supervisorctl restart/, 'a leftover conf must not start a duplicate service');
+});
+
+test('a supervisor socket that needs root is still inspected through sudo -n', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  // A sudo that never asks: it tags the child so the fake supervisorctl can
+  // tell a privileged call from a plain one.
+  fs.writeFileSync(path.join(bin, 'sudo'), '#!/bin/sh\n[ "$1" = "-n" ] && shift\nexport FAKE_SUDO=1\nexec "$@"\n', { mode: 0o755 });
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('vps-browser-host.cjs', 'serve');
+  fs.writeFileSync(path.join(sstate, 'status'), `broker-svc RUNNING pid ${pid}, uptime 0:01:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.broker-svc'), `${pid}\n`);
+  addSupervisor(bin, marker, sstate, true);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ...pluginEnv(makeHermesHome(), mktemp('vm-update-hermes-state-')) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.restarted, true);
+  assert.match(fs.readFileSync(marker, 'utf8'), /supervisorctl restart broker-svc/);
+});
+
+test('a program still starting resolves by its pid on a sudo-capable socket', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  fs.writeFileSync(path.join(bin, 'sudo'), '#!/bin/sh\n[ "$1" = "-n" ] && shift\nexec "$@"\n', { mode: 0o755 });
+  const sstate = mktemp('vm-update-supervisor-');
+  // STARTING has a live pid but `supervisorctl pid` still exits nonzero for
+  // it; the EXITED entry keeps `status` failing too, so both answers come
+  // from calls whose exit status says failure while the output is valid.
+  const pid = spawnDaemon('vps-browser-host.cjs', 'serve');
+  fs.writeFileSync(path.join(sstate, 'status'),
+    `broker-svc STARTING pid ${pid}, uptime 0:00:01\ncrashed-svc EXITED Oct 07 10:00 PM\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.broker-svc'), `${pid}\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.crashed-svc'), '0\n');
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ...pluginEnv(makeHermesHome(), mktemp('vm-update-hermes-state-')) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.restarted, true);
+  assert.match(fs.readFileSync(marker, 'utf8'), /supervisorctl restart broker-svc/);
+});
+
+test('a foreign "gateway run" program is never restarted for the agent gateway', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  const { restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const sstate = mktemp('vm-update-supervisor-');
+  // An unrelated service that merely shares the words "gateway run".
+  const pid = spawnDaemon('api-gateway', 'run', '--port', '8800');
+  fs.writeFileSync(path.join(sstate, 'status'), `api-gateway RUNNING pid ${pid}, uptime 0:02:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.api-gateway'), `${pid}\n`);
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ...pluginEnv(home, state) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'updated');
+  assert.equal(result.gatewayRestarted, true);
+  assert.equal(result.gatewayRestartCmd, 'supervisorctl signal USR1 <program>');
+  assert.equal(restarts(), 1, 'the plain hermes gateway restart path runs');
+  assert.doesNotMatch(fs.readFileSync(marker, 'utf8'), /supervisorctl restart/, 'an unrelated program is left alone');
 });

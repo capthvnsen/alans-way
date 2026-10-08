@@ -276,6 +276,55 @@ app.whenReady().then(async () => {
   await invoke('control', { id: colored[0].id, controller: 'agent' });
   assert.equal((await api(`/v1/tabs/${colored[0].id}`, 'GET', undefined, '456')).controller, 'agent', 'Give to agent hands the sealed tab back');
   console.log('PASS: explicit takeover seals control and page metadata until the human hands the tab back.');
+  // The Move button appears only for agent-owned tabs while the VM browser is
+  // connected, and on the retired local copy it offers the way back. Both
+  // clicks drive the real handoff IPC; with no VM configured the fixture
+  // surfaces the main-process error through the toast.
+  const keepStateOut = wc.send.bind(wc);
+  wc.send = (channel, ...args) => { if (channel !== 'workspace:state') keepStateOut(channel, ...args); };
+  let handoffCheck;
+  try {
+    handoffCheck = await evaluate(`(async () => {
+      const real = await window.workspace.getState();
+      const shown = () => { const b = document.getElementById('handoff-button'); return { hidden: b.classList.contains('hidden'), text: b.textContent }; };
+      const tab = (extra) => ({ id: ${JSON.stringify(colored[0].id)}, title: 'red', url: 'https://example.com/red', botId: '123', host: 'mac', ...extra });
+      const connected = (tabs, id) => ({ ...real, vpsBrowserStatus: 'connected', tabs, activeTabId: id });
+      render(connected([tab({ controller: 'agent' })], ${JSON.stringify(colored[0].id)}));
+      const up = shown();
+      document.getElementById('handoff-button').click();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      const forwardToast = document.getElementById('toast').textContent;
+      render({ ...connected([tab({ controller: 'agent' })], ${JSON.stringify(colored[0].id)}), vpsBrowserStatus: 'disconnected' });
+      const down = shown();
+      render(connected([tab({ controller: 'human' })], ${JSON.stringify(colored[0].id)}));
+      const human = shown();
+      render(connected([tab({ controller: 'agent', internal: true })], ${JSON.stringify(colored[0].id)}));
+      const internal = shown();
+      render(connected([tab({ controller: 'human', handoff: { phase: 'handed_off', destinationHost: 'vps', destinationTabId: 'vps-ghost' } })], ${JSON.stringify(colored[0].id)}));
+      const back = shown();
+      document.getElementById('handoff-button').click();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      const backToast = document.getElementById('toast').textContent;
+      const returned = tab({ controller: 'human', handoff: { phase: 'handed_off', destinationHost: 'vps', destinationTabId: 'vps-ghost' } });
+      const copy = { ...tab({}), id: 'local-returned', handoff: { phase: 'review_required', sourceTabId: 'vps-ghost', destinationHost: 'mac' } };
+      render(connected([returned, copy], returned.id));
+      const movedBack = shown();
+      render(real);
+      return { up, down, human, internal, back, movedBack, forwardToast, backToast };
+    })()`);
+  } finally { wc.send = keepStateOut; }
+  assert.equal(handoffCheck.up.hidden, false, 'agent tab shows the move control');
+  assert.match(handoffCheck.up.text, /^Move to /);
+  assert.match(handoffCheck.forwardToast, /Configure the VPS browser connection/, `the click reached the handoff IPC: ${handoffCheck.forwardToast}`);
+  assert.equal(handoffCheck.down.hidden, true, 'hidden while the VM browser is not connected');
+  assert.equal(handoffCheck.human.hidden, true, 'hidden for a human-owned tab');
+  assert.equal(handoffCheck.internal.hidden, true, 'hidden for an internal page that cannot checkpoint');
+  assert.equal(handoffCheck.back.hidden, false, 'a handed-off source offers the way back');
+  assert.match(handoffCheck.back.text, /^Move back/);
+  assert.match(handoffCheck.backToast, /Source tab not found/, `the way back hands off the remote copy: ${handoffCheck.backToast}`);
+  assert.equal(handoffCheck.movedBack.hidden, true, 'hidden once the remote copy already moved back to a local tab');
+  await invoke('control', { id: colored[0].id, controller: 'agent' });
+  console.log('PASS: handoff button follows agent control and VM link state, and both directions drive the real IPC.');
   // batch runs a multi-step sequence in one request and eval executes page JS;
   // both honor the same controller/epoch gate as single actions.
   const seizedTab = await api(`/v1/tabs/${colored[1].id}`, 'GET', undefined, 'overseer-bot');
@@ -294,6 +343,15 @@ app.whenReady().then(async () => {
   ] }, 'overseer-bot');
   assert.equal(partial.results.length, 2, 'Batch stops at the first failing step.');
   assert.ok(partial.results[1].error, 'The failing step reports its error.');
+  // A page eval rejects with a bare string, not an Error; the batch step must
+  // carry that message instead of dropping it to an empty error field.
+  const failedEval = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'batch', epoch: seizedTab.epoch, steps: [
+    { action: 'eval', code: 'return 1' },
+  ] }, 'overseer-bot');
+  assert.match(failedEval.results[0].error || '', /SyntaxError/, 'a failing batch eval reports the page error, not an empty step');
+  const badEval = await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: 'return 1', epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.equal(badEval.status, 400, 'a failing eval is a 400');
+  assert.match(badEval.data.error || '', /SyntaxError/, 'a failing eval reports the page error, not an empty body');
   console.log('PASS: batch sequencing, eval page JS, epoch gate, and stop-on-error.');
   // wait resolves instantly on an existing selector, blocks until a delayed
   // element appears, and times out as a 408 step error inside a batch.

@@ -115,11 +115,12 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
       const result = await runGuest(vm, { tag, onProgress });
       const plugins = Array.isArray(result.plugins) ? result.plugins : [];
       const gatewayRestarted = result.gatewayRestarted === true;
+      const gatewayRestartCmd = result.gatewayRestartCmd;
       if (result.ok === true) return { ok: true, state: 'ok', version: String(result.version || tag.replace(/^v/, '')),
-        plugins, gatewayRestarted, pluginLines: vmPluginLines({ plugins, gatewayRestarted }) };
+        plugins, gatewayRestarted, pluginLines: vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd }) };
       const error = String(result.error || 'The VM update failed without a reason.');
       return { ok: false, state: error === 'busy' ? 'busy' : 'failed', version: String(result.version || ''), error: error === 'busy' ? 'VM busy, will retry' : error,
-        plugins, gatewayRestarted, pluginLines: vmPluginLines({ plugins, gatewayRestarted }) };
+        plugins, gatewayRestarted, pluginLines: vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd }) };
     } catch (error) {
       log('vm-update', error);
       return { ok: false, state: 'failed', error: tail(error.message) || 'The VM update failed.', plugins: [], gatewayRestarted: false, pluginLines: [] };
@@ -170,14 +171,29 @@ function vmRetryState(appVersion, vms, targets) {
   return { show: false, version: '', failed: '' };
 }
 
-// A version check reports what the VM runs now; it must not erase a newer
-// recorded result (an update that landed while the check was in flight).
+// A version check reports what the VM runs now; a successful one refreshes
+// the record: a same or newer report clears a stale failure, while an older
+// or unparseable report must not erase a fresher recorded result (an update
+// that landed while the check was in flight).
 // Returns the vmUpdates entry to store, or null to keep the existing one.
 function vmCheckEntry(previous, check) {
   const reported = String(check?.version || check?.hostVersion || '');
   const known = String(previous?.version || '');
-  if (known && (!reported || !isNewer(reported, known))) return null;
+  if (!/^\d+\.\d+\.\d+$/.test(reported) || (known && isNewer(known, reported))) return null;
+  if (reported === known && !previous?.failed) return null;
   return { version: reported, failed: '' };
+}
+
+// Records are keyed by target id; drop every record whose id is not a saved
+// VM (a removed target, or an id an older build wrote by mistake) so only
+// live targets can ever steer the retry banner.
+function pruneVmUpdates(vms, targets) {
+  const ids = new Set((targets || []).map((target) => target.id));
+  const next = {};
+  for (const [id, entry] of Object.entries(vms || {})) {
+    if (ids.has(id)) next[id] = entry;
+  }
+  return next;
 }
 
 // Maps the guest script's "vm-update: <text>" progress lines to UI text.
@@ -211,16 +227,20 @@ function pluginStatusText(p, { qualified = false } = {}) {
 // The plugin lines shown under a VM's update result, plus a warning when new
 // plugin code never got loaded because the gateway restart did not finish.
 // Plugin problems are warnings; they never change the VM's ok/failed state.
-function vmPluginLines({ plugins, gatewayRestarted } = {}) {
+function vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd } = {}) {
   const list = Array.isArray(plugins) ? plugins : [];
   const qualified = list.length > 1;
   const lines = list.map((p) => ({
     text: pluginStatusText(p, { qualified }),
     tone: p.status === 'updated' ? 'ok' : p.status === 'current' ? 'info' : 'warn',
   }));
-  if (gatewayRestarted === false && list.some((p) => p.status === 'updated'))
-    lines.push({ text: 'Your agent needs a restart to load the new plugin. On your VM run: hermes gateway restart', tone: 'warn' });
+  if (gatewayRestarted === false && list.some((p) => p.status === 'updated')) {
+    // The guest names the restart that works there: a supervisorctl command
+    // when the gateway runs under a service manager like supervisord.
+    const cmd = String(gatewayRestartCmd || 'hermes gateway restart');
+    lines.push({ text: `Your agent needs a restart to load the new plugin. On your VM run: ${cmd}`, tone: 'warn' });
+  }
   return lines;
 }
 
-module.exports = { createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil, vmRetryState, vmCheckEntry, vmPhaseText, pluginStatusText, vmPluginLines, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS, TAG_RE };
+module.exports = { createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, vmPhaseText, pluginStatusText, vmPluginLines, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS, TAG_RE };

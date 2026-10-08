@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil,
-  vmRetryState, vmCheckEntry, vmPhaseText, pluginStatusText, vmPluginLines,
+  vmRetryState, vmCheckEntry, pruneVmUpdates, vmPhaseText, pluginStatusText, vmPluginLines,
   VM_TIMEOUT_MS, CHECK_TIMEOUT_MS,
 } = require('../src/vm-update.cjs');
 
@@ -181,11 +181,31 @@ test('the retry banner ignores a VM whose address was removed', () => {
 
 test('a stale version check never overwrites a fresher recorded result', () => {
   assert.equal(vmCheckEntry({ version: '0.3.2', failed: '' }, { version: '0.3.1' }), null);
-  assert.equal(vmCheckEntry({ version: '0.3.1', failed: 'disk full' }, { version: '0.3.1' }), null);
+  assert.equal(vmCheckEntry({ version: '0.3.2', failed: 'busy' }, { version: '0.3.1' }), null);
   assert.equal(vmCheckEntry({ version: '0.3.1' }, { version: '' }), null);
+  assert.equal(vmCheckEntry({ version: '0.3.1', failed: '' }, { version: 'v0.3.3-rc.1' }), null);
+  assert.equal(vmCheckEntry(undefined, { version: 'not-a-version' }), null);
   assert.deepEqual(vmCheckEntry({ version: '0.3.1' }, { version: '0.3.2' }), { version: '0.3.2', failed: '' });
   assert.deepEqual(vmCheckEntry(undefined, { version: '0.3.1' }), { version: '0.3.1', failed: '' });
   assert.deepEqual(vmCheckEntry({ failed: 'disk full' }, { hostVersion: '0.3.1' }), { version: '0.3.1', failed: '' });
+});
+
+test('a successful check clears a stale failure once the version is confirmed', () => {
+  // A run that failed mid-update leaves {version, failed}; the next check that
+  // sees the same version proves the VM answered, so the failure is stale.
+  assert.deepEqual(vmCheckEntry({ version: '0.3.1', failed: 'disk full' }, { version: '0.3.1' }),
+    { version: '0.3.1', failed: '' });
+  assert.equal(vmCheckEntry({ version: '0.3.1', failed: '' }, { version: '0.3.1' }), null);
+  assert.equal(vmCheckEntry({ version: '0.3.1', failed: 'disk full' }, { version: '' }), null);
+});
+
+test('pruneVmUpdates drops records whose id is not a saved VM', () => {
+  const targets = [{ id: 'agent' }];
+  const vms = { agent: { version: '0.3.3', failed: '' }, undefined: { version: '', failed: 'gone' }, old: { version: '0.2.0' } };
+  assert.deepEqual(pruneVmUpdates(vms, targets), { agent: { version: '0.3.3', failed: '' } });
+  assert.deepEqual(pruneVmUpdates(vms, []), {});
+  assert.deepEqual(pruneVmUpdates(undefined, targets), {});
+  assert.deepEqual(pruneVmUpdates({ agent: { version: '0.3.3' } }, targets), { agent: { version: '0.3.3' } });
 });
 
 test('the update popup shows only for an available, unsnoozed, idle update', () => {
@@ -288,4 +308,12 @@ test('vmPluginLines prefixes entries when a VM reports more than one and warns o
   assert.equal(lines[2].tone, 'warn');
   assert.equal(vmPluginLines({ gatewayRestarted: true, plugins: [{ status: 'current' }] }).length, 1);
   assert.equal(vmPluginLines({}).length, 0);
+});
+
+test('a missed gateway restart names the command the guest detected, not a fixed one', () => {
+  const plugins = [{ profile: 'default', name: 'alans-way', status: 'updated' }];
+  const lines = vmPluginLines({ plugins, gatewayRestarted: false, gatewayRestartCmd: 'supervisorctl restart gw-one' });
+  assert.match(lines[1].text, /supervisorctl restart gw-one/);
+  assert.doesNotMatch(lines[1].text, /hermes gateway restart/);
+  assert.match(vmPluginLines({ plugins, gatewayRestarted: false })[1].text, /hermes gateway restart/);
 });

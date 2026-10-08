@@ -7,7 +7,8 @@
 # or downloads it as a tarball when git is not installed (Node is fetched into
 # ~/.alans-way/node the same way), builds the app locally (so macOS does not quarantine it), replaces
 # /Applications/alans-way-localapp.app and opens it. Sign-ins and settings live
-# outside the bundle and survive upgrades. Safe to re-run.
+# outside the bundle and survive upgrades. In a terminal it then offers to
+# connect your Hermes server (scripts/connect-server.sh). Safe to re-run.
 set -eu
 
 REPO_URL="https://github.com/capthvnsen/alans-way"
@@ -97,6 +98,12 @@ while [ "$i" -lt 30 ]; do
       .then((r) => r.json()).then((s) => { if (!s.version) process.exit(1); console.log(s.host + " " + s.version); })
       .catch(() => process.exit(1));' "$CONN" 2>/dev/null)"; then
     say "install-mac: running — local browser API answers ($STATUS)"
+    # connect-mac.sh runs this installer itself and sets the skip flag.
+    if [ -z "${ALANS_WAY_SKIP_CONNECT:-}" ] && (: < /dev/tty) 2>/dev/null; then
+      printf 'Connect your Hermes server now? [Y/n] ' > /dev/tty
+      read -r reply < /dev/tty || reply=n
+      case "$reply" in n|N|no) say "Later: sh $DIR/scripts/connect-server.sh";; *) exec sh "$DIR/scripts/connect-server.sh";; esac
+    fi
     exit 0
   fi
   sleep 1; i=$((i + 1))

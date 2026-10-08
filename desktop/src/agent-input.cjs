@@ -262,15 +262,32 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     const w = rr - l, h = b - t;
     if (!r.width || !r.height || w <= 0 || h <= 0) return loose ? { x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) } : { fail: 'no visible area' };
     let point = null, coveredBy = '';
-    // contains() stops at a shadow boundary; walk the composed tree instead.
-    const within = (n) => { for (; n; n = n.parentNode || n.host) if (n === el) return true; return false; };
     for (const [fx, fy] of [[.5,.5],[.5,.25],[.5,.75],[.25,.5],[.75,.5],[.2,.2],[.8,.2],[.2,.8],[.8,.8]]) {
       const lx = Math.round(l + w * fx), ly = Math.round(t + h * fy);
       let hit = view.document.elementFromPoint(lx, ly);
-      // A point inside an open shadow root hits its host; descend to the real target.
-      for (let inner; hit && hit.shadowRoot && (inner = hit.shadowRoot.elementFromPoint(lx, ly)) && inner !== hit;) hit = inner;
-      if (within(hit)) { point = { x: lx + ox, y: ly + oy }; break; }
-      if (hit && !coveredBy && !within(hit)) coveredBy = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/)[0] : '');
+      // elementFromPoint retargets a hit inside a shadow root to its host and
+      // Node.contains stops at the shadow boundary, so only a walk up the
+      // composed tree sees a host or wrapper ancestor as the target itself.
+      let own = false;
+      for (let n = el; n && !own; n = n.parentNode || n.host) own = n === hit;
+      // A retargeted host hit can equally be a sibling overlay inside the
+      // same root, so it only counts when each open root's own hit test
+      // resolves down to el or something inside it.
+      if (hit && own && hit !== el && hit.shadowRoot) {
+        let inner = hit;
+        while (inner.shadowRoot) {
+          const deeper = inner.shadowRoot.elementFromPoint(lx, ly);
+          if (!deeper || deeper === inner) break;
+          inner = deeper;
+        }
+        if (inner !== hit) {
+          hit = inner;
+          own = false;
+          for (let n = inner; n && !own; n = n.parentNode || n.host) own = n === el;
+        }
+      }
+      if (hit && (own || el.contains(hit))) { point = { x: lx + ox, y: ly + oy }; break; }
+      if (hit && !coveredBy && !own && !el.contains(hit)) coveredBy = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/)[0] : '');
     }
     if (!point && loose) point = { x: Math.round(l + w / 2 + ox), y: Math.round(t + h / 2 + oy) };
     if (!point) return { fail: coveredBy ? 'covered by ' + coveredBy : 'no clickable point' };
@@ -279,7 +296,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
       el.focus({ preventScroll: true });
       if (${type}) {
         if (typeof el.select === 'function') el.select();
-        else { const doc = el.ownerDocument; const range = doc.createRange(); range.selectNodeContents(el); const s = doc.getSelection(); s.removeAllRanges(); s.addRange(range); }
+        else { const doc = el.ownerDocument; const range = doc.createRange(); range.selectNodeContents(el); const s = el.getRootNode().getSelection?.() || doc.getSelection(); s.removeAllRanges(); s.addRange(range); }
       }
     }
     const kind = (el.type || '').toLowerCase();
