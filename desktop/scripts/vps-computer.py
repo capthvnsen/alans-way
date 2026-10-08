@@ -1098,22 +1098,80 @@ def capture(wid, cap):
     return data, size
 
 
+def clamp_box(geo, screen):
+    """(x, y, width, height) of a window geometry cut to the screen; width or height 0 when it is entirely off it."""
+    left, top = int(geo.get('X', '0')), int(geo.get('Y', '0'))
+    right, bottom = left + int(geo.get('WIDTH', '0')), top + int(geo.get('HEIGHT', '0'))
+    left, top = max(left, 0), max(top, 0)
+    return left, top, max(min(right, screen[0]) - left, 0), max(min(bottom, screen[1]) - top, 0)
+
+
+def grab(box, cap):
+    """JPEG of a screen rectangle through Pillow, or None when Pillow or the grab fails."""
+    try:
+        import io
+        from PIL import ImageGrab
+        x, y, width, height = box
+        image = ImageGrab.grab(bbox=(x, y, x + width, y + height), xdisplay=os.environ['DISPLAY']).convert('RGB')
+        if width > cap:
+            image = image.resize((cap, max(1, round(height * cap / width))))
+        out = io.BytesIO()
+        image.save(out, 'JPEG', quality=55)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+def screen_size():
+    try:
+        width, height = (int(part) for part in xdotool('getdisplaygeometry').split())
+    except ValueError:
+        fail('Could not read the screen size.')
+    return width, height
+
+
 def cmd_shot(req):
     pid = req.get('pid')
     check_app(pid)
-    window = best_window(pid)
-    if not window:
-        fail('That app has no window to capture.', 'no_window')
-    wid, geo = window
     try:
         cap = min(max(int(req.get('maxWidth', 960)), 320), 1280)
     except (TypeError, ValueError):
         cap = 960
+    if agent_desktop():
+        return agent_shot(pid, cap)
+    window = best_window(pid)
+    if not window:
+        fail('That app has no window to capture.', 'no_window')
+    wid, geo = window
     data, (width, height) = capture(wid, cap)
+    return shot_reply(data, width, height, float(geo.get('X', '0')), float(geo.get('Y', '0')),
+                      float(geo.get('WIDTH', '0')), float(geo.get('HEIGHT', '0')))
+
+
+def agent_shot(pid, cap):
+    """Pillow reads the X screen directly, so a window hidden behind another still shows what is on screen."""
+    screen = screen_size()
+    wid = 'root'
+    box = (0, 0, *screen)
+    if pid:
+        window = best_window(pid)
+        if not window:
+            fail('That app has no window to capture.', 'no_window')
+        wid, box = window[0], clamp_box(window[1], screen)
+        if not (box[2] and box[3]):
+            fail('That app has no window on the screen.', 'no_window')
+    data = grab(box, cap)
+    if data and jpeg_size(data):
+        width, height = jpeg_size(data)
+    else:
+        data, (width, height) = capture(wid, cap)
+    return shot_reply(data, width, height, *box)
+
+
+def shot_reply(data, width, height, x, y, window_width, window_height):
     return {
         'ok': True, 'image': base64.b64encode(data).decode('ascii'), 'imageWidth': width, 'imageHeight': height,
-        'windowX': float(geo.get('X', '0')), 'windowY': float(geo.get('Y', '0')),
-        'windowWidth': float(geo.get('WIDTH', '0')), 'windowHeight': float(geo.get('HEIGHT', '0')),
+        'windowX': x, 'windowY': y, 'windowWidth': window_width, 'windowHeight': window_height,
     }
 
 
@@ -1199,6 +1257,28 @@ def cmd_selftest(req):
         del sent[:]
         cmd_act({'pid': 9, 'steps': steps[:1], 'settleMs': 0})
         check(sent[:2] == [['getactivewindow'], ['windowactivate', '--sync', '42']], 'agent app is activated first')
+    finally:
+        del os.environ['ALANS_WAY_AGENT_DESKTOP']
+        globals().update(saved_io)
+    screen = (1920, 1080)
+    check(clamp_box({'X': '-10', 'Y': '5', 'WIDTH': '100', 'HEIGHT': '2000'}, screen) == (0, 5, 90, 1075), 'clamp box')
+    check(clamp_box({'X': '100', 'Y': '50', 'WIDTH': '640', 'HEIGHT': '480'}, screen) == (100, 50, 640, 480), 'clamp keeps a window that fits')
+    check(clamp_box({'X': '1900', 'Y': '0', 'WIDTH': '50', 'HEIGHT': '10'}, screen) == (1900, 0, 20, 10)
+          and clamp_box({'X': '3000', 'Y': '0', 'WIDTH': '50', 'HEIGHT': '10'}, screen)[2] == 0, 'clamp off-screen')
+    fake_jpeg = b'\xff\xd8\xff\xc0\x00\x11\x08\x00\x10\x00\x20' + b'\x00' * 12
+    grabbed = []
+    stubs = ('grab', 'best_window', 'xdotool', 'resolve_app')
+    saved_io = {name: globals()[name] for name in stubs}
+    globals().update(grab=lambda box, cap: grabbed.append((box, cap)) or fake_jpeg,
+                     best_window=lambda pid: ('42', {'X': '-5', 'Y': '10', 'WIDTH': '800', 'HEIGHT': '600'}),
+                     xdotool=lambda *args: '1920 1080\n', resolve_app=lambda pid: None)
+    os.environ['ALANS_WAY_AGENT_DESKTOP'] = '1'
+    try:
+        whole = cmd_shot({'pid': 0, 'maxWidth': 640})
+        check(grabbed[-1] == ((0, 0, 1920, 1080), 640) and (whole['windowX'], whole['windowY'], whole['windowWidth'], whole['windowHeight'])
+              == (0, 0, 1920, 1080) and (whole['imageWidth'], whole['imageHeight']) == (32, 16), 'agent screen shot')
+        part = cmd_shot({'pid': 9})
+        check(grabbed[-1][0] == (0, 10, 795, 600) and (part['windowX'], part['windowWidth']) == (0, 795), 'agent window shot is clamped')
     finally:
         del os.environ['ALANS_WAY_AGENT_DESKTOP']
         globals().update(saved_io)
