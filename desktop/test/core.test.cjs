@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, followVmRemoteUrl } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl } = require('../src/core.cjs');
 const { snapshotExpression, settleSnapshot, readEffect } = require('../src/browser-page.cjs');
 const { locateElement } = require('../src/agent-input.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
@@ -381,6 +381,14 @@ test('a page exception reaches the agent with its message', async () => {
     } };
   const page = await new CDP(socket).page('t');
   await assert.rejects(page.executeJavaScript('nope'), /Unable to inspect browser page: ReferenceError: nope is not defined$/);
+});
+
+test('a rejected page eval answers with the page message, not an empty body', () => {
+  // WebFrameMain.executeJavaScript rejects with a bare string, not an Error.
+  assert.equal(errorMessage('Uncaught SyntaxError: Illegal return statement'), 'Uncaught SyntaxError: Illegal return statement');
+  assert.equal(errorMessage(Object.assign(new Error('Element is covered.'), { status: 400 })), 'Element is covered.');
+  assert.equal(errorMessage({ message: 'object rejection' }), 'object rejection');
+  for (const value of [undefined, null, '', 0]) assert.equal(errorMessage(value), 'Request failed.');
 });
 
 test('control fingerprints ignore the key order the executor happens to return', async () => {

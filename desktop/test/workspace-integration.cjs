@@ -343,6 +343,15 @@ app.whenReady().then(async () => {
   ] }, 'overseer-bot');
   assert.equal(partial.results.length, 2, 'Batch stops at the first failing step.');
   assert.ok(partial.results[1].error, 'The failing step reports its error.');
+  // A page eval rejects with a bare string, not an Error; the batch step must
+  // carry that message instead of dropping it to an empty error field.
+  const failedEval = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'batch', epoch: seizedTab.epoch, steps: [
+    { action: 'eval', code: 'return 1' },
+  ] }, 'overseer-bot');
+  assert.match(failedEval.results[0].error || '', /SyntaxError/, 'a failing batch eval reports the page error, not an empty step');
+  const badEval = await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: 'return 1', epoch: seizedTab.epoch }, 'overseer-bot');
+  assert.equal(badEval.status, 400, 'a failing eval is a 400');
+  assert.match(badEval.data.error || '', /SyntaxError/, 'a failing eval reports the page error, not an empty body');
   console.log('PASS: batch sequencing, eval page JS, epoch gate, and stop-on-error.');
   // wait resolves instantly on an existing selector, blocks until a delayed
   // element appears, and times out as a 408 step error inside a batch.

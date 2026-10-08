@@ -138,7 +138,7 @@ const tools = [
       modifiers: { type: 'array' }, timeout: { type: 'number' }, visible: { type: 'boolean' }, gone: { type: 'boolean' }, maxChars: { type: 'integer' },
       width: { type: 'number' }, height: { type: 'number' }, scale: { type: 'number' },
     } }, description: 'For batch: up to 25 action objects run sequentially; execution stops at the first error. read and wait steps are allowed.' },
-    code: { type: 'string', description: 'For eval: JS expression/function body evaluated in the page, returning a JSON-serializable value (max 16KB source, 15s timeout, ~48KB result cap).' },
+    code: { type: 'string', description: 'For eval: JS expression evaluated in the page, returning a JSON-serializable value (wrap statements in an IIFE; max 16KB source, 15s timeout, ~48KB result cap).' },
     selector: { type: 'string', description: 'CSS selector targeting an element for click/type/press/move, resolved at dispatch with multi-point hit testing, so it stays valid inside batch across page changes where snapshot refs go stale. For wait: the selector that must exist before returning.' },
     timeout: { type: 'number', description: 'For wait: max milliseconds to wait (default 10000, cap 30000).' },
     visible: { type: 'boolean', description: 'For wait with selector: require the element to be rendered with a non-zero box, not merely present in the DOM.' },
