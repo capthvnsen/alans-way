@@ -9,6 +9,7 @@ legacy argv commands (apps, snapshot, press, type, click, drag, shot) still work
 import base64
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -175,6 +176,12 @@ def ensure_display():
     fail('No DISPLAY for the desktop.')
 
 
+def atspi_address(text):
+    """The bus address in `xprop -root AT_SPI_BUS` output, or None."""
+    match = re.search(r'"(unix:[^"]+)"', text)
+    return match.group(1) if match else None
+
+
 def ensure_session():
     if os.environ.get('DBUS_SESSION_BUS_ADDRESS'):
         return
@@ -191,14 +198,24 @@ class Bus:
         from gi.repository import GLib, Gio
         self.GLib, self.Gio = GLib, Gio
         ensure_display()
-        ensure_session()
-        session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-        address = session.call_sync(
-            'org.a11y.Bus', '/org/a11y/bus', 'org.a11y.Bus', 'GetAddress',
-            None, GLib.VariantType.new('(s)'), Gio.DBusCallFlags.NONE, 3000, None,
-        ).unpack()[0]
         flags = Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION
-        self.conn = Gio.DBusConnection.new_for_address_sync(address, flags, None, None)
+        # An agent VM has no session bus; the X root property still names the accessibility bus.
+        self.conn = None
+        try:
+            address = atspi_address(subprocess.check_output(
+                ['xprop', '-root', 'AT_SPI_BUS'], text=True, stderr=subprocess.DEVNULL, timeout=3))
+            if address:
+                self.conn = Gio.DBusConnection.new_for_address_sync(address, flags, None, None)
+        except (subprocess.SubprocessError, OSError, GLib.Error):
+            pass
+        if self.conn is None:
+            ensure_session()
+            session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            address = session.call_sync(
+                'org.a11y.Bus', '/org/a11y/bus', 'org.a11y.Bus', 'GetAddress',
+                None, GLib.VariantType.new('(s)'), Gio.DBusCallFlags.NONE, 3000, None,
+            ).unpack()[0]
+            self.conn = Gio.DBusConnection.new_for_address_sync(address, flags, None, None)
 
     def v(self, signature, values):
         return self.GLib.Variant(signature, values)
@@ -1007,6 +1024,9 @@ def cmd_selftest(req):
     check(jpeg_size(b'\xff\xd8\xff\xc0\x00\x11\x08\x00\x10\x00\x20' + b'\x00' * 12) == (32, 16), 'jpeg size')
     check(fair_take([[1, 2, 3], [4], [5, 6]], 5) == [[1, 2], [4], [5, 6]], 'fair take')
     check(len(role_rule()) == 4, 'role rule')
+    check(atspi_address('AT_SPI_BUS(STRING) = "unix:path=/run/user/0/at-spi/bus_99,guid=ab12"\n')
+          == 'unix:path=/run/user/0/at-spi/bus_99,guid=ab12', 'atspi address')
+    check(atspi_address('AT_SPI_BUS:  not found.\n') is None and atspi_address('') is None, 'atspi address missing')
     store = OrderedDict()
     for number in range(5):
         remember(store, number, number, 3)
