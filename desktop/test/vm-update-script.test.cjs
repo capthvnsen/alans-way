@@ -67,6 +67,8 @@ exit 0
 //   status          printed verbatim by `supervisorctl status`
 //   pid.<name>      the pid `supervisorctl pid <name>` answers
 //   restart-fail    program names whose `restart` exits 1
+// Like the real supervisorctl, status exits nonzero when any listed program
+// is not RUNNING and pid exits nonzero for a program that is not RUNNING.
 // A long-lived process whose argv carries the given words, so the script's
 // program-by-command-line detection has something real to find.
 const fakeDaemons = [];
@@ -79,8 +81,13 @@ function addSupervisor(bin, marker, state, sudoOnly = false) {
   fs.writeFileSync(path.join(bin, 'supervisorctl'), `#!/bin/sh
 STATE="$FAKE_SUPERVISOR_STATE"
 ${sudoOnly ? '[ -n "${FAKE_SUDO:-}" ] || exit 1\n' : ''}case "\${1:-}" in
-  status) cat "$STATE/status" 2>/dev/null; exit 0;;
-  pid) cat "$STATE/pid.\${2:-}" 2>/dev/null; exit 0;;
+  status) cat "$STATE/status" 2>/dev/null
+          [ -f "$STATE/status" ] || exit 0
+          awk 'NF > 1 && $2 != "RUNNING" { bad = 1 } END { exit bad+0 }' "$STATE/status" || exit 3
+          exit 0;;
+  pid) cat "$STATE/pid.\${2:-}" 2>/dev/null
+       awk -v n="\${2:-}" '$1 == n { found = ($2 == "RUNNING") } END { exit !found }' "$STATE/status" 2>/dev/null || exit 7
+       exit 0;;
   restart) echo "supervisorctl restart \${2:-}" >> "${marker}"
            grep -qxF "\${2:-}" "$STATE/restart-fail" 2>/dev/null && exit 1
            exit 0;;
@@ -764,6 +771,30 @@ test('a supervisor socket that needs root is still inspected through sudo -n', a
   fs.writeFileSync(path.join(sstate, 'status'), `broker-svc RUNNING pid ${pid}, uptime 0:01:00\n`);
   fs.writeFileSync(path.join(sstate, 'pid.broker-svc'), `${pid}\n`);
   addSupervisor(bin, marker, sstate, true);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ...pluginEnv(makeHermesHome(), mktemp('vm-update-hermes-state-')) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.restarted, true);
+  assert.match(fs.readFileSync(marker, 'utf8'), /supervisorctl restart broker-svc/);
+});
+
+test('a program still starting resolves by its pid on a sudo-capable socket', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  fs.writeFileSync(path.join(bin, 'sudo'), '#!/bin/sh\n[ "$1" = "-n" ] && shift\nexec "$@"\n', { mode: 0o755 });
+  const sstate = mktemp('vm-update-supervisor-');
+  // STARTING has a live pid but `supervisorctl pid` still exits nonzero for
+  // it; the EXITED entry keeps `status` failing too, so both answers come
+  // from calls whose exit status says failure while the output is valid.
+  const pid = spawnDaemon('vps-browser-host.cjs', 'serve');
+  fs.writeFileSync(path.join(sstate, 'status'),
+    `broker-svc STARTING pid ${pid}, uptime 0:00:01\ncrashed-svc EXITED Oct 07 10:00 PM\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.broker-svc'), `${pid}\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.crashed-svc'), '0\n');
+  addSupervisor(bin, marker, sstate);
   const port = await makeStatus({ version: '0.3.2', busy: false });
   const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
     { FAKE_SUPERVISOR_STATE: sstate, ...pluginEnv(makeHermesHome(), mktemp('vm-update-hermes-state-')) }));

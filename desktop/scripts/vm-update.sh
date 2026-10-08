@@ -93,8 +93,16 @@ systemd_live() {
 }
 
 # supervisorctl as this user, then under passwordless sudo when the socket
-# needs root (sudo -n fails instead of ever asking for a password).
-_sp_ctl() { supervisorctl "$@" 2>/dev/null || sudo -n supervisorctl "$@" 2>/dev/null; }
+# needs root (sudo -n fails instead of ever asking for a password). Only one
+# call answers: status and pid exit nonzero whenever a program is not RUNNING
+# while still printing a valid reply, so a plain || retry would run both and
+# concatenate their output (two identical pid lines reading as one number).
+_sp_ctl() {
+  _sp_out="$(supervisorctl "$@" 2>/dev/null)" && { printf '%s' "$_sp_out"; return 0; }
+  _sp_sudo="$(sudo -n supervisorctl "$@" 2>/dev/null)" && { printf '%s' "$_sp_sudo"; return 0; }
+  printf '%s' "$_sp_out"
+  return 1
+}
 
 # Prints the supervisord program whose command line contains every pattern in
 # $*, or nothing. Programs are matched by live process argv (a wrapper that
