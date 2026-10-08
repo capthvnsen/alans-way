@@ -88,6 +88,36 @@ A connector that is already running keeps working until its SSH session ends. If
 since been removed, it exits, and the router starts the app's own connector on the next call. On Windows the
 copy has no `package.json`, so it is left alone (out of scope).
 
+## Copy report
+
+The goal is something a user can send to Alex when they're stuck. He either fixes the bug or tells them what to
+change on their side.
+
+- A **Copy report** button next to **Check setup**, and again under the results. Next to it is a
+  **Get help on Discord** link, which opens the public invite from the README (`https://discord.gg/jBQCPUsVE`).
+  After the copy, a message says: "Report copied. Paste it in Discord so we can take a look."
+- The report is plain text. It contains:
+  - the time;
+  - the app version, OS and CPU, and whether the build is signed;
+  - the saved server address;
+  - the last Check setup results with their fix lines, or "Check setup not run yet";
+  - the server's doctor summary: versions, plugin rows, and the `FAIL` and `warn` lines;
+  - the last 50 lines of `main-errors.log`.
+- Every failed app action gets logged. The `workspace:command` handler writes any error to `main-errors.log`
+  before passing it on to the screen. Today only crashes and a few background tasks are logged, so most of what
+  a user sees fail never reaches the file.
+- Before copying, `redactReport(text)` takes out secrets:
+  - Telegram bot tokens;
+  - `"token": "…"` values;
+  - `Authorization` and `Bearer` values;
+  - `sk-…` API keys;
+  - private key blocks.
+
+  SSH addresses, usernames and versions stay in, because the report is useless without them.
+- The report is only ever put on the clipboard when the user clicks. The app sends nothing on its own.
+- Code: `buildReport(...)` and `redactReport(text)` in `setup-check.cjs`, plus a `copy-report` command in
+  `main.cjs`.
+
 ## Errors
 
 Every check is independent: one that throws becomes a ✗ row with the error text and doesn't stop the others.
@@ -102,11 +132,16 @@ JSON line shows one Server ✗ row with the last two lines of its output.
   `hermes` (check-updates JSON, `config get`) and a fake `setup.sh` that prints `FAIL` and `warn` lines. Also
   that `--doctor` changes nothing in the checkout.
 - `staleConnectorCopy`: older, same, newer, and missing copies.
+- `redactReport`: each secret shape is removed, and SSH addresses and versions are kept. `buildReport`: with and
+  without check results, and with a missing log file.
 - By hand: the new-user test run (a fresh macOS account and a fresh Hermes home on a test server), once healthy
   and once with problems put in on purpose: Screen Recording off, browser host stopped, an old connector copy,
   and an older plugin.
 
 ## Out of scope
 
-A terminal `alan doctor` command, checks for Windows servers, the Windows connector copy, and fixing
-`setup.sh --verify` failures automatically.
+- A terminal `alan doctor` command.
+- Checks for Windows servers. The Server group says "Server checks aren't available for Windows servers yet."
+- The Windows connector copy.
+- Fixing `setup.sh --verify` failures automatically.
+- Server logs (gateway, browser host) in the report. Add them when reports turn out to be missing them.
