@@ -46,6 +46,12 @@ test('the mac build ships a zip for electron-updater alongside the dmg', () => {
   assert.deepEqual(targets, ['dmg', 'zip']);
 });
 
+test('the packaged app declares the alansway scheme so open-url reaches it', () => {
+  const protocols = createConfig({}).protocols;
+  assert.ok(Array.isArray(protocols), 'protocols missing from the build config');
+  assert.ok(protocols.some((p) => Array.isArray(p.schemes) && p.schemes.includes('alansway')), JSON.stringify(protocols));
+});
+
 test('the publish config feeds GitHub releases', () => {
   assert.deepEqual(createConfig({}).publish, [{ provider: 'github', owner: 'capthvnsen', repo: 'alans-way', releaseType: 'draft' }]);
 });
