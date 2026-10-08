@@ -212,7 +212,7 @@ function normalizeStep(item) {
   if (action === 'key' || action === 'hotkey') return normalizeKey(step);
   if (action === 'type' && (typeof step.text !== 'string' || step.text.length > 2000))
     throw fail('bad_request', 'Text must be a string of at most 2000 characters.');
-  if (REF_ACTIONS.has(action) && typeof step.ref !== 'string') throw fail('bad_request', `${action} needs a ref.`);
+  if ((action === 'press' || (action === 'type' && step.ref !== undefined)) && typeof step.ref !== 'string') throw fail('bad_request', `${action} needs a ref.`);
   if (action === 'menu' && !(Array.isArray(step.path) && step.path.length && step.path.every((part) => typeof part === 'string')))
     throw fail('bad_request', 'menu needs a path such as ["File","Save"].');
   if (action === 'scroll' && !['up', 'down', 'left', 'right'].includes(step.direction))

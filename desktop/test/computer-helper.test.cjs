@@ -88,6 +88,8 @@ test('key names and combos normalise to one shape', () => {
 test('steps are validated before they reach the helper', () => {
   assert.throws(() => normalizeStep({ action: 'type', ref: 'c1', text: 'x'.repeat(2001) }), /at most 2000/);
   assert.throws(() => normalizeStep({ action: 'press' }), /needs a ref/);
+  assert.throws(() => normalizeStep({ action: 'type', ref: 5, text: 'x' }), /needs a ref/);
+  assert.deepEqual(normalizeStep({ action: 'type', text: 'hi' }), { action: 'type', text: 'hi' });
   assert.throws(() => normalizeStep({ action: 'scroll' }), /direction/);
   assert.throws(() => normalizeStep({ action: 'menu', path: [] }), /needs a path/);
   assert.throws(() => normalizeStep({ action: 'teleport' }), /must be press/);

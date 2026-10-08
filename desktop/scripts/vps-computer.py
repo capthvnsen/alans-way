@@ -117,6 +117,39 @@ def xdotool_key(key, modifiers):
     return '+'.join([MODS[mod] for mod in modifiers] + [name])
 
 
+SCROLL_BUTTON = {'up': '4', 'down': '5', 'left': '6', 'right': '7'}
+CLICK_BUTTON = {'click': '1', 'double_click': '1', 'right_click': '3'}
+
+
+def pixel_argv(step):
+    """xdotool arguments for a step that gives a screen point (or free text) and no ref; None for any other step."""
+    action = step.get('action')
+    if step.get('ref') is not None:
+        return None
+    if action == 'type':
+        text = step.get('text')
+        if not isinstance(text, str) or len(text) > 2000:
+            fail('Text is too long.', 'bad_request')
+        return ['type', '--delay', '8', '--', text]
+    if action not in ('click', 'double_click', 'right_click', 'drag', 'scroll') or 'x' not in step or 'y' not in step:
+        return None
+    try:
+        x, y = float(step['x']), float(step['y'])
+        x2, y2 = (float(step['x2']), float(step['y2'])) if action == 'drag' else (x, y)
+        amount = float(step.get('amount', 1))
+    except (KeyError, TypeError, ValueError):
+        fail(f'{action} needs numeric coordinates.', 'bad_request')
+    move = lambda px, py: ['mousemove', '--sync', str(round(px)), str(round(py))]
+    if action == 'drag':
+        return (move(x, y) + ['mousedown', '1'] + move((x + x2) / 2, (y + y2) / 2) + move(x2, y2) + ['mouseup', '1'])
+    if action == 'scroll':
+        if step.get('direction') not in SCROLL_BUTTON:
+            fail('scroll needs a direction of up, down, left, or right.', 'bad_request')
+        return move(x, y) + ['click', '--repeat', str(max(1, round(amount * 4))), SCROLL_BUTTON[step['direction']]]
+    repeat = ['--repeat', '2', '--delay', '60'] if action == 'double_click' else []
+    return move(x, y) + ['click'] + repeat + [CLICK_BUTTON[action]]
+
+
 def menu_norm(title):
     text = str(title).replace('&', '').replace('_', '').strip().lower()
     for tail in ('…', '...'):
@@ -776,12 +809,44 @@ def best_window(pid):
     return best
 
 
+def send_xdotool(args):
+    try:
+        subprocess.check_call(['xdotool', *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+    except FileNotFoundError:
+        fail('xdotool is not installed.', 'unsupported_action')
+    except (subprocess.SubprocessError, OSError):
+        fail('Could not send that input.')
+
+
+def activate(pid):
+    """Raise the app's window so real input reaches it; the screen (pid 0) needs none."""
+    if pid <= 0:
+        return
+    window = best_window(pid)
+    if not window:
+        fail('That app has no window to send input to.', 'no_window')
+    if xdotool('getactivewindow').strip() != window[0]:
+        xdotool('windowactivate', '--sync', window[0])
+
+
+def step_pixel(bus, target, argv):
+    if argv[0] == 'type':
+        refuse_password_focus(bus, target)
+    activate(target.pid)
+    send_xdotool(argv)
+    return {'ok': True, 'cursorMoved': argv[0] != 'type'}
+
+
 def step_key(bus, target, step):
     key, modifiers = step.get('key'), step.get('modifiers') or []
     if not isinstance(key, str) or not key:
         fail('key needs a key.', 'bad_request')
     combo = xdotool_key(key, modifiers)
     refuse_password_focus(bus, target)
+    if agent_desktop():
+        activate(target.pid)
+        send_xdotool(['key', combo])
+        return {'ok': True, 'cursorMoved': False}
     window = best_window(target.pid)
     if not window:
         fail('That app has no window to send keys to.', 'no_window')
@@ -972,7 +1037,7 @@ def cmd_act(req):
     app = check_app(pid)
     if not isinstance(steps, list) or not steps or len(steps) > MAX_STEPS or not all(isinstance(s, dict) for s in steps):
         fail(f'steps must be 1 to {MAX_STEPS} objects.', 'bad_request')
-    bus = get_bus()
+    bus = get_bus() if app else None
     target = Target(pid, app, req.get('generation'))
     if target.gen is not None and any(s.get('ref') is not None for s in steps):
         target.walk = walk_app(pid, app, bool(req.get('menubar')))
@@ -984,7 +1049,8 @@ def cmd_act(req):
         try:
             if not run:
                 fail(f"Unsupported action {step.get('action')}.", 'unsupported_action')
-            results.append(run(bus, target, step))
+            argv = pixel_argv(step) if agent_desktop() else None
+            results.append(step_pixel(bus, target, argv) if argv else run(bus, target, step))
         except Fail as exc:
             results.append({'ok': False, 'error': str(exc), 'code': exc.code})
             break
@@ -1095,6 +1161,47 @@ def cmd_selftest(req):
     check(shown == [{'name': 'chrome', 'bundleId': 'chrome', 'pid': 5712, 'frontmost': False},
                     {'name': 'Screen', 'bundleId': 'screen', 'pid': 0, 'frontmost': False}], 'x apps')
     check(x_apps([], [], str) == [{'name': 'Screen', 'bundleId': 'screen', 'pid': 0, 'frontmost': False}], 'x apps always has the screen')
+    point = {'x': 10.4, 'y': 20.6}
+    check(pixel_argv({'action': 'click', **point}) == ['mousemove', '--sync', '10', '21', 'click', '1'], 'pixel click')
+    check(pixel_argv({'action': 'double_click', **point}) == ['mousemove', '--sync', '10', '21', 'click', '--repeat', '2', '--delay', '60', '1'], 'pixel double click')
+    check(pixel_argv({'action': 'right_click', **point}) == ['mousemove', '--sync', '10', '21', 'click', '3'], 'pixel right click')
+    check(pixel_argv({'action': 'drag', 'x': 0, 'y': 0, 'x2': 100, 'y2': 40})
+          == ['mousemove', '--sync', '0', '0', 'mousedown', '1', 'mousemove', '--sync', '50', '20',
+              'mousemove', '--sync', '100', '40', 'mouseup', '1'], 'pixel drag')
+    check(pixel_argv({'action': 'scroll', **point, 'direction': 'down'}) == ['mousemove', '--sync', '10', '21', 'click', '--repeat', '4', '5'], 'pixel scroll')
+    check(pixel_argv({'action': 'scroll', **point, 'direction': 'left', 'amount': 0.1})[-3:] == ['--repeat', '1', '6'], 'pixel scroll minimum')
+    check(pixel_argv({'action': 'scroll', **point, 'direction': 'right', 'amount': 2})[-3:] == ['--repeat', '8', '7'], 'pixel scroll right')
+    check(pixel_argv({'action': 'type', 'text': '-a b'}) == ['type', '--delay', '8', '--', '-a b'], 'pixel type')
+    check(all(pixel_argv(step) is None for step in (
+        {'action': 'click', 'ref': 'c1', **point}, {'action': 'type', 'ref': 'c1', 'text': 'a'}, {'action': 'click'},
+        {'action': 'scroll', 'direction': 'up'}, {'action': 'press', **point}, {'action': 'key', 'key': 'a'})), 'ref steps stay on AT-SPI')
+    for step in ({'action': 'drag', **point}, {'action': 'scroll', **point, 'direction': 'sideways'}, {'action': 'type', 'text': 5},
+                 {'action': 'click', 'x': 'a', 'y': 1}):
+        try:
+            pixel_argv(step)
+            refused = None
+        except Fail as exc:
+            refused = exc.code
+        check(refused == 'bad_request', f'pixel_argv rejects {step}')
+    sent = []
+    stubs = ('send_xdotool', 'best_window', 'xdotool', 'resolve_app')
+    saved_io = {name: globals()[name] for name in stubs}
+    globals().update(send_xdotool=sent.append, best_window=lambda pid: ('42', {}),
+                     xdotool=lambda *args: sent.append(list(args)) or '7', resolve_app=lambda pid: None)
+    os.environ['ALANS_WAY_AGENT_DESKTOP'] = '1'
+    try:
+        steps = [{'action': 'click', 'x': 5, 'y': 6}, {'action': 'type', 'text': 'hi'},
+                 {'action': 'key', 'key': 'a', 'modifiers': ['control']}]
+        reply = cmd_act({'pid': 0, 'steps': steps, 'settleMs': 0})
+        check([item['ok'] for item in reply['results']] == [True, True, True] and reply['elements'] == [], 'agent screen steps')
+        check(sent == [['mousemove', '--sync', '5', '6', 'click', '1'], ['type', '--delay', '8', '--', 'hi'], ['key', 'ctrl+a']],
+              'agent screen input needs no activation')
+        del sent[:]
+        cmd_act({'pid': 9, 'steps': steps[:1], 'settleMs': 0})
+        check(sent[:2] == [['getactivewindow'], ['windowactivate', '--sync', '42']], 'agent app is activated first')
+    finally:
+        del os.environ['ALANS_WAY_AGENT_DESKTOP']
+        globals().update(saved_io)
     names = ('resolve_app', 'active_pid', 'proc_name')
     saved_fns = {name: globals()[name] for name in names}
     globals().update(resolve_app=lambda pid: ('d', '/p'), proc_name=lambda pid: 'gedit', active_pid=lambda: None)
