@@ -24,8 +24,8 @@ on Windows is `hermes-companion serve-windows`.
 
 Linux host notes: desktop control needs an X11 session (Wayland is not
 supported) and these packages: `python3 python3-gi gir1.2-atspi-2.0
-at-spi2-core xdotool imagemagick` (on Debian or Ubuntu,
-`sudo apt-get install -y python3 python3-gi gir1.2-atspi-2.0 at-spi2-core xdotool imagemagick`).
+at-spi2-core xdotool imagemagick x11-utils` (on Debian or Ubuntu,
+`sudo apt-get install -y python3 python3-gi gir1.2-atspi-2.0 at-spi2-core xdotool imagemagick x11-utils`).
 GTK apps expose their controls only when accessibility is on, so start them
 with `GTK_A11Y=atspi` if a snapshot comes back empty. Browser tabs need none
 of this. The Electron sandbox can be blocked by AppArmor on Ubuntu 24.04;

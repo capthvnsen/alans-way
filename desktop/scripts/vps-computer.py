@@ -145,7 +145,7 @@ def pixel_argv(step):
     if action == 'scroll':
         if step.get('direction') not in SCROLL_BUTTON:
             fail('scroll needs a direction of up, down, left, or right.', 'bad_request')
-        return move(x, y) + ['click', '--repeat', str(max(1, round(amount * 4))), SCROLL_BUTTON[step['direction']]]
+        return move(x, y) + ['click', '--repeat', str(min(40, max(1, round(amount * 4)))), SCROLL_BUTTON[step['direction']]]
     repeat = ['--repeat', '2', '--delay', '60'] if action == 'double_click' else []
     return move(x, y) + ['click'] + repeat + [CLICK_BUTTON[action]]
 
@@ -622,14 +622,26 @@ class Target:
 
 
 def refuse_password_focus(bus, target):
-    """Keys and pointer events land on the focused control, so a focused password field blocks them."""
-    if target.app is None:
-        return
-    roots = children_of(bus, target.app)
+    """Keys and pointer events land on the focused control, so a focused password field blocks them.
+    With no accessibility tree for the target, every app on the bus is asked."""
+    anywhere = target.app is None
+    try:
+        if anywhere:
+            bus = get_bus()
+            apps = [(dest, path) for dest, path, _ in registry_apps(bus)]
+        else:
+            apps = [target.app]
+        roots = [root for app in apps for root in children_of(bus, app)]
+    except Exception:
+        if anywhere:
+            return
+        raise
     rule = ([1 << STATE_FOCUSED, 0], 1, {}, 1, [0, 0, 0, 0], 1, [], 1, False)
     args = bus.v('((aiia{ss}iaiiasib)uib)', (rule, 1, 8, True))
     got = bus.many([(d, p, 'org.a11y.atspi.Collection', 'GetMatches', args, '(a(so))') for d, p in roots])
     if any(isinstance(item, Exception) for item in got):
+        if anywhere:
+            return
         walk = walk_app(target.pid, target.app, store=False)
         hit = any(e['role'] in PASSWORD and e['ref'] in walk['focused'] for e in walk['elements'])
     else:
@@ -778,6 +790,17 @@ def xdotool(*args):
         return ''
 
 
+def xdotool_partial(args):
+    """(stdout, succeeded): a chained command that fails midway still reports what it printed before."""
+    try:
+        done = subprocess.run(['xdotool', *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5)
+    except FileNotFoundError:
+        fail('xdotool is not installed.', 'unsupported_action')
+    except (subprocess.SubprocessError, OSError):
+        return '', False
+    return done.stdout, done.returncode == 0
+
+
 def window_geometry(pid):
     """Visible windows of pid as [(wid, {X,Y,WIDTH,HEIGHT})]; two xdotool spawns however many windows."""
     ids = xdotool('search', '--onlyvisible', '--pid', str(pid)).split()[:20]
@@ -819,21 +842,34 @@ def send_xdotool(args):
 
 
 def activate(pid):
-    """Raise the app's window so real input reaches it; the screen (pid 0) needs none."""
+    """Raise the app's window and confirm it has focus, so real input cannot land elsewhere. The screen (pid 0) has no window to raise, so whatever is focused must be allowed."""
     if pid <= 0:
+        front = active_pid()
+        if front and blocked(proc_name(front)):
+            fail('That app is off limits.', 'off_limits')
         return
     window = best_window(pid)
     if not window:
         fail('That app has no window to send input to.', 'no_window')
     if xdotool('getactivewindow').strip() != window[0]:
         xdotool('windowactivate', '--sync', window[0])
+        if xdotool('getactivewindow').strip() != window[0]:
+            fail('Could not raise that window.')
 
 
 def step_pixel(bus, target, argv):
     if argv[0] == 'type':
         refuse_password_focus(bus, target)
     activate(target.pid)
-    send_xdotool(argv)
+    try:
+        send_xdotool(argv)
+    except Fail:
+        if 'mousedown' in argv:
+            try:
+                send_xdotool(['mouseup', '1'])
+            except Fail:
+                pass
+        raise
     return {'ok': True, 'cursorMoved': argv[0] != 'type'}
 
 
@@ -915,6 +951,8 @@ def menu_items(bus, parent):
 
 def menu_path(bus, app, path, descend=True):
     """Walk menu titles from the menu bar; returns (last matched item or None, items below it)."""
+    if app is None:
+        fail('That app has no menu bar.', 'unsupported_action')
     bars = menu_bars(bus, app)
     if not bars:
         fail('That app has no menu bar.', 'unsupported_action')
@@ -974,9 +1012,15 @@ def x_apps(listed, pids, name_of):
 
 def x_window_pids():
     ids = xdotool('search', '--onlyvisible', '--name', '.').split()[:60]
-    # ponytail: one window without _NET_WM_PID fails the whole chain, leaving only the screen
-    out = xdotool(*[part for wid in ids for part in ('getwindowpid', wid)]) if ids else ''
-    return [int(line) for line in out.split() if line.isdigit()]
+    pids = []
+    while ids:
+        out, done = xdotool_partial([part for wid in ids for part in ('getwindowpid', wid)])
+        got = [int(line) for line in out.split() if line.isdigit()]
+        pids += got
+        if done:
+            break
+        ids = ids[len(got) + 1:]  # the chain stops at a window with no pid; carry on after it
+    return pids
 
 
 def cmd_apps(req):
@@ -987,7 +1031,12 @@ def cmd_apps(req):
         apps = atspi_apps()
     except Exception:
         BUS, apps = None, []
-    return {'ok': True, 'apps': apps + x_apps([item['pid'] for item in apps], x_window_pids(), proc_name)}
+    try:
+        ensure_display()
+        pids = x_window_pids()
+    except Fail:
+        pids = []
+    return {'ok': True, 'apps': apps + x_apps([item['pid'] for item in apps], pids, proc_name)}
 
 
 def atspi_apps():
@@ -1037,6 +1086,8 @@ def cmd_act(req):
     app = check_app(pid)
     if not isinstance(steps, list) or not steps or len(steps) > MAX_STEPS or not all(isinstance(s, dict) for s in steps):
         fail(f'steps must be 1 to {MAX_STEPS} objects.', 'bad_request')
+    if agent_desktop():
+        ensure_display()
     bus = get_bus() if app else None
     target = Target(pid, app, req.get('generation'))
     if target.gen is not None and any(s.get('ref') is not None for s in steps):
@@ -1062,8 +1113,8 @@ def cmd_act(req):
 
 
 def cmd_menu(req):
-    bus = get_bus()
     app = check_app(req.get('pid'))
+    bus = get_bus() if app else None
     path = req.get('path') or []
     if not isinstance(path, list) or not all(isinstance(part, str) for part in path):
         fail('path must be a list of titles.', 'bad_request')
@@ -1150,21 +1201,25 @@ def cmd_shot(req):
 
 def agent_shot(pid, cap):
     """Pillow reads the X screen directly, so a window hidden behind another still shows what is on screen."""
+    ensure_display()
     screen = screen_size()
     wid = 'root'
-    box = (0, 0, *screen)
+    box = full = (0, 0, *screen)
     if pid:
         window = best_window(pid)
         if not window:
             fail('That app has no window to capture.', 'no_window')
         wid, box = window[0], clamp_box(window[1], screen)
+        full = tuple(int(window[1].get(key, '0')) for key in ('X', 'Y', 'WIDTH', 'HEIGHT'))
         if not (box[2] and box[3]):
             fail('That app has no window on the screen.', 'no_window')
     data = grab(box, cap)
     if data and jpeg_size(data):
         width, height = jpeg_size(data)
     else:
+        # the fallback grabs the whole window, so its geometry is the unclamped one
         data, (width, height) = capture(wid, cap)
+        box = full
     return shot_reply(data, width, height, *box)
 
 
@@ -1241,25 +1296,126 @@ def cmd_selftest(req):
         except Fail as exc:
             refused = exc.code
         check(refused == 'bad_request', f'pixel_argv rejects {step}')
-    sent = []
-    stubs = ('send_xdotool', 'best_window', 'xdotool', 'resolve_app')
-    saved_io = {name: globals()[name] for name in stubs}
-    globals().update(send_xdotool=sent.append, best_window=lambda pid: ('42', {}),
-                     xdotool=lambda *args: sent.append(list(args)) or '7', resolve_app=lambda pid: None)
-    os.environ['ALANS_WAY_AGENT_DESKTOP'] = '1'
+    sent, displays = [], []
+    state = {'active': '7', 'raise': True}
+
+    def fake_x(*args):
+        sent.append(list(args))
+        if args[0] == 'getactivewindow':
+            return state['active'] + '\n'
+        if args[0] == 'windowactivate' and state['raise']:
+            state['active'] = args[2]
+        return '1920 1080\n' if args[0] == 'getdisplaygeometry' else ''
+
+    def stubbed(agent, **fns):
+        saved_fns = {name: globals()[name] for name in fns}
+        globals().update(fns)
+        if agent:
+            os.environ['ALANS_WAY_AGENT_DESKTOP'] = '1'
+        else:
+            os.environ.pop('ALANS_WAY_AGENT_DESKTOP', None)
+
+        def restore():
+            os.environ.pop('ALANS_WAY_AGENT_DESKTOP', None)
+            globals().update(saved_fns)
+            POLICY.update(saved)
+        return restore
+
+    def codes(reply):
+        return [item.get('code', 'ok') for item in reply['results']]
+
+    io = dict(send_xdotool=sent.append, best_window=lambda pid: ('42', {}), xdotool=fake_x, resolve_app=lambda pid: None,
+              active_pid=lambda: None, proc_name=lambda pid: 'gedit', ensure_display=lambda: displays.append(1))
+    restore = stubbed(True, **io)
     try:
         steps = [{'action': 'click', 'x': 5, 'y': 6}, {'action': 'type', 'text': 'hi'},
                  {'action': 'key', 'key': 'a', 'modifiers': ['control']}]
         reply = cmd_act({'pid': 0, 'steps': steps, 'settleMs': 0})
-        check([item['ok'] for item in reply['results']] == [True, True, True] and reply['elements'] == [], 'agent screen steps')
+        check(codes(reply) == ['ok', 'ok', 'ok'] and reply['elements'] == [], 'agent screen steps')
         check(sent == [['mousemove', '--sync', '5', '6', 'click', '1'], ['type', '--delay', '8', '--', 'hi'], ['key', 'ctrl+a']],
               'agent screen input needs no activation')
+        check(displays, 'agent act finds the display')
         del sent[:]
-        cmd_act({'pid': 9, 'steps': steps[:1], 'settleMs': 0})
+        check(codes(cmd_act({'pid': 9, 'steps': steps[:1], 'settleMs': 0})) == ['ok'], 'agent app click')
         check(sent[:2] == [['getactivewindow'], ['windowactivate', '--sync', '42']], 'agent app is activated first')
+        del sent[:]
+        state['active'] = '7'
+        state['raise'] = False
+        reply = cmd_act({'pid': 9, 'steps': steps[:2], 'settleMs': 0})
+        check(codes(reply) == ['failed'] and reply['results'][0]['error'] == 'Could not raise that window.'
+              and not [a for a in sent if a[0] in ('mousemove', 'type')], 'a window that will not raise gets no input')
+        state['raise'] = True
+        del sent[:]
+        globals()['active_pid'], globals()['proc_name'] = (lambda: 5), (lambda pid: 'keepassxc')
+        set_policy({'exact': ['keepassxc'], 'contains': []})
+        check(codes(cmd_act({'pid': 0, 'steps': steps, 'settleMs': 0})) == ['off_limits'] and not sent, 'the screen is off limits while a blocked app has focus')
+        POLICY.update(saved)
+        globals().update(active_pid=io['active_pid'], proc_name=io['proc_name'])
+        del sent[:]
+
+        def drag_fails(args):
+            sent.append(args)
+            if 'mousedown' in args:
+                fail('Could not send that input.')
+        globals()['send_xdotool'] = drag_fails
+        reply = cmd_act({'pid': 0, 'steps': [{'action': 'drag', 'x': 1, 'y': 2, 'x2': 3, 'y2': 4}], 'settleMs': 0})
+        check(codes(reply) == ['failed'] and sent[-1] == ['mouseup', '1'], 'a drag that fails lets go of the button')
+        globals()['send_xdotool'] = sent.append
+        check(pixel_argv({'action': 'scroll', 'x': 1, 'y': 1, 'direction': 'down', 'amount': 500})[-2] == '40', 'scroll repeat is capped')
+        reply = cmd_act({'pid': 0, 'steps': [{'action': 'menu', 'path': ['File']}], 'settleMs': 0})
+        check(codes(reply) == ['unsupported_action'], 'menu step on the screen')
+        try:
+            cmd_menu({'pid': 0, 'path': []})
+            refused = None
+        except Fail as exc:
+            refused = (exc.code, str(exc))
+        check(refused == ('unsupported_action', 'That app has no menu bar.'), 'menu listing on the screen')
     finally:
-        del os.environ['ALANS_WAY_AGENT_DESKTOP']
-        globals().update(saved_io)
+        restore()
+    del sent[:], displays[:]
+    restore = stubbed(False, get_bus=lambda: None, walk_app=lambda pid, app, menubar=False, store=True: empty_walk(),
+                      **{**io, 'resolve_app': lambda pid: ('d', '/p'), 'active_pid': lambda: 6})
+    try:
+        reply = cmd_act({'pid': 9, 'steps': [{'action': 'click', 'x': 5, 'y': 6}], 'settleMs': 0})
+        check(codes(reply) == ['not_found'] and not sent and not displays, 'a user desktop never calls xdotool for a point')
+    finally:
+        restore()
+    class Pw:
+        def v(self, signature, values):
+            return values
+
+        def many(self, calls):
+            return [([('d', '/f')],) if call[3] == 'GetMatches' else (self.role,) for call in calls]
+    pw = Pw()
+    restore = stubbed(True, get_bus=lambda: pw, registry_apps=lambda bus: [('d', '/app', 1)], children_of=lambda bus, handle: [('d', '/w')])
+    try:
+        pw.role = 'password text'
+        try:
+            refuse_password_focus(None, Target(0, None, None))
+            refused = None
+        except Fail as exc:
+            refused = exc.code
+        check(refused == 'off_limits', 'a focused password field anywhere blocks ref-less typing')
+        pw.role = 'entry'
+        check(refuse_password_focus(None, Target(0, None, None)) is None, 'a focused entry does not')
+    finally:
+        restore()
+    restore = stubbed(True, atspi_apps=lambda: [{'name': 'a', 'bundleId': 'a', 'pid': 3, 'frontmost': False}],
+                      xdotool=lambda *args: fail('xdotool is not installed.', 'unsupported_action'), ensure_display=lambda: None)
+    try:
+        check([item['pid'] for item in cmd_apps({})['apps']] == [3, 0], 'apps survive a missing xdotool')
+    finally:
+        restore()
+    calls = []
+
+    def partial(args):
+        calls.append(list(args))
+        return ('10\n', False) if len(calls) == 1 else ('30\n', True)
+    restore = stubbed(True, xdotool=lambda *args: '1 2 3', xdotool_partial=partial)
+    try:
+        check(x_window_pids() == [10, 30] and calls[1] == ['getwindowpid', '3'], 'a window without a pid is skipped')
+    finally:
+        restore()
     screen = (1920, 1080)
     check(clamp_box({'X': '-10', 'Y': '5', 'WIDTH': '100', 'HEIGHT': '2000'}, screen) == (0, 5, 90, 1075), 'clamp box')
     check(clamp_box({'X': '100', 'Y': '50', 'WIDTH': '640', 'HEIGHT': '480'}, screen) == (100, 50, 640, 480), 'clamp keeps a window that fits')
@@ -1267,21 +1423,24 @@ def cmd_selftest(req):
           and clamp_box({'X': '3000', 'Y': '0', 'WIDTH': '50', 'HEIGHT': '10'}, screen)[2] == 0, 'clamp off-screen')
     fake_jpeg = b'\xff\xd8\xff\xc0\x00\x11\x08\x00\x10\x00\x20' + b'\x00' * 12
     grabbed = []
-    stubs = ('grab', 'best_window', 'xdotool', 'resolve_app')
-    saved_io = {name: globals()[name] for name in stubs}
-    globals().update(grab=lambda box, cap: grabbed.append((box, cap)) or fake_jpeg,
-                     best_window=lambda pid: ('42', {'X': '-5', 'Y': '10', 'WIDTH': '800', 'HEIGHT': '600'}),
-                     xdotool=lambda *args: '1920 1080\n', resolve_app=lambda pid: None)
-    os.environ['ALANS_WAY_AGENT_DESKTOP'] = '1'
+    del displays[:]
+    restore = stubbed(True, grab=lambda box, cap: grabbed.append((box, cap)) or fake_jpeg,
+                      best_window=lambda pid: ('42', {'X': '-5', 'Y': '10', 'WIDTH': '800', 'HEIGHT': '600'}),
+                      xdotool=lambda *args: '1920 1080\n', resolve_app=lambda pid: None, ensure_display=lambda: displays.append(1),
+                      capture=lambda wid, cap: (fake_jpeg, (32, 16)))
     try:
         whole = cmd_shot({'pid': 0, 'maxWidth': 640})
         check(grabbed[-1] == ((0, 0, 1920, 1080), 640) and (whole['windowX'], whole['windowY'], whole['windowWidth'], whole['windowHeight'])
               == (0, 0, 1920, 1080) and (whole['imageWidth'], whole['imageHeight']) == (32, 16), 'agent screen shot')
         part = cmd_shot({'pid': 9})
         check(grabbed[-1][0] == (0, 10, 795, 600) and (part['windowX'], part['windowWidth']) == (0, 795), 'agent window shot is clamped')
+        check(len(displays) == 2, 'agent shot finds the display')
+        globals()['grab'] = lambda box, cap: None
+        part = cmd_shot({'pid': 9})
+        check((part['windowX'], part['windowY'], part['windowWidth'], part['windowHeight']) == (-5, 10, 800, 600),
+              'the fallback reports the geometry it captured')
     finally:
-        del os.environ['ALANS_WAY_AGENT_DESKTOP']
-        globals().update(saved_io)
+        restore()
     names = ('resolve_app', 'active_pid', 'proc_name')
     saved_fns = {name: globals()[name] for name in names}
     globals().update(resolve_app=lambda pid: ('d', '/p'), proc_name=lambda pid: 'gedit', active_pid=lambda: None)
