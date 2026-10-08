@@ -1,0 +1,123 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { staleConnectorCopy, buildFindings } = require('../src/setup-check.cjs');
+
+function userData(connectorPackage) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'setup-check-'));
+  if (connectorPackage !== undefined) {
+    fs.mkdirSync(path.join(dir, 'connector'));
+    fs.writeFileSync(path.join(dir, 'connector', 'package.json'), connectorPackage);
+  }
+  return dir;
+}
+
+test('an older connector copy is stale; same, newer, missing and unreadable copies are kept', () => {
+  const older = userData(JSON.stringify({ version: '0.3.2' }));
+  assert.equal(staleConnectorCopy(older, '0.4.0'), path.join(older, 'connector'));
+  assert.equal(staleConnectorCopy(userData(JSON.stringify({ version: '0.4.0' })), '0.4.0'), null);
+  assert.equal(staleConnectorCopy(userData(JSON.stringify({ version: '0.4.1' })), '0.4.0'), null);
+  assert.equal(staleConnectorCopy(userData(), '0.4.0'), null);
+  assert.equal(staleConnectorCopy(userData('{not json'), '0.4.0'), null);
+  assert.equal(staleConnectorCopy(userData(JSON.stringify({ name: 'no-version' })), '0.4.0'), null);
+});
+
+const healthyServer = (over = {}) => ({
+  ok: true, version: '0.4.0', hostVersion: '0.4.0', pluginTag: 'v0.7.0', error: '',
+  profiles: [{ profile: 'default', computerBackend: 'alans-way-computer',
+    plugins: [{ name: 'alans-way', version: '0.7.0', class: 'catalog', updateAvailable: false }],
+    verify: { ran: true, fails: [], warns: [] } }],
+  ...over,
+});
+const healthy = (over = {}) => ({
+  appVersion: '0.4.0', platform: 'darwin',
+  local: { telegram: 'connected', inApplications: true, permissions: { accessibility: true, screen: 'granted' }, staleConnector: null },
+  connection: { addresses: { server: 'me@vps', computer: 'me@mac' }, reach: { ok: true, detail: '' }, back: { ok: true, detail: '' } },
+  server: healthyServer(),
+  ...over,
+});
+const byTitle = (findings, pattern) => findings.find((f) => pattern.test(f.title));
+
+test('a healthy Mac setup is all ok and offers no actions', () => {
+  const findings = buildFindings(healthy());
+  assert.ok(findings.length >= 10);
+  assert.deepEqual(findings.filter((f) => f.level !== 'ok'), []);
+  assert.deepEqual(findings.filter((f) => f.action), []);
+  assert.deepEqual([...new Set(findings.map((f) => f.group))], ['computer', 'connection', 'server']);
+});
+
+test('local problems carry their fix actions; non-Mac platforms skip the Mac-only rows', () => {
+  const findings = buildFindings(healthy({ local: { telegram: 'login', inApplications: false,
+    permissions: { accessibility: false, screen: 'denied' }, staleConnector: '/x/connector' } }));
+  assert.equal(byTitle(findings, /Telegram/).level, 'fail');
+  assert.equal(byTitle(findings, /Applications/).action, 'move-to-applications');
+  assert.equal(byTitle(findings, /Accessibility/).action, 'open-accessibility');
+  assert.equal(byTitle(findings, /Screen Recording/).action, 'open-screen');
+  assert.equal(byTitle(findings, /connector/i).action, 'remove-old-connector');
+  const linux = buildFindings(healthy({ platform: 'linux', local: { telegram: 'connected', inApplications: null, permissions: null, staleConnector: null } }));
+  assert.equal(byTitle(linux, /Applications|Accessibility|Screen Recording/), undefined);
+});
+
+test('an unreachable server fails the connection and skips every server check', () => {
+  const findings = buildFindings(healthy({
+    connection: { addresses: { server: 'me@vps', computer: 'me@mac' }, reach: { ok: false, detail: 'Connection refused' }, back: null },
+    server: null }));
+  assert.equal(byTitle(findings, /reach the server/).level, 'fail');
+  assert.match(byTitle(findings, /reach the server/).fix, /Connection refused/);
+  const server = findings.filter((f) => f.group === 'server');
+  assert.equal(server.length, 1);
+  assert.equal(server[0].level, 'fail');
+  assert.match(server[0].title, /skipped/);
+});
+
+test('missing addresses are reported before any reach check', () => {
+  const findings = buildFindings(healthy({ connection: { addresses: { server: '', computer: '' }, reach: null, back: null }, server: null }));
+  assert.equal(byTitle(findings, /server address/).level, 'fail');
+  assert.equal(byTitle(findings, /computer.s address/).level, 'fail');
+});
+
+test('a server behind the app, or with its browser down, offers the update', () => {
+  const behind = buildFindings(healthy({ server: healthyServer({ version: '0.3.2', hostVersion: '0.3.2' }) }));
+  assert.equal(byTitle(behind, /older version/).action, 'update-server');
+  const down = buildFindings(healthy({ server: healthyServer({ hostVersion: '' }) }));
+  assert.equal(byTitle(down, /browser is not running/).action, 'update-server');
+});
+
+test('plugin freshness: the catalog pin is the published version, other installs compare to the newest tag', () => {
+  const plugin = (p, tag = 'v0.7.0') => buildFindings(healthy({ server: healthyServer({ pluginTag: tag,
+    profiles: [{ ...healthyServer().profiles[0], plugins: [p] }] }) }));
+  const row = (findings) => byTitle(findings, /alans-way/);
+  assert.equal(row(plugin({ name: 'alans-way', version: '0.6.2', class: 'catalog', updateAvailable: true })).action, 'update-server');
+  assert.equal(row(plugin({ name: 'alans-way', version: '0.6.2', class: 'catalog', updateAvailable: false })).level, 'ok',
+    'a newer GitHub tag the catalog has not picked up is not a problem');
+  assert.equal(row(plugin({ name: 'alans-way', version: '0.6.2', class: 'drift', updateAvailable: false })).action, 'update-server');
+  assert.equal(row(plugin({ name: 'alans-way', version: '0.7.1', class: '', updateAvailable: false })).level, 'ok',
+    'a dev install newer than the newest tag is up to date');
+  assert.match(row(plugin({ name: 'alans-way', version: '0.7.0', class: '', updateAvailable: false }, '')).title, /Couldn.t check/);
+});
+
+test('the built-in computer-use backend, the setup audit and the time budget each show up', () => {
+  const findings = buildFindings(healthy({ server: healthyServer({ profiles: [{ profile: 'default', computerBackend: '', plugins: [],
+    verify: { ran: true, fails: ['browser host not running'], warns: ['no primary route bound'] } }] }) }));
+  assert.equal(byTitle(findings, /built-in/).level, 'warn');
+  assert.equal(byTitle(findings, /browser host not running/).level, 'fail');
+  assert.equal(byTitle(findings, /no primary route bound/).level, 'warn');
+  const late = buildFindings(healthy({ server: healthyServer({ profiles: [{ ...healthyServer().profiles[0], verify: { ran: false, reason: 'time' } }] }) }));
+  assert.match(byTitle(late, /audit/).title, /out of time/);
+});
+
+test('several profiles prefix their rows, and a Windows server says its checks are not available', () => {
+  const two = healthyServer({ profiles: [healthyServer().profiles[0], { ...healthyServer().profiles[0], profile: 'work' }] });
+  const findings = buildFindings(healthy({ server: two }));
+  assert.ok(findings.some((f) => f.title.startsWith('work: ')));
+  const windows = buildFindings(healthy({ server: { ok: false, error: 'windows' } })).filter((f) => f.group === 'server');
+  assert.deepEqual(windows.map((f) => f.level), ['warn']);
+  assert.match(windows[0].title, /Windows servers/);
+});
+
+test('a server without the app installed points at the setup prompt', () => {
+  const findings = buildFindings(healthy({ server: { ok: false, error: 'no browser host checkout found (expected …)' } }));
+  assert.match(findings.find((f) => f.group === 'server').fix, /setup prompt/);
+});
