@@ -79,12 +79,13 @@ function toolDir(tools) {
   }
   return { dir, env: { PATH: dir, DIR: dir, STUB_MARKER: path.join(dir, 'marker'), HOME: os.tmpdir() } };
 }
-function runCapture(dir, env) {
-  const result = spawnSync(python, ['-c', driver, script, '42', '960', '{"X":"10","Y":"20","WIDTH":"640","HEIGHT":"400"}'], { encoding: 'utf8', env });
+function runCapture(dir, env, geo = '{"X":"10","Y":"20","WIDTH":"640","HEIGHT":"400"}') {
+  const result = spawnSync(python, ['-c', driver, script, '42', '960', geo], { encoding: 'utf8', env });
   return { result, reply: JSON.parse(result.stdout.trim().split('\n').pop()) };
 }
 const readStub = (name) => `sys.stdout.buffer.write(open(os.path.join(os.environ['DIR'], ${JSON.stringify(name)}), 'rb').read())`;
 const writeToArg = 'open(sys.argv[-1], "wb").write(open(os.environ["CANNED"], "rb").read())';
+const displayStub = "if sys.argv[1:] == ['getdisplaygeometry']: print('700 500')";
 
 test('capture falls back to scrot when ImageMagick is absent', () => {
   const { dir, env } = toolDir({
@@ -100,6 +101,21 @@ test('capture falls back to scrot when ImageMagick is absent', () => {
   const marker = fs.readFileSync(path.join(dir, 'marker'), 'utf8');
   assert.match(marker, /scrot -a 10,20,640,400/, `the window rectangle went to scrot: ${marker}`);
   assert.doesNotMatch(marker, /import/, 'ImageMagick is never invoked when absent');
+});
+
+test('capture clamps the grab rectangle to the display for region tools', () => {
+  const { dir, env } = toolDir({
+    xdotool: displayStub,
+    scrot: writeToArg,
+    ffmpeg: readStub('canned.jpg'),
+  });
+  env.CANNED = path.join(dir, 'canned.png');
+  // A 640x400 window at x=650 on a 700x500 screen hangs 590px off the edge.
+  const { result, reply } = runCapture(dir, env, '{"X":"650","Y":"20","WIDTH":"640","HEIGHT":"400"}');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(reply.ok, true, reply.error);
+  const marker = fs.readFileSync(path.join(dir, 'marker'), 'utf8');
+  assert.match(marker, /scrot -a 650,20,50,400/, `the box was pulled inside the screen: ${marker}`);
 });
 
 test('capture falls back to xwd plus netpbm, scaling wide windows', () => {
@@ -123,5 +139,16 @@ test('capture reports a coded failure when no capture tool exists', () => {
   const { dir, env } = toolDir({});
   const { reply } = runCapture(dir, env);
   assert.equal(reply.ok, false);
+  assert.equal(reply.code, 'unsupported_action', 'a missing capability stays coded for the caller');
+  assert.match(reply.error, /No screenshot tool/);
+});
+
+test('capture reports a plain failure when tools exist but cannot grab', () => {
+  const { dir, env } = toolDir({
+    scrot: 'sys.exit(1)',
+  });
+  const { reply } = runCapture(dir, env);
+  assert.equal(reply.ok, false);
+  assert.equal(reply.code, 'failed');
   assert.match(reply.error, /Could not capture that window/);
 });

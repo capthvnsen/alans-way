@@ -9,6 +9,7 @@ legacy argv commands (apps, snapshot, press, type, click, drag, shot) still work
 import base64
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -1048,7 +1049,19 @@ def screen_box(geo):
     return (x, y, w, h) if w > 0 and h > 0 else None
 
 
+def display_size():
+    """(width, height) of the X display, or None when it cannot be asked."""
+    try:
+        parts = subprocess.check_output(['xdotool', 'getdisplaygeometry'],
+                                        text=True, stderr=subprocess.DEVNULL, timeout=5).split()
+        width, height = int(parts[0]), int(parts[1])
+        return (width, height) if width > 0 and height > 0 else None
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError):
+        return None
+
+
 def scrot_capture(box, cap):
+    """Grab the window's screen rectangle; an occluded window returns whatever is painted over it."""
     fd, tmp = tempfile.mkstemp(suffix='.png')
     try:
         os.close(fd)
@@ -1093,10 +1106,21 @@ def capture(wid, cap, geo):
         data = xwd_capture(wid, cap)
     if not jpeg_size(data or b''):
         box = screen_box(geo or {})
+        # Region tools grab the screen, not the window: pull the box inside the
+        # display so a window hanging off an edge still captures. ffmpeg refuses
+        # an out-of-bounds rectangle outright; scrot clips on its own.
+        bounds = display_size()
+        if box and bounds:
+            x, y, w, h = box
+            w, h = min(w, bounds[0] - x), min(h, bounds[1] - y)
+            box = (x, y, w, h) if w > 0 and h > 0 else None
         if box:
             data = scrot_capture(box, cap) or ffmpeg_capture(box, cap)
     size = jpeg_size(data or b'')
     if not size:
+        if not any(shutil.which(tool) for tool in ('import', 'xwd', 'scrot', 'ffmpeg')):
+            fail('No screenshot tool is installed (looked for import, xwd, scrot, and ffmpeg).',
+                 'unsupported_action')
         fail('Could not capture that window.')
     return data, size
 
