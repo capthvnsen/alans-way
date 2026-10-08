@@ -38,10 +38,13 @@ function parseComputerState(text) {
   } catch { return null; }
 }
 
-// Single quotes keep any path inert; only absolute paths reach this command.
+// Single quotes keep any path inert, but a leading ~ must sit outside them so
+// the remote shell still expands it to the remote user's home.
 function sshReadCommand(remotePath) {
-  const safe = String(remotePath).replace(/'/g, `'\\''`);
-  return `cat '${safe}'`;
+  const p = String(remotePath);
+  const rest = p.startsWith('~/') ? p.slice(2) : p;
+  const safe = `'${rest.replace(/'/g, `'\\''`)}'`;
+  return p.startsWith('~/') ? `cat ~/${safe}` : `cat ${safe}`;
 }
 
 module.exports = { MAC_CLI, tailscaleCli, findPeer, pairPollCommand, parseComputerState, sshReadCommand };

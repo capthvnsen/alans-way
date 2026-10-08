@@ -24,11 +24,15 @@ test('ANTHROPIC_BASE_URL is never written', () => {
 
 const status = `hermes-db                         EXITED    Oct 07 10:38 PM\nhermes-gateway                    RUNNING   pid 28478\nhoncho-api                        RUNNING   pid 19263\n`;
 
-test('the gateway program is read from supervisorctl output, else all', () => {
+test('the gateway program is read from supervisorctl output, else hermes-gateway', () => {
   assert.equal(gatewayProgram(status), 'hermes-gateway');
-  assert.equal(gatewayProgram('sshd                            RUNNING\n'), 'all');
-  assert.equal(gatewayRestartCommand(status), 'supervisorctl restart hermes-gateway');
-  assert.equal(gatewayRestartCommand(''), 'supervisorctl restart all');
+  assert.equal(gatewayProgram('sshd                            RUNNING\n'), 'hermes-gateway');
+  assert.equal(gatewayRestartCommand(status), `supervisorctl restart 'hermes-gateway'`);
+  assert.equal(gatewayRestartCommand(''), `supervisorctl restart 'hermes-gateway'`);
+});
+
+test('a hostile program name is single-quoted before it reaches the remote shell', () => {
+  assert.equal(gatewayRestartCommand('gateway$(rm -rf ~)              RUNNING\n'), `supervisorctl restart 'gateway$(rm'`);
 });
 
 test('the subscription login is the hermes oauth flow', () => {

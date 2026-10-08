@@ -44,3 +44,9 @@ test('the computer state file parses, and junk does not', () => {
 test('remote reads quote the path and never interpolate raw input', () => {
   assert.equal(sshReadCommand('/var/lib/alan/state.json'), "cat '/var/lib/alan/state.json'");
 });
+
+test('a ~ path expands on the remote: the tilde stays outside the quotes', () => {
+  assert.equal(sshReadCommand('~/.hermes/.env'), "cat ~/'.hermes/.env'");
+  assert.equal(sshReadCommand('~/.hermes/profiles/personal/.env'), "cat ~/'.hermes/profiles/personal/.env'");
+  assert.equal(sshReadCommand("~/it's.env"), "cat ~/'it'\\''s.env'");
+});

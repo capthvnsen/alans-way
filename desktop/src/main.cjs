@@ -744,7 +744,9 @@ async function cloudWriteEnv(host, key, value, tokenedProfiles) {
   const profile = key === 'TELEGRAM_BOT_TOKEN' ? cloudTelegram.untokenedProfile(profiles.out, tokenedProfiles) : cloudModel.chooseProfile(profiles.out);
   const envPath = cloudModel.envPathFor(profile);
   const current = await sshRun(host, cloudConnect.sshReadCommand(envPath));
-  const write = await sshWrite(host, envPath, cloudModel.setEnvValue(current.out, key, value));
+  // A failed read (missing file, ssh error) means an empty base — never feed
+  // error text into setEnvValue or the write would clobber the real .env.
+  const write = await sshWrite(host, envPath, cloudModel.setEnvValue(current.code === 0 ? current.out : '', key, value));
   if (write.code !== 0) return { ok: false, detail: 'The computer refused the env file write.' };
   const status = await sshRun(host, 'supervisorctl status 2>/dev/null');
   await sshRun(host, cloudModel.gatewayRestartCommand(status.out), { timeoutMs: 30000 });
@@ -771,29 +773,36 @@ async function cloudFinishTelegram(token, username) {
 function localRun(file, args, { timeoutMs = 10000 } = {}) {
   return new Promise((resolve) => {
     const child = spawn(file, args, { timeout: timeoutMs });
-    let out = '';
+    let out = '', err = '';
     child.stdout.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
-    child.stderr.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
-    child.on('error', () => resolve({ code: -1, out }));
-    child.on('close', (code) => resolve({ code: code ?? -1, out }));
+    // stderr stays separate: a remote warning must not corrupt parsers that
+    // read stdout (JSON state files, `cat`-ed env files, tailscale --json).
+    child.stderr.on('data', (chunk) => { err = (err + chunk).slice(-20000); });
+    child.on('error', (error) => resolve({ code: -1, out, err: err || String(error?.message || error) }));
+    child.on('close', (code) => resolve({ code: code ?? -1, out, err }));
   });
 }
+// accept-new pins the first-seen host key without prompting (BatchMode cannot
+// ask). The wizard assigns the ssh host itself, so =yes would fail every new
+// peer with "Host key verification failed."
 function sshRun(host, remote, { timeoutMs = 15000 } = {}) {
-  return localRun('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host, remote], { timeoutMs });
+  return localRun('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, remote], { timeoutMs });
 }
 // Writes a whole file over stdin so the content never lands in the remote
-// command line (keys would leak into ps otherwise). Leading ~ becomes $HOME
-// inside the double quotes.
+// command line (keys would leak into ps otherwise). Leading ~ stays unquoted
+// so it expands; the rest of the path is single-quoted against remote-side
+// interpolation of profile names.
 function sshWrite(host, remotePath, content, { timeoutMs = 15000 } = {}) {
-  const target = `"${String(remotePath).replace(/^~/, '$HOME')}"`;
+  const p = String(remotePath);
+  const target = p.startsWith('~/') ? `"$HOME"/${cloudMigrate.shellQuote(p.slice(2))}` : cloudMigrate.shellQuote(p);
   return new Promise((resolve) => {
-    const child = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host, `cat > ${target}`], { timeout: timeoutMs });
-    let out = '';
+    const child = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, `cat > ${target}`], { timeout: timeoutMs });
+    let out = '', err = '';
     child.stdout.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
-    child.stderr.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
+    child.stderr.on('data', (chunk) => { err = (err + chunk).slice(-20000); });
     child.stdin.on('error', () => {});
-    child.on('error', () => resolve({ code: -1, out }));
-    child.on('close', (code) => resolve({ code: code ?? -1, out }));
+    child.on('error', () => resolve({ code: -1, out, err }));
+    child.on('close', (code) => resolve({ code: code ?? -1, out, err }));
     child.stdin.end(content);
   });
 }
@@ -806,8 +815,8 @@ function testAgentPath() {
   if (!mac) throw new Error(`Enter this ${HOST_LABEL === 'windows' ? 'PC' : 'computer'}’s SSH address as your VPS reaches it.`);
   if (!isSshTarget(mac)) throw new Error('The saved SSH address for this computer is invalid. Re-enter it as user@host or host.');
   return new Promise((resolve) => {
-    const child = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host,
-      `ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=yes ${mac} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
+    const child = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host,
+      `ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new ${mac} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
     let out = '';
     child.stdout.on('data', chunk => { out += chunk; });
     child.stderr.on('data', chunk => { out += chunk; });
@@ -1217,7 +1226,7 @@ function registerIpc() {
         const profile = cloudModel.chooseProfile((await sshRun(host, 'ls ~/.hermes/profiles 2>/dev/null')).out);
         const envPath = cloudModel.envPathFor(profile);
         const current = await sshRun(host, cloudConnect.sshReadCommand(envPath));
-        const write = await sshWrite(host, envPath, cloudModel.setEnvValue(current.out, 'ANTHROPIC_API_KEY', key));
+        const write = await sshWrite(host, envPath, cloudModel.setEnvValue(current.code === 0 ? current.out : '', 'ANTHROPIC_API_KEY', key));
         if (write.code !== 0) return { done: false, detail: 'The key could not be written on the computer.' };
         const status = await sshRun(host, 'supervisorctl status 2>/dev/null');
         await sshRun(host, cloudModel.gatewayRestartCommand(status.out), { timeoutMs: 30000 });
@@ -1233,7 +1242,7 @@ function registerIpc() {
         // The OAuth flow prints a URL once; it opens in the user's browser here
         // while the remote waits, and cloud-model-check polls for the result.
         if (!modelAuthChild) {
-          modelAuthChild = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host, cloudModel.authLoginCommand()]);
+          modelAuthChild = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, cloudModel.authLoginCommand()]);
           let seen = '', opened = false;
           const feed = (chunk) => {
             seen = (seen + chunk).slice(-20000);

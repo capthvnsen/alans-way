@@ -17,16 +17,18 @@ function setEnvValue(text, key, value) {
   return source.endsWith('\n') ? source + line + '\n' : source + '\n' + line + '\n';
 }
 
-// The gateway's supervisor program name is read from the machine, not assumed.
+// The gateway's supervisor program name is read from the machine; when nothing
+// matches, restart only the gateway — never 'all', which would bounce the
+// tailscaled and other Orgo programs mid-onboarding.
 function gatewayProgram(statusOutput) {
   for (const line of String(statusOutput || '').split('\n')) {
     const name = line.trim().split(/\s+/)[0] || '';
     if (/gateway/i.test(name)) return name;
   }
-  return 'all';
+  return 'hermes-gateway';
 }
 function gatewayRestartCommand(statusOutput) {
-  return `supervisorctl restart ${gatewayProgram(statusOutput)}`;
+  return `supervisorctl restart ${shellQuote(gatewayProgram(statusOutput))}`;
 }
 
 // `hermes auth login` does not exist; the OAuth login for a Claude
