@@ -7,7 +7,7 @@ const fs = require('node:fs'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
-const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
 const { createAgentInput, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
@@ -439,7 +439,7 @@ async function serve() {
         if (!step || typeof step !== 'object') { results.push({ ok: false, error: 'Invalid step.' }); break; }
         if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ ok: false, error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
         try { results.push({ ok: true, ...(await vpsPerform(tab, { ...step, epoch: body.epoch }, botId, overseer, 1)) }); }
-        catch (error) { results.push({ ok: false, error: error.message }); break; }
+        catch (error) { results.push({ ok: false, error: errorMessage(error) }); break; }
         if (step.ref !== undefined || step.selector !== undefined) lastTarget = { ref: step.ref, selector: step.selector };
         if (INPUT_ACTIONS.has(step.action) && step.action !== 'move') sawInput = true;
       }
@@ -1047,7 +1047,7 @@ async function serve() {
       }
       throw fail('Unsupported VPS operation.', 405);
     } catch (e) {
-      send(e.status || 400, { error: e.message });
+      send((e && e.status) || 400, { error: errorMessage(e) });
     }
   });
   const port = cfg.port || 9465;
