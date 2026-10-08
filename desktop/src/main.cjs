@@ -901,7 +901,7 @@ async function runSetupCheck() {
       : { ok: false, detail: (probe.err || probe.out).trim().split('\n').pop() || `ssh exited ${probe.code}` };
     if (connection.reach.ok) {
       const [back, report] = await Promise.all([
-        computerHost ? testAgentPath().catch((error) => ({ ok: false, detail: error.message })) : null,
+        computerHost ? Promise.resolve().then(testAgentPath).catch((error) => ({ ok: false, detail: error.message })) : null,
         vmUpdater.doctorVm(vmTargets(prefs)[0]),
       ]);
       connection.back = back;
@@ -1194,7 +1194,7 @@ function registerIpc() {
       case 'setup-check': return runSetupCheck();
       case 'remove-old-connector': {
         const stale = setupCheck.staleConnectorCopy(app.getPath('userData'), app.getVersion());
-        if (stale) fs.rmSync(stale, { recursive: true, force: true });
+        if (stale && process.platform !== 'win32') fs.rmSync(stale, { recursive: true, force: true });
         break;
       }
       case 'copy-report': {
