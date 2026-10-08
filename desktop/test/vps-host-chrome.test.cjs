@@ -203,7 +203,8 @@ test('real Chromium: an agent page cannot reach loopback or metadata by redirect
   for (const tab of tabs) await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch);
 
   const ok = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/ok` })).data;
-  const loadedImages = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: "[...document.images].filter((i) => i.complete && i.naturalWidth).length", epoch: ok.epoch });
+  // open answers once the page is readable, so wait for its load event before counting images.
+  const loadedImages = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: "new Promise((r) => document.readyState === 'complete' ? r() : addEventListener('load', r)).then(() => [...document.images].filter((i) => i.complete && i.naturalWidth).length)", epoch: ok.epoch });
   assert.equal(loadedImages.data.value, 3, 'ordinary subresources still load through the filter');
   const viaEval = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: `location.href='http://u@127.0.0.1:${pb}/secret?eval';1`, epoch: ok.epoch });
   assert.equal(viaEval.status, 200);
