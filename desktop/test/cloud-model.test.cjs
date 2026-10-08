@@ -47,6 +47,9 @@ test('the sign-in URL is lifted from the login output', () => {
 test('auth status answers whether the login finished', () => {
   assert.equal(authLoggedIn('anthropic: logged in'), true);
   assert.equal(authLoggedIn('anthropic: not configured'), false);
+  assert.equal(authLoggedIn('anthropic: not logged in'), false, 'the negation is not a login');
+  assert.equal(authLoggedIn('anthropic: never logged in'), false);
+  assert.equal(authLoggedIn('anthropic: logged in\nother: not logged in'), true);
   assert.equal(authLoggedIn(''), false);
 });
 

@@ -39,8 +39,11 @@ function authLoginCommand() {
 function extractAuthUrl(output) {
   return /https?:\/\/[^\s'"]+/.exec(String(output || ''))?.[0] || '';
 }
+// "not logged in" and "never logged in" are the unauthenticated answers, so a
+// line only counts when the negation is absent.
 function authLoggedIn(statusOutput) {
-  return /logged in/i.test(String(statusOutput || ''));
+  return String(statusOutput || '').split('\n')
+    .some((line) => /logged in/i.test(line) && !/\b(?:not|never)\b/i.test(line));
 }
 
 // Profiles live at ~/.hermes/profiles/<name>/.env; a bare install keeps one
