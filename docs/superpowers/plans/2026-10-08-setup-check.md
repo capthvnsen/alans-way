@@ -615,8 +615,8 @@ function computerRows({ platform, local }) {
     ? row('computer', 'ok', 'Signed in to Telegram')
     : row('computer', 'fail', 'Not signed in to Telegram', 'Scan the QR code on the left with your phone: Telegram → Settings → Devices → Link Desktop Device.')];
   if (platform === 'darwin') {
-    if (local.inApplications === true) rows.push(row('computer', 'ok', 'Open Alan is in Applications'));
-    if (local.inApplications === false) rows.push(row('computer', 'fail', 'Open Alan is not in Applications', 'Move it there so your agent can find it.', 'move-to-applications'));
+    if (local.inApplications === true) rows.push(row('computer', 'ok', 'Alan’s Workspace is in Applications'));
+    if (local.inApplications === false) rows.push(row('computer', 'fail', 'Alan’s Workspace is not in Applications', 'Move it there so your agent can find it.', 'move-to-applications'));
     if (local.permissions) {
       rows.push(local.permissions.accessibility === true
         ? row('computer', 'ok', 'Accessibility is on')
@@ -660,7 +660,7 @@ function serverRows({ appVersion, server }) {
   if (server.ok !== true) {
     if (server.error === 'windows') return [row(s, 'warn', 'Server checks aren’t available for Windows servers yet')];
     const missing = /no browser host checkout/.test(server.error || '');
-    return [row(s, 'fail', missing ? 'Open Alan isn’t installed on the server' : 'The server check failed', missing ? SETUP_PROMPT : server.error || '')];
+    return [row(s, 'fail', missing ? 'Alan’s Tools aren’t installed on the server' : 'The server check failed', missing ? SETUP_PROMPT : server.error || '')];
   }
   const rows = [];
   if (isNewer(appVersion, server.version)) rows.push(row(s, 'fail', 'The server is on an older version', `Server ${server.version}, this app ${appVersion}.`, 'update-server'));
@@ -763,7 +763,7 @@ test('buildReport lists the setup, the last check and the newest log lines, reda
     { group: 'server', level: 'fail', title: 'The server is on an older version', fix: 'Server 0.3.2, this app 0.4.0.', action: 'update-server' }];
   const report = buildReport({ now: new Date('2026-10-08T16:00:00Z'), app: appInfo, serverAddress: 'root@192.0.2.5', computerAddress: 'me@192.0.2.6',
     findings, checkedAt: '2026-10-08T15:59:00Z', server: { ok: true, version: '0.3.2' }, errorLog: log });
-  assert.match(report, /^Open Alan report, 2026-10-08T16:00:00\.000Z$/m);
+  assert.match(report, /^Alan’s Workspace report, 2026-10-08T16:00:00\.000Z$/m);
   assert.match(report, /App 0\.4\.0 on darwin arm64 \(15\.6\), signed build/);
   assert.match(report, /Server address: root@192\.0\.2\.5/);
   assert.match(report, /✓ This computer: Signed in to Telegram$/m);
@@ -813,7 +813,7 @@ const GROUPS = { computer: 'This computer', connection: 'Connection', server: 'S
 // The plain-text report a user pastes to support. Built only on request.
 function buildReport({ now = new Date(), app, serverAddress, computerAddress, findings, checkedAt, server, errorLog }) {
   const lines = [
-    `Open Alan report, ${now.toISOString()}`,
+    `Alan’s Workspace report, ${now.toISOString()}`,
     `App ${app.version} on ${app.platform} ${app.arch} (${app.osVersion}), ${app.signed ? 'signed' : 'unsigned'} build`,
     `Server address: ${serverAddress || 'not saved'}`,
     `This computer’s address: ${computerAddress || 'not saved'}`,
@@ -1127,10 +1127,10 @@ Then, using the `computer-use` skill to click and take screenshots:
    computer's address, click **Save addresses**, then **Check setup**. Expected: the This computer rows show;
    Connection shows ✗ "This computer can't reach the server"; Server shows the single ✗ "Server checks
    skipped". Click **Copy report** and paste the clipboard (`pbpaste`). Expected: it starts with
-   `Open Alan report,`, lists those rows and contains no token.
+   `Alan’s Workspace report,`, lists those rows and contains no token.
 2. Golden path: enter the test server's address (`root@<test-server>`, any server this Mac's SSH key can reach), then
    **Check setup**. Expected: Connection ✓ "This computer reaches the server", and Server rows from a real
-   `--doctor` run. Until the new-user test has run setup on that box, the run reports ✗ "Open Alan isn't
+   `--doctor` run. Until the new-user test has run setup on that box, the run reports ✗ "Alan’s Tools aren't
    installed on the server". After that, it shows versions, plugin rows and the setup audit. The made-up
    computer address from step 1 makes "The server can't reach this computer" fail. That's expected.
 3. Wizard: click **Run setup wizard**, go to step 3, click **Check setup**. Expected: the same list appears in

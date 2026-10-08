@@ -2,7 +2,7 @@
 
 ## Goal
 
-One button in the app that tells a user whether their Open Alan setup works and, when it doesn't, lists each
+One button in the app that tells a user whether their Alan's Workspace setup works and, when it doesn't, lists each
 problem with a one-line fix. It covers both machines and the versions between them, which no existing check
 does. It ships in the app so it reaches users with a normal release, without a plugin catalog review.
 
@@ -28,7 +28,7 @@ saying what to do, plus a button when the app can do it.
 | 8 | Server app tools match the app | `--doctor` `version` vs `app.getVersion()` | **Update server** (existing VM update) |
 | 9 | Server browser host is running, same version | `--doctor` `hostVersion` | **Update server** |
 | 10 | Plugins are on the latest published version | `--doctor` plugin rows (see below) | **Update server** |
-| 11 | Computer use goes through Alan's Way | `--doctor` `computerBackend` per profile | Update Hermes to a build with the computer-use provider API, then re-run setup |
+| 11 | Computer use goes through the Alan's Way Plugin | `--doctor` `computerBackend` per profile | Update Hermes to a build with the computer-use provider API, then re-run setup |
 | 12 | Server setup audit passes | `--doctor` `verify`, one run per server (setup.sh audits every profile itself): each `FAIL` line is ✗, each `warn` line is ! | "Ask your bot to run `setup.sh --verify` and fix what it reports" |
 
 Checks 8 to 12 run only if check 6 passes. If check 6 fails, the Server group shows one ✗ row:

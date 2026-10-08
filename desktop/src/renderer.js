@@ -304,7 +304,7 @@ function render(next) {
   $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? `${agentName}${tab.agentBusy ? ' is working' : ' is browsing'}` : 'You'} in control${tab.controller === 'agent' ? ' · Take over anytime' : ''} · ${hostName(tab.host)}${tab.handoff?.phase==='handed_off'?` · Handed off to the ${hostName(tab.handoff.destinationHost)} (agents continue there)`:tab.handoff&&tab.handoff.phase!=='reviewed'?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `${remoteName()} · ${state.remoteStatus}` : 'Ready';
   renderUpdate();
   $('connection-status').textContent = state.api.ready ? 'Browser connector ready' : state.api.error ? 'Browser connector unavailable' : 'Browser connector starting…';
-  const notes = { login: 'Sign in with your Telegram account. Your bots appear on the left.', connected: 'Your Telegram account · bot chats only', locked: 'Unlock Telegram to load your bot chats.', offline: 'Telegram is offline. Retrying automatically; or sync in Settings.', loading: 'Connecting to Telegram…', 'layout-changed': 'Telegram layout changed. Bot chats may not load until Alan’s Way is updated.' };
+  const notes = { login: 'Sign in with your Telegram account. Your bots appear on the left.', connected: 'Your Telegram account · bot chats only', locked: 'Unlock Telegram to load your bot chats.', offline: 'Telegram is offline. Retrying automatically; or sync in Settings.', loading: 'Connecting to Telegram…', 'layout-changed': 'Telegram layout changed. Bot chats may not load until Alan’s Workspace is updated.' };
   $('telegram-note').textContent = notes[state.telegramStatus] || notes.loading;
   $('telegram-note').classList.toggle('warn', state.telegramStatus === 'layout-changed');
   scheduleLayout();
@@ -321,7 +321,7 @@ function renderUpdate() {
   renderUpdatePopup();
   renderVmBanner();
   if (u.justUpdatedFrom) {
-    toast(`Updated to v${state.version}.${u.vmRetry?.show ? ' A VM update did not finish: use Retry above, or send your agent the update prompt from Settings → Agent setup.' : ''}${state.platform === 'darwin' ? ' If your agent can no longer use this Mac, turn alans-way-localapp off and on again in System Settings → Privacy & Security → Accessibility.' : ''}`);
+    toast(`Updated to v${state.version}.${u.vmRetry?.show ? ' A VM update did not finish: use Retry above, or send your agent the update prompt from Settings → Agent setup.' : ''}${state.platform === 'darwin' ? ' If your agent can no longer use this Mac, turn Alan’s Workspace (listed as alans-way-localapp) off and on again in System Settings → Privacy & Security → Accessibility.' : ''}`);
     command('dismiss-updated');
   }
 }
@@ -333,7 +333,7 @@ function renderUpdatePopup() {
   popup.classList.toggle('hidden', !show);
   if (!show) { updatePopupPinned = false; updatePopupFocused = false; return; }
   $('update-popup-title').textContent = u.busy ? 'Updating' : 'Update available';
-  $('update-popup-copy').textContent = u.busy ? 'Your VMs update first, then this app.' : `Alan’s Way v${u.available} is ready. You have v${state.version}.`;
+  $('update-popup-copy').textContent = u.busy ? 'Your VMs update first, then this app.' : `Alan’s Workspace v${u.available} is ready. You have v${state.version}.`;
   const progress = $('update-progress'); progress.replaceChildren();
   const single = (u.vms || []).length === 1;
   for (const vm of u.vms || []) {
@@ -384,7 +384,7 @@ function renderOnboarding(show) {
   }
   card.append(element('p', 'onboarding-step', `Step ${onboardingStep} of 3`));
   if (onboardingStep === 1) {
-    card.append(element('h2', '', 'Welcome to Open Alan'), element('p', 'settings-note', 'Three short steps connect your Hermes agent to this computer.'));
+    card.append(element('h2', '', 'Welcome to Alan’s Workspace'), element('p', 'settings-note', 'Three short steps connect your Hermes agent to this computer.'));
     // A failed deep-link claim lands here: explain it instead of showing a
     // silent ordinary wizard.
     if (cloud.error) card.append(element('p', 'settings-note', cloud.error));
@@ -392,11 +392,11 @@ function renderOnboarding(show) {
     card.append(element('p', `check-item${signedIn ? ' done' : ''}`, signedIn ? '✓ Signed in to Telegram' : '○ Scan the QR code on the left with your phone: Telegram → Settings → Devices → Link Desktop Device.'));
     if (state.inApplications === false) {
       const move = element('div', 'onboarding-move');
-      move.append(element('p', 'settings-note', 'Move Open Alan to your Applications folder so your agent can find it.'),
+      move.append(element('p', 'settings-note', 'Move Alan’s Workspace to your Applications folder so your agent can find it.'),
         button('Move to Applications', 'secondary-button', () => command('move-to-applications')));
       card.append(move);
     }
-    const claimWrap = element('div', 'field'), claimLabel = element('label', '', 'Paid for a computer on openalan.com?');
+    const claimWrap = element('div', 'field'), claimLabel = element('label', '', 'Have a claim code from openalan.com?');
     claimLabel.htmlFor = 'ob-claim-code';
     const claimInput = element('input');
     claimInput.id = 'ob-claim-code'; claimInput.placeholder = 'Paste your claim code or link'; claimInput.autocomplete = 'off';
@@ -413,7 +413,7 @@ function renderOnboarding(show) {
     card.append(element('h2', '', 'Give your agent this prompt'));
     const box = element('textarea', 'onboarding-prompt'); box.readOnly = true; box.rows = 7; box.setAttribute('aria-label', 'Setup prompt for your agent');
     command('agent-prompt', { botId: state.selectedBotId, copy: false }).then((text) => { if (typeof text === 'string') box.value = text; });
-    card.append(box, element('p', 'settings-note', 'Paste it into the chat with your Hermes bot on the left. It stays current for every version of Open Alan.'));
+    card.append(box, element('p', 'settings-note', 'Paste it into the chat with your Hermes bot on the left. It stays current for every version of Alan’s Workspace.'));
     const help = button('No Hermes agent yet? Start here ↗', 'link-button', () => command('create-tab', { url: 'https://github.com/NousResearch/hermes-agent' }));
     card.append(help);
     actions.append(button('Back', 'secondary-button', () => go(1)),
@@ -705,7 +705,7 @@ async function showCookieSettings(body) {
   await refresh();
 }
 function showMacPermissions(body) {
-  body.append(element('hr', 'section-divider'), element('h3', '', 'Permissions'), element('p', 'settings-note', 'Agents need these to read and operate other apps on this Mac. Turn on alans-way-localapp in each list.'));
+  body.append(element('hr', 'section-divider'), element('h3', '', 'Permissions'), element('p', 'settings-note', 'Agents need these to read and operate other apps on this Mac. Turn on Alan’s Workspace (listed as alans-way-localapp) in each list.'));
   const rows = [['accessibility', 'Accessibility'], ['screen', 'Screen Recording']].map(([pane, label]) => {
     const row = element('div', 'setting-row'), status = element('span', '', `${label}: checking…`), open = element('button', 'secondary-button', 'Open settings');
     open.onclick = () => command('open-mac-privacy', { pane });
@@ -829,7 +829,7 @@ function showSettings() {
   linkToggle.onclick = async () => { const next = !state.autoOpenLinks; await command('settings', { autoOpenLinks: next }); state.autoOpenLinks = next; linkToggle.textContent = next ? 'On' : 'Off'; };
   linkRow.append(linkToggle); body.append(linkRow);
   body.append(element('p', 'settings-note', `A link sent by you or a bot opens a local tab assigned to that bot, so both of you can see it. If this computer is unreachable, the bot opens its own copy on the ${remoteName()} desktop instead.`));
-  body.append(element('p', 'settings-note', 'The setup installs the Alan’s Way agent plugin on your gateway host and wires this computer’s browser connector for the selected bot. Run once per bot.'));
+  body.append(element('p', 'settings-note', 'The setup installs the Alan’s Way Plugin on your gateway host and wires this computer’s browser connector for the selected bot. Run once per bot.'));
   body.append(element('p', 'settings-note', `Taking over a local tab blocks new agent actions on that tab. ${remoteName()} control currently uses your existing shared desktop; it does not pause your Hermes bots.`));
   body.append(element('hr', 'section-divider'));
   const sync = element('button', 'secondary-button', 'Sync Telegram bots'); sync.onclick = () => { command('sync-telegram'); toast('Reading Telegram’s bot chat list…'); };

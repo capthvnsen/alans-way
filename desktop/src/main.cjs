@@ -1181,7 +1181,7 @@ function registerIpc() {
         const macSsh = (prefs.macSshHost || '').trim();
         const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
         clipboard.writeText([
-          "# Alan's Way setup: paste into a terminal on the host running your Hermes gateway",
+          "# Alan's Way Plugin setup: paste into a terminal on the host running your Hermes gateway",
           `curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/setup.sh | bash -s -- --bot-id ${q(botId)}${bot ? ` --bot-name ${q(bot.name.replace(/'/g, ''))}` : ''}${macSsh ? ` --mac-ssh ${q(macSsh)}` : ''}${HOST_LABEL === 'mac' ? '' : ` --host-os ${HOST_LABEL}`} --timezone ${q(Intl.DateTimeFormat().resolvedOptions().timeZone)} --restart`,
           '# The bootstrap installs the plugin, configures the browser connector,',
           '# offers to bind the primary route, restarts the gateway, and verifies itself.',
@@ -2101,7 +2101,7 @@ function createTray() {
       : nativeImage.createFromPath(path.join(ROOT, '../assets/icon.png')).resize({ width: 24, height: 24 });
     tray = new Tray(icon);
     tray.setToolTip(`${app.getName()} is running. Bots keep their browser while this icon is here.`);
-    tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Show Alan’s Way', click: showWindow }, { type: 'separator' }, { label: 'Quit', click: () => app.quit() }]));
+    tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Show Alan’s Workspace', click: showWindow }, { type: 'separator' }, { label: 'Quit', click: () => app.quit() }]));
     tray.on('click', showWindow);
   } catch (error) { tray = undefined; logError('tray', error); }
 }

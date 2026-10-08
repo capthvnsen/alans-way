@@ -1,5 +1,5 @@
 #!/bin/sh
-# install-mac.sh — build and install (or upgrade) the Alan's Way Mac app.
+# install-mac.sh — build and install (or upgrade) the Alan's Workspace Mac app.
 #
 #   curl -fsSL https://openalan.com/install-mac | sh
 #
