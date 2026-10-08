@@ -173,13 +173,13 @@ function vmRetryState(appVersion, vms, targets) {
 
 // A version check reports what the VM runs now; a successful one refreshes
 // the record: a same or newer report clears a stale failure, while an older
-// report must not erase a fresher recorded result (an update that landed
-// while the check was in flight).
+// or unparseable report must not erase a fresher recorded result (an update
+// that landed while the check was in flight).
 // Returns the vmUpdates entry to store, or null to keep the existing one.
 function vmCheckEntry(previous, check) {
   const reported = String(check?.version || check?.hostVersion || '');
   const known = String(previous?.version || '');
-  if (!reported || (known && isNewer(known, reported))) return null;
+  if (!/^\d+\.\d+\.\d+$/.test(reported) || (known && isNewer(known, reported))) return null;
   if (reported === known && !previous?.failed) return null;
   return { version: reported, failed: '' };
 }

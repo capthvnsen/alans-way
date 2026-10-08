@@ -183,6 +183,8 @@ test('a stale version check never overwrites a fresher recorded result', () => {
   assert.equal(vmCheckEntry({ version: '0.3.2', failed: '' }, { version: '0.3.1' }), null);
   assert.equal(vmCheckEntry({ version: '0.3.2', failed: 'busy' }, { version: '0.3.1' }), null);
   assert.equal(vmCheckEntry({ version: '0.3.1' }, { version: '' }), null);
+  assert.equal(vmCheckEntry({ version: '0.3.1', failed: '' }, { version: 'v0.3.3-rc.1' }), null);
+  assert.equal(vmCheckEntry(undefined, { version: 'not-a-version' }), null);
   assert.deepEqual(vmCheckEntry({ version: '0.3.1' }, { version: '0.3.2' }), { version: '0.3.2', failed: '' });
   assert.deepEqual(vmCheckEntry(undefined, { version: '0.3.1' }), { version: '0.3.1', failed: '' });
   assert.deepEqual(vmCheckEntry({ failed: 'disk full' }, { hostVersion: '0.3.1' }), { version: '0.3.1', failed: '' });
