@@ -226,8 +226,9 @@ browser services start once a display on `:99` exists.
 
 **VPS without systemd (supervisord, for example an Orgo VM):** services run
 under supervisord, not systemd. Restart the gateway through its supervisor
-with `supervisorctl restart <program>`, where `<program>` is the entry in
-`supervisorctl status` whose command runs `hermes gateway run`;
+with `supervisorctl restart <program>`, where `<program>` is the supervisor
+program that runs `hermes gateway run`; find its name in `supervisorctl
+status` and its `command=` line in `/etc/supervisor/conf.d/*.conf`;
 `hermes gateway restart` cannot see that supervisor. If the VM already serves
 a desktop through noVNC or websockify, use its existing viewer URL in
 **Settings → VPS desktop connection** instead of installing another display

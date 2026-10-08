@@ -60,7 +60,8 @@ Rules for the whole job:
    until `hermes gateway status` reports it running. On a server without
    systemd (services under supervisord) `hermes gateway restart` cannot see
    the supervisor; instead run `supervisorctl restart <program>` for the
-   program in `supervisorctl status` whose command runs `hermes gateway run`.
+   program that runs `hermes gateway run` (find it via `supervisorctl status`
+   and the `command=` lines in `/etc/supervisor/conf.d/*.conf`).
 
 Finish with a short report: OLD → NEW (or "already up to date" if they are
 equal), what passed, every warning from setup.sh, and anything that still
