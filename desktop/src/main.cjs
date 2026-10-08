@@ -18,6 +18,7 @@ const cloudMigrate = require('./cloud-migrate.cjs');
 const cloudModel = require('./cloud-model.cjs');
 const cloudTelegram = require('./cloud-telegram.cjs');
 const macUpdate = require('./mac-update.cjs');
+const setupCheck = require('./setup-check.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup } = require('./vm-update.cjs');
@@ -86,6 +87,7 @@ const vmUpdater = createVmUpdater({ log: (label, error) => logError(label, error
 // persistent record (known VM version / last failure) the retry banner reads.
 const vmProgress = {};
 let vmRetrying = false;
+let lastSetupCheck = null;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
 const tabs = new Map();
@@ -877,6 +879,39 @@ function testAgentPath() {
         : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
   });
 }
+// Check setup: local state, both SSH directions, then the server's read-only
+// doctor report. Each part is independent; a failure becomes a finding.
+async function runSetupCheck() {
+  const serverHost = (prefs.vpsBrowser?.sshHost || '').trim();
+  const computerHost = (prefs.macSshHost || '').trim();
+  const mac = process.platform === 'darwin';
+  const local = {
+    telegram: telegramStatus,
+    inApplications: mac && app.isPackaged ? app.isInApplicationsFolder() : null,
+    permissions: mac ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null,
+    staleConnector: process.platform === 'win32' ? null : setupCheck.staleConnectorCopy(app.getPath('userData'), app.getVersion()),
+  };
+  const connection = { addresses: { server: serverHost, computer: computerHost }, reach: null, back: null };
+  let server = null;
+  if (serverHost && !isSshTarget(serverHost)) connection.reach = { ok: false, detail: 'The saved address is invalid. Re-enter it as user@host or host.' };
+  else if (serverHost) {
+    const probe = await sshRun(serverHost, 'echo CHECK_OK');
+    connection.reach = probe.code === 0 && probe.out.includes('CHECK_OK')
+      ? { ok: true, detail: '' }
+      : { ok: false, detail: (probe.err || probe.out).trim().split('\n').pop() || `ssh exited ${probe.code}` };
+    if (connection.reach.ok) {
+      const [back, report] = await Promise.all([
+        computerHost ? testAgentPath().catch((error) => ({ ok: false, detail: error.message })) : null,
+        vmUpdater.doctorVm(vmTargets(prefs)[0]),
+      ]);
+      connection.back = back;
+      server = report;
+    }
+  }
+  const findings = setupCheck.buildFindings({ appVersion: app.getVersion(), platform: process.platform, local, connection, server });
+  lastSetupCheck = { at: new Date().toISOString(), findings, server };
+  return findings;
+}
 // The connect step advances as far as it can each click: CLI check, pairing
 // status, the computer's own state file, then the saved return path check.
 // {stage} tells the wizard which message to show; 'done' moves to migrate.
@@ -954,7 +989,7 @@ async function claimWithToken(token) {
 function registerIpc() {
   ipcMain.handle('workspace:get', (event) => { trustSender(event); return getState(); });
   ipcMain.on('workspace:layout', (event, value) => { try { trustSender(event); layout = value || {}; applyLayout(); } catch {} });
-  ipcMain.handle('workspace:command', async (event, command, value = {}) => {
+  const runCommand = async (event, command, value = {}) => {
     trustSender(event);
     switch (command) {
       case 'create-tab': return describeTab(createTab({ url: value.url || 'about:blank' }));
@@ -1156,6 +1191,23 @@ function registerIpc() {
         return text;
       }
       case 'test-agent-path': return testAgentPath();
+      case 'setup-check': return runSetupCheck();
+      case 'remove-old-connector': {
+        const stale = setupCheck.staleConnectorCopy(app.getPath('userData'), app.getVersion());
+        if (stale) fs.rmSync(stale, { recursive: true, force: true });
+        break;
+      }
+      case 'copy-report': {
+        let errorLog = '';
+        try { errorLog = fs.readFileSync(path.join(app.getPath('userData'), 'main-errors.log'), 'utf8'); } catch {}
+        clipboard.writeText(setupCheck.buildReport({
+          app: { version: app.getVersion(), platform: process.platform, arch: process.arch, osVersion: process.getSystemVersion(),
+            signed: process.platform === 'darwin' && macUpdate.isDeveloperIdSigned(path.resolve(process.execPath, '../../..')) },
+          serverAddress: prefs.vpsBrowser?.sshHost || '', computerAddress: prefs.macSshHost || '',
+          findings: lastSetupCheck?.findings, checkedAt: lastSetupCheck?.at, server: lastSetupCheck?.server, errorLog }));
+        break;
+      }
+      case 'open-support': shell.openExternal('https://discord.gg/jBQCPUsVE'); break;
       case 'show-data': shell.openPath(app.getPath('userData')); break;
       case 'mac-permissions': return process.platform === 'darwin' ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null;
       case 'open-mac-privacy': if (process.platform === 'darwin') shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${value.pane === 'screen' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility'}`); break;
@@ -1190,7 +1242,7 @@ function registerIpc() {
         try {
           for (const target of vmTargets(prefs)) {
             const entry = prefs.vmUpdates?.[target.id] || {};
-            if (!entry.failed && !(entry.version && macUpdate.isNewer(app.getVersion(), entry.version))) continue;
+            if (!value.force && !entry.failed && !(entry.version && macUpdate.isNewer(app.getVersion(), entry.version))) continue;
             vmProgress[target.id] = { state: 'updating' }; broadcast();
             const result = await vmUpdater.updateVm(target, tag, noteVmProgress);
             vmProgress[target.id] = vmProgressResult(result);
@@ -1396,6 +1448,12 @@ function registerIpc() {
       default: throw new Error('Unknown workspace command.');
     }
     broadcastNow(); return getState();
+  };
+  // Failed actions only reached the screen as a toast; log them so a copied
+  // report shows what went wrong.
+  ipcMain.handle('workspace:command', async (event, command, value = {}) => {
+    try { return await runCommand(event, command, value); }
+    catch (error) { logError(`command ${command}`, error); throw error; }
   });
   ipcMain.on('telegram:catalog', (event, value) => {
     if (event.sender !== telegramView?.webContents || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith(TELEGRAM)) return;
@@ -2168,6 +2226,12 @@ else {
     });
     try { parseRemoteUrl(prefs.remoteUrl); } catch { prefs.remoteUrl = ''; }
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    // A connector copy setup.sh left behind runs ahead of the app's own and
+    // nothing else updates it; once the app is newer, drop it.
+    if (process.platform !== 'win32') {
+      const stale = setupCheck.staleConnectorCopy(app.getPath('userData'), app.getVersion());
+      if (stale) try { fs.rmSync(stale, { recursive: true, force: true }); } catch (error) { logError('stale-connector', error); }
+    }
     const browserSession = session.fromPartition('persist:browser');
     // Subresources (fetch, XHR, images) never hit will-navigate. Cancel the
     // ones an agent tab aims at a blocked address; the human's tabs are not
