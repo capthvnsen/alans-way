@@ -209,6 +209,9 @@ async function serve() {
     const t = { ...data, view: { webContents: wc }, refs: new Set(), generation: 0, queue: Promise.resolve(), sessions: new Set([wc.sessionId]), lastUsedAt: Number(data.lastUsedAt) || Date.now() };
     tabs.set(t.id, t);
     sessionOwner.set(wc.sessionId, { tab: t, targetId: data.targetId });
+    // Dialog and navigation events need Page enabled, including on a tab
+    // reattached after a broker restart.
+    wc.command('Page.enable').catch(() => {});
     // A pop-up's early session was filed under its opener; it belongs to this tab now.
     for (const [sid, entry] of sessionOwner) if (entry.targetId === data.targetId && entry.tab !== t) { entry.tab = t; t.sessions.add(sid); }
     await wc.command('Target.setAutoAttach', AUTO_ATTACH).catch(() => {});
@@ -359,12 +362,14 @@ async function serve() {
     if (closed.length) await persist().catch(() => {});
     return closed;
   }
-  async function loaded(tab, url, attempts = 80, previous) {
+  // Readable (parsed) is enough to act; a restore waits for complete so
+  // deferred scripts have booted before its drafts and scroll land.
+  async function loaded(tab, url, attempts = 80, previous, full = false) {
     for (let i = 0; i < attempts; i++) {
       const s = await tab.view.webContents
         .executeJavaScript('({url:location.href,title:document.title,ready:document.readyState})')
         .catch(() => null);
-      if ((s && s.url !== 'about:blank' && s.url !== previous && s.ready !== 'loading') || (s && url === 'about:blank')) {
+      if ((s && s.url !== 'about:blank' && s.url !== previous && (full ? s.ready === 'complete' : s.ready !== 'loading')) || (s && url === 'about:blank')) {
         tab.url = s.url;
         tab.title = s.title;
         tab.favicon = await tab.view.webContents
@@ -676,7 +681,7 @@ async function serve() {
       await tab.view.webContents.command('Page.navigate', { url });
       tab.view.webContents.executeJavaScript(tintScript(true)).catch(() => {});
     } else tab = (await open({ url, settle: false }, bot, false, (opened) => setCookies(opened, cookies), false)).tab;
-    const ready = await loaded(tab, url, RESTORE_LOAD_ATTEMPTS, previous).then(() => true, () => false);
+    const ready = await loaded(tab, url, RESTORE_LOAD_ATTEMPTS, previous, true).then(() => true, () => false);
     const result = ready ? await tab.view.webContents.executeJavaScript(restoreExpression({ url: t.url, scroll: t.scroll, drafts: t.drafts })).catch(() => null) : null;
     const verification = result?.verification || 'review_required';
     const live = mirror[bot];
@@ -720,14 +725,20 @@ async function serve() {
     persist().catch(() => {});
   }
   cdp.listeners.add((event) => {
-    // An open dialog blocks every evaluate and input on its page. An agent tab
-    // accepts it at once and the next action reply carries what it said; a
+    // An open dialog blocks every evaluate and input on its page, so an agent
+    // tab answers it at once and the next action reply says what it said. Only
+    // an alert or the leave-page prompt the agent's own navigation raised is
+    // accepted; a confirm or prompt guards a decision and is dismissed. A
     // human's tab keeps its dialog for the human.
     if (event.method === 'Page.javascriptDialogOpening') {
       const tab = sessionOwner.get(event.sessionId)?.tab;
       if (tab?.controller === 'agent') {
-        (tab.dialogs ||= []).push({ type: event.params.type, message: String(event.params.message || '').slice(0, 500) });
-        cdp.send('Page.handleJavaScriptDialog', { accept: true }, event.sessionId).catch(() => {});
+        const accepted = event.params.type === 'alert' || event.params.type === 'beforeunload';
+        tab.dialogs = [...(tab.dialogs || []), {
+          type: event.params.type, message: String(event.params.message || '').slice(0, 500), accepted,
+          ...(accepted ? {} : { note: `Dismissed. To accept it, eval window.${event.params.type} = () => ${event.params.type === 'prompt' ? '"<answer>"' : 'true'} and repeat the action.` }),
+        }].slice(-20);
+        cdp.send('Page.handleJavaScriptDialog', { accept: accepted }, event.sessionId).catch(() => {});
       }
     }
     if (event.method === 'Fetch.requestPaused') {

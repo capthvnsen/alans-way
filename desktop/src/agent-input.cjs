@@ -262,13 +262,15 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     const w = rr - l, h = b - t;
     if (!r.width || !r.height || w <= 0 || h <= 0) return loose ? { x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) } : { fail: 'no visible area' };
     let point = null, coveredBy = '';
+    // contains() stops at a shadow boundary; walk the composed tree instead.
+    const within = (n) => { for (; n; n = n.parentNode || n.host) if (n === el) return true; return false; };
     for (const [fx, fy] of [[.5,.5],[.5,.25],[.5,.75],[.25,.5],[.75,.5],[.2,.2],[.8,.2],[.2,.8],[.8,.8]]) {
       const lx = Math.round(l + w * fx), ly = Math.round(t + h * fy);
       let hit = view.document.elementFromPoint(lx, ly);
       // A point inside an open shadow root hits its host; descend to the real target.
       for (let inner; hit && hit.shadowRoot && (inner = hit.shadowRoot.elementFromPoint(lx, ly)) && inner !== hit;) hit = inner;
-      if (hit && (hit === el || el.contains(hit))) { point = { x: lx + ox, y: ly + oy }; break; }
-      if (hit && !coveredBy && !el.contains(hit)) coveredBy = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/)[0] : '');
+      if (within(hit)) { point = { x: lx + ox, y: ly + oy }; break; }
+      if (hit && !coveredBy && !within(hit)) coveredBy = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/)[0] : '');
     }
     if (!point && loose) point = { x: Math.round(l + w / 2 + ox), y: Math.round(t + h / 2 + oy) };
     if (!point) return { fail: coveredBy ? 'covered by ' + coveredBy : 'no clickable point' };

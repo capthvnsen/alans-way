@@ -118,6 +118,7 @@ before(async () => {
     '/never': (res) => setTimeout(() => res.end(), 20000),
     '/alert': page(`<button id=b onclick="alert('hello there');document.title='after'">b</button>`),
     '/shadow': page(`<x-btn></x-btn><script>customElements.define('x-btn', class extends HTMLElement { connectedCallback() { const r = this.attachShadow({ mode: 'open' }); r.innerHTML = '<button>Shadow Go</button>'; r.querySelector('button').onclick = () => { document.title = 'shadow-clicked'; }; } });</script>`),
+    '/confirm': page(`<button id=b onclick="document.title = confirm('Delete everything?') ? 'yes' : 'no'">b</button>`),
     '/readonly': page(`<input id=d readonly value=x><script>d.addEventListener('keydown', (e) => { if (e.key === 'Enter') document.title = 'entered'; });</script>`),
     '/i.png': (res) => { res.setHeader('content-type', 'image/png'); res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')); },
   };
@@ -354,7 +355,7 @@ test('real Chromium: open returns once the page is readable, not when every subr
   assert.match(String((await act(opened.data, { action: 'read', maxChars: 200 })).data.text), /READY/);
 });
 
-test('real Chromium: an alert is dismissed and reported instead of wedging the tab', { skip: skipNoChrome, timeout: 30000 }, async () => {
+test('real Chromium: an alert is accepted and reported instead of wedging the tab', { skip: skipNoChrome, timeout: 30000 }, async () => {
   const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/alert` })).data;
   const started = Date.now();
   const clicked = await act(tab, { action: 'click', selector: '#b' });
@@ -379,4 +380,19 @@ test('real Chromium: Enter reaches a read-only input', { skip: skipNoChrome, tim
   const pressed = await act(tab, { action: 'press', key: 'Enter', selector: '#d' });
   assert.equal(pressed.status, 200, JSON.stringify(pressed.data));
   assert.equal(await title(tab), 'entered');
+});
+
+test('real Chromium: a custom element that hosts its own shadow root is clickable by selector', { skip: skipNoChrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/shadow` })).data;
+  const clicked = await act(tab, { action: 'click', selector: 'x-btn' });
+  assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
+  assert.equal(await title(tab), 'shadow-clicked');
+});
+
+test('real Chromium: a confirm is dismissed, never approved on the agent\'s behalf', { skip: skipNoChrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/confirm` })).data;
+  const clicked = await act(tab, { action: 'click', selector: '#b' });
+  assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
+  assert.deepEqual(clicked.data.dialogs.map((d) => [d.type, d.message, d.accepted]), [['confirm', 'Delete everything?', false]]);
+  assert.equal(await title(tab), 'no');
 });

@@ -78,17 +78,19 @@ class CDP {
     // stays in the document (a hash link, history.pushState).
     const events = { 'Page.frameStartedNavigating': 'did-start-navigation', 'Page.domContentEventFired': 'dom-ready', 'Page.frameStoppedLoading': 'did-stop-loading' };
     const wrapped = [];
+    let enabled = false;
     return {
       sessionId,
       command,
       on: (name, fn) => {
+        if (!Object.values(events).includes(name)) return;
         const listener = (m) => {
           if (m.sessionId === sessionId && events[m.method] === name && (!m.params?.frameId || m.params.frameId === targetId))
             fn({ isMainFrame: true, isSameDocument: /sameDocument/i.test(m.params?.navigationType || '') });
         };
         wrapped.push({ name, fn, listener });
         this.listeners.add(listener);
-        command('Page.enable').catch(() => {});
+        if (!enabled) { enabled = true; command('Page.enable').catch(() => {}); }
       },
       removeListener: (name, fn) => {
         const i = wrapped.findIndex((w) => w.name === name && w.fn === fn);
