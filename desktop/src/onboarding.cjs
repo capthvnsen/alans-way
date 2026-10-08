@@ -38,7 +38,10 @@ function telegramCovered(prefs) {
   if (!Array.isArray(tokened) || !tokened.length) return false;
   if (tokened.includes(SHARED_TOKEN)) return true;
   const profiles = prefs?.cloud?.profiles;
-  return Array.isArray(profiles) && profiles.length > 0 && profiles.every((name) => tokened.includes(name));
+  // No recorded profile inventory means the tokens we know about are all we
+  // can see — do not mint a conflicting second bot.
+  if (!Array.isArray(profiles) || !profiles.length) return true;
+  return profiles.every((name) => tokened.includes(name));
 }
 
 // The step after `current`.
