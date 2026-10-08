@@ -21,12 +21,16 @@
 # Checkout discovery matches setup.sh: a root install lives at
 # /opt/hermes-alans-way/browser, a user install at
 # ~/.local/share/hermes-alans-way/app. Services match setup.sh too:
-#   Linux   hermes-alans-way-browser.service (system or user unit)
+#   Linux   hermes-alans-way-browser.service (system or user unit), or the
+#           supervisord program whose command line runs vps-browser-host.cjs
+#           on a guest without a live systemd
 #   macOS   gui/<uid>/com.alans-way.browser  (LaunchAgent)
 # Chromium is deliberately not restarted so open tabs and sign-ins survive.
 #
 # The last stdout line is one JSON result: {"ok":bool,"version":"x.y.z",
 # "restarted":bool,"error":"...","plugins":[...],"gatewayRestarted":bool}.
+# When the gateway runs under a supervisor the result also carries
+# "gatewayRestartCmd", the restart command that works on this host.
 # Everything above it is progress; "vm-update: <phase>" lines map to UI text.
 set -u
 
@@ -63,14 +67,55 @@ GATEWAY_TIMEOUT="${ALANS_WAY_VM_GATEWAY_TIMEOUT:-180}"
 # A run budget under the app's remote cap so the result line is always reached.
 VM_BUDGET="${ALANS_WAY_VM_BUDGET:-270}"
 VERSION="" RESTARTED=false PLUGINS_JSON="" GATEWAY_RESTARTED=false
+# The gateway restart that works on this host; GW_EXTRA carries it into the
+# result JSON only when it is not the usual hermes command.
+GW_CMD="hermes gateway restart" GW_EXTRA=""
 START_S="$(date +%s)"
 
 say() { printf 'vm-update: %s\n' "$*"; }
 json_string() { printf '%s' "$1" | tr '\n\t' '  ' | tr -d '\000-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-300; }
-json() { printf '{"ok":%s,"version":"%s","restarted":%s,"error":"%s","plugins":[%s],"gatewayRestarted":%s}\n' "$1" "$2" "$3" "$(json_string "$4")" "$5" "$6"; }
+json() { printf '{"ok":%s,"version":"%s","restarted":%s,"error":"%s","plugins":[%s],"gatewayRestarted":%s%s}\n' "$1" "$2" "$3" "$(json_string "$4")" "$5" "$6" "$GW_EXTRA"; }
 fail() { json false "$VERSION" "$RESTARTED" "$1" "$PLUGINS_JSON" "$GATEWAY_RESTARTED"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 budget_left() { printf '%s' "$(( VM_BUDGET - ($(date +%s) - START_S) ))"; }
+
+# True only when systemd is the running service manager. A systemctl binary
+# alone is not enough: minimal VM images ship one that answers "offline".
+# When no systemctl exists, /run/systemd/system is the fallback marker.
+systemd_live() {
+  if have systemctl; then
+    case "$(systemctl is-system-running 2>/dev/null)" in
+      running|degraded|starting|initializing|maintenance) return 0;;
+    esac
+    return 1
+  fi
+  [ -d /run/systemd/system ]
+}
+
+# Prints the supervisord program whose command line contains $1, or nothing.
+# Programs are matched by live process argv (a wrapper that execs shows the
+# real command), so a renamed program still resolves; supervisor conf files
+# are the fallback for programs that are not running.
+supervisor_program() {
+  have supervisorctl || return 1
+  _sp_pat="$1"
+  for _sp_name in $(supervisorctl status 2>/dev/null | awk '{print $1}'); do
+    _sp_pid="$(supervisorctl pid "$_sp_name" 2>/dev/null | tr -d '[:space:]')"
+    case "$_sp_pid" in ''|0|*[!0-9]*) continue;; esac
+    case "$(ps -p "$_sp_pid" -o args= 2>/dev/null)" in
+      *"$_sp_pat"*) printf '%s\n' "$_sp_name"; return 0;;
+    esac
+  done
+  for _sp_conf in ${ALANS_WAY_VM_SUPERVISOR_CONFS:-/etc/supervisor/conf.d/*.conf /etc/supervisor/conf.d/*.ini /etc/supervisord.d/*.conf /etc/supervisord.d/*.ini /etc/supervisor/supervisord.conf /etc/supervisord.conf}; do
+    [ -f "$_sp_conf" ] || continue
+    _sp_prog="$(awk -v pat="$_sp_pat" '
+      /^\[program:/ { n=$0; sub(/^\[program:[[:space:]]*/, "", n); sub(/[[:space:]]*\].*/, "", n) }
+      n != "" && /^[[:space:]]*command[[:space:]]*=/ && index($0, pat) { print n; exit }
+    ' "$_sp_conf" 2>/dev/null)"
+    [ -n "$_sp_prog" ] && { printf '%s\n' "$_sp_prog"; return 0; }
+  done
+  return 1
+}
 
 find_checkout() {
   if [ -n "${ALANS_WAY_DESKTOP_DIR:-}" ]; then
@@ -339,11 +384,23 @@ EOF
   # service manager owns the relaunch).
   if [ "$CHANGED" = true ]; then
     say "restarting the agent gateway"
-    if run_hermes "$GATEWAY_TIMEOUT" gateway restart >/dev/null 2>&1; then
+    # A gateway that runs under supervisord is restarted through it: without
+    # an external-supervisor marker `hermes gateway restart` only sees a
+    # "manual" process and takes its destructive stop/start path, which races
+    # the supervisor's own respawn. The program is found by command line,
+    # never by a hardcoded name; hermes stays the fallback.
+    GW_PROG="$(supervisor_program 'gateway run')"
+    [ -n "$GW_PROG" ] && GW_CMD="supervisorctl restart $GW_PROG"
+    [ "$GW_CMD" = "hermes gateway restart" ] || GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_CMD")\""
+    if [ -n "$GW_PROG" ] && supervisorctl restart "$GW_PROG" >/dev/null 2>&1; then
       GATEWAY_RESTARTED=true
+    elif run_hermes "$GATEWAY_TIMEOUT" gateway restart >/dev/null 2>&1; then
+      GATEWAY_RESTARTED=true
+    fi
+    if [ "$GATEWAY_RESTARTED" = true ]; then
       say "agent gateway restarted"
     else
-      say "gateway restart did not finish; on the VM run: hermes gateway restart"
+      say "gateway restart did not finish; on the VM run: $GW_CMD"
     fi
   fi
 }
@@ -422,7 +479,21 @@ case "$GUEST_OS" in
       say "could not restart the broker; run: launchctl kickstart -k gui/$(id -u)/com.alans-way.browser"
     fi;;
   *)
-    if [ "$(id -u)" = 0 ]; then
+    # A broker managed by supervisord restarts through supervisorctl; the
+    # program is found by its command line, not a hardcoded name. With no
+    # live systemd there is no working systemctl to fall back to, so the
+    # remediation names the command that can work on this host.
+    _prog="$(supervisor_program 'vps-browser-host.cjs')"
+    if [ -n "$_prog" ]; then
+      supervisorctl restart "$_prog" >/dev/null 2>&1 && RESTARTED=true \
+        || say "could not restart the broker; run: supervisorctl restart $_prog"
+    elif ! systemd_live; then
+      if have supervisorctl; then
+        say "could not restart the broker; find its program with: supervisorctl status"
+      else
+        say "could not restart the broker; restart the service that runs vps-browser-host.cjs serve"
+      fi
+    elif [ "$(id -u)" = 0 ]; then
       systemctl restart hermes-alans-way-browser.service >/dev/null 2>&1 && RESTARTED=true \
         || say "could not restart the broker; run: systemctl restart hermes-alans-way-browser.service"
     else

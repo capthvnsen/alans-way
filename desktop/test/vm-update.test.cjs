@@ -289,3 +289,11 @@ test('vmPluginLines prefixes entries when a VM reports more than one and warns o
   assert.equal(vmPluginLines({ gatewayRestarted: true, plugins: [{ status: 'current' }] }).length, 1);
   assert.equal(vmPluginLines({}).length, 0);
 });
+
+test('a missed gateway restart names the command the guest detected, not a fixed one', () => {
+  const plugins = [{ profile: 'default', name: 'alans-way', status: 'updated' }];
+  const lines = vmPluginLines({ plugins, gatewayRestarted: false, gatewayRestartCmd: 'supervisorctl restart gw-one' });
+  assert.match(lines[1].text, /supervisorctl restart gw-one/);
+  assert.doesNotMatch(lines[1].text, /hermes gateway restart/);
+  assert.match(vmPluginLines({ plugins, gatewayRestarted: false })[1].text, /hermes gateway restart/);
+});
