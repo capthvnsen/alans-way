@@ -160,8 +160,10 @@ Run the connector as a user allowed to read that private connection file.
 Use Hermes' supported gateway/MCP reload workflow, then verify a full agent
 turn. Native VPS open defaults to this host; an explicit Mac open fails
 visibly. Retain the existing SSH-to-Mac `cua_alans_way` entry for local
-work. Install the repository's `workspace-operations` skill in the profile's
-native user skills directory for host selection and takeover instructions.
+work. Host selection and takeover instructions come from the `alans-way`
+plugin's `workspace-operations` skill. Do not copy that skill into the
+profile's user skills directory: Hermes loads a bare skill name from there
+first, so the copy shadows the plugin's skill and stops getting its updates.
 
 The Mac app needs only **Settings → VPS desktop connection** and a reachable
 noVNC viewer URL for watching/control. It does not list or create VPS browser
