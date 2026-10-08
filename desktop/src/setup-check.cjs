@@ -20,6 +20,20 @@ function staleConnectorCopy(userDataDir, appVersion) {
   return isNewer(appVersion, version) ? dir : null;
 }
 
+// Must match macScripts and linuxAppRoots in alans-way-agents/alans-way/scripts/workspace-router.cjs.
+const ROUTER_MAC_APPS = ['alans-way-localapp', 'Open Alan', "Hermes- Alan's way", 'Hermes Workspace'].map((name) => `/Applications/${name}.app`);
+const ROUTER_LINUX_ROOTS = ['/opt/alans-way-localapp-linux-x64', '/opt/alans-way-localapp',
+  '$HOME/.local/share/alans-way-localapp-linux-x64', '$HOME/.local/share/alans-way-localapp'];
+
+// The connector copy may only go when the router can find the app's own
+// connector instead; otherwise the copy is the only one this computer has.
+function bundledConnectorReachable({ platform, isPackaged, execPath, home }) {
+  if (!isPackaged) return false;
+  if (platform === 'darwin') return ROUTER_MAC_APPS.includes(path.posix.resolve(execPath, '../../..'));
+  if (platform === 'linux') return ROUTER_LINUX_ROOTS.map((root) => root.replace('$HOME', home)).includes(path.posix.dirname(execPath));
+  return false;
+}
+
 const row = (group, level, title, fix = '', action = null) => ({ group, level, title, fix, action });
 
 function computerRows({ platform, local }) {
@@ -140,4 +154,4 @@ function buildReport({ now = new Date(), app, serverAddress, computerAddress, fi
   return redactReport(lines.join('\n'));
 }
 
-module.exports = { staleConnectorCopy, buildFindings, redactReport, buildReport };
+module.exports = { staleConnectorCopy, bundledConnectorReachable, buildFindings, redactReport, buildReport };

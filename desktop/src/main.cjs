@@ -879,6 +879,12 @@ function testAgentPath() {
         : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
   });
 }
+// The connector copy setup.sh left in userData when it is older than the app
+// and the router can find this app's own connector to take its place.
+function staleConnector() {
+  const reachable = setupCheck.bundledConnectorReachable({ platform: process.platform, isPackaged: app.isPackaged, execPath: process.execPath, home: app.getPath('home') });
+  return reachable ? setupCheck.staleConnectorCopy(app.getPath('userData'), app.getVersion()) : null;
+}
 // Check setup: local state, both SSH directions, then the server's read-only
 // doctor report. Each part is independent; a failure becomes a finding.
 async function runSetupCheck() {
@@ -889,7 +895,7 @@ async function runSetupCheck() {
     telegram: telegramStatus,
     inApplications: mac && app.isPackaged ? app.isInApplicationsFolder() : null,
     permissions: mac ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null,
-    staleConnector: process.platform === 'win32' ? null : setupCheck.staleConnectorCopy(app.getPath('userData'), app.getVersion()),
+    staleConnector: staleConnector(),
   };
   const connection = { addresses: { server: serverHost, computer: computerHost }, reach: null, back: null };
   let server = null;
@@ -1193,8 +1199,8 @@ function registerIpc() {
       case 'test-agent-path': return testAgentPath();
       case 'setup-check': return runSetupCheck();
       case 'remove-old-connector': {
-        const stale = setupCheck.staleConnectorCopy(app.getPath('userData'), app.getVersion());
-        if (stale && process.platform !== 'win32') fs.rmSync(stale, { recursive: true, force: true });
+        const stale = staleConnector();
+        if (stale) fs.rmSync(stale, { recursive: true, force: true });
         break;
       }
       case 'copy-report': {
@@ -2228,10 +2234,8 @@ else {
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
     // A connector copy setup.sh left behind runs ahead of the app's own and
     // nothing else updates it; once the app is newer, drop it.
-    if (process.platform !== 'win32') {
-      const stale = setupCheck.staleConnectorCopy(app.getPath('userData'), app.getVersion());
-      if (stale) try { fs.rmSync(stale, { recursive: true, force: true }); } catch (error) { logError('stale-connector', error); }
-    }
+    const stale = staleConnector();
+    if (stale) try { fs.rmSync(stale, { recursive: true, force: true }); } catch (error) { logError('stale-connector', error); }
     const browserSession = session.fromPartition('persist:browser');
     // Subresources (fetch, XHR, images) never hit will-navigate. Cancel the
     // ones an agent tab aims at a blocked address; the human's tabs are not

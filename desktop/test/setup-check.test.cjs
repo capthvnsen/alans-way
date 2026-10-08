@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { staleConnectorCopy, buildFindings } = require('../src/setup-check.cjs');
+const { staleConnectorCopy, bundledConnectorReachable, buildFindings } = require('../src/setup-check.cjs');
 
 function userData(connectorPackage) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'setup-check-'));
@@ -22,6 +22,21 @@ test('an older connector copy is stale; same, newer, missing and unreadable copi
   assert.equal(staleConnectorCopy(userData(), '0.4.0'), null);
   assert.equal(staleConnectorCopy(userData('{not json'), '0.4.0'), null);
   assert.equal(staleConnectorCopy(userData(JSON.stringify({ name: 'no-version' })), '0.4.0'), null);
+});
+
+test('the bundled connector counts as reachable only where the router looks for it', () => {
+  const reachable = (platform, execPath, isPackaged = true) => bundledConnectorReachable({ platform, isPackaged, execPath, home: '/home/me' });
+  assert.equal(reachable('darwin', '/Applications/Open Alan.app/Contents/MacOS/Open Alan'), true);
+  assert.equal(reachable('darwin', '/Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp'), true);
+  assert.equal(reachable('darwin', '/Users/me/Downloads/Open Alan.app/Contents/MacOS/Open Alan'), false);
+  assert.equal(reachable('darwin', '/Users/me/Applications/Open Alan.app/Contents/MacOS/Open Alan'), false, '~/Applications is not on the router list');
+  assert.equal(reachable('darwin', '/Applications/Open Alan 2.app/Contents/MacOS/Open Alan'), false, 'a renamed bundle');
+  assert.equal(reachable('darwin', '/Applications/Open Alan.app/Contents/MacOS/Open Alan', false), false, 'a dev run');
+  assert.equal(reachable('linux', '/opt/alans-way-localapp-linux-x64/alans-way-localapp'), true);
+  assert.equal(reachable('linux', '/home/me/.local/share/alans-way-localapp/alans-way-localapp'), true);
+  assert.equal(reachable('linux', '/home/me/Downloads/alans-way-localapp-linux-x64/alans-way-localapp'), false);
+  assert.equal(reachable('linux', '/opt/alans-way-localapp/alans-way-localapp', false), false, 'a dev run');
+  assert.equal(reachable('win32', 'C:\\Program Files\\Open Alan\\Open Alan.exe'), false);
 });
 
 const healthyServer = (over = {}) => ({
