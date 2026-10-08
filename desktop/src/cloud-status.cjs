@@ -5,7 +5,6 @@
 
 const sleep = (ms, signal) => new Promise((resolve, reject) => {
   const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
-  timer.unref?.();
   function onAbort() { clearTimeout(timer); reject(Object.assign(new Error('Polling stopped.'), { code: 'aborted' })); }
   signal?.addEventListener('abort', onAbort, { once: true });
 });

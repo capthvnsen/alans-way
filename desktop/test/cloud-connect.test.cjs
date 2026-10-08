@@ -7,28 +7,28 @@ const { spawnSync } = require('node:child_process');
 const { tailscaleCli, findPeer, parseComputerState, pairPollCommand, sshReadCommand, ensureKeypairCommand, publicKeyLine, tailnetHelpers, authorizeKeyCommand } = require('../src/cloud-connect.cjs');
 
 const fixture = JSON.stringify({
-  Self: { HostName: 'my-mac', TailscaleIPs: ['100.64.0.1'], Online: true },
+  Self: { HostName: 'my-mac', TailscaleIPs: ['192.0.2.1'], Online: true },
   Peer: {
-    'peer-1': { HostName: 'alan-42', TailscaleIPs: ['100.64.0.7', 'fd7a:115c:a1e0::7'], Online: true },
-    'peer-2': { HostName: 'alan-99', TailscaleIPs: ['100.64.0.9'], Online: false },
+    'peer-1': { HostName: 'alan-42', TailscaleIPs: ['192.0.2.7', 'fd7a:115c:a1e0::7'], Online: true },
+    'peer-2': { HostName: 'alan-99', TailscaleIPs: ['192.0.2.9'], Online: false },
   },
 });
 
 test('the matching online peer yields its tailnet address', () => {
-  assert.deepEqual(findPeer(fixture, 'alan-42'), { hostName: 'alan-42', ip: '100.64.0.7' });
+  assert.deepEqual(findPeer(fixture, 'alan-42'), { hostName: 'alan-42', ip: '192.0.2.7' });
 });
 
 test('a tailnet name-collision suffix (-1, -2…) still matches the computer', () => {
-  const collided = JSON.stringify({ Peer: { p1: { HostName: 'alan-42-1', TailscaleIPs: ['100.64.0.7'], Online: true } } });
-  assert.deepEqual(findPeer(collided, 'alan-42'), { hostName: 'alan-42-1', ip: '100.64.0.7' });
+  const collided = JSON.stringify({ Peer: { p1: { HostName: 'alan-42-1', TailscaleIPs: ['192.0.2.7'], Online: true } } });
+  assert.deepEqual(findPeer(collided, 'alan-42'), { hostName: 'alan-42-1', ip: '192.0.2.7' });
   const other = JSON.stringify({ Peer: {
-    a: { HostName: 'alan-42-extra', TailscaleIPs: ['100.64.0.7'], Online: true },
-    b: { HostName: 'alan-420', TailscaleIPs: ['100.64.0.8'], Online: true },
-    c: { HostName: 'alan-42-x', TailscaleIPs: ['100.64.0.9'], Online: true },
+    a: { HostName: 'alan-42-extra', TailscaleIPs: ['192.0.2.7'], Online: true },
+    b: { HostName: 'alan-420', TailscaleIPs: ['192.0.2.8'], Online: true },
+    c: { HostName: 'alan-42-x', TailscaleIPs: ['192.0.2.9'], Online: true },
   } });
   assert.equal(findPeer(other, 'alan-42'), null, 'only a numeric suffix may match');
   assert.equal(findPeer(other, 'alan-4'), null, 'a partial prefix is not the name');
-  const prefixed = JSON.stringify({ Peer: { p: { HostName: 'alan-4x2', TailscaleIPs: ['100.64.0.7'], Online: true } } });
+  const prefixed = JSON.stringify({ Peer: { p: { HostName: 'alan-4x2', TailscaleIPs: ['192.0.2.7'], Online: true } } });
   assert.equal(findPeer(prefixed, 'alan'), null, 'a non-numeric suffix is a different host');
 });
 
@@ -36,7 +36,7 @@ test('an offline or absent computer is not paired', () => {
   assert.equal(findPeer(fixture, 'alan-99'), null, 'offline peer');
   assert.equal(findPeer(fixture, 'alan-7'), null, 'missing peer');
   assert.equal(findPeer('{bad json', 'alan-42'), null);
-  assert.equal(findPeer('{"Self":{"HostName":"alan-42","TailscaleIPs":["100.64.0.1"],"Online":true}}', 'alan-42'), null, 'Self needs the shared secret: our own machine never counts');
+  assert.equal(findPeer('{"Self":{"HostName":"alan-42","TailscaleIPs":["192.0.2.1"],"Online":true}}', 'alan-42'), null, 'Self needs the shared secret: our own machine never counts');
 });
 
 test('the macOS CLI lives inside the app bundle; everywhere else PATH decides', () => {

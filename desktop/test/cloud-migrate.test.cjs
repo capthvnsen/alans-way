@@ -49,7 +49,7 @@ test('grep output lists profile names; tokens elsewhere report the shared sentin
   assert.deepEqual(profilesWithToken(out), ['personal', 'work']);
   assert.deepEqual(profilesWithToken(''), []);
   assert.deepEqual(profilesWithToken('grep: no matches\n'), []);
-  assert.deepEqual(profilesWithToken('/home/u/.hermes/profiles/a b/.env'), ['a b']);
+  assert.deepEqual(profilesWithToken('/home/user/.hermes/profiles/a b/.env'), ['a b']);
   assert.deepEqual(profilesWithToken('/root/.hermes/.env\n'), [SHARED_TOKEN]);
   assert.deepEqual(profilesWithToken('/root/.hermes/.secrets/telegram-bots.env\n/root/.hermes/profiles/work/.env\n'), [SHARED_TOKEN, 'work']);
 });
