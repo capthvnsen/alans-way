@@ -171,14 +171,29 @@ function vmRetryState(appVersion, vms, targets) {
   return { show: false, version: '', failed: '' };
 }
 
-// A version check reports what the VM runs now; it must not erase a newer
-// recorded result (an update that landed while the check was in flight).
+// A version check reports what the VM runs now; a successful one refreshes
+// the record: a same or newer report clears a stale failure, while an older
+// report must not erase a fresher recorded result (an update that landed
+// while the check was in flight).
 // Returns the vmUpdates entry to store, or null to keep the existing one.
 function vmCheckEntry(previous, check) {
   const reported = String(check?.version || check?.hostVersion || '');
   const known = String(previous?.version || '');
-  if (known && (!reported || !isNewer(reported, known))) return null;
+  if (!reported || (known && isNewer(known, reported))) return null;
+  if (reported === known && !previous?.failed) return null;
   return { version: reported, failed: '' };
+}
+
+// Records are keyed by target id; drop every record whose id is not a saved
+// VM (a removed target, or an id an older build wrote by mistake) so only
+// live targets can ever steer the retry banner.
+function pruneVmUpdates(vms, targets) {
+  const ids = new Set((targets || []).map((target) => target.id));
+  const next = {};
+  for (const [id, entry] of Object.entries(vms || {})) {
+    if (ids.has(id)) next[id] = entry;
+  }
+  return next;
 }
 
 // Maps the guest script's "vm-update: <text>" progress lines to UI text.
@@ -228,4 +243,4 @@ function vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd } = {}) {
   return lines;
 }
 
-module.exports = { createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil, vmRetryState, vmCheckEntry, vmPhaseText, pluginStatusText, vmPluginLines, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS, TAG_RE };
+module.exports = { createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, vmPhaseText, pluginStatusText, vmPluginLines, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS, TAG_RE };

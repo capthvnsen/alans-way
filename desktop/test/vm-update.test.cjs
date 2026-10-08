@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil,
-  vmRetryState, vmCheckEntry, vmPhaseText, pluginStatusText, vmPluginLines,
+  vmRetryState, vmCheckEntry, pruneVmUpdates, vmPhaseText, pluginStatusText, vmPluginLines,
   VM_TIMEOUT_MS, CHECK_TIMEOUT_MS,
 } = require('../src/vm-update.cjs');
 
@@ -181,11 +181,29 @@ test('the retry banner ignores a VM whose address was removed', () => {
 
 test('a stale version check never overwrites a fresher recorded result', () => {
   assert.equal(vmCheckEntry({ version: '0.3.2', failed: '' }, { version: '0.3.1' }), null);
-  assert.equal(vmCheckEntry({ version: '0.3.1', failed: 'disk full' }, { version: '0.3.1' }), null);
+  assert.equal(vmCheckEntry({ version: '0.3.2', failed: 'busy' }, { version: '0.3.1' }), null);
   assert.equal(vmCheckEntry({ version: '0.3.1' }, { version: '' }), null);
   assert.deepEqual(vmCheckEntry({ version: '0.3.1' }, { version: '0.3.2' }), { version: '0.3.2', failed: '' });
   assert.deepEqual(vmCheckEntry(undefined, { version: '0.3.1' }), { version: '0.3.1', failed: '' });
   assert.deepEqual(vmCheckEntry({ failed: 'disk full' }, { hostVersion: '0.3.1' }), { version: '0.3.1', failed: '' });
+});
+
+test('a successful check clears a stale failure once the version is confirmed', () => {
+  // A run that failed mid-update leaves {version, failed}; the next check that
+  // sees the same version proves the VM answered, so the failure is stale.
+  assert.deepEqual(vmCheckEntry({ version: '0.3.1', failed: 'disk full' }, { version: '0.3.1' }),
+    { version: '0.3.1', failed: '' });
+  assert.equal(vmCheckEntry({ version: '0.3.1', failed: '' }, { version: '0.3.1' }), null);
+  assert.equal(vmCheckEntry({ version: '0.3.1', failed: 'disk full' }, { version: '' }), null);
+});
+
+test('pruneVmUpdates drops records whose id is not a saved VM', () => {
+  const targets = [{ id: 'agent' }];
+  const vms = { agent: { version: '0.3.3', failed: '' }, undefined: { version: '', failed: 'gone' }, old: { version: '0.2.0' } };
+  assert.deepEqual(pruneVmUpdates(vms, targets), { agent: { version: '0.3.3', failed: '' } });
+  assert.deepEqual(pruneVmUpdates(vms, []), {});
+  assert.deepEqual(pruneVmUpdates(undefined, targets), {});
+  assert.deepEqual(pruneVmUpdates({ agent: { version: '0.3.3' } }, targets), { agent: { version: '0.3.3' } });
 });
 
 test('the update popup shows only for an available, unsnoozed, idle update', () => {
