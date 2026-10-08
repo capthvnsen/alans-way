@@ -3,12 +3,15 @@
 # guest VM. Run it on the guest (its Terminal, or over SSH as the console user)
 # from a checkout of this repository:
 #
-#   sh scripts/mac-guest-services.sh [--node /opt/homebrew/bin/node] [--no-load]
+#   sh scripts/mac-guest-services.sh [--node /opt/homebrew/bin/node] [--cdp-port PORT] [--no-load]
 #
 # It writes the two LaunchAgents that replace the Linux systemd units from
 # desktop/docs/vps-browser.md — com.alans-way.chromium keeps the configured
 # Chromium reachable on its loopback CDP port, and com.alans-way.browser runs
-# the tab broker — plus a default config.json when none exists. There is no
+# the tab broker — plus a default config.json when none exists. The CDP port
+# defaults to 9223, honors --cdp-port or $ALANS_WAY_CDP_PORT, and otherwise
+# picks the first free loopback port from 9223 up; an existing config.json
+# keeps whatever port it already chose. There is no
 # DISPLAY on macOS: agents bootstrapped into gui/<uid> join the console
 # session. The checkout path is baked into the plists; re-run after moving it.
 # Safe to re-run: existing agents are booted out and loaded again.
@@ -17,10 +20,11 @@ set -eu
 say() { printf '%s\n' "$*"; }
 die() { printf 'mac-guest-services: %s\n' "$*" >&2; exit 1; }
 
-NODE="" NO_LOAD=0
+NODE="" NO_LOAD=0 CDP_PORT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --node) NODE="${2:-}"; [ -n "$NODE" ] || die "--node needs a path"; shift 2;;
+    --cdp-port) CDP_PORT="${2:-}"; [ -n "$CDP_PORT" ] || die "--cdp-port needs a port"; shift 2;;
     --no-load) NO_LOAD=1; shift;;
     -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     *) die "unknown arg: $1";;
@@ -47,12 +51,36 @@ fi
 case "$NODE" in /*) ;; *) NODE="$(cd "$(dirname "$NODE")" && pwd)/$(basename "$NODE")";; esac
 [ -x "$NODE" ] || die "--node $NODE is not executable"
 
+# nc and lsof flag names differ across systems; node is already a hard
+# requirement, so probe the loopback port with a short connect.
+port_in_use() {
+  "$NODE" -e 'const s=require("net").connect(Number(process.argv[1]),"127.0.0.1");const done=c=>{s.destroy();process.exit(c)};s.once("connect",()=>done(0));s.once("error",()=>done(1));s.setTimeout(800,()=>done(1));' "$1"
+}
+
+pick_cdp_port() {
+  case "$CDP_PORT" in
+    '') ;;
+    *[!0-9]*) die "--cdp-port must be a number";;
+    *)
+      [ "$CDP_PORT" -ge 1024 ] && [ "$CDP_PORT" -le 65535 ] || die "--cdp-port out of range: $CDP_PORT"
+      port_in_use "$CDP_PORT" && say "mac-guest-services: warning: 127.0.0.1:$CDP_PORT is already listening"
+      return 0;;
+  esac
+  CDP_PORT=9223
+  while port_in_use "$CDP_PORT"; do
+    CDP_PORT=$((CDP_PORT + 1))
+    [ "$CDP_PORT" -le 9254 ] || die "no free loopback port for the managed browser CDP endpoint (tried 9223-9254); pass --cdp-port"
+  done
+}
+
 DATA="${HERMES_VPS_BROWSER_DATA:-$HOME/Library/Application Support/hermes-alans-way/browser}"
 case "$DATA" in *'"'*|*'\\'*) die "data dir path must not contain quotes or backslashes: $DATA";; esac
 mkdir -p "$DATA"
 chmod 700 "$DATA"
 
 if [ ! -f "$DATA/config.json" ]; then
+  CDP_PORT="${CDP_PORT:-${ALANS_WAY_CDP_PORT:-}}"
+  pick_cdp_port
   CHROME=""
   for cand in \
     "${CHROMIUM:-}" \
@@ -67,11 +95,11 @@ if [ ! -f "$DATA/config.json" ]; then
   cat > "$DATA/config.json" <<EOF
 {
   "port": 9465,
-  "cdpUrl": "http://127.0.0.1:9223",
+  "cdpUrl": "http://127.0.0.1:$CDP_PORT",
   "browserCommand": "$CHROME",
   "browserArgs": [
     "--user-data-dir=$DATA/chromium",
-    "--remote-debugging-port=9223",
+    "--remote-debugging-port=$CDP_PORT",
     "--remote-debugging-address=127.0.0.1",
     "--no-first-run",
     "--start-maximized",
@@ -80,7 +108,7 @@ if [ ! -f "$DATA/config.json" ]; then
 }
 EOF
   chmod 600 "$DATA/config.json"
-  say "mac-guest-services: wrote $DATA/config.json (browserCommand: $CHROME)"
+  say "mac-guest-services: wrote $DATA/config.json (browserCommand: $CHROME, cdp: 127.0.0.1:$CDP_PORT)"
 else
   say "mac-guest-services: kept existing $DATA/config.json"
 fi
