@@ -727,6 +727,31 @@ test('a failed supervisord gateway restart names the working command, not a dead
   assert.match(log(), /hermes -p default gateway restart/, 'hermes gateway restart stays the last resort');
 });
 
+test('a stale supervisor conf does not win on a host with a live systemd', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  // No systemd-state file: the fake systemctl answers "running".
+  const sstate = mktemp('vm-update-supervisor-');
+  fs.writeFileSync(path.join(sstate, 'status'), 'web RUNNING pid 1, uptime 9:09:09\n');
+  fs.writeFileSync(path.join(sstate, 'pid.web'), '1\n');
+  addSupervisor(bin, marker, sstate);
+  const confdir = mktemp('vm-update-confd-');
+  fs.writeFileSync(path.join(confdir, 'leftover.conf'),
+    '[program:browser-svc]\ncommand=/usr/bin/node /opt/x/vps-browser-host.cjs serve\n');
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SUPERVISOR_STATE: sstate,
+    ALANS_WAY_VM_SUPERVISOR_CONFS: `${confdir}/*.conf`,
+    ...pluginEnv(makeHermesHome(), mktemp('vm-update-hermes-state-')),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.restarted, true);
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.match(markerText, /systemctl --user restart hermes-alans-way-browser\.service/);
+  assert.doesNotMatch(markerText, /supervisorctl restart/, 'a leftover conf must not start a duplicate service');
+});
+
 test('a foreign "gateway run" program is never restarted for the agent gateway', async () => {
   const checkout = makeCheckout(remote);
   const { bin, marker } = makeBin();

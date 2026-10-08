@@ -94,8 +94,10 @@ systemd_live() {
 
 # Prints the supervisord program whose command line contains every pattern in
 # $*, or nothing. Programs are matched by live process argv (a wrapper that
-# execs shows the real command), so a renamed program still resolves;
-# supervisor conf files are the fallback for programs that are not running.
+# execs shows the real command), so a renamed program still resolves.
+# Supervisor conf files are the fallback for programs that are not running,
+# but only where systemd is not live: on a systemd host a leftover conf must
+# never win over the real unit or start a duplicate stopped program.
 supervisor_program() {
   have supervisorctl || return 1
   for _sp_name in $(supervisorctl status 2>/dev/null | awk '{print $1}'); do
@@ -108,6 +110,7 @@ supervisor_program() {
     done
     [ "$_sp_ok" = 1 ] && { printf '%s\n' "$_sp_name"; return 0; }
   done
+  systemd_live && return 1
   _sp_pats="$(printf '%s\034' "$@")"
   for _sp_conf in ${ALANS_WAY_VM_SUPERVISOR_CONFS:-/etc/supervisor/conf.d/*.conf /etc/supervisor/conf.d/*.ini /etc/supervisord.d/*.conf /etc/supervisord.d/*.ini /etc/supervisor/supervisord.conf /etc/supervisord.conf}; do
     [ -f "$_sp_conf" ] || continue
