@@ -87,7 +87,16 @@ const PAGE_HELPERS = `
   const sendAndRead = async (text) => {
     const before = incoming().length;
     if (!typeAndSend(text)) return '';
-    for (let i = 0; i < 60; i++) { const texts = incoming(); if (texts.length > before) return texts.slice(before).join('\\n'); await sleep(500); }
+    // A reply can land split across bubbles (greeting, then the token): read
+    // until the incoming count holds still for a beat instead of grabbing the
+    // first new message.
+    let last = before, quiet = 0;
+    for (let i = 0; i < 80; i++) {
+      await sleep(500);
+      const texts = incoming();
+      if (texts.length !== last) { last = texts.length; quiet = 0; continue; }
+      if (last > before && ++quiet >= 2) return texts.slice(before).join('\\n');
+    }
     return '';
   };`;
 

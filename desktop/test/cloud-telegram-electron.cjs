@@ -33,6 +33,7 @@ document.getElementById('editable-message-text').addEventListener('keydown', (ev
     else if (text === '/start') add('', 'Welcome!');
     else if (/^\\S+'s Alan$/.test(text)) add('', 'Good. Now let\\'s choose a username for your bot. It must end in \\'bot\\'.');
     else if (script.taken?.includes(text)) add('', 'Sorry, this username is already taken. Please try something different.');
+    else if (script.split?.includes(text)) { add('', 'Done! Congratulations on your new bot. You will find it at t.me/' + text + '.'); setTimeout(() => add('', 'Use this token to access the HTTP API: ${TOKEN} Keep your token secure.'), 400); }
     else if (text.endsWith('_bot')) add('', 'Done! Congratulations on your new bot. You will find it at t.me/' + text + '. Use this token to access the HTTP API: ${TOKEN} Keep your token secure and store it safely.');
   }, 60);
 });
@@ -74,6 +75,14 @@ app.whenReady().then(async () => {
   const reject = await wc.executeJavaScript(botFatherScript({ name: "Maya's Alan", username: taken }));
   assert.equal(reject.ok, true, JSON.stringify(reject));
   assert.equal(parseBotFatherReply(reject.reply).type, 'taken');
+
+  // A reply split across two bubbles still yields the token: the reader waits
+  // for the message count to settle rather than grabbing the first bubble.
+  const split = 'maya_alan_split_2_bot';
+  await wc.executeJavaScript(`window.FAKE_SCRIPT = { split: [${JSON.stringify(split)}] }`);
+  const splitRun = await wc.executeJavaScript(botFatherScript({ name: "Maya's Alan", username: split }));
+  assert.equal(splitRun.ok, true, JSON.stringify(splitRun));
+  assert.deepEqual(parseBotFatherReply(splitRun.reply), { type: 'token', token: TOKEN });
 
   // /start lands in the new bot's chat.
   await wc.executeJavaScript(`window.FAKE_SCRIPT = {}`);

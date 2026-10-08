@@ -355,7 +355,7 @@ function renderOnboarding(show) {
   panel.classList.toggle('hidden', !show);
   if (!show) { onboardingSignature = ''; return; }
   const cloud = state.cloud || {};
-  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
+  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
   if (signature === onboardingSignature) return;
   onboardingSignature = signature;
   const go = (step) => { onboardingStep = step; renderOnboarding(true); };
@@ -485,7 +485,7 @@ function renderCloudOnboarding(card, actions, cloud) {
           if (result?.done) await command('cloud-migrate-check');
         })] : []),
         check);
-      api.onCloudLog?.((text) => { log.textContent = (log.textContent + text).slice(-8000); });
+      cloudLogEl = log;
     } else {
       actions.append(button('Start fresh', 'secondary-button', () => command('cloud-migrate', { choice: 'fresh' })),
         button('Bring my existing Hermes', 'primary-button', () => command('cloud-migrate', { choice: 'bring' })));
@@ -502,7 +502,7 @@ function renderCloudOnboarding(card, actions, cloud) {
         status.textContent = 'Starting the sign-in…';
         const result = await command('cloud-model-subscribe');
         status.textContent = result?.detail || '';
-        actions.append(button('Check sign-in', 'secondary-button', async () => {
+        if (!actions.querySelector('.cloud-check-signin')) actions.append(button('Check sign-in', 'secondary-button cloud-check-signin', async () => {
           status.textContent = 'Checking…';
           const check = await command('cloud-model-check');
           if (!check?.done) status.textContent = check?.detail || 'Still waiting.';
@@ -604,6 +604,10 @@ api.onPreviewDrop?.(() => {
   if (previewLivePos) command('preview-move', previewLivePos).catch(() => {});
   previewLivePos = null; previewDragging = false;
 });
+// Registered once with a mutable target: re-rendering the migrate card must
+// not stack listeners or every log chunk would append once per past render.
+let cloudLogEl = null;
+api.onCloudLog?.((text) => { if (cloudLogEl?.isConnected) cloudLogEl.textContent = (cloudLogEl.textContent + text).slice(-8000); });
 function openModal(title) {
   modalOpen = true; $('modal-title').textContent = title; $('modal-body').replaceChildren(); $('modal').classList.remove('hidden'); scheduleLayout();
 }

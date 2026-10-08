@@ -764,7 +764,8 @@ async function cloudFinishTelegram(token, username) {
   prefs.onboarded = true;
   savePreferences();
   if (telegramView && !telegramView.webContents.isDestroyed()) {
-    telegramView.webContents.executeJavaScript(cloudTelegram.sendMessageScript(username, '/start')).catch(() => {});
+    const send = await telegramView.webContents.executeJavaScript(cloudTelegram.sendMessageScript(username, '/start')).catch(() => null);
+    if (send?.ok !== true) logError('cloud-telegram', new Error(`Opening the @${username} chat and sending /start did not complete.`));
   }
   broadcast();
   return { done: true, username };
@@ -1355,6 +1356,9 @@ function registerIpc() {
       case 'cloud-telegram-paste': {
         const host = (prefs.vpsBrowser?.sshHost || '').trim();
         if (!host) throw new Error('Connect to the computer first.');
+        // The finish still needs the embedded Telegram: the bot chat opens and
+        // /start is sent through it, so a signed-out pane cannot complete.
+        if (telegramStatus !== 'connected') return { done: false, detail: 'Sign in to Telegram on the left first.' };
         const check = await cloudTelegram.validateToken(String(value.token || '').trim());
         if (!check.ok) return { done: false, detail: 'Telegram did not accept that token. Check it and try again.' };
         return cloudFinishTelegram(String(value.token).trim(), check.username);
@@ -2195,6 +2199,6 @@ else {
     showWindow();
   });
   app.on('activate', showWindow);
-  app.on('before-quit', () => { isQuitting = true; hostComputer?.close(); clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close(); });
+  app.on('before-quit', () => { isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }
