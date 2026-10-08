@@ -430,6 +430,15 @@ test('a request that never finishes ends the reply at the cap', { skip: !chrome 
   assert.ok(elapsed < 4000, `the cap is a bound, not a stall: ${elapsed}ms`);
 });
 
+test('a click that starts no tracked work settles without the old 250ms watch', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/quiet` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  await api(`/v1/tabs/${tab.id}/snapshot`);
+  const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#qb', epoch: tab.epoch });
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.ok(reply.data.effect.settledMs < 200, `settledMs: ${reply.data.effect.settledMs}`);
+});
+
 test('a quiet click keeps the pre-tracker timing', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
   const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/quiet` })).data;
   assert.ok(tab.id, `tab did not open: ${stderr}`);
