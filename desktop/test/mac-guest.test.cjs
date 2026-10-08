@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { driverCommand } = require('../src/computer.cjs');
@@ -80,7 +81,74 @@ test('the guest installer emits valid plists and a default config', {
   }
   const config = JSON.parse(fs.readFileSync(path.join(data, 'config.json'), 'utf8'));
   assert.equal(config.browserCommand, '/bin/sh', '$CHROMIUM should win discovery');
-  assert.equal(config.cdpUrl, 'http://127.0.0.1:9223');
+  const port = Number(new URL(config.cdpUrl).port);
+  assert.ok(port >= 9223 && port <= 9422, `the default CDP port scan picked ${port}`);
+  assert.ok(config.browserArgs.includes(`--remote-debugging-port=${port}`), 'browserArgs match cdpUrl');
   assert.equal(fs.statSync(path.join(data, 'config.json')).mode & 0o777, 0o600);
   assert.equal(fs.statSync(data).mode & 0o777, 0o700);
+});
+
+const guestScript = path.join(__dirname, '../../scripts/mac-guest-services.sh');
+const guestInstall = (data, extra = [], envExtra = {}) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-guest-'));
+  const result = spawnSync('sh', [guestScript, '--no-load', '--node', process.execPath, ...extra], {
+    encoding: 'utf8',
+    env: { ...process.env, HOME: home, HERMES_VPS_BROWSER_DATA: data, CHROMIUM: '/bin/sh', ...envExtra },
+  });
+  return { home, result, config: () => JSON.parse(fs.readFileSync(path.join(data, 'config.json'), 'utf8')) };
+};
+const darwinOnly = { skip: process.platform !== 'darwin' && 'plutil and launchd only exist on macOS' };
+const freePort = (port) => new Promise((resolve) => {
+  const probe = net.createServer();
+  probe.once('error', () => resolve(freePort(port + 1)));
+  probe.listen(port, '127.0.0.1', () => probe.close(() => resolve(port)));
+});
+
+test('the guest installer honors --cdp-port and keeps it on re-run', darwinOnly, () => {
+  const data = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-data-')), 'data');
+  const first = guestInstall(data, ['--cdp-port', '9357']);
+  assert.equal(first.result.status, 0, first.result.stderr);
+  assert.equal(first.config().cdpUrl, 'http://127.0.0.1:9357');
+  assert.ok(first.config().browserArgs.includes('--remote-debugging-port=9357'));
+  const again = guestInstall(data);
+  assert.equal(again.result.status, 0, again.result.stderr);
+  assert.match(again.result.stdout, /kept existing/);
+  assert.equal(again.config().cdpUrl, 'http://127.0.0.1:9357', 'a re-run keeps the chosen port');
+  // An explicit --cdp-port on a re-run moves the managed browser, keeping the
+  // rest of config.json, matching the setup.sh port precedence.
+  const moved = guestInstall(data, ['--cdp-port', '9361']);
+  assert.equal(moved.result.status, 0, moved.result.stderr);
+  assert.match(moved.result.stdout, /CDP port.*9361|cdp.*9361/i, `the move is announced: ${moved.result.stdout}`);
+  const config = moved.config();
+  assert.equal(config.cdpUrl, 'http://127.0.0.1:9361');
+  assert.ok(config.browserArgs.includes('--remote-debugging-port=9361'));
+  assert.ok(!config.browserArgs.includes('--remote-debugging-port=9357'), 'the old port flag is replaced');
+  assert.equal(config.browserCommand, '/bin/sh', 'other config fields survive the port move');
+  assert.equal(config.port, 9465, 'the broker port is untouched');
+  // The env var is the same explicit request.
+  const movedEnv = guestInstall(data, [], { ALANS_WAY_CDP_PORT: '9363' });
+  assert.equal(movedEnv.result.status, 0, movedEnv.result.stderr);
+  assert.equal(movedEnv.config().cdpUrl, 'http://127.0.0.1:9363');
+});
+
+test('the guest installer picks the first free CDP port when the default is busy', darwinOnly, async () => {
+  const listener = net.createServer();
+  await new Promise((resolve, reject) => { listener.once('error', reject); listener.listen(9223, '127.0.0.1', resolve); });
+  try {
+    const data = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-data-')), 'data');
+    const first = guestInstall(data);
+    assert.equal(first.result.status, 0, first.result.stderr);
+    const config = first.config();
+    const port = Number(new URL(config.cdpUrl).port);
+    assert.equal(port, await freePort(9223), 'first free loopback port wins over the busy 9223');
+    assert.ok(port > 9223);
+    assert.ok(config.browserArgs.includes(`--remote-debugging-port=${port}`));
+    // An explicit request for the busy port is kept but announced.
+    const forced = guestInstall(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-data-')), 'data'), ['--cdp-port', '9223']);
+    assert.equal(forced.result.status, 0, forced.result.stderr);
+    assert.match(forced.result.stdout, /already listening/, 'a busy explicit port warns');
+    assert.equal(forced.config().cdpUrl, 'http://127.0.0.1:9223', 'an explicit port wins even when busy');
+  } finally {
+    listener.close();
+  }
 });

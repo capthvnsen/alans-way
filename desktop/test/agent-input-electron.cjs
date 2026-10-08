@@ -33,6 +33,10 @@ t.addEventListener('keydown',e=>log.keys.push([e.key,e.code,e.keyCode]));
 src.addEventListener('mousedown',()=>{log.down=true});document.addEventListener('mousemove',e=>{if(e.buttons===1&&log.down)log.moves++});document.addEventListener('mouseup',e=>{if(log.down){log.up=e.target.id;log.down=false}});
 h5src.addEventListener('dragstart',()=>log.h5start=true);document.addEventListener('drop',e=>{e.preventDefault();log.h5drop=e.target.id});document.addEventListener('dragover',e=>e.preventDefault());</script>`;
 const humanPage = '<title>Human focus fixture</title><input id="human" value="Human draft stays here"><script>human.focus();human.setSelectionRange(6,11)</script>';
+const shadowPage = `<!doctype html><meta charset="utf-8"><style>body{font:20px system-ui;margin:30px}</style>
+<div id="host"></div><p id="result">Waiting</p>
+<div style="position:relative"><button id="blocked" data-hermes-workspace-ref="s1-3" style="width:200px;height:44px">Blocked</button><div id="veil" style="position:absolute;inset:0;background:#fdd">overlay</div></div>
+<script>const shadow = host.attachShadow({mode:'open'});shadow.innerHTML='<div id="ed" contenteditable="true" style="width:300px;height:44px;background:#eee" data-hermes-workspace-ref="s1-1"></div><button id="ok" data-hermes-workspace-ref="s1-2">Send</button>';shadow.getElementById('ok').onclick=()=>{result.textContent='Sent: '+shadow.getElementById('ed').textContent.trim()};</script>`;
 async function value(wc, expression) { return wc.executeJavaScript(expression); }
 async function eventually(fn, predicate) {
   let result;
@@ -49,7 +53,7 @@ async function eventuallyEquals(fn, expected) {
   return got;
 }
 app.whenReady().then(async () => {
-  server = http.createServer((req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(req.url === '/human' ? humanPage : req.url === '/longform' ? longForm : req.url === '/widgets' ? widgets : fixture); });
+  server = http.createServer((req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(req.url === '/human' ? humanPage : req.url === '/longform' ? longForm : req.url === '/widgets' ? widgets : req.url === '/shadow' ? shadowPage : fixture); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const root = `http://127.0.0.1:${server.address().port}`;
   win = new BrowserWindow({ show: false, width: 1000, height: 720, webPreferences: { sandbox: true } });
@@ -159,6 +163,18 @@ app.whenReady().then(async () => {
   const hidden = await perform({ action: 'select', ref: 's1-13', value: 'y' });
   assert.deepEqual(hidden.matched, { by: 'value', value: 'y', label: 'Y' }, 'a hidden native select can still be chosen');
   console.log('PASS: macOS editing commands, punctuation key codes, select, double/right click, mouse and HTML5 drag by ref and coordinates.');
+  await view.webContents.loadURL(`${root}/shadow`);
+  tab.refs = new Set(['s1-1', 's1-2', 's1-3']);
+  await perform({ action: 'type', ref: 's1-1', text: 'Shadow agent text' });
+  await eventuallyEquals(() => value(view.webContents, 'host.shadowRoot.getElementById("ed").textContent'), 'Shadow agent text');
+  await perform({ action: 'click', ref: 's1-2' });
+  await eventuallyEquals(() => value(view.webContents, 'result.textContent'), 'Sent: Shadow agent text');
+  await assert.rejects(perform({ action: 'click', ref: 's1-3' }), /covered by div#veil/);
+  // An overlay inside the same shadow root retargets to the host just like the
+  // target does, but the root's own hit test still names it as the cover.
+  await view.webContents.executeJavaScript('(() => { const shroud = document.createElement("div"); shroud.id = "shroud"; shroud.style.cssText = "position:fixed;inset:0;background:#dde"; host.shadowRoot.appendChild(shroud); })()');
+  await assert.rejects(perform({ action: 'click', ref: 's1-1' }), /covered by div#shroud/);
+  console.log('PASS: type and click by ref reach into an open shadow root, and sibling overlays in the page and the same root are reported as covered.');
   tab.controller = 'human'; tab.epoch++;
   await agent.clear(tab);
   assert.equal(await value(view.webContents, '!!document.getElementById("hermes-workspace-agent-cursor")'), false);

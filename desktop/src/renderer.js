@@ -1,5 +1,5 @@
 const api = window.workspace;
-let state, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '';
+let state, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '', handoffBusy = false;
 const $ = (id) => document.getElementById(id);
 function element(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; }
 function toast(message) { $('toast').textContent = message; $('toast').classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.add('hidden'), 5000); }
@@ -289,6 +289,18 @@ function render(next) {
   $('control-button').title = tab ? `Browser runs on ${tab.host==='vps'||tab.host==='remote'?'the '+remoteName():'your '+thisComputer()} · ${tab.controller === 'agent' ? 'Agent' : 'You'} control it` : 'Open a browser tab first';
   if (document.activeElement !== $('address')) $('address').value = tab?.internal ? '' : tab?.url || '';
   const agentName = tab ? state.bots.find(bot => bot.id === tab.botId)?.name || 'Agent' : '';
+  // The retired local copy of a handed-off tab is the way back: it offers to
+  // pull the remote tab's current page state onto this computer again.
+  const handedOff = tab?.handoff?.phase === 'handed_off' && tab.handoff.destinationTabId ? tab.handoff.destinationTabId : '';
+  // A handed-off source stays retired once its remote copy came back: the new
+  // local tab carries a handoff record pointing at that remote tab id.
+  const movedBack = !!handedOff && state.tabs.some((item) => item !== tab && item.handoff?.sourceTabId === handedOff);
+  const canHandoff = state.vpsBrowserStatus === 'connected' && !!tab && !tab.extensionPage && !tab.internal && (tab.controller === 'agent' || (!!handedOff && !movedBack));
+  const handoffButton = $('handoff-button');
+  handoffButton.classList.toggle('hidden', !canHandoff);
+  handoffButton.disabled = !canHandoff || handoffBusy;
+  handoffButton.textContent = handoffBusy ? 'Moving…' : handedOff ? 'Move back' : `Move to ${remoteName()}`;
+  handoffButton.title = handedOff ? `Bring the ${remoteName()} copy of this page back to your ${thisComputer()}` : `Move ${agentName || 'the agent'}’s page to the ${remoteName()} desktop`;
   $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? `${agentName}${tab.agentBusy ? ' is working' : ' is browsing'}` : 'You'} in control${tab.controller === 'agent' ? ' · Take over anytime' : ''} · ${hostName(tab.host)}${tab.handoff?.phase==='handed_off'?` · Handed off to the ${hostName(tab.handoff.destinationHost)} (agents continue there)`:tab.handoff&&tab.handoff.phase!=='reviewed'?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `${remoteName()} · ${state.remoteStatus}` : 'Ready';
   renderUpdate();
   $('connection-status').textContent = state.api.ready ? 'Browser connector ready' : state.api.error ? 'Browser connector unavailable' : 'Browser connector starting…';
@@ -845,6 +857,18 @@ $('home-search').onsubmit = (event) => submitUrl(event, 'home-address');
 document.querySelectorAll('[data-url]').forEach((button) => { button.onclick = () => command('create-tab', { url: button.dataset.url }); });
 for (const action of ['back', 'forward', 'reload']) $(action).onclick = () => command('history', { id: state.activeTabId, action });
 $('control-button').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: tab.controller === 'agent' ? 'human' : 'agent' }); };
+$('handoff-button').onclick = async () => {
+  const tab = state.tabs.find((item) => item.id === state.activeTabId);
+  if (!tab) return;
+  const back = tab.handoff?.phase === 'handed_off' ? tab.handoff.destinationTabId : '';
+  handoffBusy = true; render(state);
+  try {
+    const record = await command('handoff', back
+      ? { id: back, destination: 'mac', includeDrafts: true }
+      : { id: tab.id, destination: 'vps', includeDrafts: true });
+    if (record) toast(`${back ? `Moved back to your ${thisComputer()}` : `Moved to the ${remoteName()}`}.${record.verification && record.verification !== 'ready' ? ' Review the page before the agent continues.' : ''}`);
+  } finally { handoffBusy = false; render(state); }
+};
 $('ask-bot').onclick = () => command('share-page');
 
 $('modal-close').onclick = closeModal;
