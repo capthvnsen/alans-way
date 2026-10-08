@@ -192,15 +192,16 @@ class ScriptShapeTests(unittest.TestCase):
 
 # A fake ssh runs the remote command locally with sh, so the quoting that
 # connect-server.sh builds goes through a real shell round trip. lsh stands in
-# for the login shell, which would reset PATH and lose the fake curl.
+# for the login shell, which would reset PATH and lose the fake curl. Like the
+# real ssh, it reads stdin, which under curl | sh is the rest of the script.
 FAKE_SSH = r"""#!/bin/sh
 while [ $# -gt 0 ]; do case "$1" in -o|-O) shift 2;; -t) shift;; *) break;; esac; done
 shift
 case "$*" in
   "") exit 0;;
   "sh -s") cat >/dev/null; printf 'VPS_SSH=root@hermes-vps\nVPS_KEY=%s\nVPS_HOST_KEY=ssh-ed25519 AAAAhost\n' "$VPS_KEY";;
-  test\ -e*) echo ok;;
-  true|exit) exit 0;;
+  test\ -e*) cat >/dev/null; echo ok;;
+  true|exit) cat >/dev/null;;
   *) SHELL="$(dirname "$0")/lsh" sh -c "$*";;
 esac
 """
@@ -218,22 +219,31 @@ echo "===== end ====="
 
 class ConnectServerTests(unittest.TestCase):
     def test_server_setup_gets_this_computers_values_through_the_quoting(self):
+        for piped in (False, True):
+            with self.subTest(piped=piped):
+                self.run_wizard(piped)
+
+    def run_wizard(self, piped):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            for name, body in (("bin/ssh", FAKE_SSH), ("bin/curl", '#!/bin/sh\ncp "$HOME/setup.sh" "$4"\n'),
+            for name, body in (("bin/ssh", FAKE_SSH), ("bin/curl", '#!/bin/sh\ncase "$2" in *connect-*) cp "$HOME/connect.sh" "$4";; *) cp "$HOME/setup.sh" "$4";; esac\n'),
                                ("bin/lsh", '#!/bin/sh\nexec sh -c "$2"\n'),
                                ("scripts/connect-mac.sh", FAKE_CONNECT), ("scripts/connect-linux.sh", FAKE_CONNECT),
+                               ("connect.sh", FAKE_CONNECT),
                                ("setup.sh", '#!/bin/sh\nprintf "%s\\n" "$@" > "$HOME/setup-args"\n')):
                 (tmp / name).parent.mkdir(parents=True, exist_ok=True)
                 (tmp / name).write_text(body, encoding="utf-8")
                 (tmp / name).chmod(0o755)
             (tmp / "scripts/connect-server.sh").write_text((SCRIPTS / "connect-server.sh").read_text(encoding="utf-8"))
+            args = ["--server", "root@hermes-vps", "--", "--profile", "it's"]
+            script = (tmp / "scripts/connect-server.sh").read_text()
             # A new session has no /dev/tty, as when an agent runs the script.
             result = subprocess.run(
-                ["sh", str(tmp / "scripts/connect-server.sh"), "--server", "root@hermes-vps", "--", "--profile", "it's"],
-                env={"HOME": str(tmp), "PATH": f"{tmp}/bin:/usr/bin:/bin", "VPS_KEY": KEY},
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, start_new_session=True)
+                ["sh", "-s", "--", *args] if piped else ["sh", str(tmp / "scripts/connect-server.sh"), *args],
+                env={"HOME": str(tmp), "PATH": f"{tmp}/bin:/usr/bin:/bin", "VPS_KEY": KEY}, cwd=tmp,
+                input=script if piped else "", capture_output=True, text=True, check=False, start_new_session=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Connected.", result.stdout)
             self.assertNotIn("send it to your agent", result.stdout)
             self.assertIn(f"--vps root@hermes-vps --vps-host-key ssh-ed25519 AAAAhost --vps-key {KEY}",
                           (tmp / "connect-args").read_text())
