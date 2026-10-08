@@ -29,7 +29,7 @@ saying what to do, plus a button when the app can do it.
 | 9 | Server browser host is running, same version | `--doctor` `hostVersion` | **Update server** |
 | 10 | Plugins are on the latest published version | `--doctor` plugin rows (see below) | **Update server** |
 | 11 | Computer use goes through Alan's Way | `--doctor` `computerBackend` per profile | Update Hermes to a build with the computer-use provider API, then re-run setup |
-| 12 | Server setup audit passes | `--doctor` `verify` per profile: each `FAIL` line is ✗, each `warn` line is ! | "Ask your bot to run `setup.sh --verify` and fix what it reports" |
+| 12 | Server setup audit passes | `--doctor` `verify`, one run per server (setup.sh audits every profile itself): each `FAIL` line is ✗, each `warn` line is ! | "Ask your bot to run `setup.sh --verify` and fix what it reports" |
 
 Checks 8 to 12 run only if check 6 passes. If check 6 fails, the Server group shows one ✗ row:
 "Couldn't reach the server, so its checks were skipped."
@@ -50,18 +50,22 @@ Checks 8 to 12 run only if check 6 passes. If check 6 fails, the Server group sh
 
   ```json
   {"ok":true,"version":"0.4.0","hostVersion":"0.4.0","pluginTag":"v0.7.0","error":"",
-   "profiles":[{"profile":"default","computerBackend":"alans-way-computer",
-     "plugins":[{"name":"alans-way","version":"0.7.0","class":"catalog","updateAvailable":false}],
-     "verify":{"ran":true,"fails":[],"warns":["no primary route bound: …"]}}]}
+   "verify":{"ran":true,"fails":[],"warns":["no primary route bound: …"]},
+   "profiles":[{"profile":"default","computerBackend":"alans-way-computer","checked":true,
+     "plugins":[{"name":"alans-way","version":"0.7.0","class":"catalog","updateAvailable":false}]}]}
   ```
 
   - `pluginTag` comes from `git ls-remote --tags https://github.com/capthvnsen/alans-way-agents`.
-  - `verify` runs `setup.sh --verify [--profile <name>]` from `~/alans-way-agents`, falling back to the clone
-    named in the plugin's install record. It keeps the text after `FAIL` and `warn`. With no `setup.sh` it is
-    `{"ran":false}`.
-  - Profiles run in order within a 100-second budget. A profile the budget doesn't reach is reported as
-    `"verify":{"ran":false,"reason":"time"}`. (`ponytail:` every alans-way profile is checked; filter by the
-    app's bot ids if multi-profile users find it slow.)
+  - `verify` runs `setup.sh --verify --hermes-home <home>` once per server, from `~/alans-way-agents`, falling
+    back to the clone named in a plugin install record. `setup.sh` audits every profile itself, so it is never
+    run per profile. It keeps the text after `FAIL` and `warn`. With no `setup.sh` it is
+    `{"ran":false,"reason":"no-setup"}`. A timeout is `{"ran":false,"reason":"time"}`. A non-zero exit with no
+    `FAIL` line adds the fail `setup.sh --verify stopped early (exit N)`.
+  - Profiles run in order within a 100-second budget. A profile the budget doesn't reach is reported with
+    `"checked":false` and shows as one "Not checked (out of time)" row. (`ponytail:` every alans-way profile is
+    checked; filter by the app's bot ids if multi-profile users find it slow.)
+  - A catalog plugin whose update state Hermes couldn't determine has `"updateAvailable":null` and shows as
+    "Couldn't check".
 - **`desktop/src/vm-update.cjs`**: `doctorVm(vm)`, the same `runGuest` path with `--doctor` and a 120-second
   timeout. A Windows server returns `{ ok: false, error: 'windows' }` without running anything.
 - **`desktop/src/setup-check.cjs`** (new, pure):
@@ -73,16 +77,20 @@ Checks 8 to 12 run only if check 6 passes. If check 6 fails, the Server group sh
   - A `setup-check` command collects the inputs and returns the findings.
   - A `remove-old-connector` command does what its name says.
   - At startup on Mac and Linux, remove the connector copy when `staleConnectorCopy` says it is older than the
-    app.
+    app and `bundledConnectorReachable` says the router can find the app's own connector (see below).
 - **`desktop/src/renderer.js`**: the button and result list in Agent setup, and the wizard's step 3.
 
 ## Old connector copy at launch
 
 `setup.sh` copies a connector into `<userData>/connector`, and the router uses that copy before the one in the
 app. Nothing updates the copy afterwards, so it falls behind on the first app update. At each launch, the app
-removes the copy when its `package.json` version is older than the app's version. The router then uses the
-connector inside the app, which the router already lists for `alans-way-localapp.app` and `Open Alan.app`. A
-copy that is newer than the app is kept.
+removes the copy when its `package.json` version is older than the app's version, but only if the router can
+find the connector inside the app. On a Mac that means a packaged app running from `/Applications/<name>.app`
+with a bundle name the router lists. On Linux it means a packaged app in one of the router's fixed app roots
+(an AppImage never qualifies). Otherwise the copy is the only connector the router can find, so it is kept,
+and Check setup doesn't report it as stale. The names and roots are mirrored from the router
+(`alans-way-agents/alans-way/scripts/workspace-router.cjs`) and must be kept in step with it. A copy that is
+newer than the app is always kept.
 
 A connector that is already running keeps working until its SSH session ends. If it loads a file that has
 since been removed, it exits, and the router starts the app's own connector on the next call. On Windows the
