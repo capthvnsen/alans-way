@@ -118,6 +118,20 @@ function parseRemoteUrl(value) {
   return url.href;
 }
 
+// The noVNC viewer sits on the agent VM, so its URL derives from the SSH host:
+// when the host moves, an empty remoteUrl or one still on the old host follows.
+// A remoteUrl pointing anywhere else is the user's own and is left alone.
+function followVmRemoteUrl(previousSshHost, sshHost, remoteUrl) {
+  const hostOf = (target) => String(target || '').split('@').pop().trim().replace(/^\[|\]$/g, '');
+  const previous = hostOf(previousSshHost).toLowerCase();
+  const host = hostOf(sshHost);
+  if (!host || host.toLowerCase() === previous) return '';
+  let current = '';
+  try { current = new URL(remoteUrl).hostname.replace(/^\[|\]$/g, ''); } catch {}
+  if (current && current !== previous) return '';
+  return `http://${host.includes(':') ? `[${host}]` : host}:6080/vnc.html`;
+}
+
 // Saved SSH addresses are interpolated into a remote shell command, so only
 // [user@]host (or an ~/.ssh/config alias) is accepted.
 function isSshTarget(value) {
@@ -218,4 +232,4 @@ function hostShouldReload(mtime, started, inFlight) {
   return inFlight === 0 && Number(mtime) > Number(started);
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload };
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, followVmRemoteUrl };

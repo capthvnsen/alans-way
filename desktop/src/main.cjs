@@ -6,7 +6,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, followVmRemoteUrl } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
@@ -810,7 +810,11 @@ function registerIpc() {
           if (sshHost && !isSshTarget(sshHost)) throw new Error('Enter the VPS SSH address as user@host or host, with no spaces or symbols.');
           const scriptPath = String(value.vpsBrowser.scriptPath || '').trim();
           if (scriptPath && checkScriptPath(scriptPath)) throw new Error(checkScriptPath(scriptPath));
+          // When the VM's SSH address moves to a different host, the noVNC
+          // viewer follows unless remoteUrl was deliberately pointed elsewhere.
+          const followed = followVmRemoteUrl(prefs.vpsBrowser.sshHost, sshHost, prefs.remoteUrl);
           prefs.vpsBrowser={sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}; if(!sshHost)prefs.vmUpdates={}; vpsBrowserStatus='connecting'; refreshVpsTabs();
+          if (followed) { prefs.remoteUrl = followed; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         }
         if (Number.isFinite(value.agentIdleMinutes)) prefs.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }

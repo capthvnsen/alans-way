@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, followVmRemoteUrl } = require('../src/core.cjs');
 const { snapshotExpression, settleSnapshot, readEffect } = require('../src/browser-page.cjs');
 const { locateElement } = require('../src/agent-input.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
@@ -56,6 +56,22 @@ test('existing noVNC links map to their websocket route', () => {
   assert.equal(parseRemoteUrl('https://desktop.example/view/vnc.html?path=socket'), 'wss://desktop.example/view/socket');
   assert.equal(parseRemoteUrl('wss://desktop.example/ws'), 'wss://desktop.example/ws');
   assert.throws(() => parseRemoteUrl('file:///etc/passwd'));
+});
+test('the noVNC address follows the agent VM when the SSH host moves', () => {
+  // Empty or still pointing at the previous host: re-derive for the new one.
+  assert.equal(followVmRemoteUrl('root@10.0.0.1', 'root@10.0.0.2', 'http://10.0.0.1:6080/vnc.html'), 'http://10.0.0.2:6080/vnc.html');
+  assert.equal(followVmRemoteUrl('', 'root@10.0.0.2', ''), 'http://10.0.0.2:6080/vnc.html');
+  assert.equal(followVmRemoteUrl('root@10.0.0.1', '10.0.0.2', 'http://10.0.0.1:9090/custom.html'), 'http://10.0.0.2:6080/vnc.html');
+  // A remoteUrl pointing anywhere else is the user's and is left alone.
+  for (const other of ['https://desktop.example:8445/vnc.html', 'wss://other.example/ws'])
+    assert.equal(followVmRemoteUrl('root@10.0.0.1', 'root@10.0.0.2', other), '', other);
+  // Same host, with or without a user@ change, never rewrites; neither does clearing the VM.
+  assert.equal(followVmRemoteUrl('root@10.0.0.1', 'me@10.0.0.1', ''), '');
+  assert.equal(followVmRemoteUrl('root@10.0.0.1', 'root@10.0.0.1', 'http://10.0.0.1:6080/vnc.html'), '');
+  assert.equal(followVmRemoteUrl('root@10.0.0.1', '', 'http://10.0.0.1:6080/vnc.html'), '');
+  // IPv6 targets keep their brackets in the derived URL.
+  assert.equal(followVmRemoteUrl('', 'root@fd00::2', ''), 'http://[fd00::2]:6080/vnc.html');
+  assert.equal(followVmRemoteUrl('root@fd00::1', 'root@fd00::2', 'http://[fd00::1]:6080/vnc.html'), 'http://[fd00::2]:6080/vnc.html');
 });
 test('a bot cannot accidentally drive another bot tab or stale human takeover', () => {
   const tab = { botId: 'research', controller: 'agent', epoch: 4, allowedBots: [] };
