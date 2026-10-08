@@ -21,15 +21,28 @@ function migrateCheckCommand() {
   return `ls -d ${MIGRATED_MARKER} ~/.hermes.pre-migrate-* 2>/dev/null`;
 }
 
-// -l prints paths only: the token value itself never crosses SSH.
+// -l prints paths only: the token value itself never crosses SSH. Tokens on
+// real installs also live in the shared ~/.hermes/.env and in
+// ~/.hermes/.secrets/*.env, and Orgo's env writer emits `export KEY='v'`, so
+// all three places and both line shapes are covered.
 function profilesWithTokenCommand() {
-  return `grep -l '^TELEGRAM_BOT_TOKEN=' ~/.hermes/profiles/*/.env 2>/dev/null`;
+  return `grep -lE '^[[:space:]]*(export[[:space:]]+)?TELEGRAM_BOT_TOKEN=' ~/.hermes/profiles/*/.env ~/.hermes/.env ~/.hermes/.secrets/*.env 2>/dev/null`;
 }
 
+// A token found outside a profile env (the shared home .env or the secrets
+// dir) covers the whole install — minting another bot would write a
+// conflicting token.
+const SHARED_TOKEN = '*';
 function profilesWithToken(grepOutput) {
-  return String(grepOutput || '').split('\n')
-    .map((line) => /profiles\/(.+)\/\.env\s*$/.exec(line.trim())?.[1])
-    .filter(Boolean);
+  return [...new Set(String(grepOutput || '').split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.endsWith('.env'))
+    .map((line) => /profiles\/(.+)\/\.env$/.exec(line)?.[1] || SHARED_TOKEN))];
 }
 
-module.exports = { shellQuote, migrateCommand, migrateCheckCommand, profilesWithTokenCommand, profilesWithToken, MIGRATED_MARKER };
+// `ls ~/.hermes/profiles` gives one profile name per line.
+function profileNames(lsOutput) {
+  return String(lsOutput || '').split('\n').map((line) => line.trim()).filter(Boolean).sort();
+}
+
+module.exports = { shellQuote, migrateCommand, migrateCheckCommand, profilesWithTokenCommand, profilesWithToken, profileNames, MIGRATED_MARKER, SHARED_TOKEN };

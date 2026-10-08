@@ -1266,10 +1266,13 @@ function registerIpc() {
         const host = (prefs.vpsBrowser?.sshHost || '').trim();
         if (!host) throw new Error('Connect to the computer first.');
         const marker = await sshRun(host, cloudMigrate.migrateCheckCommand());
-        if (marker.code !== 0 || !marker.out.trim()) return { done: false, detail: 'No migration has landed on the computer yet.' };
+        // ls exits non-zero when one glob has no match even while printing the
+        // other — the stdout content alone carries the signal.
+        if (!marker.out.trim()) return { done: false, detail: 'No migration has landed on the computer yet.' };
         const grep = await sshRun(host, cloudMigrate.profilesWithTokenCommand());
+        const profiles = await sshRun(host, 'ls ~/.hermes/profiles 2>/dev/null');
         const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
-        prefs.cloud = { ...cloud, tokenedProfiles: cloudMigrate.profilesWithToken(grep.out) };
+        prefs.cloud = { ...cloud, profiles: cloudMigrate.profileNames(profiles.out), tokenedProfiles: cloudMigrate.profilesWithToken(grep.out) };
         setCloudStep(prefs, 'model');
         savePreferences();
         return { done: true, profiles: prefs.cloud.tokenedProfiles };

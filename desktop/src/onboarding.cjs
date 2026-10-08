@@ -1,4 +1,5 @@
 'use strict';
+const { SHARED_TOKEN } = require('./cloud-migrate.cjs');
 
 // Upgraders who already wired a computer never see the wizard unless they reopen it.
 function shouldOnboard(prefs) {
@@ -28,13 +29,23 @@ function cloudStep(prefs, computer) {
   return CLOUD_STEPS.includes(cloud.step) ? cloud.step : 'cloud-wait';
 }
 
-// The step after `current`. A migrated profile that already carries a
-// TELEGRAM_BOT_TOKEN skips the telegram step entirely — no new bot is made.
+// The telegram step mints a bot only for profiles that lack one: skip it when
+// every discovered profile already carries a TELEGRAM_BOT_TOKEN, or a token
+// lives in the shared home env / secrets dir (SHARED_TOKEN covers them all).
+// Mixed coverage keeps the step so untokenedProfile can pick a target.
+function telegramCovered(prefs) {
+  const tokened = prefs?.cloud?.tokenedProfiles;
+  if (!Array.isArray(tokened) || !tokened.length) return false;
+  if (tokened.includes(SHARED_TOKEN)) return true;
+  const profiles = prefs?.cloud?.profiles;
+  return Array.isArray(profiles) && profiles.length > 0 && profiles.every((name) => tokened.includes(name));
+}
+
+// The step after `current`.
 function nextCloudStep(prefs, current) {
   const index = CLOUD_FLOW.indexOf(current);
   let next = index === -1 ? 'done' : CLOUD_FLOW[index + 1] || 'done';
-  const tokened = prefs?.cloud?.tokenedProfiles;
-  if (next === 'telegram' && Array.isArray(tokened) && tokened.length) next = 'done';
+  if (next === 'telegram' && telegramCovered(prefs)) next = 'done';
   return next;
 }
 
