@@ -1,5 +1,6 @@
 const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
@@ -806,6 +807,43 @@ function sshWrite(host, remotePath, content, { timeoutMs = 15000 } = {}) {
     child.stdin.end(content);
   });
 }
+// scripts/connect-mac.sh keeps its authorized_keys editor between "tailnet
+// helpers" markers; read the real script (the packaged app carries it as an
+// extra resource) so the wizard installs keys exactly the way the script does.
+function connectMacHelpers() {
+  const candidates = [path.join(ROOT, '..', '..', 'scripts', 'connect-mac.sh')];
+  try { if (app.isPackaged) candidates.unshift(path.join(process.resourcesPath, 'connect-mac.sh')); } catch {}
+  for (const file of candidates) {
+    try {
+      const block = cloudConnect.tailnetHelpers(fs.readFileSync(file, 'utf8'));
+      if (block) return block;
+    } catch {}
+  }
+  return '';
+}
+// The computer must ssh back into this machine for AGENT_PATH_OK: ensure it
+// has a keypair, then authorize its public key here restricted to the tailnet.
+// While there, fill in this machine's ssh address when it is derivable, so the
+// path check can actually run in the claimed flow.
+async function authorizeComputerKey(host) {
+  if (process.platform === 'win32') return { ok: true };
+  const pub = await sshRun(host, cloudConnect.ensureKeypairCommand());
+  const key = pub.code === 0 ? cloudConnect.publicKeyLine(pub.out) : '';
+  if (!key) return { ok: false, detail: 'The computer did not produce an SSH key to authorize here.' };
+  const helpers = connectMacHelpers();
+  if (!helpers) return { ok: false, detail: 'The connect helper script is missing, so the computer key cannot be authorized on this computer.' };
+  const run = await localRun('sh', ['-c',
+    `${helpers}\nmkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh" && touch "$HOME/.ssh/authorized_keys" && install_tailnet_key "$HOME/.ssh/authorized_keys" "$1"`,
+    'sh', key]);
+  if (run.code !== 0) return { ok: false, detail: 'Could not authorize the computer key on this computer.' };
+  if (!(prefs.macSshHost || '').trim()) {
+    const cli = cloudConnect.tailscaleCli();
+    const ip = cli ? (await localRun(cli, ['ip', '-4'], { timeoutMs: 8000 })).out.trim().split('\n')[0] : '';
+    const user = process.env.USER || os.userInfo().username || '';
+    if (ip && user && isSshTarget(`${user}@${ip}`)) { prefs.macSshHost = `${user}@${ip}`; savePreferencesSoon(); }
+  }
+  return { ok: true };
+}
 // The saved VPS SSH path check, shared by Settings and the connect step.
 function testAgentPath() {
   const host = (prefs.vpsBrowser?.sshHost || '').trim();
@@ -848,6 +886,8 @@ async function cloudConnectRun(diyHost) {
     if (probe.code !== 0 || !probe.out.includes('CONNECT_OK')) return { stage: 'ssh', ok: false, detail: `Could not reach ${sshHost} over SSH. Check the address and your key, then try again.` };
     const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
     if (remote?.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the server failed.' };
+    const back = await authorizeComputerKey(sshHost);
+    if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
     if ((prefs.macSshHost || '').trim()) {
       const path = await testAgentPath();
       if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
@@ -870,6 +910,8 @@ async function cloudConnectRun(diyHost) {
   if (!remote) return { stage: 'state', ok: false, detail: 'The computer joined Tailscale. Waiting for its setup to finish…' };
   if (remote.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the computer failed.' };
   if (remote.state !== 'ready' && remote.step !== 'paired') return { stage: 'state', ok: false, detail: 'The computer is still finishing its setup…' };
+  const back = await authorizeComputerKey(sshHost);
+  if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
   if ((prefs.macSshHost || '').trim()) {
     const path = await testAgentPath();
     if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
@@ -1173,6 +1215,14 @@ function registerIpc() {
       case 'cloud-tailscale-download': await shell.openExternal('https://tailscale.com/download'); break;
       case 'cloud-diy': {
         const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+        if (value.off === true) {
+          // Back out of the DIY connect card: leave cloud mode entirely so the
+          // normal wizard shows again.
+          prefs.cloud = { ...cloud, diy: false };
+          savePreferences();
+          broadcast();
+          break;
+        }
         prefs.cloud = { ...cloud, diy: true, step: 'connect' };
         prefs.onboarded = false;
         savePreferences();

@@ -453,7 +453,8 @@ function renderCloudOnboarding(card, actions, cloud) {
       const field = element('div', 'field'), lab = element('label', '', 'Server SSH address'); lab.htmlFor = 'ob-diy-host';
       const input = element('input'); input.id = 'ob-diy-host'; input.placeholder = 'you@your-server'; input.autocomplete = 'off'; input.value = state.vpsBrowser?.sshHost || '';
       field.append(lab, input); card.append(field);
-      actions.append(button('Connect', 'primary-button', () => check({ host: input.value.trim() })));
+      actions.append(button('Back', 'secondary-button', () => command('cloud-diy', { off: true })),
+        button('Connect', 'primary-button', () => check({ host: input.value.trim() })));
     } else {
       card.append(element('h2', '', 'Connect to your computer'),
         element('p', 'settings-note', `${cloud.computer?.name || 'Your computer'} pairs over Tailscale. Install Tailscale, open the pairing page, then check again.`));
