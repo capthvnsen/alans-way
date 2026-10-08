@@ -38,6 +38,10 @@ function createConfig(env) {
       '!scripts/setup-signing-secrets.sh',
     ],
     publish: PUBLISH,
+    // The paid-computer link is alansway://claim?token=…; without a declared
+    // scheme the packaged macOS app is never a valid handler, so the runtime
+    // setAsDefaultProtocolClient call alone cannot deliver cold-start links.
+    protocols: [{ name: 'alansway', schemes: ['alansway'] }],
     mac: {
       target: [
         { target: 'dmg', arch: ['arm64'] },
