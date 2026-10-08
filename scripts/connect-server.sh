@@ -87,7 +87,7 @@ MAC_SSH="$(val MAC_SSH "$TMPD/local")"
 TZ_ARG=""; [ -z "$(val MAC_TZ "$TMPD/local")" ] || TZ_ARG=" --timezone $(q "$(val MAC_TZ "$TMPD/local")")"
 
 say ""
-say "Installing the Alan's Way plugin on the server"
+say "Installing the Alan's Way Plugin on the server"
 # A downloaded setup.sh fetches the plugin itself, pinned to the catalog's
 # version when the plugin came from the Hermes catalog.
 REMOTE="set -e; d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT
@@ -107,7 +107,7 @@ ssh -o ControlPath=none -o BatchMode=yes -o StrictHostKeyChecking=yes -o Connect
   || die "this computer cannot log in to $VPS_SSH without a prompt. If the server uses Tailscale SSH, change its rule from \"check\" to \"accept\" in the Tailscale admin console, then re-run."
 
 say ""
-say "Connected. Last steps, in the Alan's Way app:"
+say "Connected. Last steps, in the Alan's Workspace app:"
 say "  - Sign in to Telegram with the QR code (phone: Telegram > Settings > Devices > Link Desktop Device)."
-[ "$OS" != mac ] || say "  - At this Mac: System Settings > Privacy & Security. Turn on alans-way-localapp under Accessibility and under Screen Recording."
+[ "$OS" != mac ] || say "  - At this Mac: System Settings > Privacy & Security. Turn on Alan's Workspace (listed as alans-way-localapp) under Accessibility and under Screen Recording."
 say "  - Settings > Agent setup: VPS address $VPS_SSH, this computer $MAC_SSH. Click Save addresses, then Test agent path."

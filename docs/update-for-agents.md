@@ -1,15 +1,16 @@
 # Update prompt for your cloud agent
 
-The Open Alan app's **Copy agent update prompt** button points here (through
-https://openalan.com/agent-update). An agent fetches this page and carries out
-the text block below. It updates the alans-way Hermes plugin and the server
-scripts it installs, refreshes the connector on the person's computer, and
-proves everything still works. The person only answers questions.
+The Alan's Workspace app's **Copy agent update prompt** button points here
+(through https://openalan.com/agent-update). An agent fetches this page and
+carries out the text block below. It updates the Alan's Way Plugin and the
+Alan's Tools server scripts it installs, refreshes the connector on the
+person's computer, and proves everything still works. The person only answers
+questions.
 
 ```text
-Update Open Alan on this server. This server runs my Hermes gateway with the
-alans-way plugin; bring the plugin and its server scripts up to date and
-prove they still work. Do not modify Hermes itself.
+Update the Alan's Way Plugin and Alan's Tools on this server. This server runs
+my Hermes gateway with the alans-way plugin; bring the plugin and its server
+tools up to date and prove they still work. Do not modify Hermes itself.
 
 Rules for the whole job:
 - Never print, paste or ask me for secrets (bot tokens, auth keys, passwords).
@@ -51,8 +52,8 @@ Rules for the whole job:
    end with "setup: all required checks passed". If my computer is a Mac,
    tell me: "Updates can switch off computer control on a Mac. If I can't
    use your Mac, open System Settings → Privacy & Security → Accessibility
-   and Screen Recording, and turn Open Alan (alans-way-localapp) off and on
-   again."
+   and Screen Recording, and turn Alan's Workspace (listed as
+   alans-way-localapp) off and on again."
 
 6. Restart the gateway so it loads the update. If you are this Hermes bot,
    first tell me "Restarting now; send me any message in a minute to

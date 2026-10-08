@@ -1,9 +1,9 @@
-# Set up Alan's Way (instructions for an AI agent)
+# Set up Alan's Workspace (instructions for an AI agent)
 
-You are setting up three pieces for a human: the **desktop app**
-(alans-way-localapp) on their computer, the **VPS** that runs their Hermes
-gateway and a cloud browser, and the **Hermes
-plugin** (alans-way-agents). Work through the stages in order. Each stage ends
+You are setting up three pieces for a human: the **Alan's Workspace desktop
+app** (installed as `alans-way-localapp`) on their computer, the **VPS** that
+runs their Hermes gateway and a cloud browser, and the **Alan's Way Plugin**
+(`alans-way` from alans-way-agents). Work through the stages in order. Each stage ends
 with a check; do not continue past a failing check.
 
 This guide is written for a Mac as the user's computer. When it is a Windows
@@ -75,14 +75,15 @@ under `%LOCALAPPDATA%\Programs\alans-way-localapp` — a local build needs no
 code signature or SmartScreen bypass. Re-run the same command to upgrade;
 sign-ins and settings live outside the app bundle and are kept on both OSes.
 
-**Human step — tell them:** "The Alan's Way app is open. Sign in to Telegram in
+**Human step — tell them:** "The Alan's Workspace app is open. Sign in to Telegram in
 the left pane with the QR code (Telegram on your phone → Settings → Devices →
 Link Desktop Device). Tell me when your bots appear in the sidebar."
 
 **Human step, Mac only, at the Mac itself and not over SSH. Tell them:**
 "Open System Settings → Privacy & Security → Accessibility and turn on
-**alans-way-localapp**. Then open Screen Recording (called Screen & System
-Audio Recording on macOS 15 and later) and turn it on there too. If it is not
+**Alan's Workspace** (listed as `alans-way-localapp`). Then open Screen
+Recording (called Screen & System Audio Recording on macOS 15 and later) and
+turn it on there too. If it is not
 listed, click + and choose `/Applications/alans-way-localapp.app`." These two
 grants are what let the agent read and operate other apps. They belong to the
 app, not to Terminal, `sshd` or Node: the SSH connector only relays, and the
@@ -224,7 +225,7 @@ Do not install a desktop stack on your own. **Human step — tell them:** the
 exact `apt-get install` line it printed, and ask whether to install it. The
 browser services start once a display on `:99` exists.
 
-**VPS without systemd (supervisord, for example an Orgo VM):** services run
+**VPS without systemd (supervisord, for example a cloud VM):** services run
 under supervisord, not systemd. Restart the gateway through its supervisor
 with `supervisorctl signal USR1 <program>`, where `<program>` is the
 supervisor program that runs `hermes gateway run`; find its name in
@@ -255,7 +256,7 @@ human.
 1. In the app: **Settings → Agent setup**, enter the VPS SSH address and
    `MAC_SSH`, click **Save addresses**, then **Test agent path**. Success text
    is "VPS reaches this Mac over ssh" (or "this PC" on Windows).
-2. **Human step — tell them:** "In the Alan's Way app, message your bot:
+2. **Human step — tell them:** "In the Alan's Workspace app, message your bot:
    *Open example.com in the workspace browser and tell me the page title.*"
    Expect a tab with the bot's named cursor to appear on the right and the bot
    to reply "Example Domain".
@@ -283,7 +284,7 @@ desktop connection** in the app.
 | Verify says `workspace_browser timeout …s is below 120s` | Long browser actions get cut off. Re-run stage 3 setup, or set `timeout: 120` on the block and restart the gateway. |
 | Bot opens tabs on the VPS while the Mac is awake | The Mac app is closed, or SSH from the VPS fails. Re-run the stage 2 check. On Windows and Linux, closing the app window hides it to the tray; use the tray icon's Show, and Quit only when you want the app stopped. |
 | A connect script says the address is not a Tailscale address | The VPS address must be a Tailscale name or `100.x.y.z` IP. On the VPS run `tailscale ip -4` and use that. |
-| Desktop control fails on a Mac with "Accessibility is off" or "Screen Recording is off" | Grant both to `alans-way-localapp` at the Mac itself, as in stage 1. After an app upgrade, switch them off and on again. |
+| Desktop control fails on a Mac with "Accessibility is off" or "Screen Recording is off" | Grant both to Alan's Workspace (listed as `alans-way-localapp`) at the Mac itself, as in stage 1. After an app upgrade, switch them off and on again. |
 | Browser tool errors right after setup | The gateway is still running old code. `hermes gateway restart` (on a VPS without systemd, `supervisorctl signal USR1 <program>` for the program running `hermes gateway run`). |
 | `handoff_review_required` | A page moved between computers needs the human to check it, for example a login. Ask them. |
 

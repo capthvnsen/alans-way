@@ -9,7 +9,7 @@
 #     --vps-key 'ssh-ed25519 AAAA... root@vps'
 #
 # It checks Tailscale and the systemd SSH server, builds and installs the
-# Alan's Way app (skip with --skip-install), lets that VPS key log in to this
+# Alan's Workspace app (skip with --skip-install), lets that VPS key log in to this
 # computer (only from your Tailscale network), pins the VPS host key so this
 # computer can reach the VPS without a trust-on-first-use prompt, and prints
 # the values the agent needs next. The VPS address must be a Tailscale name or
@@ -37,7 +37,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(uname -s)" = Linux ] || die "run this on your Linux computer"
-[ "$(uname -m)" = x86_64 ] || die "Alan's Way for Linux only comes as a 64-bit Intel/AMD (x86_64) build, and this computer is $(uname -m)."
+[ "$(uname -m)" = x86_64 ] || die "Alan's Workspace for Linux only comes as a 64-bit Intel/AMD (x86_64) build, and this computer is $(uname -m)."
 [ -n "$VPS" ] && [ -n "$VPS_HOST_KEY" ] && [ -n "$VPS_KEY" ] \
   || die "needs --vps, --vps-host-key and --vps-key; ask your setup agent for the full command"
 
@@ -98,7 +98,7 @@ append_known_host() {
 }
 # --- tailnet helpers end
 
-is_tailnet_host "$VPS_HOST" || die "$VPS_HOST is not a Tailscale address. Alan's Way connects over your Tailscale network only. On the VPS run 'tailscale ip -4' and use that 100.x.y.z address (or its name ending in .ts.net), then re-run this command."
+is_tailnet_host "$VPS_HOST" || die "$VPS_HOST is not a Tailscale address. Alan's Workspace connects over your Tailscale network only. On the VPS run 'tailscale ip -4' and use that 100.x.y.z address (or its name ending in .ts.net), then re-run this command."
 
 TS="$(command -v tailscale || true)"
 PC_IP="$([ -n "$TS" ] && "$TS" ip -4 2>/dev/null | head -1 || true)"

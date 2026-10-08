@@ -1,8 +1,8 @@
-# Hermes Alan's Way
+# Alan's Workspace
 
 **The open-source Grokbot killer.** A companion app and plugin for stock Hermes. Your bots live on a VM or VPS and work on your Mac or PC, on your terms.
 
-The app is called **OpenAlan**.
+The app is called **Alan's Workspace**.
 
 [**Download for Mac**](https://openalan.com/download/mac) · [**Download for Windows**](https://openalan.com/download/windows) · [openalan.com](https://openalan.com) · [Discord](https://discord.gg/jBQCPUsVE) · [X @alexhvnsen](https://x.com/alexhvnsen)
 
@@ -91,10 +91,10 @@ On Linux (x64, systemd, with a desktop session), run the [Quick start](#quick-st
 
 Sign into Telegram inside the app, and your existing bots appear in the sidebar.
 
-**Mac permissions (once, on the Mac itself).** Controlling other desktop apps needs two macOS permissions for the Alan's Way app:
+**Mac permissions (once, on the Mac itself).** Controlling other desktop apps needs two macOS permissions for the Alan's Workspace app:
 
-1. Open System Settings, Privacy & Security, Accessibility, and turn on **alans-way-localapp**. If it is not listed, click +, choose `/Applications/alans-way-localapp.app`, and turn it on.
-2. In Privacy & Security, Screen Recording (named Screen & System Audio Recording on macOS 15 and later), turn on **alans-way-localapp** the same way.
+1. Open System Settings, Privacy & Security, Accessibility, and turn on **Alan's Workspace (listed as alans-way-localapp)**. If it is not listed, click +, choose `/Applications/alans-way-localapp.app`, and turn it on.
+2. In Privacy & Security, Screen Recording (named Screen & System Audio Recording on macOS 15 and later), turn on **Alan's Workspace** the same way.
 
 Do this at the Mac itself: macOS only creates these entries from a real login session. Grant the app, not Terminal, `sshd` or Node. The agent's SSH session only relays requests to the app, and the app runs the helper (built from `desktop/scripts/mac-computer.swift`) that reads other apps, so remote SSH sessions need no grant of their own. The first time an agent is refused, macOS shows its own prompt for the app; Settings in the app also shows both statuses with buttons that open the right System Settings panes. After you reinstall or upgrade, macOS can treat the rebuilt app as new: if desktop control stops working, switch both entries off and on again. Browser tabs need neither permission. A macOS VM guest is different: grant `mac-computer` inside the VM, as described in [macOS guest VM](docs/mac-vm-guest.md).
 
@@ -108,7 +108,7 @@ For development, run from source instead: `cd desktop && npm ci && npm start`
 **Let your cloud agent do it (recommended).** The app's setup wizard (or **Settings → Agent setup → Copy setup prompt**) gives you a prompt to paste to your Hermes bot. It points at [docs/setup-prompt.md](docs/setup-prompt.md) through `openalan.com/agent-prompt`, so it stays current as setup changes. Without the app open, this works too:
 
 ```text
-Set up Alan's Way. Repo: https://github.com/capthvnsen/alans-way
+Set up Alan's Workspace. Repo: https://github.com/capthvnsen/alans-way
 Fetch https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-prompt.md and follow the text block in it exactly. Do not modify Hermes. Never print secrets.
 ```
 
@@ -139,12 +139,6 @@ Short-term themes, all in progress or planned:
 - Network routing of remote tasks through your primary machine.
 - Faster and cheaper runs (optional).
 - Phone your agent with local voice models, without interrupting Telegram.
-
-## Hosting
-
-DIY is free. Host Hermes on Orgo and get 25% off the first 3 months: [orgo.ai/?r=alan](https://orgo.ai/?r=alan).
-
-Or take the $79.95/mo Support Plan: your own Orgo cloud computer (up to 8GB RAM), seamless automated setup, 1:1 support, 2,000+ fast browser and scraping tasks a month and 250 voice minutes. You can bring your existing agent. Details at [openalan.com/#pricing](https://openalan.com/#pricing).
 
 ## Honest boundaries
 

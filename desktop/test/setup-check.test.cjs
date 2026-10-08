@@ -221,7 +221,7 @@ test('buildReport lists the setup, the last check and the newest log lines, reda
     { group: 'server', level: 'fail', title: 'The server is on an older version', fix: 'Server 0.3.2, this app 0.4.0.', action: 'update-server' }];
   const report = buildReport({ now: new Date('2026-10-08T16:00:00Z'), app: appInfo, serverAddress: 'root@192.0.2.5', computerAddress: 'me@192.0.2.6',
     findings, checkedAt: '2026-10-08T15:59:00Z', server: { ok: true, version: '0.3.2' }, errorLog: log });
-  assert.match(report, /^Open Alan report, 2026-10-08T16:00:00\.000Z$/m);
+  assert.match(report, /^Alan’s Workspace report, 2026-10-08T16:00:00\.000Z$/m);
   assert.match(report, /App 0\.4\.0 on darwin arm64 \(15\.6\), signed build/);
   assert.match(report, /Server address: root@192\.0\.2\.5/);
   assert.match(report, /✓ This computer: Signed in to Telegram$/m);
