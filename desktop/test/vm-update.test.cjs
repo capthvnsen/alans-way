@@ -338,6 +338,16 @@ test('doctorVm never runs against a Windows server', async () => {
 test('doctorVm turns an unreachable server into an error result', async () => {
   const { run } = fakeRun({ code: 255, out: '', err: 'ssh: connect to host vm.example port 22: Connection refused' });
   const result = await createVmUpdater({ run, readScript }).doctorVm(vm());
-  assert.equal(result.ok, false);
-  assert.match(result.error, /Could not reach the VM over SSH/);
+  assert.deepEqual(result, { ok: false, error: 'The server check stopped without a report: ssh: connect to host vm.example port 22: Connection refused' });
+});
+
+test('doctorVm says when the server check ran out of time or stopped without a report', async () => {
+  const doctor = (res) => createVmUpdater({ run: fakeRun(res).run, readScript }).doctorVm(vm());
+  assert.deepEqual(await doctor({ code: null, out: 'vm-update: still going\n', err: '' }), { ok: false, error: 'The server check ran out of time.' });
+  assert.deepEqual(await doctor({ code: 0, out: 'first\nsecond\nthird\n', err: '' }),
+    { ok: false, error: 'The server check stopped without a report: second third' });
+  assert.deepEqual(await doctor({ code: 1, out: 'progress\n', err: 'sh: node: not found\n' }),
+    { ok: false, error: 'The server check stopped without a report: progress sh: node: not found' });
+  const check = await createVmUpdater({ run: fakeRun({ code: null, out: '', err: '' }).run, readScript }).checkVm(vm());
+  assert.equal(check.error, 'Could not reach the VM over SSH. exit null', 'checkVm keeps its message');
 });

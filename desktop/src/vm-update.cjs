@@ -108,6 +108,8 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
     } : undefined;
     const res = await ssh(host, remote, { input: text, timeoutMs, onStdout });
     const result = parseResultLine(res.out) || {};
+    if (doctor && !Object.keys(result).length) return { ok: false, error: res.code === null ? 'The server check ran out of time.'
+      : `The server check stopped without a report: ${tail(`${res.out}\n${res.err}`) || `exit ${res.code}`}` };
     if (res.code !== 0 && !Object.keys(result).length)
       return { ok: false, state: 'failed', error: `Could not reach the VM over SSH. ${tail(res.err) || `exit ${res.code}`}` };
     return result;
