@@ -1,4 +1,5 @@
 node_modules/
+.npm-cache/
 scripts/mac-computer
 scripts/win-computer.exe
 dist/
