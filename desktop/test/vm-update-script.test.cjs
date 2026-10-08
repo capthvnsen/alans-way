@@ -64,9 +64,13 @@ exit 0
   return { bin, marker };
 }
 // A fake supervisorctl driven by files under $FAKE_SUPERVISOR_STATE:
-//   status          printed verbatim by `supervisorctl status`
-//   pid.<name>      the pid `supervisorctl pid <name>` answers
-//   restart-fail    program names whose `restart` exits 1
+//   status           printed verbatim by `supervisorctl status` (the matching
+//                    line only when a program name is passed)
+//   pid.<name>       the pid `supervisorctl pid <name>` answers
+//   next-pid.<name>  the pid `signal`/`start` promotes: the relaunched process
+//   signal-fail      names whose `signal` exits 1 (a verb the host lacks)
+//   no-relaunch      names that stay STOPPED after `signal` (no autorestart)
+//   restart-fail     names whose `restart` exits 1
 // Like the real supervisorctl, status exits nonzero when any listed program
 // is not RUNNING and pid exits nonzero for a program that is not RUNNING.
 // A long-lived process whose argv carries the given words, so the script's
@@ -81,13 +85,48 @@ function addSupervisor(bin, marker, state, sudoOnly = false) {
   fs.writeFileSync(path.join(bin, 'supervisorctl'), `#!/bin/sh
 STATE="$FAKE_SUPERVISOR_STATE"
 ${sudoOnly ? '[ -n "${FAKE_SUDO:-}" ] || exit 1\n' : ''}case "\${1:-}" in
-  status) cat "$STATE/status" 2>/dev/null
+  status) if [ -n "\${2:-}" ]; then
+            grep "^\${2} " "$STATE/status" 2>/dev/null
+            awk -v n="\${2:-}" '$1 == n && $2 != "RUNNING" { bad = 1 } END { exit bad+0 }' "$STATE/status" 2>/dev/null || exit 3
+            exit 0
+          fi
+          cat "$STATE/status" 2>/dev/null
           [ -f "$STATE/status" ] || exit 0
           awk 'NF > 1 && $2 != "RUNNING" { bad = 1 } END { exit bad+0 }' "$STATE/status" || exit 3
           exit 0;;
   pid) cat "$STATE/pid.\${2:-}" 2>/dev/null
        awk -v n="\${2:-}" '$1 == n { found = ($2 == "RUNNING") } END { exit !found }' "$STATE/status" 2>/dev/null || exit 7
        exit 0;;
+  signal) n="\${3:-}"
+          [ "\${2:-}" = "USR1" ] || [ "\${2:-}" = "SIGUSR1" ] || exit 1
+          grep -qxF "$n" "$STATE/signal-fail" 2>/dev/null && exit 1
+          cur="$(cat "$STATE/pid.$n" 2>/dev/null | tr -d '[:space:]')"
+          case "$cur" in ''|0|*[!0-9]*) exit 1;; esac
+          echo "supervisorctl signal \${2:-} $n" >> "${marker}"
+          kill "$cur" 2>/dev/null
+          newp="$(cat "$STATE/next-pid.$n" 2>/dev/null | tr -d '[:space:]')"
+          grep -qxF "$n" "$STATE/no-relaunch" 2>/dev/null && newp=""
+          case "$newp" in
+            ''|*[!0-9]*)
+              printf '0\\n' > "$STATE/pid.$n"
+              awk -v n="$n" '$1 == n { $0 = n " STOPPED Oct 08 12:00 AM" } { print }' "$STATE/status" > "$STATE/status.tmp" \\
+                && mv "$STATE/status.tmp" "$STATE/status";;
+            *)
+              printf '%s\\n' "$newp" > "$STATE/pid.$n"
+              awk -v n="$n" -v p="$newp" '$1 == n { sub(/pid [0-9]+/, "pid " p) } { print }' "$STATE/status" > "$STATE/status.tmp" \\
+                && mv "$STATE/status.tmp" "$STATE/status";;
+          esac
+          exit 0;;
+  start) n="\${2:-}"
+         cur="$(cat "$STATE/pid.$n" 2>/dev/null | tr -d '[:space:]')"
+         case "$cur" in ''|0|*[!0-9]*) ;; *) exit 1;; esac
+         newp="$(cat "$STATE/next-pid.$n" 2>/dev/null | tr -d '[:space:]')"
+         case "$newp" in ''|*[!0-9]*) exit 1;; esac
+         echo "supervisorctl start $n" >> "${marker}"
+         printf '%s\\n' "$newp" > "$STATE/pid.$n"
+         awk -v n="$n" -v p="$newp" '$1 == n { $0 = n " RUNNING pid " p ", uptime 0:00:01" } { print }' "$STATE/status" > "$STATE/status.tmp" \\
+           && mv "$STATE/status.tmp" "$STATE/status"
+         exit 0;;
   restart) echo "supervisorctl restart \${2:-}" >> "${marker}"
            grep -qxF "\${2:-}" "$STATE/restart-fail" 2>/dev/null && exit 1
            exit 0;;
@@ -681,7 +720,7 @@ test('an unresolvable broker program names supervisorctl, never a dead systemctl
   assert.doesNotMatch(fs.readFileSync(marker, 'utf8'), /systemctl (--user )?restart/);
 });
 
-test('a plugin change restarts a supervisord-managed gateway through supervisorctl', async () => {
+test('a plugin change drains a supervisord-managed gateway through SIGUSR1', async () => {
   const checkout = makeCheckout(remote);
   const { bin, marker } = makeBin();
   fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
@@ -691,8 +730,10 @@ test('a plugin change restarts a supervisord-managed gateway through supervisorc
   addPlugin(home, 'default', 'alans-way', '0.6.1');
   const sstate = mktemp('vm-update-supervisor-');
   const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  const pid2 = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
   fs.writeFileSync(path.join(sstate, 'status'), `gw-one RUNNING pid ${pid}, uptime 0:02:00\n`);
   fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
+  fs.writeFileSync(path.join(sstate, 'next-pid.gw-one'), `${pid2}\n`);
   addSupervisor(bin, marker, sstate);
   const port = await makeStatus({ version: '0.3.2', busy: false });
   const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
@@ -701,10 +742,69 @@ test('a plugin change restarts a supervisord-managed gateway through supervisorc
   assert.equal(res.status, 0, res.stderr);
   assert.equal(result.plugins[0].status, 'updated');
   assert.equal(result.gatewayRestarted, true);
-  assert.equal(result.gatewayRestartCmd, 'supervisorctl restart gw-one');
+  assert.equal(result.gatewayRestartCmd, 'supervisorctl signal USR1 gw-one');
   assert.equal(restarts(), 0, 'no hermes gateway restart on a supervisord guest');
   assert.doesNotMatch(log(), /gateway restart/);
-  assert.match(fs.readFileSync(marker, 'utf8'), /supervisorctl restart gw-one/);
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.match(markerText, /supervisorctl signal USR1 gw-one/);
+  assert.doesNotMatch(markerText, /supervisorctl restart/, 'a drain restart never escalates to SIGKILL');
+});
+
+test('a gateway still down after the drain is started through supervisorctl', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  const { restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  const pid2 = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  fs.writeFileSync(path.join(sstate, 'status'), `gw-one RUNNING pid ${pid}, uptime 0:02:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
+  fs.writeFileSync(path.join(sstate, 'next-pid.gw-one'), `${pid2}\n`);
+  fs.writeFileSync(path.join(sstate, 'no-relaunch'), 'gw-one\n');
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ALANS_WAY_VM_GATEWAY_TIMEOUT: '2',
+      ...pluginEnv(home, state) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.gatewayRestarted, true);
+  assert.equal(result.gatewayRestartCmd, 'supervisorctl start gw-one');
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.match(markerText, /supervisorctl signal USR1 gw-one/);
+  assert.match(markerText, /supervisorctl start gw-one/);
+  assert.equal(restarts(), 0);
+});
+
+test('a supervisor without the signal verb falls back to supervisorctl restart', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  const { restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  fs.writeFileSync(path.join(sstate, 'status'), `gw-one RUNNING pid ${pid}, uptime 0:02:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
+  fs.writeFileSync(path.join(sstate, 'signal-fail'), 'gw-one\n');
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin,
+    { FAKE_SUPERVISOR_STATE: sstate, ...pluginEnv(home, state) }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.gatewayRestarted, true);
+  assert.equal(result.gatewayRestartCmd, 'supervisorctl restart gw-one');
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.match(markerText, /supervisorctl restart gw-one/);
+  assert.doesNotMatch(markerText, /supervisorctl signal/, 'the signal verb itself was never usable');
+  assert.equal(restarts(), 0);
 });
 
 test('a failed supervisord gateway restart names the working command, not a dead one', async () => {
@@ -720,6 +820,7 @@ test('a failed supervisord gateway restart names the working command, not a dead
   const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
   fs.writeFileSync(path.join(sstate, 'status'), `gw-one RUNNING pid ${pid}, uptime 0:02:00\n`);
   fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
+  fs.writeFileSync(path.join(sstate, 'signal-fail'), 'gw-one\n');
   fs.writeFileSync(path.join(sstate, 'restart-fail'), 'gw-one\n');
   addSupervisor(bin, marker, sstate);
   const port = await makeStatus({ version: '0.3.2', busy: false });
@@ -825,7 +926,7 @@ test('a foreign "gateway run" program is never restarted for the agent gateway',
   assert.equal(res.status, 0, res.stderr);
   assert.equal(result.plugins[0].status, 'updated');
   assert.equal(result.gatewayRestarted, true);
-  assert.equal(result.gatewayRestartCmd, 'supervisorctl restart <program>');
+  assert.equal(result.gatewayRestartCmd, 'supervisorctl signal USR1 <program>');
   assert.equal(restarts(), 1, 'the plain hermes gateway restart path runs');
   assert.doesNotMatch(fs.readFileSync(marker, 'utf8'), /supervisorctl restart/, 'an unrelated program is left alone');
 });

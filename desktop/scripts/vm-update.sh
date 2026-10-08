@@ -408,24 +408,61 @@ EOF
   # service manager owns the relaunch).
   if [ "$CHANGED" = true ]; then
     say "restarting the agent gateway"
-    # A gateway that runs under supervisord is restarted through it: without
-    # an external-supervisor marker `hermes gateway restart` only sees a
-    # "manual" process and takes its destructive stop/start path, which races
-    # the supervisor's own respawn. The program is found by command line,
-    # never by a hardcoded name; hermes stays the fallback.
+    # A gateway under supervisord is restarted with USR1, not `restart`: the
+    # supervisor's restart escalates SIGTERM to SIGKILL past stopwaitsecs, and
+    # a SIGKILL mid-checkpoint corrupts the gateway's state. USR1 drains
+    # active turns, exits, and the supervisor relaunches. The program is found
+    # by command line, never a hardcoded name; hermes stays the last resort.
     GW_PROG="$(supervisor_program 'hermes' 'gateway run')"
     if [ -n "$GW_PROG" ]; then
-      GW_CMD="supervisorctl restart $GW_PROG"
+      _gw_old="$(_sp_ctl pid "$GW_PROG" | tr -d '[:space:]')"
+      if _sp_ctl signal USR1 "$GW_PROG" >/dev/null 2>&1; then
+        GW_CMD="supervisorctl signal USR1 $GW_PROG"
+        say "gateway is draining; waiting for the supervisor to relaunch it"
+        # Wait for a new RUNNING pid, bounded by the run budget so the JSON
+        # result line is always reached; a drain can outlive stopwaitsecs by
+        # design, so the deadline is a poll cap, not a kill.
+        _gw_wait=$(( $(budget_left) - 5 ))
+        [ "$_gw_wait" -gt "$GATEWAY_TIMEOUT" ] && _gw_wait="$GATEWAY_TIMEOUT"
+        _gw_deadline=$(( $(date +%s) + _gw_wait ))
+        while [ "$(date +%s)" -lt "$_gw_deadline" ]; do
+          _gw_line="$(_sp_ctl status "$GW_PROG" 2>/dev/null)"
+          case "$_gw_line" in
+            *" RUNNING "*)
+              _gw_new="$(printf '%s' "$_gw_line" | sed -n 's/.*pid \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+              if [ -n "$_gw_new" ] && [ "$_gw_new" != "$_gw_old" ]; then
+                GATEWAY_RESTARTED=true
+                break
+              fi;;
+          esac
+          sleep 2
+        done
+        if [ "$GATEWAY_RESTARTED" != true ]; then
+          _gw_now="$(_sp_ctl pid "$GW_PROG" | tr -d '[:space:]')"
+          case "$_gw_now" in
+            ''|0|*[!0-9]*)
+              # The drain finished but nothing relaunched it.
+              GW_CMD="supervisorctl start $GW_PROG"
+              _sp_ctl start "$GW_PROG" >/dev/null 2>&1 && GATEWAY_RESTARTED=true;;
+            *)
+              # Still running on the old pid: the drain is in flight and the
+              # supervisor owns the relaunch.
+              GATEWAY_RESTARTED=true;;
+          esac
+        fi
+      else
+        # A supervisor too old for the signal verb still gets a plain restart.
+        GW_CMD="supervisorctl restart $GW_PROG"
+        _sp_ctl restart "$GW_PROG" >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+      fi
     elif ! systemd_live && have supervisorctl; then
       # The gateway's program is unresolvable here (a stopped program whose
       # conf command is a wrapper), but supervisord is the service manager, so
       # the remediation names it rather than the hermes fallback it hides.
-      GW_CMD="supervisorctl restart <program>"
+      GW_CMD="supervisorctl signal USR1 <program>"
     fi
     [ "$GW_CMD" = "hermes gateway restart" ] || GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_CMD")\""
-    if [ -n "$GW_PROG" ] && _sp_ctl restart "$GW_PROG" >/dev/null 2>&1; then
-      GATEWAY_RESTARTED=true
-    elif run_hermes "$GATEWAY_TIMEOUT" gateway restart >/dev/null 2>&1; then
+    if [ "$GATEWAY_RESTARTED" != true ] && run_hermes "$GATEWAY_TIMEOUT" gateway restart >/dev/null 2>&1; then
       GATEWAY_RESTARTED=true
     fi
     if [ "$GATEWAY_RESTARTED" = true ]; then

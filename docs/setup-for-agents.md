@@ -226,10 +226,14 @@ browser services start once a display on `:99` exists.
 
 **VPS without systemd (supervisord, for example an Orgo VM):** services run
 under supervisord, not systemd. Restart the gateway through its supervisor
-with `supervisorctl restart <program>`, where `<program>` is the supervisor
-program that runs `hermes gateway run`; find its name in `supervisorctl
-status` and its `command=` line in `/etc/supervisor/conf.d/*.conf`;
-`hermes gateway restart` cannot see that supervisor. If the VM already serves
+with `supervisorctl signal USR1 <program>`, where `<program>` is the
+supervisor program that runs `hermes gateway run`; find its name in
+`supervisorctl status` and its `command=` line in
+`/etc/supervisor/conf.d/*.conf`. USR1 drains active turns before the
+supervisor relaunches the program; `supervisorctl restart` escalates to a
+force-kill that can corrupt gateway state, and `hermes gateway restart`
+cannot see that supervisor. If the program is stopped, `supervisorctl start
+<program>`. If the VM already serves
 a desktop through noVNC or websockify, use its existing viewer URL in
 **Settings → VPS desktop connection** instead of installing another display
 stack.
@@ -280,7 +284,7 @@ desktop connection** in the app.
 | Bot opens tabs on the VPS while the Mac is awake | The Mac app is closed, or SSH from the VPS fails. Re-run the stage 2 check. On Windows and Linux, closing the app window hides it to the tray; use the tray icon's Show, and Quit only when you want the app stopped. |
 | A connect script says the address is not a Tailscale address | The VPS address must be a Tailscale name or `100.x.y.z` IP. On the VPS run `tailscale ip -4` and use that. |
 | Desktop control fails on a Mac with "Accessibility is off" or "Screen Recording is off" | Grant both to `alans-way-localapp` at the Mac itself, as in stage 1. After an app upgrade, switch them off and on again. |
-| Browser tool errors right after setup | The gateway is still running old code. `hermes gateway restart` (on a VPS without systemd, `supervisorctl restart <program>` for the program running `hermes gateway run`). |
+| Browser tool errors right after setup | The gateway is still running old code. `hermes gateway restart` (on a VPS without systemd, `supervisorctl signal USR1 <program>` for the program running `hermes gateway run`). |
 | `handoff_review_required` | A page moved between computers needs the human to check it, for example a login. Ask them. |
 
 More detail: [deployment](deployment.md), [VPS browser](../desktop/docs/vps-browser.md),

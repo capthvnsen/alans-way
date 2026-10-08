@@ -55,9 +55,12 @@ it can't safely automate.
 
 On a VM without systemd (services under supervisord, for example an Orgo VM),
 restart the gateway through its supervisor instead of `hermes gateway restart`:
-`supervisorctl restart <program>` for the program that runs `hermes gateway
-run` (find it via `supervisorctl status` and the `command=` lines in
-`/etc/supervisor/conf.d/*.conf`).
+`supervisorctl signal USR1 <program>` for the program that runs `hermes
+gateway run` (find it via `supervisorctl status` and the `command=` lines in
+`/etc/supervisor/conf.d/*.conf`). USR1 drains active turns before the
+supervisor relaunches the program; `supervisorctl restart` escalates to a
+force-kill that can corrupt gateway state. If the program is stopped,
+`supervisorctl start <program>`.
 
 Chrome extensions are a separate browser capability. The current Electron app
 ships no extension installer or pinning bar. Electron supports a subset of

@@ -59,9 +59,11 @@ Rules for the whole job:
    continue", then run `hermes gateway restart`. Otherwise run it and wait
    until `hermes gateway status` reports it running. On a server without
    systemd (services under supervisord) `hermes gateway restart` cannot see
-   the supervisor; instead run `supervisorctl restart <program>` for the
+   the supervisor; instead run `supervisorctl signal USR1 <program>` for the
    program that runs `hermes gateway run` (find it via `supervisorctl status`
-   and the `command=` lines in `/etc/supervisor/conf.d/*.conf`).
+   and the `command=` lines in `/etc/supervisor/conf.d/*.conf`), which drains
+   active turns before the supervisor relaunches it. If the program is
+   stopped, `supervisorctl start <program>`.
 
 Finish with a short report: OLD → NEW (or "already up to date" if they are
 equal), what passed, every warning from setup.sh, and anything that still
