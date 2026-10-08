@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const {
   createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil,
   vmRetryState, vmCheckEntry, pruneVmUpdates, vmPhaseText, pluginStatusText, vmPluginLines,
-  VM_TIMEOUT_MS, CHECK_TIMEOUT_MS,
+  VM_TIMEOUT_MS, CHECK_TIMEOUT_MS, DOCTOR_TIMEOUT_MS,
 } = require('../src/vm-update.cjs');
 
 const SCRIPTS = { 'vm-update.sh': '#!/bin/sh\n# fake posix payload\n', 'vm-update.ps1': '# fake windows payload\n' };
@@ -316,4 +316,28 @@ test('a missed gateway restart names the command the guest detected, not a fixed
   assert.match(lines[1].text, /supervisorctl restart gw-one/);
   assert.doesNotMatch(lines[1].text, /hermes gateway restart/);
   assert.match(vmPluginLines({ plugins, gatewayRestarted: false })[1].text, /hermes gateway restart/);
+});
+
+test('doctorVm pipes the bundled script with --doctor under the doctor cap and returns its report', async () => {
+  const report = { ok: true, version: '0.4.0', hostVersion: '0.4.0', pluginTag: 'v0.7.0', error: '', profiles: [] };
+  const { calls, run } = fakeRun({ code: 0, out: `${JSON.stringify(report)}\n`, err: '' });
+  const result = await createVmUpdater({ run, readScript }).doctorVm(vm());
+  assert.deepEqual(result, report);
+  assert.equal(calls[0].args.at(-1), 'sh -s -- --doctor');
+  assert.equal(calls[0].opts.timeoutMs, DOCTOR_TIMEOUT_MS);
+  assert.equal(calls[0].opts.input, SCRIPTS['vm-update.sh']);
+});
+
+test('doctorVm never runs against a Windows server', async () => {
+  const { calls, run } = fakeRun({ code: 0, out: '', err: '' });
+  const result = await createVmUpdater({ run, readScript }).doctorVm(vm({ scriptPath: 'C:/Users/me/app/vps-browser-host.cjs' }));
+  assert.deepEqual(result, { ok: false, error: 'windows' });
+  assert.equal(calls.length, 0);
+});
+
+test('doctorVm turns an unreachable server into an error result', async () => {
+  const { run } = fakeRun({ code: 255, out: '', err: 'ssh: connect to host vm.example port 22: Connection refused' });
+  const result = await createVmUpdater({ run, readScript }).doctorVm(vm());
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Could not reach the VM over SSH/);
 });
