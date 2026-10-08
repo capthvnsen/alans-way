@@ -825,7 +825,7 @@ test('a foreign "gateway run" program is never restarted for the agent gateway',
   assert.equal(res.status, 0, res.stderr);
   assert.equal(result.plugins[0].status, 'updated');
   assert.equal(result.gatewayRestarted, true);
-  assert.equal(result.gatewayRestartCmd, undefined);
+  assert.equal(result.gatewayRestartCmd, 'supervisorctl restart <program>');
   assert.equal(restarts(), 1, 'the plain hermes gateway restart path runs');
   assert.doesNotMatch(fs.readFileSync(marker, 'utf8'), /supervisorctl restart/, 'an unrelated program is left alone');
 });

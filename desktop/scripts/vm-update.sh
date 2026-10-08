@@ -414,7 +414,14 @@ EOF
     # the supervisor's own respawn. The program is found by command line,
     # never by a hardcoded name; hermes stays the fallback.
     GW_PROG="$(supervisor_program 'hermes' 'gateway run')"
-    [ -n "$GW_PROG" ] && GW_CMD="supervisorctl restart $GW_PROG"
+    if [ -n "$GW_PROG" ]; then
+      GW_CMD="supervisorctl restart $GW_PROG"
+    elif ! systemd_live && have supervisorctl; then
+      # The gateway's program is unresolvable here (a stopped program whose
+      # conf command is a wrapper), but supervisord is the service manager, so
+      # the remediation names it rather than the hermes fallback it hides.
+      GW_CMD="supervisorctl restart <program>"
+    fi
     [ "$GW_CMD" = "hermes gateway restart" ] || GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_CMD")\""
     if [ -n "$GW_PROG" ] && _sp_ctl restart "$GW_PROG" >/dev/null 2>&1; then
       GATEWAY_RESTARTED=true
@@ -510,7 +517,7 @@ case "$GUEST_OS" in
     _prog="$(supervisor_program 'vps-browser-host.cjs')"
     if [ -n "$_prog" ]; then
       _sp_ctl restart "$_prog" >/dev/null 2>&1 && RESTARTED=true \
-        || say "could not restart the broker; run: supervisorctl restart $_prog"
+        || say "could not restart the broker; run: supervisorctl restart $_prog (or: sudo supervisorctl restart $_prog)"
     elif ! systemd_live; then
       if have supervisorctl; then
         say "could not restart the broker; find its program with: supervisorctl status"
