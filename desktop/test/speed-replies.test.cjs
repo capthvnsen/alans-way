@@ -165,6 +165,14 @@ before(async () => {
     await wait(100);
   }
   cdpPort = fs.readFileSync(portFile, 'utf8').split('\n')[0];
+  // DevToolsActivePort appears when the port is bound, before Chrome answers
+  // HTTP; the host's one-shot connect gives up after 3s and exits on a starved runner.
+  for (const deadline = Date.now() + 60000;;) {
+    if (await fetch(`http://127.0.0.1:${cdpPort}/json/version`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false)) break;
+    assert.equal(browser.exitCode, null, 'Chrome exited before answering /json/version');
+    assert.ok(Date.now() < deadline, 'Chrome never answered /json/version');
+    await wait(100);
+  }
   const data = path.join(dir, 'data');
   fs.mkdirSync(data);
   fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify({ cdpUrl: `http://127.0.0.1:${cdpPort}`, port: await new Promise((r) => { const p = http.createServer(); p.listen(0, '127.0.0.1', () => { const n = p.address().port; p.close(() => r(n)); }); }) }));

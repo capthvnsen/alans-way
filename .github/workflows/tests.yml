@@ -10,7 +10,12 @@ permissions:
 
 jobs:
   desktop:
-    runs-on: ubuntu-latest
+    # The release build runs check on macOS, so PRs must too.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: desktop
