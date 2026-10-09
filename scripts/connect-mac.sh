@@ -8,7 +8,7 @@
 #     --vps-host-key 'ssh-ed25519 AAAA...' \
 #     --vps-key 'ssh-ed25519 AAAA... root@vps'
 #
-# It installs or upgrades the Alan's Way app, lets that VPS key log in to this
+# It installs or upgrades the Alan's Workspace app, lets that VPS key log in to this
 # Mac (only from your Tailscale network), pins the VPS host key so this Mac can
 # reach the VPS without a trust-on-first-use prompt, and prints the values the
 # agent needs next. The VPS address must be a Tailscale name or IP. Only public
@@ -93,7 +93,7 @@ append_known_host() {
 }
 # --- tailnet helpers end
 
-is_tailnet_host "$VPS_HOST" || die "$VPS_HOST is not a Tailscale address. Alan's Way connects over your Tailscale network only. On the VPS run 'tailscale ip -4' and use that 100.x.y.z address (or its name ending in .ts.net), then re-run this command."
+is_tailnet_host "$VPS_HOST" || die "$VPS_HOST is not a Tailscale address. Alan's Workspace connects over your Tailscale network only. On the VPS run 'tailscale ip -4' and use that 100.x.y.z address (or its name ending in .ts.net), then re-run this command."
 
 TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale
 [ -x "$TS" ] || TS="$(command -v tailscale || true)"

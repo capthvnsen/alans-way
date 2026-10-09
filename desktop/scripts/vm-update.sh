@@ -1,5 +1,5 @@
 #!/bin/sh
-# vm-update.sh - bring this machine's Alan's Way browser host checkout to a
+# vm-update.sh - bring this machine's Alan's Tools browser host checkout to a
 # release tag, restart the tab broker and verify it answers with that version,
 # then update each Hermes profile's alans-way plugins through `hermes plugins
 # update` and drain-restart the gateway once when any plugin changed. Recent

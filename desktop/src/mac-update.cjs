@@ -60,7 +60,7 @@ async function download(url, file) {
 // Downloaded by the app itself, the image carries no quarantine flag, so the
 // new version opens without another Gatekeeper prompt.
 async function installMacUpdate({ tag, bundlePath }) {
-  if (!canSelfUpdate(bundlePath)) throw new Error('Open Alan is not in a folder it can update. Move it to Applications first.');
+  if (!canSelfUpdate(bundlePath)) throw new Error('Alan’s Workspace is not in a folder it can update. Move it to Applications first.');
   const base = `https://github.com/${REPO}/releases/download/${tag}`;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openalan-update-'));
   const dmg = path.join(dir, 'OpenAlan-mac.dmg'), mount = path.join(dir, 'mnt');

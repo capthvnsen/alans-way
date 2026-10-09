@@ -41,8 +41,8 @@ function computerRows({ platform, local }) {
     ? row('computer', 'ok', 'Signed in to Telegram')
     : row('computer', 'fail', 'Not signed in to Telegram', 'Scan the QR code on the left with your phone: Telegram → Settings → Devices → Link Desktop Device.')];
   if (platform === 'darwin') {
-    if (local.inApplications === true) rows.push(row('computer', 'ok', 'Open Alan is in Applications'));
-    if (local.inApplications === false) rows.push(row('computer', 'fail', 'Open Alan is not in Applications', 'Move it there so your agent can find it.', 'move-to-applications'));
+    if (local.inApplications === true) rows.push(row('computer', 'ok', 'Alan’s Workspace is in Applications'));
+    if (local.inApplications === false) rows.push(row('computer', 'fail', 'Alan’s Workspace is not in Applications', 'Move it there so your agent can find it.', 'move-to-applications'));
     if (local.permissions) {
       rows.push(local.permissions.accessibility === true
         ? row('computer', 'ok', 'Accessibility is on')
@@ -86,7 +86,7 @@ function serverRows({ appVersion, server }) {
   if (server.ok !== true) {
     if (server.error === 'windows') return [row(s, 'warn', 'Server checks aren’t available for Windows servers yet')];
     const missing = /no browser host checkout/.test(server.error || '');
-    return [row(s, 'fail', missing ? 'Open Alan isn’t installed on the server' : 'The server check failed', missing ? SETUP_PROMPT : server.error || '')];
+    return [row(s, 'fail', missing ? 'Alan’s Tools aren’t installed on the server' : 'The server check failed', missing ? SETUP_PROMPT : server.error || '')];
   }
   const rows = [];
   if (isNewer(appVersion, server.version)) rows.push(row(s, 'fail', 'The server is on an older version', `Server ${server.version}, this app ${appVersion}.`, 'update-server'));
@@ -96,13 +96,13 @@ function serverRows({ appVersion, server }) {
   else if (server.hostVersion !== server.version) rows.push(row(s, 'warn', 'The server’s browser is running an older version', 'Update the server to restart it.', 'update-server'));
   else rows.push(row(s, 'ok', 'The server’s browser is running'));
   const profiles = server.profiles || [];
-  if (!profiles.length) rows.push(row(s, 'warn', 'No Hermes profile on the server has the alans-way plugin', SETUP_PROMPT));
+  if (!profiles.length) rows.push(row(s, 'warn', 'No Hermes profile on the server has the Alan’s Way Plugin', SETUP_PROMPT));
   for (const p of profiles) {
     const prefix = profiles.length > 1 ? `${p.profile}: ` : '';
     if (p.checked === false) { rows.push(row(s, 'warn', `${prefix}Not checked (out of time)`, 'Check again later.')); continue; }
     for (const plugin of p.plugins || []) rows.push(pluginRow(s, prefix, plugin, server.pluginTag));
     rows.push(p.computerBackend === 'alans-way-computer'
-      ? row(s, 'ok', `${prefix}Computer use goes through Alan’s Way`)
+      ? row(s, 'ok', `${prefix}Computer use goes through the Alan’s Way Plugin`)
       : row(s, 'warn', `${prefix}Computer use runs on Hermes’s built-in backend`, 'Update Hermes to a build with the computer-use provider API, then paste the setup prompt to your bot again.'));
   }
   // One audit per server; setup.sh names the profile in its own lines.
@@ -147,7 +147,7 @@ const GROUPS = { computer: 'This computer', connection: 'Connection', server: 'S
 // The plain-text report a user pastes to support. Built only on request.
 function buildReport({ now = new Date(), app, serverAddress, computerAddress, findings, checkedAt, server, errorLog }) {
   const lines = [
-    `Open Alan report, ${now.toISOString()}`,
+    `Alan’s Workspace report, ${now.toISOString()}`,
     `App ${app.version} on ${app.platform} ${app.arch} (${app.osVersion}), ${app.signed ? 'signed' : 'unsigned'} build`,
     `Server address: ${serverAddress || 'not saved'}`,
     `This computer’s address: ${computerAddress || 'not saved'}`,

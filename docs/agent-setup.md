@@ -1,14 +1,14 @@
 # Small fleet setup with stock Hermes
 
-Keep one VPS primary as the owner of the real Telegram conversation. The Mac
-Hermes- Alan's way app is a browser/tool host, not a second Telegram gateway. An
+Keep one VPS primary as the owner of the real Telegram conversation. The
+Alan's Workspace app on the Mac is a browser/tool host, not a second Telegram gateway. An
 optional native Mac profile can handle deliberately separate local sessions;
 it should retain its own transcript and should not poll the primary's bot
 token. Add specialists only when there is a clear independent role.
 
 ## Workspace behavior
 
-Install the [Alan's Way agent plugin](https://github.com/capthvnsen/alans-way-agents)
+Install the [Alan's Way Plugin](https://github.com/capthvnsen/alans-way-agents)
 on the gateway host — its bundled `workspace-operations` skill covers browser
 and handoff behavior for this release, including human takeover and the limits
 of execution handoff. A short pointer in the profile's user-managed `SOUL.md`
