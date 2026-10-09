@@ -359,6 +359,42 @@ plugin_update_status() {
   printf 'updated|'
 }
 
+# $1 = profile, $2 = plugin, $3 = before, $4 = repoRef; one bounded
+# `plugins update` try. Classifies the answer into _pu_st/_pu_err/_pu_after,
+# counts real movement toward CHANGED, prints the say line and appends the
+# plugin entry - except with $5 = collect a live-gateway refusal is recorded
+# into REFUSED instead, for the drain-stop retry to replay.
+plugin_update_try() {
+  if [ "$1" = default ]; then
+    _pu_ph="$HHOME"
+    _pu_out="$(run_hermes "$PLUGIN_TIMEOUT" plugins update "$2")"
+  else
+    _pu_ph="$HHOME/profiles/$1"
+    _pu_out="$(run_hermes "$PLUGIN_TIMEOUT" -p "$1" plugins update "$2")"
+  fi; _pu_rc=$?
+  _pu_after="$(plugin_version "$_pu_ph/plugins/$2")"
+  [ -n "$_pu_after" ] || _pu_after="$(plugin_rev "$(plugin_meta "$_pu_ph/plugins" "$2")")"
+  _pu_cls="$(plugin_update_status "$_pu_rc" "$_pu_out")"
+  _pu_st="${_pu_cls%%|*}"; _pu_err="${_pu_cls#*|}"
+  case "$_pu_st" in
+    updated) CHANGED=true;;
+    needs_approval)
+      # The code moved but new capabilities stay ungranted until reviewed.
+      printf '%s' "$_pu_out" | grep -Eq 'updated|Re-installed' && CHANGED=true;;
+    blocked)
+      if [ "${5:-}" = collect ]; then
+        # Refused while the gateway runs: collect the pair, report it after
+        # the drain-stop retry below (or as blocked when that never happens).
+        REFUSED="${REFUSED}${REFUSED:+
+}$1|$2|$3|$4|$_pu_err"
+        say "plugin $2 ($1): blocked while the gateway runs"
+        return 0
+      fi;;
+  esac
+  say "plugin $2 ($1): $_pu_st"
+  PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$1" "$2" "$3" "$_pu_after" "$_pu_st" "$_pu_err" "$4")"
+}
+
 update_hermes_plugins() {
   if ! hermes_bin; then say "no hermes CLI on this VM; skipping plugin updates"; return 0; fi
   HHOME="${HERMES_HOME:-$HOME/.hermes}"
@@ -397,31 +433,7 @@ update_hermes_plugins() {
           esac;;
       esac
       [ "$(budget_left)" -gt 15 ] || { say "plugin phase ran out of the time budget; remaining plugins will retry next update"; break 2; }
-      if [ "$_pname" = default ]; then
-        _out="$(run_hermes "$PLUGIN_TIMEOUT" plugins update "$_name")"
-      else
-        _out="$(run_hermes "$PLUGIN_TIMEOUT" -p "$_pname" plugins update "$_name")"
-      fi; _rc=$?
-      _after="$(plugin_version "$_pdir/$_name")"
-      [ -n "$_after" ] || _after="$(plugin_rev "$(plugin_meta "$_pdir" "$_name")")"
-      _cls="$(plugin_update_status "$_rc" "$_out")"
-      _st="${_cls%%|*}"; _err="${_cls#*|}"
-      if [ "$_st" = blocked ]; then
-        # Refused while the gateway runs: collect the pair, report it after
-        # the drain-stop retry below (or as blocked when that never happens).
-        REFUSED="${REFUSED}${REFUSED:+
-}$_pname|$_name|$_before|$_repo_ref|$_err"
-        say "plugin $_name ($_pname): blocked while the gateway runs"
-        continue
-      fi
-      case "$_st" in
-        updated) CHANGED=true;;
-        needs_approval)
-          # The code moved but new capabilities stay ungranted until reviewed.
-          printf '%s' "$_out" | grep -Eq 'updated|Re-installed' && CHANGED=true;;
-      esac
-      say "plugin $_name ($_pname): $_st"
-      PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$_pname" "$_name" "$_before" "$_after" "$_st" "$_err" "$_repo_ref")"
+      plugin_update_try "$_pname" "$_name" "$_before" "$_repo_ref" collect
     done
   done <<EOF
 $(list_profiles)
@@ -430,8 +442,10 @@ EOF
   # the refused pairs, and always start it again. Under supervisord a bare
   # `stop` escalates SIGTERM to SIGKILL past stopwaitsecs and can corrupt
   # state.db mid-drain, so USR1 drains it first and the plain `stop` afterwards
-  # only ever meets a fresh autorestart respawn (or nothing: "not running" is
-  # the state we want, so its exit code is ignored).
+  # only ever fires at a fresh autorestart respawn (or nothing at all). When
+  # the wait ends with the pre-drain pid still running the gateway is left
+  # alone: stopping it would SIGKILL a mid-checkpoint process, the exact path
+  # this avoids.
   if [ -n "$REFUSED" ]; then
     if [ "$(budget_left)" -gt 25 ]; then
       say "stopping the agent gateway so the refused plugin updates can run"
@@ -448,8 +462,24 @@ EOF
             sleep 1
           done
         fi
-        _sp_ctl stop "$GW_PROG" >/dev/null 2>&1 || true
-        GW_STOPPED=true
+        # Re-read the pid before stopping: the same live pid means the drain
+        # is still in flight (or USR1 never landed) and `stop` would escalate
+        # to a SIGKILL against it, so it is left alone and the pairs report
+        # blocked. Only a fresh respawn - or nothing running - is stopped.
+        _gw_now="$(_sp_ctl pid "$GW_PROG" | tr -d '[:space:]')"
+        _gw_hold=0
+        case "$_gw_now" in
+          ''|0|*[!0-9]*) ;;
+          *) [ "$_gw_now" = "$_gw_old" ] && _gw_hold=1;;
+        esac
+        if [ "$_gw_hold" = 0 ]; then
+          _sp_ctl stop "$GW_PROG" >/dev/null 2>&1 || true
+          _gw_now="$(_sp_ctl pid "$GW_PROG" | tr -d '[:space:]')"
+        fi
+        # GW_STOPPED is only claimed when nothing reports running afterwards:
+        # a failed stop leaves the pairs blocked instead of letting a later
+        # `start` spawn a second gateway next to the live one.
+        case "$_gw_now" in ''|0|*[!0-9]*) GW_STOPPED=true;; esac
       elif systemd_live; then
         GW_VIA=systemd
         if [ "$(id -u)" = 0 ]; then
@@ -457,6 +487,12 @@ EOF
         else
           { systemctl --user stop hermes-gateway >/dev/null 2>&1 \
             || sudo -n systemctl stop hermes-gateway >/dev/null 2>&1; } && GW_STOPPED=true
+        fi
+        # Stock Hermes keeps its gateway under `hermes gateway`, not
+        # necessarily a hermes-gateway unit; when neither stop lands, mirror
+        # the restart path's last resort.
+        if [ "$GW_STOPPED" != true ] && run_hermes 30 gateway stop >/dev/null 2>&1; then
+          GW_VIA=hermes GW_STOPPED=true
         fi
       elif run_hermes 30 gateway stop >/dev/null 2>&1; then
         GW_VIA=hermes GW_STOPPED=true
@@ -467,28 +503,15 @@ EOF
     if [ "$GW_STOPPED" = true ]; then
       while IFS='|' read -r _pname _name _before _repo_ref _err; do
         [ -n "$_pname" ] || continue
-        [ "$_pname" = default ] && _phome="$HHOME" || _phome="$HHOME/profiles/$_pname"
-        _after="$(plugin_version "$_phome/plugins/$_name")"
-        [ -n "$_after" ] || _after="$(plugin_rev "$(plugin_meta "$_phome/plugins" "$_name")")"
-        _st=blocked
         if [ "$(budget_left)" -gt 15 ]; then
-          if [ "$_pname" = default ]; then
-            _out="$(run_hermes "$PLUGIN_TIMEOUT" plugins update "$_name")"
-          else
-            _out="$(run_hermes "$PLUGIN_TIMEOUT" -p "$_pname" plugins update "$_name")"
-          fi; _rc=$?
+          plugin_update_try "$_pname" "$_name" "$_before" "$_repo_ref"
+        else
+          [ "$_pname" = default ] && _phome="$HHOME" || _phome="$HHOME/profiles/$_pname"
           _after="$(plugin_version "$_phome/plugins/$_name")"
           [ -n "$_after" ] || _after="$(plugin_rev "$(plugin_meta "$_phome/plugins" "$_name")")"
-          _cls="$(plugin_update_status "$_rc" "$_out")"
-          _st="${_cls%%|*}"; _err="${_cls#*|}"
-          case "$_st" in
-            updated) CHANGED=true;;
-            needs_approval)
-              printf '%s' "$_out" | grep -Eq 'updated|Re-installed' && CHANGED=true;;
-          esac
+          say "plugin $_name ($_pname): blocked"
+          PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$_pname" "$_name" "$_before" "$_after" blocked "$_err" "$_repo_ref")"
         fi
-        say "plugin $_name ($_pname): $_st"
-        PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$_pname" "$_name" "$_before" "$_after" "$_st" "$_err" "$_repo_ref")"
       done <<EOF
 $REFUSED
 EOF
@@ -511,6 +534,8 @@ EOF
           run_hermes "$GATEWAY_TIMEOUT" gateway start >/dev/null 2>&1 && GATEWAY_RESTARTED=true;;
       esac
       if [ "$GATEWAY_RESTARTED" = true ]; then say "agent gateway restarted"
+      elif [ "$GW_VIA" = supervisor ]; then
+        say "could not start the gateway; on the VM run: $GW_CMD (or: sudo $GW_CMD)"
       else say "could not start the gateway; on the VM run: $GW_CMD"; fi
     else
       # The gateway stayed up; every refused pair reports blocked with the

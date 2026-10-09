@@ -57,6 +57,8 @@ function makeBin() {
   fs.writeFileSync(path.join(bin, 'systemctl'), `#!/bin/sh
 echo "systemctl $@" >> "${marker}"
 if [ "\${1:-}" = "is-system-running" ]; then cat "${bin}/systemd-state" 2>/dev/null || echo running; fi
+# A unit named in bin/missing-units does not exist; every verb on it fails.
+for _a in "$@"; do grep -qxF "$_a" "${bin}/missing-units" 2>/dev/null && { echo "Unit $_a.service not found." >&2; exit 1; }; done
 # A hermes-gateway unit's state is tracked in the hermes fixture so a fake
 # hermes can tell a stopped gateway apart from a running one.
 _op="" _gw=0
@@ -78,6 +80,8 @@ exit 0
 //   pid.<name>       the pid `supervisorctl pid <name>` answers
 //   next-pid.<name>  the pid `signal`/`start` promotes: the relaunched process
 //   signal-fail      names whose `signal` exits 1 (a verb the host lacks)
+//   drain-hold       names whose `signal` lands but keeps the old pid: the
+//                    drain is still in flight when the wait ends
 //   no-relaunch      names that stay STOPPED after `signal` (no autorestart)
 //   restart-fail     names whose `restart` exits 1
 // Like the real supervisorctl, status exits nonzero when any listed program
@@ -109,6 +113,8 @@ ${sudoOnly ? '[ -n "${FAKE_SUDO:-}" ] || exit 1\n' : ''}case "\${1:-}" in
   signal) n="\${3:-}"
           [ "\${2:-}" = "USR1" ] || [ "\${2:-}" = "SIGUSR1" ] || exit 1
           grep -qxF "$n" "$STATE/signal-fail" 2>/dev/null && exit 1
+          grep -qxF "$n" "$STATE/drain-hold" 2>/dev/null \
+            && { echo "supervisorctl signal \${2:-} $n" >> "${marker}"; exit 0; }
           cur="$(cat "$STATE/pid.$n" 2>/dev/null | tr -d '[:space:]')"
           case "$cur" in ''|0|*[!0-9]*) exit 1;; esac
           echo "supervisorctl signal \${2:-} $n" >> "${marker}"
@@ -1188,6 +1194,136 @@ test('a refused update with no service manager goes through hermes gateway stop 
   assert.ok(calls.indexOf('gateway stop') < calls.lastIndexOf('plugins update alans-way'), calls);
   assert.ok(calls.lastIndexOf('plugins update alans-way') < calls.indexOf('gateway start'), calls);
   assert.doesNotMatch(fs.readFileSync(marker, 'utf8'), /supervisorctl/);
+});
+
+test('a gateway still draining when the wait ends is left running and the pair reports blocked', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  fs.writeFileSync(path.join(sstate, 'status'), `gw-one                          RUNNING   pid ${pid}, uptime 0:02:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
+  // USR1 lands but the drain never finishes inside the wait window.
+  fs.writeFileSync(path.join(sstate, 'drain-hold'), 'gw-one\n');
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SUPERVISOR_STATE: sstate, FAKE_SVC_LOG: marker,
+    ALANS_WAY_VM_GATEWAY_TIMEOUT: '2',
+    ALANS_WAY_VM_SUPERVISOR_CONFS: `${mktemp('vm-update-confd-')}/*.conf`,
+    ...pluginEnv(home, state),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'blocked');
+  assert.match(result.plugins[0].error, /Cannot update plugin files while the messaging gateway is running/);
+  assert.equal(result.gatewayRestarted, false);
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.match(markerText, /signal USR1 gw-one/);
+  assert.doesNotMatch(markerText, /supervisorctl stop gw-one/,
+    'a mid-drain gateway is never stopped (stop would escalate to SIGKILL)');
+  assert.doesNotMatch(markerText, /supervisorctl start gw-one/, 'the gateway was never down');
+  assert.equal(fs.readFileSync(path.join(sstate, 'pid.gw-one'), 'utf8').trim(), String(pid),
+    'the pre-drain process still owns the program');
+});
+
+test('a supervisor without the signal verb leaves the live gateway alone and reports blocked', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  fs.writeFileSync(path.join(sstate, 'status'), `gw-one                          RUNNING   pid ${pid}, uptime 0:02:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
+  fs.writeFileSync(path.join(sstate, 'signal-fail'), 'gw-one\n');
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SUPERVISOR_STATE: sstate, FAKE_SVC_LOG: marker,
+    ALANS_WAY_VM_SUPERVISOR_CONFS: `${mktemp('vm-update-confd-')}/*.conf`,
+    ...pluginEnv(home, state),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'blocked');
+  assert.equal(result.gatewayRestarted, false);
+  assert.doesNotMatch(fs.readFileSync(marker, 'utf8'), /supervisorctl (stop|start) gw-one/,
+    'the still-running pre-drain pid is never stopped');
+});
+
+test('a systemd guest without a hermes-gateway unit falls back to hermes gateway stop', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  // No systemd-state file: the fake systemctl answers "running", but the
+  // hermes-gateway unit does not exist on this host.
+  fs.writeFileSync(path.join(bin, 'missing-units'), 'hermes-gateway\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  fs.writeFileSync(path.join(state, 'gwstate'), 'running\n');
+  addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SVC_LOG: marker, ...pluginEnv(home, state),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'updated');
+  assert.equal(result.plugins[0].after, '0.6.2');
+  assert.equal(result.gatewayRestarted, true);
+  const markerText = fs.readFileSync(marker, 'utf8');
+  const i = (s) => markerText.indexOf(s), l = (s) => markerText.lastIndexOf(s);
+  assert.ok(i('stop hermes-gateway') > -1, 'the systemctl stop was tried first');
+  assert.ok(i('hermes -p default gateway stop') > i('stop hermes-gateway'),
+    'hermes gateway stop is the fallback when the unit does not exist');
+  assert.ok(l('hermes -p default plugins update alans-way') > i('hermes -p default gateway stop'),
+    'the retry ran while the gateway was down');
+  assert.ok(i('hermes -p default gateway start') > l('hermes -p default plugins update alans-way'),
+    'the gateway is started again after the retries');
+});
+
+test('a supervisor start failure names the sudo variant in the remediation', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  fs.writeFileSync(path.join(sstate, 'status'), `gw-one                          RUNNING   pid ${pid}, uptime 0:02:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
+  // No next-pid.gw-one: the drain stops the program with no relaunch queued,
+  // and the later `start` has nothing to launch, so it fails.
+  addSupervisor(bin, marker, sstate);
+  const confdir = mktemp('vm-update-confd-');
+  fs.writeFileSync(path.join(confdir, 'apps.conf'),
+    '[program:gw-one]\ncommand=/usr/bin/hermes gateway run\n');
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SUPERVISOR_STATE: sstate, FAKE_SVC_LOG: marker,
+    ALANS_WAY_VM_SUPERVISOR_CONFS: `${confdir}/*.conf`,
+    ...pluginEnv(home, state),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'updated');
+  assert.match(res.stdout, /on the VM run: supervisorctl start gw-one \(or: sudo supervisorctl start gw-one\)/);
+  assert.equal(result.gatewayRestarted, true, 'the tail drain-restart path recovers it');
 });
 
 // A read-only hermes for --doctor. Per profile P:
