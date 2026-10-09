@@ -14,10 +14,12 @@
 #   -- ARGS              extra setup.sh flags, e.g. -- --profile work
 #
 # Both machines must be on the same Tailscale network. Safe to re-run.
+# The plugin's setup.sh is fetched at its latest release tag; set
+# ALANS_WAY_AGENTS_REF=<tag or branch> to use another ref (testing).
 set -eu
 
 RAW="https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts"
-AGENTS_RAW="https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main"
+AGENTS_REPO_SLUG="capthvnsen/alans-way-agents"
 SERVER="" EXTRA=""
 
 die() { printf 'connect-server: %s\n' "$*" >&2; exit 1; }
@@ -65,12 +67,13 @@ set -e
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
 [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
 TS="$(command -v tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tailscale)"
-echo "VPS_SSH=$(whoami)@$("$TS" ip -4 2>/dev/null | head -1)"
+if [ -x "$TS" ]; then echo "VPS_SSH=$(whoami)@$("$TS" ip -4 2>/dev/null | head -1)"; else echo "VPS_SSH=missing"; fi
 echo "VPS_KEY=$(cut -d' ' -f1,2 ~/.ssh/id_ed25519.pub) $(whoami)@vps"
 echo "VPS_HOST_KEY=$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null || ssh-keyscan -t ed25519 127.0.0.1 2>/dev/null | awk '{print $2" "$3; exit}')"
 EOF
 val() { sed -n "s/^$1=//p" "$2" | head -1; }
 VPS_SSH="$(val VPS_SSH "$TMPD/server")"
+case "$VPS_SSH" in missing) die "Tailscale is not installed on the server. Install it there (curl -fsSL https://tailscale.com/install.sh | sh), run 'sudo tailscale up', sign in with the same account as this computer, then re-run.";; esac
 case "$VPS_SSH" in *@) die "Tailscale is not connected on the server. Run 'sudo tailscale up' there, sign in with the same account as this computer, then re-run.";; esac
 
 # The connect script prints MAC_* lines meant for pasting to an agent; this
@@ -86,8 +89,19 @@ MAC_SSH="$(val MAC_SSH "$TMPD/local")"
 
 TZ_ARG=""; [ -z "$(val MAC_TZ "$TMPD/local")" ] || TZ_ARG=" --timezone $(q "$(val MAC_TZ "$TMPD/local")")"
 
+# The newest vX.Y.Z tag of the plugin repo, so a fresh server gets a published
+# release and never whatever is on main. Falls back to main, loudly.
+AGENTS_REF="${ALANS_WAY_AGENTS_REF:-}"
+if [ -z "$AGENTS_REF" ]; then
+  AGENTS_REF="$(curl -fsSL "https://api.github.com/repos/$AGENTS_REPO_SLUG/tags?per_page=100" 2>/dev/null \
+    | grep -Eo '"name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' | sed 's/.*"\(v[^"]*\)"$/\1/' \
+    | sort -t. -k1.2n -k2n -k3n | tail -1)" || AGENTS_REF=""
+  [ -n "$AGENTS_REF" ] || { AGENTS_REF=main; say "WARNING: could not look up the plugin's latest release tag on GitHub; using the unreleased main branch instead."; }
+fi
+AGENTS_RAW="https://raw.githubusercontent.com/$AGENTS_REPO_SLUG/$AGENTS_REF"
+
 say ""
-say "Installing the Alan's Way Plugin on the server"
+say "Installing the Alan's Way Plugin ($AGENTS_REF) on the server"
 # A downloaded setup.sh fetches the plugin itself, pinned to the catalog's
 # version when the plugin came from the Hermes catalog.
 REMOTE="set -e; d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT
@@ -95,9 +109,10 @@ curl -fsSL $AGENTS_RAW/setup.sh -o \"\$d/setup.sh\"
 bash \"\$d/setup.sh\" --mac-ssh $(q "$MAC_SSH") --host-os $OS$TZ_ARG \
   --mac-key $(q "$(val MAC_KEY "$TMPD/local")") --mac-host-key $(q "$(val MAC_HOST_KEY "$TMPD/local")") --restart$EXTRA"
 # A login shell, so the server's PATH matches what you get when you ssh in.
-if has_tty; then $SSH -t "$SERVER" "exec \"\${SHELL:-/bin/sh}\" -lc $(q "$REMOTE")" < /dev/tty
-else $SSH "$SERVER" "exec \"\${SHELL:-/bin/sh}\" -lc $(q "$REMOTE")" < /dev/null; fi \
-  || die "server setup stopped; the reason is above. Fix it and re-run this command."
+# The output is kept so the closing steps can repeat what setup left undone.
+{ if has_tty; then $SSH -t "$SERVER" "exec \"\${SHELL:-/bin/sh}\" -lc $(q "$REMOTE")" < /dev/tty
+  else $SSH "$SERVER" "exec \"\${SHELL:-/bin/sh}\" -lc $(q "$REMOTE")" < /dev/null; fi && : > "$TMPD/setup-ok"; } | tee "$TMPD/setup"
+[ -e "$TMPD/setup-ok" ] || die "server setup stopped; the reason is above. Fix it and re-run this command."
 
 say ""
 say "Checking SSH both ways"
@@ -107,7 +122,15 @@ ssh -o ControlPath=none -o BatchMode=yes -o StrictHostKeyChecking=yes -o Connect
   || die "this computer cannot log in to $VPS_SSH without a prompt. If the server uses Tailscale SSH, change its rule from \"check\" to \"accept\" in the Tailscale admin console, then re-run."
 
 say ""
-say "Connected. Last steps, in the Alan's Workspace app:"
-say "  - Sign in to Telegram with the QR code (phone: Telegram > Settings > Devices > Link Desktop Device)."
-[ "$OS" != mac ] || say "  - At this Mac: System Settings > Privacy & Security. Turn on Alan's Workspace (listed as alans-way-localapp) under Accessibility and under Screen Recording."
-say "  - Settings > Agent setup: VPS address $VPS_SSH, this computer $MAC_SSH. Click Save addresses, then Test agent path."
+say "Connected. Still to do, in order:"
+N=0
+step() { N=$((N + 1)); say "  $N. $*"; }
+OUT="$(tr -d '\r' < "$TMPD/setup")"
+has() { printf '%s\n' "$OUT" | grep -q "$1"; }
+if has 'No TELEGRAM_BOT_TOKEN found'; then step "On the server, create your Telegram bot: run 'hermes gateway setup', choose Telegram, scan the QR code. Then re-run this command."; fi
+if has 'no Chrome or Chromium found'; then step "On the server, install Chrome or Chromium (apt-get install chromium, or Google Chrome's .deb), then re-run this command."; fi
+if has 'no display stack detected'; then step "On the server, install a virtual display (apt-get install xvfb) and re-run this command; the server's browser needs DISPLAY=:99."; fi
+step "Sign in to Telegram in the Alan's Workspace app with the QR code (phone: Telegram > Settings > Devices > Link Desktop Device)."
+if [ "$OS" = mac ]; then step "At this Mac: System Settings > Privacy & Security. Turn on Alan's Workspace (listed as alans-way-localapp) under Accessibility and under Screen Recording."; fi
+step "In the app: Settings > Agent setup: VPS address $VPS_SSH, this computer $MAC_SSH. Click Save addresses, then Test agent path."
+if has 'no Telegram DM sessions yet'; then step "Message your bot once on Telegram, then on the server run: setup.sh --bind"; fi

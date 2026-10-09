@@ -261,3 +261,43 @@ test('a running copy outside /Applications/<productName>.app is a Check setup wa
   assert.match(dup.fix, /alans-way-localapp 3\.app/);
   assert.match(dup.fix, /\/Applications\/alans-way-localapp\.app is the one updates and your agent’s plugin expect/);
 });
+
+function causeServer(extra) {
+  return { ok: true, version: '0.4.0', hostVersion: '', hostCauses: [], verify: { ran: true, fails: [], warns: [] }, profiles: [], ...extra };
+}
+const serverRows = (server) => buildFindings({ appVersion: '0.4.0', platform: 'linux', local: { telegram: 'connected', staleConnector: false },
+  connection: { addresses: { server: 'a', computer: 'b' } }, server }).filter((f) => f.group === 'server');
+
+test('a down browser host names its cause with a fix that can work, never a bare server update', () => {
+  const rows = serverRows(causeServer({ hostCauses: ['no-chromium', 'no-display', 'no-bot'] }));
+  const titles = rows.map((r) => r.title);
+  assert.ok(titles.includes('Chromium is not installed on the server'));
+  assert.ok(titles.includes('The server has no X display for the browser'));
+  assert.ok(titles.includes('No Telegram bot is configured on the server'));
+  assert.ok(!titles.includes('The server’s browser is not running'));
+  for (const r of rows.filter((x) => x.level === 'fail')) assert.ok(!/Update the server|--verify/.test(r.fix), r.fix);
+  assert.match(rows.find((r) => /Chromium/.test(r.title)).fix, /apt-get install chromium/);
+  assert.match(rows.find((r) => /Telegram bot/.test(r.title)).fix, /hermes gateway setup/);
+});
+
+test('a down host with no known cause still offers the server update', () => {
+  const row = serverRows(causeServer({})).find((r) => /not running/.test(r.title));
+  assert.equal(row.action, 'update-server');
+});
+
+test('audit rows use the audit hint, or the bot fix when there is no bot, not “ask your bot”', () => {
+  const v = { ran: true, fails: ['no workspace_browser block in /root/.hermes/config.yaml'], warns: ["built-in 'browser' toolset still enabled (run: hermes tools disable browser --platform telegram)"] };
+  const rows = serverRows(causeServer({ hostVersion: '0.4.0', verify: v }));
+  assert.match(rows.find((r) => /workspace_browser/.test(r.title)).fix, /connect command again/);
+  assert.equal(rows.find((r) => /toolset/.test(r.title)).fix, 'On the server, run: hermes tools disable browser --platform telegram');
+  const noBot = serverRows(causeServer({ hostVersion: '0.4.0', hostCauses: ['no-bot'], verify: v }));
+  assert.match(noBot.find((r) => /workspace_browser/.test(r.title)).fix, /hermes gateway setup/);
+  assert.ok(!rows.some((r) => /Ask your bot/.test(r.fix)));
+});
+
+test('the update-check row shows Hermes’s reason, and falls back to GitHub only without one', () => {
+  const withPlugin = (plugin) => serverRows(causeServer({ hostVersion: '0.4.0', profiles: [{ profile: 'default', checked: true, computerBackend: 'alans-way-computer',
+    plugins: [{ name: 'alans-way', version: '0.7.0', class: 'drift', updateAvailable: null, ...plugin }] }] })).find((r) => /Couldn’t check/.test(r.title));
+  assert.match(withPlugin({ reason: 'provenance drift: the dir has no .git' }).fix, /provenance drift/);
+  assert.match(withPlugin({}).fix, /couldn’t reach GitHub/);
+});

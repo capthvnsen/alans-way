@@ -1456,7 +1456,7 @@ test('--doctor reports versions, plugin rows, the newest plugin tag and the setu
   addPlugin(home, 'default', 'alans-way-computer', '0.6.0');
   fs.writeFileSync(path.join(state, 'updates.default.json'), JSON.stringify([
     { name: 'alans-way', class: 'catalog', current: 'bbb222', latest: 'ccc333', update_available: true },
-    { name: 'alans-way-computer', class: 'manual', current: null, latest: null, update_available: null }]));
+    { name: 'alans-way-computer', class: 'manual', current: null, latest: null, update_available: null, reason: 'provenance drift: the dir has no .git' }]));
   fs.writeFileSync(path.join(state, 'backend.default'), 'alans-way-computer\n');
   fs.writeFileSync(path.join(state, 'noise'), '');
   const port = await makeStatus({ version: '0.3.1', busy: false });
@@ -1466,19 +1466,34 @@ test('--doctor reports versions, plugin rows, the newest plugin tag and the setu
   const res = await runScript(['--doctor'], envFor(checkout, data, bin, { ...pluginEnv(home, state), ALANS_WAY_VM_PLUGIN_REMOTE: pluginRemote }));
   assert.equal(res.status, 0, res.stderr);
   assert.deepEqual(lastJson(res), {
-    ok: true, version: '0.3.1', hostVersion: '0.3.1', pluginTag: 'v0.6.2', error: '',
+    ok: true, version: '0.3.1', hostVersion: '0.3.1', pluginTag: 'v0.6.2', error: '', hostCauses: [],
     verify: { ran: true, fails: ['browser host not running'], warns: ['no primary route bound'] },
     profiles: [{
       profile: 'default', computerBackend: 'alans-way-computer',
       plugins: [
         { name: 'alans-way', version: '0.6.0', class: 'catalog', updateAvailable: true },
-        { name: 'alans-way-computer', version: '0.6.0', class: 'manual', updateAvailable: null }],
+        { name: 'alans-way-computer', version: '0.6.0', class: 'manual', updateAvailable: null, reason: 'provenance drift: the dir has no .git' }],
       checked: true,
     }],
   });
   assert.equal(git(checkout, 'rev-parse', 'HEAD'), before, 'the checkout did not move');
   assert.deepEqual(hermesLog(), ['hermes -p default plugins check-updates --json', 'hermes -p default config get computer_use.backend']);
   assert.equal(setupCalls().trim(), `--verify --hermes-home ${home}`);
+});
+
+test('--doctor names why the browser host is down: no bot token is a cause until one is set', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, state, home } = doctorFixture();
+  addPlugin(home, 'default', 'alans-way', '0.6.0');
+  const data = makeDataDir(1);
+  addSetupScript(data, ['  ok   plugin enabled']);
+  const env = envFor(checkout, data, bin, { ...pluginEnv(home, state), ALANS_WAY_VM_PLUGIN_REMOTE: path.join(os.tmpdir(), 'no-such-remote') });
+  const down = lastJson(await runScript(['--doctor'], env));
+  assert.equal(down.hostVersion, '');
+  assert.ok(down.hostCauses.includes('no-bot'), JSON.stringify(down.hostCauses));
+  fs.writeFileSync(path.join(home, '.env'), 'TELEGRAM_BOT_TOKEN=123456789:abc\n');
+  const withBot = lastJson(await runScript(['--doctor'], env));
+  assert.ok(!withBot.hostCauses.includes('no-bot'), JSON.stringify(withBot.hostCauses));
 });
 
 test('--doctor reports a profile the time budget does not reach instead of running it', async () => {
