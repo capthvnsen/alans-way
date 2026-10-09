@@ -23,6 +23,7 @@
     "test:newtab": "electron test/newtab-electron.cjs",
     "test:pdf-viewer": "electron test/pdf-viewer-electron.cjs",
     "test:cloud-telegram": "electron test/cloud-telegram-electron.cjs",
+    "eval": "node eval/run.cjs",
     "build:preload": "node scripts/build-preload.cjs",
     "prestart": "npm run build:preload && node scripts/build-info.cjs",
     "prepackage:mac": "npm run build:preload && node scripts/build-info.cjs && node scripts/build-computer.cjs",
