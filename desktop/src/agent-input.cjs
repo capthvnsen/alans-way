@@ -543,7 +543,13 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         // insertText is actual Chromium input (including input/beforeinput).
         // The selection belongs to the agent tab, never the human's focused tab.
         await armFollowUp();
-        if (body.text) await send('Input.insertText', { text: body.text });
+        if (body.text) {
+          await send('Input.insertText', { text: body.text });
+          // A key event sent before the renderer has produced a frame after the
+          // insertion is dropped silently (the CDP ack comes first). Hidden pages
+          // may never paint, so the wait is capped.
+          await boundedJs(wc, 'new Promise(done => { setTimeout(done, 500); requestAnimationFrame(() => requestAnimationFrame(done)); })', 1500).catch(() => {});
+        }
         else await keys(keyboardEvent({ key: 'Backspace' }));
         cursor(point, 'type', hl);
       } else if (action === 'press') {
