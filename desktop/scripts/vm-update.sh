@@ -488,11 +488,16 @@ EOF
         esac
       elif systemd_live; then
         GW_VIA=systemd
+        # `stop` on an inactive unit is a no-op success, so a unit is only
+        # claimed when it was active: otherwise the live gateway runs outside
+        # it and starting the unit afterwards would add a second one.
         if [ "$(id -u)" = 0 ]; then
-          systemctl stop hermes-gateway >/dev/null 2>&1 && GW_STOPPED=true
-        else
-          { systemctl --user stop hermes-gateway >/dev/null 2>&1 \
-            || sudo -n systemctl stop hermes-gateway >/dev/null 2>&1; } && GW_STOPPED=true
+          systemctl is-active --quiet hermes-gateway \
+            && systemctl stop hermes-gateway >/dev/null 2>&1 && GW_STOPPED=true
+        elif systemctl --user is-active --quiet hermes-gateway; then
+          systemctl --user stop hermes-gateway >/dev/null 2>&1 && GW_STOPPED=true
+        elif systemctl is-active --quiet hermes-gateway; then
+          sudo -n systemctl stop hermes-gateway >/dev/null 2>&1 && GW_STOPPED=true
         fi
         # Stock Hermes keeps its gateway under `hermes gateway`, not
         # necessarily a hermes-gateway unit; when neither stop lands, mirror

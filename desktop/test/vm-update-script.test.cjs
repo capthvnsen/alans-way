@@ -57,8 +57,12 @@ function makeBin() {
   fs.writeFileSync(path.join(bin, 'systemctl'), `#!/bin/sh
 echo "systemctl $@" >> "${marker}"
 if [ "\${1:-}" = "is-system-running" ]; then cat "${bin}/systemd-state" 2>/dev/null || echo running; fi
+# A unit named in bin/inactive-units exists but is not running.
+if [ "\${1:-}" = "is-active" ] || { [ "\${1:-}" = "--user" ] && [ "\${2:-}" = "is-active" ]; }; then
+  for _a in "$@"; do grep -qxF -e "$_a" "${bin}/inactive-units" 2>/dev/null && exit 3; done
+fi
 # A unit named in bin/missing-units does not exist; every verb on it fails.
-for _a in "$@"; do grep -qxF "$_a" "${bin}/missing-units" 2>/dev/null && { echo "Unit $_a.service not found." >&2; exit 1; }; done
+for _a in "$@"; do grep -qxF -e "$_a" "${bin}/missing-units" 2>/dev/null && { echo "Unit $_a.service not found." >&2; exit 1; }; done
 # A hermes-gateway unit's state is tracked in the hermes fixture so a fake
 # hermes can tell a stopped gateway apart from a running one.
 _op="" _gw=0
@@ -1200,6 +1204,30 @@ test('a refused update on a systemd guest stops and starts the hermes-gateway un
   assert.ok(markerText.indexOf('start hermes-gateway') > markerText.lastIndexOf('plugins update alans-way'));
 });
 
+test('an inactive hermes-gateway unit is never claimed when the live gateway runs outside it', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'inactive-units'), 'hermes-gateway\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  fs.writeFileSync(path.join(state, 'gwstate'), 'running\n');
+  addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SVC_LOG: marker, ...pluginEnv(home, state),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'updated');
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.doesNotMatch(markerText, /systemctl (--user )?(stop|start) hermes-gateway/,
+    'starting the inactive unit would add a second gateway');
+  assert.match(markerText, /gateway stop/);
+  assert.match(markerText, /gateway start/);
+});
+
 test('a refused update with no service manager goes through hermes gateway stop and start', async () => {
   const checkout = makeCheckout(remote);
   const { bin, marker } = makeBin();
@@ -1314,8 +1342,9 @@ test('a systemd guest without a hermes-gateway unit falls back to hermes gateway
   assert.equal(result.gatewayRestarted, true);
   const markerText = fs.readFileSync(marker, 'utf8');
   const i = (s) => markerText.indexOf(s), l = (s) => markerText.lastIndexOf(s);
-  assert.ok(i('stop hermes-gateway') > -1, 'the systemctl stop was tried first');
-  assert.ok(i('hermes -p default gateway stop') > i('stop hermes-gateway'),
+  assert.ok(i('is-active --quiet hermes-gateway') > -1, 'the unit was probed first');
+  assert.doesNotMatch(markerText, /systemctl (--user )?stop hermes-gateway/, 'a missing unit is never stopped');
+  assert.ok(i('hermes -p default gateway stop') > i('is-active --quiet hermes-gateway'),
     'hermes gateway stop is the fallback when the unit does not exist');
   assert.ok(l('hermes -p default plugins update alans-way') > i('hermes -p default gateway stop'),
     'the retry ran while the gateway was down');
