@@ -479,7 +479,13 @@ EOF
         # GW_STOPPED is only claimed when nothing reports running afterwards:
         # a failed stop leaves the pairs blocked instead of letting a later
         # `start` spawn a second gateway next to the live one.
-        case "$_gw_now" in ''|0|*[!0-9]*) GW_STOPPED=true;; esac
+        # A program that was not running before (a stopped conf entry while
+        # the refusing gateway lives outside supervisord) is never claimed:
+        # starting it afterwards would add a second gateway.
+        case "$_gw_old" in
+          ''|0|*[!0-9]*) ;;
+          *) case "$_gw_now" in ''|0|*[!0-9]*) GW_STOPPED=true;; esac;;
+        esac
       elif systemd_live; then
         GW_VIA=systemd
         if [ "$(id -u)" = 0 ]; then

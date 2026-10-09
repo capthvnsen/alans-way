@@ -1044,6 +1044,35 @@ test('a refused update drain-stops the supervisord gateway, retries it and start
   assert.doesNotMatch(markerText, /supervisorctl restart/, 'a drain never escalates to SIGKILL');
 });
 
+test('a stopped supervisor program is never started when the refusing gateway runs outside supervisord', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  fs.writeFileSync(path.join(state, 'gwstate'), 'running\n');
+  addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const sstate = mktemp('vm-update-supervisor-');
+  fs.writeFileSync(path.join(sstate, 'status'), 'gw-one                          STOPPED   Oct 08 12:00 AM\n');
+  fs.writeFileSync(path.join(sstate, 'pid.gw-one'), '0\n');
+  addSupervisor(bin, marker, sstate);
+  const confd = mktemp('vm-update-confd-');
+  fs.writeFileSync(path.join(confd, 'gw.conf'), '[program:gw-one]\ncommand=hermes gateway run --no-supervise\n');
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SUPERVISOR_STATE: sstate, FAKE_SVC_LOG: marker,
+    ALANS_WAY_VM_SUPERVISOR_CONFS: `${confd}/*.conf`,
+    ...pluginEnv(home, state),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.doesNotMatch(fs.readFileSync(marker, 'utf8'), /supervisorctl (start|restart) gw-one/,
+    'starting a program that was never running would add a second gateway');
+  assert.notEqual(result.plugins[0].status, 'updated');
+});
+
 test('a run where nothing is refused never stops the gateway', async () => {
   const checkout = makeCheckout(remote);
   const { bin, marker } = makeBin();
