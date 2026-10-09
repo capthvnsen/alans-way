@@ -2,7 +2,9 @@
 # vm-update.sh - bring this machine's Alan's Way browser host checkout to a
 # release tag, restart the tab broker and verify it answers with that version,
 # then update each Hermes profile's alans-way plugins through `hermes plugins
-# update` and drain-restart the gateway once when any plugin changed.
+# update` and drain-restart the gateway once when any plugin changed. Recent
+# hermes refuses the update while that profile's gateway runs; refused pairs
+# are retried once after a drain-stop, and the gateway always comes back up.
 #
 # The desktop app pipes this script over SSH (ssh <host> 'sh -s -- v0.3.2'),
 # so nothing is installed on the VM and no file is left behind. It only ever
@@ -338,11 +340,30 @@ plugin_entry() {
     "$(json_string "$1")" "$(json_string "$2")" "$(json_string "$3")" "$(json_string "$4")" "$5" "$_extra"
 }
 
+# $1 = `plugins update` exit code, $2 = its whole output; prints
+# "<status>|<error>". The live-gateway refusal is its own status, not
+# "failed": the pair is retried below once the gateway is down, and the whole
+# message is kept - the last-two-lines cut used to drop the "Cannot update"
+# sentence and the dialog showed it starting mid-sentence.
+plugin_update_status() {
+  if [ "$1" -eq 124 ]; then printf 'failed|the hermes update timed out'; return 0; fi
+  if printf '%s' "$2" | grep -qF 'Cannot update plugin files while the messaging gateway is running'; then
+    printf 'blocked|%s' "$(printf '%s\n' "$2" | tr '\n' ' ')"
+    return 0
+  fi
+  if printf '%s' "$2" | grep -Eiq 'not applied|declined|confirm to continue|fail.?closed|not granted|new capabilities'; then
+    printf 'needs_approval|'; return 0
+  fi
+  if [ "$1" -ne 0 ]; then printf 'failed|%s' "$(printf '%s\n' "$2" | tr '\n' ' ')"; return 0; fi
+  if printf '%s' "$2" | grep -Eiq 'already (up to date|at catalog pin)'; then printf 'current|'; return 0; fi
+  printf 'updated|'
+}
+
 update_hermes_plugins() {
   if ! hermes_bin; then say "no hermes CLI on this VM; skipping plugin updates"; return 0; fi
   HHOME="${HERMES_HOME:-$HOME/.hermes}"
   say "updating Hermes plugins"
-  CLONES="" CHANGED=false
+  CLONES="" CHANGED=false REFUSED="" GW_STOPPED=false GW_VIA=""
   while read -r _pname _phome; do
     [ -n "$_pname" ] || continue
     _pdir="$_phome/plugins"
@@ -383,16 +404,15 @@ update_hermes_plugins() {
       fi; _rc=$?
       _after="$(plugin_version "$_pdir/$_name")"
       [ -n "$_after" ] || _after="$(plugin_rev "$(plugin_meta "$_pdir" "$_name")")"
-      if [ "$_rc" -eq 124 ]; then
-        _st=failed; _err="the hermes update timed out"
-      elif printf '%s' "$_out" | grep -Eiq 'not applied|declined|confirm to continue|fail.?closed|not granted|new capabilities'; then
-        _st=needs_approval; _err=""
-      elif [ "$_rc" -ne 0 ]; then
-        _st=failed; _err="$(printf '%s\n' "$_out" | tail -2 | tr '\n' ' ')"
-      elif printf '%s' "$_out" | grep -Eiq 'already (up to date|at catalog pin)'; then
-        _st=current; _err=""
-      else
-        _st=updated; _err=""
+      _cls="$(plugin_update_status "$_rc" "$_out")"
+      _st="${_cls%%|*}"; _err="${_cls#*|}"
+      if [ "$_st" = blocked ]; then
+        # Refused while the gateway runs: collect the pair, report it after
+        # the drain-stop retry below (or as blocked when that never happens).
+        REFUSED="${REFUSED}${REFUSED:+
+}$_pname|$_name|$_before|$_repo_ref|$_err"
+        say "plugin $_name ($_pname): blocked while the gateway runs"
+        continue
       fi
       case "$_st" in
         updated) CHANGED=true;;
@@ -406,10 +426,108 @@ update_hermes_plugins() {
   done <<EOF
 $(list_profiles)
 EOF
+  # A refusal only clears while the gateway is down. Drain-stop it, retry just
+  # the refused pairs, and always start it again. Under supervisord a bare
+  # `stop` escalates SIGTERM to SIGKILL past stopwaitsecs and can corrupt
+  # state.db mid-drain, so USR1 drains it first and the plain `stop` afterwards
+  # only ever meets a fresh autorestart respawn (or nothing: "not running" is
+  # the state we want, so its exit code is ignored).
+  if [ -n "$REFUSED" ]; then
+    if [ "$(budget_left)" -gt 25 ]; then
+      say "stopping the agent gateway so the refused plugin updates can run"
+      GW_PROG="$(supervisor_program 'hermes' 'gateway run')"
+      if [ -n "$GW_PROG" ]; then
+        GW_VIA=supervisor
+        _gw_old="$(_sp_ctl pid "$GW_PROG" | tr -d '[:space:]')"
+        if _sp_ctl signal USR1 "$GW_PROG" >/dev/null 2>&1; then
+          _gw_wait=$(( $(budget_left) - 12 ))
+          [ "$_gw_wait" -gt "$GATEWAY_TIMEOUT" ] && _gw_wait="$GATEWAY_TIMEOUT"
+          _gw_deadline=$(( $(date +%s) + _gw_wait ))
+          while [ "$(date +%s)" -lt "$_gw_deadline" ]; do
+            [ "$(_sp_ctl pid "$GW_PROG" | tr -d '[:space:]')" = "$_gw_old" ] || break
+            sleep 1
+          done
+        fi
+        _sp_ctl stop "$GW_PROG" >/dev/null 2>&1 || true
+        GW_STOPPED=true
+      elif systemd_live; then
+        GW_VIA=systemd
+        if [ "$(id -u)" = 0 ]; then
+          systemctl stop hermes-gateway >/dev/null 2>&1 && GW_STOPPED=true
+        else
+          { systemctl --user stop hermes-gateway >/dev/null 2>&1 \
+            || sudo -n systemctl stop hermes-gateway >/dev/null 2>&1; } && GW_STOPPED=true
+        fi
+      elif run_hermes 30 gateway stop >/dev/null 2>&1; then
+        GW_VIA=hermes GW_STOPPED=true
+      fi
+    else
+      say "no time left to stop the gateway; the refused updates stay for the next run"
+    fi
+    if [ "$GW_STOPPED" = true ]; then
+      while IFS='|' read -r _pname _name _before _repo_ref _err; do
+        [ -n "$_pname" ] || continue
+        [ "$_pname" = default ] && _phome="$HHOME" || _phome="$HHOME/profiles/$_pname"
+        _after="$(plugin_version "$_phome/plugins/$_name")"
+        [ -n "$_after" ] || _after="$(plugin_rev "$(plugin_meta "$_phome/plugins" "$_name")")"
+        _st=blocked
+        if [ "$(budget_left)" -gt 15 ]; then
+          if [ "$_pname" = default ]; then
+            _out="$(run_hermes "$PLUGIN_TIMEOUT" plugins update "$_name")"
+          else
+            _out="$(run_hermes "$PLUGIN_TIMEOUT" -p "$_pname" plugins update "$_name")"
+          fi; _rc=$?
+          _after="$(plugin_version "$_phome/plugins/$_name")"
+          [ -n "$_after" ] || _after="$(plugin_rev "$(plugin_meta "$_phome/plugins" "$_name")")"
+          _cls="$(plugin_update_status "$_rc" "$_out")"
+          _st="${_cls%%|*}"; _err="${_cls#*|}"
+          case "$_st" in
+            updated) CHANGED=true;;
+            needs_approval)
+              printf '%s' "$_out" | grep -Eq 'updated|Re-installed' && CHANGED=true;;
+          esac
+        fi
+        say "plugin $_name ($_pname): $_st"
+        PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$_pname" "$_name" "$_before" "$_after" "$_st" "$_err" "$_repo_ref")"
+      done <<EOF
+$REFUSED
+EOF
+      # The gateway always comes back up, whatever the retries found.
+      case "$GW_VIA" in
+        supervisor)
+          GW_CMD="supervisorctl start $GW_PROG"
+          _sp_ctl start "$GW_PROG" >/dev/null 2>&1 && GATEWAY_RESTARTED=true;;
+        systemd)
+          if [ "$(id -u)" = 0 ]; then
+            GW_CMD="systemctl start hermes-gateway"
+            systemctl start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+          else
+            GW_CMD="systemctl --user start hermes-gateway"
+            { systemctl --user start hermes-gateway >/dev/null 2>&1 \
+              || sudo -n systemctl start hermes-gateway >/dev/null 2>&1; } && GATEWAY_RESTARTED=true
+          fi;;
+        hermes)
+          GW_CMD="hermes gateway start"
+          run_hermes "$GATEWAY_TIMEOUT" gateway start >/dev/null 2>&1 && GATEWAY_RESTARTED=true;;
+      esac
+      if [ "$GATEWAY_RESTARTED" = true ]; then say "agent gateway restarted"
+      else say "could not start the gateway; on the VM run: $GW_CMD"; fi
+    else
+      # The gateway stayed up; every refused pair reports blocked with the
+      # full refusal text so the dialog can quote it.
+      while IFS='|' read -r _pname _name _before _repo_ref _err; do
+        [ -n "$_pname" ] || continue
+        PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$_pname" "$_name" "$_before" "$_before" blocked "$_err" "$_repo_ref")"
+      done <<EOF
+$REFUSED
+EOF
+    fi
+  fi
   # The gateway loads plugin code at start, so one drain-restart when anything
   # actually changed (hermes gateway restart: SIGUSR1 drain, the supervisor or
-  # service manager owns the relaunch).
-  if [ "$CHANGED" = true ]; then
+  # service manager owns the relaunch). Skipped when the bounce above already
+  # restarted it; run even when nothing changed if that bounce left it down.
+  if [ "$GATEWAY_RESTARTED" != true ] && { [ "$CHANGED" = true ] || [ "$GW_STOPPED" = true ]; }; then
     say "restarting the agent gateway"
     # A gateway under supervisord is restarted with USR1, not `restart`: the
     # supervisor's restart escalates SIGTERM to SIGKILL past stopwaitsecs, and
