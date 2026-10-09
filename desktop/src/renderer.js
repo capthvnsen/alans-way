@@ -320,6 +320,9 @@ function renderUpdate() {
   note.onclick = () => { if (u.error) command('open-download-page'); else { updatePopupPinned = true; renderUpdatePopup(); } };
   renderUpdatePopup();
   renderVmBanner();
+  $('bundle-banner').classList.toggle('hidden', !state.bundleWarning);
+  $('bundle-banner-text').textContent = state.bundleWarning || '';
+  $('bundle-banner-dismiss').onclick = () => command('dismiss-bundle-warning');
   if (u.justUpdatedFrom) {
     toast(`Updated to v${state.version}.${u.vmRetry?.show ? ' A VM update did not finish: use Retry above, or send your agent the update prompt from Settings → Agent setup.' : ''}${state.platform === 'darwin' ? ' If your agent can no longer use this Mac, turn Alan’s Workspace (listed as alans-way-localapp) off and on again in System Settings → Privacy & Security → Accessibility.' : ''}`);
     command('dismiss-updated');

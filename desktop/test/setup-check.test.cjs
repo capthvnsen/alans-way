@@ -215,7 +215,7 @@ test('redactReport leaves the next line and plain words about keys and tokens al
 const appInfo = { version: '0.4.0', platform: 'darwin', arch: 'arm64', osVersion: '15.6', signed: true };
 
 test('buildReport lists the setup, the last check and the newest log lines, redacted', () => {
-  const log = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n') + '\nbot123456789:AAFakeTokenForRedactionTestsOnly_123 oops';
+  const log = Array.from({ length: 110 }, (_, i) => `line ${i + 1}`).join('\n') + '\nbot123456789:AAFakeTokenForRedactionTestsOnly_123 oops';
   const findings = [
     { group: 'computer', level: 'ok', title: 'Signed in to Telegram', fix: '', action: null },
     { group: 'server', level: 'fail', title: 'The server is on an older version', fix: 'Server 0.3.2, this app 0.4.0.', action: 'update-server' }];
@@ -227,19 +227,19 @@ test('buildReport lists the setup, the last check and the newest log lines, reda
   assert.match(report, /✓ This computer: Signed in to Telegram$/m);
   assert.match(report, /✗ Server: The server is on an older version \(Server 0\.3\.2, this app 0\.4\.0\.\)/);
   assert.match(report, /"version":"0\.3\.2"/);
-  assert.doesNotMatch(report, /line 11$/m, 'only the last 50 log lines');
+  assert.doesNotMatch(report, /line 11$/m, 'only the last 100 log lines');
   assert.match(report, /line 12$/m);
   assert.doesNotMatch(report, /AAFakeTokenForRedactionTestsOnly_123/);
 });
 
-test('buildReport removes a private key that straddles the 50-line cut', () => {
+test('buildReport removes a private key that straddles the 100-line cut', () => {
   const log = [...Array.from({ length: 5 }, (_, i) => `before ${i}`), '-----BEGIN OPENSSH ' + 'PRIVATE KEY-----',
     ...Array.from({ length: 5 }, (_, i) => `keybody${i}secret`), '-----END OPENSSH PRIVATE KEY-----',
-    ...Array.from({ length: 45 }, (_, i) => `after ${i}`)].join('\n');
+    ...Array.from({ length: 95 }, (_, i) => `after ${i}`)].join('\n');
   const report = buildReport({ app: appInfo, serverAddress: '', computerAddress: '', errorLog: log });
   assert.doesNotMatch(report, /keybody\dsecret/);
   assert.match(report, /\[private key removed\]/);
-  assert.match(report, /after 44$/);
+  assert.match(report, /after 94$/);
 });
 
 test('buildReport says when no check ran and when there are no errors', () => {
@@ -247,5 +247,17 @@ test('buildReport says when no check ran and when there are no errors', () => {
   assert.match(report, /unsigned build/);
   assert.match(report, /Server address: not saved/);
   assert.match(report, /Check setup not run yet\./);
-  assert.match(report, /Recent app errors:\nnone/);
+  assert.match(report, /Recent app log:\nnone/);
+});
+
+test('a running copy outside /Applications/<productName>.app is a Check setup warning with its path', () => {
+  const product = 'alans-way-localapp';
+  const local = (bundle) => ({ telegram: 'connected', inApplications: true, permissions: null, staleConnector: null, bundle, productName: product });
+  const rows = (bundle) => buildFindings({ appVersion: '0.4.0', platform: 'darwin', local: local(bundle), connection: { addresses: { server: 'a', computer: 'b' } }, server: null })
+    .filter((f) => f.title.startsWith('Running from'));
+  assert.equal(rows({ ok: true, kind: 'applications', path: `/Applications/${product}.app` }).length, 0);
+  const [dup] = rows({ ok: false, kind: 'duplicate', path: `/Applications/${product} 3.app` });
+  assert.equal(dup.level, 'warn');
+  assert.match(dup.fix, /alans-way-localapp 3\.app/);
+  assert.match(dup.fix, /\/Applications\/alans-way-localapp\.app is the one updates and your agent’s plugin expect/);
 });

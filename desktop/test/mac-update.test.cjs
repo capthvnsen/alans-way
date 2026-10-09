@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { isNewer, canSelfUpdate } = require('../src/mac-update.cjs');
+const { isNewer, canSelfUpdate, bundleLocation } = require('../src/mac-update.cjs');
 
 test('version compare', () => {
   assert.equal(isNewer('v0.3.1', '0.3.0'), true);
@@ -16,4 +16,14 @@ test('only an app bundle outside a mounted image can swap itself', () => {
   assert.equal(canSelfUpdate('/Volumes/alans-way-localapp/alans-way-localapp.app'), false);
   assert.equal(canSelfUpdate('/private/var/folders/x/AppTranslocation/y/d/alans-way-localapp.app'), false);
   assert.equal(canSelfUpdate(''), false);
+});
+
+test('bundleLocation accepts only /Applications/<productName>.app', () => {
+  const at = (p) => bundleLocation(p, 'alans-way-localapp');
+  assert.deepEqual(at('/Applications/alans-way-localapp.app'), { ok: true, kind: 'applications', path: '/Applications/alans-way-localapp.app' });
+  assert.equal(at('/Applications/alans-way-localapp 3.app').kind, 'duplicate');
+  assert.equal(at('/Applications/alans-way-localapp 2.app').ok, false);
+  assert.equal(at('/Users/a/Downloads/alans-way-localapp.app').kind, 'downloads');
+  assert.equal(at('/Volumes/alans-way-localapp 0.4.0/alans-way-localapp.app').kind, 'dmg');
+  assert.equal(at('/Users/a/Desktop/alans-way-localapp.app').kind, 'other');
 });

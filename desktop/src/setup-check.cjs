@@ -36,6 +36,13 @@ function bundledConnectorReachable({ platform, isPackaged, execPath, home }) {
 
 const row = (group, level, title, fix = '', action = null) => ({ group, level, title, fix, action });
 
+const WHERE = { duplicate: 'a duplicate copy', downloads: 'your Downloads folder', dmg: 'a mounted disk image', other: 'outside Applications' };
+// Text for the in-app banner and the Check setup row; null when all is well.
+function bundleWarning(bundle, productName) {
+  if (!bundle || bundle.ok) return null;
+  return `Alan’s Workspace is running from ${WHERE[bundle.kind] || WHERE.other} (${bundle.path}). The copy at /Applications/${productName}.app is the one updates and your agent’s plugin expect. Quit this one and open that copy; delete the extra copy yourself when you’re ready.`;
+}
+
 function computerRows({ platform, local }) {
   const rows = [local.telegram === 'connected'
     ? row('computer', 'ok', 'Signed in to Telegram')
@@ -43,6 +50,8 @@ function computerRows({ platform, local }) {
   if (platform === 'darwin') {
     if (local.inApplications === true) rows.push(row('computer', 'ok', 'Alan’s Workspace is in Applications'));
     if (local.inApplications === false) rows.push(row('computer', 'fail', 'Alan’s Workspace is not in Applications', 'Move it there so your agent can find it.', 'move-to-applications'));
+    const warning = bundleWarning(local.bundle, local.productName);
+    if (warning) rows.push(row('computer', 'warn', 'Running from a different copy than Applications', warning));
     if (local.permissions) {
       rows.push(local.permissions.accessibility === true
         ? row('computer', 'ok', 'Accessibility is on')
@@ -159,9 +168,9 @@ function buildReport({ now = new Date(), app, serverAddress, computerAddress, fi
   } else lines.push('Check setup not run yet.');
   if (server) lines.push('', 'Server report:', JSON.stringify(server));
   // Redact before the cut so a secret spanning it can't lose its start marker.
-  const log = redactReport(String(errorLog || '')).trimEnd().split('\n').slice(-50).join('\n');
-  lines.push('', 'Recent app errors:', log || 'none');
+  const log = redactReport(String(errorLog || '')).trimEnd().split('\n').slice(-100).join('\n');
+  lines.push('', 'Recent app log:', log || 'none');
   return redactReport(lines.join('\n'));
 }
 
-module.exports = { staleConnectorCopy, bundledConnectorReachable, buildFindings, redactReport, buildReport };
+module.exports = { bundleWarning, staleConnectorCopy, bundledConnectorReachable, buildFindings, redactReport, buildReport };
