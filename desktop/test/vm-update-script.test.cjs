@@ -61,6 +61,10 @@ exit 0
 `, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'launchctl'), `#!/bin/sh\necho "launchctl $@" >> "${marker}"\nexit 0\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'npm'), `#!/bin/sh\necho "npm $@" >> "${marker}"\nexit 0\n`, { mode: 0o755 });
+  // The closed PATH still reaches /usr/bin/sudo; a runner with passwordless sudo
+  // (macOS CI) would rerun the fake supervisorctl with the test env scrubbed and
+  // turn a deliberate failure into success. Default to "password required".
+  fs.writeFileSync(path.join(bin, 'sudo'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   return { bin, marker };
 }
 // A fake supervisorctl driven by files under $FAKE_SUPERVISOR_STATE:
