@@ -141,6 +141,6 @@ Not fixed on this branch.
 - Task: `fx-iframe-decoy` (the same effect shows on `pub-iframe-datepicker`, where the oracle has to poll snapshots until the iframe's input appears).
 - Steps: `cua_alans_way_open` the fixture page `/f/iframe` (outer page with a disabled "Coupon code" input plus a same-origin `<iframe src="/f/iframe-inner">` holding the real form), then immediately `cua_alans_way_snapshot`.
 - Symptom: the reply has `loading:false` and lists the iframe under `iframes`, but `elements` has only the outer controls. The iframe's "Coupon code" input and "Apply" button are missing. A snapshot a moment later includes them.
-- Rate: 1 in 8 on a bare open then snapshot (script `scratchpad/dbg2.cjs`, 8 loops); 2 of 18 oracle runs of this task across the sessions (`--mode oracle --tasks fx-iframe-decoy --repeat 3`).
+- Rate: 1 in 8 on a bare open then snapshot (script `scratchpad/dbg2.cjs`, 8 loops); 1 of 3 in each of the two 3x oracle passes (`--mode oracle --tasks fx-iframe-decoy --repeat 3`).
 - Expected: either wait for same-origin iframe load before reporting `loading:false`, or report the frame as still loading so the agent knows the control list is incomplete.
 
