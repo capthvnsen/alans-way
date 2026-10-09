@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stub (client only): connect-linux.sh refuses non-x86_64, and the docker VM here is arm64.
+[ "$*" = "-m" ] && { echo x86_64; exit 0; }
+exec /usr/bin/uname "$@"

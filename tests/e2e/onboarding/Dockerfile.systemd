@@ -1,0 +1,14 @@
+# A normal VPS: Ubuntu 24.04 with systemd as PID 1 (run with --privileged),
+# the same Hermes, Chromium and Xvfb as the supervisord image, but sshd,
+# Xvfb and the gateway are systemd units.
+ARG BASE
+FROM ${BASE}
+RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus sudo \
+    && rm -rf /var/lib/apt/lists/* /etc/supervisor/conf.d/*.conf \
+    && systemctl mask getty.target console-getty.service systemd-logind.service \
+    && systemctl enable ssh.service
+RUN printf '[Unit]\nDescription=Xvfb\n[Service]\nExecStart=/usr/bin/Xvfb :99 -screen 0 1280x800x24\nRestart=always\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/xvfb.service \
+ && printf '[Unit]\nDescription=Hermes gateway\nAfter=network.target\n[Service]\nEnvironment=HOME=/root\nExecStart=/usr/local/bin/orgo-hermes-gateway\nRestart=always\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/hermes-gateway.service \
+ && systemctl enable xvfb.service hermes-gateway.service
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

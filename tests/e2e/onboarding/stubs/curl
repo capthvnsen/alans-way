@@ -1,0 +1,14 @@
+#!/bin/sh
+# Stub: serve the public raw.githubusercontent.com URLs of the two repos from
+# the local exports, so the run tests the code in this tree. Everything else
+# goes to the real curl.
+real=/usr/bin/curl
+args=""
+for a in "$@"; do
+  case "$a" in
+    https://raw.githubusercontent.com/capthvnsen/alans-way/main/*) a="file:///srv/alans-way/${a#https://raw.githubusercontent.com/capthvnsen/alans-way/main/}";;
+    https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/*) a="file:///srv/agents/${a#https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/}";;
+  esac
+  args="$args '$(printf %s "$a" | sed "s/'/'\\\\''/g")'"
+done
+eval "exec $real $args"
