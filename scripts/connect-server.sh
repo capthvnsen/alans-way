@@ -67,7 +67,7 @@ mkdir -p ~/.ssh && chmod 700 ~/.ssh
 TS="$(command -v tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tailscale)"
 echo "VPS_SSH=$(whoami)@$("$TS" ip -4 2>/dev/null | head -1)"
 echo "VPS_KEY=$(cut -d' ' -f1,2 ~/.ssh/id_ed25519.pub) $(whoami)@vps"
-echo "VPS_HOST_KEY=$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)"
+echo "VPS_HOST_KEY=$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null || ssh-keyscan -t ed25519 127.0.0.1 2>/dev/null | awk '{print $2" "$3; exit}')"
 EOF
 val() { sed -n "s/^$1=//p" "$2" | head -1; }
 VPS_SSH="$(val VPS_SSH "$TMPD/server")"

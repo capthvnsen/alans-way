@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stub: the containers sit on a docker network inside 100.64.0.0/10, so their
+# real addresses already look like tailnet addresses. Only the CLI is faked.
+ip4() { hostname -i | tr ' ' '\n' | grep '^100\.' | head -1; }
+case "${1:-}" in
+  ip) [ -z "${3:-}" ] || exit 0; ip4;;
+  status) case "$*" in *--json*) printf '{"BackendState":"Running","TUN":true,"Self":{"HostName":"%s","DNSName":"%s.e2e.ts.net.","TailscaleIPs":["%s"]},"Peer":{}}\n' "$(hostname)" "$(hostname)" "$(ip4)";; *) echo "$(ip4)  $(hostname)  e2e@  linux  -";; esac;;
+  nc) shift; exec nc "$@";;
+  version) echo "0.0.0-e2e-stub";;
+  *) echo "tailscale stub: unsupported: $*" >&2; exit 1;;
+esac
