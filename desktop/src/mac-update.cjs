@@ -28,6 +28,19 @@ function canSelfUpdate(bundlePath) {
   return /\.app$/.test(bundlePath || '') && !bundlePath.startsWith('/Volumes/') && !bundlePath.includes('/AppTranslocation/');
 }
 
+// Updates and the agent's plugin expect /Applications/<productName>.app. A
+// Finder copy ("name 3.app"), a Downloads folder or a mounted dmg is another
+// install that Squirrel would update separately.
+function bundleLocation(bundlePath, productName) {
+  const p = String(bundlePath || '');
+  if (p === `/Applications/${productName}.app`) return { ok: true, kind: 'applications', path: p };
+  const kind = p.startsWith('/Volumes/') ? 'dmg'
+    : /\/Downloads\//.test(p) ? 'downloads'
+    : p.startsWith('/Applications/') && /^\/Applications\/[^/]*\s\d+\.app$/.test(p) ? 'duplicate'
+    : 'other';
+  return { ok: false, kind, path: p };
+}
+
 // codesign -dv prints the authority chain on stderr; an ad-hoc signature has
 // "Signature=adhoc" and no Authority lines at all.
 function isDeveloperIdSigned(bundlePath, run = spawnSync) {
@@ -93,4 +106,4 @@ async function installMacUpdate({ tag, bundlePath }) {
   }
 }
 
-module.exports = { isNewer, canSelfUpdate, isDeveloperIdSigned, updaterDriver, checkLatest, installMacUpdate };
+module.exports = { bundleLocation, isNewer, canSelfUpdate, isDeveloperIdSigned, updaterDriver, checkLatest, installMacUpdate };

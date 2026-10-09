@@ -19,6 +19,8 @@ const cloudModel = require('./cloud-model.cjs');
 const cloudTelegram = require('./cloud-telegram.cjs');
 const macUpdate = require('./mac-update.cjs');
 const setupCheck = require('./setup-check.cjs');
+const { createLog } = require('./main-log.cjs');
+const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup } = require('./vm-update.cjs');
@@ -67,14 +69,11 @@ const BUILD = readBuildInfo(path.join(ROOT, '..', 'build-info.json'));
 // down the connector every bot depends on. The log file helps when a Windows
 // user reports a silent failure.
 function logError(label, error) {
-  const line = `${new Date().toISOString()} ${label}: ${error?.stack || error}\n`;
-  try { console.error(line.trimEnd()); } catch {}
-  try {
-    const file = path.join(app.getPath('userData'), 'main-errors.log');
-    if (fs.existsSync(file) && fs.statSync(file).size > 1000000) fs.renameSync(file, `${file}.old`);
-    fs.appendFileSync(file, line);
-  } catch {}
+  try { console.error(`${label}: ${error?.stack || error}`); } catch {}
+  mainLog().write(label, String(error?.stack || error));
 }
+let mainLogger;
+const mainLog = () => mainLogger ||= createLog(path.join(app.getPath('userData'), 'logs'));
 process.on('uncaughtException', (error) => logError('uncaughtException', error));
 process.on('unhandledRejection', (reason) => logError('unhandledRejection', reason));
 const TELEGRAM = 'https://web.telegram.org/a/';
@@ -105,6 +104,8 @@ const NAVIGATE_PARSE_MS = 3000;
 const SNAPSHOT_PARSE_MS = 1500;
 const WAIT_SLICE_MS = 1000;
 let isQuitting = false;
+let bundleWarningDismissed = false;
+const runningBundle = () => process.platform === 'darwin' && app.isPackaged ? macUpdate.bundleLocation(path.resolve(process.execPath, '../../..'), app.getName()) : null;
 let backgroundCaptureQueue = Promise.resolve();
 const avatarStore = createAvatarStore({ root: ROOT, nativeImage, dialog, getWindow: () => win, getPreferences: () => prefs });
 const agentInput = createAgentInput({ command: browserCommand,
@@ -280,6 +281,7 @@ function getState() {
       snoozedUntil: prefs.updateSnoozedUntil || 0,
       vms: vmTargets(prefs).map((target) => ({ id: target.id, label: target.label, ...(vmProgress[target.id] || {}) })),
       vmRetry: vmRetryState(app.getVersion(), prefs.vmUpdates, vmTargets(prefs)), vmRetrying },
+    bundleWarning: bundleWarningDismissed ? '' : setupCheck.bundleWarning(runningBundle(), app.getName()) || '',
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? app.isInApplicationsFolder() : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
@@ -658,6 +660,7 @@ async function checkVmVersions() {
 // Offline or rate-limited checks stay quiet for the user; only the first failure is logged, and the next check retries.
 let updateDriver = 'none';
 function startUpdates() {
+  mainLog().write('app', `v${app.getVersion()} started from ${path.resolve(process.execPath, '../../..')}`);
   if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
   if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
   if (prefs.updateSnoozedUntil) { prefs.updateSnoozedUntil = 0; savePreferencesSoon(); }
@@ -671,11 +674,15 @@ function startUpdates() {
   if (updateDriver === 'electron-updater') {
     const { autoUpdater } = require('electron-updater');
     autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.on('update-downloaded', (info) => { update.available = info.version; update.ready = true; broadcast(); });
+    const note = (text) => mainLog().write('updater', text);
+    autoUpdater.on('checking-for-update', () => note('checking'));
+    autoUpdater.on('update-available', (info) => note(`available ${info?.version}`));
+    autoUpdater.on('update-not-available', () => note('none available'));
+    autoUpdater.on('update-downloaded', (info) => { note(`downloaded ${info.version}`); update.available = info.version; update.ready = true; broadcast(); });
     const feed = githubFeed(fs.existsSync(path.join(process.resourcesPath, 'app-update.yml')), PUBLISH);
     if (feed) autoUpdater.setFeedURL(feed);
     let logged = false;
-    const failed = (error) => { if (!logged) { logged = true; logError('updater', error); } };
+    const failed = (error) => { mainLog().write('updater error', String(error?.message || error)); if (!logged) { logged = true; logError('updater', error); } };
     autoUpdater.on('error', failed);
     check = () => autoUpdater.checkForUpdates().catch(failed);
   } else if (updateDriver === 'self') {
@@ -894,6 +901,7 @@ async function runSetupCheck() {
   const local = {
     telegram: telegramStatus,
     inApplications: mac && app.isPackaged ? app.isInApplicationsFolder() : null,
+    bundle: runningBundle(), productName: app.getName(),
     permissions: mac ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null,
     staleConnector: staleConnector(),
   };
@@ -1204,8 +1212,7 @@ function registerIpc() {
         break;
       }
       case 'copy-report': {
-        let errorLog = '';
-        try { errorLog = fs.readFileSync(path.join(app.getPath('userData'), 'main-errors.log'), 'utf8'); } catch {}
+        const errorLog = mainLog().tail(100);
         clipboard.writeText(setupCheck.buildReport({
           app: { version: app.getVersion(), platform: process.platform, arch: process.arch, osVersion: process.getSystemVersion(),
             signed: process.platform === 'darwin' && macUpdate.isDeveloperIdSigned(path.resolve(process.execPath, '../../..')) },
@@ -1229,12 +1236,22 @@ function registerIpc() {
         // Every saved VM first, then this app. A VM failure or timeout is
         // recorded for the retry banner and never blocks the app update.
         try {
+          mainLog().write('vm update', `start ${tag} for ${targets.map((t) => t.id).join(',') || 'no targets'}`);
           for (const result of await vmUpdater.updateAll(tag, targets, noteVmProgress)) {
+            mainLog().write('vm update', `${result.id} ${result.ok ? `ok ${result.version || ''}` : `failed ${result.error || ''}`}`.trim());
             vmProgress[result.id] = vmProgressResult(result);
             noteVmResult(result); broadcast();
           }
           savePreferences();
-          if (autoUpdate) { require('electron-updater').autoUpdater.quitAndInstall(); break; }
+          if (autoUpdate) {
+            // quitAndInstall closes windows without a before-quit, so the close
+            // handler would hide the window instead and the app would never exit.
+            isQuitting = true;
+            mainLog().write('updater', 'quitAndInstall called');
+            armQuitWatchdog({ exit: (code) => app.exit(code), log: (text) => mainLog().write('updater', text) });
+            require('electron-updater').autoUpdater.quitAndInstall();
+            break;
+          }
           await macUpdate.installMacUpdate({ tag: update.tag, bundlePath: path.resolve(process.execPath, '../../..') });
         }
         catch (error) { update.busy = false; update.error = error.message; broadcast(); throw error; }
@@ -1260,6 +1277,7 @@ function registerIpc() {
       }
       case 'open-download-page': shell.openExternal(`https://openalan.com/download/${HOST_LABEL === 'windows' ? 'windows' : 'mac'}`); break;
       case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/v${app.getVersion()}`); break;
+      case 'dismiss-bundle-warning': bundleWarningDismissed = true; broadcast(); break;
       case 'dismiss-updated': update.justUpdatedFrom = ''; break;
       case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;
       case 'onboarding-open': prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; seedMacSshHost(); savePreferences(); applyLayout(); break;
