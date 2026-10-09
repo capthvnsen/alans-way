@@ -60,6 +60,9 @@ if [ "\${1:-}" = "is-system-running" ]; then cat "${bin}/systemd-state" 2>/dev/n
 # A unit named in bin/inactive-units exists but is not running.
 if [ "\${1:-}" = "is-active" ] || { [ "\${1:-}" = "--user" ] && [ "\${2:-}" = "is-active" ]; }; then
   for _a in "$@"; do grep -qxF -e "$_a" "${bin}/inactive-units" 2>/dev/null && exit 3; done
+  if [ "\${1:-}" = "--user" ]; then
+    for _a in "$@"; do grep -qxF -e "$_a" "${bin}/inactive-user-units" 2>/dev/null && exit 3; done
+  fi
 fi
 # A unit named in bin/missing-units does not exist; every verb on it fails.
 for _a in "$@"; do grep -qxF -e "$_a" "${bin}/missing-units" 2>/dev/null && { echo "Unit $_a.service not found." >&2; exit 1; }; done
@@ -75,7 +78,7 @@ exit 0
   // The closed PATH still reaches /usr/bin/sudo; a runner with passwordless sudo
   // (macOS CI) would rerun the fake supervisorctl with the test env scrubbed and
   // turn a deliberate failure into success. Default to "password required".
-  fs.writeFileSync(path.join(bin, 'sudo'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'sudo'), `#!/bin/sh\n[ -f "${bin}/sudo-ok" ] || exit 1\n[ "$1" = -n ] && shift\nexec "$@"\n`, { mode: 0o755 });
   return { bin, marker };
 }
 // A fake supervisorctl driven by files under $FAKE_SUPERVISOR_STATE:
@@ -1226,6 +1229,30 @@ test('an inactive hermes-gateway unit is never claimed when the live gateway run
     'starting the inactive unit would add a second gateway');
   assert.match(markerText, /gateway stop/);
   assert.match(markerText, /gateway start/);
+});
+
+test('the system unit that was stopped is the one started, not a stale user unit', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'inactive-user-units'), 'hermes-gateway\n');
+  fs.writeFileSync(path.join(bin, 'sudo-ok'), '');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  fs.writeFileSync(path.join(state, 'gwstate'), 'running\n');
+  addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SVC_LOG: marker, ...pluginEnv(home, state),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'updated');
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.match(markerText, /^systemctl stop hermes-gateway$/m);
+  assert.match(markerText, /^systemctl start hermes-gateway$/m);
+  assert.doesNotMatch(markerText, /systemctl --user start hermes-gateway/);
 });
 
 test('a refused update with no service manager goes through hermes gateway stop and start', async () => {

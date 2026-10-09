@@ -399,7 +399,7 @@ update_hermes_plugins() {
   if ! hermes_bin; then say "no hermes CLI on this VM; skipping plugin updates"; return 0; fi
   HHOME="${HERMES_HOME:-$HOME/.hermes}"
   say "updating Hermes plugins"
-  CLONES="" CHANGED=false REFUSED="" GW_STOPPED=false GW_VIA=""
+  CLONES="" CHANGED=false REFUSED="" GW_STOPPED=false GW_VIA="" GW_SCOPE=""
   while read -r _pname _phome; do
     [ -n "$_pname" ] || continue
     _pdir="$_phome/plugins"
@@ -495,7 +495,7 @@ EOF
           systemctl is-active --quiet hermes-gateway \
             && systemctl stop hermes-gateway >/dev/null 2>&1 && GW_STOPPED=true
         elif systemctl --user is-active --quiet hermes-gateway; then
-          systemctl --user stop hermes-gateway >/dev/null 2>&1 && GW_STOPPED=true
+          systemctl --user stop hermes-gateway >/dev/null 2>&1 && GW_STOPPED=true GW_SCOPE=user
         elif systemctl is-active --quiet hermes-gateway; then
           sudo -n systemctl stop hermes-gateway >/dev/null 2>&1 && GW_STOPPED=true
         fi
@@ -535,10 +535,14 @@ EOF
           if [ "$(id -u)" = 0 ]; then
             GW_CMD="systemctl start hermes-gateway"
             systemctl start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
-          else
+          elif [ "$GW_SCOPE" = user ]; then
             GW_CMD="systemctl --user start hermes-gateway"
-            { systemctl --user start hermes-gateway >/dev/null 2>&1 \
-              || sudo -n systemctl start hermes-gateway >/dev/null 2>&1; } && GATEWAY_RESTARTED=true
+            systemctl --user start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+          else
+            # Start the scope that was stopped: a stale user unit must not
+            # come up in place of the system unit.
+            GW_CMD="sudo systemctl start hermes-gateway"
+            sudo -n systemctl start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
           fi;;
         hermes)
           GW_CMD="hermes gateway start"
