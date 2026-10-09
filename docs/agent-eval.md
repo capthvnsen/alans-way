@@ -27,8 +27,8 @@ Check types: `state` (a fixture page POSTs its outcome to the fixture server, or
 | pub-wiki-multihop | public (Wikipedia) | Click through to Babbage, birth year | 8 | many similar links; link beyond first snapshot |
 | pub-books-pagination | public (toscrape) | Next to page 3, 5th title | 10 | truncated titles; grid position |
 | pub-quotes-infinite-scroll | public (toscrape) | Scroll to load 30, author of 25th | 10 | content only after scroll |
-| pub-js-prompt | public (the-internet) | Native prompt answer | 8 | host dismisses prompts unless overridden |
-| pub-shadow-dom | public (the-internet) | Read slotted shadow content | 6 | shadow DOM. Weak check, strengthen at first network pass |
+| pub-js-prompt | public (selenium.dev) | Native prompt answer | 8 | host dismisses prompts unless overridden |
+| pub-shadow-switch | public (shoelace.style) | Turn on the Medium web-component switch | 8 | shadow DOM, switch absent from snapshot, promo modal covers page |
 | pub-iframe-datepicker | public (jqueryui) | Pick the 15th inside an iframe | 8 | iframe plus popup calendar |
 | fx-shadow-nested | fixture | Type into input two shadow roots deep, press button | 6 | selectors cannot pierce |
 | fx-iframe-decoy | fixture | Coupon form in iframe, disabled twin outside | 6 | same accessible name twice |
@@ -48,7 +48,7 @@ Check types: `state` (a fixture page POSTs its outcome to the fixture server, or
 | dk-calculator-menu | desktop | View > Scientific, 123 x 45 | 14 | menu-only mode switch, unnamed keys |
 | dk-finder-rename-move | desktop | Rename and move a file in the sandbox | 18 | context menu, inline rename, no pointer |
 
-Safety: the task set sends nothing, buys nothing, logs in nowhere and changes no setting. Desktop tasks touch only `$TMPDIR/alans-way-eval-sandbox`; System Settings is read-only. Public sites are read-only except that web forms and a datepicker are filled but never submitted anywhere that stores data (the selenium form echoes into the URL). Public sites change; the checker derives expected values from the live site where it can (books, quotes) and the fixed ones (Hopper DOB, Babbage) are stable facts.
+Safety: the task set sends nothing, buys nothing, logs in nowhere and changes no setting. Desktop tasks touch only `$TMPDIR/alans-way-eval-sandbox`; System Settings is read-only. Public sites are read-only except that web forms and a datepicker are filled but never submitted anywhere that stores data (the selenium form echoes into the URL). the-internet.herokuapp.com was dropped: its render-blocking Optimizely script never finishes loading in headless Chrome here (reproduced in plain Chrome too), so `open` fails after 8 s. Public sites change; the checker derives expected values from the live site where it can (books, quotes) and the fixed ones (Hopper DOB, Babbage) are stable facts.
 
 ## 3. Metrics and baseline protocol
 
@@ -103,4 +103,44 @@ Run on this worktree, `nice`d, one browser. Five tasks, 3 repeats each:
 
 Finding from the one failure, reproduced 1 in 8 with a bare snapshot: `cua_alans_way_snapshot` right after `cua_alans_way_open` on a page with a same-origin iframe returned `loading:false` but omitted the iframe's controls (only the outer controls were listed). The iframe had not finished loading and nothing in the reply said so. An agent would act on an incomplete control list. That is a real tool gap that the one-site speed test cannot see. Not fixed here (eval only).
 
-Not run: public tasks (no network, per scope), desktop tasks, hermes mode against a model.
+## 6. Full oracle pass (network on), 3 repeats
+
+Ran public (8) and fixture (12) tasks, 60 runs: 59/60 passed. Median wall ms and tool calls per run:
+
+| task | pass | wall | calls/max |
+|---|---|---|---|
+| pub-form-multifield | 3/3 | 709 | 3/8 |
+| pub-wiki-search-extract | 3/3 | 1017 | 4/8 |
+| pub-wiki-multihop | 3/3 | 776 | 5/8 |
+| pub-books-pagination | 3/3 | 897 | 6/10 |
+| pub-quotes-infinite-scroll | 3/3 | 1413 | 2/10 |
+| pub-js-prompt | 3/3 | 258 | 4/8 |
+| pub-shadow-switch | 3/3 | 1302 | 5/8 |
+| pub-iframe-datepicker | 3/3 | 1183 | 6/8 |
+| fx-shadow-nested | 3/3 | 826 | 4/6 |
+| fx-iframe-decoy | 2/3 | 1443 | 4/6 |
+| fx-dialog-chain | 3/3 | 237 | 3/8 |
+| fx-file-download | 3/3 | 845 | 3/4 |
+| fx-new-tab-code | 3/3 | 942 | 10/12 |
+| fx-infinite-scroll-select | 3/3 | 806 | 14/14 |
+| fx-paginate-max | 3/3 | 966 | 5/16 |
+| fx-flaky-overlay | 3/3 | 2030 | 4/8 |
+| fx-combobox-virtual | 3/3 | 820 | 5/8 |
+| fx-canvas-click | 3/3 | 236 | 3/5 |
+| fx-wizard-validation | 3/3 | 1884 | 12/14 |
+| fx-drag-reorder | 3/3 | 247 | 2/6 |
+
+Desktop tasks (5) did not run: they need a Mac app build with Accessibility and Screen Recording granted, and have no oracle yet.
+
+Oracles use eval and selectors where a human-like agent would use refs, so the call counts are a floor, not a target. The public oracles passed against live sites on 2026-10-09; the quotes and books checks derive the expected value from the site at check time.
+
+## 7. Repro note for a separate fix: iframe controls missing from an early snapshot
+
+Not fixed on this branch.
+
+- Task: `fx-iframe-decoy` (the same effect shows on `pub-iframe-datepicker`, where the oracle has to poll snapshots until the iframe's input appears).
+- Steps: `cua_alans_way_open` the fixture page `/f/iframe` (outer page with a disabled "Coupon code" input plus a same-origin `<iframe src="/f/iframe-inner">` holding the real form), then immediately `cua_alans_way_snapshot`.
+- Symptom: the reply has `loading:false` and lists the iframe under `iframes`, but `elements` has only the outer controls. The iframe's "Coupon code" input and "Apply" button are missing. A snapshot a moment later includes them.
+- Rate: 1 in 8 on a bare open then snapshot (script `scratchpad/dbg2.cjs`, 8 loops); 2 of 18 oracle runs of this task across the sessions (`--mode oracle --tasks fx-iframe-decoy --repeat 3`).
+- Expected: either wait for same-origin iframe load before reporting `loading:false`, or report the frame as still loading so the agent knows the control list is incomplete.
+
