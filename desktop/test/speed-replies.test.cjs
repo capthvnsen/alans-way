@@ -15,7 +15,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
-const { followUpArmExpression, followUpCloseExpression, snapshotExpression } = require('../src/browser-page.cjs');
+const { followUpArmExpression, followUpCloseExpression, snapshotExpression, FOLLOW_UP_KEY } = require('../src/browser-page.cjs');
 
 function findChrome() {
   const home = os.homedir();
@@ -129,7 +129,27 @@ document.getElementById('bb').onclick = function () {
   capturedFetch('/slow-json').then(function (r) { return r.text(); }).then(function (t) { document.getElementById('out').textContent = t; });
 };
 </script>`;
-const routes = { '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
+// A same-origin iframe whose document arrives late: until it commits, the frame
+// is an empty about:blank document and the top page already reads as loaded.
+const frameOuter = `<!doctype html><title>outer</title><button>Outer</button><iframe src="/frame-inner" title="Coupon form"></iframe>`;
+const frameInner = `<!doctype html><title>inner</title><label>Coupon <input aria-label="Coupon code"></label><button>Apply</button>`;
+const frameStuck = `<!doctype html><title>stuck</title><button>Outer</button><iframe src="/hang"></iframe>`;
+// Many shadow roots ahead of the widgets, a switch whose real input is a
+// tiny hidden checkbox inside the shadow root (named by its host's slotted
+// text), an ARIA switch on a focusable host, and a focusable custom element.
+const widgetPage = `<!doctype html><title>widgets</title>
+${'<x-filler></x-filler>'.repeat(80)}
+<x-switch>Notifications</x-switch>
+<x-aria role="switch" aria-checked="false" tabindex="0" aria-label="Dark mode"></x-aria>
+<x-tab tabindex="0">Billing</x-tab>
+<pre tabindex="0">scrollable code block</pre>
+<script>
+customElements.define('x-filler', class extends HTMLElement { constructor() { super(); this.attachShadow({ mode: 'open' }).innerHTML = '<span>.</span>'; } });
+customElements.define('x-switch', class extends HTMLElement { constructor() { super(); this.attachShadow({ mode: 'open' }).innerHTML = '<label><input type="checkbox" role="switch" style="position:absolute;opacity:0;width:13px;height:13px;pointer-events:none"><span style="display:inline-block;width:36px;height:18px;background:#ccc"></span><slot></slot></label>'; } });
+customElements.define('x-aria', class extends HTMLElement { constructor() { super(); this.style.display = 'inline-block'; this.textContent = 'o'; this.onclick = () => this.setAttribute('aria-checked', this.getAttribute('aria-checked') === 'true' ? 'false' : 'true'); } });
+customElements.define('x-tab', class extends HTMLElement {});
+</script>`;
+const routes = { '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
 const api = (route, method = 'GET', body, epoch) =>
@@ -147,6 +167,7 @@ before(async () => {
     // requests: the tracker counts them only when the action started them.
     if (pathname === '/slow-json') return setTimeout(() => { res.setHeader('content-type', 'text/plain'); res.end('Fetched payload text'); }, 300);
     if (pathname === '/hang') return;
+    if (pathname === '/frame-inner') return setTimeout(() => { res.setHeader('content-type', 'text/html'); res.end(routes[pathname]); }, 300);
     res.setHeader('content-type', 'text/html');
     res.end(routes[pathname] || 'nf');
   });
@@ -232,9 +253,9 @@ test('ten sequential tasks each complete in one action call', { skip: !chrome &&
       assert.equal(reply.data.effect.navigated, false);
       assert.equal(reply.data.effect.url, `http://bench.example:${port}/bench`);
       assert.equal(reply.data.effect.title, 'bench');
-      // The reply waited out the 450ms render timer the click started; the
-      // bound is loose because the read starts wherever the eval lands.
-      assert.ok(reply.data.effect.settledMs >= 200, `task 1 settledMs: ${reply.data.effect.settledMs}`);
+      // The effect.text check above is the proof the reply waited out the
+      // 450ms render timer; settledMs only measures from wherever the read
+      // started, which a slow runner pushes close to the end of that timer.
       console.log(`single-action settle: task 1 waited ${reply.data.effect.settledMs}ms for its own follow-up render; effect.text=${JSON.stringify(reply.data.effect.text.slice(0, 120))}`);
     }
     if (i === 3 || i === 8) assert.match(reply.data.results[0].matched.by, /label/, `task ${i + 1} select matched by label`);
@@ -442,9 +463,15 @@ test('a click that starts no tracked work settles without the old 250ms watch', 
   const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/quiet` })).data;
   assert.ok(tab.id, `tab did not open: ${stderr}`);
   await api(`/v1/tabs/${tab.id}/snapshot`);
+  // Wall time on a starved runner says nothing about which watch ran, so
+  // record the delays the settle asks its timer for instead.
+  const probe = (await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', epoch: tab.epoch, code: `(() => { const f = window[Symbol.for(${JSON.stringify(FOLLOW_UP_KEY)})]; if (!f) return false; const raw = f.setT; window.__delays = []; f.setT = (fn, ms, ...rest) => { window.__delays.push(ms); return raw(fn, ms, ...rest); }; return true; })()` })).data;
+  assert.equal(probe.value, true, `no follow-up tracker on the page: ${JSON.stringify(probe)}`);
   const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#qb', epoch: tab.epoch });
   assert.equal(reply.status, 200, JSON.stringify(reply.data));
-  assert.ok(reply.data.effect.settledMs < 200, `settledMs: ${reply.data.effect.settledMs}`);
+  const delays = (await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', epoch: tab.epoch, code: 'window.__delays' })).data.value;
+  assert.ok(delays.includes(100), `settle never used the tracked watch: ${JSON.stringify(delays)}`);
+  assert.ok(!delays.includes(250), `settle fell back to the old 250ms watch: ${JSON.stringify(delays)}`);
 });
 
 test('a quiet click keeps the pre-tracker timing', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
@@ -563,4 +590,40 @@ test('read and wait steps refresh the baseline so the effect does not repeat the
   const read = reply.data.results[2];
   assert.ok(read.text.includes('Async result appeared'), `read text: ${JSON.stringify(read.text)}`);
   assert.ok(!reply.data.effect.text.includes('Async result appeared'), `effect.text repeats the read: ${JSON.stringify(reply.data.effect)}`);
+});
+
+test('a snapshot right after open waits for a late same-origin iframe', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/frame-outer` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  assert.equal(snap.loading, false);
+  assert.ok(snap.elements.some((e) => e.name === 'Coupon code'), `iframe input missing: ${JSON.stringify(snap.elements)}`);
+  assert.ok(snap.elements.some((e) => e.name === 'Apply'), `iframe button missing: ${JSON.stringify(snap.elements)}`);
+});
+
+test('a frame that never loads ends the wait and the snapshot says loading', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/frame-stuck` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  const started = Date.now();
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  assert.equal(snap.loading, true);
+  assert.ok(snap.elements.some((e) => e.name === 'Outer'));
+  assert.ok(Date.now() - started < 4000, `wait was not bounded: ${Date.now() - started}ms`);
+});
+
+test('custom elements and ARIA widgets in shadow roots become refs that toggle', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/widgets` })).data;
+  assert.ok(tab.id, `tab did not open: ${stderr}`);
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot?maxElements=300`)).data;
+  const sw = snap.elements.find((e) => e.role === 'switch' && /Notifications/.test(e.name || ''));
+  assert.ok(sw, `shadow switch missing past 80 shadow roots: ${JSON.stringify(snap.elements)}`);
+  assert.match(sw.name, /off/);
+  const aria = snap.elements.find((e) => e.role === 'switch' && /Dark mode/.test(e.name || ''));
+  assert.ok(aria, `ARIA switch on a custom host missing: ${JSON.stringify(snap.elements)}`);
+  assert.ok(snap.elements.some((e) => e.role === 'x-tab' && e.name === 'Billing'), 'focusable custom element missing');
+  assert.ok(!snap.elements.some((e) => e.role === 'pre'), 'a tabindex code block is not a control');
+  const click = (await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', ref: sw.ref, epoch: tab.epoch })).data;
+  assert.ok(click.ok !== false, JSON.stringify(click));
+  const checked = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: "document.querySelector('x-switch').shadowRoot.querySelector('input').checked", epoch: tab.epoch });
+  assert.equal(checked.data.value, true, `click did not toggle: ${JSON.stringify(click)}`);
 });

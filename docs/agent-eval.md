@@ -136,7 +136,7 @@ Oracles use eval and selectors where a human-like agent would use refs, so the c
 
 ## 7. Repro note for a separate fix: iframe controls missing from an early snapshot
 
-Not fixed on this branch.
+Fixed on `capthvnsen/snapshot-gaps`: the snapshot waits (bounded, 1.2s) for same-origin frames that are still loading and reports `loading:true` if any remain. Root cause: a not-yet-navigated same-origin iframe is a readable empty about:blank document, and `loading` only looked at the top document.
 
 - Task: `fx-iframe-decoy` (the same effect shows on `pub-iframe-datepicker`, where the oracle has to poll snapshots until the iframe's input appears).
 - Steps: `cua_alans_way_open` the fixture page `/f/iframe` (outer page with a disabled "Coupon code" input plus a same-origin `<iframe src="/f/iframe-inner">` holding the real form), then immediately `cua_alans_way_snapshot`.
