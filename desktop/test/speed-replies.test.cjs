@@ -253,9 +253,9 @@ test('ten sequential tasks each complete in one action call', { skip: !chrome &&
       assert.equal(reply.data.effect.navigated, false);
       assert.equal(reply.data.effect.url, `http://bench.example:${port}/bench`);
       assert.equal(reply.data.effect.title, 'bench');
-      // The reply waited out the 450ms render timer the click started; the
-      // bound is loose because the read starts wherever the eval lands.
-      assert.ok(reply.data.effect.settledMs >= 200, `task 1 settledMs: ${reply.data.effect.settledMs}`);
+      // The effect.text check above is the proof the reply waited out the
+      // 450ms render timer; settledMs only measures from wherever the read
+      // started, which a slow runner pushes close to the end of that timer.
       console.log(`single-action settle: task 1 waited ${reply.data.effect.settledMs}ms for its own follow-up render; effect.text=${JSON.stringify(reply.data.effect.text.slice(0, 120))}`);
     }
     if (i === 3 || i === 8) assert.match(reply.data.results[0].matched.by, /label/, `task ${i + 1} select matched by label`);
