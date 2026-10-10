@@ -30,7 +30,7 @@ async function startProxy(target, token) {
   let log = [];
   const server = http.createServer((req, res) => {
     const t0 = Date.now();
-    const up = http.request(new URL(req.url, target.url), { method: req.method, headers: req.headers }, (r) => {
+    const up = http.request(new URL(req.url, target.url), { method: req.method, headers: { ...req.headers, host: new URL(target.url).host } }, (r) => {
       let bytes = 0;
       r.on('data', (c) => { bytes += c.length; });
       r.on('end', () => log.push({ t: t0, method: req.method, path: req.url.split('?')[0], status: r.statusCode, ms: Date.now() - t0, bytes }));

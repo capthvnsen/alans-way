@@ -76,7 +76,7 @@ l.querySelectorAll('li').forEach(li=>{li.ondragstart=e=>e.dataTransfer.setData('
   return pages;
 }
 
-function createFixtures() {
+function createFixtures(bind = '127.0.0.1') {
   const s = { hits: {}, reports: {}, codes: {}, canvas: {}, rows: [], paginateAnswer: '', scrollTarget: 0, country: 'Portugal' };
   const pages = build(s);
   const reset = () => {
@@ -106,7 +106,7 @@ function createFixtures() {
     res.setHeader('content-type', 'text/html');
     res.end(typeof p === 'function' ? p() : p || 'not found');
   });
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ state: s, reset, port: server.address().port, close: () => server.close() })));
+  return new Promise((resolve) => server.listen(0, bind, () => resolve({ state: s, reset, port: server.address().port, close: () => server.close() })));
 }
 
 module.exports = { createFixtures, COUNTRIES };
