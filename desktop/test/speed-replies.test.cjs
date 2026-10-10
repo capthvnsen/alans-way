@@ -15,7 +15,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
-const { followUpArmExpression, followUpCloseExpression, snapshotExpression } = require('../src/browser-page.cjs');
+const { followUpArmExpression, followUpCloseExpression, snapshotExpression, FOLLOW_UP_KEY } = require('../src/browser-page.cjs');
 
 function findChrome() {
   const home = os.homedir();
@@ -463,9 +463,15 @@ test('a click that starts no tracked work settles without the old 250ms watch', 
   const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/quiet` })).data;
   assert.ok(tab.id, `tab did not open: ${stderr}`);
   await api(`/v1/tabs/${tab.id}/snapshot`);
+  // Wall time on a starved runner says nothing about which watch ran, so
+  // record the delays the settle asks its timer for instead.
+  const probe = (await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', epoch: tab.epoch, code: `(() => { const f = window[Symbol.for(${JSON.stringify(FOLLOW_UP_KEY)})]; if (!f) return false; const raw = f.setT; window.__delays = []; f.setT = (fn, ms, ...rest) => { window.__delays.push(ms); return raw(fn, ms, ...rest); }; return true; })()` })).data;
+  assert.equal(probe.value, true, `no follow-up tracker on the page: ${JSON.stringify(probe)}`);
   const reply = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#qb', epoch: tab.epoch });
   assert.equal(reply.status, 200, JSON.stringify(reply.data));
-  assert.ok(reply.data.effect.settledMs < 200, `settledMs: ${reply.data.effect.settledMs}`);
+  const delays = (await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', epoch: tab.epoch, code: 'window.__delays' })).data.value;
+  assert.ok(delays.includes(100), `settle never used the tracked watch: ${JSON.stringify(delays)}`);
+  assert.ok(!delays.includes(250), `settle fell back to the old 250ms watch: ${JSON.stringify(delays)}`);
 });
 
 test('a quiet click keeps the pre-tracker timing', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
