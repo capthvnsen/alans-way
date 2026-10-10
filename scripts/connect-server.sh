@@ -95,7 +95,7 @@ AGENTS_REF="${ALANS_WAY_AGENTS_REF:-}"
 if [ -z "$AGENTS_REF" ]; then
   AGENTS_REF="$(curl -fsSL "https://api.github.com/repos/$AGENTS_REPO_SLUG/tags?per_page=100" 2>/dev/null \
     | grep -Eo '"name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' | sed 's/.*"\(v[^"]*\)"$/\1/' \
-    | sort -t. -k1.2n -k2n -k3n | tail -1)" || AGENTS_REF=""
+    | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -1)" || AGENTS_REF=""
   [ -n "$AGENTS_REF" ] || { AGENTS_REF=main; say "WARNING: could not look up the plugin's latest release tag on GitHub; using the unreleased main branch instead."; }
 fi
 AGENTS_RAW="https://raw.githubusercontent.com/$AGENTS_REPO_SLUG/$AGENTS_REF"
