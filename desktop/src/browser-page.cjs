@@ -12,6 +12,7 @@ function snapshotExpression(generation, opts = {}) {
   const keep = int(opts.keep, 0, Number.MAX_SAFE_INTEGER, -1);
   const restamp = int(opts.restamp, 0, Number.MAX_SAFE_INTEGER, -1);
   const parseWaitMs = int(opts.parseWaitMs, 0, 5000, 400);
+  const frameWaitMs = int(opts.frameWaitMs, 0, 5000, maxElements > 0 ? 1200 : 0);
   // effect reads also report which control holds focus and the value of the
   // element the action just touched (a ref token or a selector).
   const valueRef = opts.valueFor && typeof opts.valueFor.ref === 'string' ? opts.valueFor.ref : null;
@@ -26,6 +27,23 @@ function snapshotExpression(generation, opts = {}) {
     // The parser yields between chunks, so a snapshot can land mid-document;
     // give a still-parsing page a moment and report it if it is not done.
     if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setT(done, ${parseWaitMs}); });
+    // A same-origin iframe is readable as an empty about:blank document until
+    // its navigation commits, and the top document says nothing about it, so
+    // the controls inside would be missing from a read that looks complete.
+    // Wait for such frames, bounded; whatever is still pending is reported as loading.
+    const framesPending = (doc, depth) => {
+      for (const frame of doc.querySelectorAll('iframe')) {
+        let inner = null;
+        try { inner = frame.contentDocument; } catch {}
+        if (!inner) continue;
+        const src = frame.getAttribute('src') || '';
+        const blank = !src || frame.hasAttribute('srcdoc') || /^(about|javascript):/i.test(src) || frame.loading === 'lazy';
+        if (inner.readyState !== 'complete' || (!blank && inner.URL === 'about:blank')) return true;
+        if (depth < 3 && framesPending(inner, depth + 1)) return true;
+      }
+      return false;
+    };
+    for (const end = performance.now() + ${frameWaitMs}; document.readyState !== 'loading' && performance.now() < end && framesPending(document, 0);) await new Promise(done => setT(done, 25));
     // Marks the document: a cross-document navigation swaps the window and
     // drops the marker, which is how a read tells it from a same-document one.
     // Kept under a symbol and non-enumerable so window scans do not see it.
@@ -117,19 +135,23 @@ function snapshotExpression(generation, opts = {}) {
     };
     const items = [];
     const deadline = performance.now() + ${elementMs};
-    const pick = 'a[href],button,summary,input:not([type="hidden"]),textarea,select,[onclick],[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="treeitem"],[role="slider"],[contenteditable="true"]';
+    const pick = 'a[href],button,summary,input:not([type="hidden"]),textarea,select,[onclick],[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="treeitem"],[role="slider"],[role="combobox"],[role="textbox"],[role="searchbox"],[role="spinbutton"],[contenteditable="true"]';
+    // Widgets with no native tag or listed role: a state attribute, or a
+    // focusable custom element. Containers around real controls are skipped
+    // below so the host and the control inside its shadow root do not both show.
+    const loosePick = pick + ',[aria-checked],[aria-pressed],[tabindex]:not([tabindex^="-"])';
     // Open shadow roots only. A closed root reads null here, which keeps the
     // agent cursor (and anything else the page sealed) out of the snapshot.
     const queue = [document];
     const seenRoot = new Set();
     const candidates = [];
     let more = false;
-    while (queue.length && seenRoot.size < 40 && performance.now() <= deadline) {
+    while (queue.length && seenRoot.size < 600 && performance.now() <= deadline) {
       const root = queue.shift();
       if (seenRoot.has(root)) continue;
       seenRoot.add(root);
       let list = [];
-      try { list = root.querySelectorAll(pick); } catch {}
+      try { list = root.querySelectorAll(loosePick); } catch {}
       for (const el of list) candidates.push(el);
       const start = root.nodeType === 11 ? root : (root.documentElement || root.body || null);
       if (!start) continue;
@@ -160,6 +182,11 @@ function snapshotExpression(generation, opts = {}) {
         : (s => s.visibility === 'hidden' || s.display === 'none')(getComputedStyle(el))) continue;
       const r = el.getBoundingClientRect();
       if (!r.width || !r.height) continue;
+      if (!el.matches(pick)) {
+        const stateful = el.hasAttribute('aria-checked') || el.hasAttribute('aria-pressed');
+        if (!stateful && el.localName.indexOf('-') < 0) continue;
+        if (el.querySelector(pick) || (el.shadowRoot && el.shadowRoot.querySelector(pick))) continue;
+      }
       const ref = 's${generation}-' + (items.length + 1);
       const kept = (el.getAttribute('data-hermes-workspace-ref') || '').split(' ').filter(token => token.startsWith('s${keep}-'));
       // Held refs stay usable if the page re-rendered an identical tree: the
@@ -183,6 +210,11 @@ function snapshotExpression(generation, opts = {}) {
         name = own && labelText.endsWith(own) ? labelText.slice(0, -own.length).trim() : labelText;
       }
       if (!name) name = (el.innerText || '').trim();
+      // A control inside a shadow root is usually named by its host (a slotted
+      // label, or a label attribute).
+      for (let host = el.getRootNode().host, hops = 0; !name && host && hops < 3; host = host.getRootNode().host, hops++) {
+        name = (host.getAttribute('aria-label') || host.getAttribute('label') || host.innerText || '').trim();
+      }
       if (el.tagName === 'SELECT' && el.selectedIndex >= 0) {
         const picked = (el.options[el.selectedIndex].label || el.options[el.selectedIndex].text || '').trim();
         if (picked && picked !== name) name = (name ? name + ' ' : '') + picked;
@@ -309,7 +341,7 @@ function snapshotExpression(generation, opts = {}) {
       text = text.slice(0, ${maxChars});
       textSig = sigNodes + ':' + (sigHash >>> 0).toString(36);
     } else textCut = ${maxChars} <= 0 && !!document.body?.textContent?.trim();
-    return {title:document.title,url:location.href,sameDoc,loading:document.readyState === 'loading',text,textSig,elements:items,truncated:{text:textCut,elements:more || scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
+    return {title:document.title,url:location.href,sameDoc,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,elements:items,truncated:{text:textCut,elements:more || scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
   })()`;
 }
 

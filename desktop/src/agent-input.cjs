@@ -45,7 +45,7 @@ function locateElement(selectorSource) {
     const sel = ${selectorSource};
     const queue = [document];
     const seen = new Set();
-    for (let i = 0; i < queue.length && i < 40; i++) {
+    for (let i = 0; i < queue.length && i < 600; i++) {
       const root = queue[i];
       let hit = null;
       try { hit = root.querySelector(sel); } catch { return null; }
@@ -286,6 +286,9 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
           for (let n = inner; n && !own; n = n.parentNode || n.host) own = n === el;
         }
       }
+      // A visually hidden checkbox or radio (pointer-events:none behind a
+      // styled track) is operated through its label; a hit on that label is a hit on it.
+      if (hit && !own && hit.closest) { const label = hit.closest('label'); own = !!label && label.control === el; }
       if (hit && (own || el.contains(hit))) { point = { x: lx + ox, y: ly + oy }; break; }
       if (hit && !coveredBy && !own && !el.contains(hit)) coveredBy = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/)[0] : '');
     }

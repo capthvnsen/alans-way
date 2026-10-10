@@ -82,8 +82,8 @@ const tasks = [
     check: async ({ stack }) => { const r = await stack.pageEval('[...document.querySelectorAll("sl-switch")].map(s=>s.textContent.trim()+(s.checked?"+":"-")).join()'); return { ok: /Medium\+/.test(r || '') && /Small-/.test(r || '') && /Large-/.test(r || ''), why: String(r) }; },
     maxSteps: 8, why: 'Shadow-DOM web components whose real input is visually hidden: the snapshot does not list the switches even when scrolled into view, so the agent needs a screenshot and a coordinate click. A modal "Web Awesome" promo covers the page on load and must be dismissed first.',
     oracle: async (t) => { await t.act({ action: 'eval', code: 'document.getElementById("wa-dialog").open=false;1' }); await t.act({ action: 'eval', code: '(()=>{const s=[...document.querySelectorAll("sl-switch")].find(x=>x.textContent.trim()==="Medium");s.scrollIntoView({block:"center",behavior:"instant"});return 1})()' });
-      const r = (await t.act({ action: 'eval', code: '(async()=>{await new Promise(r=>setTimeout(r,700));const s=[...document.querySelectorAll("sl-switch")].find(x=>x.textContent.trim()==="Medium");const b=s.getBoundingClientRect();return {x:b.left+16,y:b.top+b.height/2}})()' })).value;
-      await t.act({ action: 'click', x: r.x, y: r.y }); return 'on'; },
+      for (let i = 0; i < 20 && !t.els.some((e) => e.role === 'switch'); i++) { await t.snapshot({ maxElements: 300 }); if (!t.els.some((e) => e.role === 'switch')) await new Promise((r) => setTimeout(r, 250)); }
+      await t.act({ action: 'click', ref: t.ref(/^Medium/, 'switch') }); return 'on'; },
   },
   {
     id: 'pub-iframe-datepicker', tier: 'public', title: 'Datepicker inside an iframe',
