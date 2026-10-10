@@ -1,13 +1,14 @@
 #!/bin/sh
 # Stub: serve the public raw.githubusercontent.com URLs of the two repos from
-# the local exports, so the run tests the code in this tree. Everything else
+# the local exports (any ref; the tags API answers with the export's own tag), so the run tests the code in this tree. Everything else
 # goes to the real curl.
 real=/usr/bin/curl
 args=""
 for a in "$@"; do
   case "$a" in
     https://raw.githubusercontent.com/capthvnsen/alans-way/main/*) a="file:///srv/alans-way/${a#https://raw.githubusercontent.com/capthvnsen/alans-way/main/}";;
-    https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/*) a="file:///srv/agents/${a#https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/}";;
+    https://raw.githubusercontent.com/capthvnsen/alans-way-agents/*/*) r="${a#https://raw.githubusercontent.com/capthvnsen/alans-way-agents/}"; a="file:///srv/agents/${r#*/}";;
+    https://api.github.com/repos/capthvnsen/alans-way-agents/tags*) a="file:///srv/agents-tags.json";;
   esac
   args="$args '$(printf %s "$a" | sed "s/'/'\\\\''/g")'"
 done

@@ -44,11 +44,15 @@ if ! node_ok; then
   PATH="$NODE_DIR/bin:$PATH"; export PATH
 fi
 
-if [ -d "$DIR/.git" ] && command -v git >/dev/null && git --version >/dev/null 2>&1; then
+# On a Mac without the Command Line Tools, running git opens Apple's install
+# dialog, so ask xcode-select first and take the tarball path instead.
+git_ok() { command -v git >/dev/null && xcode-select -p >/dev/null 2>&1 && git --version >/dev/null 2>&1; }
+
+if [ -d "$DIR/.git" ] && git_ok; then
   say "Updating $DIR"
   git -C "$DIR" pull --ff-only -q || die "could not fast-forward $DIR (local changes?)"
   say "Version $(git -C "$DIR" rev-parse --short HEAD)"
-elif [ ! -e "$DIR" ] && command -v git >/dev/null && git --version >/dev/null 2>&1; then
+elif [ ! -e "$DIR" ] && git_ok; then
   say "Cloning into $DIR"
   git clone -q "$REPO_URL" "$DIR"
   say "Version $(git -C "$DIR" rev-parse --short HEAD)"

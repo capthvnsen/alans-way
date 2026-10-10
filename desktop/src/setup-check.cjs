@@ -8,7 +8,23 @@ const { isNewer } = require('./mac-update.cjs');
 
 const UPDATE = 'Update the server to install it.';
 const SETUP_PROMPT = 'Paste the setup prompt to your bot (Settings → Agent setup → Copy setup prompt).';
-const AUDIT_FIX = 'Ask your bot to run setup.sh --verify and fix what it reports.';
+const RECONNECT = 'Run the connect command again from this computer (see the README Quick start); it re-runs setup on the server.';
+const BOT_FIX = 'On the server, run “hermes gateway setup”, choose Telegram and scan the QR code. Then run the connect command again.';
+
+// What --doctor found missing on a server whose browser is down, and the fix
+// that works for each. Update the server cannot install any of these.
+const HOST_CAUSES = {
+  'no-chromium': ['Chromium is not installed on the server', 'On the server, install Chromium or Google Chrome (apt-get install chromium, or the Google Chrome .deb). Then run the connect command again.'],
+  'no-display': ['The server has no X display for the browser', 'On the server, install a virtual display (apt-get install xvfb). Then run the connect command again.'],
+  'no-bot': ['No Telegram bot is configured on the server', BOT_FIX],
+};
+
+// The audit's own “(run: …)” hint when it has one, else a re-run of setup.
+function auditFix(text, causes) {
+  if (causes.includes('no-bot')) return BOT_FIX;
+  const hint = /\(run: ([^)]+)\)/.exec(text);
+  return hint ? `On the server, run: ${hint[1]}` : RECONNECT;
+}
 
 // setup.sh copies a connector into <userData>/connector and the router runs it
 // ahead of the app's own, so once the app updates past it the copy is stale.
@@ -83,7 +99,7 @@ function connectionRows({ connection }) {
 
 function pluginRow(group, prefix, plugin, pluginTag) {
   const behind = plugin.class === 'catalog' ? plugin.updateAvailable : pluginTag ? isNewer(pluginTag, plugin.version) : null;
-  if (typeof behind !== 'boolean') return row(group, 'warn', `${prefix}Couldn’t check ${plugin.name} for updates`, 'The server couldn’t reach GitHub. Check again later.');
+  if (typeof behind !== 'boolean') return row(group, 'warn', `${prefix}Couldn’t check ${plugin.name} for updates`, plugin.reason || 'The server couldn’t reach GitHub. Check again later.');
   return behind
     ? row(group, 'warn', `${prefix}${plugin.name} ${plugin.version} has an update`, UPDATE, 'update-server')
     : row(group, 'ok', `${prefix}${plugin.name} ${plugin.version} is the latest published version`);
@@ -101,7 +117,9 @@ function serverRows({ appVersion, server }) {
   if (isNewer(appVersion, server.version)) rows.push(row(s, 'fail', 'The server is on an older version', `Server ${server.version}, this app ${appVersion}.`, 'update-server'));
   else if (isNewer(server.version, appVersion)) rows.push(row(s, 'warn', 'The server is newer than this app', 'Update this app.'));
   else rows.push(row(s, 'ok', `Server tools are on ${server.version}`));
-  if (!server.hostVersion) rows.push(row(s, 'fail', 'The server’s browser is not running', 'Update the server to restart it.', 'update-server'));
+  const causes = (server.hostCauses || []).filter((c) => HOST_CAUSES[c]);
+  if (!server.hostVersion && causes.length) for (const c of causes) rows.push(row(s, 'fail', ...HOST_CAUSES[c]));
+  else if (!server.hostVersion) rows.push(row(s, 'fail', 'The server’s browser is not running', 'Update the server to restart it.', 'update-server'));
   else if (server.hostVersion !== server.version) rows.push(row(s, 'warn', 'The server’s browser is running an older version', 'Update the server to restart it.', 'update-server'));
   else rows.push(row(s, 'ok', 'The server’s browser is running'));
   const profiles = server.profiles || [];
@@ -120,8 +138,8 @@ function serverRows({ appVersion, server }) {
     ? row(s, 'warn', 'Setup audit not run (out of time)', 'Check again later.')
     : row(s, 'warn', 'Setup audit not available', `The setup files are missing on the server. ${SETUP_PROMPT}`));
   else if (!(v.fails || []).length && !(v.warns || []).length) rows.push(row(s, 'ok', 'Setup audit passed'));
-  for (const text of v.fails || []) rows.push(row(s, 'fail', text, AUDIT_FIX));
-  for (const text of v.warns || []) rows.push(row(s, 'warn', text, AUDIT_FIX));
+  for (const text of v.fails || []) rows.push(row(s, 'fail', text, auditFix(text, causes)));
+  for (const text of v.warns || []) rows.push(row(s, 'warn', text, auditFix(text, causes)));
   return rows;
 }
 

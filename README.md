@@ -18,13 +18,15 @@ A desktop app for people running [Hermes Agent](https://github.com/NousResearch/
 
 ## Quick start
 
-On your Mac, in Terminal:
+**Download Alan's Workspace:** [Mac (Apple Silicon)](https://openalan.com/download/mac) or [Windows 10/11 x64](https://openalan.com/download/windows). The Mac build is signed and notarized, so it opens like any other app. Open it, sign in to Telegram, and the setup wizard hands you one prompt for your Hermes agent. The app updates itself after that.
+
+**Or from a terminal.** On your Mac:
 
 ```sh
 curl -fsSL https://openalan.com/install-mac | sh
 ```
 
-It builds and opens the app, then asks to connect your Hermes server. Type the server's SSH address (for example `root@hermes-vps`) and it does the rest from your computer: trusts both machines' keys, installs the plugin on the server, restarts the gateway and checks SSH both ways. The plugin's setup asks its own questions as it goes. Re-run it any time to upgrade or reconnect.
+It builds and opens the app, then asks to connect your Hermes server. Type the server's SSH address (for example `root@hermes-vps`) and it does the rest from your computer: trusts both machines' keys, installs Alan's Way Plugin on the server, restarts the gateway and checks SSH both ways. The plugin's setup asks its own questions as it goes. It ends with the steps still left for you, in order. Re-run it any time to upgrade or reconnect.
 
 On Linux (x64, systemd, desktop session, Node 22.12+ and git), the same flow builds the app too:
 
@@ -32,7 +34,9 @@ On Linux (x64, systemd, desktop session, Node 22.12+ and git), the same flow bui
 curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-server.sh | sh
 ```
 
-Before you start: Tailscale on both machines with the same account, Remote Login on (Mac: System Settings, General, Sharing) or an SSH server (Linux), and `ssh <server>` working from this terminal. On Windows, or with no SSH access to the server, use [Connect your agents](#connect-your-agents) instead.
+Alan's Workspace for Linux is x86_64 only; 64-bit ARM Linux is not supported yet.
+
+Before you start: a Telegram bot on your Hermes server (run `hermes gateway setup` there if you have none), Tailscale on both machines with the same account, Remote Login on (Mac: System Settings, General, Sharing) or an SSH server (Linux), and `ssh <server>` working from this terminal. On Windows, or with no SSH access to the server, use [Connect your agents](#connect-your-agents) instead.
 
 ## What you get
 

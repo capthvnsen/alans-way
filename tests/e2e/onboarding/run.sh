@@ -59,6 +59,7 @@ export_repo "$WORK/agents" git -C "$AGENTS_REPO" archive "$REF"
 # insteadOf below points that at this export, so it carries the plugin's own version as a tag.
 PV="$(sed -n 's/^version:[[:space:]]*"\{0,1\}\([0-9.]*\).*/\1/p' "$WORK/agents/alans-way/plugin.yaml" | head -1)"
 git -C "$WORK/agents" tag "v$PV"
+printf '[{"name":"v%s"},{"name":"v0.0.1"}]\n' "$PV" > "$WORK/agents-tags.json"
 export_repo "$WORK/desktop" git -C "$REPO" archive HEAD
 echo "plugin $REF ($(git -C "$AGENTS_REPO" rev-parse --short "$REF")), app $(git -C "$REPO" rev-parse --short HEAD)"
 
@@ -69,7 +70,7 @@ for n in "$S" "$C"; do
   extra=""; [ "$n" != "$C" ] || extra="-v $HERE/stubs/uname:/usr/local/bin/uname:ro"
   # shellcheck disable=SC2086
   docker run -d $RUN_OPTS --name "$n" --network "$NET" \
-    -v "$WORK/agents:/srv/agents:ro" -v "$WORK/desktop:/srv/alans-way:ro" \
+    -v "$WORK/agents:/srv/agents:ro" -v "$WORK/agents-tags.json:/srv/agents-tags.json:ro" -v "$WORK/desktop:/srv/alans-way:ro" \
     -v "$HERE/stubs/tailscale:/usr/local/bin/tailscale:ro" -v "$HERE/stubs/curl:/usr/local/bin/curl:ro" $extra \
     "$IMAGE" >/dev/null
   for _ in $(seq 90); do docker exec "$n" sh -c "$READY" >/dev/null 2>&1 && break; sleep 1; done

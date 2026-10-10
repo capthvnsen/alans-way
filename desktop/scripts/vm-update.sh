@@ -657,6 +657,26 @@ doctor_setup_script() {
   [ -n "$_ds" ] && [ -f "$_ds/setup.sh" ] && printf '%s' "$_ds/setup.sh"
 }
 
+# Why the browser host is down, one word per line: what is missing on this
+# server (no-chromium, no-display, no-bot). Only run when the host is down.
+doctor_host_causes() {
+  _hh="${HERMES_HOME:-$HOME/.hermes}"
+  _found=0
+  for _b in google-chrome google-chrome-stable chromium chromium-browser; do have "$_b" && _found=1; done
+  for _b in "$HOME"/.cache/ms-playwright/chromium-*; do [ -e "$_b" ] && _found=1; done
+  [ "$_found" = 1 ] || echo no-chromium
+  _found=0
+  for _b in Xvfb Xtigervnc Xvnc; do have "$_b" && _found=1; done
+  for _b in /tmp/.X11-unix/X*; do [ -e "$_b" ] && _found=1; done
+  [ "$_found" = 1 ] || echo no-display
+  _found=0
+  for _h in "$_hh" "$_hh"/profiles/*; do
+    grep -Eqs '^(export )?TELEGRAM_BOT_TOKEN=.+' "$_h/.env" && _found=1
+    grep -Eqs '^[[:space:]]*token:[[:space:]]*[^[:space:]]' "$_h/config.yaml" && _found=1
+  done
+  [ "$_found" = 1 ] || echo no-bot
+}
+
 DOCTOR_JS='
 const fs = require("fs"), path = require("path");
 const [work, version] = process.argv.slice(1);
@@ -672,7 +692,8 @@ const profiles = dirs.map((d) => {
   const updates = array(read(`${d}/updates.json`));
   const plugins = ["alans-way", "alans-way-computer"].filter((n) => has(`${d}/version.${n}`)).map((name) => {
     const row = updates.find((u) => u && u.name === name) || {};
-    return { name, version: read(`${d}/version.${name}`), class: String(row.class || ""), updateAvailable: typeof row.update_available === "boolean" ? row.update_available : null };
+    const reason = typeof row.reason === "string" ? row.reason.trim() : "";
+    return { name, version: read(`${d}/version.${name}`), class: String(row.class || ""), updateAvailable: typeof row.update_available === "boolean" ? row.update_available : null, ...(reason ? { reason } : {}) };
   });
   const backend = read(`${d}/backend`);
   return { profile: read(`${d}/name`), computerBackend: /^[a-z0-9_-]+$/i.test(backend) && !/^(none|null)$/i.test(backend) ? backend : "", plugins, checked: !has(`${d}/out-of-time`) };
@@ -684,7 +705,7 @@ if (code && !fails.length && code !== 124 && code !== 142) fails.push(`setup.sh 
 const verify = has("verify-out-of-time") || code === 124 || code === 142 ? { ran: false, reason: "time" }
   : has("verify") ? { ran: true, fails, warns: pick(lines, "warn") }
   : { ran: false, reason: "no-setup" };
-process.stdout.write(JSON.stringify({ ok: true, version, hostVersion: read("hostVersion"), pluginTag: read("pluginTag"), error: "", verify, profiles }) + "\n");
+process.stdout.write(JSON.stringify({ ok: true, version, hostVersion: read("hostVersion"), pluginTag: read("pluginTag"), error: "", verify, hostCauses: read("causes").split("\n").filter(Boolean), profiles }) + "\n");
 '
 
 doctor() {
@@ -727,6 +748,7 @@ EOF
       fi
     fi
   fi
+  [ -n "$(cat "$WORK/hostVersion")" ] || doctor_host_causes > "$WORK/causes"
   "$NODE_BIN" -e "$DOCTOR_JS" "$WORK" "$VERSION"
 }
 
