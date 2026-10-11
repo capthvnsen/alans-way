@@ -100,6 +100,7 @@ const API_TOKEN = crypto.randomBytes(32).toString('hex');
 // early enough that its last step (wait caps at 30s) still answers in time.
 const BATCH_BUDGET_MS = 50000;
 const NAVIGATE_PARSE_MS = 3000;
+const OPEN_PARSE_MS = 8000;
 // A snapshot waits this long for a still-parsing document; the wait ends at DOMContentLoaded.
 const SNAPSHOT_PARSE_MS = 1500;
 const WAIT_SLICE_MS = 1000;
@@ -430,6 +431,34 @@ function configureContents(contents, isTelegram = false) {
   configuredSessions.add(session);
   sitePermissions.install(session, isTelegram ? 'telegram' : 'browser');
   downloadStore.install(session, isTelegram ? 'telegram' : 'browser');
+  if (!isTelegram) session.on('will-download', (_event, item, source) => { try { trackAgentDownload(item, source); } catch {} });
+}
+// A download an agent tab starts has no human to pick a save location, so it
+// saves straight into Downloads and the next action reply reports the finished
+// file (name, path, state), so the agent never has to guess or re-click.
+function trackAgentDownload(item, source) {
+  const tab = [...tabs.values()].find(t => t.view.webContents === source);
+  if (!tab || tab.controller !== 'agent') return;
+  const dir = app.getPath('downloads'), name = path.basename(String(item.getFilename() || 'download')) || 'download';
+  const ext = path.extname(name), stem = path.basename(name, ext);
+  let target = path.join(dir, name);
+  for (let n = 1; fs.existsSync(target); n++) target = path.join(dir, `${stem} (${n})${ext}`);
+  item.setSavePath(target);
+  const record = { name: path.basename(target), path: target, state: 'progressing' };
+  record.done = new Promise((resolve) => item.once('done', (_event, state) => {
+    record.state = state;
+    record.bytes = item.getReceivedBytes();
+    resolve();
+  }));
+  (tab.downloads ||= []).push(record);
+}
+const DOWNLOAD_WAIT_MS = 5000;
+async function takeDownloads(tab) {
+  const list = tab.downloads;
+  if (!list?.length) return {};
+  await Promise.race([Promise.all(list.map(d => d.done)), new Promise(r => setTimeout(r, DOWNLOAD_WAIT_MS))]);
+  tab.downloads = list.filter(d => d.state === 'progressing');
+  return { downloads: list.map(({ name, path, state, bytes }) => ({ name, path, state, ...(bytes !== undefined ? { bytes } : {}) })) };
 }
 function isExtensionUrl(value) {
   try { const url = new URL(value); return url.protocol === 'chrome-extension:' && !url.username && !url.password && !!session.fromPartition('persist:browser').extensions.getExtension(url.hostname); } catch { return false; }
@@ -493,6 +522,7 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
   view.setBounds({ x: Math.round(viewport.x), y: Math.round(viewport.y), width: Math.round(viewport.width), height: Math.round(viewport.height) });
   configureContents(view.webContents);
   syncFollowUpSeed(tab);
+  syncDialogGuard(tab);
   // The library selects newly registered tabs. Registration must not reparent
   // or focus a background agent view in the human window.
   registeringExtensionTab = true;
@@ -551,6 +581,42 @@ function syncFollowUpSeed(tab) {
     browserCommand(tab, 'Page.removeAllScriptsToEvaluateOnNewDocument').catch(() => {});
   }
 }
+// An open JS dialog blocks the page and every evaluate on it, and on a
+// background tab nobody sees the native sheet. With Page enabled on the
+// debugger Chromium hands dialogs to us instead: an agent tab answers at once
+// and the next action reply says what it said (same rules as the VM host). Only
+// an alert or the leave-page prompt is accepted; a confirm or prompt guards a
+// decision and is dismissed. A human's tab keeps its native dialog.
+function syncDialogGuard(tab) {
+  const wc = tab.view.webContents;
+  if (!wc || wc.isDestroyed()) return Promise.resolve();
+  if (tab.controller !== 'agent') {
+    if (!tab.pageEnabled) return Promise.resolve();
+    tab.pageEnabled = false;
+    return browserCommand(tab, 'Page.disable').catch(() => {});
+  }
+  if (!tab.dialogListener) {
+    tab.dialogListener = true;
+    wc.debugger.on('message', (_event, method, params) => {
+      if (method !== 'Page.javascriptDialogOpening' || tab.controller !== 'agent') return;
+      const accepted = params.type === 'alert' || params.type === 'beforeunload';
+      tab.dialogs = [...(tab.dialogs || []), {
+        type: params.type, message: String(params.message || '').slice(0, 500), accepted,
+        ...(accepted ? {} : { note: `Dismissed. To accept it, eval window.${params.type} = () => ${params.type === 'prompt' ? '"<answer>"' : 'true'} and repeat the action.` }),
+      }].slice(-20);
+      wc.debugger.sendCommand('Page.handleJavaScriptDialog', { accept: accepted }).catch(() => {});
+    });
+    wc.debugger.on('detach', () => { tab.pageEnabled = false; });
+  }
+  if (tab.pageEnabled && wc.debugger.isAttached()) return Promise.resolve();
+  tab.pageEnabled = true;
+  return browserCommand(tab, 'Page.enable').catch(() => { tab.pageEnabled = false; });
+}
+function takeDialogs(tab) {
+  const dialogs = tab.dialogs;
+  tab.dialogs = undefined;
+  return dialogs ? { dialogs } : {};
+}
 function changeController(id, controller, source = 'human') {
   const tab = tabs.get(id);
   if (!tab) throw new Error('Tab not found.');
@@ -558,6 +624,7 @@ function changeController(id, controller, source = 'human') {
   const wasAgent = tab.controller === 'agent';
   tab.controller = controller === 'agent' ? 'agent' : 'human';
   syncFollowUpSeed(tab);
+  syncDialogGuard(tab);
   // An explicit human takeover seals the tab to bots until the human hands
   // it back in the UI. A bot's own release or the idle-expiry clock stays
   // retakeable, and a tab already locked stays locked.
@@ -1678,11 +1745,11 @@ async function actionEffect(tab, opts) {
     requireAgentRead(tab);
     const effect = await readEffect((code) => readJs(tab.view.webContents, code, 12000), tab, opts);
     requireAgentRead(tab);
-    if (effect) return effect;
-    return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.' };
+    if (effect) return { ...effect, ...takeDialogs(tab), ...(await takeDownloads(tab)) };
+    return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.', ...takeDialogs(tab), ...(await takeDownloads(tab)) };
   } catch (error) {
     if (error && error.status === 409) throw error;
-    return { effect: { ...EMPTY_EFFECT }, error: String(error && error.message || error) };
+    return { effect: { ...EMPTY_EFFECT }, error: String(error && error.message || error), ...takeDialogs(tab), ...(await takeDownloads(tab)) };
   }
 }
 // A batch step answers with its own payload only: the page state, controls and
@@ -1694,6 +1761,7 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
   const overseer = isOverseer(botId);
   requireActor(tab, botId, body.epoch, true, overseer);
   const wc = tab.view.webContents;
+  if (depth === 0) await syncDialogGuard(tab);
   const reply = (payload) => depth > 0 ? payload : actionReply(tab, payload);
   const finish = async (payload, opts) => depth > 0 ? payload : actionReply(tab, { ...payload, ...(await actionEffect(tab, opts)) });
   if (body.action === 'batch') {
@@ -1950,6 +2018,9 @@ function startApi() {
               const timer = setTimeout(done, 1500);
               wc.once('did-navigate', done); wc.on('did-fail-load', failed); wc.once('destroyed', done);
             });
+            // Commit is not parsed: an eval or snapshot right after open would
+            // see a half-built document. The VM host waits for the parse too.
+            await boundedJs(wc, `document.readyState === 'loading' ? new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${OPEN_PARSE_MS}); }) : 0`, OPEN_PARSE_MS + 2000).catch(() => {});
           }
           return send(201, describeTab(created, true)); }
       }
