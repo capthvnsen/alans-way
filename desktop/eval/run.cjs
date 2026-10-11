@@ -110,7 +110,7 @@ function runCodex(prompt, timeoutMs, dir) {
 
 // Codex's browser is not on our host, so tab/DOM checks fall back to what it reports (FINAL_URL, ANSWER); DOM-only checks cannot be verified.
 function codexStack(a) {
-  return { tabs: async () => [{ url: a.finalUrl || '' }], pageEval: async () => (a.answer && /eval-42/.test(a.answer) ? 'eval-42' : undefined) };
+  return { tabs: async () => [{ url: a.finalUrl || '' }], pageEval: async () => { if (a.answer && /eval-42/.test(a.answer)) return 'eval-42'; throw new Error('unverifiable: DOM state of the external browser is not observable'); } };
 }
 
 async function manual(picked, outDir) {
@@ -151,7 +151,7 @@ async function manual(picked, outDir) {
       if (mode !== 'hermes' && mode !== 'codex' && (!task.oracle || task.tier === 'desktop')) { rows.push({ id: task.id, tier: task.tier, skipped: task.tier === 'desktop' ? 'desktop needs a Mac with grants' : 'no oracle yet' }); continue; }
       if (mode === 'hermes' && task.tier === 'desktop' && !opt('hermes-home') && !opt('connection')) { rows.push({ id: task.id, tier: task.tier, skipped: 'desktop needs --hermes-home with computer_use + a real app connection' }); continue; }
       fixtures.reset(); await stack.closeTabs(); stack.proxy.takeLog(); task.setup?.();
-      const fx = Object.assign(fixtures.state, { port: fixtures.port, ...(opt('connection') ? { host: opt('fixture-host', '127.0.0.1') } : {}) });
+      const fx = Object.assign(fixtures.state, { port: fixtures.port, ...(opt('connection') || mode === 'codex' ? { host: opt('fixture-host', '127.0.0.1') } : {}) });
       const t0 = Date.now();
       let answer = '', error = '', agent = {};
       if (mode === 'codex') {
