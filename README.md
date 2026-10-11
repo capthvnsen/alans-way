@@ -16,6 +16,17 @@ A desktop app for people running [Hermes Agent](https://github.com/NousResearch/
 
 **Tailscale is required.** Your computer and your server talk over your Tailscale network and nothing else. Install Tailscale on both and sign in to the same account. SSH addresses must be Tailscale names (`*.ts.net`) or Tailscale IPs (`100.64.0.0/10`); the setup scripts refuse public addresses, and the server's SSH key can log in to your computer only from the tailnet.
 
+## Requirements
+
+This is not a standalone app — it pairs with a Hermes setup you already have running. Before installing:
+
+- **A [Hermes Agent](https://github.com/NousResearch/hermes-agent) gateway already running** on a server (Linux VPS, or a macOS VM via [Tart](https://tart.run)), with Telegram (or another supported platform) already connected to it.
+- **[Tailscale](https://tailscale.com)**, installed and signed into the same account on both your computer and that server.
+- **Your computer**: macOS (Apple Silicon), Windows 10/11 x64, or Linux x64 with a desktop session. Mac and Windows get signed, one-click installers; Linux currently builds from source (`scripts/connect-linux.sh`, needs Node 22.12+ and git).
+- SSH access from the server to your computer (set up for you during the in-app agent setup step).
+
+If you don't have a Hermes gateway yet, set that up first, then come back here.
+
 ## What you get
 
 - **See every bot's cursor.** Each agent gets a colored, named cursor in its tabs. You can literally watch it click around.
