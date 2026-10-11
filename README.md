@@ -22,7 +22,7 @@ This is not a standalone app — it pairs with a Hermes setup you already have r
 
 - **A [Hermes Agent](https://github.com/NousResearch/hermes-agent) gateway already running** on a server (Linux VPS, or a macOS VM via [Tart](https://tart.run)), with Telegram (or another supported platform) already connected to it.
 - **[Tailscale](https://tailscale.com)**, installed and signed into the same account on both your computer and that server.
-- **Your computer**: macOS (Apple Silicon), Windows 10/11 x64, or Linux x64 with a desktop session. Mac and Windows get signed, one-click installers; Linux currently builds from source, x86_64 only.
+- **Your computer**: macOS (Apple Silicon), Windows 10/11 x64, or Linux x64 with a desktop session (systemd, Node 22.12+ and git for the build-from-source step). Mac and Windows get signed, one-click installers; Linux currently builds from source, x86_64 only.
 - SSH access from the server to your computer (Remote Login on Mac, an SSH server on Linux; the setup wizard tests it).
 
 If you don't have a Hermes gateway yet, set that up first, then come back here.
@@ -37,7 +37,7 @@ If you don't have a Hermes gateway yet, set that up first, then come back here.
 curl -fsSL https://openalan.com/install-mac | sh
 ```
 
-It builds and opens the app, then asks to connect your Hermes server. Type the server's SSH address (for example `root@hermes-vps`) and it does the rest from your computer: trusts both machines' keys, installs Alan's Way Plugin on the server, restarts the gateway and checks SSH both ways. The plugin's setup asks its own questions as it goes. It ends with the steps still left for you, in order. Re-run it any time to upgrade or reconnect.
+It builds and opens the app, then asks to connect your Hermes server. Type the server's SSH address (for example `root@hermes-vps`) and it does the rest from your computer: trusts both machines' keys, installs the agent plugin on the server, restarts the gateway and checks SSH both ways. The plugin's setup asks its own questions as it goes. It ends with the steps still left for you, in order. Re-run it any time to upgrade or reconnect.
 
 On Linux (x64, systemd, desktop session, Node 22.12+ and git), the same flow builds the app too:
 
@@ -47,7 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/c
 
 Alan's Workspace for Linux is x86_64 only; 64-bit ARM Linux is not supported yet.
 
-Before you start: a Telegram bot on your Hermes server (run `hermes gateway setup` there if you have none), Tailscale on both machines with the same account, Remote Login on (Mac: System Settings, General, Sharing) or an SSH server (Linux), and `ssh <server>` working from this terminal. On Windows, or with no SSH access to the server, use [Connect your agents](#connect-your-agents) instead.
+No Telegram bot on your Hermes server yet? Run `hermes gateway setup` there first. On Windows, or with no SSH access to the server, use [Connect your agents](#connect-your-agents) instead.
 
 ## What you get
 
