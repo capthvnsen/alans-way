@@ -6,9 +6,9 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
-const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange } = require('./shell-support.cjs');
+const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
@@ -18,6 +18,9 @@ const cloudMigrate = require('./cloud-migrate.cjs');
 const cloudModel = require('./cloud-model.cjs');
 const cloudTelegram = require('./cloud-telegram.cjs');
 const macUpdate = require('./mac-update.cjs');
+const setupCheck = require('./setup-check.cjs');
+const { createLog } = require('./main-log.cjs');
+const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup } = require('./vm-update.cjs');
@@ -66,14 +69,11 @@ const BUILD = readBuildInfo(path.join(ROOT, '..', 'build-info.json'));
 // down the connector every bot depends on. The log file helps when a Windows
 // user reports a silent failure.
 function logError(label, error) {
-  const line = `${new Date().toISOString()} ${label}: ${error?.stack || error}\n`;
-  try { console.error(line.trimEnd()); } catch {}
-  try {
-    const file = path.join(app.getPath('userData'), 'main-errors.log');
-    if (fs.existsSync(file) && fs.statSync(file).size > 1000000) fs.renameSync(file, `${file}.old`);
-    fs.appendFileSync(file, line);
-  } catch {}
+  try { console.error(`${label}: ${error?.stack || error}`); } catch {}
+  mainLog().write(label, String(error?.stack || error));
 }
+let mainLogger;
+const mainLog = () => mainLogger ||= createLog(path.join(app.getPath('userData'), 'logs'));
 process.on('uncaughtException', (error) => logError('uncaughtException', error));
 process.on('unhandledRejection', (reason) => logError('unhandledRejection', reason));
 const TELEGRAM = 'https://web.telegram.org/a/';
@@ -86,6 +86,7 @@ const vmUpdater = createVmUpdater({ log: (label, error) => logError(label, error
 // persistent record (known VM version / last failure) the retry banner reads.
 const vmProgress = {};
 let vmRetrying = false;
+let lastSetupCheck = null;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
 const tabs = new Map();
@@ -99,10 +100,13 @@ const API_TOKEN = crypto.randomBytes(32).toString('hex');
 // early enough that its last step (wait caps at 30s) still answers in time.
 const BATCH_BUDGET_MS = 50000;
 const NAVIGATE_PARSE_MS = 3000;
+const OPEN_PARSE_MS = 8000;
 // A snapshot waits this long for a still-parsing document; the wait ends at DOMContentLoaded.
 const SNAPSHOT_PARSE_MS = 1500;
 const WAIT_SLICE_MS = 1000;
 let isQuitting = false;
+let bundleWarningDismissed = false;
+const runningBundle = () => process.platform === 'darwin' && app.isPackaged ? macUpdate.bundleLocation(path.resolve(process.execPath, '../../..'), app.getName()) : null;
 let backgroundCaptureQueue = Promise.resolve();
 const avatarStore = createAvatarStore({ root: ROOT, nativeImage, dialog, getWindow: () => win, getPreferences: () => prefs });
 const agentInput = createAgentInput({ command: browserCommand,
@@ -166,6 +170,17 @@ const prefsSaver = createSaver({
 });
 function savePreferences() { prefsSaver.flush(); }
 function savePreferencesSoon() { prefsSaver.schedule(); }
+// Onboarding and the path check need this computer's SSH address as the agent
+// machine reaches it; derive it from Tailscale while the field was never set
+// so a fresh install starts with a working answer. A saved value is never
+// touched, including a deliberately cleared one.
+function seedMacSshHost() {
+  if (typeof prefs.macSshHost === 'string') return;
+  let username = '';
+  try { username = os.userInfo().username; } catch {}
+  const host = tailscaleSshHost({ username });
+  if (host) prefs.macSshHost = host;
+}
 function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
@@ -267,6 +282,7 @@ function getState() {
       snoozedUntil: prefs.updateSnoozedUntil || 0,
       vms: vmTargets(prefs).map((target) => ({ id: target.id, label: target.label, ...(vmProgress[target.id] || {}) })),
       vmRetry: vmRetryState(app.getVersion(), prefs.vmUpdates, vmTargets(prefs)), vmRetrying },
+    bundleWarning: bundleWarningDismissed ? '' : setupCheck.bundleWarning(runningBundle(), app.getName()) || '',
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? app.isInApplicationsFolder() : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
@@ -415,6 +431,34 @@ function configureContents(contents, isTelegram = false) {
   configuredSessions.add(session);
   sitePermissions.install(session, isTelegram ? 'telegram' : 'browser');
   downloadStore.install(session, isTelegram ? 'telegram' : 'browser');
+  if (!isTelegram) session.on('will-download', (_event, item, source) => { try { trackAgentDownload(item, source); } catch {} });
+}
+// A download an agent tab starts has no human to pick a save location, so it
+// saves straight into Downloads and the next action reply reports the finished
+// file (name, path, state), so the agent never has to guess or re-click.
+function trackAgentDownload(item, source) {
+  const tab = [...tabs.values()].find(t => t.view.webContents === source);
+  if (!tab || tab.controller !== 'agent') return;
+  const dir = app.getPath('downloads'), name = path.basename(String(item.getFilename() || 'download')) || 'download';
+  const ext = path.extname(name), stem = path.basename(name, ext);
+  let target = path.join(dir, name);
+  for (let n = 1; fs.existsSync(target); n++) target = path.join(dir, `${stem} (${n})${ext}`);
+  item.setSavePath(target);
+  const record = { name: path.basename(target), path: target, state: 'progressing' };
+  record.done = new Promise((resolve) => item.once('done', (_event, state) => {
+    record.state = state;
+    record.bytes = item.getReceivedBytes();
+    resolve();
+  }));
+  (tab.downloads ||= []).push(record);
+}
+const DOWNLOAD_WAIT_MS = 5000;
+async function takeDownloads(tab) {
+  const list = tab.downloads;
+  if (!list?.length) return {};
+  await Promise.race([Promise.all(list.map(d => d.done)), new Promise(r => setTimeout(r, DOWNLOAD_WAIT_MS))]);
+  tab.downloads = list.filter(d => d.state === 'progressing');
+  return { downloads: list.map(({ name, path, state, bytes }) => ({ name, path, state, ...(bytes !== undefined ? { bytes } : {}) })) };
 }
 function isExtensionUrl(value) {
   try { const url = new URL(value); return url.protocol === 'chrome-extension:' && !url.username && !url.password && !!session.fromPartition('persist:browser').extensions.getExtension(url.hostname); } catch { return false; }
@@ -478,6 +522,7 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
   view.setBounds({ x: Math.round(viewport.x), y: Math.round(viewport.y), width: Math.round(viewport.width), height: Math.round(viewport.height) });
   configureContents(view.webContents);
   syncFollowUpSeed(tab);
+  syncDialogGuard(tab);
   // The library selects newly registered tabs. Registration must not reparent
   // or focus a background agent view in the human window.
   registeringExtensionTab = true;
@@ -536,6 +581,42 @@ function syncFollowUpSeed(tab) {
     browserCommand(tab, 'Page.removeAllScriptsToEvaluateOnNewDocument').catch(() => {});
   }
 }
+// An open JS dialog blocks the page and every evaluate on it, and on a
+// background tab nobody sees the native sheet. With Page enabled on the
+// debugger Chromium hands dialogs to us instead: an agent tab answers at once
+// and the next action reply says what it said (same rules as the VM host). Only
+// an alert or the leave-page prompt is accepted; a confirm or prompt guards a
+// decision and is dismissed. A human's tab keeps its native dialog.
+function syncDialogGuard(tab) {
+  const wc = tab.view.webContents;
+  if (!wc || wc.isDestroyed()) return Promise.resolve();
+  if (tab.controller !== 'agent') {
+    if (!tab.pageEnabled) return Promise.resolve();
+    tab.pageEnabled = false;
+    return browserCommand(tab, 'Page.disable').catch(() => {});
+  }
+  if (!tab.dialogListener) {
+    tab.dialogListener = true;
+    wc.debugger.on('message', (_event, method, params) => {
+      if (method !== 'Page.javascriptDialogOpening' || tab.controller !== 'agent') return;
+      const accepted = params.type === 'alert' || params.type === 'beforeunload';
+      tab.dialogs = [...(tab.dialogs || []), {
+        type: params.type, message: String(params.message || '').slice(0, 500), accepted,
+        ...(accepted ? {} : { note: `Dismissed. To accept it, eval window.${params.type} = () => ${params.type === 'prompt' ? '"<answer>"' : 'true'} and repeat the action.` }),
+      }].slice(-20);
+      wc.debugger.sendCommand('Page.handleJavaScriptDialog', { accept: accepted }).catch(() => {});
+    });
+    wc.debugger.on('detach', () => { tab.pageEnabled = false; });
+  }
+  if (tab.pageEnabled && wc.debugger.isAttached()) return Promise.resolve();
+  tab.pageEnabled = true;
+  return browserCommand(tab, 'Page.enable').catch(() => { tab.pageEnabled = false; });
+}
+function takeDialogs(tab) {
+  const dialogs = tab.dialogs;
+  tab.dialogs = undefined;
+  return dialogs ? { dialogs } : {};
+}
 function changeController(id, controller, source = 'human') {
   const tab = tabs.get(id);
   if (!tab) throw new Error('Tab not found.');
@@ -543,6 +624,7 @@ function changeController(id, controller, source = 'human') {
   const wasAgent = tab.controller === 'agent';
   tab.controller = controller === 'agent' ? 'agent' : 'human';
   syncFollowUpSeed(tab);
+  syncDialogGuard(tab);
   // An explicit human takeover seals the tab to bots until the human hands
   // it back in the UI. A bot's own release or the idle-expiry clock stays
   // retakeable, and a tab already locked stays locked.
@@ -645,6 +727,7 @@ async function checkVmVersions() {
 // Offline or rate-limited checks stay quiet for the user; only the first failure is logged, and the next check retries.
 let updateDriver = 'none';
 function startUpdates() {
+  mainLog().write('app', `v${app.getVersion()} started from ${path.resolve(process.execPath, '../../..')}`);
   if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
   if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
   if (prefs.updateSnoozedUntil) { prefs.updateSnoozedUntil = 0; savePreferencesSoon(); }
@@ -658,11 +741,15 @@ function startUpdates() {
   if (updateDriver === 'electron-updater') {
     const { autoUpdater } = require('electron-updater');
     autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.on('update-downloaded', (info) => { update.available = info.version; update.ready = true; broadcast(); });
+    const note = (text) => mainLog().write('updater', text);
+    autoUpdater.on('checking-for-update', () => note('checking'));
+    autoUpdater.on('update-available', (info) => note(`available ${info?.version}`));
+    autoUpdater.on('update-not-available', () => note('none available'));
+    autoUpdater.on('update-downloaded', (info) => { note(`downloaded ${info.version}`); update.available = info.version; update.ready = true; broadcast(); });
     const feed = githubFeed(fs.existsSync(path.join(process.resourcesPath, 'app-update.yml')), PUBLISH);
     if (feed) autoUpdater.setFeedURL(feed);
     let logged = false;
-    const failed = (error) => { if (!logged) { logged = true; logError('updater', error); } };
+    const failed = (error) => { mainLog().write('updater error', String(error?.message || error)); if (!logged) { logged = true; logError('updater', error); } };
     autoUpdater.on('error', failed);
     check = () => autoUpdater.checkForUpdates().catch(failed);
   } else if (updateDriver === 'self') {
@@ -839,16 +926,13 @@ async function authorizeComputerKey(host) {
   if (!helpers) return { ok: false, detail: 'The connect helper script is missing, so the computer key cannot be authorized on this computer.' };
   const run = await localRun('sh', ['-c', cloudConnect.authorizeKeyCommand(helpers), 'sh', key]);
   if (run.code !== 0) return { ok: false, detail: 'Could not authorize the computer key on this computer.' };
-  if (!(prefs.macSshHost || '').trim()) {
-    const cli = cloudConnect.tailscaleCli();
-    const ip = cli ? (await localRun(cli, ['ip', '-4'], { timeoutMs: 8000 })).out.trim().split('\n')[0] : '';
-    const user = process.env.USER || os.userInfo().username || '';
-    if (ip && user && isSshTarget(`${user}@${ip}`)) { prefs.macSshHost = `${user}@${ip}`; savePreferencesSoon(); }
-  }
+  seedMacSshHost();
+  savePreferencesSoon();
   return { ok: true };
 }
 // The saved VPS SSH path check, shared by Settings and the connect step.
 function testAgentPath() {
+  seedMacSshHost();
   const host = (prefs.vpsBrowser?.sshHost || '').trim();
   const mac = (prefs.macSshHost || '').trim();
   if (!host) throw new Error('Save a VPS browser SSH host first.');
@@ -868,6 +952,46 @@ function testAgentPath() {
         ? { ok: false, detail: 'Tailscale SSH on the VPS wants a browser check for this login, which unattended agents cannot pass. In the Tailscale admin console → Access controls, change the SSH rule for this user from "check" to "accept".' }
         : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
   });
+}
+// The connector copy setup.sh left in userData when it is older than the app
+// and the router can find this app's own connector to take its place.
+function staleConnector() {
+  const reachable = setupCheck.bundledConnectorReachable({ platform: process.platform, isPackaged: app.isPackaged, execPath: process.execPath, home: app.getPath('home') });
+  return reachable ? setupCheck.staleConnectorCopy(app.getPath('userData'), app.getVersion()) : null;
+}
+// Check setup: local state, both SSH directions, then the server's read-only
+// doctor report. Each part is independent; a failure becomes a finding.
+async function runSetupCheck() {
+  const serverHost = (prefs.vpsBrowser?.sshHost || '').trim();
+  const computerHost = (prefs.macSshHost || '').trim();
+  const mac = process.platform === 'darwin';
+  const local = {
+    telegram: telegramStatus,
+    inApplications: mac && app.isPackaged ? app.isInApplicationsFolder() : null,
+    bundle: runningBundle(), productName: app.getName(),
+    permissions: mac ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null,
+    staleConnector: staleConnector(),
+  };
+  const connection = { addresses: { server: serverHost, computer: computerHost }, reach: null, back: null };
+  let server = null;
+  if (serverHost && !isSshTarget(serverHost)) connection.reach = { ok: false, detail: 'The saved address is invalid. Re-enter it as user@host or host.' };
+  else if (serverHost) {
+    const probe = await sshRun(serverHost, 'echo CHECK_OK');
+    connection.reach = probe.code === 0 && probe.out.includes('CHECK_OK')
+      ? { ok: true, detail: '' }
+      : { ok: false, detail: (probe.err || probe.out).trim().split('\n').pop() || `ssh exited ${probe.code}` };
+    if (connection.reach.ok) {
+      const [back, report] = await Promise.all([
+        computerHost ? Promise.resolve().then(testAgentPath).catch((error) => ({ ok: false, detail: error.message })) : null,
+        vmUpdater.doctorVm(vmTargets(prefs)[0]),
+      ]);
+      connection.back = back;
+      server = report;
+    }
+  }
+  const findings = setupCheck.buildFindings({ appVersion: app.getVersion(), platform: process.platform, local, connection, server });
+  lastSetupCheck = { at: new Date().toISOString(), findings, server };
+  return findings;
 }
 // The connect step advances as far as it can each click: CLI check, pairing
 // status, the computer's own state file, then the saved return path check.
@@ -946,7 +1070,7 @@ async function claimWithToken(token) {
 function registerIpc() {
   ipcMain.handle('workspace:get', (event) => { trustSender(event); return getState(); });
   ipcMain.on('workspace:layout', (event, value) => { try { trustSender(event); layout = value || {}; applyLayout(); } catch {} });
-  ipcMain.handle('workspace:command', async (event, command, value = {}) => {
+  const runCommand = async (event, command, value = {}) => {
     trustSender(event);
     switch (command) {
       case 'create-tab': return describeTab(createTab({ url: value.url || 'about:blank' }));
@@ -1085,7 +1209,11 @@ function registerIpc() {
           if (sshHost && !isSshTarget(sshHost)) throw new Error('Enter the VPS SSH address as user@host or host, with no spaces or symbols.');
           const scriptPath = String(value.vpsBrowser.scriptPath || '').trim();
           if (scriptPath && checkScriptPath(scriptPath)) throw new Error(checkScriptPath(scriptPath));
+          // When the VM's SSH address moves to a different host, the noVNC
+          // viewer follows unless remoteUrl was deliberately pointed elsewhere.
+          const followed = followVmRemoteUrl(prefs.vpsBrowser.sshHost, sshHost, prefs.remoteUrl);
           prefs.vpsBrowser={sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}; if(!sshHost)prefs.vmUpdates={}; vpsBrowserStatus='connecting'; refreshVpsTabs();
+          if (followed) { prefs.remoteUrl = followed; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         }
         if (Number.isFinite(value.agentIdleMinutes)) prefs.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
         if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
@@ -1124,10 +1252,11 @@ function registerIpc() {
         const botId = String(value?.botId || prefs.selectedBotId || '').replace(/[^0-9A-Za-z_-]/g, '');
         if (!botId) throw new Error('Select a bot first. Its ID goes in the agent config.');
         const bot = prefs.bots.find(item => item.id === botId);
+        seedMacSshHost();
         const macSsh = (prefs.macSshHost || '').trim();
         const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
         clipboard.writeText([
-          "# Alan's Way setup: paste into a terminal on the host running your Hermes gateway",
+          "# Alan's Way Plugin setup: paste into a terminal on the host running your Hermes gateway",
           `curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/setup.sh | bash -s -- --bot-id ${q(botId)}${bot ? ` --bot-name ${q(bot.name.replace(/'/g, ''))}` : ''}${macSsh ? ` --mac-ssh ${q(macSsh)}` : ''}${HOST_LABEL === 'mac' ? '' : ` --host-os ${HOST_LABEL}`} --timezone ${q(Intl.DateTimeFormat().resolvedOptions().timeZone)} --restart`,
           '# The bootstrap installs the plugin, configures the browser connector,',
           '# offers to bind the primary route, restarts the gateway, and verifies itself.',
@@ -1136,12 +1265,29 @@ function registerIpc() {
       }
       case 'agent-prompt': {
         const botId = String(value?.botId || prefs.selectedBotId || '').replace(/[^0-9A-Za-z_-]/g, '');
+        seedMacSshHost();
         const text = buildAgentPrompt({ kind: value?.kind === 'update' ? 'update' : 'setup', hostLabel: HOST_LABEL, version: app.getVersion(),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, botId, sshHost: (prefs.macSshHost || '').trim() });
         if (value?.copy !== false) clipboard.writeText(text);
         return text;
       }
       case 'test-agent-path': return testAgentPath();
+      case 'setup-check': return runSetupCheck();
+      case 'remove-old-connector': {
+        const stale = staleConnector();
+        if (stale) fs.rmSync(stale, { recursive: true, force: true });
+        break;
+      }
+      case 'copy-report': {
+        const errorLog = mainLog().tail(100);
+        clipboard.writeText(setupCheck.buildReport({
+          app: { version: app.getVersion(), platform: process.platform, arch: process.arch, osVersion: process.getSystemVersion(),
+            signed: process.platform === 'darwin' && macUpdate.isDeveloperIdSigned(path.resolve(process.execPath, '../../..')) },
+          serverAddress: prefs.vpsBrowser?.sshHost || '', computerAddress: prefs.macSshHost || '',
+          findings: lastSetupCheck?.findings, checkedAt: lastSetupCheck?.at, server: lastSetupCheck?.server, errorLog }));
+        break;
+      }
+      case 'open-support': shell.openExternal('https://discord.gg/jBQCPUsVE'); break;
       case 'show-data': shell.openPath(app.getPath('userData')); break;
       case 'mac-permissions': return process.platform === 'darwin' ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null;
       case 'open-mac-privacy': if (process.platform === 'darwin') shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${value.pane === 'screen' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility'}`); break;
@@ -1157,12 +1303,22 @@ function registerIpc() {
         // Every saved VM first, then this app. A VM failure or timeout is
         // recorded for the retry banner and never blocks the app update.
         try {
+          mainLog().write('vm update', `start ${tag} for ${targets.map((t) => t.id).join(',') || 'no targets'}`);
           for (const result of await vmUpdater.updateAll(tag, targets, noteVmProgress)) {
+            mainLog().write('vm update', `${result.id} ${result.ok ? `ok ${result.version || ''}` : `failed ${result.error || ''}`}`.trim());
             vmProgress[result.id] = vmProgressResult(result);
             noteVmResult(result); broadcast();
           }
           savePreferences();
-          if (autoUpdate) { require('electron-updater').autoUpdater.quitAndInstall(); break; }
+          if (autoUpdate) {
+            // quitAndInstall closes windows without a before-quit, so the close
+            // handler would hide the window instead and the app would never exit.
+            isQuitting = true;
+            mainLog().write('updater', 'quitAndInstall called');
+            armQuitWatchdog({ exit: (code) => app.exit(code), log: (text) => mainLog().write('updater', text) });
+            require('electron-updater').autoUpdater.quitAndInstall();
+            break;
+          }
           await macUpdate.installMacUpdate({ tag: update.tag, bundlePath: path.resolve(process.execPath, '../../..') });
         }
         catch (error) { update.busy = false; update.error = error.message; broadcast(); throw error; }
@@ -1176,7 +1332,7 @@ function registerIpc() {
         try {
           for (const target of vmTargets(prefs)) {
             const entry = prefs.vmUpdates?.[target.id] || {};
-            if (!entry.failed && !(entry.version && macUpdate.isNewer(app.getVersion(), entry.version))) continue;
+            if (!value.force && !entry.failed && !(entry.version && macUpdate.isNewer(app.getVersion(), entry.version))) continue;
             vmProgress[target.id] = { state: 'updating' }; broadcast();
             const result = await vmUpdater.updateVm(target, tag, noteVmProgress);
             vmProgress[target.id] = vmProgressResult(result);
@@ -1188,9 +1344,10 @@ function registerIpc() {
       }
       case 'open-download-page': shell.openExternal(`https://openalan.com/download/${HOST_LABEL === 'windows' ? 'windows' : 'mac'}`); break;
       case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/v${app.getVersion()}`); break;
+      case 'dismiss-bundle-warning': bundleWarningDismissed = true; broadcast(); break;
       case 'dismiss-updated': update.justUpdatedFrom = ''; break;
       case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;
-      case 'onboarding-open': prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; savePreferences(); applyLayout(); break;
+      case 'onboarding-open': prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; seedMacSshHost(); savePreferences(); applyLayout(); break;
       case 'cloud-claim-code': {
         const token = cloudClaim.claimToken(value.code);
         if (!token) throw new Error('That does not look like a claim code or claim link.');
@@ -1382,6 +1539,12 @@ function registerIpc() {
       default: throw new Error('Unknown workspace command.');
     }
     broadcastNow(); return getState();
+  };
+  // Failed actions only reached the screen as a toast; log them so a copied
+  // report shows what went wrong.
+  ipcMain.handle('workspace:command', async (event, command, value = {}) => {
+    try { return await runCommand(event, command, value); }
+    catch (error) { logError(`command ${command}`, error); throw error; }
   });
   ipcMain.on('telegram:catalog', (event, value) => {
     if (event.sender !== telegramView?.webContents || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith(TELEGRAM)) return;
@@ -1582,11 +1745,11 @@ async function actionEffect(tab, opts) {
     requireAgentRead(tab);
     const effect = await readEffect((code) => readJs(tab.view.webContents, code, 12000), tab, opts);
     requireAgentRead(tab);
-    if (effect) return effect;
-    return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.' };
+    if (effect) return { ...effect, ...takeDialogs(tab), ...(await takeDownloads(tab)) };
+    return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.', ...takeDialogs(tab), ...(await takeDownloads(tab)) };
   } catch (error) {
     if (error && error.status === 409) throw error;
-    return { effect: { ...EMPTY_EFFECT }, error: String(error && error.message || error) };
+    return { effect: { ...EMPTY_EFFECT }, error: String(error && error.message || error), ...takeDialogs(tab), ...(await takeDownloads(tab)) };
   }
 }
 // A batch step answers with its own payload only: the page state, controls and
@@ -1598,6 +1761,7 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
   const overseer = isOverseer(botId);
   requireActor(tab, botId, body.epoch, true, overseer);
   const wc = tab.view.webContents;
+  if (depth === 0) await syncDialogGuard(tab);
   const reply = (payload) => depth > 0 ? payload : actionReply(tab, payload);
   const finish = async (payload, opts) => depth > 0 ? payload : actionReply(tab, { ...payload, ...(await actionEffect(tab, opts)) });
   if (body.action === 'batch') {
@@ -1854,6 +2018,9 @@ function startApi() {
               const timer = setTimeout(done, 1500);
               wc.once('did-navigate', done); wc.on('did-fail-load', failed); wc.once('destroyed', done);
             });
+            // Commit is not parsed: an eval or snapshot right after open would
+            // see a half-built document. The VM host waits for the parse too.
+            await boundedJs(wc, `document.readyState === 'loading' ? new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${OPEN_PARSE_MS}); }) : 0`, OPEN_PARSE_MS + 2000).catch(() => {});
           }
           return send(201, describeTab(created, true)); }
       }
@@ -2023,7 +2190,7 @@ function createTray() {
       : nativeImage.createFromPath(path.join(ROOT, '../assets/icon.png')).resize({ width: 24, height: 24 });
     tray = new Tray(icon);
     tray.setToolTip(`${app.getName()} is running. Bots keep their browser while this icon is here.`);
-    tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Show Alan’s Way', click: showWindow }, { type: 'separator' }, { label: 'Quit', click: () => app.quit() }]));
+    tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Show Alan’s Workspace', click: showWindow }, { type: 'separator' }, { label: 'Quit', click: () => app.quit() }]));
     tray.on('click', showWindow);
   } catch (error) { tray = undefined; logError('tray', error); }
 }
@@ -2143,7 +2310,7 @@ function createWindow() {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(async () => {
-    prefs = readPreferences(); prefs.remoteControl = false; pinOnboarding(prefs);
+    prefs = readPreferences(); prefs.remoteControl = false; pinOnboarding(prefs); seedMacSshHost();
     // A cold start launched by the claim link (Windows/Linux) carries the URL in argv.
     for (const arg of process.argv) claimTokens.push(cloudClaim.parseClaimUrl(arg));
     // A session already stored means onboarding was in progress: resume it.
@@ -2154,6 +2321,10 @@ else {
     });
     try { parseRemoteUrl(prefs.remoteUrl); } catch { prefs.remoteUrl = ''; }
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    // A connector copy setup.sh left behind runs ahead of the app's own and
+    // nothing else updates it; once the app is newer, drop it.
+    const stale = staleConnector();
+    if (stale) try { fs.rmSync(stale, { recursive: true, force: true }); } catch (error) { logError('stale-connector', error); }
     const browserSession = session.fromPartition('persist:browser');
     // Subresources (fetch, XHR, images) never hit will-navigate. Cancel the
     // ones an agent tab aims at a blocked address; the human's tabs are not

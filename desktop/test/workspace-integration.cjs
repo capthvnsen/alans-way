@@ -101,6 +101,9 @@ app.whenReady().then(async () => {
     if (req.url === '/favicon-cross') return res.end(`<title>favicon-cross</title><link rel="icon" href="http://localhost:${server.address().port}/icon.png">`);
     if (req.url === '/streaming') { res.write('<title>streaming</title><h1>First half</h1>'); setTimeout(() => res.end('<p>Second half</p>'), 600); return; }
     if (req.url === '/form') return res.end('<!doctype html><title>form</title><form id="f"><input name="a" aria-label="Field A"><input name="b" aria-label="Field B"><input name="c" aria-label="Field C"><button type="submit">Send form</button></form><p id="out">idle</p><script>f.onsubmit=e=>{e.preventDefault();out.textContent=[f.a.value,f.b.value,f.c.value].join("|")}</script>');
+    if (req.url === '/dialogs') return res.end('<!doctype html><title>dialogs</title><button id="b" onclick="alert(\'hello\');const ok=confirm(\'Sure?\');document.title=\'ok=\'+ok">Go</button>');
+    if (req.url === '/file.csv') { res.setHeader('Content-Type', 'text/csv'); res.setHeader('Content-Disposition', 'attachment; filename="r.csv"'); return res.end('a,b\n1,2\n'); }
+    if (req.url === '/download') return res.end('<!doctype html><title>download</title><a href="/file.csv" download="r.csv">Get report</a>');
     if (req.url === '/nav-a') return res.end('<title>nav-a</title><body>Nav A');
     if (req.url === '/nav-b') return res.end('<title>nav-b</title><body>Nav B');
     if (req.url === '/remount') return res.end('<!doctype html><title>remount</title><div id="root"><button onclick="hits.push(1)">Alpha</button><button onclick="hits.push(2)">Beta</button></div><script>window.hits=[];window.render=()=>{root.innerHTML=\'<button onclick="hits.push(1)">Alpha</button><button onclick="hits.push(2)">Beta</button>\'}</script>');
@@ -276,6 +279,55 @@ app.whenReady().then(async () => {
   await invoke('control', { id: colored[0].id, controller: 'agent' });
   assert.equal((await api(`/v1/tabs/${colored[0].id}`, 'GET', undefined, '456')).controller, 'agent', 'Give to agent hands the sealed tab back');
   console.log('PASS: explicit takeover seals control and page metadata until the human hands the tab back.');
+  // The Move button appears only for agent-owned tabs while the VM browser is
+  // connected, and on the retired local copy it offers the way back. Both
+  // clicks drive the real handoff IPC; with no VM configured the fixture
+  // surfaces the main-process error through the toast.
+  const keepStateOut = wc.send.bind(wc);
+  wc.send = (channel, ...args) => { if (channel !== 'workspace:state') keepStateOut(channel, ...args); };
+  let handoffCheck;
+  try {
+    handoffCheck = await evaluate(`(async () => {
+      const real = await window.workspace.getState();
+      const shown = () => { const b = document.getElementById('handoff-button'); return { hidden: b.classList.contains('hidden'), text: b.textContent }; };
+      const tab = (extra) => ({ id: ${JSON.stringify(colored[0].id)}, title: 'red', url: 'https://example.com/red', botId: '123', host: 'mac', ...extra });
+      const connected = (tabs, id) => ({ ...real, vpsBrowserStatus: 'connected', tabs, activeTabId: id });
+      render(connected([tab({ controller: 'agent' })], ${JSON.stringify(colored[0].id)}));
+      const up = shown();
+      document.getElementById('handoff-button').click();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      const forwardToast = document.getElementById('toast').textContent;
+      render({ ...connected([tab({ controller: 'agent' })], ${JSON.stringify(colored[0].id)}), vpsBrowserStatus: 'disconnected' });
+      const down = shown();
+      render(connected([tab({ controller: 'human' })], ${JSON.stringify(colored[0].id)}));
+      const human = shown();
+      render(connected([tab({ controller: 'agent', internal: true })], ${JSON.stringify(colored[0].id)}));
+      const internal = shown();
+      render(connected([tab({ controller: 'human', handoff: { phase: 'handed_off', destinationHost: 'vps', destinationTabId: 'vps-ghost' } })], ${JSON.stringify(colored[0].id)}));
+      const back = shown();
+      document.getElementById('handoff-button').click();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      const backToast = document.getElementById('toast').textContent;
+      const returned = tab({ controller: 'human', handoff: { phase: 'handed_off', destinationHost: 'vps', destinationTabId: 'vps-ghost' } });
+      const copy = { ...tab({}), id: 'local-returned', handoff: { phase: 'review_required', sourceTabId: 'vps-ghost', destinationHost: 'mac' } };
+      render(connected([returned, copy], returned.id));
+      const movedBack = shown();
+      render(real);
+      return { up, down, human, internal, back, movedBack, forwardToast, backToast };
+    })()`);
+  } finally { wc.send = keepStateOut; }
+  assert.equal(handoffCheck.up.hidden, false, 'agent tab shows the move control');
+  assert.match(handoffCheck.up.text, /^Move to /);
+  assert.match(handoffCheck.forwardToast, /Configure the VPS browser connection/, `the click reached the handoff IPC: ${handoffCheck.forwardToast}`);
+  assert.equal(handoffCheck.down.hidden, true, 'hidden while the VM browser is not connected');
+  assert.equal(handoffCheck.human.hidden, true, 'hidden for a human-owned tab');
+  assert.equal(handoffCheck.internal.hidden, true, 'hidden for an internal page that cannot checkpoint');
+  assert.equal(handoffCheck.back.hidden, false, 'a handed-off source offers the way back');
+  assert.match(handoffCheck.back.text, /^Move back/);
+  assert.match(handoffCheck.backToast, /Source tab not found/, `the way back hands off the remote copy: ${handoffCheck.backToast}`);
+  assert.equal(handoffCheck.movedBack.hidden, true, 'hidden once the remote copy already moved back to a local tab');
+  await invoke('control', { id: colored[0].id, controller: 'agent' });
+  console.log('PASS: handoff button follows agent control and VM link state, and both directions drive the real IPC.');
   // batch runs a multi-step sequence in one request and eval executes page JS;
   // both honor the same controller/epoch gate as single actions.
   const seizedTab = await api(`/v1/tabs/${colored[1].id}`, 'GET', undefined, 'overseer-bot');
@@ -585,6 +637,28 @@ app.whenReady().then(async () => {
   assert.equal(await hostStatus(`rebind.example:${apiPort}`), 401, 'a non-loopback Host header is refused even with the token');
   assert.equal(await hostStatus('127.0.0.1:1'), 401);
   console.log('PASS: connector enforces a loopback Host header.');
+
+  // An agent tab answers JS dialogs itself and reports them; a download lands
+  // in Downloads and the same reply names the finished file.
+  {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const act = async (tab, body) => apiRaw(`/v1/tabs/${tab.id}/actions`, 'POST', { epoch: tab.epoch, ...body }, 'dialog-bot');
+    const withDialogs = (await apiRaw('/v1/tabs', 'POST', { url: `${base}/dialogs` }, 'dialog-bot')).data;
+    const clicked = await act(withDialogs, { action: 'click', selector: '#b' });
+    assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
+    assert.deepEqual(clicked.data.dialogs.map(d => [d.type, d.message, d.accepted]), [['alert', 'hello', true], ['confirm', 'Sure?', false]]);
+    assert.match(clicked.data.dialogs[1].note, /window\.confirm = \(\) => true/);
+    assert.equal(clicked.data.effect.title, 'ok=false');
+    assert.equal((await act(withDialogs, { action: 'eval', code: '1' })).data.dialogs, undefined, 'dialogs are reported once');
+    const downloads = path.join(profile, 'dl');
+    fs.mkdirSync(downloads); app.setPath('downloads', downloads);
+    const withDownload = (await apiRaw('/v1/tabs', 'POST', { url: `${base}/download` }, 'dialog-bot')).data;
+    const got = await act(withDownload, { action: 'click', selector: 'a' });
+    assert.equal(got.status, 200, JSON.stringify(got.data));
+    assert.deepEqual(got.data.downloads, [{ name: 'r.csv', path: path.join(downloads, 'r.csv'), state: 'completed', bytes: 8 }]);
+    assert.equal(fs.readFileSync(path.join(downloads, 'r.csv'), 'utf8'), 'a,b\n1,2\n');
+    console.log('PASS: agent tabs answer JS dialogs and report them, and report finished downloads in the action reply.');
+  }
 
   // Telegram keeps normal throttling, so a tray-hidden window really goes idle.
   if (telegram && !telegram.isDestroyed()) {

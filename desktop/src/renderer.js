@@ -1,5 +1,5 @@
 const api = window.workspace;
-let state, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '';
+let state, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '', handoffBusy = false;
 const $ = (id) => document.getElementById(id);
 function element(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; }
 function toast(message) { $('toast').textContent = message; $('toast').classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.add('hidden'), 5000); }
@@ -289,10 +289,22 @@ function render(next) {
   $('control-button').title = tab ? `Browser runs on ${tab.host==='vps'||tab.host==='remote'?'the '+remoteName():'your '+thisComputer()} · ${tab.controller === 'agent' ? 'Agent' : 'You'} control it` : 'Open a browser tab first';
   if (document.activeElement !== $('address')) $('address').value = tab?.internal ? '' : tab?.url || '';
   const agentName = tab ? state.bots.find(bot => bot.id === tab.botId)?.name || 'Agent' : '';
+  // The retired local copy of a handed-off tab is the way back: it offers to
+  // pull the remote tab's current page state onto this computer again.
+  const handedOff = tab?.handoff?.phase === 'handed_off' && tab.handoff.destinationTabId ? tab.handoff.destinationTabId : '';
+  // A handed-off source stays retired once its remote copy came back: the new
+  // local tab carries a handoff record pointing at that remote tab id.
+  const movedBack = !!handedOff && state.tabs.some((item) => item !== tab && item.handoff?.sourceTabId === handedOff);
+  const canHandoff = state.vpsBrowserStatus === 'connected' && !!tab && !tab.extensionPage && !tab.internal && (tab.controller === 'agent' || (!!handedOff && !movedBack));
+  const handoffButton = $('handoff-button');
+  handoffButton.classList.toggle('hidden', !canHandoff);
+  handoffButton.disabled = !canHandoff || handoffBusy;
+  handoffButton.textContent = handoffBusy ? 'Moving…' : handedOff ? 'Move back' : `Move to ${remoteName()}`;
+  handoffButton.title = handedOff ? `Bring the ${remoteName()} copy of this page back to your ${thisComputer()}` : `Move ${agentName || 'the agent'}’s page to the ${remoteName()} desktop`;
   $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? `${agentName}${tab.agentBusy ? ' is working' : ' is browsing'}` : 'You'} in control${tab.controller === 'agent' ? ' · Take over anytime' : ''} · ${hostName(tab.host)}${tab.handoff?.phase==='handed_off'?` · Handed off to the ${hostName(tab.handoff.destinationHost)} (agents continue there)`:tab.handoff&&tab.handoff.phase!=='reviewed'?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `${remoteName()} · ${state.remoteStatus}` : 'Ready';
   renderUpdate();
   $('connection-status').textContent = state.api.ready ? 'Browser connector ready' : state.api.error ? 'Browser connector unavailable' : 'Browser connector starting…';
-  const notes = { login: 'Sign in with your Telegram account. Your bots appear on the left.', connected: 'Your Telegram account · bot chats only', locked: 'Unlock Telegram to load your bot chats.', offline: 'Telegram is offline. Retrying automatically; or sync in Settings.', loading: 'Connecting to Telegram…', 'layout-changed': 'Telegram layout changed. Bot chats may not load until Alan’s Way is updated.' };
+  const notes = { login: 'Sign in with your Telegram account. Your bots appear on the left.', connected: 'Your Telegram account · bot chats only', locked: 'Unlock Telegram to load your bot chats.', offline: 'Telegram is offline. Retrying automatically; or sync in Settings.', loading: 'Connecting to Telegram…', 'layout-changed': 'Telegram layout changed. Bot chats may not load until Alan’s Workspace is updated.' };
   $('telegram-note').textContent = notes[state.telegramStatus] || notes.loading;
   $('telegram-note').classList.toggle('warn', state.telegramStatus === 'layout-changed');
   scheduleLayout();
@@ -308,8 +320,11 @@ function renderUpdate() {
   note.onclick = () => { if (u.error) command('open-download-page'); else { updatePopupPinned = true; renderUpdatePopup(); } };
   renderUpdatePopup();
   renderVmBanner();
+  $('bundle-banner').classList.toggle('hidden', !state.bundleWarning);
+  $('bundle-banner-text').textContent = state.bundleWarning || '';
+  $('bundle-banner-dismiss').onclick = () => command('dismiss-bundle-warning');
   if (u.justUpdatedFrom) {
-    toast(`Updated to v${state.version}.${u.vmRetry?.show ? ' A VM update did not finish: use Retry above, or send your agent the update prompt from Settings → Agent setup.' : ''}${state.platform === 'darwin' ? ' If your agent can no longer use this Mac, turn alans-way-localapp off and on again in System Settings → Privacy & Security → Accessibility.' : ''}`);
+    toast(`Updated to v${state.version}.${u.vmRetry?.show ? ' A VM update did not finish: use Retry above, or send your agent the update prompt from Settings → Agent setup.' : ''}${state.platform === 'darwin' ? ' If your agent can no longer use this Mac, turn Alan’s Workspace (listed as alans-way-localapp) off and on again in System Settings → Privacy & Security → Accessibility.' : ''}`);
     command('dismiss-updated');
   }
 }
@@ -321,7 +336,7 @@ function renderUpdatePopup() {
   popup.classList.toggle('hidden', !show);
   if (!show) { updatePopupPinned = false; updatePopupFocused = false; return; }
   $('update-popup-title').textContent = u.busy ? 'Updating' : 'Update available';
-  $('update-popup-copy').textContent = u.busy ? 'Your VMs update first, then this app.' : `Alan’s Way v${u.available} is ready. You have v${state.version}.`;
+  $('update-popup-copy').textContent = u.busy ? 'Your VMs update first, then this app.' : `Alan’s Workspace v${u.available} is ready. You have v${state.version}.`;
   const progress = $('update-progress'); progress.replaceChildren();
   const single = (u.vms || []).length === 1;
   for (const vm of u.vms || []) {
@@ -372,7 +387,7 @@ function renderOnboarding(show) {
   }
   card.append(element('p', 'onboarding-step', `Step ${onboardingStep} of 3`));
   if (onboardingStep === 1) {
-    card.append(element('h2', '', 'Welcome to Open Alan'), element('p', 'settings-note', 'Three short steps connect your Hermes agent to this computer.'));
+    card.append(element('h2', '', 'Welcome to Alan’s Workspace'), element('p', 'settings-note', 'Three short steps connect your Hermes agent to this computer.'));
     // A failed deep-link claim lands here: explain it instead of showing a
     // silent ordinary wizard.
     if (cloud.error) card.append(element('p', 'settings-note', cloud.error));
@@ -380,11 +395,11 @@ function renderOnboarding(show) {
     card.append(element('p', `check-item${signedIn ? ' done' : ''}`, signedIn ? '✓ Signed in to Telegram' : '○ Scan the QR code on the left with your phone: Telegram → Settings → Devices → Link Desktop Device.'));
     if (state.inApplications === false) {
       const move = element('div', 'onboarding-move');
-      move.append(element('p', 'settings-note', 'Move Open Alan to your Applications folder so your agent can find it.'),
+      move.append(element('p', 'settings-note', 'Move Alan’s Workspace to your Applications folder so your agent can find it.'),
         button('Move to Applications', 'secondary-button', () => command('move-to-applications')));
       card.append(move);
     }
-    const claimWrap = element('div', 'field'), claimLabel = element('label', '', 'Paid for a computer on openalan.com?');
+    const claimWrap = element('div', 'field'), claimLabel = element('label', '', 'Have a claim code from openalan.com?');
     claimLabel.htmlFor = 'ob-claim-code';
     const claimInput = element('input');
     claimInput.id = 'ob-claim-code'; claimInput.placeholder = 'Paste your claim code or link'; claimInput.autocomplete = 'off';
@@ -401,7 +416,7 @@ function renderOnboarding(show) {
     card.append(element('h2', '', 'Give your agent this prompt'));
     const box = element('textarea', 'onboarding-prompt'); box.readOnly = true; box.rows = 7; box.setAttribute('aria-label', 'Setup prompt for your agent');
     command('agent-prompt', { botId: state.selectedBotId, copy: false }).then((text) => { if (typeof text === 'string') box.value = text; });
-    card.append(box, element('p', 'settings-note', 'Paste it into the chat with your Hermes bot on the left. It stays current for every version of Open Alan.'));
+    card.append(box, element('p', 'settings-note', 'Paste it into the chat with your Hermes bot on the left. It stays current for every version of Alan’s Workspace.'));
     const help = button('No Hermes agent yet? Start here ↗', 'link-button', () => command('create-tab', { url: 'https://github.com/NousResearch/hermes-agent' }));
     card.append(help);
     actions.append(button('Back', 'secondary-button', () => go(1)),
@@ -417,14 +432,12 @@ function renderOnboarding(show) {
     };
     const vps = field('ob-vps-ssh-host', 'Agent machine SSH address', 'you@your-vps', state.vpsBrowser?.sshHost);
     const mine = field('ob-mac-ssh-host', `This ${windows ? 'PC' : 'Mac'}’s SSH address`, windows ? 'you@mypc' : 'you@mymac', state.macSshHost);
-    const result = element('p', 'settings-note', '');
-    const testButton = button('Test connection', 'secondary-button', async () => {
+    const results = element('div', 'checklist hidden');
+    const checkButton = button('Check setup', 'secondary-button', async () => {
       if (!await command('settings', { macSshHost: mine.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } })) return;
-      testButton.disabled = true; result.textContent = 'Checking…';
-      const check = await command('test-agent-path'); testButton.disabled = false;
-      result.textContent = check && typeof check === 'object' ? `${check.ok ? '✓' : '✗'} ${check.detail}` : '✗ The check could not run.';
+      await runSetupCheck(checkButton, results);
     });
-    card.append(testButton, result);
+    card.append(checkButton, button('Copy report', 'secondary-button', copyReport), results);
     actions.append(button('Back', 'secondary-button', () => go(2)), button('Done', 'primary-button', finish));
   }
   card.append(actions);
@@ -695,7 +708,7 @@ async function showCookieSettings(body) {
   await refresh();
 }
 function showMacPermissions(body) {
-  body.append(element('hr', 'section-divider'), element('h3', '', 'Permissions'), element('p', 'settings-note', 'Agents need these to read and operate other apps on this Mac. Turn on alans-way-localapp in each list.'));
+  body.append(element('hr', 'section-divider'), element('h3', '', 'Permissions'), element('p', 'settings-note', 'Agents need these to read and operate other apps on this Mac. Turn on Alan’s Workspace (listed as alans-way-localapp) in each list.'));
   const rows = [['accessibility', 'Accessibility'], ['screen', 'Screen Recording']].map(([pane, label]) => {
     const row = element('div', 'setting-row'), status = element('span', '', `${label}: checking…`), open = element('button', 'secondary-button', 'Open settings');
     open.onclick = () => command('open-mac-privacy', { pane });
@@ -703,6 +716,46 @@ function showMacPermissions(body) {
     return { pane, label, status };
   });
   command('mac-permissions').then((result) => { if (result) for (const { pane, label, status } of rows) status.textContent = `${label}: ${result[pane] === true || result[pane] === 'granted' ? 'on' : 'off'}`; });
+}
+const CHECK_GROUPS = [['computer', 'This computer'], ['connection', 'Connection'], ['server', 'Server']];
+const CHECK_MARKS = { ok: '✓', warn: '!', fail: '✗' };
+const CHECK_ACTIONS = {
+  'move-to-applications': ['Move to Applications', () => command('move-to-applications')],
+  'open-accessibility': ['Open settings', () => command('open-mac-privacy', { pane: 'accessibility' })],
+  'open-screen': ['Open settings', () => command('open-mac-privacy', { pane: 'screen' })],
+  'remove-old-connector': ['Remove old copy', async () => { if (await command('remove-old-connector')) toast('Old connector copy removed.'); }],
+  'update-server': ['Update server', async () => { toast('Updating the server…'); await command('vm-update-retry', { force: true }); }],
+};
+function renderFindings(container, findings) {
+  container.replaceChildren();
+  for (const [group, label] of CHECK_GROUPS) {
+    const rows = findings.filter((f) => f.group === group);
+    if (!rows.length) continue;
+    container.append(element('p', 'check-group', label));
+    for (const f of rows) {
+      const item = element('div', `check-row ${f.level}`);
+      item.append(element('p', 'check-item', `${CHECK_MARKS[f.level]} ${f.title}`));
+      if (f.level !== 'ok' && f.fix) item.append(element('p', 'settings-note', f.fix));
+      const action = f.level !== 'ok' && CHECK_ACTIONS[f.action];
+      if (action) { const fix = element('button', 'secondary-button', action[0]); fix.onclick = action[1]; item.append(fix); }
+      container.append(item);
+    }
+  }
+  const footer = element('div', 'check-footer');
+  const report = element('button', 'secondary-button', 'Copy report'); report.onclick = copyReport;
+  const support = element('button', 'link-button', 'Get help on Discord ↗'); support.onclick = () => command('open-support');
+  footer.append(report, support); container.append(footer);
+}
+async function runSetupCheck(trigger, container) {
+  trigger.disabled = true; trigger.textContent = 'Checking…';
+  container.classList.remove('hidden');
+  container.replaceChildren(element('p', 'settings-note', 'Checking this computer, the connection and the server. This can take up to two minutes.'));
+  const findings = await command('setup-check');
+  trigger.disabled = false; trigger.textContent = 'Check setup';
+  if (Array.isArray(findings)) renderFindings(container, findings); else container.classList.add('hidden');
+}
+async function copyReport() {
+  if (await command('copy-report')) toast('Report copied. Paste it in Discord so we can take a look.');
 }
 function showSettings() {
   openModal('Workspace settings');
@@ -761,7 +814,12 @@ function showSettings() {
   const wizard = element('button', 'secondary-button', 'Run setup wizard'); wizard.onclick = async () => { closeModal(); await command('onboarding-open'); };
   const agentTest = element('button', 'secondary-button', 'Test agent path'); const agentResult = element('p', 'settings-note', '');
   agentTest.onclick = async () => { agentTest.disabled = true; agentResult.textContent = `Checking ${remoteName()} → computer ssh path…`; const result = await command('test-agent-path'); agentTest.disabled = false; agentResult.textContent = result && typeof result === 'object' ? `${result.ok ? '✓' : '✗'} ${result.detail}` : '✗ Path check failed.'; };
-  body.append(vpsField, sshField, element('div', 'setting-row'), sshSave, agentSetup, agentPrompt, agentUpdate, agentTest, wizard, agentResult);
+  const checkSetup = element('button', 'secondary-button', 'Check setup');
+  const checkResults = element('div', 'checklist hidden');
+  checkSetup.onclick = () => runSetupCheck(checkSetup, checkResults);
+  const report = element('button', 'secondary-button', 'Copy report'); report.onclick = copyReport;
+  const support = element('button', 'link-button', 'Get help on Discord ↗'); support.onclick = () => command('open-support');
+  body.append(vpsField, sshField, element('div', 'setting-row'), sshSave, agentSetup, agentPrompt, agentUpdate, agentTest, wizard, agentResult, checkSetup, report, support, checkResults);
   const primaryField = element('div', 'field'), primaryLabel = element('label', '', 'Primary bot'); primaryLabel.htmlFor = 'primary-bot';
   const primarySelect = element('select'); primarySelect.id = 'primary-bot';
   const none = element('option', '', 'None (defaults to the overseer bot)'); none.value = ''; primarySelect.append(none);
@@ -774,7 +832,7 @@ function showSettings() {
   linkToggle.onclick = async () => { const next = !state.autoOpenLinks; await command('settings', { autoOpenLinks: next }); state.autoOpenLinks = next; linkToggle.textContent = next ? 'On' : 'Off'; };
   linkRow.append(linkToggle); body.append(linkRow);
   body.append(element('p', 'settings-note', `A link sent by you or a bot opens a local tab assigned to that bot, so both of you can see it. If this computer is unreachable, the bot opens its own copy on the ${remoteName()} desktop instead.`));
-  body.append(element('p', 'settings-note', 'The setup installs the Alan’s Way agent plugin on your gateway host and wires this computer’s browser connector for the selected bot. Run once per bot.'));
+  body.append(element('p', 'settings-note', 'The setup installs the Alan’s Way Plugin on your gateway host and wires this computer’s browser connector for the selected bot. Run once per bot.'));
   body.append(element('p', 'settings-note', `Taking over a local tab blocks new agent actions on that tab. ${remoteName()} control currently uses your existing shared desktop; it does not pause your Hermes bots.`));
   body.append(element('hr', 'section-divider'));
   const sync = element('button', 'secondary-button', 'Sync Telegram bots'); sync.onclick = () => { command('sync-telegram'); toast('Reading Telegram’s bot chat list…'); };
@@ -845,6 +903,18 @@ $('home-search').onsubmit = (event) => submitUrl(event, 'home-address');
 document.querySelectorAll('[data-url]').forEach((button) => { button.onclick = () => command('create-tab', { url: button.dataset.url }); });
 for (const action of ['back', 'forward', 'reload']) $(action).onclick = () => command('history', { id: state.activeTabId, action });
 $('control-button').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: tab.controller === 'agent' ? 'human' : 'agent' }); };
+$('handoff-button').onclick = async () => {
+  const tab = state.tabs.find((item) => item.id === state.activeTabId);
+  if (!tab) return;
+  const back = tab.handoff?.phase === 'handed_off' ? tab.handoff.destinationTabId : '';
+  handoffBusy = true; render(state);
+  try {
+    const record = await command('handoff', back
+      ? { id: back, destination: 'mac', includeDrafts: true }
+      : { id: tab.id, destination: 'vps', includeDrafts: true });
+    if (record) toast(`${back ? `Moved back to your ${thisComputer()}` : `Moved to the ${remoteName()}`}.${record.verification && record.verification !== 'ready' ? ' Review the page before the agent continues.' : ''}`);
+  } finally { handoffBusy = false; render(state); }
+};
 $('ask-bot').onclick = () => command('share-page');
 
 $('modal-close').onclick = closeModal;

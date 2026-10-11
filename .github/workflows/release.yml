@@ -87,7 +87,9 @@ jobs:
             desktop/dist/OpenAlan-mac.dmg
             desktop/dist/OpenAlan-mac.dmg.sha512
             desktop/dist/OpenAlan-mac.zip
+            desktop/dist/OpenAlan-mac.zip.blockmap
             desktop/dist/OpenAlan-windows-setup.exe
+            desktop/dist/OpenAlan-windows-setup.exe.blockmap
             desktop/dist/latest.yml
             desktop/dist/latest-mac.yml
 
@@ -102,7 +104,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - run: gh release upload "$GITHUB_REF_NAME" dist/OpenAlan-mac.dmg dist/OpenAlan-mac.dmg.sha512 dist/OpenAlan-mac.zip dist/OpenAlan-windows-setup.exe dist/latest.yml dist/latest-mac.yml --clobber -R "$GITHUB_REPOSITORY"
+      - run: gh release upload "$GITHUB_REF_NAME" dist/OpenAlan-mac.dmg dist/OpenAlan-mac.dmg.sha512 dist/OpenAlan-mac.zip dist/OpenAlan-mac.zip.blockmap dist/OpenAlan-windows-setup.exe dist/OpenAlan-windows-setup.exe.blockmap dist/latest.yml dist/latest-mac.yml --clobber -R "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ github.token }}
 

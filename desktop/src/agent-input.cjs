@@ -45,7 +45,7 @@ function locateElement(selectorSource) {
     const sel = ${selectorSource};
     const queue = [document];
     const seen = new Set();
-    for (let i = 0; i < queue.length && i < 40; i++) {
+    for (let i = 0; i < queue.length && i < 600; i++) {
       const root = queue[i];
       let hit = null;
       try { hit = root.querySelector(sel); } catch { return null; }
@@ -286,13 +286,16 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
           for (let n = inner; n && !own; n = n.parentNode || n.host) own = n === el;
         }
       }
+      // A visually hidden checkbox or radio (pointer-events:none behind a
+      // styled track) is operated through its label; a hit on that label is a hit on it.
+      if (hit && !own && hit.closest) { const label = hit.closest('label'); own = !!label && label.control === el; }
       if (hit && (own || el.contains(hit))) { point = { x: lx + ox, y: ly + oy }; break; }
       if (hit && !coveredBy && !own && !el.contains(hit)) coveredBy = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/)[0] : '');
     }
     if (!point && loose) point = { x: Math.round(l + w / 2 + ox), y: Math.round(t + h / 2 + oy) };
     if (!point) return { fail: coveredBy ? 'covered by ' + coveredBy : 'no clickable point' };
     if (${focus}) {
-      if (${type} && !(el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(el.type)) || el.readOnly) return { fail: 'element cannot accept text' };
+      if (${type} && (!(el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(el.type)) || el.readOnly)) return { fail: 'element cannot accept text' };
       el.focus({ preventScroll: true });
       if (${type}) {
         if (typeof el.select === 'function') el.select();
@@ -543,7 +546,13 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         // insertText is actual Chromium input (including input/beforeinput).
         // The selection belongs to the agent tab, never the human's focused tab.
         await armFollowUp();
-        if (body.text) await send('Input.insertText', { text: body.text });
+        if (body.text) {
+          await send('Input.insertText', { text: body.text });
+          // A key event sent before the renderer has produced a frame after the
+          // insertion is dropped silently (the CDP ack comes first). Hidden pages
+          // may never paint, so the wait is capped.
+          await boundedJs(wc, 'new Promise(done => { setTimeout(done, 500); requestAnimationFrame(() => requestAnimationFrame(done)); })', 1500).catch(() => {});
+        }
         else await keys(keyboardEvent({ key: 'Backspace' }));
         cursor(point, 'type', hl);
       } else if (action === 'press') {

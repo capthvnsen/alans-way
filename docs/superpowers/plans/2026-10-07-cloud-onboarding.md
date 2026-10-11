@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Implement task by task, test first. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** A customer who paid on openalan.com clicks "Open Alan's Way". The app claims their cloud computer, pairs it over Tailscale, optionally migrates their old Hermes, sets the model login, and sets up Telegram, all in the onboarding wizard. DIY users get the same steps through "Use my own server".
+**Goal:** A customer who paid on openalan.com clicks "Open Alan’s Workspace". The app claims their cloud computer, pairs it over Tailscale, optionally migrates their old Hermes, sets the model login, and sets up Telegram, all in the onboarding wizard. DIY users get the same steps through "Use my own server".
 
 **Architecture:**
 - New logic goes in small CommonJS modules under `desktop/src/`. Each one is unit-testable with node, in the style of `desktop/test/*.test.cjs`.

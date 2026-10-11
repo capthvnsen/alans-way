@@ -1,8 +1,10 @@
 #!/bin/sh
-# vm-update.sh - bring this machine's Alan's Way browser host checkout to a
+# vm-update.sh - bring this machine's Alan's Tools browser host checkout to a
 # release tag, restart the tab broker and verify it answers with that version,
 # then update each Hermes profile's alans-way plugins through `hermes plugins
-# update` and drain-restart the gateway once when any plugin changed.
+# update` and drain-restart the gateway once when any plugin changed. Recent
+# hermes refuses the update while that profile's gateway runs; refused pairs
+# are retried once after a drain-stop, and the gateway always comes back up.
 #
 # The desktop app pipes this script over SSH (ssh <host> 'sh -s -- v0.3.2'),
 # so nothing is installed on the VM and no file is left behind. It only ever
@@ -17,6 +19,7 @@
 #
 #   sh vm-update.sh v0.3.2    update to the tag, restart broker + plugins
 #   sh vm-update.sh --check   read-only: print the checkout/live versions
+#   sh vm-update.sh --doctor  read-only: one JSON health report for Check setup
 #
 # Checkout discovery matches setup.sh: a root install lives at
 # /opt/hermes-alans-way/browser, a user install at
@@ -34,9 +37,10 @@
 # Everything above it is progress; "vm-update: <phase>" lines map to UI text.
 set -u
 
-TAG="" CHECK=0
+TAG="" CHECK=0 DOCTOR=0
 case "${1:-}" in
   --check) CHECK=1;;
+  --doctor) DOCTOR=1;;
   -h|--help)
     # $0 is 'sh' when the app pipes this script via 'sh -s', so the usage text
     # is embedded rather than read back out of the script file.
@@ -46,6 +50,7 @@ release tag, restart the tab broker and verify it answers with that version.
 
   sh vm-update.sh v0.3.2    update to the tag and restart the browser host
   sh vm-update.sh --check   read-only: print the checkout/live versions
+  sh vm-update.sh --doctor  read-only: a health report for the app's Check setup
 
 The desktop app pipes this script over SSH, so nothing is installed on the VM
 and no file is left behind. It only ever touches the checkout setup.sh
@@ -335,11 +340,66 @@ plugin_entry() {
     "$(json_string "$1")" "$(json_string "$2")" "$(json_string "$3")" "$(json_string "$4")" "$5" "$_extra"
 }
 
+# $1 = `plugins update` exit code, $2 = its whole output; prints
+# "<status>|<error>". The live-gateway refusal is its own status, not
+# "failed": the pair is retried below once the gateway is down, and the whole
+# message is kept - the last-two-lines cut used to drop the "Cannot update"
+# sentence and the dialog showed it starting mid-sentence.
+plugin_update_status() {
+  if [ "$1" -eq 124 ]; then printf 'failed|the hermes update timed out'; return 0; fi
+  if printf '%s' "$2" | grep -qF 'Cannot update plugin files while the messaging gateway is running'; then
+    printf 'blocked|%s' "$(printf '%s\n' "$2" | tr '\n' ' ')"
+    return 0
+  fi
+  if printf '%s' "$2" | grep -Eiq 'not applied|declined|confirm to continue|fail.?closed|not granted|new capabilities'; then
+    printf 'needs_approval|'; return 0
+  fi
+  if [ "$1" -ne 0 ]; then printf 'failed|%s' "$(printf '%s\n' "$2" | tr '\n' ' ')"; return 0; fi
+  if printf '%s' "$2" | grep -Eiq 'already (up to date|at catalog pin)'; then printf 'current|'; return 0; fi
+  printf 'updated|'
+}
+
+# $1 = profile, $2 = plugin, $3 = before, $4 = repoRef; one bounded
+# `plugins update` try. Classifies the answer into _pu_st/_pu_err/_pu_after,
+# counts real movement toward CHANGED, prints the say line and appends the
+# plugin entry - except with $5 = collect a live-gateway refusal is recorded
+# into REFUSED instead, for the drain-stop retry to replay.
+plugin_update_try() {
+  if [ "$1" = default ]; then
+    _pu_ph="$HHOME"
+    _pu_out="$(run_hermes "$PLUGIN_TIMEOUT" plugins update "$2")"
+  else
+    _pu_ph="$HHOME/profiles/$1"
+    _pu_out="$(run_hermes "$PLUGIN_TIMEOUT" -p "$1" plugins update "$2")"
+  fi; _pu_rc=$?
+  _pu_after="$(plugin_version "$_pu_ph/plugins/$2")"
+  [ -n "$_pu_after" ] || _pu_after="$(plugin_rev "$(plugin_meta "$_pu_ph/plugins" "$2")")"
+  _pu_cls="$(plugin_update_status "$_pu_rc" "$_pu_out")"
+  _pu_st="${_pu_cls%%|*}"; _pu_err="${_pu_cls#*|}"
+  case "$_pu_st" in
+    updated) CHANGED=true;;
+    needs_approval)
+      # The code moved but new capabilities stay ungranted until reviewed.
+      printf '%s' "$_pu_out" | grep -Eq 'updated|Re-installed' && CHANGED=true;;
+    blocked)
+      if [ "${5:-}" = collect ]; then
+        # Refused while the gateway runs: collect the pair, report it after
+        # the drain-stop retry below (or as blocked when that never happens).
+        REFUSED="${REFUSED}${REFUSED:+
+}$1|$2|$3|$4|$_pu_err"
+        say "plugin $2 ($1): blocked while the gateway runs"
+        return 0
+      fi;;
+  esac
+  say "plugin $2 ($1): $_pu_st"
+  PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$1" "$2" "$3" "$_pu_after" "$_pu_st" "$_pu_err" "$4")"
+}
+
 update_hermes_plugins() {
   if ! hermes_bin; then say "no hermes CLI on this VM; skipping plugin updates"; return 0; fi
   HHOME="${HERMES_HOME:-$HOME/.hermes}"
   say "updating Hermes plugins"
-  CLONES="" CHANGED=false
+  CLONES="" CHANGED=false REFUSED="" GW_STOPPED=false GW_VIA="" GW_SCOPE=""
   while read -r _pname _phome; do
     [ -n "$_pname" ] || continue
     _pdir="$_phome/plugins"
@@ -373,40 +433,141 @@ update_hermes_plugins() {
           esac;;
       esac
       [ "$(budget_left)" -gt 15 ] || { say "plugin phase ran out of the time budget; remaining plugins will retry next update"; break 2; }
-      if [ "$_pname" = default ]; then
-        _out="$(run_hermes "$PLUGIN_TIMEOUT" plugins update "$_name")"
-      else
-        _out="$(run_hermes "$PLUGIN_TIMEOUT" -p "$_pname" plugins update "$_name")"
-      fi; _rc=$?
-      _after="$(plugin_version "$_pdir/$_name")"
-      [ -n "$_after" ] || _after="$(plugin_rev "$(plugin_meta "$_pdir" "$_name")")"
-      if [ "$_rc" -eq 124 ]; then
-        _st=failed; _err="the hermes update timed out"
-      elif printf '%s' "$_out" | grep -Eiq 'not applied|declined|confirm to continue|fail.?closed|not granted|new capabilities'; then
-        _st=needs_approval; _err=""
-      elif [ "$_rc" -ne 0 ]; then
-        _st=failed; _err="$(printf '%s\n' "$_out" | tail -2 | tr '\n' ' ')"
-      elif printf '%s' "$_out" | grep -Eiq 'already (up to date|at catalog pin)'; then
-        _st=current; _err=""
-      else
-        _st=updated; _err=""
-      fi
-      case "$_st" in
-        updated) CHANGED=true;;
-        needs_approval)
-          # The code moved but new capabilities stay ungranted until reviewed.
-          printf '%s' "$_out" | grep -Eq 'updated|Re-installed' && CHANGED=true;;
-      esac
-      say "plugin $_name ($_pname): $_st"
-      PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$_pname" "$_name" "$_before" "$_after" "$_st" "$_err" "$_repo_ref")"
+      plugin_update_try "$_pname" "$_name" "$_before" "$_repo_ref" collect
     done
   done <<EOF
 $(list_profiles)
 EOF
+  # A refusal only clears while the gateway is down. Drain-stop it, retry just
+  # the refused pairs, and always start it again. Under supervisord a bare
+  # `stop` escalates SIGTERM to SIGKILL past stopwaitsecs and can corrupt
+  # state.db mid-drain, so USR1 drains it first and the plain `stop` afterwards
+  # only ever fires at a fresh autorestart respawn (or nothing at all). When
+  # the wait ends with the pre-drain pid still running the gateway is left
+  # alone: stopping it would SIGKILL a mid-checkpoint process, the exact path
+  # this avoids.
+  if [ -n "$REFUSED" ]; then
+    if [ "$(budget_left)" -gt 25 ]; then
+      say "stopping the agent gateway so the refused plugin updates can run"
+      GW_PROG="$(supervisor_program 'hermes' 'gateway run')"
+      if [ -n "$GW_PROG" ]; then
+        GW_VIA=supervisor
+        _gw_old="$(_sp_ctl pid "$GW_PROG" | tr -d '[:space:]')"
+        if _sp_ctl signal USR1 "$GW_PROG" >/dev/null 2>&1; then
+          _gw_wait=$(( $(budget_left) - 12 ))
+          [ "$_gw_wait" -gt "$GATEWAY_TIMEOUT" ] && _gw_wait="$GATEWAY_TIMEOUT"
+          _gw_deadline=$(( $(date +%s) + _gw_wait ))
+          while [ "$(date +%s)" -lt "$_gw_deadline" ]; do
+            [ "$(_sp_ctl pid "$GW_PROG" | tr -d '[:space:]')" = "$_gw_old" ] || break
+            sleep 1
+          done
+        fi
+        # Re-read the pid before stopping: the same live pid means the drain
+        # is still in flight (or USR1 never landed) and `stop` would escalate
+        # to a SIGKILL against it, so it is left alone and the pairs report
+        # blocked. Only a fresh respawn - or nothing running - is stopped.
+        _gw_now="$(_sp_ctl pid "$GW_PROG" | tr -d '[:space:]')"
+        _gw_hold=0
+        case "$_gw_now" in
+          ''|0|*[!0-9]*) ;;
+          *) [ "$_gw_now" = "$_gw_old" ] && _gw_hold=1;;
+        esac
+        if [ "$_gw_hold" = 0 ]; then
+          _sp_ctl stop "$GW_PROG" >/dev/null 2>&1 || true
+          _gw_now="$(_sp_ctl pid "$GW_PROG" | tr -d '[:space:]')"
+        fi
+        # GW_STOPPED is only claimed when nothing reports running afterwards:
+        # a failed stop leaves the pairs blocked instead of letting a later
+        # `start` spawn a second gateway next to the live one.
+        # A program that was not running before (a stopped conf entry while
+        # the refusing gateway lives outside supervisord) is never claimed:
+        # starting it afterwards would add a second gateway.
+        case "$_gw_old" in
+          ''|0|*[!0-9]*) ;;
+          *) case "$_gw_now" in ''|0|*[!0-9]*) GW_STOPPED=true;; esac;;
+        esac
+      elif systemd_live; then
+        GW_VIA=systemd
+        # `stop` on an inactive unit is a no-op success, so a unit is only
+        # claimed when it was active: otherwise the live gateway runs outside
+        # it and starting the unit afterwards would add a second one.
+        if [ "$(id -u)" = 0 ]; then
+          systemctl is-active --quiet hermes-gateway \
+            && systemctl stop hermes-gateway >/dev/null 2>&1 && GW_STOPPED=true
+        elif systemctl --user is-active --quiet hermes-gateway; then
+          systemctl --user stop hermes-gateway >/dev/null 2>&1 && GW_STOPPED=true GW_SCOPE=user
+        elif systemctl is-active --quiet hermes-gateway; then
+          sudo -n systemctl stop hermes-gateway >/dev/null 2>&1 && GW_STOPPED=true
+        fi
+        # Stock Hermes keeps its gateway under `hermes gateway`, not
+        # necessarily a hermes-gateway unit; when neither stop lands, mirror
+        # the restart path's last resort.
+        if [ "$GW_STOPPED" != true ] && run_hermes 30 gateway stop >/dev/null 2>&1; then
+          GW_VIA=hermes GW_STOPPED=true
+        fi
+      elif run_hermes 30 gateway stop >/dev/null 2>&1; then
+        GW_VIA=hermes GW_STOPPED=true
+      fi
+    else
+      say "no time left to stop the gateway; the refused updates stay for the next run"
+    fi
+    if [ "$GW_STOPPED" = true ]; then
+      while IFS='|' read -r _pname _name _before _repo_ref _err; do
+        [ -n "$_pname" ] || continue
+        if [ "$(budget_left)" -gt 15 ]; then
+          plugin_update_try "$_pname" "$_name" "$_before" "$_repo_ref"
+        else
+          [ "$_pname" = default ] && _phome="$HHOME" || _phome="$HHOME/profiles/$_pname"
+          _after="$(plugin_version "$_phome/plugins/$_name")"
+          [ -n "$_after" ] || _after="$(plugin_rev "$(plugin_meta "$_phome/plugins" "$_name")")"
+          say "plugin $_name ($_pname): blocked"
+          PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$_pname" "$_name" "$_before" "$_after" blocked "$_err" "$_repo_ref")"
+        fi
+      done <<EOF
+$REFUSED
+EOF
+      # The gateway always comes back up, whatever the retries found.
+      case "$GW_VIA" in
+        supervisor)
+          GW_CMD="supervisorctl start $GW_PROG"
+          _sp_ctl start "$GW_PROG" >/dev/null 2>&1 && GATEWAY_RESTARTED=true;;
+        systemd)
+          if [ "$(id -u)" = 0 ]; then
+            GW_CMD="systemctl start hermes-gateway"
+            systemctl start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+          elif [ "$GW_SCOPE" = user ]; then
+            GW_CMD="systemctl --user start hermes-gateway"
+            systemctl --user start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+          else
+            # Start the scope that was stopped: a stale user unit must not
+            # come up in place of the system unit.
+            GW_CMD="sudo systemctl start hermes-gateway"
+            sudo -n systemctl start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+          fi;;
+        hermes)
+          GW_CMD="hermes gateway start"
+          run_hermes "$GATEWAY_TIMEOUT" gateway start >/dev/null 2>&1 && GATEWAY_RESTARTED=true;;
+      esac
+      if [ "$GATEWAY_RESTARTED" = true ]; then say "agent gateway restarted"
+      elif [ "$GW_VIA" = supervisor ]; then
+        say "could not start the gateway; on the VM run: $GW_CMD (or: sudo $GW_CMD)"
+      else say "could not start the gateway; on the VM run: $GW_CMD"; fi
+    else
+      # The gateway stayed up; every refused pair reports blocked with the
+      # full refusal text so the dialog can quote it.
+      while IFS='|' read -r _pname _name _before _repo_ref _err; do
+        [ -n "$_pname" ] || continue
+        PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$_pname" "$_name" "$_before" "$_before" blocked "$_err" "$_repo_ref")"
+      done <<EOF
+$REFUSED
+EOF
+    fi
+  fi
   # The gateway loads plugin code at start, so one drain-restart when anything
   # actually changed (hermes gateway restart: SIGUSR1 drain, the supervisor or
-  # service manager owns the relaunch).
-  if [ "$CHANGED" = true ]; then
+  # service manager owns the relaunch). Skipped when the bounce above already
+  # restarted it; run even when nothing changed if that bounce left it down.
+  if [ "$GATEWAY_RESTARTED" != true ] && { [ "$CHANGED" = true ] || [ "$GW_STOPPED" = true ]; }; then
     say "restarting the agent gateway"
     # A gateway under supervisord is restarted with USR1, not `restart`: the
     # supervisor's restart escalates SIGTERM to SIGKILL past stopwaitsecs, and
@@ -473,6 +634,124 @@ EOF
   fi
 }
 
+# --- doctor -------------------------------------------------------------------
+# Read-only health report for the app's Check setup. Nothing here changes the
+# machine: hermes only gets `plugins check-updates --json` and `config get`,
+# setup.sh only runs --verify, git only lists remote tags. The shell gathers
+# raw pieces into a temp dir and node turns them into the one JSON line.
+
+PLUGIN_REMOTE="${ALANS_WAY_VM_PLUGIN_REMOTE:-https://github.com/capthvnsen/alans-way-agents}"
+
+bounded() {
+  _s="$1"; shift
+  if have timeout; then timeout "$_s" "$@"
+  elif have perl; then perl -e 'alarm shift; exec @ARGV' "$_s" "$@"
+  else "$@"; fi
+}
+
+# The setup.sh the server was installed with: ~/alans-way-agents first (where
+# the setup prompt clones it), else the clone a profile's file:// plugin source names.
+doctor_setup_script() {
+  if [ -f "$HOME/alans-way-agents/setup.sh" ]; then printf '%s' "$HOME/alans-way-agents/setup.sh"; return 0; fi
+  _ds="$(plugin_meta "$1/plugins" alans-way | sed -n 's|.*"source"[[:space:]]*:[[:space:]]*"file://\([^"#]*\).*|\1|p' | head -1)"
+  [ -n "$_ds" ] && [ -f "$_ds/setup.sh" ] && printf '%s' "$_ds/setup.sh"
+}
+
+# Why the browser host is down, one word per line: what is missing on this
+# server (no-chromium, no-display, no-bot). Only run when the host is down.
+doctor_host_causes() {
+  _hh="${HERMES_HOME:-$HOME/.hermes}"
+  _found=0
+  for _b in google-chrome google-chrome-stable chromium chromium-browser; do have "$_b" && _found=1; done
+  for _b in "$HOME"/.cache/ms-playwright/chromium-*; do [ -e "$_b" ] && _found=1; done
+  [ "$_found" = 1 ] || echo no-chromium
+  _found=0
+  for _b in Xvfb Xtigervnc Xvnc; do have "$_b" && _found=1; done
+  for _b in /tmp/.X11-unix/X*; do [ -e "$_b" ] && _found=1; done
+  [ "$_found" = 1 ] || echo no-display
+  _found=0
+  for _h in "$_hh" "$_hh"/profiles/*; do
+    grep -Eqs '^(export )?TELEGRAM_BOT_TOKEN=.+' "$_h/.env" && _found=1
+    grep -Eqs '^[[:space:]]*token:[[:space:]]*[^[:space:]]' "$_h/config.yaml" && _found=1
+  done
+  [ "$_found" = 1 ] || echo no-bot
+}
+
+DOCTOR_JS='
+const fs = require("fs"), path = require("path");
+const [work, version] = process.argv.slice(1);
+const has = (f) => fs.existsSync(path.join(work, f));
+const read = (f) => { try { return fs.readFileSync(path.join(work, f), "utf8").trim(); } catch { return ""; } };
+const array = (text) => {
+  const a = text.search(/^\[/m), b = text.lastIndexOf("]");
+  try { return a < 0 || b < a ? [] : JSON.parse(text.slice(a, b + 1)); } catch { return []; }
+};
+const pick = (lines, tag) => lines.map((l) => l.match(new RegExp("^\\s*" + tag + " (.*)$"))).filter(Boolean).map((m) => m[1].trim());
+const dirs = fs.readdirSync(work).filter((d) => /^p\d+$/.test(d)).sort((a, b) => a.slice(1) - b.slice(1));
+const profiles = dirs.map((d) => {
+  const updates = array(read(`${d}/updates.json`));
+  const plugins = ["alans-way", "alans-way-computer"].filter((n) => has(`${d}/version.${n}`)).map((name) => {
+    const row = updates.find((u) => u && u.name === name) || {};
+    const reason = typeof row.reason === "string" ? row.reason.trim() : "";
+    return { name, version: read(`${d}/version.${name}`), class: String(row.class || ""), updateAvailable: typeof row.update_available === "boolean" ? row.update_available : null, ...(reason ? { reason } : {}) };
+  });
+  const backend = read(`${d}/backend`);
+  return { profile: read(`${d}/name`), computerBackend: /^[a-z0-9_-]+$/i.test(backend) && !/^(none|null)$/i.test(backend) ? backend : "", plugins, checked: !has(`${d}/out-of-time`) };
+});
+const lines = read("verify").split("\n");
+const code = Number(read("verify-exit")) || 0;
+const fails = pick(lines, "FAIL");
+if (code && !fails.length && code !== 124 && code !== 142) fails.push(`setup.sh --verify stopped early (exit ${code})`);
+const verify = has("verify-out-of-time") || code === 124 || code === 142 ? { ran: false, reason: "time" }
+  : has("verify") ? { ran: true, fails, warns: pick(lines, "warn") }
+  : { ran: false, reason: "no-setup" };
+process.stdout.write(JSON.stringify({ ok: true, version, hostVersion: read("hostVersion"), pluginTag: read("pluginTag"), error: "", verify, hostCauses: read("causes").split("\n").filter(Boolean), profiles }) + "\n");
+'
+
+doctor() {
+  VM_BUDGET="${ALANS_WAY_VM_DOCTOR_BUDGET:-100}"
+  node_bin || fail "node is not installed on this server"
+  WORK="$(mktemp -d)" || fail "could not create a temp dir"
+  trap 'rm -rf "$WORK"' EXIT
+  BODY="$(status_body)" || BODY=""
+  printf '%s' "$BODY" | json_field version > "$WORK/hostVersion"
+  bounded 15 "$GIT" ls-remote --tags --refs "$PLUGIN_REMOTE" 2>/dev/null \
+    | sed -n 's|.*refs/tags/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$|\1|p' \
+    | sort -t. -k1.2n -k2n -k3n | tail -1 > "$WORK/pluginTag"
+  if hermes_bin; then
+    HHOME="${HERMES_HOME:-$HOME/.hermes}"
+    _i=0
+    _setup="$(doctor_setup_script "$HHOME")"
+    while read -r _pname _phome; do
+      [ -n "$_pname" ] || continue
+      [ -d "$_phome/plugins/alans-way" ] || [ -d "$_phome/plugins/alans-way-computer" ] || continue
+      _i=$((_i + 1)); _d="$WORK/p$_i"; mkdir -p "$_d"
+      printf '%s' "$_pname" > "$_d/name"
+      for _name in alans-way alans-way-computer; do
+        [ -d "$_phome/plugins/$_name" ] && plugin_version "$_phome/plugins/$_name" > "$_d/version.$_name"
+      done
+      [ -n "$_setup" ] || _setup="$(doctor_setup_script "$_phome")"
+      if [ "$(budget_left)" -le 20 ]; then touch "$_d/out-of-time"; continue; fi
+      if [ "$_pname" = default ]; then set --; else set -- -p "$_pname"; fi
+      run_hermes 30 "$@" plugins check-updates --json > "$_d/updates.json"
+      run_hermes 15 "$@" config get computer_use.backend | tail -1 > "$_d/backend"
+    done <<EOF
+$(list_profiles)
+EOF
+    # One audit for the whole server: without --profile, setup.sh --verify
+    # already covers the default home and every profile that has a bot.
+    if [ -n "$_setup" ]; then
+      if [ "$(budget_left)" -le 10 ]; then touch "$WORK/verify-out-of-time"
+      else
+        bounded "$(( $(budget_left) - 5 ))" sh "$_setup" --verify --hermes-home "$HHOME" > "$WORK/verify" 2>&1 </dev/null
+        printf '%s' "$?" > "$WORK/verify-exit"
+      fi
+    fi
+  fi
+  [ -n "$(cat "$WORK/hostVersion")" ] || doctor_host_causes > "$WORK/causes"
+  "$NODE_BIN" -e "$DOCTOR_JS" "$WORK" "$VERSION"
+}
+
 # ---------------------------------------------------------------- main
 DIR="$(find_checkout)" \
   || fail "no browser host checkout found (expected /opt/hermes-alans-way/browser or ~/.local/share/hermes-alans-way/app)"
@@ -486,6 +765,7 @@ if [ "$CHECK" = 1 ]; then
   printf '{"ok":true,"version":"%s","hostVersion":"%s","busy":%s,"error":""}\n' "$VERSION" "$HOST_VERSION" "$HOST_BUSY"
   exit 0
 fi
+if [ "$DOCTOR" = 1 ]; then doctor; exit 0; fi
 
 printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
   || fail "refusing non-release tag '$TAG' (need vX.Y.Z)"

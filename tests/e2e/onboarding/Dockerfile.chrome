@@ -1,0 +1,9 @@
+# The orgo-sim image plus the two things a fresh server needs before
+# setup.sh and that setup.sh does not install (see findings): a real Chromium
+# and an X display on :99 (Xvfb, run by supervisord like the guide says). Playwright's build is
+# what exists for arm64 Ubuntu 24.04, where apt's chromium is a snap stub.
+ARG BASE=alans-way-orgo-sim:test
+FROM ${BASE}
+RUN apt-get update && apt-get install -y --no-install-recommends xvfb && rm -rf /var/lib/apt/lists/* \
+ && printf '[program:xvfb]\ncommand=/usr/bin/Xvfb :99 -screen 0 1280x800x24\nautorestart=true\n' > /etc/supervisor/conf.d/xvfb.conf
+RUN cd /tmp && npx -y playwright@1.49.1 install --with-deps chromium && rm -rf /var/lib/apt/lists/*

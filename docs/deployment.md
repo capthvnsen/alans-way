@@ -53,7 +53,7 @@ side — plugin, connector config, browser host units, gateway restart,
 and primary-route binding — and prints guided steps for the display/VNC stack
 it can't safely automate.
 
-On a VM without systemd (services under supervisord, for example an Orgo VM),
+On a VM without systemd (services under supervisord, for example a cloud VM),
 restart the gateway through its supervisor instead of `hermes gateway restart`:
 `supervisorctl signal USR1 <program>` for the program that runs `hermes
 gateway run` (find it via `supervisorctl status` and the `command=` lines in

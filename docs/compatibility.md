@@ -14,7 +14,7 @@ Two machines are involved and their OS choices are independent:
 
 Networking: every SSH address is a Tailscale name or IP. The connect scripts refuse anything else and authorize the VPS key only from `100.64.0.0/10` and `fd7a:115c:a1e0::/48`.
 
-macOS notes: desktop-app control needs Accessibility and Screen Recording granted to `alans-way-localapp` on the Mac itself (see the README). Remote SSH sessions need no grant, because computer use runs through the app's loopback API. Browser tabs need neither.
+macOS notes: desktop-app control needs Accessibility and Screen Recording granted to Alan's Workspace (listed as `alans-way-localapp`) on the Mac itself (see the README). Remote SSH sessions need no grant, because computer use runs through the app's loopback API. Browser tabs need neither.
 
 Windows notes: computer-use runs through the app's authenticated loopback API
 (`/v1/computer/*`, as it does on macOS and Linux hosts) because an SSH session cannot reach the interactive desktop
@@ -24,8 +24,12 @@ on Windows is `hermes-companion serve-windows`.
 
 Linux host notes: desktop control needs an X11 session (Wayland is not
 supported) and these packages: `python3 python3-gi gir1.2-atspi-2.0
-at-spi2-core xdotool imagemagick` (on Debian or Ubuntu,
-`sudo apt-get install -y python3 python3-gi gir1.2-atspi-2.0 at-spi2-core xdotool imagemagick`).
+at-spi2-core xdotool x11-utils` (on Debian or Ubuntu,
+`sudo apt-get install -y python3 python3-gi gir1.2-atspi-2.0 at-spi2-core xdotool x11-utils`).
+Screenshots use ImageMagick `import` when present and otherwise fall back
+to `xwd` (converted through netpbm or Pillow), `scrot -a`, or `ffmpeg`
+x11grab, so installing any one of `imagemagick`, `x11-apps`, `scrot`, or
+`ffmpeg` covers them.
 GTK apps expose their controls only when accessibility is on, so start them
 with `GTK_A11Y=atspi` if a snapshot comes back empty. Browser tabs need none
 of this. The Electron sandbox can be blocked by AppArmor on Ubuntu 24.04;

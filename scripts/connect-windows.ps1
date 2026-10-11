@@ -7,7 +7,7 @@
 #     -VpsHostKey 'ssh-ed25519 AAAA...' `
 #     -VpsKey 'ssh-ed25519 AAAA... root@vps'
 #
-# It installs or upgrades the Alan's Way app, lets that key log in to this PC
+# It installs or upgrades the Alan's Workspace app, lets that key log in to this PC
 # over SSH (only from your Tailscale network), pins the remote host key so
 # this PC can reach it without a trust-on-first-use prompt, and prints the
 # values the agent needs next. The -Vps address must be a Tailscale name or
@@ -62,7 +62,7 @@ function Test-TailnetHost([string]$h) {
   return ($h -match '^([A-Za-z0-9][A-Za-z0-9-]*\.)+ts\.net$') -or ($h -match '^[A-Za-z0-9][A-Za-z0-9-]*$')
 }
 if (-not (Test-TailnetHost $VpsHost)) {
-  Die "$VpsHost is not a Tailscale address. Alan's Way connects over your Tailscale network only. On the agent machine run 'tailscale ip -4' and use that 100.x.y.z address (or its name ending in .ts.net), then re-run this command."
+  Die "$VpsHost is not a Tailscale address. Alan's Workspace connects over your Tailscale network only. On the agent machine run 'tailscale ip -4' and use that 100.x.y.z address (or its name ending in .ts.net), then re-run this command."
 }
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)

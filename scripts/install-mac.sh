@@ -1,5 +1,5 @@
 #!/bin/sh
-# install-mac.sh — build and install (or upgrade) the Alan's Way Mac app.
+# install-mac.sh — build and install (or upgrade) the Alan's Workspace Mac app.
 #
 #   curl -fsSL https://openalan.com/install-mac | sh
 #
@@ -7,7 +7,8 @@
 # or downloads it as a tarball when git is not installed (Node is fetched into
 # ~/.alans-way/node the same way), builds the app locally (so macOS does not quarantine it), replaces
 # /Applications/alans-way-localapp.app and opens it. Sign-ins and settings live
-# outside the bundle and survive upgrades. Safe to re-run.
+# outside the bundle and survive upgrades. In a terminal it then offers to
+# connect your Hermes server (scripts/connect-server.sh). Safe to re-run.
 set -eu
 
 REPO_URL="https://github.com/capthvnsen/alans-way"
@@ -43,11 +44,15 @@ if ! node_ok; then
   PATH="$NODE_DIR/bin:$PATH"; export PATH
 fi
 
-if [ -d "$DIR/.git" ] && command -v git >/dev/null && git --version >/dev/null 2>&1; then
+# On a Mac without the Command Line Tools, running git opens Apple's install
+# dialog, so ask xcode-select first and take the tarball path instead.
+git_ok() { command -v git >/dev/null && xcode-select -p >/dev/null 2>&1 && git --version >/dev/null 2>&1; }
+
+if [ -d "$DIR/.git" ] && git_ok; then
   say "Updating $DIR"
   git -C "$DIR" pull --ff-only -q || die "could not fast-forward $DIR (local changes?)"
   say "Version $(git -C "$DIR" rev-parse --short HEAD)"
-elif [ ! -e "$DIR" ] && command -v git >/dev/null && git --version >/dev/null 2>&1; then
+elif [ ! -e "$DIR" ] && git_ok; then
   say "Cloning into $DIR"
   git clone -q "$REPO_URL" "$DIR"
   say "Version $(git -C "$DIR" rev-parse --short HEAD)"
@@ -97,6 +102,12 @@ while [ "$i" -lt 30 ]; do
       .then((r) => r.json()).then((s) => { if (!s.version) process.exit(1); console.log(s.host + " " + s.version); })
       .catch(() => process.exit(1));' "$CONN" 2>/dev/null)"; then
     say "install-mac: running — local browser API answers ($STATUS)"
+    # connect-mac.sh runs this installer itself and sets the skip flag.
+    if [ -z "${ALANS_WAY_SKIP_CONNECT:-}" ] && (: < /dev/tty) 2>/dev/null; then
+      printf 'Connect your Hermes server now? [Y/n] ' > /dev/tty
+      read -r reply < /dev/tty || reply=n
+      case "$reply" in n|N|no) say "Later: sh $DIR/scripts/connect-server.sh";; *) exec sh "$DIR/scripts/connect-server.sh";; esac
+    fi
     exit 0
   fi
   sleep 1; i=$((i + 1))

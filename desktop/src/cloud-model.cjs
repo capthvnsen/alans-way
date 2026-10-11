@@ -27,8 +27,12 @@ function gatewayProgram(statusOutput) {
   }
   return 'hermes-gateway';
 }
+// USR1 is Hermes's drain-and-exit restart for a supervised gateway: supervisord
+// relaunches it. `restart` escalates to SIGKILL after stopwaitsecs, and a kill
+// mid-checkpoint corrupts state.db, so it is only the fallback.
 function gatewayRestartCommand(statusOutput) {
-  return `supervisorctl restart ${shellQuote(gatewayProgram(statusOutput))}`;
+  const program = shellQuote(gatewayProgram(statusOutput));
+  return `supervisorctl signal USR1 ${program} || supervisorctl restart ${program}`;
 }
 
 // `hermes auth login` does not exist; the OAuth login for a Claude

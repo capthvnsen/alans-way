@@ -2,14 +2,15 @@
 
 The short prompt in the [README](../README.md#connect-your-agents) points here.
 An agent fetches this page and carries out the text block below. It connects
-the server and the user's computer over Tailscale, installs the Alan's Way app
-and Hermes plugin, and proves both ends work. The person does four things on
-their computer; everything else is automatic.
+the server and the user's computer over Tailscale, installs the Alan's
+Workspace app and the Alan's Way Plugin, and proves both ends work. The person
+does four things on their computer; everything else is automatic.
 
 ```text
-Set up Alan's Way for me. This server runs my Hermes gateway; connect it to my
-<Mac | Windows PC | Linux computer> over Tailscale, install the Alan's Way app on it and the
-alans-way Hermes plugin here, and prove it works. Do not modify Hermes itself.
+Set up Alan's Workspace for me. This server runs my Hermes gateway; connect it
+to my <Mac | Windows PC | Linux computer> over Tailscale, install the Alan's
+Workspace app on it and the Alan's Way Plugin (`alans-way`) here, and prove it
+works. Do not modify Hermes itself.
 Reference: https://github.com/capthvnsen/alans-way/blob/main/docs/setup-for-agents.md
 
 Rules for the whole job:
@@ -58,7 +59,7 @@ Rules for the whole job:
    differ. On a Mac it must be Apple Silicon; on Windows it must be Windows
    10/11 x64; on Linux it must be x64 with systemd and a desktop session,
    plus Node 22.12 or newer and git.
-   If my message says the Open Alan app is already installed and open, it
+   If my message says the Alan's Workspace app is already installed and open, it
    came from openalan.com: leave out the "builds the app" wording below and
    add --skip-install to the Mac or Linux command or -SkipInstall to the
    Windows command. If it says MAC_SSH, still run the connect script; it
@@ -71,12 +72,13 @@ Rules for the whole job:
       the app and takes a few minutes:
       curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-mac.sh | sh -s -- --vps '<VPS_SSH>' --vps-host-key '<VPS_HOST_KEY>' --vps-key '<VPS_KEY>'
    4. Copy the lines it prints between the ===== markers and send them to me.
-   5. In the Alan's Way app that opened, sign in to Telegram with the QR code
-      (on your phone: Telegram → Settings → Devices → Link Desktop Device).
+   5. In the Alan's Workspace app that opened, sign in to Telegram with the QR
+      code (on your phone: Telegram → Settings → Devices → Link Desktop
+      Device).
    6. At the Mac itself (not over SSH), open System Settings → Privacy &
       Security. Under Accessibility, and again under Screen Recording, turn on
-      alans-way-localapp. This lets your agent control other apps; browser
-      tabs work without it.
+      Alan's Workspace (listed as alans-way-localapp). This lets your agent
+      control other apps; browser tabs work without it.
    If the script stops, it says why in one line; tell me that line.
    On a Windows PC send me these steps instead:
    1. Install Tailscale from https://tailscale.com/download and sign in with
@@ -87,7 +89,7 @@ Rules for the whole job:
       directions:
       irm https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-windows.ps1 -OutFile $env:TEMP\connect-windows.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\connect-windows.ps1 -Vps '<VPS_SSH>' -VpsHostKey '<VPS_HOST_KEY>' -VpsKey '<VPS_KEY>'
    3. Copy the lines it prints between the ===== markers and send them to me.
-   4. In the Alan's Way app that opened, sign in to Telegram as above.
+   4. In the Alan's Workspace app that opened, sign in to Telegram as above.
    Note: on Windows the SSH session cannot drive the desktop — computer-use
    calls run through the app's local API, so the app must stay running.
    On a Linux computer send me these steps instead:
@@ -99,7 +101,7 @@ Rules for the whole job:
       Return. The first run builds the app and takes a few minutes:
       curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-linux.sh | sh -s -- --vps '<VPS_SSH>' --vps-host-key '<VPS_HOST_KEY>' --vps-key '<VPS_KEY>'
    4. Copy the lines it prints between the ===== markers and send them to me.
-   5. In the Alan's Way app that opened, sign in to Telegram as above. Closing
+   5. In the Alan's Workspace app that opened, sign in to Telegram as above. Closing
       its window keeps it running in the tray; choose Quit there to stop it.
 
 5. Trust both ways, on this server, using MAC_SSH, MAC_HOST_KEY and MAC_KEY
@@ -141,7 +143,7 @@ Rules for the whole job:
 
 7. Verify: `~/alans-way-agents/setup.sh --verify [--profile <profile>]` must
    end with "setup: all required checks passed". Then ask me to:
-   1. In the Alan's Way app open Settings → Agent setup, enter '<VPS_SSH>' as
+   1. In the Alan's Workspace app open Settings → Agent setup, enter '<VPS_SSH>' as
       the VPS address and '<MAC_SSH>' as this Mac's address, click Save
       addresses, then Test agent path. It should say "VPS reaches this Mac over
       ssh" (or "this PC" on Windows).

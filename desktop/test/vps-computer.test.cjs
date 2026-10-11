@@ -1,6 +1,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawn, spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const script = path.join(__dirname, '../scripts/vps-computer.py');
@@ -44,4 +46,109 @@ test('serve answers each line in order and exits on EOF', async () => {
   assert.equal(lines[2].id, 'a');
   assert.equal(lines[3].id, 2);
   assert.equal(lines[3].code, 'not_found');
+});
+
+// Screenshots must work on a minimal X11 box: no ImageMagick, only whichever
+// of scrot, xwd+netpbm, Pillow or ffmpeg the image ships. Stub tools sit on a
+// restricted PATH so the choice of tool is hermetic on every test host.
+const python = spawnSync('python3', ['-c', 'import sys;print(sys.executable)'], { encoding: 'utf8' }).stdout.trim();
+const driver = `
+import importlib.util
+import json
+import sys
+spec = importlib.util.spec_from_file_location('vc', sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+try:
+    data, size = m.capture(sys.argv[2], int(sys.argv[3]), json.loads(sys.argv[4]))
+    print(json.dumps({'ok': True, 'size': list(size), 'head': data[:2].hex()}))
+except Exception as exc:
+    print(json.dumps({'ok': False, 'error': str(exc), 'code': getattr(exc, 'code', 'crash')}))
+`;
+const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const JPEG_STUB = Buffer.concat([Buffer.from('ffd8ffc000110800100020', 'hex'), Buffer.alloc(13)]);
+
+function toolDir(tools) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vps-tools-'));
+  fs.writeFileSync(path.join(dir, 'canned.png'), Buffer.from(PNG_1PX, 'base64'));
+  fs.writeFileSync(path.join(dir, 'canned.jpg'), JPEG_STUB);
+  fs.writeFileSync(path.join(dir, 'canned.xwd'), Buffer.from('not a real xwd file'));
+  fs.writeFileSync(path.join(dir, 'canned.pnm'), Buffer.concat([Buffer.from('P6\n2000 10\n255\n'), Buffer.alloc(60000, 128)]));
+  for (const [name, source] of Object.entries(tools)) {
+    fs.writeFileSync(path.join(dir, name), `#!${python}\nimport os, sys\nopen(os.environ['STUB_MARKER'], 'a').write('${name} ' + ' '.join(sys.argv[1:]) + '\\n')\n${source}\n`, { mode: 0o755 });
+  }
+  return { dir, env: { PATH: dir, DIR: dir, STUB_MARKER: path.join(dir, 'marker'), HOME: os.tmpdir() } };
+}
+function runCapture(dir, env, geo = '{"X":"10","Y":"20","WIDTH":"640","HEIGHT":"400"}') {
+  const result = spawnSync(python, ['-c', driver, script, '42', '960', geo], { encoding: 'utf8', env });
+  return { result, reply: JSON.parse(result.stdout.trim().split('\n').pop()) };
+}
+const readStub = (name) => `sys.stdout.buffer.write(open(os.path.join(os.environ['DIR'], ${JSON.stringify(name)}), 'rb').read())`;
+const writeToArg = 'open(sys.argv[-1], "wb").write(open(os.environ["CANNED"], "rb").read())';
+const displayStub = "if sys.argv[1:] == ['getdisplaygeometry']: print('700 500')";
+
+test('capture falls back to scrot when ImageMagick is absent', () => {
+  const { dir, env } = toolDir({
+    scrot: writeToArg,
+    ffmpeg: readStub('canned.jpg'),
+  });
+  env.CANNED = path.join(dir, 'canned.png');
+  const { result, reply } = runCapture(dir, env);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(reply.ok, true, reply.error);
+  assert.equal(reply.head, 'ffd8', 'the reply is a JPEG either way the stub PNG was converted');
+  assert.ok(reply.size[0] > 0 && reply.size[1] > 0, 'jpeg dimensions are reported');
+  const marker = fs.readFileSync(path.join(dir, 'marker'), 'utf8');
+  assert.match(marker, /scrot -a 10,20,640,400/, `the window rectangle went to scrot: ${marker}`);
+  assert.doesNotMatch(marker, /import/, 'ImageMagick is never invoked when absent');
+});
+
+test('capture clamps the grab rectangle to the display for region tools', () => {
+  const { dir, env } = toolDir({
+    xdotool: displayStub,
+    scrot: writeToArg,
+    ffmpeg: readStub('canned.jpg'),
+  });
+  env.CANNED = path.join(dir, 'canned.png');
+  // A 640x400 window at x=650 on a 700x500 screen hangs 590px off the edge.
+  const { result, reply } = runCapture(dir, env, '{"X":"650","Y":"20","WIDTH":"640","HEIGHT":"400"}');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(reply.ok, true, reply.error);
+  const marker = fs.readFileSync(path.join(dir, 'marker'), 'utf8');
+  assert.match(marker, /scrot -a 650,20,50,400/, `the box was pulled inside the screen: ${marker}`);
+});
+
+test('capture falls back to xwd plus netpbm, scaling wide windows', () => {
+  const { dir, env } = toolDir({
+    xwd: readStub('canned.xwd'),
+    xwdtopnm: readStub('canned.pnm'),
+    pnmscale: `data = sys.stdin.buffer.read()\nsys.stdout.buffer.write(data)`,
+    pnmtojpeg: readStub('canned.jpg'),
+  });
+  const { result, reply } = runCapture(dir, env);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(reply.ok, true, reply.error);
+  assert.equal(reply.head, 'ffd8');
+  assert.deepEqual(reply.size, [32, 16], 'the netpbm stub jpeg reports its own size');
+  const marker = fs.readFileSync(path.join(dir, 'marker'), 'utf8');
+  assert.match(marker, /xwd -silent -id 42/, `the window id went to xwd: ${marker}`);
+  assert.match(marker, /pnmscale -width 960/, 'the 2000px window is scaled to the cap');
+});
+
+test('capture reports a coded failure when no capture tool exists', () => {
+  const { dir, env } = toolDir({});
+  const { reply } = runCapture(dir, env);
+  assert.equal(reply.ok, false);
+  assert.equal(reply.code, 'unsupported_action', 'a missing capability stays coded for the caller');
+  assert.match(reply.error, /No screenshot tool/);
+});
+
+test('capture reports a plain failure when tools exist but cannot grab', () => {
+  const { dir, env } = toolDir({
+    scrot: 'sys.exit(1)',
+  });
+  const { reply } = runCapture(dir, env);
+  assert.equal(reply.ok, false);
+  assert.equal(reply.code, 'failed');
+  assert.match(reply.error, /Could not capture that window/);
 });
