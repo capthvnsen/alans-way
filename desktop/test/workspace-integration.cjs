@@ -101,6 +101,9 @@ app.whenReady().then(async () => {
     if (req.url === '/favicon-cross') return res.end(`<title>favicon-cross</title><link rel="icon" href="http://localhost:${server.address().port}/icon.png">`);
     if (req.url === '/streaming') { res.write('<title>streaming</title><h1>First half</h1>'); setTimeout(() => res.end('<p>Second half</p>'), 600); return; }
     if (req.url === '/form') return res.end('<!doctype html><title>form</title><form id="f"><input name="a" aria-label="Field A"><input name="b" aria-label="Field B"><input name="c" aria-label="Field C"><button type="submit">Send form</button></form><p id="out">idle</p><script>f.onsubmit=e=>{e.preventDefault();out.textContent=[f.a.value,f.b.value,f.c.value].join("|")}</script>');
+    if (req.url === '/dialogs') return res.end('<!doctype html><title>dialogs</title><button id="b" onclick="alert(\'hello\');const ok=confirm(\'Sure?\');document.title=\'ok=\'+ok">Go</button>');
+    if (req.url === '/file.csv') { res.setHeader('Content-Type', 'text/csv'); res.setHeader('Content-Disposition', 'attachment; filename="r.csv"'); return res.end('a,b\n1,2\n'); }
+    if (req.url === '/download') return res.end('<!doctype html><title>download</title><a href="/file.csv" download="r.csv">Get report</a>');
     if (req.url === '/nav-a') return res.end('<title>nav-a</title><body>Nav A');
     if (req.url === '/nav-b') return res.end('<title>nav-b</title><body>Nav B');
     if (req.url === '/remount') return res.end('<!doctype html><title>remount</title><div id="root"><button onclick="hits.push(1)">Alpha</button><button onclick="hits.push(2)">Beta</button></div><script>window.hits=[];window.render=()=>{root.innerHTML=\'<button onclick="hits.push(1)">Alpha</button><button onclick="hits.push(2)">Beta</button>\'}</script>');
@@ -634,6 +637,28 @@ app.whenReady().then(async () => {
   assert.equal(await hostStatus(`rebind.example:${apiPort}`), 401, 'a non-loopback Host header is refused even with the token');
   assert.equal(await hostStatus('127.0.0.1:1'), 401);
   console.log('PASS: connector enforces a loopback Host header.');
+
+  // An agent tab answers JS dialogs itself and reports them; a download lands
+  // in Downloads and the same reply names the finished file.
+  {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const act = async (tab, body) => apiRaw(`/v1/tabs/${tab.id}/actions`, 'POST', { epoch: tab.epoch, ...body }, 'dialog-bot');
+    const withDialogs = (await apiRaw('/v1/tabs', 'POST', { url: `${base}/dialogs` }, 'dialog-bot')).data;
+    const clicked = await act(withDialogs, { action: 'click', selector: '#b' });
+    assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
+    assert.deepEqual(clicked.data.dialogs.map(d => [d.type, d.message, d.accepted]), [['alert', 'hello', true], ['confirm', 'Sure?', false]]);
+    assert.match(clicked.data.dialogs[1].note, /window\.confirm = \(\) => true/);
+    assert.equal(clicked.data.effect.title, 'ok=false');
+    assert.equal((await act(withDialogs, { action: 'eval', code: '1' })).data.dialogs, undefined, 'dialogs are reported once');
+    const downloads = path.join(profile, 'dl');
+    fs.mkdirSync(downloads); app.setPath('downloads', downloads);
+    const withDownload = (await apiRaw('/v1/tabs', 'POST', { url: `${base}/download` }, 'dialog-bot')).data;
+    const got = await act(withDownload, { action: 'click', selector: 'a' });
+    assert.equal(got.status, 200, JSON.stringify(got.data));
+    assert.deepEqual(got.data.downloads, [{ name: 'r.csv', path: path.join(downloads, 'r.csv'), state: 'completed', bytes: 8 }]);
+    assert.equal(fs.readFileSync(path.join(downloads, 'r.csv'), 'utf8'), 'a,b\n1,2\n');
+    console.log('PASS: agent tabs answer JS dialogs and report them, and report finished downloads in the action reply.');
+  }
 
   // Telegram keeps normal throttling, so a tray-hidden window really goes idle.
   if (telegram && !telegram.isDestroyed()) {

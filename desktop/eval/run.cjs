@@ -7,7 +7,8 @@
 //   node eval/run.cjs --mode codex  --tasks fixture,public   (runs `codex exec --json` per task with the manual-mode prompt; fixtures served on 127.0.0.1)
 //   node eval/run.cjs --mode manual --tasks fixture,public   (baseline: Codex or a human drives; harness prints each task, times it, runs the check)
 // Options: --connection PATH  drive an already-running app/host instead of booting headless Chrome
-//          --fixture-host IP  bind fixtures to and address them by IP (the shipped Mac app blocks loopback; use the LAN IP)
+//          --fixture-host H   host fixtures are served under and addressed by (default 127.0.0.1 with --connection or codex;
+//                             the shipped Mac app blocks loopback, so pass its LAN IP there)
 //          --repeat N         run each task N times (agents are noisy; use >=3 for real numbers)
 // See docs/agent-eval.md for the hermes-mode requirements.
 const fs = require('node:fs');
@@ -151,7 +152,8 @@ async function manual(picked, outDir) {
       if (mode !== 'hermes' && mode !== 'codex' && (!task.oracle || task.tier === 'desktop')) { rows.push({ id: task.id, tier: task.tier, skipped: task.tier === 'desktop' ? 'desktop needs a Mac with grants' : 'no oracle yet' }); continue; }
       if (mode === 'hermes' && task.tier === 'desktop' && !opt('hermes-home') && !opt('connection')) { rows.push({ id: task.id, tier: task.tier, skipped: 'desktop needs --hermes-home with computer_use + a real app connection' }); continue; }
       fixtures.reset(); await stack.closeTabs(); stack.proxy.takeLog(); task.setup?.();
-      const fx = Object.assign(fixtures.state, { port: fixtures.port, ...(opt('connection') || mode === 'codex' ? { host: opt('fixture-host', '127.0.0.1') } : {}) });
+      const fixtureHost = opt('fixture-host') || (opt('connection') || mode === 'codex' ? '127.0.0.1' : undefined);
+      const fx = Object.assign(fixtures.state, { port: fixtures.port, ...(fixtureHost ? { host: fixtureHost } : {}) });
       const t0 = Date.now();
       let answer = '', error = '', agent = {};
       if (mode === 'codex') {
