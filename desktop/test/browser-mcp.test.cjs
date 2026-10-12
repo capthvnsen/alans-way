@@ -209,14 +209,14 @@ test('browser MCP exposes select, double click, right click and drag, and forwar
   assert.deepEqual(received, { epoch: 2, action: 'drag', ref: 's1-1', toRef: 's1-2' });
 });
 
-async function computerHost(t, capabilities) {
+async function computerHost(t, capabilities, hostLabel) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
   const seen = [];
   const host = http.createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk;
     seen.push({ line: req.method + ' ' + req.url, bot: req.headers['x-hermes-bot'], body: raw ? JSON.parse(raw) : undefined });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(req.url === '/v1/status' ? JSON.stringify({ capabilities })
+    res.end(req.url === '/v1/status' ? JSON.stringify({ capabilities, ...(hostLabel ? { host: hostLabel } : {}) })
       : req.url === '/v1/computer/apps' ? JSON.stringify({ apps: [{ pid: 7, name: 'app-api-marker' }] })
       : req.url.includes('/screenshot') ? JSON.stringify({ image: 'AAAA', imageWidth: 1, imageHeight: 1, windowX: 0, windowY: 0, windowWidth: 1, windowHeight: 1 })
       : JSON.stringify({ generation: 4, via: 'app-api-marker' }));
@@ -238,6 +238,13 @@ async function computerHost(t, capabilities) {
   await client.connect(transport);
   return { client, seen, profile };
 }
+
+test('the app list names the machine the apps run on', { timeout: 8000 }, async (t) => {
+  const { client } = await computerHost(t, ['computer', 'tabs'], 'mac');
+  const reply = JSON.parse((await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text);
+  assert.equal(reply.host, 'mac');
+  assert.equal(reply.apps[0].name, 'app-api-marker');
+});
 
 test('computer tools go through the app API when the connected app advertises computer use', { timeout: 8000 }, async (t) => {
   const { client, seen } = await computerHost(t, ['computer', 'computer-v2', 'tabs']);
