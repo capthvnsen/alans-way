@@ -68,3 +68,65 @@ Chrome APIs, and 1Password desktop pairing has its own browser-signing
 requirements. Check extension compatibility and license requirements before
 selecting a browser extension layer. Password-vault integration needs an actual
 user-authorized test, not a decorative toolbar button.
+
+## Reboot resilience
+
+A common failure in hosted bot products: the server reboots, the bot's
+browser comes back without its logins (or doesn't come back at all), and a
+person has to sign in again by hand before the bot can work. Alan's way avoids
+that by design, and nothing here needs a person after a reboot:
+
+- **Every long-running piece is a supervised service.** The agents repo's
+  `setup.sh` installs the Chromium keeper (`vps-chromium-host.cjs`), the tab
+  broker (`vps-browser-host.cjs serve`) and, with `--mac-ssh` (as root under
+  systemd), the mac-watch router (`workspace-router.cjs --watch`) under whatever the host already uses:
+  systemd units (`hermes-alans-way-chromium`, `hermes-alans-way-browser`,
+  `mac-watch`, plus `hermes-alans-way-xvfb` when it provisions a display),
+  supervisord programs, LaunchAgents on a macOS guest (`com.alans-way.chromium`,
+  `com.alans-way.browser`, `com.alans-way.mac-watch`, all `KeepAlive` and
+  `RunAtLoad`), or Windows Scheduled Tasks (`AlansWay_Chromium`,
+  `AlansWay_Browser`, `AlansWay_MacWatch`, restarting on failure every minute).
+  The reference units are in the agents repo's `deploy/` folder.
+- **Logins live in an on-disk profile, not in a process.** The managed Chromium
+  always runs with a fixed `--user-data-dir` under the browser data directory,
+  so cookies and sessions survive a crash, a restart or a reboot. Nothing keeps
+  login state only in memory.
+- **The pieces recover in order on their own.** The keeper checks the browser's
+  loopback CDP port every 3 seconds and relaunches Chromium on the same profile.
+  The broker exits when its CDP connection drops, and its service manager starts
+  a fresh broker that reconnects and rewrites `connection.json`. Under systemd
+  and supervisord, a broker that can never bind its port exits 78 and is not
+  restarted in a loop.
+- **Telegram auth stays with Hermes.** The bot token belongs to Hermes' own
+  gateway (set up by `hermes gateway setup`, run as Hermes' own service). The
+  plugin and `setup.sh` only read it to check it is configured; they never hold
+  a Telegram login of their own, so there is nothing for the plugin to re-login.
+
+Two host caveats. Linux user units stop at logout unless the account lingers
+(`setup.sh` runs `loginctl enable-linger`; as root the units are system units).
+Windows starts the tasks at logon, not at boot, so turn on automatic sign-in
+(`netplwiz`) and keep the PC awake.
+
+### Smoke test
+
+`scripts/reboot-smoke.sh` checks this on a running host. Run it on the Hermes
+host (Linux, a macOS guest, or Git Bash on a Windows guest) as the account that
+owns the browser data, from this repository's checkout there:
+
+```sh
+sh scripts/reboot-smoke.sh            # crash each service, verify it recovers
+sh scripts/reboot-smoke.sh --check    # health only
+```
+
+The default mode SIGKILLs, one at a time, every Chromium process on the managed
+profile, the broker, the keeper and mac-watch (skipped when not installed), then
+waits for each to come back under a new process and for the broker's
+`/v1/status` to report `browserUp: true`. It also fails if the profile is
+missing or sits under `/tmp`, `/var/tmp` or `/private/tmp`, which a reboot can clear. Open VPS tabs close; logins
+stay. Set `HERMES_VPS_BROWSER_DATA` if the data directory is not the default,
+and `SMOKE_TIMEOUT` (seconds, default 90) to change how long each step may take.
+
+For the real thing, reboot the host (`sudo reboot`, or restart the Windows PC),
+wait for it to come back without signing in to anything, then run
+`sh scripts/reboot-smoke.sh --check` and send the bot a Telegram message that
+opens a page on a site it was signed in to.
