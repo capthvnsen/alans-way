@@ -6,7 +6,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
@@ -107,6 +107,8 @@ const OPEN_PARSE_MS = 8000;
 // A snapshot waits this long for a still-parsing document; the wait ends at DOMContentLoaded.
 const SNAPSHOT_PARSE_MS = 1500;
 const WAIT_SLICE_MS = 1000;
+const HUMAN_INPUT = new Set(['mouseDown', 'rawKeyDown', 'keyDown', 'char', 'mouseWheel', 'gestureScrollBegin', 'gestureScrollUpdate', 'touchStart']);
+const TAKEOVER_NOTICE_MS = 8000;
 let isQuitting = false;
 let bundleWarningDismissed = false;
 const runningBundle = () => process.platform === 'darwin' && app.isPackaged ? macUpdate.bundleLocation(path.resolve(process.execPath, '../../..'), app.getName()) : null;
@@ -189,7 +191,7 @@ function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
   const info = { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
-    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab) };
+    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab), takeover: tab.takeover || null };
   return forBot ? redactTabForBot(info) : info;
 }
 function pageState(tab) {
@@ -290,7 +292,7 @@ function getState() {
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? setupCheck.inRouterApplications(process.execPath) : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
-    autoOpenLinks: prefs.autoOpenLinks !== false,
+    autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false,
     activeTabId, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
@@ -422,6 +424,12 @@ function configureContents(contents, isTelegram = false) {
     }
   });
   contents.on('will-redirect', (event, url) => { if (!isTelegram) blockAgentNavigation(event, url); });
+  // The human's last press, key or scroll on a page holds off a bot takeover.
+  contents.on('input-event', (_event, input) => {
+    if (!HUMAN_INPUT.has(input.type)) return;
+    const targetTab = [...tabs.values()].find(tab => tab.view.webContents === contents);
+    if (targetTab && !agentInput.isDispatching(targetTab)) targetTab.lastHumanInput = Date.now();
+  });
   contents.on('before-input-event', (event, input) => {
     const targetTab = [...tabs.values()].find(tab => tab.view.webContents === contents);
     if (targetTab && agentInput.isDispatching(targetTab)) return;
@@ -637,6 +645,7 @@ function changeController(id, controller, source = 'human', handback = null) {
   // Only the human's own browsing is recorded: a bot taking the tab ends it.
   if (recording?.tabId === id && (controller === 'agent' || tab.extensionPage)) { try { stopRecording(); } catch (error) { logError('recording', error); } }
   const wasAgent = tab.controller === 'agent';
+  tab.takeover = null;
   tab.handback = nextHandback(tab, controller, source, handback);
   tab.controller = controller === 'agent' ? 'agent' : 'human';
   syncFollowUpSeed(tab);
@@ -657,6 +666,31 @@ function changeController(id, controller, source = 'human', handback = null) {
   agentInput.clear(tab).catch(() => {});
   scheduleVpsMirror();
   notifyHandback(describeTab(tab));
+  broadcast();
+  return describeTab(tab);
+}
+// A bot's claim, or an action on a tab the human holds, takes the tab back when
+// Settings allow it (on by default). The claim rules run before and after the
+// grace wait: the human may hand the tab over or start recording meanwhile.
+async function claimTab(tab, botId, isClosed = () => false) {
+  const autoTakeover = prefs.autoTakeover !== false;
+  const rules = () => ({ autoTakeover, recording: autoTakeover && recording?.tabId === tab.id });
+  requireAgentClaim(tab, Date.now(), rules());
+  const auto = autoTakeover && tab.controller === 'human';
+  if (auto) {
+    const started = Date.now();
+    for (let ms; (ms = takeoverDelay(tab.lastHumanInput, started)) > 0;) await new Promise((resolve) => setTimeout(resolve, ms));
+    if (isClosed()) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
+    if (!tabs.has(tab.id)) throw Object.assign(new Error('Tab not found.'), { status: 404 });
+    requireAgentClaim(tab, Date.now(), rules());
+  }
+  const took = auto && tab.controller === 'human';
+  tab.handoff = reviewedHandoff(tab.handoff);
+  if (tab.botId === 'shared') tab.botId = botId;
+  const info = changeController(tab.id, 'agent', 'agent');
+  if (!took) return info;
+  const notice = tab.takeover = { botId: tab.botId, at: Date.now() };
+  setTimeout(() => { if (tab.takeover === notice) { tab.takeover = null; broadcast(); } }, TAKEOVER_NOTICE_MS);
   broadcast();
   return describeTab(tab);
 }
@@ -1239,6 +1273,7 @@ function registerIpc() {
         if(isVpsTab(value.id)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller});}
         const tab = tabs.get(value.id);
         if (tab && value.controller === 'agent') tab.handoff = reviewedHandoff(tab.handoff);
+        if (tab && value.controller !== 'agent') tab.lastHumanInput = Date.now();
         return changeController(value.id, value.controller);
       }
       case 'share-page': {
@@ -1361,6 +1396,7 @@ function registerIpc() {
         if (typeof value.showBrowser === 'boolean') prefs.showBrowser = value.showBrowser;
         if (typeof value.macSshHost === 'string') prefs.macSshHost = value.macSshHost.trim();
         if (typeof value.autoOpenLinks === 'boolean') prefs.autoOpenLinks = value.autoOpenLinks;
+        if (typeof value.autoTakeover === 'boolean') prefs.autoTakeover = value.autoTakeover;
         if (typeof value.primaryBotId === 'string') prefs.primaryBotId = prefs.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : prefs.primaryBotId;
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) prefs.locationDefault = value.locationDefault;
         if (Number.isFinite(value.chatWidth)) prefs.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
@@ -2268,8 +2304,15 @@ function startApi() {
         // queued action run later against whatever the page became.
         let closed = false;
         res.on('close', () => { if (!res.writableFinished) closed = true; });
-        const action = tab.queue.then(() => {
+        const action = tab.queue.then(async () => {
           if (closed) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
+          // An epoch read while the human held the tab is still current after
+          // the takeover; an older one stays stale, as the page may have moved.
+          if (tab.controller !== 'agent' && prefs.autoTakeover !== false) {
+            const before = tab.epoch;
+            await claimTab(tab, botId, () => closed);
+            if (body.epoch === before) body.epoch = tab.epoch;
+          }
           return performAction(tab, body, botId, 0, () => closed);
         })
           .finally(() => { tab.pendingActions--; tab.lastAgentActivity = Date.now(); });
@@ -2284,9 +2327,8 @@ function startApi() {
         const granted = (tab.allowedBots || []).includes(botId)
           || (tab.botId === 'shared' && prefs.bots.some((bot) => bot.id === botId));
         if (botId !== tab.botId && !overseer && !granted) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
-        if (body.controller === 'agent') { requireAgentClaim(tab); tab.handoff = reviewedHandoff(tab.handoff); }
-        if (tab.botId === 'shared' && body.controller === 'agent') tab.botId = botId;
-        return send(200, redactTabForBot(changeController(tab.id, body.controller, 'agent', body.controller === 'agent' ? null : handbackRequest(body))));
+        if (body.controller === 'agent') return send(200, redactTabForBot(await claimTab(tab, botId)));
+        return send(200, redactTabForBot(changeController(tab.id, body.controller, 'agent', handbackRequest(body))));
       }
       if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true, overseer); closeTab(tab.id); return send(200, { closed: true }); }
       return send(405, { error: 'Method not supported.' });

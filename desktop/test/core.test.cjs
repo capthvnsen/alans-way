@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, agentPageUrl, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, handbackRequest, nextHandback, liveHandback, HANDBACK_MS, dialogAnswer, answerDialog } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, handbackRequest, nextHandback, liveHandback, HANDBACK_MS, dialogAnswer, answerDialog } = require('../src/core.cjs');
 const { controlsDelta, snapshotExpression, settleSnapshot, readEffect } = require('../src/browser-page.cjs');
 const { locateElement } = require('../src/agent-input.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
@@ -131,6 +131,33 @@ test('an explicit human takeover locks bots out while an idle or released tab st
   requireAgentClaim({ controller: 'human', humanLock: false });
   requireAgentClaim({ controller: 'human' });
   requireAgentClaim({ controller: 'agent', humanLock: true });
+});
+test('with automatic takeover a bot action takes the human\'s tab back under a fresh epoch', () => {
+  const tab = { botId: 'research', controller: 'agent', epoch: 4 };
+  // The human takes over: the tab is locked to them and the bot's action is refused.
+  Object.assign(tab, { controller: 'human', humanLock: true, epoch: 5 });
+  assert.throws(() => requireActor(tab, 'research', 4, true), /human_has_control/);
+  assert.throws(() => requireAgentClaim(tab), /human_has_control/, 'the setting off keeps the refusal');
+  assert.throws(() => requireAgentClaim(tab, Date.now(), { autoTakeover: false }), /human_has_control/);
+  // The setting on: the claim rules let the bot take it, as changeController then does.
+  requireAgentClaim(tab, Date.now(), { autoTakeover: true });
+  Object.assign(tab, { controller: 'agent', humanLock: false, epoch: tab.epoch + 1 });
+  requireActor(tab, 'research', 6, true);
+  assert.throws(() => requireActor(tab, 'research', 4, true), /stale_control_epoch/, 'an epoch from before the human took over stays stale');
+});
+test('automatic takeover never takes a tab the bot handed over or one being recorded', () => {
+  const waiting = { botId: 'research', controller: 'human', handback: { state: 'awaiting_human', reason: 'captcha', note: '', botId: 'research', since: 1000 } };
+  assert.throws(() => requireAgentClaim(waiting, 2000, { autoTakeover: true }), /awaiting_human/);
+  assert.throws(() => requireAgentClaim({ controller: 'human', humanLock: true }, 2000, { autoTakeover: true, recording: true }), /^Error: recording_in_progress/);
+});
+test('a takeover waits until 3 seconds after the human\'s last input, for 10 seconds at most', () => {
+  const t = 1_700_000_000_000;
+  assert.equal(takeoverDelay(undefined, t, t), 0, 'no input: take over at once');
+  assert.equal(takeoverDelay(t - 5000, t, t), 0, 'input long ago');
+  assert.equal(takeoverDelay(t - 1000, t, t), 2000, 'typed a second ago');
+  assert.equal(takeoverDelay(t - 1000, t, t + 2000), 0, 'paused 3 seconds');
+  assert.equal(takeoverDelay(t + 9000, t, t + 9000), 1000, 'still typing: the 10 second cap wins');
+  assert.equal(takeoverDelay(t + 10500, t, t + 10500), 0, 'past the cap');
 });
 test('a release with a reason waits for the human, then the give-back or 30 minutes reopens the tab', () => {
   assert.equal(handbackRequest({ controller: 'human' }), null);

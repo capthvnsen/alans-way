@@ -313,6 +313,13 @@ function render(next) {
     $('needs-you-banner').style.setProperty('--h', String(tab.agentHue ?? 168));
     $('needs-you-text').textContent = `${agentName} needs you: ${needsYou.note || HANDBACK_TEXT[needsYou.reason] || 'take a look.'}`;
   }
+  // Main clears the takeover notice a few seconds after a bot took the tab.
+  const takeover = tab?.takeover && tab.controller === 'agent';
+  $('takeover-banner').classList.toggle('hidden', !takeover);
+  if (takeover) {
+    $('takeover-banner').style.setProperty('--h', String(tab.agentHue ?? 168));
+    $('takeover-text').textContent = `${agentName} took over this tab`;
+  }
   // Recording runs only on a tab the human controls; a bot taking it, or the
   // tab closing, stops and saves it in main.
   const recording = state.recording;
@@ -892,9 +899,13 @@ function showSettings() {
   const linkToggle = element('button', 'secondary-button', state.autoOpenLinks ? 'On' : 'Off');
   linkToggle.onclick = async () => { const next = !state.autoOpenLinks; await command('settings', { autoOpenLinks: next }); state.autoOpenLinks = next; linkToggle.textContent = next ? 'On' : 'Off'; };
   linkRow.append(linkToggle); body.append(linkRow);
+  const takeoverRow = element('div', 'setting-row'); takeoverRow.append(element('span', '', 'Let bots take over tabs automatically'));
+  const takeoverToggle = element('button', 'secondary-button', state.autoTakeover ? 'On' : 'Off');
+  takeoverToggle.onclick = async () => { const next = !state.autoTakeover; await command('settings', { autoTakeover: next }); state.autoTakeover = next; takeoverToggle.textContent = next ? 'On' : 'Off'; };
+  takeoverRow.append(takeoverToggle); body.append(takeoverRow);
   body.append(element('p', 'settings-note', `A link sent by you or a bot opens a local tab assigned to that bot, so both of you can see it. If this computer is unreachable, the bot opens its own copy on the ${remoteName()} desktop instead.`));
   body.append(element('p', 'settings-note', 'The setup installs the Alan’s Way Plugin on your gateway host and wires this computer’s browser connector for the selected bot. Run once per bot.'));
-  body.append(element('p', 'settings-note', `Taking over a local tab blocks new agent actions on that tab. ${remoteName()} control currently uses your existing shared desktop; it does not pause your Hermes bots.`));
+  body.append(element('p', 'settings-note', `When bots take over automatically, a bot takes back a local tab you took over the next time it acts, once you pause for 3 seconds; Take back returns it to you. A tab a bot handed you, or one you are recording, stays yours. Turned off, taking over a local tab blocks new agent actions on that tab. ${remoteName()} control currently uses your existing shared desktop; it does not pause your Hermes bots.`));
   body.append(element('hr', 'section-divider'));
   const sync = element('button', 'secondary-button', 'Sync Telegram bots'); sync.onclick = () => { command('sync-telegram'); toast('Reading Telegram’s bot chat list…'); };
   body.append(sync, element('p', 'settings-note', 'Bot discovery reads Telegram Web A’s local cache. Newly opened bot chats appear after Telegram saves them. Your Telegram session and browser logins stay on this computer.'));
@@ -978,6 +989,7 @@ $('record-button').onclick = () => {
 };
 $('recording-stop').onclick = () => stopRecording(true);
 $('recording-discard').onclick = () => stopRecording(false);
+$('takeover-take-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: 'human' }); };
 $('needs-you-give-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: 'agent' }); };
 $('handoff-button').onclick = async () => {
   const tab = state.tabs.find((item) => item.id === state.activeTabId);

@@ -216,7 +216,9 @@ function requireActor(tab, botId, epoch, mutate = false, overseer = false, now =
 // A handoff source stays human-only so the task has one live copy, and a
 // destination that did not verify (login redirect, lost drafts) waits for the
 // human. Humans clear either by giving the tab to an agent themselves.
-function requireAgentClaim(tab, now = Date.now()) {
+// autoTakeover (a Setting, on by default) lets a bot take back a tab the human
+// took over; a tab the bot handed over or one being recorded stays theirs.
+function requireAgentClaim(tab, now = Date.now(), { autoTakeover = false, recording = false } = {}) {
   const h = tab.handoff;
   if (h && (h.phase === 'handed_off' || (h.phase === 'review_required' && h.verification !== 'ready')))
     throw Object.assign(new Error(h.phase === 'handed_off'
@@ -227,8 +229,16 @@ function requireAgentClaim(tab, now = Date.now()) {
   // release or the idle-expiry clock stays retakeable.
   const handback = liveHandback(tab, now);
   if (handback && handback.state === 'awaiting_human') throw awaitingHumanError(handback);
-  if (tab.controller === 'human' && tab.humanLock)
+  if (recording)
+    throw Object.assign(new Error('recording_in_progress: the human is recording a task on this tab. Open your own tab, or read the tab state later.'), { status: 409 });
+  if (tab.controller === 'human' && tab.humanLock && !autoTakeover)
     throw Object.assign(new Error('human_has_control: the human took this tab over; only they can hand it back.'), { status: 409 });
+}
+// Input in the last 3 seconds holds a takeover until the human pauses, for
+// 10 seconds at most, so a bot never yanks the page mid-keystroke.
+const TAKEOVER_GRACE_MS = 3000, TAKEOVER_MAX_MS = 10000;
+function takeoverDelay(lastInput, started, now = Date.now()) {
+  return Math.max(0, Math.min((lastInput || 0) + TAKEOVER_GRACE_MS, started + TAKEOVER_MAX_MS) - now);
 }
 function reviewedHandoff(handoff) {
   return handoff && handoff.phase !== 'reviewed' ? { ...handoff, phase: 'reviewed', reviewedAt: Date.now() } : handoff;
@@ -238,7 +248,7 @@ function requireAgentRead(tab, now = Date.now()) {
   if (tab.controller !== 'human') return;
   const handback = liveHandback(tab, now);
   if (handback && handback.state === 'awaiting_human') throw awaitingHumanError(handback);
-  throw Object.assign(new Error('Tab is under human control.'), { status: 409 });
+  throw Object.assign(new Error('Tab is under human control. Claim it to take it back, then read.'), { status: 409 });
 }
 
 function isAuthorized(header, token) {
@@ -314,4 +324,4 @@ function hostShouldReload(mtime, started, inFlight) {
   return inFlight === 0 && Number(mtime) > Number(started);
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog };
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog };

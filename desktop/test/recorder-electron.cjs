@@ -155,16 +155,21 @@ app.whenReady().then(async () => {
   assert.equal(kept.keepTyped, true);
   assert.deepEqual(kept.steps.slice(1).map(step => step.value), ['ada@example.com', ...Array(9).fill('[redacted]')], 'secret-named fields stay redacted with Keep typed text');
 
-  // A bot taking a tab ends its recording (a tab the human never took over
-  // stays claimable, as before).
+  // A bot cannot take a tab while it records; with automatic takeover off, a
+  // bot taking a tab the human never took over ends its recording, as before.
   const fresh = await invoke('create-tab', { url: `${base}/login?fresh` });
   const freshWc = await waitFor(() => webContents.getAllWebContents().find(item => item.getURL().endsWith('?fresh')), Boolean);
   await waitFor(() => freshWc.executeJavaScript('document.readyState === "complete"').catch(() => false), Boolean);
   await invoke('record-start', { id: fresh.id });
   await type('#email', 'x', freshWc);
   await waitFor(getState, state => state.recording?.steps === 2);
+  const refused = await api(`/v1/tabs/${fresh.id}/control`, '4242', 'POST', { controller: 'agent' });
+  assert.equal(refused.status, 409); assert.match(refused.data.error, /^recording_in_progress/);
+  assert.equal((await getState()).recording?.steps, 2, 'the recording keeps running');
+  await invoke('settings', { autoTakeover: false });
   const claim = await api(`/v1/tabs/${fresh.id}/control`, '4242', 'POST', { controller: 'agent' });
   assert.equal(claim.status, 200, JSON.stringify(claim.data));
+  await invoke('settings', { autoTakeover: true });
   await waitFor(getState, state => !state.recording && state.recordings.length === 3);
   await waitFor(() => evaluate('document.getElementById("toast").textContent'), text => text.includes('Recording stopped'));
 
