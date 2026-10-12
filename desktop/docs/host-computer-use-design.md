@@ -144,22 +144,28 @@ its last capture, which turned every state-changing step into a `stale_ref`.
    (AXUIElement identity, then role, name and position among namesakes for
    apps that rebuild their tree). The helper keeps the last eight trees it
    handed out; a ref action with an older generation still runs when every
-   ref it uses has the role and name the caller saw, and otherwise fails
-   naming the ref. Fixes live churn and removes the provider's stale
-   retries without changing the provider.
+   ref it uses is the same control (the same AXUIElement) with the role,
+   name and enclosing row the caller saw, and otherwise fails naming the
+   ref. A ref re-bound by label, or a button in a recycled table row, never
+   passes. Fixes live churn and removes the provider's stale retries without
+   changing the provider.
 3. **Delta replies.** An action reply lists `changed[]` and `removed[]`
-   against what that bot was last sent, when that is under 60% of the full
-   tree (shared JS, so Windows and Linux get it too; their positional refs
+   against what that bot was last sent, when the caller passes that tree's
+   generation (so a lost reply gets the whole tree) and the delta is under
+   60% of the full tree (shared JS, so Windows and Linux get it too; their positional refs
    mostly fall back to the full tree).
 4. **`wait` step.** `{action:"wait", text, gone, timeout}` polls the tree, so
    a batch acts and confirms in one call. Steps after a wait still carry the
-   caller's generation; a run refused after earlier steps ran is reported in
-   `results`, not thrown.
+   caller's generation; a run or a wait that fails after earlier steps ran is
+   reported in `results`, not thrown; all waits in one call share 45 s.
 5. **Say why a tree is empty.** No readable window gives a `note`: on another
    Space, minimized or hidden (with the fix), or no windows (use the menus).
    Window screenshots include off-screen windows, preferring on-screen ones
    and skipping the untitled never-shown windows apps own.
-6. **`locked`.** A locked screen fails fast with the next step.
+6. **`locked`.** Found during the bench: with the screen locked,
+   Accessibility returns the menu-bar strips as an app's windows (78 empty
+   menu items for the fixture, no controls). The helper now fails fast with
+   `locked` and the next step, after the policy check.
 7. **Tool text.** `workspace_computer_apps` returns `host`; descriptions lead
    with where and how; the app list drops off-limits apps and negative pids
    and only marks the front app.
