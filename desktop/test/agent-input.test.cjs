@@ -8,7 +8,7 @@ function fixture(options = {}) {
   const calls = [], scripts = [], shortcuts = [];
   let hook = async () => {};
   const found = { x: 40, y: 60, ...options.found };
-  const tab = { botId: 'bot', controller: 'agent', epoch: 1, refs: new Set(['s1-1', 's1-2']), view: { webContents: Object.assign(new EventEmitter(), {
+  const tab = { botId: 'bot', controller: 'agent', epoch: 1, refs: new Set(['e1', 'e2']), view: { webContents: Object.assign(new EventEmitter(), {
     isDestroyed: () => false,
     setIgnoreMenuShortcuts: value => shortcuts.push(value),
     executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('elementFromPoint') ? found : code.includes('hw.submit') ? (options.submitted ?? null) : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : found; },
@@ -31,7 +31,7 @@ test('pointer and keyboard dispatch only to the assigned tab, in order, with a s
     await new Promise(resolve => setImmediate(resolve));
     pending = false;
   });
-  const result = await f.perform({ action: 'click', ref: 's1-1' });
+  const result = await f.perform({ action: 'click', ref: 'e1' });
   assert.equal(result.input, 'tab-cdp');
   assert.deepEqual(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').map(({ type, x, y }) => ({ type, x, y })), [
     { type: 'mouseMoved', x: 40, y: 60 }, { type: 'mousePressed', x: 40, y: 60 }, { type: 'mouseReleased', x: 40, y: 60 },
@@ -68,7 +68,7 @@ test('a tab the human is not watching skips the glide and its pacing', async () 
   let paced = 0;
   const f = fixture({ visible: false, delay: async () => { paced++; } });
   f.tab.agentCursor = { x: 10, y: 10 };
-  await f.perform({ action: 'click', ref: 's1-1' });
+  await f.perform({ action: 'click', ref: 'e1' });
   assert.equal(paced, 0);
   assert.equal(f.scripts.filter(code => code.includes('"path":[')).length, 0, 'no tween for a hidden tab');
   assert.equal(pointer(f).filter(call => call.type === 'mouseMoved').length, 1);
@@ -78,7 +78,7 @@ test('a tab the human is not watching skips the glide and its pacing', async () 
 
 test('the locate script scrolls only when out of view and never waits on rAF alone', async () => {
   const f = fixture();
-  await f.perform({ action: 'click', ref: 's1-1' });
+  await f.perform({ action: 'click', ref: 'e1' });
   const locate = f.scripts.find(code => code.includes('elementFromPoint'));
   assert.match(locate, /box\.top < 0/, 'an in-view element is not scrolled');
   assert.match(locate, /setTimeout\(r, 80\)/, 'the rAF wait has a timer fallback');
@@ -102,20 +102,20 @@ test('an overlay or probe that never answers cannot hang an action', async () =>
 });
 
 test('stale epoch, ownership and malformed targets fail before input or focus emulation', async () => {
-  for (const body of [{ epoch: 2, action: 'click', ref: 's1-1' }, { action: 'type', ref: 's1-99', text: 'hello' }, { action: 'move', x: NaN, y: 10 }, { action: 'type', ref: 's1-1', text: 'x'.repeat(20001) }]) {
+  for (const body of [{ epoch: 2, action: 'click', ref: 'e1' }, { action: 'type', ref: 'e99', text: 'hello' }, { action: 'move', x: NaN, y: 10 }, { action: 'type', ref: 'e1', text: 'x'.repeat(20001) }]) {
     const f = fixture(); await assert.rejects(f.perform(body)); assert.equal(f.calls.length, 0);
   }
   const f = fixture();
-  await assert.rejects(f.agent.perform(f.tab, { epoch: 1, action: 'click', ref: 's1-1' }, 'other'), /different bot/);
+  await assert.rejects(f.agent.perform(f.tab, { epoch: 1, action: 'click', ref: 'e1' }, 'other'), /different bot/);
   f.tab.controller = 'human';
-  await assert.rejects(f.perform({ action: 'click', ref: 's1-1' }), /human_has_control/);
+  await assert.rejects(f.perform({ action: 'click', ref: 'e1' }), /human_has_control/);
   assert.equal(f.calls.length, 0);
 });
 
 test('takeover during target resolution prevents all subsequent pointer input', async () => {
   const f = fixture();
   f.hook(async method => { if (method === 'evaluate') f.tab.controller = 'human'; });
-  await assert.rejects(f.perform({ action: 'click', ref: 's1-1' }), /human_has_control/);
+  await assert.rejects(f.perform({ action: 'click', ref: 'e1' }), /human_has_control/);
   assert.equal(f.calls.some(call => call.method.startsWith('Input.')), false);
   assert.equal(f.calls.at(-1).enabled, false);
 });
@@ -123,7 +123,7 @@ test('takeover during target resolution prevents all subsequent pointer input', 
 test('revocation between mouse down and up cannot complete a click on the old target', async () => {
   const f = fixture();
   f.hook(async (method, params) => { if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') f.tab.epoch++; });
-  await assert.rejects(f.perform({ action: 'click', ref: 's1-1' }), /stale_control_epoch/);
+  await assert.rejects(f.perform({ action: 'click', ref: 'e1' }), /stale_control_epoch/);
   const released = f.calls.filter(call => call.type === 'mouseReleased');
   assert.deepEqual(released.map(({ x, y, clickCount }) => ({ x, y, clickCount })), [{ x: -1, y: -1, clickCount: 0 }]);
   assert.equal(f.calls.at(-1).enabled, false);
@@ -131,11 +131,11 @@ test('revocation between mouse down and up cannot complete a click on the old ta
 
 test('typing is Chromium text input; empty replacement deletes the selected text', async () => {
   const f = fixture();
-  await f.perform({ action: 'type', ref: 's1-1', text: 'Agent text' });
+  await f.perform({ action: 'type', ref: 'e1', text: 'Agent text' });
   assert.ok(f.calls.some(call => call.method === 'Input.insertText' && call.text === 'Agent text'));
   assert.ok(f.scripts.some(code => code.includes('el.select()')));
   f.calls.length = 0;
-  await f.perform({ action: 'type', ref: 's1-1', text: '' });
+  await f.perform({ action: 'type', ref: 'e1', text: '' });
   assert.deepEqual(f.calls.filter(call => call.method === 'Input.dispatchKeyEvent').map(call => [call.type, call.key]), [['keyDown', 'Backspace'], ['keyUp', 'Backspace']]);
 });
 
@@ -165,7 +165,7 @@ test('focus emulation is held across actions and released once on clear', async 
 test('input failure always disables focus emulation and restores shortcut handling', async () => {
   const f = fixture();
   f.hook(async method => { if (method === 'Input.insertText') throw new Error('Target detached'); });
-  await assert.rejects(f.perform({ action: 'type', ref: 's1-1', text: 'hello' }), /Target detached/);
+  await assert.rejects(f.perform({ action: 'type', ref: 'e1', text: 'hello' }), /Target detached/);
   assert.equal(f.calls.at(-1).enabled, false);
   assert.deepEqual(f.shortcuts, [true, false]);
   assert.equal(f.agent.isDispatching(f.tab), false);
@@ -199,7 +199,7 @@ test('clearing cancels a pending action and removes the separate cursor', async 
 
 test('a submit button gets a real click, not a synthetic submit', async () => {
   const f = fixture({ found: { submit: true, nav: true } });
-  await f.perform({ action: 'click', ref: 's1-2' });
+  await f.perform({ action: 'click', ref: 'e2' });
   assert.equal(f.scripts.some(code => code.includes('requestSubmit')), false);
   assert.equal(pointer(f).filter(call => call.type === 'mousePressed').length, 1, 'trusted input carries the click, the submitter and its handlers');
   assert.match(f.scripts.find(code => code.includes('elementFromPoint')), /addEventListener\('submit'/, 'a click on a submit button watches for the submit');
@@ -208,10 +208,10 @@ test('a submit button gets a real click, not a synthetic submit', async () => {
 test('a submit the page handles does not wait for a navigation, an uncancelled one does', async () => {
   let waited = 0;
   const handled = fixture({ found: { submit: true }, submitted: 'handled', delay: async () => { waited++; } });
-  await handled.perform({ action: 'click', ref: 's1-2' });
+  await handled.perform({ action: 'click', ref: 'e2' });
   assert.equal(waited, 0);
   const real = fixture({ found: { submit: true }, submitted: 'navigates', delay: async () => { waited++; } });
-  await real.perform({ action: 'click', ref: 's1-2' });
+  await real.perform({ action: 'click', ref: 'e2' });
   assert.equal(waited, 1, 'an uncancelled submit gives the navigation its start window');
 });
 
@@ -239,12 +239,12 @@ test('editing shortcuts carry macOS commands, but never clipboard ones', () => {
 
 test('double and right clicks send the right buttons and click counts', async () => {
   const f = fixture();
-  await f.perform({ action: 'double_click', ref: 's1-1' });
+  await f.perform({ action: 'double_click', ref: 'e1' });
   assert.deepEqual(pointer(f).slice(1).map(({ type, button, buttons, clickCount }) => [type, button, buttons, clickCount]), [
     ['mousePressed', 'left', 1, 1], ['mouseReleased', 'left', 0, 1], ['mousePressed', 'left', 1, 2], ['mouseReleased', 'left', 0, 2],
   ]);
   f.calls.length = 0;
-  await f.perform({ action: 'right_click', ref: 's1-1' });
+  await f.perform({ action: 'right_click', ref: 'e1' });
   assert.deepEqual(pointer(f).slice(1).map(({ type, button, buttons, clickCount }) => [type, button, buttons, clickCount]), [
     ['mousePressed', 'right', 2, 1], ['mouseReleased', 'right', 0, 1],
   ]);
@@ -254,13 +254,13 @@ test('double and right clicks send the right buttons and click counts', async ()
 test('a revoked right click releases the right button outside the viewport', async () => {
   const f = fixture();
   f.hook(async (method, params) => { if (params.type === 'mousePressed') f.tab.epoch++; });
-  await assert.rejects(f.perform({ action: 'right_click', ref: 's1-1' }), /stale_control_epoch/);
+  await assert.rejects(f.perform({ action: 'right_click', ref: 'e1' }), /stale_control_epoch/);
   assert.deepEqual(pointer(f).filter(call => call.type === 'mouseReleased').map(({ x, y, button }) => ({ x, y, button })), [{ x: -1, y: -1, button: 'right' }]);
 });
 
 test('drag presses at the source, moves with the button held and releases at the destination', async () => {
   const f = fixture({ visible: false });
-  await f.perform({ action: 'drag', ref: 's1-1', toX: 300, toY: 200 });
+  await f.perform({ action: 'drag', ref: 'e1', toX: 300, toY: 200 });
   const events = pointer(f);
   assert.deepEqual(events[0], { type: 'mouseMoved', x: 40, y: 60, button: 'none', buttons: 0, clickCount: undefined });
   assert.deepEqual(events[1], { type: 'mousePressed', x: 40, y: 60, button: 'left', buttons: 1, clickCount: 1 });
@@ -268,32 +268,32 @@ test('drag presses at the source, moves with the button held and releases at the
   assert.ok(moves.length >= 2 && moves.every(call => call.type === 'mouseMoved' && call.buttons === 1));
   assert.deepEqual(events.at(-1), { type: 'mouseReleased', x: 300, y: 200, button: 'left', buttons: 0, clickCount: 1 });
   assert.deepEqual({ x: f.tab.agentCursor.x, y: f.tab.agentCursor.y }, { x: 300, y: 200 });
-  await assert.rejects(f.perform({ action: 'drag', ref: 's1-1' }), /destination/);
-  await assert.rejects(f.perform({ action: 'drag', ref: 's1-1', toRef: 's9-9' }), /Stale/);
-  await assert.rejects(f.perform({ action: 'drag', ref: 's1-1', toX: 9999, toY: 5 }), /inside the tab viewport/);
+  await assert.rejects(f.perform({ action: 'drag', ref: 'e1' }), /destination/);
+  await assert.rejects(f.perform({ action: 'drag', ref: 'e1', toRef: 'e909' }), /Stale/);
+  await assert.rejects(f.perform({ action: 'drag', ref: 'e1', toX: 9999, toY: 5 }), /inside the tab viewport/);
 });
 
 test('drag to an element resolves the destination before the source', async () => {
   const f = fixture({ visible: false });
-  await f.perform({ action: 'drag', ref: 's1-1', toRef: 's1-2' });
+  await f.perform({ action: 'drag', ref: 'e1', toRef: 'e2' });
   const locates = f.scripts.filter(code => code.includes('elementFromPoint'));
   assert.equal(locates.length, 2);
-  assert.ok(locates[0].includes('s1-2') && locates[1].includes('s1-1'), 'the destination is found first so scrolling the source cannot move it');
+  assert.ok(locates[0].includes('e2') && locates[1].includes('e1'), 'the destination is found first so scrolling the source cannot move it');
 });
 
 test('select picks an option by value or label and reports it', async () => {
   const f = fixture();
-  const result = await f.perform({ action: 'select', ref: 's1-1', label: 'Beta' });
+  const result = await f.perform({ action: 'select', ref: 'e1', label: 'Beta' });
   assert.deepEqual(result.matched, { by: 'label', value: 'b', label: 'Beta' });
   const script = f.scripts.find(code => code.includes('has no option matching'));
   assert.ok(script.includes('"Beta"') && script.includes("dispatchEvent(new Event('change'"));
-  await assert.rejects(f.perform({ action: 'select', ref: 's1-1' }), /value, label, option, text or choice/);
-  await assert.rejects(f.perform({ action: 'select', x: 1, label: 'Beta' }), /requires an element/);
+  await assert.rejects(f.perform({ action: 'select', ref: 'e1' }), /value, label, option, text or choice/);
+  await assert.rejects(f.perform({ action: 'select', x: 1, label: 'Beta' }), /requires a ref, a name or a selector/);
   const loose = fixture();
-  await loose.perform({ action: 'select', ref: 's1-1', value: 'b' });
+  await loose.perform({ action: 'select', ref: 'e1', value: 'b' });
   assert.match(loose.scripts.find(code => code.includes('elementFromPoint')), /const loose = true && el\.tagName === 'SELECT'/, 'select resolves without a hit test');
   const g = fixture({ select: { fail: 'has no option matching that value or label', options: [{ value: 'a', label: 'Alpha' }] } });
-  await assert.rejects(g.perform({ action: 'select', ref: 's1-1', value: 'zzz' }), /no option matching.*Alpha/);
+  await assert.rejects(g.perform({ action: 'select', ref: 'e1', value: 'zzz' }), /no option matching.*Alpha/);
 });
 
 test('a click that starts a navigation answers after DOMContentLoaded, not before', async () => {
@@ -301,7 +301,7 @@ test('a click that starts a navigation answers after DOMContentLoaded, not befor
   const wc = f.tab.view.webContents;
   f.hook(async (method, params) => { if (params.type === 'mouseReleased') wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false }); });
   let done = false;
-  const pending = f.perform({ action: 'click', ref: 's1-2' }).then(result => { done = true; return result; });
+  const pending = f.perform({ action: 'click', ref: 'e2' }).then(result => { done = true; return result; });
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(done, false, 'still waiting on the new document');
   wc.emit('dom-ready');
@@ -314,7 +314,7 @@ test('same-document navigations and quiet clicks do not wait', async () => {
   const f = fixture();
   const wc = f.tab.view.webContents;
   f.hook(async (method, params) => { if (params.type === 'mouseReleased') wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true }); });
-  await f.perform({ action: 'click', ref: 's1-2' });
+  await f.perform({ action: 'click', ref: 'e2' });
   await f.perform({ action: 'press', key: 'Tab' });
 });
 

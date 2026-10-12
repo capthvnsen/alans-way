@@ -539,9 +539,9 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
   view.webContents.on('page-title-updated', (_event, title) => { tab.title = title; broadcast(); });
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
   view.webContents.on('did-stop-loading', () => { tab.loading = false; savePreferencesSoon(); broadcast(); });
-  view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.snapshotStamp = null; tab.lastRead = null; tab.favicon = ''; tab.faviconSeq = (tab.faviconSeq || 0) + 1; tab.generation++; if (tab.controller === 'agent') { view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); scheduleVpsMirror(); } broadcast(); });
+  view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.snapshotStamp = null; tab.scan = null; tab.lastRead = null; tab.favicon = ''; tab.faviconSeq = (tab.faviconSeq || 0) + 1; tab.generation++; if (tab.controller === 'agent') { view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); scheduleVpsMirror(); } broadcast(); });
   view.webContents.on('page-favicon-updated', (event, favicons) => { resolveFavicon(tab, favicons).catch(() => {}); });
-  view.webContents.on('did-navigate-in-page', () => { tab.refs.clear(); tab.generation++; if (tab.controller === 'agent') scheduleVpsMirror(); broadcast(); });
+  view.webContents.on('did-navigate-in-page', () => { tab.generation++; if (tab.controller === 'agent') scheduleVpsMirror(); broadcast(); });
   view.webContents.on('did-fail-load', (_e, code, description, _url, isMainFrame) => {
     if (isMainFrame && code !== -3) { tab.error = description; tab.loading = false; broadcast(); }
   });
@@ -1669,7 +1669,7 @@ async function snapshot(tab, opts = {}) {
     // A wedged renderer leaves executeJavaScript pending forever; bound it so
     // a snapshot can never outlive the connector's own timeout.
     const result = await Promise.race([
-      readJs(tab.view.webContents, snapshotExpression(generation, { parseWaitMs: SNAPSHOT_PARSE_MS, ...opts, keep: tab.snapshotStamp?.base, restamp: tab.snapshotStamp?.base }), 20000),
+      readJs(tab.view.webContents, snapshotExpression({ parseWaitMs: SNAPSHOT_PARSE_MS, ...opts, seed: tab.refSeed }), 20000),
       new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000); }),
     ]).finally(() => clearTimeout(timer));
     if (!result || !Array.isArray(result.elements)) throw Object.assign(new Error('Snapshot returned no page data.'), { status: 503 });
@@ -1816,7 +1816,7 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
   const wc = tab.view.webContents;
   if (depth === 0) await syncDialogGuard(tab);
   const reply = (payload) => depth > 0 ? payload : actionReply(tab, payload);
-  const finish = async (payload, opts) => depth > 0 ? payload : actionReply(tab, { ...payload, ...(await actionEffect(tab, opts)) });
+  const finish = async (payload, opts) => depth > 0 ? payload : actionReply(tab, { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) });
   if (body.action === 'batch') {
     if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
     const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
@@ -1829,12 +1829,14 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
       if (isAborted()) { results.push({ ok: false, error: 'The request was closed; remaining steps were not run.' }); break; }
       try { results.push({ ok: true, ...(await performAction(tab, { ...step, epoch: body.epoch }, botId, 1, isAborted)) }); }
       catch (error) { results.push({ ok: false, error: errorMessage(error) }); break; }
-      if (step.ref !== undefined || step.selector !== undefined) lastTarget = { ref: step.ref, selector: step.selector };
+      // A step aimed by name reports the ref it resolved to.
+      const ref = results.at(-1).ref || step.ref;
+      if (ref !== undefined || step.selector !== undefined) lastTarget = { ref, selector: step.selector };
       if (INPUT_ACTIONS.has(step.action) && step.action !== 'move') sawInput = true;
     }
     // A takeover mid-batch seals the accumulated step results too.
     requireActor(tab, botId, body.epoch, true, overseer);
-    return actionReply(tab, { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput })), dispatched: true });
+    return actionReply(tab, { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput, held: body.generation })), dispatched: true });
   }
   if (body.action === 'read') {
     const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
@@ -1842,7 +1844,7 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
     // A read step is the model's own baseline, so it must not plant the doc
     // marker: on a fresh document the missing marker is what lets the final
     // effect report the navigation it observed.
-    const data = await readJs(wc, snapshotExpression(tab.generation || 0, { maxChars, maxElements: 0, elementMs: 5, mark: false }), 12000).catch(() => null);
+    const data = await readJs(wc, snapshotExpression({ maxChars, maxElements: 0, elementMs: 5, mark: false }), 12000).catch(() => null);
     requireActor(tab, botId, body.epoch, true, overseer);
     if (data) { tab.lastRead = data.sameDoc === false ? null : lastReadOf(data); tab.docMarked = tab.docMarked || data.sameDoc === true; }
     return finish({ text: (data && typeof data.text === 'string' ? data.text : ''), dispatched: true });
@@ -1919,7 +1921,7 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
     requireActor(tab, botId, body.epoch, true, overseer);
     // A successful wait observed the page, so it becomes the read baseline:
     // the final effect must not re-report what the wait already confirmed.
-    const waited = await readJs(wc, snapshotExpression(tab.generation || 0, { maxChars: 8000, maxElements: 0, elementMs: 5, mark: false }), 12000).catch(() => null);
+    const waited = await readJs(wc, snapshotExpression({ maxChars: 8000, maxElements: 0, elementMs: 5, mark: false }), 12000).catch(() => null);
     if (waited) { tab.lastRead = waited.sameDoc === false ? null : lastReadOf(waited); tab.docMarked = tab.docMarked || waited.sameDoc === true; }
     return finish({ waited: value.waited, dispatched: true });
   }
@@ -1965,13 +1967,12 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
   }
   if (INPUT_ACTIONS.has(body.action)) {
     const { input, cursor, navigated, ...result } = await agentInput.perform(tab, body, botId);
-    if (depth === 0 && body.action !== 'move') tab.refs.clear();
     broadcast();
     const payload = { ...result, ...(depth === 0 && cursor ? { cursor: { x: cursor.x, y: cursor.y } } : {}), dispatched: true };
     // A move changes no page state; report it without paying for a read.
     if (body.action === 'move') return depth > 0 ? payload : actionReply(tab, { ...payload, effect: { ...EMPTY_EFFECT } });
     return finish(payload,
-      { navigated, settle: true, target: body.ref !== undefined || body.selector !== undefined ? { ref: body.ref, selector: body.selector } : undefined });
+      { navigated, settle: true, target: result.ref || body.ref !== undefined || body.selector !== undefined ? { ref: result.ref || body.ref, selector: body.selector } : undefined });
   }
   let parseWaitMs = 0, didNavigate = false;
   if (body.action === 'navigate') {
