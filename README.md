@@ -157,7 +157,7 @@ Short-term themes, all in progress or planned:
 
 ## Honest boundaries
 
-- **Alpha software.** Tested on the author's setup; yours may differ. Bugs → [issues](https://github.com/capthvnsen/alans-way/issues).
+- **Alpha software.** Bugs → [issues](https://github.com/capthvnsen/alans-way/issues).
 - Agents think on the VPS. On your computer they can drive a background app or a browser tab. They do not take the app you are currently using, and they do not move your cursor. On Windows, elevated apps (Task Manager, UAC, the lock screen) are unreachable by design.
 - Browser input goes through Chromium's debugger into one tab. Other apps are read as buttons and text first; a click uses that control and does not move your cursor. Keychain and password fields are refused.
 - One exception: in the VPS preview, "Take control" mode *does* send your clicks to the remote desktop. That's the point of it.
