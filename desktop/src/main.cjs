@@ -78,6 +78,7 @@ process.on('uncaughtException', (error) => logError('uncaughtException', error))
 process.on('unhandledRejection', (reason) => logError('unhandledRejection', reason));
 const TELEGRAM = 'https://web.telegram.org/a/';
 let win, backgroundWindow, telegramView, remoteView, apiServer, prefs, layout = {}, apiPort = 0, tray, telegramRecovery;
+let obscuredFocus = null;
 let extensionStore, extensionHost, extensionPopup, extensionPopupTabId, extensionActiveContentsId;
 let registeringExtensionTab = false;
 const update = { available: '', tag: '', ready: false, busy: false, error: '', justUpdatedFrom: '' };
@@ -538,7 +539,7 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
   view.webContents.on('page-title-updated', (_event, title) => { tab.title = title; broadcast(); });
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
   view.webContents.on('did-stop-loading', () => { tab.loading = false; savePreferencesSoon(); broadcast(); });
-  view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.snapshotStamp = null; tab.lastRead = null; tab.favicon = ''; tab.generation++; if (tab.controller === 'agent') { view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); scheduleVpsMirror(); } broadcast(); });
+  view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.snapshotStamp = null; tab.lastRead = null; tab.favicon = ''; tab.faviconSeq = (tab.faviconSeq || 0) + 1; tab.generation++; if (tab.controller === 'agent') { view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); scheduleVpsMirror(); } broadcast(); });
   view.webContents.on('page-favicon-updated', (event, favicons) => { resolveFavicon(tab, favicons).catch(() => {}); });
   view.webContents.on('did-navigate-in-page', () => { tab.refs.clear(); tab.generation++; if (tab.controller === 'agent') scheduleVpsMirror(); broadcast(); });
   view.webContents.on('did-fail-load', (_e, code, description, _url, isMainFrame) => {
@@ -1111,10 +1112,20 @@ function registerIpc() {
       const next = value || {};
       // A DOM overlay (settings, the update popup) shows while the attached
       // views hide. Keys must move to the page too, or Escape and typing keep
-      // landing in a view nobody can see.
-      if (next.obscured && !layout.obscured) win.webContents.focus();
+      // landing in a view nobody can see. Restore the visible view on close.
+      const wasObscured = !!layout.obscured;
+      if (next.obscured && !wasObscured) {
+        const focused = webContents.getFocusedWebContents();
+        obscuredFocus = focused === telegramView?.webContents || focused === tabs.get(activeTabId)?.view.webContents ? focused : null;
+        win.webContents.focus();
+      }
       layout = next;
       applyLayout();
+      if (!next.obscured && wasObscured) {
+        const target = obscuredFocus;
+        obscuredFocus = null;
+        if (target && !target.isDestroyed() && (target === telegramView?.webContents || target === tabs.get(activeTabId)?.view.webContents)) target.focus();
+      }
     } catch {}
   });
   const runCommand = async (event, command, value = {}) => {

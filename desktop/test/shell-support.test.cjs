@@ -157,6 +157,7 @@ test('watchChange reports a stuck page only when nothing changed after the delay
 test('main.cjs mirrors on in-page navigation, guards the poll-tier send, and names the Linux host', () => {
   const main = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
   assert.match(main, /'did-navigate-in-page', \(\) => \{[^\n]*scheduleVpsMirror\(\)/);
+  assert.match(main, /'did-navigate', \(\) => \{[^\n]*faviconSeq = \(tab\.faviconSeq \|\| 0\) \+ 1/, 'a full navigation invalidates an in-flight favicon fetch');
   assert.match(main, /function sendToTelegram[\s\S]*?try \{[\s\S]*?mainFrame\.url[\s\S]*?catch/, 'the frame is probed before sending');
   assert.ok(!/telegramView\.webContents\.send\('(workspace:poll-tier|telegram:poll)'/.test(main), 'poll sends go through the guard');
   assert.ok(main.includes('--host-os ${HOST_LABEL}'), 'the setup command and prompt name every non-Mac host');

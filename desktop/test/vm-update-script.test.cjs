@@ -406,15 +406,19 @@ test('the Windows twin pins full tag refs and retries the fetch like the POSIX s
 
 // The Windows twin cannot run under the harness (no PowerShell on CI), so
 // these assert the live-gateway flow the POSIX script's tests execute: a
-// blocked classification, one gateway stop, refused-only retries, and a
-// start that always runs.
+// blocked classification, every profile stopped, refused-only retries, and
+// the previously running gateways started again.
 test('the Windows twin ports the live-gateway refusal flow', () => {
   const ps1 = fs.readFileSync(WINDOWS_SCRIPT, 'utf8');
   assert.match(ps1, /Cannot update plugin files while the messaging gateway is running/,
     'classifies the live-gateway refusal instead of treating it as a failure');
   assert.match(ps1, /'blocked'/, 'the refusal reports its own blocked status');
-  assert.match(ps1, /'gateway', 'stop'/, 'stops the gateway once before retrying');
-  assert.match(ps1, /'gateway', 'start'/, 'always starts the gateway again');
+  assert.match(ps1, /'gateway', 'stop', '--help'/, 'probes whether the atomic stop is available');
+  assert.match(ps1, /'gateway', 'stop', '--all'/, 'uses the atomic stop when available');
+  assert.match(ps1, /@\('-p', \$prof\.name, 'gateway', 'stop'\)/, 'older Hermes stops each named profile');
+  assert.match(ps1, /gateway\.pid/, 'snapshots standalone named gateways from their pid files');
+  assert.match(ps1, /@\('-p', \$name, 'gateway', 'start'\)/, 'restarts each live named gateway');
+  assert.match(ps1, /'gateway', 'start'/, 'always starts the default gateway again');
   assert.doesNotMatch(ps1, /--allow-live-gateway/, 'the dangerous bypass flag is never passed');
   assert.doesNotMatch(ps1, /Select-Object -Last 2/,
     'keeps the whole refusal text, not the old last-two-lines cut');
@@ -426,9 +430,10 @@ test('the Windows twin ports the live-gateway refusal flow', () => {
 //   $STATE/gwfail                  makes `gateway restart` exit 1
 //   $STATE/gwguard                 refuses `plugins update` while the gateway
 //                                  is live, like the recent-hermes guard
-//   $STATE/gwstate                 the unmanaged gateway's state file:
-//                                  `gateway stop`/`gateway start` and the
-//                                  fake systemctl keep it stopped|running
+//   $STATE/gwstate[.<profile>]     unmanaged gateway state; named profiles
+//                                  fall back to the global file when absent
+//   $STATE/stop-all                advertises `gateway stop --all`
+//   $STATE/startfail.<profile>     makes that profile's gateway start fail
 //   $STATE/updated-version         the version "update" writes to plugin.yaml
 //   $STATE/hermes.log              one line per invocation
 //   $STATE/restarts.log            one line per `gateway restart`
@@ -440,9 +445,15 @@ P=default
 if [ "\${1:-}" = "-p" ]; then P="$2"; shift 2; fi
 printf 'hermes -p %s %s\\n' "$P" "$*" >> "$STATE/hermes.log"
 [ -n "\${FAKE_SVC_LOG:-}" ] && printf 'hermes -p %s %s\\n' "$P" "$*" >> "$FAKE_SVC_LOG"
+GWFILE="$STATE/gwstate"
+GWPROFILE="$GWFILE"
+if [ "$P" != default ]; then
+  GWPROFILE="$STATE/gwstate.$P"
+  [ -f "$GWPROFILE" ] && GWFILE="$GWPROFILE"
+fi
 # The gateway counts as live while a supervisor program reports RUNNING whose
 # process argv carries 'gateway run' (the same match the script uses), or
-# while a fixture without supervisord left gwstate at "running".
+# while a fixture without supervisord left its profile state at "running".
 gw_live() {
   [ -f "$STATE/gwguard" ] || return 1
   if [ -n "\${FAKE_SUPERVISOR_STATE:-}" ] && [ -f "$FAKE_SUPERVISOR_STATE/status" ]; then
@@ -453,14 +464,26 @@ gw_live() {
       ps -p "$_p" -o args= 2>/dev/null | grep -q 'gateway run' && return 0
     done < "$FAKE_SUPERVISOR_STATE/status"
   fi
-  [ "$(cat "$STATE/gwstate" 2>/dev/null || true)" = "running" ]
+  [ "$(cat "$GWFILE" 2>/dev/null || true)" = "running" ]
 }
 if [ "$1" = gateway ] && [ "$2" = restart ]; then
   if [ -f "$STATE/gwfail" ]; then echo 'gateway restart refused'; exit 1; fi
   printf 'restart\\n' >> "$STATE/restarts.log"; exit 0
 fi
-if [ "$1" = gateway ] && [ "$2" = stop ]; then printf 'stopped\\n' > "$STATE/gwstate"; exit 0; fi
-if [ "$1" = gateway ] && [ "$2" = start ]; then printf 'running\\n' > "$STATE/gwstate"; exit 0; fi
+if [ "$1" = gateway ] && [ "$2" = stop ] && [ "\${3:-}" = --help ]; then
+  if [ -f "$STATE/stop-all" ]; then echo 'usage: hermes gateway stop [--all]'; else echo 'usage: hermes gateway stop'; fi
+  exit 0
+fi
+if [ "$1" = gateway ] && [ "$2" = stop ] && [ "\${3:-}" = --all ]; then
+  printf 'stopped\\n' > "$STATE/gwstate"
+  for _f in "$STATE"/gwstate.*; do [ -f "$_f" ] && printf 'stopped\\n' > "$_f"; done
+  exit 0
+fi
+if [ "$1" = gateway ] && [ "$2" = stop ]; then printf 'stopped\\n' > "$GWPROFILE"; exit 0; fi
+if [ "$1" = gateway ] && [ "$2" = start ]; then
+  [ -f "$STATE/startfail.$P" ] && { echo 'gateway start refused'; exit 1; }
+  printf 'running\\n' > "$GWPROFILE"; exit 0
+fi
 if [ "$1" = plugins ] && [ "$2" = update ]; then
   name="$3"
   if gw_live; then
@@ -1294,6 +1317,111 @@ test('a refused update with no service manager goes through hermes gateway stop 
   assert.ok(calls.indexOf('gateway stop') < calls.lastIndexOf('plugins update alans-way'), calls);
   assert.ok(calls.lastIndexOf('plugins update alans-way') < calls.indexOf('gateway start'), calls);
   assert.doesNotMatch(fs.readFileSync(marker, 'utf8'), /supervisorctl/);
+});
+
+test('gateway stop --all preserves and restarts only live standalone named profiles', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  fs.writeFileSync(path.join(state, 'gwstate'), 'running\n');
+  fs.writeFileSync(path.join(state, 'gwstate.work'), 'running\n');
+  fs.writeFileSync(path.join(state, 'stop-all'), '');
+  const { log } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addProfile(home, 'work');
+  addPlugin(home, 'work', 'alans-way', '0.6.1');
+  addProfile(home, 'idle');
+  fs.writeFileSync(path.join(home, 'profiles', 'work', 'gateway.pid'), JSON.stringify({ pid: process.pid }));
+  const deadPid = 999999;
+  assert.notEqual(spawnSync('ps', ['-p', String(deadPid)]).status, 0, 'the idle fixture pid must not be live');
+  fs.writeFileSync(path.join(home, 'profiles', 'idle', 'gateway.pid'), `${deadPid}\n`);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'updated');
+  assert.equal(result.gatewayRestarted, true);
+  const calls = log().trim().split('\n');
+  const retry = calls.lastIndexOf('hermes -p work plugins update alans-way');
+  assert.ok(calls.indexOf('hermes -p default gateway stop --all') < retry, calls.join('\n'));
+  assert.ok(!calls.includes('hermes -p work gateway stop'), 'the atomic stop replaces per-profile stops');
+  assert.ok(calls.indexOf('hermes -p default gateway start') > retry, calls.join('\n'));
+  assert.ok(calls.indexOf('hermes -p work gateway start') > retry, calls.join('\n'));
+  assert.ok(!calls.includes('hermes -p idle gateway start'), 'a dead pid is not restored');
+});
+
+test('Hermes without stop --all stops and restores every running profile explicitly', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  fs.writeFileSync(path.join(state, 'gwstate'), 'running\n');
+  fs.writeFileSync(path.join(state, 'gwstate.work'), 'running\n');
+  const { log } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addProfile(home, 'work');
+  addPlugin(home, 'work', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(home, 'profiles', 'work', 'gateway.pid'), `${process.pid}\n`);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'updated');
+  assert.equal(result.gatewayRestarted, true);
+  const calls = log().trim().split('\n');
+  const retry = calls.lastIndexOf('hermes -p work plugins update alans-way');
+  assert.ok(calls.indexOf('hermes -p default gateway stop') < retry, calls.join('\n'));
+  assert.ok(calls.indexOf('hermes -p work gateway stop') < retry, calls.join('\n'));
+  assert.ok(calls.indexOf('hermes -p default gateway start') > retry, calls.join('\n'));
+  assert.ok(calls.indexOf('hermes -p work gateway start') > retry, calls.join('\n'));
+  assert.ok(!calls.some(call => call.endsWith('gateway stop --all')), 'unsupported --all is never invoked');
+});
+
+test('a failed named-profile gateway start is reported without claiming a restart', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  fs.writeFileSync(path.join(state, 'gwstate.work'), 'running\n');
+  fs.writeFileSync(path.join(state, 'stop-all'), '');
+  fs.writeFileSync(path.join(state, 'startfail.work'), '');
+  const { log } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addProfile(home, 'work');
+  addPlugin(home, 'work', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(home, 'profiles', 'work', 'gateway.pid'), JSON.stringify({ pid: process.pid }));
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'updated');
+  assert.equal(result.gatewayRestarted, false);
+  assert.match(res.stdout, /could not start the gateway; on the VM run: hermes -p work gateway start/);
+  assert.doesNotMatch(log(), /gateway restart/, 'a default restart cannot recover the named standalone gateway');
+});
+
+test('a failed default gateway start still falls back to gateway restart', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  fs.writeFileSync(path.join(state, 'gwstate'), 'running\n');
+  fs.writeFileSync(path.join(state, 'startfail.default'), '');
+  const { log } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'updated');
+  assert.equal(result.gatewayRestarted, true);
+  assert.match(log(), /gateway restart/, 'the restart fallback still covers the default profile');
 });
 
 test('a gateway still draining when the wait ends is left running and the pair reports blocked', async () => {
