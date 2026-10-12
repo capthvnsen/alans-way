@@ -152,8 +152,8 @@ its last capture, which turned every state-changing step into a `stale_ref`.
 3. **Delta replies.** An action reply lists `changed[]` and `removed[]`
    against what that bot was last sent, when the caller passes that tree's
    generation (so a lost reply gets the whole tree) and the delta is under
-   60% of the full tree (shared JS, so Windows and Linux get it too; their positional refs
-   mostly fall back to the full tree).
+   60% of the full tree (shared JS, so Windows and Linux get it too; Windows
+   now has stable refs and Linux's positional refs still fall back).
 4. **`wait` step.** `{action:"wait", text, gone, timeout}` polls the tree, so
    a batch acts and confirms in one call. Steps after a wait still carry the
    caller's generation; a run or a wait that fails after earlier steps ran is
@@ -256,9 +256,15 @@ this work) already batches: 4/4 tasks pass in one call each, 124 ms to 761 ms,
    `mode="vision"` away. Saves about 1.2k tokens per capture on the fixture.
 3. **Provider: surface `note`, `hidden` and `locked`** in its capture note
    and error codes.
-4. **Windows parity.** Stable refs from UI Automation RuntimeId and the
-   per-ref check in `win-computer.cs`, so deltas get small and churn stops
-   voiding refs there too. Not attempted: no Windows machine to verify.
+4. **Windows verification.** Windows now has RuntimeId refs and the per-ref
+   check. It is stricter than Mac: the namesake ordinal is in the signature
+   (MSAA list items can have index-based RuntimeIds), a ref with no RuntimeId
+   never passes an older generation, and toggle state (`on`/`off`/`mixed`)
+   sits after the name cap so a long label cannot hide a flip.
+   Compile-checked on Mac against .NET Framework 4.8 reference assemblies at
+   C# 5, and the ref checks run under `dotnet` in `npm test`; the Windows CI
+   job builds with the in-box `csc` and runs selftest and Notepad. Not driven
+   by hand on a real PC yet.
 5. **Screenshot scale.** Captures use the Retina backing scale, so a 420 pt
    window is an 840 px image. 1x would quarter the image cost at some text
    legibility; worth a bench with a vision model before changing.
