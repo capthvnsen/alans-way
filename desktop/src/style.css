@@ -101,3 +101,11 @@ body.win32 .pane-actions{padding-right:140px}body.win32 .side-title{padding-top:
 .needs-you-badge{width:7px;height:7px;border-radius:50%;flex-shrink:0;background:hsl(var(--h,168),85%,63%);box-shadow:0 0 0 2px hsl(var(--h,168),60%,22%)}
 .vm-banner.needs-you{background:hsl(var(--h,168),40%,11%);border-color:hsl(var(--h,168),45%,30%);color:hsl(var(--h,168),70%,82%)}
 #needs-you-text{min-width:0;overflow-wrap:anywhere}
+
+/* Teach by demonstration: the Record button turns red while the user's own browsing is recorded. */
+.record-button.recording{color:#ff6b6b}.record-button.recording svg{fill:currentColor;animation:recording-pulse 1.4s ease-in-out infinite}.record-button:disabled{opacity:.35;cursor:default}.record-button:disabled:hover{background:none;color:#aaaab0}
+.vm-banner.recording{background:#2a1214;border-color:#5a2428;color:#f2b8bb}.vm-banner.recording .secondary-button{margin:0;white-space:nowrap}.recording-keep{margin-left:auto;white-space:nowrap;display:flex;align-items:center;gap:5px;cursor:pointer}
+.recording-dot{width:8px;height:8px;border-radius:50%;background:#ff6b6b;flex-shrink:0;animation:recording-pulse 1.4s ease-in-out infinite}
+@keyframes recording-pulse{50%{opacity:.35}}
+@media(prefers-reduced-motion:reduce){.recording-dot,.record-button.recording svg{animation:none}}
+.recording-shares{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:11px;color:#8a8a99;margin:4px 0 14px}.recording-shares label{color:#babaca;cursor:pointer}

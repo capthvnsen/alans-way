@@ -1,0 +1,112 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const vm = require('node:vm');
+const { REDACTED, MAX_RECORDINGS, PAGE_SCRIPT, normalizeEvent, navigateStep, addStep, finishSteps, createRecordingStore } = require('../src/recorder.cjs');
+
+const url = 'https://shop.example/login';
+const input = (extra) => normalizeEvent({ kind: 'input', url, role: 'input', name: 'Field', selector: '#f', type: 'text', autocomplete: '', value: 'typed', ...extra });
+
+test('secret fields are always redacted, whatever the page sends', () => {
+  for (const extra of [{ type: 'password' }, { type: 'hidden' }, { autocomplete: 'cc-number' }, { autocomplete: 'billing cc-exp-month' },
+    { autocomplete: 'CC-CSC' }, { autocomplete: 'one-time-code' }, { autocomplete: 'current-password' }, { autocomplete: 'section-a new-password' }, { secret: true }]) {
+    const step = input({ ...extra, value: 'hunter2' });
+    assert.equal(step.value, REDACTED, JSON.stringify(extra));
+    assert.equal(finishSteps([step], { keepTyped: true })[0].value, REDACTED, 'keep typed text never keeps a secret');
+  }
+  assert.equal(normalizeEvent({ kind: 'change', url, type: '', autocomplete: 'cc-exp-year', value: '2031' }).value, REDACTED);
+  for (const extra of [{ name: 'Card PIN' }, { name: 'CVV' }, { name: 'Security code' }, { name: 'SSN' }, { field: 'otpCode' }, { field: 'cvc2 cardCvc' },
+    { selector: 'input[name="reset_token"]' }, { name: 'Verification code' }]) {
+    assert.equal(finishSteps([input({ ...extra, value: 'hunter2' })], { keepTyped: true })[0].value, REDACTED, `secret-named field ${JSON.stringify(extra)}`);
+  }
+  for (const name of ['Shipping notes', 'Spinner', 'Pinterest handle', 'Tokenomics essay']) assert.equal(input({ name }).value, 'typed', `${name} is not a secret`);
+  assert.equal(input({ autocomplete: 'email' }).value, 'typed');
+  assert.equal(input({ autocomplete: 'occ-note' }).value, 'typed', 'only whole cc-* tokens count');
+});
+
+test('other typed text is kept only when the user ticks keep typed text', () => {
+  const steps = [input({ value: 'ada@example.com' }), normalizeEvent({ kind: 'change', url, role: 'select', name: 'Country', selector: '#c', value: 'Canada' })];
+  assert.deepEqual(finishSteps(steps).map(step => step.value), [REDACTED, 'Canada']);
+  assert.deepEqual(finishSteps(steps, { keepTyped: true }).map(step => step.value), ['ada@example.com', 'Canada']);
+});
+
+test('events become steps with the documented shape and nothing else', () => {
+  assert.deepEqual(normalizeEvent({ kind: 'click', url, role: 'button', name: '  Sign\n in ', selector: '#go', extra: 'x', value: 'ignored' }),
+    { url, action: 'click', role: 'button', name: 'Sign in', selector: '#go' });
+  assert.deepEqual(normalizeEvent({ kind: 'submit', url, role: 'form', name: '', selector: 'form' }), { url, action: 'submit', role: 'form', name: '', selector: 'form' });
+  assert.equal(normalizeEvent({ kind: 'eval', url }), null);
+  assert.equal(normalizeEvent({ kind: 'toString', url }), null);
+  assert.equal(normalizeEvent({ kind: 'click', url: 'file:///etc/passwd' }), null);
+  assert.equal(normalizeEvent(null), null);
+  assert.equal(normalizeEvent({ kind: 'click', url: 'https://me:secret@bank.example/a' }).url, 'https://bank.example/a', 'credentials in a URL are dropped');
+  assert.equal(navigateStep('https://a.example/login?user=ada&password=hunter2').url, 'https://a.example/login', 'query strings never reach a step');
+  assert.equal(navigateStep('https://a.example/cb#access_token=xyz').url, 'https://a.example/cb');
+  assert.equal(navigateStep('https://a.example/reset/9f8a7c6b5d4e3f2a1b0c9d8e/confirm').url, 'https://a.example/reset/[redacted]/confirm');
+  assert.equal(navigateStep('https://a.example/invite/550e8400-e29b-41d4-a716-446655440000').url, 'https://a.example/invite/[redacted]');
+  assert.equal(navigateStep('https://a.example/magic/eyJhbGciOiJIUzI1NiJ9abc123XYZ').url, 'https://a.example/magic/[redacted]');
+  assert.equal(navigateStep('https://a.example/blog/how-to-file-taxes-2026/comments').url, 'https://a.example/blog/how-to-file-taxes-2026/comments', 'a slug is not a token');
+  assert.equal(navigateStep('https://a.example/orders/2026/10').url, 'https://a.example/orders/2026/10');
+  assert.deepEqual(navigateStep('https://shop.example/'), { url: 'https://shop.example/', action: 'navigate', role: '', name: '', selector: '' });
+  assert.equal(navigateStep('about:blank'), null);
+});
+
+test('a field is never named by what was typed into it', () => {
+  assert.equal(input({ name: 'Dear Ada, the contract is attached', value: 'Dear Ada, the contract is attached' }).name, '');
+  assert.equal(input({ name: 'x'.repeat(200), value: 'x'.repeat(300) }).name, '', 'a name cut from long contents');
+  assert.equal(input({ name: 'Bio', value: 'Bio text here' }).name, 'Bio', 'a label that the text happens to start with stays');
+  assert.equal(input({ name: 'Email', value: 'ada@example.com' }).name, 'Email');
+  assert.equal(normalizeEvent({ kind: 'click', url, role: 'button', name: 'Save', selector: '#s' }).name, 'Save');
+});
+
+test('steps merge keystrokes, redirects and the submit a click caused', () => {
+  const steps = [];
+  addStep(steps, navigateStep('https://a.example/'));
+  addStep(steps, navigateStep('https://a.example/home'));
+  addStep(steps, input({ url: 'https://a.example/home', value: 'a' }));
+  addStep(steps, input({ url: 'https://a.example/home', value: 'ab' }));
+  addStep(steps, input({ url: 'https://a.example/home', selector: '#other', value: 'c' }));
+  addStep(steps, normalizeEvent({ kind: 'click', url: 'https://a.example/home', role: 'button', name: 'Go', selector: '#go' }));
+  addStep(steps, normalizeEvent({ kind: 'submit', url: 'https://a.example/home', role: 'form', name: '', selector: 'form' }));
+  addStep(steps, navigateStep('https://a.example/home'));
+  addStep(steps, null);
+  addStep(steps, navigateStep('https://a.example/done'));
+  assert.deepEqual(steps.map(step => [step.action, step.url, step.value]), [
+    ['navigate', 'https://a.example/home', undefined],
+    ['type', 'https://a.example/home', 'ab'],
+    ['type', 'https://a.example/home', 'c'],
+    ['click', 'https://a.example/home', undefined],
+    ['navigate', 'https://a.example/done', undefined],
+  ]);
+  const enter = [input({ value: 'q' })];
+  addStep(enter, normalizeEvent({ kind: 'submit', url, role: 'form', name: '', selector: 'form' }));
+  assert.equal(enter.at(-1).action, 'submit', 'a submit by Enter stays');
+});
+
+test('the store keeps at most 20 private recordings, deletes them, and shows a bot only what was shared with it', () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'recorder-test-')), 'recordings');
+  const store = createRecordingStore(dir);
+  const steps = [navigateStep(url), input({ value: REDACTED })];
+  const first = store.save({ title: 'Log in', steps, keepTyped: false, sharedWith: ['42'] });
+  assert.equal(fs.statSync(path.join(dir, `${first.id}.json`)).mode & 0o777, 0o600);
+  assert.deepEqual(store.listFor('42').map(item => item.id), [first.id]);
+  assert.deepEqual(store.listFor('99'), []);
+  assert.equal(store.getFor(first.id, '99'), null);
+  assert.deepEqual(store.getFor(first.id, '42').steps, steps);
+  assert.equal(store.listFor('42')[0].sharedWith, undefined, 'a bot does not learn who else it was shared with');
+  store.share(first.id, ['99']);
+  assert.equal(store.getFor(first.id, '42'), null);
+  assert.equal(createRecordingStore(dir).getFor(first.id, '99').title, 'Log in', 'sharing persists');
+  for (let i = 1; i < MAX_RECORDINGS; i++) store.save({ title: `r${i}`, steps, sharedWith: [] });
+  assert.ok(store.full());
+  assert.throws(() => store.save({ title: 'one too many', steps, sharedWith: [] }), /Delete one in Settings/);
+  store.remove(first.id);
+  assert.equal(fs.existsSync(path.join(dir, `${first.id}.json`)), false);
+  assert.equal(store.list().length, MAX_RECORDINGS - 1);
+  assert.equal(createRecordingStore(dir).list().length, MAX_RECORDINGS - 1);
+});
+
+test('the page script parses', () => {
+  assert.doesNotThrow(() => new vm.Script(PAGE_SCRIPT));
+});
