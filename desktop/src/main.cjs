@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
+const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, Notification, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -6,7 +6,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
@@ -185,7 +185,7 @@ function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
   const info = { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
-    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null };
+    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab) };
   return forBot ? redactTabForBot(info) : info;
 }
 function pageState(tab) {
@@ -620,11 +620,12 @@ function takeDialogs(tab) {
   tab.dialogs = undefined;
   return dialogs ? { dialogs } : {};
 }
-function changeController(id, controller, source = 'human') {
+function changeController(id, controller, source = 'human', handback = null) {
   const tab = tabs.get(id);
   if (!tab) throw new Error('Tab not found.');
   if (tab.extensionPage && controller === 'agent') throw new Error('Extension account pages stay under your control.');
   const wasAgent = tab.controller === 'agent';
+  tab.handback = nextHandback(tab, controller, source, handback);
   tab.controller = controller === 'agent' ? 'agent' : 'human';
   syncFollowUpSeed(tab);
   syncDialogGuard(tab);
@@ -643,8 +644,40 @@ function changeController(id, controller, source = 'human') {
   tab.refs.clear();
   agentInput.clear(tab).catch(() => {});
   scheduleVpsMirror();
+  notifyHandback(describeTab(tab));
   broadcast();
   return describeTab(tab);
+}
+const HANDBACK_TEXT = { captcha: 'Solve the CAPTCHA, then give the tab back.', login: 'Sign in, then give the tab back.', two_factor: 'Enter the verification code, then give the tab back.', payment_details: 'Enter the card details, then give the tab back.', review: 'Review the page, then give the tab back.', other: 'Take a look, then give the tab back.' };
+// One notification per handback. Notifications are kept per tab so a click
+// still reaches its handler after garbage collection.
+const handbackNotices = new Map(), notifiedHandbacks = new Set();
+function notifyHandback(info) {
+  const h = info && info.handback;
+  if (!h || h.state !== 'awaiting_human' || !Notification.isSupported()) return;
+  const key = `${info.id}:${h.since}`;
+  if (notifiedHandbacks.has(key)) return;
+  notifiedHandbacks.add(key);
+  const notice = new Notification({ title: `${nameForBot(info.botId) || 'Your agent'} needs you`, body: h.note || HANDBACK_TEXT[h.reason] || '' });
+  notice.on('click', () => {
+    if (!win || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.show(); win.focus();
+    if (!tabs.has(info.id)) return;
+    // A collapsed browser pane would hide the badge and the banner.
+    if (prefs.showBrowser === false) { prefs.showBrowser = true; savePreferencesSoon(); }
+    activateTab(info.id).then(broadcast, () => {});
+  });
+  handbackNotices.set(info.id, notice);
+  notice.show();
+}
+async function activateTab(tabId) {
+  const id=isVpsTab(tabId)?'vps':tabId;
+  if(id==='vps'&&activeTabId!=='vps')browserReturnTabId=activeTabId;
+  if(activeTabId!==id)prefs.remoteControl=false;
+  activeTabId=tabs.has(id)||['home','vps'].includes(id)?id:'home';
+  if(isVpsTab(tabId))await remoteRequest(tabId,'activate',{});
+  applyLayout();
 }
 async function openExtension(key, anchor) {
   if (activeTabId === 'vps') throw new Error('Extensions are available in local browser tabs.');
@@ -1090,14 +1123,7 @@ function registerIpc() {
       case 'create-tab': return describeTab(createTab({ url: value.url || 'about:blank' }));
       case 'close-tab':
         if (isVpsTab(value.id)) { if(activeTabId===value.id)prefs.remoteControl=false; await vpsBrowser.request(`/v1/tabs/${value.id}`,'DELETE',undefined,{human:true}); vpsTabs.delete(value.id); if(activeTabId===value.id)activeTabId='home'; applyLayout(); } else closeTab(value.id); break;
-      case 'activate': {
-        const id=isVpsTab(value.id)?'vps':value.id;
-        if(id==='vps'&&activeTabId!=='vps')browserReturnTabId=activeTabId;
-        if(activeTabId!==id)prefs.remoteControl=false;
-        activeTabId=tabs.has(id)||['home','vps'].includes(id)?id:'home';
-        if(isVpsTab(value.id))await remoteRequest(value.id,'activate',{});
-        applyLayout();break;
-      }
+      case 'activate': await activateTab(value.id); break;
       case 'toggle-vps-view': {
         if(activeTabId==='vps')activeTabId=tabs.has(browserReturnTabId)?browserReturnTabId:'home';
         else {browserReturnTabId=activeTabId;activeTabId='vps';}
@@ -2119,7 +2145,10 @@ function startApi() {
         })
           .finally(() => { tab.pendingActions--; tab.lastAgentActivity = Date.now(); });
         tab.queue = action.catch(() => {});
-        return send(200, await action);
+        const result = await action;
+        // The bot is acting on the tab again; human_returned has done its job.
+        if (tab.handback?.state === 'human_returned') { tab.handback = null; broadcast(); }
+        return send(200, result);
       }
       if (req.method === 'POST' && match[2] === 'control') {
         const body = await readJson(req);
@@ -2128,7 +2157,7 @@ function startApi() {
         if (botId !== tab.botId && !overseer && !granted) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
         if (body.controller === 'agent') { requireAgentClaim(tab); tab.handoff = reviewedHandoff(tab.handoff); }
         if (tab.botId === 'shared' && body.controller === 'agent') tab.botId = botId;
-        return send(200, redactTabForBot(changeController(tab.id, body.controller, 'agent')));
+        return send(200, redactTabForBot(changeController(tab.id, body.controller, 'agent', body.controller === 'agent' ? null : handbackRequest(body))));
       }
       if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true, overseer); closeTab(tab.id); return send(200, { closed: true }); }
       return send(405, { error: 'Method not supported.' });
@@ -2315,6 +2344,7 @@ function createWindow() {
   idleTimer = setInterval(() => {
     const idleMs = Math.max(1, Number(process.env.HERMES_AGENT_IDLE_MINUTES) || prefs.agentIdleMinutes || 15) * 60000, now = Date.now();
     for (const tab of tabs.values()) {
+      if (tab.handback && !liveHandback(tab, now)) { tab.handback = null; broadcast(); }
       if (tab.controller !== 'agent' || tab.extensionPage || tab.pendingActions > 0 || agentInput.isDispatching(tab)) continue;
       if (now - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) > idleMs) changeController(tab.id, 'human', 'idle');
     }
