@@ -1,5 +1,5 @@
 const api = window.workspace;
-let state, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '', handoffBusy = false;
+let state, lastRecording = null, stoppedRecordingAt = 0, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '', handoffBusy = false;
 const $ = (id) => document.getElementById(id);
 function element(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; }
 function toast(message) { $('toast').textContent = message; $('toast').classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.add('hidden'), 5000); }
@@ -263,7 +263,7 @@ function render(next) {
     $('presence-status').textContent = window.HermesAvatars.activityLabel(bot.activity);
     $('presence-status').classList.toggle('active', window.HermesAvatars.isActive(bot.activity));
   }
-  renderBots(); renderTabs(); renderSettingsBots(); renderSitePermissions(); renderExtensions(); renderDownloads();
+  renderBots(); renderTabs(); renderSettingsBots(); renderRecordings(); renderSitePermissions(); renderExtensions(); renderDownloads();
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
   const remote = state.activeTabId==='vps';
   $('vm-toggle').title = remote ? 'Return to browser' : 'Expand virtual desktop';
@@ -313,6 +313,17 @@ function render(next) {
     $('needs-you-banner').style.setProperty('--h', String(tab.agentHue ?? 168));
     $('needs-you-text').textContent = `${agentName} needs you: ${needsYou.note || HANDBACK_TEXT[needsYou.reason] || 'take a look.'}`;
   }
+  // Recording runs only on a tab the human controls; a bot taking it, or the
+  // tab closing, stops and saves it in main.
+  const recording = state.recording;
+  $('record-button').disabled = !recording && (!tab || tab.controller !== 'human' || tab.extensionPage);
+  $('record-button').classList.toggle('recording', !!recording);
+  $('record-button').setAttribute('aria-pressed', String(!!recording));
+  $('record-button').title = recording ? 'Stop recording and save' : tab?.controller === 'agent' ? 'Take over this tab to record a task' : 'Record a task to teach your agent';
+  $('recording-banner').classList.toggle('hidden', !recording);
+  if (recording) $('recording-text').textContent = `Recording${recording.tabId === tab?.id ? '' : ' another tab'} · ${recording.steps} ${recording.steps === 1 ? 'step' : 'steps'}. Do the task once. Passwords, card numbers and codes are never saved.`;
+  if (lastRecording && !recording && lastRecording.startedAt !== stoppedRecordingAt) toast('Recording stopped. Anything it caught is in Settings → Recordings.');
+  lastRecording = recording;
   $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? `${agentName}${tab.agentBusy ? ' is working' : ' is browsing'}` : 'You'} in control${tab.controller === 'agent' ? ' · Take over anytime' : ''} · ${hostName(tab.host)}${tab.handoff?.phase==='handed_off'?` · Handed off to the ${hostName(tab.handoff.destinationHost)} (agents continue there)`:tab.handoff&&tab.handoff.phase!=='reviewed'?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `${remoteName()} · ${state.remoteStatus}` : 'Ready';
   renderUpdate();
   $('connection-status').textContent = state.api.ready ? 'Browser connector ready' : state.api.error ? 'Browser connector unavailable' : 'Browser connector starting…';
@@ -667,6 +678,30 @@ function renderSettingsBots() {
   }
 }
 const permissionLabels = { geolocation: 'Precise location', 'geolocation-approximate': 'General area', notifications: 'Notifications', camera: 'Camera', microphone: 'Microphone', 'clipboard-read': 'Read clipboard' };
+function renderRecordings() {
+  const list = $('recordings-list');
+  if (!modalOpen || !list) return;
+  const signature = JSON.stringify([state.recordings, state.bots.map(bot => [bot.id, bot.name])]);
+  if (list.dataset.signature === signature) return;
+  list.dataset.signature = signature; list.replaceChildren();
+  if (!state.recordings.length) list.append(element('p', 'settings-note', 'No recordings yet.'));
+  for (const item of state.recordings) {
+    const row = element('div', 'setting-row'), copy = element('span', 'visibility-copy');
+    copy.append(element('span', 'visibility-name', item.title), element('span', 'visibility-username',
+      `${item.steps} ${item.steps === 1 ? 'step' : 'steps'} · ${new Date(item.createdAt).toLocaleString()}${item.keepTyped ? ' · typed text kept' : ''}`));
+    const remove = element('button', 'secondary-button', 'Delete'); remove.setAttribute('aria-label', `Delete recording ${item.title}`);
+    remove.onclick = () => command('recording-delete', { id: item.id });
+    const shares = element('div', 'recording-shares');
+    shares.append(element('span', '', 'Shared with'));
+    for (const bot of state.bots) {
+      const label = element('label'), box = element('input');
+      box.type = 'checkbox'; box.dataset.botId = bot.id; box.checked = item.sharedWith.includes(bot.id);
+      box.onchange = () => command('recording-share', { id: item.id, botIds: [...shares.querySelectorAll('input:checked')].map(input => input.dataset.botId) });
+      label.append(box, ` ${bot.name}`); shares.append(label);
+    }
+    row.append(copy, remove); list.append(row, shares);
+  }
+}
 function permissionChoice(selected, onChange) {
   const select = element('select');
   for (const [value, label] of [['block', 'Block'], ['allow', 'Allow'], ['ask', 'Use default']]) {
@@ -785,6 +820,8 @@ function showSettings() {
   const avatars = element('button', 'secondary-button', 'Customize bot avatars');
   avatars.onclick = () => showAvatarEditor(); body.append(avatars);
   body.append(element('p', 'settings-note', 'Pick a marble avatar or import your own. Eyes follow your mouse only while Telegram reports activity.'), element('hr', 'section-divider'));
+  body.append(element('h3', '', 'Recordings'), element('p', 'settings-note', 'Teach a bot a task: on a tab you control, press ● in the browser toolbar, do the task once, then Stop and save. A recording is a list of clicks, typed fields and pages, never video. Passwords, card numbers, one-time codes and hidden fields are never saved; other typed text is kept only if you tick Keep typed text. Each bot sees only the recordings shared with it, and can turn one into a skill. Up to 20 recordings.'));
+  const recordingsList = element('div'); recordingsList.id = 'recordings-list'; body.append(recordingsList, element('hr', 'section-divider')); renderRecordings();
   showSitePermissionSettings(body);
   showCookieSettings(body);
   const label = element('label', '', 'Remote desktop connection'); label.htmlFor = 'remote-url';
@@ -918,6 +955,20 @@ $('home-search').onsubmit = (event) => submitUrl(event, 'home-address');
 document.querySelectorAll('[data-url]').forEach((button) => { button.onclick = () => command('create-tab', { url: button.dataset.url }); });
 for (const action of ['back', 'forward', 'reload']) $(action).onclick = () => command('history', { id: state.activeTabId, action });
 $('control-button').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: tab.controller === 'agent' ? 'human' : 'agent' }); };
+async function stopRecording(save) {
+  stoppedRecordingAt = state.recording?.startedAt || 0;
+  const saved = await command('record-stop', { save, keepTyped: $('recording-keep').checked });
+  const bot = state.bots.find(item => item.id === state.selectedBotId);
+  if (saved) toast(`Saved “${saved.title}” (${saved.steps} steps)${bot ? `, shared with ${bot.name}. Ask ${bot.name} to turn it into a skill` : '. Share it with a bot in Settings → Recordings'}.`);
+  else if (saved === null && save) toast('Nothing was recorded.');
+}
+$('record-button').onclick = () => {
+  if (state.recording) return stopRecording(true);
+  $('recording-keep').checked = false;
+  command('record-start', { id: state.activeTabId });
+};
+$('recording-stop').onclick = () => stopRecording(true);
+$('recording-discard').onclick = () => stopRecording(false);
 $('needs-you-give-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: 'agent' }); };
 $('handoff-button').onclick = async () => {
   const tab = state.tabs.find((item) => item.id === state.activeTabId);

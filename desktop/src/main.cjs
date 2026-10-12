@@ -32,6 +32,7 @@ const { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, re
 const { createVpsBrowser, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
+const recorder = require('./recorder.cjs');
 const { ElectronChromeExtensions } = require('electron-chrome-extensions');
 
 // The host computer driver runs in the app's own session — the only place it
@@ -135,6 +136,7 @@ const downloadStore = createDownloadStore({ getPreferences: () => prefs, savePre
   openInTab: async (record, { activate = true } = {}) => { createTab({ filePath: record.path, activate }); },
   confirmOpen: async (name) => (await dialog.showMessageBox(win, { type: 'warning', buttons: ['Cancel', 'Open anyway'], defaultId: 0, cancelId: 0,
     message: `Open ${name}?`, detail: 'This file can run programs on your computer. Only open it if you trust where it came from.' })).response === 1 });
+const recordings = recorder.createRecordingStore(path.join(app.getPath('userData'), 'recordings'));
 let pointerTimer, activityTimer, idleTimer;
 
 function readPreferences() {
@@ -290,6 +292,7 @@ function getState() {
     autoOpenLinks: prefs.autoOpenLinks !== false,
     activeTabId, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
+    recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
     fullscreen: win?.isFullScreen() || false, api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
 }
 let lastBotWorkSignature = '';
@@ -560,6 +563,7 @@ function closeTab(id) {
   if (id === 'home' || id === 'vps') { prefs.remoteControl=false; activeTabId = 'home'; applyLayout(); broadcast(); return; }
   const tab = tabs.get(id);
   if (!tab) return;
+  if (recording?.tabId === id) { try { stopRecording(); } catch (error) { logError('recording', error); } }
   tabs.delete(id);
   if (tab.view.webContents) extensionHost?.removeTab(tab.view.webContents);
   if (browserReturnTabId === id) browserReturnTabId = [...tabs.keys()].at(-1) || 'home';
@@ -625,6 +629,8 @@ function changeController(id, controller, source = 'human', handback = null) {
   const tab = tabs.get(id);
   if (!tab) throw new Error('Tab not found.');
   if (tab.extensionPage && controller === 'agent') throw new Error('Extension account pages stay under your control.');
+  // Only the human's own browsing is recorded: a bot taking the tab ends it.
+  if (recording?.tabId === id && (controller === 'agent' || tab.extensionPage)) { try { stopRecording(); } catch (error) { logError('recording', error); } }
   const wasAgent = tab.controller === 'agent';
   tab.handback = nextHandback(tab, controller, source, handback);
   tab.controller = controller === 'agent' ? 'agent' : 'human';
@@ -679,6 +685,64 @@ async function activateTab(tabId) {
   activeTabId=tabs.has(id)||['home','vps'].includes(id)?id:'home';
   if(isVpsTab(tabId))await remoteRequest(tabId,'activate',{});
   applyLayout();
+}
+// One recording at a time, on a tab the human controls. The page script runs
+// in its own isolated world on each document (dom-ready); Page stays disabled
+// so the human keeps native dialogs. Steps live in memory until Stop.
+let recording = null;
+async function startRecording(id) {
+  const tab = tabs.get(id);
+  if (!tab) throw new Error('Open a page to record first.');
+  if (recording) throw new Error('A recording is already running. Stop it first.');
+  if (tab.controller !== 'human' || tab.extensionPage) throw new Error('Take over this tab before recording it.');
+  if (recordings.full()) throw new Error(`You have ${recorder.MAX_RECORDINGS} recordings. Delete one in Settings to record another.`);
+  const wc = tab.view.webContents;
+  const rec = recording = { tabId: id, title: tab.title, steps: [], startedAt: Date.now() };
+  const add = (step) => { if (recording === rec) { recorder.addStep(rec.steps, step); broadcast(); } };
+  rec.onMessage = (_event, method, params) => {
+    if (method !== 'Runtime.bindingCalled' || params.name !== recorder.BINDING) return;
+    try { add(recorder.normalizeEvent(JSON.parse(params.payload))); } catch {}
+  };
+  rec.onNavigate = (_event, url) => add(recorder.navigateStep(url));
+  rec.onInPage = (_event, url, isMainFrame) => { if (isMainFrame) add(recorder.navigateStep(url)); };
+  // ponytail: main frame only; a task inside an iframe records as clicks on the frame's host page.
+  rec.inject = async () => {
+    const { frameTree } = await browserCommand(tab, 'Page.getFrameTree');
+    const { executionContextId } = await browserCommand(tab, 'Page.createIsolatedWorld', { frameId: frameTree.frame.id, worldName: recorder.WORLD });
+    await browserCommand(tab, 'Runtime.evaluate', { expression: recorder.PAGE_SCRIPT, contextId: executionContextId });
+  };
+  rec.onReady = () => { if (recording === rec) rec.inject().catch(() => {}); };
+  add(recorder.navigateStep(wc.getURL()));
+  wc.debugger.on('message', rec.onMessage);
+  wc.on('did-navigate', rec.onNavigate);
+  wc.on('did-navigate-in-page', rec.onInPage);
+  wc.on('dom-ready', rec.onReady);
+  try {
+    await browserCommand(tab, 'Runtime.enable');
+    await browserCommand(tab, 'Runtime.addBinding', { name: recorder.BINDING, executionContextName: recorder.WORLD });
+    await rec.inject();
+  } catch (error) { stopRecording({ save: false }); throw new Error(`Could not record this page: ${errorMessage(error)}`); }
+  broadcast();
+}
+function stopRecording({ save = true, keepTyped = false } = {}) {
+  const rec = recording;
+  if (!rec) return null;
+  recording = null;
+  const tab = tabs.get(rec.tabId), wc = tab?.view.webContents;
+  if (wc && !wc.isDestroyed()) {
+    wc.debugger.removeListener('message', rec.onMessage);
+    wc.removeListener('did-navigate', rec.onNavigate).removeListener('did-navigate-in-page', rec.onInPage).removeListener('dom-ready', rec.onReady);
+    if (wc.debugger.isAttached()) {
+      browserCommand(tab, 'Runtime.removeBinding', { name: recorder.BINDING }).catch(() => {});
+      browserCommand(tab, 'Runtime.disable').catch(() => {});
+    }
+  }
+  try {
+    // A lone starting page teaches nothing.
+    if (!save || !rec.steps.some(step => step.action !== 'navigate')) return null;
+    const title = rec.title && rec.title !== 'New tab' ? rec.title : (tab?.title || new URL(rec.steps[0].url).hostname);
+    return recordings.save({ title, steps: recorder.finishSteps(rec.steps, { keepTyped }), keepTyped, sharedWith: prefs.selectedBotId ? [prefs.selectedBotId] : [] });
+  } finally { broadcast(); }
 }
 async function openExtension(key, anchor) {
   if (activeTabId === 'vps') throw new Error('Extensions are available in local browser tabs.');
@@ -1239,6 +1303,10 @@ function registerIpc() {
       case 'cancel-download': downloadStore.cancel(value.id); break;
       case 'clear-downloads': downloadStore.clear(); break;
       case 'downloads-folder': await downloadStore.openFolder(); break;
+      case 'record-start': await startRecording(String(value.id)); break;
+      case 'record-stop': return stopRecording({ save: value.save !== false, keepTyped: value.keepTyped === true });
+      case 'recording-share': recordings.share(String(value.id), value.botIds); broadcast(); break;
+      case 'recording-delete': recordings.remove(String(value.id)); broadcast(); break;
       case 'open-bot': await openBot(String(value.id)); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
       case 'bot-sort': if (['recent', 'alpha', 'manual'].includes(value.mode)) { prefs.botSort = value.mode; savePreferences(); } break;
@@ -2076,6 +2144,15 @@ function startApi() {
             await boundedJs(wc, `document.readyState === 'loading' ? new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setTimeout(done, ${OPEN_PARSE_MS}); }) : 0`, OPEN_PARSE_MS + 2000).catch(() => {});
           }
           return send(201, describeTab(created, true)); }
+      }
+      // Recordings the user shared with this bot; read-only.
+      const recordingMatch = /^\/v1\/recordings(?:\/([\w-]{8,64}))?$/.exec(url.pathname);
+      if (recordingMatch && req.method === 'GET') {
+        if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
+        if (!recordingMatch[1]) return send(200, { recordings: recordings.listFor(botId) });
+        const record = recordings.getFor(recordingMatch[1], botId);
+        if (!record) throw Object.assign(new Error('Recording not found, or the user has not shared it with you.'), { status: 404 });
+        return send(200, record);
       }
       // Host computer use is served here so an SSH-spawned connector never
       // drives the desktop itself — on Windows that process would sit in

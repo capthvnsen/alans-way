@@ -158,6 +158,9 @@ const tools = [
     reason: { type: 'string', enum: ['captcha', 'login', 'two_factor', 'payment_details', 'review', 'other'], description: 'For release: why the human must take over. Omit for a plain release.' },
     note: { type: 'string', description: 'For release with a reason: plain text shown to the human, at most 140 characters, for example "Sign in to your bank, then give the tab back."' },
   }, ['tabId', 'epoch', 'action']), annotations: { readOnlyHint: false, openWorldHint: true } },
+  { name: 'cua_alans_way_recordings', description: `Read the browser tasks the user recorded for you: they press Record in Alan's Workspace on their computer, do the task once, and share the recording with you. list gives {id, title, startUrl, createdAt, steps} for each recording shared with you; get with an id gives its steps in order, each {url, action, role, name, selector, value?}. action is navigate, click, type, select or submit (submit means pressing Enter in that form); role and name match elements[] in a snapshot. "[redacted]" stands for a password, card number, one-time code, or typed text the user chose not to keep: never guess it.
+- When the user asks you to learn a recording, turn it into a Hermes skill with your core skill tools: get it, then call skill_manage with one create operation whose SKILL.md has frontmatter (a short lowercase-hyphenated name and a description of when to use it) and a body that replays the task with cua_alans_way_action. Open the start url, then do each click, type or select by finding the control with that role and name in the current elements (the selector is a fallback), and confirm each page change before going on. Make every redacted or task-specific value an input the skill asks the user for, and where a password, card or code was entered, release the tab with a reason instead of typing it. Tell the user the skill's name; skill_view shows it.`,
+    inputSchema: objectSchema({ action: { type: 'string', enum: ['list', 'get'] }, id: { type: 'string', description: 'For get: the recording id from list.' } }, ['action']), annotations: { readOnlyHint: true } },
 ];
 async function requestOnce(endpoint, method = 'GET', body, epoch) {
   let connection;
@@ -314,6 +317,10 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
           : await request(`${tabPath}/actions`, 'POST', body);
         break;
       }
+      case 'cua_alans_way_recordings':
+        if (args.action === 'get' && !args.id) throw new Error('Pass the recording id from list.');
+        result = await request(args.action === 'get' ? `/v1/recordings/${encodeURIComponent(args.id)}` : '/v1/recordings');
+        break;
       default: throw new Error('Unknown browser tool.');
     }
     return { content: [{ type: 'text', text: JSON.stringify(omitIcons(result)) }] };

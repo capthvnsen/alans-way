@@ -31,7 +31,7 @@ test('browser MCP exposes close and reports non-JSON host errors cleanly', { tim
     'cua_alans_way_status', 'cua_alans_way_tabs', 'cua_alans_way_open',
     'cua_alans_way_snapshot', 'cua_alans_way_screenshot', 'cua_alans_way_close',
     'workspace_computer_apps', 'workspace_computer_snapshot', 'workspace_computer_screenshot', 'workspace_computer_menu', 'workspace_computer_action',
-    'cua_alans_way_action',
+    'cua_alans_way_action', 'cua_alans_way_recordings',
   ]);
   const result = await client.callTool({ name: 'cua_alans_way_status', arguments: {} });
   assert.equal(result.isError, true);
@@ -71,6 +71,40 @@ test('open rejects an unrecognized host instead of dropping it', { timeout: 8000
   assert.equal((await open({})).isError, undefined, 'an omitted host still works');
   assert.deepEqual(seen.filter((s) => s.line === 'POST /v1/tabs').map((s) => s.body.host), ['vps', 'local', undefined],
     'the bad host never reached the app');
+});
+
+test('the recordings tool is read-only and asks the app for this bot only', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
+  const seen = [];
+  const host = http.createServer((req, res) => {
+    seen.push(`${req.method} ${req.url} ${req.headers['x-hermes-bot']}`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(req.url === '/v1/recordings' ? '{"recordings":[]}' : '{"id":"rec-12345678","steps":[]}');
+  });
+  await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')],
+    env: { ...process.env },
+  });
+  const client = new Client({ name: 'browser-mcp-test', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {});
+    await transport.close().catch(() => {});
+    await new Promise((resolve) => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const tool = (await client.listTools()).tools.find((item) => item.name === 'cua_alans_way_recordings');
+  assert.equal(tool.annotations.readOnlyHint, true);
+  assert.deepEqual(tool.inputSchema.properties.action.enum, ['list', 'get']);
+  assert.match(tool.description, /skill_manage/);
+  const call = (args) => client.callTool({ name: 'cua_alans_way_recordings', arguments: args });
+  assert.equal((await call({ action: 'list' })).isError, undefined);
+  assert.equal((await call({ action: 'get', id: 'rec-12345678' })).isError, undefined);
+  assert.equal((await call({ action: 'get' })).isError, true);
+  assert.deepEqual(seen, ['GET /v1/recordings mcp-test', 'GET /v1/recordings/rec-12345678 mcp-test']);
 });
 
 test('browser tool results omit favicon images', { timeout: 8000 }, async (t) => {
