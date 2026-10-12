@@ -6,7 +6,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
@@ -470,18 +470,7 @@ function pageUrl(url, extensionPage = false) {
   return normalizeUrl(url);
 }
 const faviconCache = new Map();
-async function resolveFavicon(tab, favicons) {
-  const seq = (tab.faviconSeq = (tab.faviconSeq || 0) + 1);
-  const apply = (value) => { if (tab.faviconSeq === seq && value !== tab.favicon) { tab.favicon = value; broadcast(); } };
-  const url = favicons.find((item) => /^https?:\/\//i.test(item));
-  if (!url) return apply(favicons.find((item) => item && item !== 'data:,') || '');
-  // Only same-origin icons, fetched without the browser session or its
-  // cookies: a page-controlled favicon URL must never become a credentialed
-  // fetch to somewhere the page points at (loopback, LAN, metadata).
-  const pageUrlNow = tab.view?.webContents && !tab.view.webContents.isDestroyed() ? tab.view.webContents.getURL() : String(tab.url || '');
-  let target = faviconTarget(pageUrlNow, url);
-  if (!target) return apply('');
-  if (faviconCache.has(target)) return apply(faviconCache.get(target));
+async function fetchFavicon(pageUrlNow, target) {
   try {
     let response;
     for (let hop = 0; hop < 3; hop++) {
@@ -489,18 +478,32 @@ async function resolveFavicon(tab, favicons) {
       const location = response.headers.get('location');
       if (response.status >= 300 && response.status < 400 && location) {
         target = faviconTarget(pageUrlNow, new URL(location, target).href);
-        if (!target) return apply('');
+        if (!target) return '';
       } else break;
     }
     const mime = response.headers.get('content-type')?.split(';')[0]?.trim() || '';
-    if (!response.ok || !mime.startsWith('image/')) return apply('');
+    if (!response.ok || !mime.startsWith('image/')) return '';
     const buffer = Buffer.from(await response.arrayBuffer());
-    if (!buffer.length || buffer.length > 262144) return apply('');
+    if (!buffer.length || buffer.length > 262144) return '';
     const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`;
     if (faviconCache.size > 300) faviconCache.clear();
     faviconCache.set(target, dataUrl);
-    apply(dataUrl);
-  } catch { apply(''); }
+    return dataUrl;
+  } catch { return ''; }
+}
+async function resolveFavicon(tab, favicons) {
+  const seq = (tab.faviconSeq = (tab.faviconSeq || 0) + 1);
+  const apply = (value) => { if (tab.faviconSeq === seq && value !== tab.favicon) { tab.favicon = value; broadcast(); } };
+  // Only same-origin icons, fetched without the browser session or its
+  // cookies: a page-controlled favicon URL must never become a credentialed
+  // fetch to somewhere the page points at (loopback, LAN, metadata).
+  const pageUrlNow = tab.view?.webContents && !tab.view.webContents.isDestroyed() ? tab.view.webContents.getURL() : String(tab.url || '');
+  const { targets, inline } = faviconQueue(pageUrlNow, favicons);
+  for (const target of targets) {
+    const dataUrl = faviconCache.get(target) || await fetchFavicon(pageUrlNow, target);
+    if (dataUrl) return apply(dataUrl);
+  }
+  apply(inline);
 }
 function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedBotId || 'shared', controller = 'human', options, skipLoad = false, activate = true, extensionPage = false } = {}) {
   if (tabs.size >= 40) throw new Error('Close a tab before opening another.');
@@ -535,7 +538,7 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
   view.webContents.on('page-title-updated', (_event, title) => { tab.title = title; broadcast(); });
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
   view.webContents.on('did-stop-loading', () => { tab.loading = false; savePreferencesSoon(); broadcast(); });
-  view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.snapshotStamp = null; tab.lastRead = null; tab.generation++; if (tab.controller === 'agent') { view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); scheduleVpsMirror(); } broadcast(); });
+  view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.snapshotStamp = null; tab.lastRead = null; tab.favicon = ''; tab.generation++; if (tab.controller === 'agent') { view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); scheduleVpsMirror(); } broadcast(); });
   view.webContents.on('page-favicon-updated', (event, favicons) => { resolveFavicon(tab, favicons).catch(() => {}); });
   view.webContents.on('did-navigate-in-page', () => { tab.refs.clear(); tab.generation++; if (tab.controller === 'agent') scheduleVpsMirror(); broadcast(); });
   view.webContents.on('did-fail-load', (_e, code, description, _url, isMainFrame) => {

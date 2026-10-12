@@ -83,13 +83,15 @@ function renderBotActivity(row, bot) {
 }
 function tabIcon(tab) {
   const icon = element('span', 'tab-icon');
+  if (tab.favicon) { const img = element('img', 'tab-favicon'); img.src = tab.favicon; img.alt = ''; img.onerror = () => { img.replaceWith(tab.symbol || '◈'); }; icon.append(img); }
   if (tab.controller === 'agent') {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 19 25');
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', 'M1 1v19l5-5 4 9 4-2-4-8h7Z'); svg.append(path);
-    icon.append(svg); icon.classList.add('tab-agent-cursor'); icon.style.setProperty('--h', String(tab.agentHue ?? 168)); return icon;
+    const cursor = element('span', 'tab-agent-cursor'); cursor.style.setProperty('--h', String(tab.agentHue ?? 168));
+    cursor.append(svg); icon.append(cursor); return icon;
   }
-  if (tab.favicon) { const img = element('img', 'tab-favicon'); img.src = tab.favicon; img.alt = ''; img.onerror = () => { img.replaceWith(tab.symbol || '◈'); }; icon.append(img); return icon; }
-  icon.textContent = tab.symbol; return icon;
+  if (!tab.favicon) icon.textContent = tab.symbol;
+  return icon;
 }
 function renderTabs() {
   const container = $('tabs'); container.replaceChildren();

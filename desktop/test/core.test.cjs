@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, agentPageUrl, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl } = require('../src/core.cjs');
 const { snapshotExpression, settleSnapshot, readEffect } = require('../src/browser-page.cjs');
 const { locateElement } = require('../src/agent-input.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
@@ -32,6 +32,16 @@ test('only same-origin favicons may be fetched', () => {
   for (const icon of ['https://evil.example/x.png', 'http://127.0.0.1:9999/x.png', 'https://a.example.evil.com/x.png', 'data:image/png;base64,x', 'file:///etc/passwd'])
     assert.equal(faviconTarget('https://a.example/page', icon), '', icon);
   assert.equal(faviconTarget('https://a.example:444/x', 'https://a.example/i.png'), '', 'ports differ');
+});
+test('the favicon queue keeps every same-origin candidate in page order', () => {
+  const page = 'https://a.example/page';
+  const { targets, inline } = faviconQueue(page, ['https://cdn.other.example/x.png', 'https://a.example/one.ico', 'https://a.example/one.ico', 'https://a.example/two.png', 'data:image/png;base64,x']);
+  assert.deepEqual(targets, ['https://a.example/one.ico', 'https://a.example/two.png'], 'cross-origin candidates drop, duplicates collapse');
+  assert.equal(inline, 'data:image/png;base64,x', 'a decoded inline icon stays the last fallback');
+  assert.deepEqual(faviconQueue(page, ['https://evil.example/x.png']), { targets: [], inline: '' }, 'a cross-origin url never renders directly');
+  assert.equal(faviconQueue(page, ['data:,']).inline, '', 'the blank-data sentinel is not an icon');
+  const many = Array.from({ length: 9 }, (_, i) => `https://a.example/${i}.png`);
+  assert.equal(faviconQueue(page, many).targets.length, 6, 'the serial fetch queue is bounded');
 });
 test('bot-visible tab metadata seals url, title, icon and note on human-controlled tabs', () => {
   const info = { id: 't', url: 'https://a.example/private?token=1', title: 'Secret page', favicon: 'data:image/png;base64,x', controller: 'human', handoff: { phase: 'handed_off', destinationTabId: 't2', note: 'do this' } };
