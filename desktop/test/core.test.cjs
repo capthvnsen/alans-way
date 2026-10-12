@@ -165,6 +165,7 @@ test('a release with a reason waits for the human, then the give-back or 30 minu
   assert.equal(liveHandback(waiting, 1001 + HANDBACK_MS), null);
   requireAgentClaim(waiting, 1001 + HANDBACK_MS);
   assert.equal(nextHandback(waiting, 'agent', 'human', null, 1001 + HANDBACK_MS), null);
+  assert.equal(nextHandback({ botId: 'research', controller: 'human', humanLock: true }, 'human', 'agent', request, 1000), null, 'no hold on a tab the human took over');
 });
 test('an unchanged snapshot keeps the refs the agent already holds usable', () => {
   const page = (generation, label = 'Send') => ({ url: 'https://a.example/', title: 'A', text: 'hello',

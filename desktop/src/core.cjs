@@ -190,7 +190,8 @@ function nextHandback(tab, controller, source, request, now = Date.now()) {
   const current = liveHandback(tab, now);
   const awaiting = current && current.state === 'awaiting_human';
   if (controller === 'human') {
-    if (source === 'agent' && request) return { ...request, state: 'awaiting_human', botId: tab.botId, since: awaiting ? current.since : now };
+    // A tab the human already took over needs no banner from the bot.
+    if (source === 'agent' && request && !(tab.controller === 'human' && tab.humanLock)) return { ...request, state: 'awaiting_human', botId: tab.botId, since: awaiting ? current.since : now };
     return tab.controller === 'human' ? current : null;
   }
   return source === 'human' && awaiting ? { ...current, state: 'human_returned', returnedAt: now } : null;

@@ -71,9 +71,11 @@ app.whenReady().then(async () => {
   await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'human', reason: 'captcha', note });
   assert.equal(shown.length, 1, 'repeating the release does not notify again');
 
-  // Clicking the notification brings that tab forward with the banner in the app chrome.
+  // Clicking the notification brings that tab forward with the banner in the
+  // app chrome, reopening a collapsed browser pane.
+  await invoke('settings', { showBrowser: false });
   shown[0].emit('click');
-  await waitFor(getState, state => state.activeTabId === tab.id);
+  await waitFor(getState, state => state.activeTabId === tab.id && state.showBrowser === true);
   await waitFor(() => evaluate('!document.getElementById("needs-you-banner").classList.contains("hidden")'), Boolean);
   assert.equal(await evaluate('document.getElementById("needs-you-text").textContent'), `Scout needs you: ${note}`);
   assert.equal(await evaluate('document.querySelectorAll("#needs-you-banner img").length'), 0, 'the note is escaped, not parsed as HTML');

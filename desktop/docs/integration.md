@@ -99,6 +99,8 @@ shared workers (not tied to one tab), and public hostnames that merely resolve
 to a private or loopback address (there is no DNS check). Running Chromium
 behind a local egress filter closes all three.
 
+When only the human can continue (a CAPTCHA, a login, a 2FA code, card details, a page to review), a bot releases with `POST /v1/tabs/:id/control` `{controller:'human', reason, note}`. `reason` is one of `captcha`, `login`, `two_factor`, `payment_details`, `review`, `other` (anything else is a 400); `note` is plain text cut to 140 characters. On the Mac the tab then carries `handback: {state:'awaiting_human', reason, note, botId, since}`: the app badges the tab, shows a banner in its own chrome with Give back to agent, and fires one notification. Until the human gives the tab back, bot claims, reads and actions on it return 409 `awaiting_human`; a plain release cannot lift it. After the give-back `handback.state` is `human_returned` and a stale-epoch call says so; a claim or the bot's next successful action clears it. An unanswered hold becomes a normal release after 30 minutes. The VPS host only records the reason in `handback` and does not hold the tab.
+
 On `human_has_control`, wait for an explicit release. On `stale_control_epoch`, inspect current state and take a fresh snapshot before deciding whether to proceed. A timed-out form submission is uncertain; inspect the page rather than automatically repeat it. The UI must be the authority for tab access grants and human control.
 
 ## Browser task handoff

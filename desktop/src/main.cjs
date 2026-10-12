@@ -663,7 +663,10 @@ function notifyHandback(info) {
     if (!win || win.isDestroyed()) return;
     if (win.isMinimized()) win.restore();
     win.show(); win.focus();
-    activateTab(info.id).catch(() => {});
+    if (!tabs.has(info.id)) return;
+    // A collapsed browser pane would hide the badge and the banner.
+    if (prefs.showBrowser === false) { prefs.showBrowser = true; savePreferencesSoon(); }
+    activateTab(info.id).then(broadcast, () => {});
   });
   handbackNotices.set(info.id, notice);
   notice.show();
