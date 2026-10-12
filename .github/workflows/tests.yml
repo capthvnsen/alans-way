@@ -53,6 +53,8 @@ jobs:
         timeout-minutes: 3
       - run: npm run test:recorder
         timeout-minutes: 3
+      - run: npm run test:captcha
+        timeout-minutes: 3
 
   desktop-windows:
     runs-on: windows-latest

@@ -309,6 +309,67 @@ function refsSource(seed = 0) {
   })()`;
 }
 
+// A challenge only a person can clear: a CAPTCHA widget or a bot-check page.
+// A few URL, title and selector checks on the top document, no layout beyond
+// the frames' boxes. A widget whose response token is filled is solved and
+// no longer counts; an invisible reCAPTCHA (the corner badge) is not one until
+// it pops its image challenge. page marks a whole-page check, where every
+// input lands on the challenge; blocking means the bot cannot go on without a
+// person. els are the widget's elements, for the input hit test.
+const CHALLENGE_SOURCE = `() => {
+  const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 2 && r.height > 2 && (!el.checkVisibility || el.checkVisibility({ checkVisibilityCSS: true, opacityProperty: true })); };
+  const solved = (name) => [...document.querySelectorAll('textarea[name^="' + name + '"],input[name^="' + name + '"]')].some((el) => el.value);
+  const found = (kind, blocking, els, page) => ({ kind, blocking, page: page === true, els: els || [] });
+  const path = location.pathname, title = document.title.trim();
+  if (path.indexOf('/sorry/') === 0 && (/(^|\\.)google\\.[a-z.]+$/.test(location.hostname) || document.querySelector('#captcha-form'))) return found('google_sorry', true, null, true);
+  if (/^(just a moment|one more step|verify you are human)/i.test(title) || document.querySelector('#challenge-form,#challenge-stage,#challenge-running,#cf-challenge-running,#cf-please-wait')) return found('cloudflare', true, null, true);
+  const frames = [...document.querySelectorAll('iframe')].filter(shown);
+  const src = (el) => String(el.src || '');
+  const arkose = [...frames.filter((el) => /arkoselabs\\.com|funcaptcha\\.com/.test(src(el))), ...[...document.querySelectorAll('#FunCaptcha,#arkose-iframe,[data-e2e="enforcement-frame"]')].filter(shown)];
+  if (arkose.length) return found('arkose', true, arkose);
+  const hc = frames.filter((el) => /hcaptcha\\.com/.test(src(el)) && !/frame=checkbox-invisible/.test(src(el)));
+  if (hc.length && !solved('h-captcha-response')) return found('hcaptcha', hc.some((el) => /frame=challenge/.test(src(el))), hc);
+  const rc = frames.filter((el) => /\\/recaptcha\\/(api2|enterprise)\\/(anchor|bframe)/.test(src(el)) && !/[?&]size=invisible/.test(src(el)));
+  if (rc.length && !solved('g-recaptcha-response')) return found('recaptcha', rc.some((el) => /\\/bframe/.test(src(el))), rc);
+  const ts = [...frames.filter((el) => /challenges\\.cloudflare\\.com/.test(src(el))), ...[...document.querySelectorAll('.cf-turnstile')].filter(shown)];
+  if (ts.length && !solved('cf-turnstile-response')) return found('turnstile', false, ts);
+  return null;
+}`;
+function challengeExpression() {
+  return `(() => { const c = (${CHALLENGE_SOURCE})(); return c && { kind: c.kind, blocking: c.blocking }; })()`;
+}
+// Whether input at these viewport points (or, for keys, into the focused
+// element) would land on a challenge: the challenge when it would, else null.
+// The input locate scripts run it in the same round trip.
+const CHALLENGE_HIT_SOURCE = `(points, keyboard) => {
+  const c = (${CHALLENGE_SOURCE})();
+  if (!c) return null;
+  const own = (el) => !!el && (c.els.some((w) => w === el || w.contains(el)) || !!(el.closest && el.closest('.g-recaptcha,.h-captcha,.cf-turnstile')));
+  const hits = points.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y)).map((p) => document.elementFromPoint(p.x, p.y));
+  if (keyboard) hits.push(document.activeElement);
+  return c.page || hits.some(own) ? { kind: c.kind, blocking: c.blocking } : null;
+}`;
+function challengeHitExpression(points = [], keyboard = false) {
+  return `(${CHALLENGE_HIT_SOURCE})(${JSON.stringify(points)}, ${keyboard === true})`;
+}
+// The watch on a tab handed over for a CAPTCHA reads the challenge, whether
+// the page is loading, and a fingerprint of the focused field so a person
+// still typing keeps the tab.
+function challengeProbeExpression() {
+  return `(() => {
+    const c = (${CHALLENGE_SOURCE})();
+    const a = document.activeElement, editable = !!a && (a.isContentEditable || /^(INPUT|TEXTAREA)$/.test(a.tagName));
+    let typing = '';
+    if (editable) {
+      const value = String(a.isContentEditable ? a.textContent : a.value);
+      let h = 0x811c9dc5;
+      for (let i = 0; i < value.length; i++) { h ^= value.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+      typing = value.length + ':' + (h >>> 0).toString(36);
+    }
+    return { challenge: c && { kind: c.kind, blocking: c.blocking }, loading: document.readyState === 'loading', typing };
+  })()`;
+}
+
 function snapshotExpression(opts = {}) {
   const int = (value, min, max, fallback) => Number.isInteger(value) ? Math.max(min, Math.min(max, value)) : fallback;
   const maxChars = int(opts.maxChars, 0, 20000, 6000);
@@ -549,7 +610,8 @@ function snapshotExpression(opts = {}) {
       text = text.slice(0, ${maxChars});
       textSig = sigNodes + ':' + (sigHash >>> 0).toString(36);
     } else textCut = ${maxChars} <= 0 && !!document.body?.textContent?.trim();
-    return {title:document.title,url:location.href,sameDoc,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,elements:items,seq:R ? R.n : 0,gone,overlays,truncated:{text:textCut,elements:more},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
+    const challenge = ${challengeExpression()};
+    return {title:document.title,url:location.href,sameDoc,challenge,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,elements:items,seq:R ? R.n : 0,gone,overlays,truncated:{text:textCut,elements:more},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
   })()`;
 }
 
@@ -772,8 +834,10 @@ function settleSnapshot(tab, data, generation, since) {
   tab.docMarked = true;
   noteScan(tab, data, generation);
   // sameDoc, textSig, seq and gone feed the host's bookkeeping, not the reply.
-  const { sameDoc, textSig, seq, gone, overlays, ...page } = data;
-  return unchanged ? { unchanged: true, generation } : { ...page, ...(overlays && overlays.length ? { overlays } : {}), generation };
+  // A challenge rides even on an unchanged read: its frames sit outside the text.
+  const { sameDoc, textSig, seq, gone, overlays, challenge, ...page } = data;
+  const flagged = challenge ? { challenge } : {};
+  return unchanged ? { unchanged: true, generation, ...flagged } : { ...page, ...(overlays && overlays.length ? { overlays } : {}), ...flagged, generation };
 }
 // A full list in an action reply stops here; unlisted says how many more a snapshot shows.
 const EFFECT_ELEMENTS = 40;
@@ -796,7 +860,25 @@ function controlsDelta(scan, data) {
 // when they changed: as changed[] and removed[] when the caller passed the
 // generation it holds (held) and the page did not navigate, otherwise as the
 // list. An unchanged page keeps the generation, so a later since= still dedupes.
-async function readEffect(execute, tab, { parseWaitMs, navigated, target, settle, held } = {}) {
+// A Cloudflare "Just a moment" page usually clears by itself in a few seconds
+// in a real browser. The reply waits that out, so neither the bot nor the
+// person hears about a check nobody had to solve.
+const CLOUDFLARE_WAIT_MS = 8000;
+async function passCloudflare(execute, ms = CLOUDFLARE_WAIT_MS, step = 500) {
+  for (const end = Date.now() + ms; Date.now() < end;) {
+    await new Promise((r) => setTimeout(r, step));
+    // A read that lands mid-navigation fails or hangs; that is the page moving on.
+    const c = await Promise.race([Promise.resolve().then(() => execute(challengeExpression())).catch(() => undefined), new Promise((r) => setTimeout(r, 1500))]);
+    if (c === null) return true;
+  }
+  return false;
+}
+async function readEffect(execute, tab, opts = {}) {
+  const reply = await readEffectOnce(execute, tab, opts);
+  if (reply?.challenge?.kind !== 'cloudflare' || !(await passCloudflare(execute, opts.cloudflareWaitMs))) return reply;
+  return (await readEffectOnce(execute, tab, { ...opts, navigated: undefined, settle: false })) || reply;
+}
+async function readEffectOnce(execute, tab, { parseWaitMs, navigated, target, settle, held } = {}) {
   const previous = tab.snapshotStamp, scan = tab.scan;
   const generation = Math.max(previous && Number.isInteger(previous.generation) ? previous.generation : 0, Number.isInteger(tab.generation) ? tab.generation : 0) + 1;
   let timer;
@@ -844,7 +926,8 @@ async function readEffect(execute, tab, { parseWaitMs, navigated, target, settle
     if (result.focused.name) effect.focused.name = result.focused.name;
   }
   // A dialog or banner over the page rides on every reply while it is there.
-  const overlays = result.overlays && result.overlays.length ? { overlays: result.overlays } : {};
+  // So does a challenge (a CAPTCHA or a bot check) the page shows.
+  const overlays = { ...(result.overlays && result.overlays.length ? { overlays: result.overlays } : {}), ...(result.challenge ? { challenge: result.challenge } : {}) };
   if (Number.isInteger(result.seq)) tab.refSeed = Math.max(tab.refSeed || 0, result.seq);
   if (controlsSame) return { generation: previous.generation, effect, ...overlays };
   tab.generation = generation;
@@ -895,4 +978,4 @@ function restoreExpression(checkpoint) {
     return {verification:restored === c.drafts.length ? 'ready' : 'review_required',restored,skipped:c.drafts.length-restored};
   })()`;
 }
-module.exports = { refsSource, REFS_KEY, snapshotExpression, settleSnapshot, readEffect, controlsDelta, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, followUpInstallExpression, lastReadOf, FOLLOW_UP_KEY };
+module.exports = { refsSource, REFS_KEY, CHALLENGE_HIT_SOURCE, challengeExpression, challengeHitExpression, challengeProbeExpression, snapshotExpression, settleSnapshot, readEffect, controlsDelta, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, followUpInstallExpression, lastReadOf, FOLLOW_UP_KEY };

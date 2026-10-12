@@ -196,6 +196,56 @@ function nextHandback(tab, controller, source, request, now = Date.now()) {
   }
   return source === 'human' && awaiting ? { ...current, state: 'human_returned', returnedAt: now } : null;
 }
+// Challenges (CAPTCHAs, bot checks) a tab met, per origin: one counts when the
+// last read saw none there. Two inside ten minutes tell the bot to stop
+// retrying that site.
+const CHALLENGE_WINDOW_MS = 10 * 60000;
+const CHALLENGE_NAMES = { recaptcha: 'reCAPTCHA', hcaptcha: 'hCaptcha', turnstile: 'Cloudflare check', cloudflare: 'Cloudflare check', google_sorry: 'Google "unusual traffic" check', arkose: 'Arkose puzzle' };
+function challengeReply(tab, url, challenge, now = Date.now()) {
+  const log = tab.challengeLog ||= { on: '', seen: {} };
+  if (!challenge) { log.on = ''; return undefined; }
+  let origin = '', host = 'This site';
+  try { const u = new URL(url); origin = u.origin; host = u.hostname || host; } catch {}
+  for (const key of Object.keys(log.seen)) if (log.seen[key].every((at) => now - at >= CHALLENGE_WINDOW_MS)) delete log.seen[key];
+  const times = (log.seen[origin] || []).filter((at) => now - at < CHALLENGE_WINDOW_MS);
+  if (log.on !== origin) times.push(now);
+  log.seen[origin] = times;
+  log.on = origin;
+  const reply = { kind: challenge.kind, blocking: challenge.blocking === true };
+  if (times.length >= 2) Object.assign(reply, { backOff: true, advice: `${host} has challenged ${times.length} times in 10 minutes. Stop retrying it and use another source.` });
+  return reply;
+}
+// The N2 release the host makes itself when a blocking challenge lands on a
+// bot's tab. The note names the site and the kind of check.
+function captchaHandback(url, challenge) {
+  let host = 'this site';
+  try { host = new URL(url).hostname || host; } catch {}
+  const note = `Solve the ${CHALLENGE_NAMES[challenge.kind] || 'CAPTCHA'} on ${host}. The tab goes back to the agent once it clears.`;
+  return { reason: 'captcha', note: note.slice(0, 140), auto: true, challenge: challenge.kind };
+}
+// One step of the watch on a tab handed over for a CAPTCHA, fed a page probe
+// (challengeProbeExpression) about once a second. It hands the tab back once
+// a challenge it saw is gone (a navigation, or the widget removed or solved)
+// on two reads in a row, the page is not loading, and the focused field held
+// still between them (the person is not typing). resume says to give it back.
+function captchaWatchStep(watch, probe) {
+  if (!probe || probe.loading) return { ...watch, clear: 0, resume: false };
+  if (probe.challenge) return { seen: true, clear: 0, typing: probe.typing, resume: false };
+  const clear = watch.seen && probe.typing === watch.typing ? watch.clear + 1 : 0;
+  return { seen: watch.seen, clear, typing: probe.typing, resume: clear >= 2 };
+}
+// The live desktop viewer a person opens to solve a challenge on the VM: an
+// http(s) address with no credentials, secret-looking parameters or fragment
+// (noVNC also reads a password from the fragment).
+function viewerUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    url.username = ''; url.password = ''; url.hash = '';
+    for (const key of [...url.searchParams.keys()]) if (/pass|token|secret|key|auth/i.test(key)) url.searchParams.delete(key);
+    return url.href;
+  } catch { return ''; }
+}
 function awaitingHumanError(h) {
   return Object.assign(new Error(`awaiting_human: this tab was handed to the human (${h.reason}). Wait until they give it back; read the tab state later.`), { status: 409 });
 }
@@ -314,4 +364,4 @@ function hostShouldReload(mtime, started, inFlight) {
   return inFlight === 0 && Number(mtime) > Number(started);
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog };
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, viewerUrl };
