@@ -283,7 +283,7 @@ cd desktop
 node scripts/computer-bench.cjs                      # mcp, batch, plugin
 node scripts/computer-bench.cjs --mode plugin --visible
 node scripts/computer-bench.cjs --root /path/to/other/checkout/desktop   # baseline
-node scripts/browser-bench.cjs                       # needs the app running
+node scripts/browser-bench.cjs                       # see browser-use-design.md
 ```
 
 The fixture (`test/computer-bench-app.swift`) is built into a temporary

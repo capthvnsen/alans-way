@@ -192,7 +192,10 @@ function refsSource() {
     // cookie banner) eats clicks meant for the page under it. It is named the
     // way a person would read it, with the control that dismisses it,
     // preferring the choice that shares nothing (close, no thanks, reject).
-    S.layer = (el) => {
+    // listed is for a layer found by looking, not by a blocked click: an app
+    // whose whole shell is fixed holds most of the page's controls, and that
+    // is the page, not something over it.
+    S.layer = (el, listed = false) => {
       let layer = null;
       for (let node = el; node && node.nodeType === 1; node = node.parentElement || (node.getRootNode() && node.getRootNode().host) || null) {
         if (typeof node.id === 'string' && node.id.indexOf('hermes-workspace-agent-cursor') === 0) return null;
@@ -201,6 +204,7 @@ function refsSource() {
       if (!layer) return null;
       const box = layer.getBoundingClientRect();
       if (box.width * box.height < innerWidth * innerHeight * 0.25) return null;
+      if (listed && layer.querySelectorAll(pick).length * 2 > document.querySelectorAll(pick).length) return null;
       const dialog = layer.matches('dialog,[role=dialog],[role=alertdialog]') ? layer : layer.querySelector('dialog,[role=dialog],[role=alertdialog]') || layer;
       let name = (dialog.getAttribute('aria-label') || '').trim();
       const labelledby = dialog.getAttribute('aria-labelledby');
@@ -236,7 +240,7 @@ function refsSource() {
           if (seen.has(hit)) continue;
           seen.add(hit);
           if (getComputedStyle(hit).position !== 'fixed') continue;
-          const found = S.layer(hit);
+          const found = S.layer(hit, true);
           if (found && !layers.has(found.layer)) { layers.add(found.layer); if (out.length < 3) out.push(found.out); }
         }
       }

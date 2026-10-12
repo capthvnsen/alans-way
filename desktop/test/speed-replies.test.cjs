@@ -176,7 +176,8 @@ customElements.define('x-card', class extends HTMLElement { constructor() { supe
 const popupPage = `<!doctype html><title>vault</title><button onclick="window.open('/nav-b', '_blank')">Reveal code</button><button id="run">Run cleanup</button><p id="out">not run</p><script>
 run.onclick = () => { alert('Starting'); const ok = confirm('Delete the scratch files?'); out.textContent = 'ok=' + ok + ' name=' + (ok ? prompt('Name this run', 'run') : null); };
 </script>`;
-const routes = { '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
+const shellPage = `<!doctype html><title>app</title><div style="position:fixed;inset:0;overflow:auto"><nav><a href="/a">Inbox</a> <a href="/b">Sent</a> <a href="/c">Drafts</a></nav><h1>Inbox</h1><button>Compose</button><button>Close</button></div>`;
+const routes = { '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
 const api = (route, method = 'GET', body, epoch) =>
@@ -725,6 +726,8 @@ test('dialogs and banners over the page are named with what closes them', live, 
   assert.ok(done.data.results.every((r) => r.ok), JSON.stringify(done.data.results));
   assert.equal(await pageText(tab, '#out'), 'added');
   assert.equal(done.data.overlays, undefined, 'a cleared page carries no overlays');
+  const shell = await openTab('/shell');
+  assert.equal((await api(`/v1/tabs/${shell.id}/snapshot`)).data.overlays, undefined, 'an app whose whole shell is fixed is the page, not an overlay');
 });
 
 test('a control can be named instead of referenced, inside shadow roots too', live, async () => {
