@@ -144,17 +144,6 @@ Release installs update themselves. When an update is ready, the popup updates e
 
 `git pull` + `cd desktop && npm ci` applies only to source installs. On the VPS, a manual update means pulling the plugin checkout and restarting the gateway through Hermes' normal lifecycle: a running gateway keeps old code until restarted. Then send one Telegram message and watch a bounded browser action to confirm both ends still work. See [deployment](docs/deployment.md) and the [multi-profile fleet guide](docs/agent-setup.md).
 
-## Roadmap
-
-The roadmap lives in the [GitHub project](https://github.com/users/capthvnsen/projects/5) for this repo. The fastest updates are on X: [@alexhvnsen](https://x.com/alexhvnsen).
-
-Short-term themes, all in progress or planned:
-
-- Make v0.3 rock solid on Mac and PC: remote computer polish, proactivity, smoother handoff.
-- Network routing of remote tasks through your primary machine.
-- Faster and cheaper runs (optional).
-- Phone your agent with local voice models, without interrupting Telegram.
-
 ## Honest boundaries
 
 - **Alpha software.** Bugs → [issues](https://github.com/capthvnsen/alans-way/issues).
