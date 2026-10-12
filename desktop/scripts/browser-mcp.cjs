@@ -100,7 +100,7 @@ const tools = [
   { name: 'workspace_computer_action', description: `Act in a background desktop app; the pointer never moves and focus never changes.
 - press and type take a ref plus the generation you last received. A ref keeps working while its control keeps its role and name; stale_ref means that control changed, so snapshot again.
 - press presses a control and selects a row. type replaces a field's text. click, double_click and right_click take a ref or x,y. drag goes from x,y to x2,y2 and sets sliders directly. scroll takes direction and amount in pages, on a ref, at x,y or in the main window. key and hotkey send a key or a combo such as cmd+s (Windows: unmodified keys only). menu presses a path such as ["File","Save"].
-- wait waits until any element's name or value contains text, or with gone:true none does. All waits in one call share 45s. On Windows a ref after a wait that changed the app is refused with stale_ref.
+- wait waits until any element's name or value contains text, or with gone:true none does. Waits and steps in one call share 45s; once it is spent no further step starts, and that step's result says so. On Windows a ref after a wait that changed the app is refused with stale_ref.
 - batch runs up to 25 steps in one call and stops at the first failure. Confirm an action in the same call: [{action:"press",ref:"c4"},{action:"wait",text:"Saved"}].
 - Pass the generation you last received with every action. The reply is the new state, so do not snapshot after acting: unchanged:true, or changed[] (new or updated elements) and removed[] (refs gone) since that generation, or the whole elements[].
 - unsupported_action means the OS cannot do it in the background. The front app, keychains, password managers, Windows secure desktop and password fields are refused. On the VM desktop, click, drag and scroll at x,y and type without a ref are real input in the app's raised window.`, inputSchema: objectSchema({
@@ -288,7 +288,7 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
           { type: 'text', text: JSON.stringify({
             imageWidth: shot.imageWidth, imageHeight: shot.imageHeight,
             window: { x: shot.windowX, y: shot.windowY, width: shot.windowWidth, height: shot.windowHeight },
-            note: 'Click coordinates stay in snapshot space. Screen x = window.x + px * window.width / imageWidth; screen y = window.y + py * window.height / imageHeight.',
+            note: [shot.note, 'Click coordinates stay in snapshot space. Screen x = window.x + px * window.width / imageWidth; screen y = window.y + py * window.height / imageHeight.'].filter(Boolean).join(' '),
           }) },
         ] };
       }

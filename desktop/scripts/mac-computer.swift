@@ -301,6 +301,9 @@ final class RefBook {
     var next = 1
     // What each ref named in the last few trees handed out.
     var history: [(generation: Int, seen: [String: Seen])] = []
+    // A caller still acting from a tree: a batch that waits walks every 150 ms
+    // and would push it out of history before its later steps run.
+    var pinned: [(generation: Int, seen: [String: Seen])] = []
 }
 
 struct Seen {
@@ -308,11 +311,17 @@ struct Seen {
     let signature: String
 }
 
-func signature(_ node: Node) -> String { "\(node.role)|\(node.name)|\(node.context)" }
+// A toggle's own state, apart from its label: a long label is cut before " on"/" off", mixed reads as "on", and a disclosure triangle shows none.
+let toggles: Set<String> = ["AXCheckBox", "AXRadioButton", "AXDisclosureTriangle"]
+
+func signature(_ node: Node) -> String {
+    let state = toggles.contains(node.role) ? (node.value as? NSNumber).map { "|\($0.intValue)" } ?? "" : ""
+    return "\(node.role)|\(node.name)|\(node.context)\(state)"
+}
 
 // A ref from an older tree still means what the caller saw only when it is the
 // same control (a ref re-bound by label in an app that rebuilt its tree is not)
-// with the same label in the same row.
+// with the same label in the same row and, for a toggle, the same state.
 func stillSame(_ then: Seen, _ node: Node) -> Bool {
     then.key == AXKey(element: node.element) && then.signature == signature(node)
 }
@@ -345,6 +354,17 @@ func remember(_ book: RefBook, _ walk: Walk) {
     if book.history.last?.generation == walk.generation { return }
     book.history.append((walk.generation, walk.nodes.mapValues { Seen(key: AXKey(element: $0.element), signature: signature($0)) }))
     if book.history.count > 8 { book.history.removeFirst() }
+}
+
+func seenAt(_ book: RefBook, _ generation: Int) -> [String: Seen]? {
+    book.history.last(where: { $0.generation == generation })?.seen ?? book.pinned.last(where: { $0.generation == generation })?.seen
+}
+
+func pin(_ book: RefBook, _ generation: Int) {
+    guard let seen = seenAt(book, generation) else { return }
+    book.pinned.removeAll { $0.generation == generation }
+    book.pinned.append((generation, seen))
+    if book.pinned.count > 4 { book.pinned.removeFirst() }
 }
 
 // MARK: windows Accessibility cannot see
@@ -503,7 +523,7 @@ func ensureCache(_ pid: pid_t, _ expected: Int?, refs: [String], menubar: Bool) 
     }
     let walk = try refresh(pid, menubar: menubar)
     if walk.generation == expected { return }
-    guard let seen = refBooks[pid]?.history.first(where: { $0.generation == expected })?.seen else {
+    guard let seen = (refBooks[pid].flatMap { seenAt($0, expected) }) else {
         throw Fail("stale_ref", "stale_ref: The app changed since your snapshot. Take a fresh snapshot.")
     }
     for ref in refs {
@@ -855,25 +875,35 @@ func targetSize(_ frame: CGRect, _ maxWidth: Int) -> (width: Int, height: Int) {
     return (width, max(1, Int((Double(width) * frame.height / frame.width).rounded())))
 }
 
+struct WindowCandidate { let onScreen: Bool; let titled: Bool; let frame: CGRect }
+
+// The largest window of the app on the current Space. Only when it has none there
+// (another Space, minimized, hidden) is its largest titled window elsewhere used, the
+// one view of it Accessibility leaves; untitled off-screen windows are never shown ones.
+func pickWindow(_ windows: [WindowCandidate]) -> (index: Int, elsewhere: Bool)? {
+    let sized = windows.indices.filter { windows[$0].frame.width >= 40 && windows[$0].frame.height >= 40 }
+    let here = sized.filter { windows[$0].onScreen }
+    let pool = here.isEmpty ? sized.filter { windows[$0].titled } : here
+    guard let best = pool.max(by: { windows[$0].frame.width * windows[$0].frame.height < windows[$1].frame.width * windows[$1].frame.height }) else { return nil }
+    return (best, here.isEmpty)
+}
+
+let elsewhereShotNote = "Read only: this window is on another Space, minimized or hidden, where Accessibility cannot reach it and clicks at these coordinates may not land. To act on it, ask the user to bring it onto the current Space."
+
 // ScreenCaptureKit's screenshot call needs macOS 14; the app supports 13.
 @available(macOS 14, *)
 func captureWithScreenCaptureKit(_ pid: pid_t, maxWidth: Int) throws -> JSON {
     _ = NSApplication.shared
     var content: SCShareableContent?
     var finished = false
-    // Off-screen windows too: a window on another Space (behind a full-screen
-    // app) still captures, which is the only view of it Accessibility leaves.
+    // Include other Spaces so an app with no window on this one still has its
+    // titled window available as a read-only fallback.
     SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: false) { found, _ in content = found; finished = true }
     guard waitFor({ finished }), let windows = content?.windows else { throw Fail("failed", "Could not list windows to capture.") }
-    var best: SCWindow?
-    for window in windows where window.owningApplication?.processID == pid && window.windowLayer == 0 {
-        if window.frame.width < 40 || window.frame.height < 40 { continue }
-        if !window.isOnScreen && (window.title ?? "").isEmpty { continue }
-        guard let current = best else { best = window; continue }
-        if window.isOnScreen != current.isOnScreen { if window.isOnScreen { best = window }; continue }
-        if window.frame.width * window.frame.height > current.frame.width * current.frame.height { best = window }
-    }
-    guard let window = best else { throw Fail("no_window", "That app has no window to capture.") }
+    let appWindows = windows.filter { $0.owningApplication?.processID == pid && $0.windowLayer == 0 }
+    let candidates = appWindows.map { WindowCandidate(onScreen: $0.isOnScreen, titled: !($0.title ?? "").isEmpty, frame: $0.frame) }
+    guard let picked = pickWindow(candidates) else { throw Fail("no_window", "That app has no window to capture.") }
+    let window = appWindows[picked.index]
     let size = targetSize(window.frame, maxWidth)
     let configuration = SCStreamConfiguration()
     configuration.width = size.width
@@ -886,7 +916,9 @@ func captureWithScreenCaptureKit(_ pid: pid_t, maxWidth: Int) throws -> JSON {
         finished = true
     }
     guard waitFor({ finished }), let image else { throw Fail("failed", "Could not capture that window.") }
-    return try jpegReply(image, window.frame)
+    var reply = try jpegReply(image, window.frame)
+    if picked.elsewhere { reply["note"] = elsewhereShotNote }
+    return reply
 }
 
 func captureWithScreencapture(_ pid: pid_t, maxWidth: Int) throws -> JSON {
@@ -1055,6 +1087,7 @@ func act(_ request: JSON) throws -> JSON {
     let pid = try pidOf(request)
     try requireAccessibility()
     try checkApp(pid)
+    if let generation = (request["generation"] as? NSNumber)?.intValue, let book = refBooks[pid] { pin(book, generation) }
     let steps = request["steps"] as? [JSON] ?? []
     let menubar = request["menubar"] as? Bool ?? caches[pid]?.menubar ?? false
     let refs = steps.compactMap { $0["ref"] as? String }
@@ -1100,6 +1133,7 @@ func dispatch(_ request: JSON) throws -> JSON {
         let pid = try pidOf(request)
         try requireAccessibility()
         try checkApp(pid)
+        if let generation = (request["pin"] as? NSNumber)?.intValue, let book = refBooks[pid] { pin(book, generation) }
         return snapshotFields(try refresh(pid, menubar: request["menubar"] as? Bool ?? false))
     case "act":
         return try act(request)
@@ -1185,6 +1219,59 @@ func selftest() throws -> JSON {
     try expect(stillSame(Seen(key: AXKey(element: AXUIElementCreateApplication(4)), signature: "AXButton|Go|"), rebuilt), "same control accepted")
     rebuilt.context = "Row 7"
     try expect(!stillSame(Seen(key: AXKey(element: AXUIElementCreateApplication(4)), signature: "AXButton|Go|Row 3"), rebuilt), "recycled row refused")
+
+    let longLabel = String(repeating: "x", count: 120)
+    let box = Node(AXUIElementCreateApplication(5), depth: 0, limit: 0)
+    box.role = "AXCheckBox"
+    box.name = longLabel
+    box.value = NSNumber(value: 0)
+    let boxOff = Seen(key: AXKey(element: box.element), signature: signature(box))
+    try expect(stillSame(boxOff, box), "unchanged checkbox accepted")
+    box.value = NSNumber(value: 1)
+    try expect(!stillSame(boxOff, box), "checkbox state checked")
+    let boxOn = Seen(key: AXKey(element: box.element), signature: signature(box))
+    box.value = NSNumber(value: 2)
+    try expect(!stillSame(boxOn, box), "mixed checkbox state checked")
+    let disclosure = Node(AXUIElementCreateApplication(6), depth: 0, limit: 0)
+    disclosure.role = "AXDisclosureTriangle"
+    disclosure.value = NSNumber(value: 0)
+    let disclosureClosed = Seen(key: AXKey(element: disclosure.element), signature: signature(disclosure))
+    disclosure.value = NSNumber(value: 1)
+    try expect(!stillSame(disclosureClosed, disclosure), "disclosure state checked")
+    let button = Node(AXUIElementCreateApplication(7), depth: 0, limit: 0)
+    button.role = "AXButton"
+    button.name = "Go"
+    button.value = NSNumber(value: 0)
+    let buttonSeen = Seen(key: AXKey(element: button.element), signature: signature(button))
+    button.value = NSNumber(value: 1)
+    try expect(stillSame(buttonSeen, button), "button value ignored")
+
+    let pinnedBook = RefBook()
+    remember(pinnedBook, Walk(elements: [], nodes: [:], truncated: false, generation: 100))
+    pin(pinnedBook, 100)
+    for value in 101...120 { remember(pinnedBook, Walk(elements: [], nodes: [:], truncated: false, generation: value)) }
+    try expect(seenAt(pinnedBook, 100) != nil, "pinned generation kept")
+    try expect(seenAt(pinnedBook, 101) == nil, "old unpinned generation dropped")
+    try expect(seenAt(pinnedBook, 120) != nil, "latest generation kept")
+    let pinnedCount = pinnedBook.pinned.count
+    pin(pinnedBook, 99)
+    try expect(pinnedBook.pinned.count == pinnedCount, "unknown generation not pinned")
+    for value in 116...120 { pin(pinnedBook, value) }
+    try expect(pinnedBook.pinned.map(\.generation) == [117, 118, 119, 120], "only four generations pinned")
+
+    let here = pickWindow([
+        WindowCandidate(onScreen: false, titled: true, frame: CGRect(x: 0, y: 0, width: 500, height: 500)),
+        WindowCandidate(onScreen: true, titled: true, frame: CGRect(x: 0, y: 0, width: 100, height: 100)),
+    ])
+    try expect(here?.index == 1 && here?.elsewhere == false, "on-screen window preferred")
+    let elsewhere = pickWindow([
+        WindowCandidate(onScreen: false, titled: true, frame: CGRect(x: 0, y: 0, width: 200, height: 100)),
+        WindowCandidate(onScreen: false, titled: true, frame: CGRect(x: 0, y: 0, width: 300, height: 100)),
+    ])
+    try expect(elsewhere?.index == 1 && elsewhere?.elsewhere == true, "largest elsewhere window picked")
+    try expect(pickWindow([WindowCandidate(onScreen: false, titled: false, frame: CGRect(x: 0, y: 0, width: 100, height: 100))]) == nil, "untitled elsewhere window skipped")
+    try expect(pickWindow([WindowCandidate(onScreen: true, titled: true, frame: CGRect(x: 0, y: 0, width: 39, height: 100))]) == nil, "small window skipped")
+    try expect(pickWindow([]) == nil, "empty windows skipped")
     return ["checks": checks]
 }
 

@@ -218,7 +218,7 @@ async function computerHost(t, capabilities, hostLabel) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(req.url === '/v1/status' ? JSON.stringify({ capabilities, ...(hostLabel ? { host: hostLabel } : {}) })
       : req.url === '/v1/computer/apps' ? JSON.stringify({ apps: [{ pid: 7, name: 'app-api-marker' }] })
-      : req.url.includes('/screenshot') ? JSON.stringify({ image: 'AAAA', imageWidth: 1, imageHeight: 1, windowX: 0, windowY: 0, windowWidth: 1, windowHeight: 1 })
+      : req.url.includes('/screenshot') ? JSON.stringify({ image: 'AAAA', imageWidth: 1, imageHeight: 1, windowX: 0, windowY: 0, windowWidth: 1, windowHeight: 1, note: 'Read only: elsewhere.' })
       : JSON.stringify({ generation: 4, via: 'app-api-marker' }));
   });
   await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
@@ -255,6 +255,7 @@ test('computer tools go through the app API when the connected app advertises co
   assert.match(await call('workspace_computer_action', { pid: 7, action: 'batch', generation: 4, menubar: true, steps: [{ action: 'press', ref: 'a1' }] }), /app-api-marker/);
   const shot = await client.callTool({ name: 'workspace_computer_screenshot', arguments: { pid: 7, maxWidth: 640 } });
   assert.equal(shot.isError, undefined);
+  assert.match(JSON.parse(shot.content[1].text).note, /^Read only: elsewhere\. Click coordinates stay/);
   const lines = seen.map((entry) => entry.line);
   assert.deepEqual(lines.filter((line) => line !== 'GET /v1/status'), [
     'GET /v1/computer/apps',

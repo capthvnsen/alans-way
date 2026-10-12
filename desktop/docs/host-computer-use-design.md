@@ -142,13 +142,15 @@ its last capture, which turned every state-changing step into a `stale_ref`.
    row named. Fixes the list and scroll tasks.
 2. **Stable refs and per-ref checks.** A ref follows its control
    (AXUIElement identity, then role, name and position among namesakes for
-   apps that rebuild their tree). The helper keeps the last eight trees it
-   handed out; a ref action with an older generation still runs when every
-   ref it uses is the same control (the same AXUIElement) with the role,
-   name and enclosing row the caller saw, and otherwise fails naming the
-   ref. A ref re-bound by label, or a button in a recycled table row, never
-   passes. Fixes live churn and removes the provider's stale retries without
-   changing the provider.
+   apps that rebuild their tree). The helper keeps the last eight trees plus
+   up to four the caller is still acting from, pinned by every action and wait
+   poll, so a long batch's later steps still check against the caller's tree.
+   A ref action with an older generation still runs when every ref it uses is
+   the same control (the same AXUIElement) with the role, name and enclosing
+   row the caller saw; a toggle must also still have the state the caller saw.
+   Otherwise it fails naming the ref. A ref re-bound by label, or a button in
+   a recycled table row, never passes. Fixes live churn and removes the
+   provider's stale retries without changing the provider.
 3. **Delta replies.** An action reply lists `changed[]` and `removed[]`
    against what that bot was last sent, when the caller passes that tree's
    generation (so a lost reply gets the whole tree) and the delta is under
@@ -157,11 +159,13 @@ its last capture, which turned every state-changing step into a `stale_ref`.
 4. **`wait` step.** `{action:"wait", text, gone, timeout}` polls the tree, so
    a batch acts and confirms in one call. Steps after a wait still carry the
    caller's generation; a run or a wait that fails after earlier steps ran is
-   reported in `results`, not thrown; all waits in one call share 45 s.
+   reported in `results`, not thrown. Waits and act runs start only within 45 s.
 5. **Say why a tree is empty.** No readable window gives a `note`: on another
    Space, minimized or hidden (with the fix), or no windows (use the menus).
-   Window screenshots include off-screen windows, preferring on-screen ones
-   and skipping the untitled never-shown windows apps own.
+   Screenshots come from the app's windows on the current Space. Only when it
+   has none there do they use its titled window elsewhere, and the reply's
+   note says it is read only. The macOS 13 screencapture path stays
+   current-Space only.
 6. **`locked`.** Found during the bench: with the screen locked,
    Accessibility returns the menu-bar strips as an app's windows (78 empty
    menu items for the fixture, no controls). The helper now fails fast with

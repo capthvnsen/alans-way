@@ -86,6 +86,14 @@ test('the Mac helper re-walks with the request menubar flag, fails closed on foc
   assert.match(drag, /isSecure\(element\)/);
 });
 
+test('the Mac helper pins action and wait generations before walking', () => {
+  const swift = fs.readFileSync(path.join(__dirname, '../scripts/mac-computer.swift'), 'utf8');
+  const act = swift.slice(swift.indexOf('func act('), swift.indexOf('func dispatch('));
+  assert.match(act, /pin\(book, generation\)[\s\S]*try ensureCache/);
+  const snapshot = swift.slice(swift.indexOf('case "snapshot":'), swift.indexOf('case "act":'));
+  assert.match(snapshot, /pin\(book, generation\)[\s\S]*refresh\(/);
+});
+
 test('the Mac helper checks focus before menu items, drag ends, and defaults to the snapshot menubar flag', () => {
   const swift = fs.readFileSync(path.join(__dirname, '../scripts/mac-computer.swift'), 'utf8');
   const menu = swift.slice(swift.indexOf('case "menu":\n        try'), swift.indexOf('default:\n        throw Fail("unsupported_action"'));
