@@ -130,6 +130,61 @@ test('a batch reports per-step results and stops at the first failure', async (t
   assert.equal(reply.generation, 8);
 });
 
+test('wait steps are validated and capped', () => {
+  assert.throws(() => normalizeStep({ action: 'wait' }), /wait needs text/);
+  assert.throws(() => normalizeStep({ action: 'wait', text: 'x'.repeat(201) }), /wait needs text/);
+  assert.deepEqual(normalizeStep({ action: 'wait', text: 'Saved' }), { action: 'wait', text: 'Saved', gone: false, timeout: 5000 });
+  assert.deepEqual(normalizeStep({ action: 'wait', text: 'Saving', gone: true, timeout: 60000 }), { action: 'wait', text: 'Saving', gone: true, timeout: 15000 });
+});
+
+test('a batch can act and then wait for what the action caused', async (t) => {
+  const { service, close } = fakeComputer('ok');
+  t.after(close);
+  const reply = await service.action('bot', 5, { action: 'batch', generation: 7, steps: [
+    { action: 'press', ref: 'c1' }, { action: 'wait', text: 'done' }, { action: 'click', x: 1, y: 2 },
+  ] });
+  assert.equal(reply.results.length, 3);
+  assert.equal(reply.results[1].ok, true);
+  assert.ok(Number.isInteger(reply.results[1].waitedMs));
+  assert.equal(reply.elements[0].name, 'Done');
+});
+
+test('a wait that times out stops the batch and still reports the steps that ran', async (t) => {
+  const { service, close } = fakeComputer('ok');
+  t.after(close);
+  const reply = await service.action('bot', 5, { action: 'batch', generation: 7, steps: [
+    { action: 'press', ref: 'c1' }, { action: 'wait', text: 'Never', timeout: 300 }, { action: 'click', x: 1, y: 2 },
+  ] });
+  assert.equal(reply.results.length, 2);
+  assert.equal(reply.results[0].ok, true);
+  assert.equal(reply.results[1].code, 'timeout');
+  // The wait polled the tree, which the fake answers with its snapshot.
+  assert.equal(reply.elements[0].name, 'Go');
+  await assert.rejects(service.action('bot', 5, { action: 'wait', text: 'Never', timeout: 200 }), (error) => error.code === 'timeout');
+});
+
+test('a run after a wait that the helper refuses is reported, not thrown, once earlier steps ran', async (t) => {
+  const { service, close } = fakeComputer('ok');
+  t.after(close);
+  // The fake refuses the ref "gone" the way a helper refuses a control that changed.
+  const reply = await service.action('bot', 5, { action: 'batch', generation: 7, steps: [
+    { action: 'click', x: 1, y: 2 }, { action: 'wait', text: 'Done' }, { action: 'press', ref: 'gone' },
+  ] });
+  assert.deepEqual(reply.results.map((item) => !item.error), [true, true, false]);
+  assert.equal(reply.results[2].code, 'stale_ref');
+  assert.equal(reply.elements[0].name, 'Done');
+  await assert.rejects(service.action('bot', 5, { action: 'press', ref: 'gone', generation: 7 }), (error) => error.code === 'stale_ref');
+});
+
+test('the app list leaves out off-limits apps and only marks the front one', async (t) => {
+  const { service, close } = fakeComputer('ok');
+  t.after(close);
+  const apps = await service.apps();
+  assert.deepEqual(apps.map((app) => app.name), ['X', 'Front']);
+  assert.equal('frontmost' in apps[0], false);
+  assert.equal(apps[1].frontmost, true);
+});
+
 test('a second bot is sent the tree even when the first bot already saw it', async (t) => {
   const { service, close } = fakeComputer('ok');
   t.after(close);

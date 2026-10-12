@@ -13,10 +13,13 @@ const handle = (request) => {
   if (mode === 'always-not-found' || (mode === 'flaky-not-found' && misses++ < 1)) return reply({ id: request.id, ok: false, code: 'not_found', error: 'App not found.' });
   if (mode === 'bad-menu' && request.cmd === 'menu') return reply({ id: request.id, ok: false, code: 'not_found', error: 'No such menu item.' });
   if (mode === 'crash-mid-act' && request.cmd === 'act') process.exit(3);
-  if (request.cmd === 'apps') return reply({ id: request.id, ok: true, apps: [{ name: 'X', bundleId: 'x', pid: process.pid, frontmost: false }], policy });
+  if (request.cmd === 'apps') return reply({ id: request.id, ok: true, apps: [
+    { name: 'X', bundleId: 'x', pid: process.pid, frontmost: false }, { name: 'Front', bundleId: 'front', pid: 3, frontmost: true },
+    { name: '1Password', bundleId: 'com.1password.1password', pid: 4, frontmost: false }, { name: 'Device Hub', bundleId: 'com.apple.dt.Devices', pid: -1, frontmost: false },
+  ], policy });
   if (request.cmd === 'snapshot') return reply({ id: request.id, ok: true, generation: 7, elements: [{ ref: 'c1', role: 'AXButton', name: 'Go' }], helper: process.pid, policy });
   if (request.cmd === 'act') {
-    if (request.generation !== undefined && request.generation !== 7) return reply({ id: request.id, ok: false, code: 'stale_ref', error: 'The app changed since your snapshot. Take a fresh snapshot.' });
+    if ((request.generation !== undefined && request.generation !== 7) || request.steps.some((step) => step.ref === 'gone')) return reply({ id: request.id, ok: false, code: 'stale_ref', error: 'The app changed since your snapshot. Take a fresh snapshot.' });
     const results = request.steps.map((step) => (step.action === 'scroll' ? { ok: false, code: 'unsupported_action', error: 'No scroll here.' } : { ok: true, cursorMoved: false }));
     return reply({ id: request.id, ok: true, results: results.slice(0, results.findIndex((r) => !r.ok) + 1 || results.length), generation: 8, elements: [{ ref: 'c1', role: 'AXButton', name: 'Done' }], steps: request.steps });
   }
