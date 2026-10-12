@@ -70,6 +70,24 @@ function faviconTarget(pageUrlValue, iconUrl) {
   } catch { return ''; }
 }
 
+// A page names every candidate icon; the fetch queue keeps the same-origin
+// http(s) ones in the page's own order so a cross-origin or dead first
+// candidate does not sink the tab's icon. Non-URL candidates (an inline
+// data: icon Chromium already decoded) ride along as the last fallback.
+// The queue is capped: fetches run serially, so a page naming dozens of
+// icons cannot stall the icon or hang the resolver.
+function faviconQueue(pageUrlValue, favicons) {
+  const targets = [];
+  for (const item of favicons) {
+    if (targets.length >= 6) break;
+    if (!/^https?:\/\//i.test(item)) continue;
+    const target = faviconTarget(pageUrlValue, item);
+    if (target && !targets.includes(target)) targets.push(target);
+  }
+  const inline = favicons.find((item) => item && item !== 'data:,' && !/^https?:\/\//i.test(item)) || '';
+  return { targets, inline };
+}
+
 // While the human holds a tab, bots may learn that it exists and who holds
 // it — not where the human is. Keep metadata structural: origin-only URL,
 // no title, icon or handoff note.
@@ -239,4 +257,4 @@ function hostShouldReload(mtime, started, inFlight) {
   return inFlight === 0 && Number(mtime) > Number(started);
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl };
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl };
