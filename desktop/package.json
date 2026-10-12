@@ -21,6 +21,7 @@
     "test:agent-visual": "node test/agent-visual-electron.cjs",
     "test:preview-drag": "node test/preview-drag-electron.cjs",
     "test:newtab": "electron test/newtab-electron.cjs",
+    "test:restore-tabs": "node test/restore-tabs-electron.cjs",
     "test:pdf-viewer": "electron test/pdf-viewer-electron.cjs",
     "test:cloud-telegram": "electron test/cloud-telegram-electron.cjs",
     "eval": "node eval/run.cjs",
@@ -39,6 +40,7 @@
     "pretest:agent-visual": "npm run build:preload",
     "pretest:preview-drag": "npm run build:preload",
     "pretest:newtab": "npm run build:preload",
+    "pretest:restore-tabs": "npm run build:preload",
     "pretest:pdf-viewer": "npm run build:preload"
   },
   "dependencies": {
