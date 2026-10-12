@@ -871,7 +871,16 @@ function showSettings() {
   checkSetup.onclick = () => runSetupCheck(checkSetup, checkResults);
   const report = element('button', 'secondary-button', 'Copy report'); report.onclick = copyReport;
   const support = element('button', 'link-button', 'Get help on Discord ↗'); support.onclick = () => command('open-support');
-  body.append(vpsField, sshField, element('div', 'setting-row'), sshSave, agentSetup, agentPrompt, agentUpdate, agentTest, wizard, agentResult, checkSetup, report, support, checkResults);
+  const hermesUpdate = element('button', 'secondary-button', 'Update Hermes');
+  const hermesResult = element('p', 'settings-note', '');
+  hermesUpdate.onclick = async () => {
+    hermesUpdate.disabled = true;
+    hermesResult.textContent = `Running hermes update on the ${remoteName()}; this can take a few minutes. Your bot will message you when it finishes.`;
+    const result = await command('hermes-update');
+    hermesUpdate.disabled = false;
+    hermesResult.textContent = result && typeof result === 'object' ? `${result.ok ? '✓' : '✗'} ${result.detail}` : '✗ The update did not run.';
+  };
+  body.append(vpsField, sshField, element('div', 'setting-row'), sshSave, agentSetup, agentPrompt, agentUpdate, agentTest, wizard, agentResult, checkSetup, report, support, checkResults, hermesUpdate, hermesResult);
   const primaryField = element('div', 'field'), primaryLabel = element('label', '', 'Primary bot'); primaryLabel.htmlFor = 'primary-bot';
   const primarySelect = element('select'); primarySelect.id = 'primary-bot';
   const none = element('option', '', 'None (defaults to the overseer bot)'); none.value = ''; primarySelect.append(none);
