@@ -178,13 +178,21 @@ What we do that it does not document:
 ## Changes, ranked by what they moved
 
 1. **Name targets.** `{action:"click", name:"Next", role:"link"}` acts on
-   the control with that name, as a snapshot would list it. Matching is
-   exact first, then by prefix, then by contained words. `role` and `row`
-   narrow it. It works in open shadow roots and same-origin frames, and the
-   reply says which ref it resolved to. Several matches fail with their
-   refs and rows; it never guesses. This is the locator layer ChatGPT
-   prefers, and it removes the snapshot before an action on a named control
-   and after a navigation.
+   the control with that name, as a snapshot would list it. Only an exact
+   match acts (case and spacing aside, state words optional). `role` and
+   `row` narrow it. It works in open shadow roots and same-origin frames,
+   and the reply says which ref and full name it resolved to.
+   - Several exact matches fail with their refs and rows.
+   - No exact match fails with the near matches as suggestions, so
+     `name:"Cancel"` never clicks a lone "Cancel subscription".
+   - A lookup that could not read the whole page (over 2,000 controls or
+     400 ms) says so: `partial` on success, a note on failure.
+   - Both hosts list `name-targets` in their status. A host from before it
+     (a VM not yet updated) rejects a named step, and the MCP says to act
+     by ref until it is updated.
+
+   This is the locator layer ChatGPT prefers, and it removes the snapshot
+   before an action on a named control and after a navigation.
 2. **Stable refs.** A ref (`e12`) names one control for the life of its
    document. Refs are held in a page-side store on a registered symbol, not
    in a DOM attribute. When the page re-renders a control as a new node, the
@@ -194,7 +202,10 @@ What we do that it does not document:
    - Refs no longer die after each action or on in-page route changes.
    - A page can no longer plant the ref attribute to redirect a ref.
    - Numbering continues across documents in a tab, so an old document's
-     ref never names a control in the new one.
+     ref never names a control in the new one. That holds whichever script
+     opens a new document's store first (a snapshot, a name lookup, an
+     overlay's close ref): each starts past the tab's highest issued ref
+     (tested across a navigation inside one batch).
 3. **Delta replies.** Pass `generation` and an action reply carries
    `changed[]` and `removed[]` instead of the list. A scan cut short by its
    cap removes only refs the page reports gone. After a navigation, without
@@ -215,9 +226,9 @@ What we do that it does not document:
      the confirm or prompt it raises. The default is still dismiss, and the
      note says how to accept.
 
-The tool descriptions say all of this in 1.2k more characters (10,963 to
-12,179 for the browser tools on main with #126; about 300 tokens per turn,
-before prompt caching).
+The browser tool definitions grow from 10,046 characters at the baseline
+commit (10,963 on today's main, which adds #126's release reason) to 12,186:
+1.2k for this change, about 300 tokens per turn before prompt caching.
 
 ## Before and after
 
@@ -234,7 +245,7 @@ same loop runs on both.
 
 | Task | Pass | Calls | Snapshots | Tool errors | Tokens |
 |---|---|---|---|---|---|
-| search-open | 3/3 → 3/3 | 4 → 3 | 1 → 0 | 0 → 0 | 2,324 → 2,001 |
+| search-open | 3/3 → 3/3 | 4 → 4 | 1 → 0 | 0 → 0 | 2,324 → 2,492 |
 | form-multifield | 3/3 → 3/3 | 3 → 3 | 1 → 1 | 0 → 0 | 1,280 → 1,275 |
 | infinite-list | 3/3 → 3/3 | 8 → 7 | 1 → 1 | 0 → 0 | 4,926 → 4,012 |
 | cookie-modal | 3/3 → 3/3 | 7 → 3 | 1 → 1 | 2 → 0 | 1,970 → 977 |
@@ -244,17 +255,17 @@ same loop runs on both.
 | login-wall | 3/3 → 3/3 | 4 → 3 | 1 → 0 | 0 → 0 | 1,307 → 818 |
 | iframes | 3/3 → 3/3 | 8 → 8 | 1 → 1 | 0 → 0 | 2,549 → 2,283 |
 | pub-wiki-search | 3/3 → 3/3 | 4 → 4 | 1 → 1 | 0 → 0 | 4,385 → 4,413 |
-| pub-books-next | 3/3 → 3/3 | 6 → 3 | 3 → 1 | 0 → 0 | 16,350 → 6,593 |
+| pub-books-next | 3/3 → 3/3 | 6 → 3 | 3 → 1 | 0 → 0 | 16,350 → 6,594 |
 | pub-selenium-form | 3/3 → 3/3 | 3 → 3 | 1 → 1 | 0 → 0 | 1,073 → 1,077 |
-| **Total** | **36/36 → 36/36** | **67 → 47 (-30%)** | **17 → 8** | **2 → 0** | **44,410 → 26,884 (-39%)** |
+| **Total** | **36/36 → 36/36** | **67 → 48 (−28%)** | **17 → 8** | **2 → 0** | **44,410 → 27,376 (−38%)** |
 
-Tool time, summed medians: 11,435 ms → 9,442 ms.
+Tool time, summed medians: 11,435 ms → 9,777 ms.
 
 **Host tabs (the app under Electron)**
 
 | Task | Pass | Calls | Snapshots | Tool errors | Tokens |
 |---|---|---|---|---|---|
-| search-open | 3/3 → 3/3 | 4 → 3 | 1 → 0 | 0 → 0 | 2,001 → 1,694 |
+| search-open | 3/3 → 3/3 | 4 → 4 | 1 → 0 | 0 → 0 | 2,001 → 2,110 |
 | form-multifield | 3/3 → 3/3 | 3 → 3 | 1 → 1 | 0 → 0 | 1,117 → 1,108 |
 | infinite-list | 3/3 → 3/3 | 8 → 7 | 1 → 1 | 0 → 0 | 4,177 → 3,415 |
 | cookie-modal | 3/3 → 3/3 | 7 → 3 | 1 → 1 | 2 → 0 | 1,555 → 827 |
@@ -263,12 +274,12 @@ Tool time, summed medians: 11,435 ms → 9,442 ms.
 | confirm-dialog | 3/3 → 3/3 | 5 → 3 | 1 → 0 | 0 → 0 | 862 → 651 |
 | login-wall | 3/3 → 3/3 | 4 → 3 | 1 → 0 | 0 → 0 | 1,110 → 646 |
 | iframes | 3/3 → 3/3 | 8 → 8 | 1 → 1 | 0 → 0 | 2,355 → 2,087 |
-| pub-wiki-search | 3/3 → 3/3 | 4 → 4 | 1 → 1 | 0 → 0 | 4,022 → 4,219 |
-| pub-books-next | 3/3 → 3/3 | 6 → 3 | 3 → 1 | 0 → 0 | 16,112 → 6,470 |
+| pub-wiki-search | 3/3 → 3/3 | 4 → 4 | 1 → 1 | 0 → 0 | 4,022 → 4,181 |
+| pub-books-next | 3/3 → 3/3 | 6 → 3 | 3 → 1 | 0 → 0 | 16,112 → 6,471 |
 | pub-selenium-form | 3/3 → 3/3 | 3 → 3 | 1 → 1 | 0 → 0 | 899 → 898 |
-| **Total** | **36/36 → 36/36** | **67 → 47 (-30%)** | **17 → 8** | **2 → 0** | **40,287 → 24,091 (-40%)** |
+| **Total** | **36/36 → 36/36** | **67 → 48 (−28%)** | **17 → 8** | **2 → 0** | **40,287 → 24,470 (−39%)** |
 
-Tool time, summed medians: 13,788 ms → 7,732 ms.
+Tool time, summed medians: 13,788 ms → 7,882 ms.
 
 The held-out eval (`node eval/run.cjs --mode oracle`, 20 browser tasks, 3
 runs each) checks that nothing regressed. Its oracles are scripted with
@@ -277,18 +288,20 @@ its pages were used to tune these changes.
 
 | Engine | Pass | Mean wall | Mean tool calls | Mean reply bytes |
 |---|---|---|---|---|
-| VM host code | 59/60 → 60/60 | 985 → 905 ms | 5.1 → 5.1 | 10,098 → 10,803 |
-| Host tabs (app under Electron) | 51/60 → 54/60 | 2,418 → 1,326 ms | 5.3 → 5.1 | 9,709 → 12,069 |
+| VM host code | 59/60 → 59/60 | 985 → 899 ms | 5.1 → 5.1 | 10,098 → 10,542 |
+| Host tabs (app under Electron) | 51/60 → 54/60 | 2,418 → 1,336 ms | 5.3 → 5.1 | 9,709 → 11,603 |
 
-The failures that remain, on host tabs only, are in the eval's own oracles,
-not in the tools: `pub-wiki-multihop` clicks link pixels it measured by
-script and lands on the old page, and `pub-quotes-infinite-scroll` scrolls by
-script with page timers that a background tab in a minimized window
-throttles (3/3 each, before and after). Before, `pub-shadow-switch`,
-`pub-iframe-datepicker` and `fx-infinite-scroll-select` also failed once
-each; after, they passed. Replies are larger in this eval because its oracles
-snapshot with `maxElements: 300`, and rows and overlays add to every
-snapshot.
+The failures that remain are in the eval's own oracles, not in the tools,
+and they fail the same way before and after:
+- `pub-wiki-multihop` clicks link pixels it measured by script and lands on
+  the old page (1 of 3 runs on the VM code, 3 of 3 on host tabs).
+- `pub-quotes-infinite-scroll` scrolls by script with page timers, which a
+  background tab in a minimized window throttles (3 of 3 on host tabs).
+
+Before, `pub-shadow-switch`, `pub-iframe-datepicker` and
+`fx-infinite-scroll-select` also failed once each on host tabs; after, they
+passed. Replies are larger in this eval because its oracles snapshot with
+`maxElements: 300`, and rows and overlays add to every snapshot.
 
 The VM itself (the live Orgo VM through the installed app, public tasks only,
 because fixtures on this Mac are not reachable from it) was run for the
