@@ -115,20 +115,23 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
     return result;
   }
 
+  // Every result carries the target's id/label: callers key per-VM progress
+  // and the persistent prefs.vmUpdates retry record off result.id directly,
+  // whether the result came from updateVm or updateAll.
   async function updateVm(vm, tag, onProgress) {
     try {
       const result = await runGuest(vm, { tag, onProgress });
       const plugins = Array.isArray(result.plugins) ? result.plugins : [];
       const gatewayRestarted = result.gatewayRestarted === true;
       const gatewayRestartCmd = result.gatewayRestartCmd;
-      if (result.ok === true) return { ok: true, state: 'ok', version: String(result.version || tag.replace(/^v/, '')),
+      if (result.ok === true) return { id: vm.id, label: vm.label, ok: true, state: 'ok', version: String(result.version || tag.replace(/^v/, '')),
         plugins, gatewayRestarted, pluginLines: vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd }) };
       const error = String(result.error || 'The VM update failed without a reason.');
-      return { ok: false, state: error === 'busy' ? 'busy' : 'failed', version: String(result.version || ''), error: error === 'busy' ? 'VM busy, will retry' : error,
+      return { id: vm.id, label: vm.label, ok: false, state: error === 'busy' ? 'busy' : 'failed', version: String(result.version || ''), error: error === 'busy' ? 'VM busy, will retry' : error,
         plugins, gatewayRestarted, pluginLines: vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd }) };
     } catch (error) {
       log('vm-update', error);
-      return { ok: false, state: 'failed', error: tail(error.message) || 'The VM update failed.', plugins: [], gatewayRestarted: false, pluginLines: [] };
+      return { id: vm.id, label: vm.label, ok: false, state: 'failed', error: tail(error.message) || 'The VM update failed.', plugins: [], gatewayRestarted: false, pluginLines: [] };
     }
   }
 
@@ -155,7 +158,7 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
   }
 
   async function updateAll(tag, targets, onProgress) {
-    return Promise.all((targets || []).map(async (vm) => ({ id: vm.id, label: vm.label, ...(await updateVm(vm, tag, onProgress)) })));
+    return Promise.all((targets || []).map((vm) => updateVm(vm, tag, onProgress)));
   }
 
   // The release order: every VM first, then the local app. A VM that failed
