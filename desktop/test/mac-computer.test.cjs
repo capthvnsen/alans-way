@@ -76,7 +76,7 @@ test('the Mac helper refuses password managers by policy before touching an app'
 
 test('the Mac helper re-walks with the request menubar flag, fails closed on focus errors and checks drag starts', () => {
   const swift = fs.readFileSync(path.join(__dirname, '../scripts/mac-computer.swift'), 'utf8');
-  assert.match(swift, /func ensureCache\(_ pid: pid_t, _ expected: Int\?, menubar: Bool\)/);
+  assert.match(swift, /func ensureCache\(_ pid: pid_t, _ expected: Int\?, refs: \[String\], menubar: Bool\)/);
   assert.match(swift, /try ensureCache\(pid, [^\n]*menubar: menubar\)/);
   assert.ok(!/refresh\(pid, menubar: false\)/.test(swift), 'no walk may hard-code menubar:false');
   const focus = swift.slice(swift.indexOf('func rejectSecureFocus'), swift.indexOf('func rejectSecure(_ node'));

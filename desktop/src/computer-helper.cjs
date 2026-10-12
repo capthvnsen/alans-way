@@ -3,12 +3,16 @@
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const { helperPolicy } = require('./computer-policy.cjs');
+const { helperPolicy, isBlocked } = require('./computer-policy.cjs');
 const { createComputerSnapshots } = require('./computer-snapshot.cjs');
 
 const REQUEST_TIMEOUT_MS = 20000;
 const ONCE_RETRY_MS = 60000;
 const STEP_LIMIT = 25;
+const WAIT_POLL_MS = 150;
+// All waits in one call share this, well under the connector's 90s abort, so
+// a batch never keeps acting after its caller has given up on it.
+const WAIT_BUDGET_MS = 45000;
 const READ_ONLY = new Set(['apps', 'snapshot', 'shot', 'menu']);
 
 function helperError(response) {
@@ -210,6 +214,12 @@ function normalizeStep(item) {
   const step = item && typeof item === 'object' ? item : {};
   const action = step.action;
   if (action === 'key' || action === 'hotkey') return normalizeKey(step);
+  if (action === 'wait') {
+    if (typeof step.text !== 'string' || !step.text || step.text.length > 200)
+      throw fail('bad_request', 'wait needs text: a few words of the element name or value to wait for.');
+    const timeout = Number.isFinite(step.timeout) ? Math.min(Math.max(step.timeout, 100), 15000) : 5000;
+    return { action: 'wait', text: step.text, gone: step.gone === true, timeout };
+  }
   if (action === 'type' && (typeof step.text !== 'string' || step.text.length > 2000))
     throw fail('bad_request', 'Text must be a string of at most 2000 characters.');
   // Only a desktop the agent owns types at the focused window; elsewhere apps never take focus.
@@ -220,7 +230,7 @@ function normalizeStep(item) {
   if (action === 'scroll' && !['up', 'down', 'left', 'right'].includes(step.direction))
     throw fail('bad_request', 'scroll needs a direction: up, down, left, or right.');
   if (!REF_ACTIONS.has(action) && !POINT_OR_REF.has(action) && !['click', 'drag', 'menu'].includes(action))
-    throw fail('bad_request', 'Computer action must be press, type, click, double_click, right_click, drag, scroll, key, hotkey, menu, or batch.');
+    throw fail('bad_request', 'Computer action must be press, type, click, double_click, right_click, drag, scroll, key, hotkey, menu, wait, or batch.');
   return step;
 }
 
@@ -234,25 +244,82 @@ function createComputerService(driver) {
     return seen.snapshot(bot, pid, await driver.snapshot(pid, { menubar: menubar === true }), since);
   }
 
+  // Polls the tree until an element's name or value contains the text (or no
+  // longer does), so one call can act and then confirm what the action caused.
+  async function waitFor(pid, step, tree, menubar, deadline) {
+    const needle = step.text.toLowerCase();
+    const present = (current) => current.elements.some((element) => `${element.name || ''}\n${element.value || ''}`.toLowerCase().includes(needle));
+    const started = Date.now();
+    const until = Math.min(started + step.timeout, deadline);
+    for (;;) {
+      if (tree && Array.isArray(tree.elements) && present(tree) !== step.gone) return { tree, result: { ok: true, waitedMs: Date.now() - started } };
+      if (Date.now() >= until) {
+        return { tree, result: { ok: false, code: 'timeout', error: `"${step.text}" did not ${step.gone ? 'go away' : 'appear'} within ${Date.now() - started}ms; the tree in this reply is the latest.` } };
+      }
+      if (tree) await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS));
+      try {
+        const { ok, ...latest } = await driver.snapshot(pid, { menubar });
+        tree = latest;
+      } catch (error) {
+        // The app quitting is what a wait for its text to go can be waiting for.
+        if (step.gone && error.code === 'not_found') return { tree, result: { ok: true, waitedMs: Date.now() - started, note: 'The app is gone.' } };
+        // The steps before this wait ran; report the wait failing rather than losing them.
+        return { tree, result: { ok: false, code: error.code || 'failed', error: error.message } };
+      }
+    }
+  }
+
   async function action(bot, pid, body) {
     const batch = body.action === 'batch';
     const raw = batch ? (Array.isArray(body.steps) ? body.steps.slice(0, STEP_LIMIT) : []) : [body];
     const steps = raw.map(normalizeStep);
     if (steps.some(needsGeneration) && !Number.isInteger(body.generation))
       throw fail('stale_ref', 'Pass the generation from your latest snapshot with every action that uses a ref.');
-    const reply = await driver.act(pid, { steps, generation: body.generation, menubar: body.menubar === true });
-    const { results = [], ...tree } = reply;
+    const menubar = body.menubar === true;
+    const results = [];
+    const deadline = Date.now() + WAIT_BUDGET_MS;
+    let tree = null;
+    // Steps run in runs between waits. Every run carries the caller's own
+    // generation, so a ref is always checked against the tree the caller saw.
+    for (let at = 0; at < steps.length;) {
+      if (steps[at].action === 'wait') {
+        const waited = await waitFor(pid, steps[at++], tree, menubar, deadline);
+        tree = waited.tree;
+        results.push(waited.result);
+        if (waited.result.ok === false) break;
+        continue;
+      }
+      let end = at;
+      while (end < steps.length && steps[end].action !== 'wait') end++;
+      let reply;
+      try { reply = await driver.act(pid, { steps: steps.slice(at, end), generation: body.generation, menubar }); }
+      catch (error) {
+        // Nothing ran yet: fail the call as before. Later, earlier steps did run and must be reported.
+        if (!results.length) throw error;
+        results.push({ ok: false, code: error.code || 'failed', error: error.message });
+        break;
+      }
+      const { results: done = [], ...latest } = reply;
+      results.push(...done);
+      // A run whose first step failed brings no tree; the one before it still stands.
+      tree = Array.isArray(latest.elements) || !tree ? latest : { ...tree, ...latest };
+      at = end;
+      if (done.some((item) => item.ok === false)) break;
+    }
     let result;
     if (batch) result = { results: results.map(({ ok, ...rest }) => (ok === false ? { error: rest.error, code: rest.code } : { ok, ...rest })) };
     else {
       if (!results[0] || results[0].ok === false) throw helperError(results[0] || {});
       result = results[0];
     }
-    return seen.action(bot, pid, { ...result, ...tree });
+    return seen.action(bot, pid, { ...result, ...(tree || {}) }, body.generation);
   }
 
   return {
-    apps: () => driver.apps(),
+    // Off-limits apps would only be refused, so they are not offered.
+    apps: async () => (await driver.apps())
+      .filter((app) => !(app.pid < 0) && !isBlocked(app.bundleId))
+      .map(({ frontmost, ...app }) => (frontmost ? { ...app, frontmost } : app)),
     snapshot,
     action,
     menu: (pid, path) => driver.menu(pid, Array.isArray(path) ? path.filter((part) => typeof part === 'string') : []),

@@ -26,6 +26,9 @@ let interactive: Set<String> = [
     "AXDisclosureTriangle", "AXTabGroup", "AXTab", "AXMenuBarItem",
 ]
 let textEntry: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox"]
+// Close, minimize and zoom never need the agent, and every window has them.
+let windowChrome: Set<String> = ["AXCloseButton", "AXMinimizeButton", "AXZoomButton", "AXFullScreenButton"]
+let rowRoles: Set<String> = ["AXRow", "AXOutlineRow"]
 let inFrontMessage = "That app is the one in front. Leave it in the background; the real cursor stays yours."
 
 // MARK: policy
@@ -43,12 +46,19 @@ func setPolicy(_ policy: JSON) {
     policyContains = (policy["contains"] as? [String] ?? []).map { $0.lowercased() }
 }
 
+// While the screen is locked Accessibility answers with menu-bar strips in
+// place of windows, so say so instead of handing back that tree.
+func screenLocked() -> Bool {
+    (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true
+}
+
 @discardableResult
 func checkApp(_ pid: pid_t) throws -> NSRunningApplication {
     guard let app = NSRunningApplication(processIdentifier: pid), app.activationPolicy == .regular, !app.isTerminated else {
         throw Fail("not_found", "App not found.")
     }
     if isBlocked(app.bundleIdentifier ?? "") { throw Fail("off_limits", "That app is off limits.") }
+    if screenLocked() { throw Fail("locked", "The screen is locked, so apps cannot be read or driven. Ask the user to unlock it, then retry.") }
     if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { throw Fail("in_front", inFrontMessage) }
     return app
 }
@@ -139,7 +149,11 @@ final class Node {
     var ref = ""
     var name = ""
     var shownValue = ""
-    var emitted = false
+    // The visible rect of the nearest scroll area above, and whether a row is.
+    var clip: CGRect?
+    var inRow = false
+    // The name of the row a control sits in: a recycled row keeps its buttons.
+    var context = ""
 
     init(_ element: AXUIElement, depth: Int, limit: Int) {
         self.element = element
@@ -147,7 +161,11 @@ final class Node {
         self.limit = limit
     }
 
-    var readable: Bool { interactive.contains(role) || role == "AXStaticText" }
+    // Cells and text inside a row are read into the row's name, not listed again.
+    var readable: Bool {
+        if inRow && (role == "AXCell" || role == "AXStaticText") { return false }
+        return interactive.contains(role) || role == "AXStaticText"
+    }
     var secure: Bool { subrole == "AXSecureTextField" || role == "AXSecureTextField" }
 }
 
@@ -162,10 +180,10 @@ struct Elem {
         var out: JSON = ["ref": ref, "role": role, "name": name]
         if !value.isEmpty { out["value"] = value }
         if let frame {
-            out["x"] = frame.origin.x
-            out["y"] = frame.origin.y
-            out["width"] = frame.width
-            out["height"] = frame.height
+            out["x"] = whole(frame.origin.x)
+            out["y"] = whole(frame.origin.y)
+            out["width"] = whole(frame.width)
+            out["height"] = whole(frame.height)
         }
         return out
     }
@@ -184,6 +202,8 @@ func rounded(_ number: Double) -> String {
     guard number.isFinite else { return "0" }
     return String(Int((number + 0.5).rounded(.down)))
 }
+
+func whole(_ number: Double) -> Int { Int(rounded(number)) ?? 0 }
 
 func generation(of elements: [Elem]) -> Int {
     fnv(elements.map { item in
@@ -259,7 +279,94 @@ struct Walk {
     var nodes: [String: Node]
     var truncated: Bool
     var generation: Int
+    var hidden = 0
+    var note: String?
 }
+
+// MARK: stable refs
+
+// AXUIElement equality is the app's own identity for a control, so a control
+// keeps its ref across walks while it exists. Apps that rebuild their tree get
+// the ref of the control with the same role, name and position among
+// namesakes, and anything new gets the next unused number.
+struct AXKey: Hashable {
+    let element: AXUIElement
+    static func == (a: AXKey, b: AXKey) -> Bool { CFEqual(a.element, b.element) }
+    func hash(into hasher: inout Hasher) { hasher.combine(CFHash(element)) }
+}
+
+final class RefBook {
+    var byElement: [AXKey: String] = [:]
+    var byLabel: [String: String] = [:]
+    var next = 1
+    // What each ref named in the last few trees handed out.
+    var history: [(generation: Int, seen: [String: Seen])] = []
+}
+
+struct Seen {
+    let key: AXKey
+    let signature: String
+}
+
+func signature(_ node: Node) -> String { "\(node.role)|\(node.name)|\(node.context)" }
+
+// A ref from an older tree still means what the caller saw only when it is the
+// same control (a ref re-bound by label in an app that rebuilt its tree is not)
+// with the same label in the same row.
+func stillSame(_ then: Seen, _ node: Node) -> Bool {
+    then.key == AXKey(element: node.element) && then.signature == signature(node)
+}
+
+var refBooks: [pid_t: RefBook] = [:]
+
+func assignRefs(_ items: [(key: AXKey, label: String)], _ book: RefBook) -> [String] {
+    var refs = [String?](repeating: nil, count: items.count)
+    var used: Set<String> = []
+    for (index, item) in items.enumerated() {
+        if let ref = book.byElement[item.key], !used.contains(ref) { refs[index] = ref; used.insert(ref) }
+    }
+    for (index, item) in items.enumerated() where refs[index] == nil {
+        if let ref = book.byLabel[item.label], !used.contains(ref) { refs[index] = ref; used.insert(ref) }
+    }
+    var byElement: [AXKey: String] = [:]
+    var byLabel: [String: String] = [:]
+    for (index, item) in items.enumerated() {
+        let ref = refs[index] ?? { defer { book.next += 1 }; return "c\(book.next)" }()
+        refs[index] = ref
+        byElement[item.key] = ref
+        byLabel[item.label] = ref
+    }
+    book.byElement = byElement
+    book.byLabel = byLabel
+    return refs.map { $0! }
+}
+
+func remember(_ book: RefBook, _ walk: Walk) {
+    if book.history.last?.generation == walk.generation { return }
+    book.history.append((walk.generation, walk.nodes.mapValues { Seen(key: AXKey(element: $0.element), signature: signature($0)) }))
+    if book.history.count > 8 { book.history.removeFirst() }
+}
+
+// MARK: windows Accessibility cannot see
+
+// Apps also own untitled off-screen windows that are never shown (a 500x500
+// one at the screen's bottom-left, menu-bar strips); a real window on another
+// Space has its title. Titles need Screen Recording; without it this says no.
+func hasOffscreenWindow(_ pid: pid_t) -> Bool {
+    let info = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    return info.contains { item in
+        guard (item[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
+              (item[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+              (item[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue != true,
+              !(item[kCGWindowName as String] as? String ?? "").isEmpty,
+              let bounds = item[kCGWindowBounds as String] as? [String: Any] else { return false }
+        return ((bounds["Width"] as? NSNumber)?.doubleValue ?? 0) >= 40 && ((bounds["Height"] as? NSNumber)?.doubleValue ?? 0) >= 40
+    }
+}
+
+let otherSpaceNote = "No window of this app is readable: its windows are on another Space, minimized or hidden (a full-screen app in front puts them on another Space). Its menus and a screenshot still work. To use its controls, ask the user to bring it onto the current Space."
+let noWindowNote = "This app has no open windows. Its menus still work (menubar:true), for example File > New."
+let unsureWindowNote = "No window of this app is readable: it has none open, or they are on another Space, minimized or hidden (Screen Recording is off, so which is unknown). Its menus still work (menubar:true)."
 
 func walkApp(_ pid: pid_t, menubar: Bool) throws -> Walk {
     let app = appElement(pid)
@@ -272,6 +379,7 @@ func walkApp(_ pid: pid_t, menubar: Bool) throws -> Walk {
         throw Fail("unresponsive", "That app is not responding.")
     }
     for window in windows as? [AXUIElement] ?? [] { roots.append(Node(window, depth: 0, limit: depthCap)) }
+    let note = roots.isEmpty ? (hasOffscreenWindow(pid) ? otherSpaceNote : CGPreflightScreenCaptureAccess() ? noWindowNote : unsureWindowNote) : nil
     if menubar, let bar = axValue(app, "AXMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID() {
         roots.append(Node(bar as! AXUIElement, depth: 0, limit: 1))
     }
@@ -281,6 +389,7 @@ func walkApp(_ pid: pid_t, menubar: Bool) throws -> Walk {
     var visits = 0
     var truncated = false
     var dropped = false
+    var hidden = 0
     let started = Date()
     while head < queue.count {
         if readable >= elementCap || visits >= visitCap || Date().timeIntervalSince(started) > walkBudget {
@@ -295,29 +404,62 @@ func walkApp(_ pid: pid_t, menubar: Bool) throws -> Walk {
             continue
         }
         fill(node, attributes)
+        if windowChrome.contains(node.subrole) { node.visited = false; continue }
+        // Scrolled out of view: the agent scrolls to reach it, as a person would.
+        if let clip = node.clip, let frame = node.frame, frame.width > 0, frame.height > 0, !frame.intersects(clip) {
+            node.visited = false
+            hidden += 1
+            continue
+        }
         if node.readable { readable += 1 }
         if node.depth < node.limit, let children = attributes["AXChildren"] as? [AXUIElement] {
-            node.kids = children.map { Node($0, depth: node.depth + 1, limit: node.limit) }
+            var clip = node.clip
+            if node.role == "AXScrollArea", let frame = node.frame, frame.width > 0, frame.height > 0 { clip = clip.map { $0.intersection(frame) } ?? frame }
+            let inRow = node.inRow || rowRoles.contains(node.role)
+            node.kids = children.map { child in
+                let kid = Node(child, depth: node.depth + 1, limit: node.limit)
+                kid.clip = clip
+                kid.inRow = inRow
+                return kid
+            }
             queue.append(contentsOf: node.kids)
         }
     }
     if head < queue.count || dropped { truncated = true }
-    var elements: [Elem] = []
-    var nodes: [String: Node] = [:]
-    func emit(_ node: Node) {
+    var found: [Node] = []
+    func emit(_ node: Node, _ row: String) {
         guard node.visited else { return }
+        var row = row
         if node.readable {
             describe(node)
             // Scroll bar arrows and other collapsed parts: nothing to read or press.
-            if node.name.isEmpty, let frame = node.frame, frame.width <= 0 || frame.height <= 0 { for kid in node.kids { emit(kid) }; return }
-            node.ref = "c\(elements.count + 1)"
-            nodes[node.ref] = node
-            elements.append(Elem(ref: node.ref, role: node.role, name: node.name, value: node.shownValue, frame: node.frame))
+            if node.name.isEmpty, let frame = node.frame, frame.width <= 0 || frame.height <= 0 { for kid in node.kids { emit(kid, row) }; return }
+            node.context = row
+            if rowRoles.contains(node.role) { row = node.name }
+            found.append(node)
         }
-        for kid in node.kids { emit(kid) }
+        for kid in node.kids { emit(kid, row) }
     }
-    for root in roots { emit(root) }
-    return Walk(elements: elements, nodes: nodes, truncated: truncated, generation: generation(of: elements))
+    for root in roots { emit(root, "") }
+    var namesakes: [String: Int] = [:]
+    let items = found.map { node -> (key: AXKey, label: String) in
+        let label = "\(node.role)|\(node.name)"
+        let ordinal = namesakes[label, default: 0]
+        namesakes[label] = ordinal + 1
+        return (AXKey(element: node.element), "\(label)|\(ordinal)")
+    }
+    let book = refBooks[pid] ?? RefBook()
+    refBooks[pid] = book
+    var elements: [Elem] = []
+    var nodes: [String: Node] = [:]
+    for (node, ref) in zip(found, assignRefs(items, book)) {
+        node.ref = ref
+        nodes[ref] = node
+        elements.append(Elem(ref: ref, role: node.role, name: node.name, value: node.shownValue, frame: node.frame))
+    }
+    let walk = Walk(elements: elements, nodes: nodes, truncated: truncated, generation: generation(of: elements), hidden: hidden, note: note)
+    remember(book, walk)
+    return walk
 }
 
 struct Cache {
@@ -331,6 +473,8 @@ var caches: [pid_t: Cache] = [:]
 func snapshotFields(_ walk: Walk) -> JSON {
     var out: JSON = ["generation": walk.generation, "elements": walk.elements.map { $0.json }]
     if walk.truncated { out["truncated"] = true }
+    if walk.hidden > 0 { out["hidden"] = walk.hidden }
+    if let note = walk.note { out["note"] = note }
     return out
 }
 
@@ -343,19 +487,29 @@ func refresh(_ pid: pid_t, menubar: Bool) throws -> Walk {
     cacheOrder.append(pid)
     while cacheOrder.count > 16 { cacheOrder.removeFirst() }
     for key in Array(caches.keys) where !cacheOrder.contains(key) { caches[key] = nil }
+    for key in Array(refBooks.keys) where !cacheOrder.contains(key) { refBooks[key] = nil }
     return walk
 }
 
 // A ref action is checked against the live tree, not the last walk: the app can
 // change on its own between a snapshot and the action. The fresh walk's handles
-// replace the cache, so the step uses what was just verified.
-func ensureCache(_ pid: pid_t, _ expected: Int?, menubar: Bool) throws {
+// replace the cache, so the step uses what was just verified. A tree that moved
+// on elsewhere (a clock, a counter the last step bumped) still takes the action
+// when every ref it uses is the very control the caller saw, still labelled the same.
+func ensureCache(_ pid: pid_t, _ expected: Int?, refs: [String], menubar: Bool) throws {
     guard let expected else {
         if caches[pid] == nil { _ = try refresh(pid, menubar: menubar) }
         return
     }
-    if try refresh(pid, menubar: menubar).generation != expected {
+    let walk = try refresh(pid, menubar: menubar)
+    if walk.generation == expected { return }
+    guard let seen = refBooks[pid]?.history.first(where: { $0.generation == expected })?.seen else {
         throw Fail("stale_ref", "stale_ref: The app changed since your snapshot. Take a fresh snapshot.")
+    }
+    for ref in refs {
+        guard let then = seen[ref], let node = walk.nodes[ref], stillSame(then, node) else {
+            throw Fail("stale_ref", "stale_ref: \(ref) is gone or changed since your snapshot. Take a fresh snapshot.")
+        }
     }
 }
 
@@ -707,12 +861,17 @@ func captureWithScreenCaptureKit(_ pid: pid_t, maxWidth: Int) throws -> JSON {
     _ = NSApplication.shared
     var content: SCShareableContent?
     var finished = false
-    SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: true) { found, _ in content = found; finished = true }
+    // Off-screen windows too: a window on another Space (behind a full-screen
+    // app) still captures, which is the only view of it Accessibility leaves.
+    SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: false) { found, _ in content = found; finished = true }
     guard waitFor({ finished }), let windows = content?.windows else { throw Fail("failed", "Could not list windows to capture.") }
     var best: SCWindow?
     for window in windows where window.owningApplication?.processID == pid && window.windowLayer == 0 {
         if window.frame.width < 40 || window.frame.height < 40 { continue }
-        if best == nil || window.frame.width * window.frame.height > best!.frame.width * best!.frame.height { best = window }
+        if !window.isOnScreen && (window.title ?? "").isEmpty { continue }
+        guard let current = best else { best = window; continue }
+        if window.isOnScreen != current.isOnScreen { if window.isOnScreen { best = window }; continue }
+        if window.frame.width * window.frame.height > current.frame.width * current.frame.height { best = window }
     }
     guard let window = best else { throw Fail("no_window", "That app has no window to capture.") }
     let size = targetSize(window.frame, maxWidth)
@@ -898,8 +1057,9 @@ func act(_ request: JSON) throws -> JSON {
     try checkApp(pid)
     let steps = request["steps"] as? [JSON] ?? []
     let menubar = request["menubar"] as? Bool ?? caches[pid]?.menubar ?? false
-    if steps.contains(where: { $0["ref"] is String }) {
-        try ensureCache(pid, (request["generation"] as? NSNumber)?.intValue, menubar: menubar)
+    let refs = steps.compactMap { $0["ref"] as? String }
+    if !refs.isEmpty {
+        try ensureCache(pid, (request["generation"] as? NSNumber)?.intValue, refs: refs, menubar: menubar)
     }
     var results: [JSON] = []
     var succeeded = false
@@ -1009,6 +1169,22 @@ func selftest() throws -> JSON {
     try expect(normalizedTitle("Save As…") == "save as" && normalizedTitle("&Open...") == "open", "menu titles")
     try expect(keyCodes["return"] == 36 && keyCodes["f5"] == 96 && keyCodes["a"] == 0, "key codes")
     try expect(keyFlags(["shift", "meta"]) == [.maskShift, .maskCommand], "key flags")
+    try expect(whole(94.5) == 95 && whole(-3.2) == -3, "whole points")
+    let first = AXKey(element: AXUIElementCreateApplication(1)), second = AXKey(element: AXUIElementCreateApplication(2))
+    try expect(first == AXKey(element: AXUIElementCreateApplication(1)) && first != second && Set([first, first, second]).count == 2, "element identity")
+    let book = RefBook()
+    try expect(assignRefs([(first, "AXButton|Go|0"), (second, "AXButton|Go|1")], book) == ["c1", "c2"], "fresh refs")
+    let third = AXKey(element: AXUIElementCreateApplication(3))
+    // An inserted control takes a new number; the others keep theirs, a rebuilt one by its label.
+    try expect(assignRefs([(third, "AXButton|New|0"), (second, "AXButton|Go|1"), (AXKey(element: AXUIElementCreateApplication(4)), "AXButton|Go|0")], book) == ["c3", "c2", "c1"], "stable refs")
+    // c1 now names a rebuilt control found by label: an action from the older tree must not reach it.
+    let rebuilt = Node(AXUIElementCreateApplication(4), depth: 0, limit: 0)
+    rebuilt.role = "AXButton"
+    rebuilt.name = "Go"
+    try expect(!stillSame(Seen(key: first, signature: "AXButton|Go|"), rebuilt), "rebound ref refused")
+    try expect(stillSame(Seen(key: AXKey(element: AXUIElementCreateApplication(4)), signature: "AXButton|Go|"), rebuilt), "same control accepted")
+    rebuilt.context = "Row 7"
+    try expect(!stillSame(Seen(key: AXKey(element: AXUIElementCreateApplication(4)), signature: "AXButton|Go|Row 3"), rebuilt), "recycled row refused")
     return ["checks": checks]
 }
 

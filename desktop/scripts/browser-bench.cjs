@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // browser-bench.cjs — measures real task completion through the workspace
-// browser API: wall time, HTTP call count, and success per task. Runs the same
-// task once per action-call and once batched to quantify the round-trip win.
+// browser API: wall time, HTTP call count, approximate tokens returned
+// (response chars / 4), and success per task. Runs the same task once per
+// action-call and once batched to quantify the round-trip win.
 //
 // Usage: node scripts/browser-bench.cjs [--connection PATH] [--bot-id ID]
 //        [--mode both|per-action|batch]
@@ -18,6 +19,7 @@ const botId = arg('--bot-id') || process.env.HERMES_WORKSPACE_BOT_ID || 'bench';
 const mode = arg('--mode') || 'both';
 const connection = JSON.parse(fs.readFileSync(connPath, 'utf8'));
 let calls = 0;
+let chars = 0;
 async function api(endpoint, method = 'GET', body, extra = {}) {
   calls++;
   const r = await fetch(new URL(endpoint, connection.url), {
@@ -25,7 +27,10 @@ async function api(endpoint, method = 'GET', body, extra = {}) {
     headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': botId, 'Content-Type': 'application/json', ...extra },
     body: body ? JSON.stringify(body) : undefined,
   });
-  const data = await r.json().catch(() => ({}));
+  const text = await r.text();
+  chars += text.length;
+  let data = {};
+  try { data = JSON.parse(text); } catch { /* counted, not parsed */ }
   return { status: r.status, ...data };
 }
 async function newTab() {
@@ -123,19 +128,20 @@ async function main() {
       if (mode === 'batch' && variant === 'perAction') continue;
       const tab = await newTab();
       calls = 0;
+      chars = 0;
       const t0 = Date.now();
       let result;
       try { result = await task[variant](tab); }
       catch (e) { result = { ok: false, err: e.message }; }
       const ms = Date.now() - t0;
-      rows.push({ task: task.name, mode: variant === 'batched' ? 'batch' : 'per-action', ok: !!result.ok, ms, calls });
+      rows.push({ task: task.name, mode: variant === 'batched' ? 'batch' : 'per-action', ok: !!result.ok, ms, calls, tokens: Math.round(chars / 4) });
       const fresh = await api(`/v1/tabs/${tab.id}`);
       await closeTab(tab.id, fresh.epoch ?? tab.epoch);
     }
   }
-  console.log('\n  task                         mode        ok   calls    wall');
-  console.log('  ' + '─'.repeat(64));
-  for (const r of rows) console.log(`  ${r.task.padEnd(28)} ${r.mode.padEnd(11)} ${r.ok ? 'PASS' : 'FAIL'}  ${String(r.calls).padStart(5)}  ${String(r.ms).padStart(6)}ms`);
+  console.log('\n  task                         mode        ok   calls    wall   tokens');
+  console.log('  ' + '─'.repeat(72));
+  for (const r of rows) console.log(`  ${r.task.padEnd(28)} ${r.mode.padEnd(11)} ${r.ok ? 'PASS' : 'FAIL'}  ${String(r.calls).padStart(5)}  ${String(r.ms).padStart(6)}ms ${String(r.tokens).padStart(7)}`);
   const fails = rows.filter(r => !r.ok);
   console.log(`\n${rows.length - fails.length}/${rows.length} tasks passed${fails.length ? ' — failures: ' + fails.map(f => f.task + '/' + f.mode).join(', ') : ''}`);
   process.exit(fails.length ? 1 : 0);

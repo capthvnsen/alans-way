@@ -44,3 +44,53 @@ test('truncated survives the trim only when the tree is sent', () => {
   const first = seen.snapshot('a', 7, { ...tree(5), truncated: true }, undefined);
   assert.equal(first.truncated, true);
 });
+
+const big = (generation, count, change = {}) => ({
+  generation,
+  elements: Array.from({ length: count }, (_, i) => ({ ref: `c${i + 1}`, role: 'AXButton', name: change[i + 1] ?? `Button ${i + 1}`, x: i, y: 2, width: 3, height: 4 })),
+});
+
+test('an action reply lists only what changed since this bot last saw the app', () => {
+  const seen = createComputerSnapshots();
+  seen.snapshot('a', 7, big(1, 20), undefined);
+  const after = big(2, 20, { 3: 'Count: 1' });
+  after.elements.pop();
+  const reply = seen.action('a', 7, { ok: true, ...after }, 1);
+  assert.equal(reply.elements, undefined);
+  assert.deepEqual(reply.changed.map((element) => [element.ref, element.name]), [['c3', 'Count: 1']]);
+  assert.deepEqual(reply.removed, ['c20']);
+  assert.equal(reply.generation, 2);
+  // The next delta is against the tree this bot now holds, not the snapshot.
+  const next = seen.action('a', 7, { ok: true, ...big(3, 21, { 3: 'Count: 1' }) }, 2);
+  assert.deepEqual(next.changed.map((element) => element.ref), ['c20', 'c21']);
+  assert.deepEqual(next.removed, []);
+});
+
+test('a delta that is not much smaller than the tree is sent as the whole tree', () => {
+  const seen = createComputerSnapshots();
+  seen.snapshot('a', 7, big(1, 4), undefined);
+  // Every ref shifts (an insert at the top, numbered in tree order): the whole tree is the cheaper read.
+  const shifted = big(2, 4, { 1: 'New', 2: 'Button 1', 3: 'Button 2', 4: 'Button 3' });
+  const reply = seen.action('a', 7, { ok: true, ...shifted, truncated: true }, 1);
+  assert.equal(reply.elements.length, 4);
+  assert.equal(reply.truncated, true);
+});
+
+test('key order in an element does not count as a change', () => {
+  const seen = createComputerSnapshots();
+  seen.snapshot('a', 7, big(1, 10), undefined);
+  const reordered = big(2, 10, { 5: 'Changed' });
+  reordered.elements = reordered.elements.map(({ height, width, y, x, name, role, ref }) => ({ height, width, y, x, name, role, ref }));
+  assert.deepEqual(seen.action('a', 7, { ok: true, ...reordered }, 1).changed.map((element) => element.ref), ['c5']);
+});
+
+test('a caller that does not hold the last tree it was sent gets the whole tree', () => {
+  const seen = createComputerSnapshots();
+  seen.snapshot('a', 7, big(1, 20), undefined);
+  // The reply carrying generation 2 never reached the caller, which still holds 1.
+  seen.action('a', 7, { ok: true, ...big(2, 20, { 3: 'Count: 1' }) }, 1);
+  const reply = seen.action('a', 7, { ok: true, ...big(3, 20, { 3: 'Count: 2' }) }, 1);
+  assert.equal(reply.elements.length, 20);
+  // No generation at all says nothing about what the caller holds.
+  assert.equal(seen.action('a', 7, { ok: true, ...big(4, 20, { 3: 'Count: 3' }) }).elements.length, 20);
+});
