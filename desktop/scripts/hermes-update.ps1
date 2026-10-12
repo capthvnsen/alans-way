@@ -1,0 +1,156 @@
+# hermes-update.ps1 - Windows guest twin of hermes-update.sh. The desktop app
+# pipes this file over ssh stdin (via cmd so any sshd shell works). It runs
+# `hermes update --yes` once (the update restarts the fleet's own services),
+# `hermes --version` for the report, then `hermes [-p <profile>] send
+# -t telegram <text>` for every profile so each bot reports the result in its
+# usual chat - even when the update failed.
+# The last stdout line is one JSON result:
+# {"ok":bool,"version":"x.y.z","updated":bool,"error":"...","messaged":bool,
+#  "messages":[{"profile":"...","sent":bool,"error":"..."}]}
+# Written for Windows PowerShell 5.1 (no ?? or ?:).
+$ErrorActionPreference = 'Stop'
+$script:Version = ''
+$script:Updated = $false
+$script:Messaged = $false
+$script:Messages = @()
+$script:StartTime = Get-Date
+$script:HermesBin = ''
+
+function Write-Result([bool]$Ok, [string]$Err) {
+    @{ ok = $Ok; version = $script:Version; updated = $script:Updated; error = $Err;
+       messaged = $script:Messaged; messages = @($script:Messages) } |
+        ConvertTo-Json -Compress -Depth 4 | Write-Output
+}
+function Say([string]$Text) { Write-Output "hermes-update: $Text" }
+function EnvInt([string]$Name, [int]$Default) {
+    $v = [Environment]::GetEnvironmentVariable($Name); if ($v) { return [int]$v } return $Default
+}
+function BudgetLeft {
+    return [int]((EnvInt 'ALANS_WAY_HERMES_BUDGET' 270) - ((Get-Date) - $script:StartTime).TotalSeconds)
+}
+function Tail-Text([string]$Text, [int]$Max) {
+    $t = (($Text -split "`n" | Where-Object { $_.Trim() }) -join ' ') -replace '\s+', ' '
+    if ($t.Length -gt $Max) { return $t.Substring($t.Length - $Max) }
+    return $t
+}
+
+function Find-Hermes {
+    foreach ($n in @('hermes.exe', 'hermes.cmd', 'hermes.bat', 'hermes')) {
+        $h = Get-Command $n -ErrorAction SilentlyContinue
+        if ($h -and $h.CommandType -eq 'Application' -and $h.Source) { return $h.Source }
+    }
+    foreach ($c in @("$env:USERPROFILE\.local\bin\hermes.exe",
+                     "$env:LOCALAPPDATA\Programs\hermes\hermes.exe")) {
+        if (Test-Path $c) { return $c }
+    }
+    return $null
+}
+
+# One bounded hermes call: stdin is an empty file so a prompt can only ever
+# read EOF ("no"), and the timeout keeps the call inside the run's remaining
+# budget so the JSON result line is always reached.
+function Invoke-Hermes([int]$Secs, [string[]]$HermesArgs) {
+    $left = (BudgetLeft) - 8
+    if ($left -le 0) { return @{ code = 124; out = '' } }
+    if ($Secs -gt $left) { $Secs = $left }
+    $out = [IO.Path]::GetTempFileName()
+    $err = [IO.Path]::GetTempFileName()
+    $inp = [IO.Path]::GetTempFileName()
+    try {
+        $exe = $script:HermesBin
+        $argLine = $HermesArgs -join ' '
+        if ($exe -match '\.(cmd|bat)$') { $argLine = "/d /c `"$exe`" $argLine"; $exe = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' } }
+        $p = Start-Process -FilePath $exe -ArgumentList $argLine -NoNewWindow -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err -RedirectStandardInput $inp
+        if ($p.WaitForExit($Secs * 1000)) { $code = $p.ExitCode }
+        else { try { $p.Kill() } catch {}; $code = 124 }
+        $text = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue) + "`n" +
+                [string](Get-Content $err -Raw -ErrorAction SilentlyContinue)
+        return @{ code = $code; out = $text }
+    } catch {
+        return @{ code = 1; out = "$_" }
+    } finally {
+        Remove-Item $out, $err, $inp -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# The profiles hermes counts: the default home plus every profile dir with the
+# canonical name grammar, an identity marker and no .deleted tombstone.
+function Get-Profiles([string]$Hhome) {
+    $list = @()
+    if (Test-Path $Hhome) { $list += @{ name = 'default'; home = $Hhome } }
+    $pdir = Join-Path $Hhome 'profiles'
+    if (Test-Path $pdir) {
+        foreach ($d in (Get-ChildItem $pdir -Directory -ErrorAction SilentlyContinue)) {
+            $n = $d.Name
+            if ($n -notmatch '^[a-z0-9][a-z0-9_-]{0,63}$') { continue }
+            if (Test-Path (Join-Path $pdir ".deleted\$n")) { continue }
+            $found = $false
+            foreach ($m in @('config.yaml', '.env', 'SOUL.md', 'profile.yaml', 'auth.json', 'state.db')) {
+                if (Test-Path (Join-Path $d.FullName $m)) { $found = $true; break }
+            }
+            if ($found) { $list += @{ name = $n; home = $d.FullName } }
+        }
+    }
+    return ,$list
+}
+
+$script:HermesBin = Find-Hermes
+if (-not $script:HermesBin) { Write-Result $false 'no hermes CLI on this machine'; exit 1 }
+Say 'running hermes update'
+$r = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_UPDATE_TIMEOUT' 200) @('update', '--yes')
+$ok = ($r.code -eq 0)
+$err = ''
+if ($r.code -eq 124) { $err = 'the hermes update timed out' }
+elseif (-not $ok) {
+    $err = Tail-Text $r.out 300
+    if (-not $err) { $err = "hermes update exited $($r.code)" }
+}
+$script:Updated = $ok -and ($r.out -notmatch '(?i)already up.to.date|nothing to update|no update available')
+# The version read follows the update so an install that moved reports the new
+# one; a failed update still reports whatever version is on the machine now.
+$v = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_VERSION_TIMEOUT' 20) @('--version')
+$vm = [regex]::Match([string]$v.out, 'Hermes Agent v([0-9][0-9.]*)')
+if ($vm.Success) { $script:Version = $vm.Groups[1].Value }
+if ($ok) { Say 'hermes update finished' } else { Say "hermes update failed: $err" }
+
+# The message each profile's bot sends home: outcome, host and version so a
+# user with several machines can tell them apart. Characters cmd would read
+# as syntax (when hermes resolves to a .cmd shim) never reach the message.
+$where = ''
+if ($env:COMPUTERNAME) { $where = " on $env:COMPUTERNAME" }
+if ($ok) {
+    if ($script:Updated) { $msg = "Hermes update finished$where." } else { $msg = "Hermes is already up to date$where." }
+    if ($script:Version) { $msg = "$msg Now on v$($script:Version)." }
+} else {
+    $short = $err; if ($short.Length -gt 200) { $short = $short.Substring(0, 200) }
+    $msg = "Hermes update failed${where}: $short"
+}
+$msg = ($msg -replace '[&|<>^%"]', ' ')
+
+$hhome = $env:HERMES_HOME
+if (-not $hhome) { $hhome = "$env:LOCALAPPDATA\hermes" }
+if ((BudgetLeft) -gt 15) {
+    Say 'telling your bot to message you'
+    foreach ($prof in (Get-Profiles $hhome)) {
+        if ((BudgetLeft) -le 12) { Say 'ran out of the time budget; remaining profiles were not messaged'; break }
+        $quoted = '"' + $msg + '"'
+        if ($prof.name -eq 'default') { $sendArgs = @('send', '-q', '-t', 'telegram', $quoted) }
+        else { $sendArgs = @('-p', $prof.name, 'send', '-q', '-t', 'telegram', $quoted) }
+        $s = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_SEND_TIMEOUT' 30) $sendArgs
+        $e = @{ profile = $prof.name; sent = ($s.code -eq 0); error = '' }
+        if ($s.code -eq 0) { $script:Messaged = $true }
+        else {
+            $e['error'] = Tail-Text $s.out 200
+            if (-not $e['error']) { $e['error'] = "send exited $($s.code)" }
+        }
+        if ($s.code -eq 0) { Say "message $($prof.name): sent" } else { Say "message $($prof.name): failed" }
+        $script:Messages += $e
+    }
+} else {
+    Say 'no time left to message you'
+}
+if ((-not $script:Messaged) -and $ok) { Say 'no profile could message you; the result is only in this report' }
+
+Write-Result $ok $err
+if ($ok) { exit 0 } else { exit 1 }
