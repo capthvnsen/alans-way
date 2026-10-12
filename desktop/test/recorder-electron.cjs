@@ -14,6 +14,11 @@ process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10
 require('../src/main.cjs');
 // Typed only, never served: if either string is anywhere in the profile, a secret reached disk.
 const PASSWORD = 'Tr0ub4dor-recorder-test-pw', CARD = '4111222233334444', NOTE = 'Private note 8317 for Ada', BIO = 'Bio text 5521 never kept';
+// Secret fields known only by their name (no type or autocomplete), typed with Keep typed text on.
+const NAMED_SECRETS = { security_code: 'sc-90417', verificationCode: 'vc-90418', one_time_code: 'otc-90419', social_security_number: 'ssn-90420',
+  cardnumber: 'cn-90421', ccnum: 'cc-90422', cvc2: 'cvc-90423', exp_date: 'exp-90424' };
+// A search the page echoes into its path and title.
+const TERM = 'Zebra umbrella 7731', TERM_FORMS = ['umbrella 7731', 'umbrella-7731', 'umbrella%207731', 'Umbrella 7731'];
 const waitFor = async (read, predicate, timeout = 12000) => {
   const deadline = Date.now() + timeout;
   let value;
@@ -42,10 +47,16 @@ app.whenReady().then(async () => {
     return { status: res.status, data: await res.json() };
   };
 
-  server = http.createServer((req, res) => res.end(req.url === '/account'
+  // no-store keeps Chromium's own HTTP cache (which keys entries by URL, as in
+  // any browsing) out of the disk scan below, so the scan sees what the app writes.
+  server = http.createServer((req, res) => res.writeHead(200, { 'Cache-Control': 'no-store', 'Content-Type': 'text/html' }).end(req.url === '/account'
     ? '<title>Account</title><button id="save">Save plan</button>'
+    : req.url === '/find'
+    ? `<title>Find</title><input id="q"><button id="go" onclick="location.href = '/search/' + document.getElementById('q').value.toLowerCase().replace(/ +/g, '-')">Go</button>`
+    : req.url.startsWith('/search/')
+    ? `<title>Results for ${decodeURIComponent(req.url.slice(8)).replace(/-/g, ' ')}</title><p>No results</p>`
     : `<title>Sign in</title><form><label>Email <input id="email" autocomplete="email"></label><label>Password <input id="pw" type="password"></label>
-       <label>Card <input id="card" autocomplete="cc-number"></label><input id="pin" type="password"><div id="note" contenteditable="true" style="min-height:20px"></div><label>Bio <textarea id="bio"></textarea></label><input type="hidden" id="token" value="x"></form><a id="next" href="/account">Continue</a>`));
+       <label>Card <input id="card" autocomplete="cc-number"></label><input id="pin" type="password"><div id="note" contenteditable="true" style="min-height:20px"></div><label>Bio <textarea id="bio"></textarea></label><input type="hidden" id="token" value="x">${Object.keys(NAMED_SECRETS).map(name => `<input name="${name}">`).join('')}</form><a id="next" href="/account">Continue</a>`));
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const tab = await invoke('create-tab', { url: `${base}/login` });
@@ -53,17 +64,17 @@ app.whenReady().then(async () => {
   const loaded = path => waitFor(() => pageWc.executeJavaScript(`location.pathname === ${JSON.stringify(path)} && document.readyState === 'complete'`).catch(() => false), Boolean);
   await loaded('/login');
   // Real input events, so the page sees trusted clicks and typing.
-  const click = async selector => {
-    const { x, y } = await pageWc.executeJavaScript(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
-    pageWc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-    pageWc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+  const click = async (selector, contents = pageWc) => {
+    const { x, y } = await contents.executeJavaScript(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+    contents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+    contents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
     await pause(150);
   };
   // A click right after the Settings sheet closes can land before the tab view
   // is back on screen, so retry until the field really has focus.
   const type = async (selector, text, contents = pageWc) => {
     const focused = () => contents.executeJavaScript(`document.activeElement === document.querySelector(${JSON.stringify(selector)})`);
-    for (let attempt = 0; attempt < 20 && !await focused(); attempt++) await (contents === pageWc ? click(selector) : contents.executeJavaScript(`document.querySelector(${JSON.stringify(selector)}).focus()`));
+    for (let attempt = 0; attempt < 20 && !await focused(); attempt++) await click(selector, contents);
     assert.ok(await focused(), `${selector} never took focus`);
     await contents.insertText(text); await pause(150);
   };
@@ -135,13 +146,14 @@ app.whenReady().then(async () => {
   await invoke('record-start', { id: tab.id });
   await type('#email', 'ada@example.com');
   await type('#pw', PASSWORD);
-  await waitFor(getState, state => state.recording?.steps === 3);
+  for (const [name, value] of Object.entries(NAMED_SECRETS)) await type(`[name="${name}"]`, value);
+  await waitFor(getState, state => state.recording?.steps === 11);
   await evaluate('document.getElementById("recording-keep").click()');
   await evaluate('document.getElementById("recording-stop").click()');
   await waitFor(getState, state => state.recordings.length === 2);
   const kept = (await api(`/v1/recordings/${(await getState()).recordings[0].id}`, '4242')).data;
   assert.equal(kept.keepTyped, true);
-  assert.deepEqual(kept.steps.slice(1).map(step => step.value), ['ada@example.com', '[redacted]']);
+  assert.deepEqual(kept.steps.slice(1).map(step => step.value), ['ada@example.com', ...Array(9).fill('[redacted]')], 'secret-named fields stay redacted with Keep typed text');
 
   // A bot taking a tab ends its recording (a tab the human never took over
   // stays claimable, as before).
@@ -156,21 +168,42 @@ app.whenReady().then(async () => {
   await waitFor(getState, state => !state.recording && state.recordings.length === 3);
   await waitFor(() => evaluate('document.getElementById("toast").textContent'), text => text.includes('Recording stopped'));
 
-  // The test password and card number never reached disk.
+  // A search echoed into the URL path and the page title stays off disk
+  // when typed text is not kept. The tab starts blank, so the title comes
+  // from the results page at Stop.
+  const blank = await invoke('create-tab');
+  await waitFor(getState, state => state.activeTabId === blank.id);
+  await invoke('record-start', { id: blank.id });
+  const blankWc = await waitFor(async () => webContents.fromId((await getState()).browserContentsId), Boolean);
+  await blankWc.loadURL(`${base}/find`);
+  await waitFor(() => blankWc.executeJavaScript('document.readyState === "complete"').catch(() => false), Boolean);
+  await pause(300);
+  await type('#q', TERM, blankWc);
+  await click('#go', blankWc);
+  await waitFor(() => blankWc.executeJavaScript('document.title').catch(() => ''), title => title.includes('umbrella 7731'));
+  await waitFor(getState, state => state.recording?.steps === 4);
+  const searched = await invoke('record-stop', { keepTyped: false });
+  assert.equal(searched.title, '127.0.0.1', 'a title echoing the search falls back to the host');
+  const search = (await api(`/v1/recordings/${searched.id}`)).data;
+  assert.deepEqual(search.steps.map(step => [step.action, step.url.replace(base, ''), step.value]), [
+    ['navigate', '/find', undefined], ['type', '/find', '[redacted]'], ['click', '/find', undefined], ['navigate', '/search/[redacted]', undefined]]);
+  await invoke('close-tab', { id: blank.id });
+
+  // The test password, card number, notes, named secrets and the search never reached disk.
   session.fromPartition('persist:browser').flushStorageData();
   await pause(500);
   for (const file of filesUnder(profile)) {
     const bytes = fs.readFileSync(file);
-    for (const text of [NOTE, BIO]) assert.ok(!bytes.includes(text) && !bytes.includes(Buffer.from(text, 'utf16le')), `typed text that was not kept is in ${file}`);
+    for (const text of [NOTE, BIO, ...Object.values(NAMED_SECRETS), ...TERM_FORMS]) assert.ok(!bytes.includes(text) && !bytes.includes(Buffer.from(text, 'utf16le')), `typed text that was not kept is in ${file}`);
     assert.ok(!bytes.includes(PASSWORD) && !bytes.includes(Buffer.from(PASSWORD, 'utf16le')), `the password is in ${file}`);
     assert.ok(!bytes.includes(CARD) && !bytes.includes(Buffer.from(CARD, 'utf16le')), `the card number is in ${file}`);
   }
 
   // Each recording is deletable.
   const files = () => fs.readdirSync(path.join(profile, 'recordings'));
-  assert.equal(files().length, 3);
+  assert.equal(files().length, 4);
   await invoke('recording-delete', { id: kept.id });
-  assert.equal(files().length, 2);
+  assert.equal(files().length, 3);
   assert.ok(!files().includes(`${kept.id}.json`));
 
   console.log('PASS: Record captures clicks, typing and navigation on a human tab, redacts secrets, shares per bot, and keeps the password off disk.');

@@ -758,8 +758,9 @@ function stopRecording({ save = true, keepTyped = false } = {}) {
     // A lone starting page teaches nothing.
     if (!save || !rec.steps.some(step => step.action !== 'navigate')) return null;
     const tab = tabs.get(rec.tabId);
-    const title = rec.title && rec.title !== 'New tab' ? rec.title : (tab?.title || new URL(rec.steps[0].url).hostname);
-    return recordings.save({ title, steps: recorder.finishSteps(rec.steps, { keepTyped }), keepTyped, sharedWith: prefs.selectedBotId ? [prefs.selectedBotId] : [] });
+    const host = new URL(rec.steps[0].url).hostname;
+    const { title, steps } = recorder.finishRecording(rec.steps, { keepTyped, title: rec.title && rec.title !== 'New tab' ? rec.title : tab?.title, fallbackTitle: host });
+    return recordings.save({ title, steps, keepTyped, sharedWith: prefs.selectedBotId ? [prefs.selectedBotId] : [] });
   } finally { broadcast(); }
 }
 async function openExtension(key, anchor) {
