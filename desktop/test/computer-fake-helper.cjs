@@ -17,6 +17,8 @@ const handle = (request) => {
     { name: 'X', bundleId: 'x', pid: process.pid, frontmost: false }, { name: 'Front', bundleId: 'front', pid: 3, frontmost: true },
     { name: '1Password', bundleId: 'com.1password.1password', pid: 4, frontmost: false }, { name: 'Device Hub', bundleId: 'com.apple.dt.Devices', pid: -1, frontmost: false },
   ], policy });
+  if (mode === 'snapshot-in-front' && request.cmd === 'snapshot') return reply({ id: request.id, ok: false, code: 'in_front', error: 'That app is the one in front.' });
+  if (mode === 'snapshot-not-found' && request.cmd === 'snapshot') return reply({ id: request.id, ok: false, code: 'not_found', error: 'App not found.' });
   if (request.cmd === 'snapshot') return reply({ id: request.id, ok: true, generation: 7, elements: [{ ref: 'c1', role: 'AXButton', name: 'Go' }], helper: process.pid, policy });
   if (request.cmd === 'act') {
     if ((request.generation !== undefined && request.generation !== 7) || request.steps.some((step) => step.ref === 'gone')) return reply({ id: request.id, ok: false, code: 'stale_ref', error: 'The app changed since your snapshot. Take a fresh snapshot.' });

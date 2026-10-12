@@ -9,8 +9,10 @@ const DELTA_SHARE = 0.6;
 const canonical = (element) => JSON.stringify(Object.keys(element).sort().map((key) => [key, element[key]]));
 
 // Generation is a hash of the tree, so it is the same for every bot. What is
-// per bot is the last tree that bot was sent: a reply is "unchanged", or a
-// delta, only relative to what that bot has already seen.
+// per bot is the last tree that bot was sent: a reply is "unchanged" only
+// relative to what that bot has already seen, and a delta only when the caller
+// also says it holds that tree (it passed its generation), so a lost reply or
+// a second session on the same bot id gets the whole tree.
 function createComputerSnapshots() {
   const sent = new Map();
   const remember = (bot, pid, tree) => {
@@ -26,12 +28,12 @@ function createComputerSnapshots() {
     if (Number.isInteger(since) && since === tree.generation) return { unchanged: true, generation: tree.generation };
     return tree;
   }
-  function action(bot, pid, result) {
+  function action(bot, pid, result, held) {
     if (!Number.isInteger(result.generation) || !Array.isArray(result.elements)) return result;
     const before = remember(bot, pid, result);
     const { elements, truncated, ...rest } = result;
     if (before && before.generation === result.generation) return { ...rest, unchanged: true, generation: result.generation };
-    if (!before) return result;
+    if (!before || held !== before.generation) return result;
     const changed = elements.filter((element) => before.elements.get(element.ref) !== canonical(element));
     const now = new Set(elements.map((element) => element.ref));
     const removed = [...before.elements.keys()].filter((ref) => !now.has(ref));

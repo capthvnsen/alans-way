@@ -176,6 +176,26 @@ test('a run after a wait that the helper refuses is reported, not thrown, once e
   await assert.rejects(service.action('bot', 5, { action: 'press', ref: 'gone', generation: 7 }), (error) => error.code === 'stale_ref');
 });
 
+test('a wait whose poll fails keeps the results of the steps that ran', async (t) => {
+  const { service, close } = fakeComputer('snapshot-in-front');
+  t.after(close);
+  const reply = await service.action('bot', 5, { action: 'batch', generation: 7, steps: [
+    { action: 'press', ref: 'c1' }, { action: 'wait', text: 'Never', timeout: 2000 },
+  ] });
+  assert.equal(reply.results[0].ok, true);
+  assert.equal(reply.results[1].code, 'in_front');
+  assert.equal(reply.elements[0].name, 'Done');
+});
+
+test('a wait for text to go away is done when the app quits', async (t) => {
+  const { service, close } = fakeComputer('snapshot-not-found');
+  t.after(close);
+  const reply = await service.action('bot', 5, { action: 'batch', generation: 7, steps: [
+    { action: 'menu', path: ['File', 'Quit'] }, { action: 'wait', text: 'Done', gone: true },
+  ] });
+  assert.equal(reply.results[1].ok, true);
+});
+
 test('the app list leaves out off-limits apps and only marks the front one', async (t) => {
   const { service, close } = fakeComputer('ok');
   t.after(close);
