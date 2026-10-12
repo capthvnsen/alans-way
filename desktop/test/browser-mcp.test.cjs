@@ -207,6 +207,11 @@ test('browser MCP exposes select, double click, right click and drag, and forwar
   const result = await client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't', epoch: 2, action: 'drag', ref: 's1-1', toRef: 's1-2' } });
   assert.equal(result.isError, undefined);
   assert.deepEqual(received, { epoch: 2, action: 'drag', ref: 's1-1', toRef: 's1-2' });
+  assert.deepEqual(action.reason.enum, ['captcha', 'login', 'two_factor', 'payment_details', 'review', 'other']);
+  await client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't', epoch: 2, action: 'release', reason: 'login', note: 'Sign in please' } });
+  assert.deepEqual(received, { controller: 'human', reason: 'login', note: 'Sign in please' });
+  await client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't', epoch: 2, action: 'claim', reason: 'login' } });
+  assert.deepEqual(received, { controller: 'agent' });
 });
 
 async function computerHost(t, capabilities, hostLabel) {

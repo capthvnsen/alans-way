@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, agentPageUrl, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, handbackRequest, nextHandback, liveHandback, HANDBACK_MS } = require('../src/core.cjs');
 const { snapshotExpression, settleSnapshot, readEffect } = require('../src/browser-page.cjs');
 const { locateElement } = require('../src/agent-input.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
@@ -131,6 +131,40 @@ test('an explicit human takeover locks bots out while an idle or released tab st
   requireAgentClaim({ controller: 'human', humanLock: false });
   requireAgentClaim({ controller: 'human' });
   requireAgentClaim({ controller: 'agent', humanLock: true });
+});
+test('a release with a reason waits for the human, then the give-back or 30 minutes reopens the tab', () => {
+  assert.equal(handbackRequest({ controller: 'human' }), null);
+  assert.throws(() => handbackRequest({ reason: 'bored' }), /reason must be one of/);
+  const request = handbackRequest({ reason: 'captcha', note: `  Solve\nthe <b>puzzle</b> ${'x'.repeat(200)}` });
+  assert.equal(request.reason, 'captcha');
+  assert.equal(request.note.length, 140);
+  assert.match(request.note, /^Solve the <b>puzzle<\/b> x/);
+  const tab = { botId: 'research', controller: 'agent', epoch: 4 };
+  // The bot's release: the tab goes to the human and the bot cannot claim it.
+  tab.handback = nextHandback(tab, 'human', 'agent', request, 1000); tab.controller = 'human'; tab.epoch++;
+  assert.deepEqual(tab.handback, { reason: 'captcha', note: request.note, state: 'awaiting_human', botId: 'research', since: 1000 });
+  assert.throws(() => requireAgentClaim(tab, 2000), /awaiting_human/);
+  assert.throws(() => requireAgentRead(tab, 2000), /awaiting_human/);
+  assert.throws(() => requireActor(tab, 'research', 5, true, false, 2000), /awaiting_human/);
+  // Neither a plain re-release nor human navigation lifts it; a second reason keeps the clock.
+  assert.equal(nextHandback(tab, 'human', 'agent', null, 2000), tab.handback);
+  assert.equal(nextHandback(tab, 'human', 'human', null, 2000), tab.handback);
+  assert.equal(nextHandback(tab, 'human', 'agent', handbackRequest({ reason: 'login' }), 5000).since, 1000);
+  // The human gives it back: the bot sees human_returned and claims with a fresh epoch.
+  const returned = nextHandback(tab, 'agent', 'human', null, 3000);
+  assert.equal(returned.state, 'human_returned');
+  tab.handback = returned; tab.controller = 'agent'; tab.epoch++;
+  assert.throws(() => requireActor(tab, 'research', 5, true, false, 3000), /human_returned/);
+  requireAgentClaim(tab, 3000);
+  requireActor(tab, 'research', 6, true, false, 3000);
+  assert.equal(nextHandback(tab, 'agent', 'agent', null, 3000), null, 'a claim clears the marker');
+  assert.equal(nextHandback(tab, 'human', 'human', null, 3000), null, 'a human takeover clears the marker');
+  // Unanswered, the hold expires into a normal, retakeable release.
+  const waiting = { botId: 'research', controller: 'human', handback: { state: 'awaiting_human', reason: 'review', note: '', botId: 'research', since: 1000 } };
+  assert.throws(() => requireAgentClaim(waiting, 1000 + HANDBACK_MS), /awaiting_human/);
+  assert.equal(liveHandback(waiting, 1001 + HANDBACK_MS), null);
+  requireAgentClaim(waiting, 1001 + HANDBACK_MS);
+  assert.equal(nextHandback(waiting, 'agent', 'human', null, 1001 + HANDBACK_MS), null);
 });
 test('an unchanged snapshot keeps the refs the agent already holds usable', () => {
   const page = (generation, label = 'Send') => ({ url: 'https://a.example/', title: 'A', text: 'hello',

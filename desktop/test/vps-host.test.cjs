@@ -320,6 +320,13 @@ test('handed-off tabs refuse agent claims until the human gives them over', asyn
   await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'human' });
   assert.equal((await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'agent' })).status, 200,
     'a bot release stays retakeable');
+  const asked = await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'human', reason: 'captcha', note: 'Solve the puzzle' });
+  assert.equal(asked.status, 200);
+  assert.deepEqual([asked.data.handback.reason, asked.data.handback.note], ['captcha', 'Solve the puzzle'], 'the VPS reports why the bot released');
+  assert.equal((await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'human', reason: 'nope' })).status, 400);
+  const reclaimed = await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'agent' });
+  assert.equal(reclaimed.status, 200, 'with no give-back control for VPS tabs, the reason does not hold the tab');
+  assert.equal(reclaimed.data.handback, null);
 
   const restore = async (url) => {
     const tab = (await api('/v1/tabs', 'POST', { url }, { human: true })).data;

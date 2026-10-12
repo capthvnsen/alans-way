@@ -7,7 +7,7 @@ const fs = require('node:fs'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { CDP, AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
-const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
 const { createAgentInput, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
@@ -151,6 +151,7 @@ async function serve() {
     agentCursor: t.agentCursor || null,
     agentBusy: input.isDispatching(t),
     handoff: t.handoff || null,
+    handback: t.handback || null,
     blocked: t.blocked || null,
   });
   function persist() {
@@ -973,6 +974,7 @@ async function serve() {
       if ((human || overseer || botId === tab.botId) && req.method === 'POST' && m[2] === 'control') {
         const body = await read(req);
         if (!human && body.controller === 'agent') { requireAgentClaim(tab); tab.handoff = reviewedHandoff(tab.handoff); }
+        const handback = !human && body.controller !== 'agent' ? handbackRequest(body) : null;
         if (human && body.handoff?.phase === 'handed_off')
           tab.handoff = {
             id: String(body.handoff.id || '').slice(0, 100),
@@ -984,6 +986,10 @@ async function serve() {
           };
         else if (human && body.controller === 'agent') tab.handoff = reviewedHandoff(tab.handoff);
         const wasAgent = tab.controller === 'agent';
+        // The VPS records why a bot released a tab and reports it in tab
+        // status, but does not hold the tab for the human: the app has no
+        // give-back control for VPS tabs. Any other control change clears it.
+        tab.handback = handback ? { ...handback, botId: tab.botId, since: Date.now() } : null;
         tab.controller = body.controller === 'agent' ? 'agent' : 'human';
         // Only a person holding the tab protects it from reaping; a bot's own
         // release does not.

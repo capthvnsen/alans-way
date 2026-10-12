@@ -168,19 +168,54 @@ function normalizeHost(value) {
   return HOST_ALIASES[String(value).trim().toLowerCase()];
 }
 
-function requireActor(tab, botId, epoch, mutate = false, overseer = false) {
+// A bot releases a tab with a reason when only the human can go on (a
+// CAPTCHA, a login, card details). The tab then waits for the human: bots
+// cannot claim it until the human gives it back, or until HANDBACK_MS
+// passes and it becomes a normal release. After the give-back the bot sees
+// human_returned until it claims the tab again.
+const HANDBACK_REASONS = ['captcha', 'login', 'two_factor', 'payment_details', 'review', 'other'];
+const HANDBACK_MS = 30 * 60000;
+function handbackRequest(body) {
+  if (!body || body.reason === undefined) return null;
+  if (!HANDBACK_REASONS.includes(body.reason)) throw Object.assign(new Error(`reason must be one of ${HANDBACK_REASONS.join(', ')}.`), { status: 400 });
+  return { reason: body.reason, note: String(body.note ?? '').replace(/\s+/g, ' ').trim().slice(0, 140) };
+}
+function liveHandback(tab, now = Date.now()) {
+  const h = tab.handback;
+  return h && !(h.state === 'awaiting_human' && now - h.since > HANDBACK_MS) ? h : null;
+}
+// The handback a tab carries after its controller changes. tab.controller is
+// still the old controller here.
+function nextHandback(tab, controller, source, request, now = Date.now()) {
+  const current = liveHandback(tab, now);
+  const awaiting = current && current.state === 'awaiting_human';
+  if (controller === 'human') {
+    if (source === 'agent' && request) return { ...request, state: 'awaiting_human', botId: tab.botId, since: awaiting ? current.since : now };
+    return tab.controller === 'human' ? current : null;
+  }
+  return source === 'human' && awaiting ? { ...current, state: 'human_returned', returnedAt: now } : null;
+}
+function awaitingHumanError(h) {
+  return Object.assign(new Error(`awaiting_human: this tab was handed to the human (${h.reason}). Wait until they give it back; read the tab state later.`), { status: 409 });
+}
+
+function requireActor(tab, botId, epoch, mutate = false, overseer = false, now = Date.now()) {
   if (!botId || typeof botId !== 'string' || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
   if (!overseer && tab.botId !== botId && !(tab.allowedBots || []).includes(botId)) {
     throw Object.assign(new Error('This tab belongs to a different bot.'), { status: 403 });
   }
-  if (mutate && tab.controller !== 'agent') throw Object.assign(new Error('human_has_control'), { status: 409 });
-  if (mutate && epoch !== tab.epoch) throw Object.assign(new Error('stale_control_epoch: read the tab state and retry after a fresh snapshot.'), { status: 409 });
+  if (!mutate) return;
+  const h = liveHandback(tab, now);
+  if (tab.controller !== 'agent') throw h && h.state === 'awaiting_human' ? awaitingHumanError(h) : Object.assign(new Error('human_has_control'), { status: 409 });
+  if (epoch !== tab.epoch) throw Object.assign(new Error(h && h.state === 'human_returned'
+    ? 'human_returned: the human finished and gave this tab back. Read the tab state for its fresh epoch and current page.'
+    : 'stale_control_epoch: read the tab state and retry after a fresh snapshot.'), { status: 409 });
 }
 
 // A handoff source stays human-only so the task has one live copy, and a
 // destination that did not verify (login redirect, lost drafts) waits for the
 // human. Humans clear either by giving the tab to an agent themselves.
-function requireAgentClaim(tab) {
+function requireAgentClaim(tab, now = Date.now()) {
   const h = tab.handoff;
   if (h && (h.phase === 'handed_off' || (h.phase === 'review_required' && h.verification !== 'ready')))
     throw Object.assign(new Error(h.phase === 'handed_off'
@@ -189,6 +224,8 @@ function requireAgentClaim(tab) {
   // An explicit human takeover (Take over, human navigation, extension page)
   // seals the tab until the human hands it back in the UI. A bot's own
   // release or the idle-expiry clock stays retakeable.
+  const handback = liveHandback(tab, now);
+  if (handback && handback.state === 'awaiting_human') throw awaitingHumanError(handback);
   if (tab.controller === 'human' && tab.humanLock)
     throw Object.assign(new Error('human_has_control: the human took this tab over; only they can hand it back.'), { status: 409 });
 }
@@ -196,8 +233,11 @@ function reviewedHandoff(handoff) {
   return handoff && handoff.phase !== 'reviewed' ? { ...handoff, phase: 'reviewed', reviewedAt: Date.now() } : handoff;
 }
 
-function requireAgentRead(tab) {
-  if (tab.controller === 'human') throw Object.assign(new Error('Tab is under human control.'), { status: 409 });
+function requireAgentRead(tab, now = Date.now()) {
+  if (tab.controller !== 'human') return;
+  const handback = liveHandback(tab, now);
+  if (handback && handback.state === 'awaiting_human') throw awaitingHumanError(handback);
+  throw Object.assign(new Error('Tab is under human control.'), { status: 409 });
 }
 
 function isAuthorized(header, token) {
@@ -257,4 +297,4 @@ function hostShouldReload(mtime, started, inFlight) {
   return inFlight === 0 && Number(mtime) > Number(started);
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl };
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback };

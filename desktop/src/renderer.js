@@ -7,6 +7,7 @@ async function command(name, value = {}) { try { return await api.command(name, 
 const remoteName = () => (state?.remotePlatform === 'mac' ? 'Mac VM' : 'VPS');
 const hostName = (host) => (host === 'vps' || host === 'remote' ? remoteName() : ({ mac: 'Mac', windows: 'PC', linux: 'local computer' })[host] || 'this computer');
 const thisComputer = () => hostName(state?.hostLabel || 'mac');
+const HANDBACK_TEXT = { captcha: 'solve the CAPTCHA.', login: 'sign in.', two_factor: 'enter the verification code.', payment_details: 'enter the card details.', review: 'review the page.', other: 'take a look.' };
 function orderedBots(includeHidden = false) {
   const bots = state.bots.filter((bot) => includeHidden || !state.hidden.includes(bot.id));
   const mode = state.botSort || 'manual';
@@ -102,6 +103,7 @@ function renderTabs() {
     node.append(tabIcon(tab), element('span', 'tab-title', tab.title || 'New tab'));
     if (tab.controller === 'agent') { node.classList.add('agent'); node.append(element('span', 'agent-dot')); }
     if (tab.agentBusy) node.classList.add('busy');
+    if (tab.handback?.state === 'awaiting_human') { const badge = element('span', 'needs-you-badge'); badge.style.setProperty('--h', String(tab.agentHue ?? 168)); badge.title = `${state.bots.find(bot=>bot.id===tab.botId)?.name || 'Agent'} needs you`; node.append(badge); }
     if(tab.host)node.title=`${hostName(tab.host)} · ${state.bots.find(bot=>bot.id===tab.botId)?.name || tab.botId}${tab.controller === 'agent' ? ' · agent-controlled' : ''}`;
     node.onclick = () => command('activate', { id: tab.id });
     node.onkeydown = (event) => { if (event.key === 'Enter') command('activate', { id: tab.id }); };
@@ -303,6 +305,14 @@ function render(next) {
   handoffButton.disabled = !canHandoff || handoffBusy;
   handoffButton.textContent = handoffBusy ? 'Moving…' : handedOff ? 'Move back' : `Move to ${remoteName()}`;
   handoffButton.title = handedOff ? `Bring the ${remoteName()} copy of this page back to your ${thisComputer()}` : `Move ${agentName || 'the agent'}’s page to the ${remoteName()} desktop`;
+  // The bot's note is plain text from the page side of the trust line: it
+  // only ever reaches the DOM through textContent.
+  const needsYou = tab?.handback?.state === 'awaiting_human' ? tab.handback : null;
+  $('needs-you-banner').classList.toggle('hidden', !needsYou);
+  if (needsYou) {
+    $('needs-you-banner').style.setProperty('--h', String(tab.agentHue ?? 168));
+    $('needs-you-text').textContent = `${agentName} needs you: ${needsYou.note || HANDBACK_TEXT[needsYou.reason] || 'take a look.'}`;
+  }
   $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? `${agentName}${tab.agentBusy ? ' is working' : ' is browsing'}` : 'You'} in control${tab.controller === 'agent' ? ' · Take over anytime' : ''} · ${hostName(tab.host)}${tab.handoff?.phase==='handed_off'?` · Handed off to the ${hostName(tab.handoff.destinationHost)} (agents continue there)`:tab.handoff&&tab.handoff.phase!=='reviewed'?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `${remoteName()} · ${state.remoteStatus}` : 'Ready';
   renderUpdate();
   $('connection-status').textContent = state.api.ready ? 'Browser connector ready' : state.api.error ? 'Browser connector unavailable' : 'Browser connector starting…';
@@ -908,6 +918,7 @@ $('home-search').onsubmit = (event) => submitUrl(event, 'home-address');
 document.querySelectorAll('[data-url]').forEach((button) => { button.onclick = () => command('create-tab', { url: button.dataset.url }); });
 for (const action of ['back', 'forward', 'reload']) $(action).onclick = () => command('history', { id: state.activeTabId, action });
 $('control-button').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: tab.controller === 'agent' ? 'human' : 'agent' }); };
+$('needs-you-give-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: 'agent' }); };
 $('handoff-button').onclick = async () => {
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
   if (!tab) return;
