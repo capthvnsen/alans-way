@@ -673,9 +673,12 @@ app.whenReady().then(async () => {
     const clicked = await act(withDialogs, { action: 'click', selector: '#b' });
     assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
     assert.deepEqual(clicked.data.dialogs.map(d => [d.type, d.message, d.accepted]), [['alert', 'hello', true], ['confirm', 'Sure?', false]]);
-    assert.match(clicked.data.dialogs[1].note, /window\.confirm = \(\) => true/);
+    assert.match(clicked.data.dialogs[1].note, /dialog: \{accept: true\}/);
     assert.equal(clicked.data.effect.title, 'ok=false');
     assert.equal((await act(withDialogs, { action: 'eval', code: '1' })).data.dialogs, undefined, 'dialogs are reported once');
+    const accepted = await act(withDialogs, { action: 'click', selector: '#b', dialog: { accept: true } });
+    assert.deepEqual(accepted.data.dialogs.map(d => [d.type, d.accepted]), [['alert', true], ['confirm', true]]);
+    assert.equal(accepted.data.effect.title, 'ok=true', 'the action that carried dialog answered its confirm');
     const downloads = path.join(profile, 'dl');
     fs.mkdirSync(downloads); app.setPath('downloads', downloads);
     const withDownload = (await apiRaw('/v1/tabs', 'POST', { url: `${base}/download` }, 'dialog-bot')).data;
@@ -683,7 +686,7 @@ app.whenReady().then(async () => {
     assert.equal(got.status, 200, JSON.stringify(got.data));
     assert.deepEqual(got.data.downloads, [{ name: 'r.csv', path: path.join(downloads, 'r.csv'), state: 'completed', bytes: 8 }]);
     assert.equal(fs.readFileSync(path.join(downloads, 'r.csv'), 'utf8'), 'a,b\n1,2\n');
-    console.log('PASS: agent tabs answer JS dialogs and report them, and report finished downloads in the action reply.');
+    console.log('PASS: agent tabs answer JS dialogs as the action says and report them, and report finished downloads in the action reply.');
   }
 
   // Telegram keeps normal throttling, so a tray-hidden window really goes idle.

@@ -149,7 +149,45 @@ customElements.define('x-switch', class extends HTMLElement { constructor() { su
 customElements.define('x-aria', class extends HTMLElement { constructor() { super(); this.style.display = 'inline-block'; this.textContent = 'o'; this.onclick = () => this.setAttribute('aria-checked', this.getAttribute('aria-checked') === 'true' ? 'false' : 'true'); } });
 customElements.define('x-tab', class extends HTMLElement {});
 </script>`;
-const routes = { '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
+// A list the page re-renders from scratch on every change, two identical
+// rows that re-render too, a decoy wearing a ref attribute, and a modal over
+// a cookie banner over the button an agent wants.
+const todoPage = `<!doctype html><title>todos</title><input id="new" aria-label="New todo"><ul id="l"></ul><p id="tick">0</p><script>
+let t = [['Walk dog', 0], ['Pay rent', 0], ['Old task', 0]];
+setInterval(() => { tick.textContent = String(Number(tick.textContent) + 1); }, 100);
+const R = () => { l.innerHTML = t.map(([x, d], i) => '<li><label><input type="checkbox" data-i="' + i + '"' + (d ? ' checked' : '') + '> ' + x + '</label> <button data-d="' + i + '">Delete</button></li>').join('');
+  l.querySelectorAll('input').forEach((c) => { c.onchange = () => { t[c.dataset.i][1] = c.checked ? 1 : 0; R(); }; });
+  l.querySelectorAll('button').forEach((b) => { b.onclick = () => { t.splice(b.dataset.d, 1); R(); }; }); };
+document.getElementById('new').onkeydown = (e) => { if (e.key === 'Enter' && e.target.value) { t.push([e.target.value, 0]); e.target.value = ''; R(); } };
+R();
+</script>`;
+const twinPage = `<!doctype html><title>twins</title><div id="w"></div><p id="out">none</p><script>
+let n = 0;
+const R = () => { w.innerHTML = '<div><button>Same</button></div><div><button>Same</button></div>'; w.querySelectorAll('button').forEach((b, i) => { b.onclick = () => { out.textContent = 'clicked ' + i + ' after ' + n; n++; R(); }; }); };
+R();
+</script>`;
+const decoyPage = `<!doctype html><title>decoy</title><button id="bad" data-hermes-workspace-ref="e1" onclick="out.textContent='decoy'">Delete account</button><button id="good" onclick="out.textContent='good'">Save</button><p id="out">none</p>`;
+const overlayPage = `<!doctype html><title>shop</title><div style="height:40vh"></div><button id="add" onclick="out.textContent='added'">Add to cart</button><p id="out">empty</p>
+<div id="cookies" style="position:fixed;left:0;right:0;bottom:0;height:50vh;background:#222;color:#fff">We use cookies. <button onclick="cookies.remove()">Accept all</button><button onclick="cookies.remove()">Reject all</button></div>
+<div id="modal" style="position:fixed;inset:0;background:#0008"><div role="dialog" aria-label="Join our newsletter" style="background:#fff;margin:80px;padding:20px"><button>Subscribe</button><button onclick="modal.remove()">No thanks</button></div></div>`;
+const shadowNamePage = `<!doctype html><title>named</title><x-card></x-card><a href="/nav-b">Next</a><p id="out">idle</p><script>
+customElements.define('x-card', class extends HTMLElement { constructor() { super(); const r = this.attachShadow({ mode: 'open' }); r.innerHTML = '<input aria-label="Callsign"><button>Transmit</button>'; r.querySelector('button').onclick = () => { out.textContent = 'sent ' + r.querySelector('input').value; }; } });
+</script>`;
+const popupPage = `<!doctype html><title>vault</title><button onclick="window.open('/nav-b', '_blank')">Reveal code</button><button id="run">Run cleanup</button><p id="out">not run</p><script>
+run.onclick = () => { alert('Starting'); const ok = confirm('Delete the scratch files?'); out.textContent = 'ok=' + ok + ' name=' + (ok ? prompt('Name this run', 'run') : null); };
+</script>`;
+const shellPage = `<!doctype html><title>app</title><div style="position:fixed;inset:0;overflow:auto"><nav><a href="/a">Inbox</a> <a href="/b">Sent</a> <a href="/c">Drafts</a></nav><h1>Inbox</h1><button>Compose</button><button>Close</button></div>`;
+const long = 'x'.repeat(240);
+const reviewPage = `<!doctype html><title>review</title><div id="w"></div><div id="v"></div><p id="out">none</p>
+<div id="ask" style="position:fixed;inset:0;background:#0008"><div role="dialog" aria-label="Delete project?"><button onclick="out.textContent='continued'">Continue</button><button onclick="ask.remove()">Cancel</button></div></div><script>
+const rows = () => { w.innerHTML = ['A', 'B'].map((k) => '<div>' + '${long}' + ' <button>Delete</button></div>').join(''); w.querySelectorAll('button').forEach((b, i) => { b.onclick = () => { out.textContent = 'deleted ' + i; rows(); }; }); };
+const view = () => { v.innerHTML = '<button>Save</button>'; v.querySelector('button').onclick = () => { out.textContent = 'saved ' + location.hash; }; };
+rows(); view(); addEventListener('hashchange', view);
+</script>`;
+const hopA = `<!doctype html><title>hop a</title><a href="/hop-b">Go</a> <button>Alpha</button>`;
+const hopB = `<!doctype html><title>hop b</title><button onclick="out.textContent += 'B'">Beta</button><button onclick="out.textContent += 'G'">Gamma</button><button onclick="out.textContent += 'C'">Cancel subscription</button><p id="out"></p>`;
+const crowdPage = `<!doctype html><title>crowd</title>${Array.from({ length: 2100 }, (_, i) => `<button>Item ${i}</button>`).join('')}`;
+const routes = { '/hop-a': hopA, '/hop-b': hopB, '/crowd': crowdPage, '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
 const api = (route, method = 'GET', body, epoch) =>
@@ -247,7 +285,7 @@ test('ten sequential tasks each complete in one action call', { skip: !chrome &&
     // leaves no controls behind, so its list is empty.
     assert.ok(Array.isArray(reply.data.elements), `task ${i + 1} reply lacks an elements list: ${JSON.stringify(reply.data)}`);
     if (i + 1 < tasks.length) assert.ok(reply.data.elements.length, `task ${i + 1} reply lacks fresh element refs`);
-    assert.ok(reply.data.elements.every((el) => /^s\d+-\d+$/.test(el.ref)), `task ${i + 1} refs malformed: ${JSON.stringify(reply.data.elements)}`);
+    assert.ok(reply.data.elements.every((el) => /^e\d+$/.test(el.ref)), `task ${i + 1} refs malformed: ${JSON.stringify(reply.data.elements)}`);
     elements = reply.data.elements;
     if (i === 0) {
       assert.equal(reply.data.effect.navigated, false);
@@ -347,7 +385,7 @@ test('a click landing inside the delivery window still counts the work it starte
       return true;
     })()`);
     assert.equal(scheduled, true, 'the close ran and the late click was scheduled on the raw timer');
-    const data = await evalOnTab(snapshotExpression(90, { effect: true, settle: true }));
+    const data = await evalOnTab(snapshotExpression({ effect: true, settle: true }));
     assert.ok(data && typeof data.text === 'string', `the settle read returned nothing: ${JSON.stringify(data)}`);
     assert.ok(data.text.includes('Fetched payload text'), `the late click's fetch escaped the settle: ${JSON.stringify(data.text).slice(0, 300)} settledMs=${data.settledMs}`);
   } finally {
@@ -626,4 +664,166 @@ test('custom elements and ARIA widgets in shadow roots become refs that toggle',
   assert.ok(click.ok !== false, JSON.stringify(click));
   const checked = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: "document.querySelector('x-switch').shadowRoot.querySelector('input').checked", epoch: tab.epoch });
   assert.equal(checked.data.value, true, `click did not toggle: ${JSON.stringify(click)}`);
+});
+
+const live = { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 };
+const openTab = async (route) => { const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}${route}` })).data; assert.ok(tab.id, `tab did not open: ${stderr}`); return tab; };
+const act = (tab, body) => api(`/v1/tabs/${tab.id}/actions`, 'POST', { epoch: tab.epoch, ...body });
+const pageText = async (tab, selector) => (await act(tab, { action: 'eval', code: `document.querySelector(${JSON.stringify(selector)}).textContent` })).data.value;
+
+test('refs from one snapshot survive a page that re-renders its list after every step', live, async () => {
+  const tab = await openTab('/todos');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const ref = (rx, role) => snap.elements.find((e) => rx.test(e.name || '') && (!role || e.role === role)).ref;
+  const deletes = snap.elements.filter((e) => e.name === 'Delete');
+  assert.deepEqual(deletes.map((e) => e.row), ['Walk dog', 'Pay rent', 'Old task'], 'repeated names carry their row');
+  const reply = await act(tab, { action: 'batch', generation: snap.generation, steps: [
+    { action: 'type', ref: ref(/New todo/), text: 'Buy milk' }, { action: 'press', key: 'Enter' },
+    { action: 'click', ref: ref(/^Walk dog/, 'input') }, { action: 'click', ref: ref(/^Pay rent/, 'input') },
+    { action: 'click', ref: deletes.find((e) => e.row === 'Old task').ref }] });
+  assert.ok(reply.data.results.every((r) => r.ok), JSON.stringify(reply.data.results));
+  const state = await act(tab, { action: 'eval', code: "[...document.querySelectorAll('li')].map((li) => li.textContent.trim().replace(/\\s+Delete$/, '') + (li.querySelector('input').checked ? '+' : '')).join(',')" });
+  assert.equal(state.data.value, 'Walk dog+,Pay rent+,Buy milk');
+  // With the caller's generation the reply is a delta, and the ticking counter is not a control change.
+  assert.ok(Array.isArray(reply.data.changed) && Array.isArray(reply.data.removed), JSON.stringify(reply.data));
+  assert.ok(reply.data.removed.includes(deletes[2].ref), 'the deleted row\'s Delete is reported removed');
+  assert.equal(reply.data.elements, undefined);
+});
+
+test('a re-rendered control with an identical twin goes stale instead of guessing', live, async () => {
+  const tab = await openTab('/twins');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const [first, second] = snap.elements.filter((e) => e.name === 'Same');
+  assert.ok(first && second);
+  const one = await act(tab, { action: 'click', ref: second.ref });
+  assert.equal(one.status, 200, JSON.stringify(one.data));
+  assert.equal(await pageText(tab, '#out'), 'clicked 1 after 0');
+  // The reply re-listed the twins under fresh refs; the old ones name nothing.
+  const stale = await act(tab, { action: 'click', ref: first.ref });
+  assert.equal(stale.status, 409, JSON.stringify(stale.data));
+  assert.match(stale.data.error, /Stale or unknown reference/);
+  assert.equal(await pageText(tab, '#out'), 'clicked 1 after 0', 'nothing was clicked on a guess');
+});
+
+test('a ref attribute planted by the page cannot redirect a ref, and a new document voids the old ones', live, async () => {
+  const tab = await openTab('/decoy');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const save = snap.elements.find((e) => e.name === 'Save');
+  const reply = await act(tab, { action: 'click', ref: save.ref });
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.equal(await pageText(tab, '#out'), 'good');
+  const decoy = snap.elements.find((e) => e.name === 'Delete account');
+  await act(tab, { action: 'navigate', url: `http://bench.example:${port}/decoy` });
+  const old = await act(tab, { action: 'click', ref: decoy.ref });
+  assert.equal(old.status, 409, `a ref from the old document still acted: ${JSON.stringify(old.data)}`);
+  const fresh = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const oldest = Math.max(...snap.elements.map((e) => Number(e.ref.slice(1))));
+  assert.ok(fresh.elements.every((e) => Number(e.ref.slice(1)) > oldest), 'refs in a new document never reuse old numbers');
+});
+
+test('dialogs and banners over the page are named with what closes them', live, async () => {
+  const tab = await openTab('/overlay');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  assert.equal(snap.overlays.length, 2, JSON.stringify(snap.overlays));
+  assert.equal(snap.overlays[0].name, 'Join our newsletter');
+  assert.equal(snap.overlays[0].closeName, 'No thanks');
+  assert.equal(snap.overlays[1].closeName, 'Reject all', 'the choice that shares nothing is offered first');
+  const add = snap.elements.find((e) => e.name === 'Add to cart');
+  const covered = await act(tab, { action: 'click', ref: add.ref });
+  assert.equal(covered.status, 400);
+  assert.match(covered.data.error, new RegExp(`covered by "Join our newsletter"\\. Close it first: click ${snap.overlays[0].close} \\("No thanks"\\)`));
+  const done = await act(tab, { action: 'batch', steps: snap.overlays.map((o) => ({ action: 'click', ref: o.close })).concat({ action: 'click', ref: add.ref }) });
+  assert.ok(done.data.results.every((r) => r.ok), JSON.stringify(done.data.results));
+  assert.equal(await pageText(tab, '#out'), 'added');
+  assert.equal(done.data.overlays, undefined, 'a cleared page carries no overlays');
+  const shell = await openTab('/shell');
+  assert.equal((await api(`/v1/tabs/${shell.id}/snapshot`)).data.overlays, undefined, 'an app whose whole shell is fixed is the page, not an overlay');
+});
+
+test('a control can be named instead of referenced, inside shadow roots too', live, async () => {
+  const tab = await openTab('/named');
+  const typed = await act(tab, { action: 'batch', steps: [{ action: 'type', name: 'callsign', text: 'ORCA-7' }, { action: 'click', name: 'Transmit', role: 'button' }] });
+  assert.ok(typed.data.results.every((r) => r.ok), JSON.stringify(typed.data.results));
+  assert.match(typed.data.results[0].ref, /^e\d+$/, 'a named step reports the ref it resolved to');
+  assert.equal(await pageText(tab, '#out'), 'sent ORCA-7');
+  const missing = await act(tab, { action: 'click', name: 'Launch' });
+  assert.match(missing.data.error, /No visible control is named exactly "Launch"/);
+  const todos = await openTab('/todos');
+  const many = await act(todos, { action: 'click', name: 'Delete' });
+  assert.match(many.data.error, /3 controls match "Delete": e\d+ "Delete" \(row "Walk dog"\)/);
+  const one = await act(todos, { action: 'click', name: 'Delete', row: 'pay rent' });
+  assert.equal(one.status, 200, JSON.stringify(one.data));
+  assert.equal(await act(todos, { action: 'eval', code: "[...document.querySelectorAll('li')].map((li) => li.textContent.trim()).join('|')" }).then((r) => r.data.value), 'Walk dog Delete|Old task Delete');
+  const nav = await act(tab, { action: 'click', name: 'Next', role: 'link' });
+  assert.equal(nav.data.effect.navigated, true, JSON.stringify(nav.data.effect));
+});
+
+test('a reply names the tab its action opened and answers dialogs the way the action said', live, async () => {
+  const tab = await openTab('/popup');
+  const opened = await act(tab, { action: 'click', name: 'Reveal code' });
+  assert.equal(opened.data.opened?.length, 1, JSON.stringify(opened.data));
+  assert.match(opened.data.opened[0].tabId, /^[\w-]+$/);
+  assert.ok(Number.isInteger(opened.data.opened[0].epoch));
+  const popup = (await api(`/v1/tabs/${opened.data.opened[0].tabId}/snapshot`)).data;
+  assert.match(popup.text, /Page B body/, 'the opened tab is readable by its id');
+  const dismissed = await act(tab, { action: 'click', name: 'Run cleanup' });
+  assert.deepEqual(dismissed.data.dialogs.map((d) => [d.type, d.accepted]), [['alert', true], ['confirm', false]]);
+  assert.match(dismissed.data.dialogs[1].note, /dialog: \{accept: true\}/);
+  assert.equal(await pageText(tab, '#out'), 'ok=false name=null');
+  const answered = await act(tab, { action: 'click', name: 'Run cleanup', dialog: { accept: true, text: 'eval-42' } });
+  assert.deepEqual(answered.data.dialogs.map((d) => [d.type, d.accepted]), [['alert', true], ['confirm', true], ['prompt', true]]);
+  assert.equal(await pageText(tab, '#out'), 'ok=true name=eval-42');
+  const after = await act(tab, { action: 'click', name: 'Run cleanup' });
+  assert.equal(after.data.dialogs[1].accepted, false, 'an answer lasts only for the action that carried it');
+});
+
+test('rebinding needs evidence: no row text, another hash route, or a partial view never rebind', live, async () => {
+  const tab = await openTab('/review#/a');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  assert.equal(snap.overlays[0].closeName, 'Cancel', 'a confirm dialog offers Cancel, never Continue');
+  await act(tab, { action: 'click', ref: snap.overlays[0].close });
+  const [first, second] = snap.elements.filter((e) => e.name === 'Delete');
+  assert.equal(first.row, undefined, 'rows too long to read give no row');
+  assert.equal((await act(tab, { action: 'click', ref: first.ref })).status, 200);
+  const stale = await act(tab, { action: 'click', ref: second.ref });
+  assert.equal(stale.status, 409, `a repeated name with no row text was rebound: ${JSON.stringify(stale.data)}`);
+  assert.equal(await pageText(tab, '#out'), 'deleted 0');
+  const save = snap.elements.find((e) => e.name === 'Save');
+  await act(tab, { action: 'eval', code: "location.hash = '#/b'" });
+  const moved = await act(tab, { action: 'click', ref: save.ref });
+  assert.equal(moved.status, 409, `a ref followed a control onto another hash route: ${JSON.stringify(moved.data)}`);
+  assert.equal(await pageText(tab, '#out'), 'deleted 0');
+  const both = await act(tab, { action: 'click', ref: save.ref, name: 'Save' });
+  assert.match(both.data.error, /Target one way/);
+  const todos = await openTab('/todos');
+  const stateful = await act(todos, { action: 'click', name: 'Walk dog off', role: 'checkbox' });
+  assert.equal(stateful.status, 200, `a name as the snapshot lists it, state words included: ${JSON.stringify(stateful.data)}`);
+  assert.equal(stateful.data.resolved, 'Walk dog off');
+});
+
+test('a name lookup that opens a new page\'s store numbers past every ref the tab handed out', live, async () => {
+  const tab = await openTab('/hop-a');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const lowest = snap.elements.map((e) => e.ref).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))[0];
+  // No read between the steps: the lookup on the new page opens its store.
+  const reply = await act(tab, { action: 'batch', steps: [{ action: 'click', name: 'Go' }, { action: 'click', name: 'Beta' }, { action: 'click', ref: lowest }] });
+  assert.deepEqual(reply.data.results.map((r) => r.ok), [true, true, false], JSON.stringify(reply.data.results));
+  assert.ok(Number(reply.data.results[1].ref.slice(1)) > Math.max(...snap.elements.map((e) => Number(e.ref.slice(1)))), `the new page reused an old number: ${reply.data.results[1].ref}`);
+  assert.match(reply.data.results[2].error, /Stale or unknown reference/);
+  assert.equal(await pageText(tab, '#out'), 'B', 'the old page\'s ref clicked nothing on the new page');
+});
+
+test('only an exact name acts; near matches come back as suggestions, and a cut-short lookup says so', live, async () => {
+  const tab = await openTab('/hop-b');
+  const near = await act(tab, { action: 'click', name: 'Cancel' });
+  assert.equal(near.status, 400);
+  assert.match(near.data.error, /No visible control is named exactly "Cancel"\. Close matches: e\d+ "Cancel subscription"/);
+  assert.equal(await pageText(tab, '#out'), '', 'a near match is never clicked');
+  const exact = await act(tab, { action: 'click', name: 'cancel  SUBSCRIPTION' });
+  assert.equal(exact.status, 200, 'case and spacing do not matter');
+  assert.equal(await pageText(tab, '#out'), 'C');
+  const crowd = await openTab('/crowd');
+  const cut = await act(crowd, { action: 'click', name: 'Item 3' });
+  assert.equal(cut.status, 200, JSON.stringify(cut.data));
+  assert.equal(cut.data.partial, true, 'a lookup that did not read the whole page says so');
 });

@@ -1,6 +1,315 @@
 const crypto = require('node:crypto');
 
-function snapshotExpression(generation, opts = {}) {
+// Drops tracking parameters and fragments; keeps only web and mail links.
+const SHORT_HREF = `(raw) => {
+  if (!raw) return '';
+  try {
+    const url = new URL(raw, location.href);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:' && url.protocol !== 'mailto:') return '';
+    if (url.protocol === 'http:' || url.protocol === 'https:') {
+      for (const key of [...url.searchParams.keys()]) {
+        if (/^(utm_|fbclid$|gclid$|mc_eid$|mc_cid$|igshid$|_hsenc$|_hsmi$)/.test(key)) url.searchParams.delete(key);
+      }
+      url.hash = '';
+    }
+    return url.href.slice(0, 300);
+  } catch { return ''; }
+}`;
+const REFS_KEY = 'hw.refs';
+const PICK = 'a[href],button,summary,input:not([type="hidden"]),textarea,select,[onclick],[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="treeitem"],[role="slider"],[role="combobox"],[role="textbox"],[role="searchbox"],[role="spinbutton"],[contenteditable="true"]';
+// The page-side ref store, kept on the document's window under a registered
+// symbol. A ref names one control for the life of the document: it follows
+// the node through any change to the page, and when the page re-renders the
+// control as a new node it moves to that node only if exactly one new control
+// has the same role, name, row and address and no other lost ref shares them.
+// Anything less certain is a stale ref, never a guess. Agent input resolves
+// refs through the same store (find), so a planted attribute cannot redirect one.
+// seed is the highest ref the tab has handed out: whichever script first
+// opens a document's store (a snapshot, a name lookup), numbering continues
+// past it, so a ref remembered from an earlier page never names a control here.
+function refsSource(seed = 0) {
+  const floor = Number.isInteger(seed) && seed > 0 ? seed : 0;
+  return `(() => {
+    const key = Symbol.for(${JSON.stringify(REFS_KEY)});
+    let S = window[key];
+    if (!S || S.doc !== document) {
+      S = { doc: document, n: 0, byRef: new Map(), byNode: new WeakMap() };
+      try { Object.defineProperty(window, key, { value: S, configurable: true }); } catch { try { window[key] = S; } catch {} }
+    }
+    S.n = Math.max(S.n, ${floor});
+    const shortHref = ${SHORT_HREF};
+    const pick = ${JSON.stringify(PICK)};
+    // Widgets with no native tag or listed role: a state attribute, or a
+    // focusable custom element. Containers around real controls are skipped
+    // below so the host and the control inside its shadow root do not both show.
+    const loosePick = pick + ',[aria-checked],[aria-pressed],[tabindex]:not([tabindex^="-"])';
+    S.live = (ref) => { const r = S.byRef.get(ref), node = r && r.node.deref(); return node && node.isConnected ? node : null; };
+    S.refOf = (el) => { const ref = S.byNode.get(el); return ref && S.live(ref) === el ? ref : ''; };
+    // Visible controls in page order, through open shadow roots and
+    // same-origin frames. A closed root reads null here, which keeps the
+    // agent cursor (and anything else the page sealed) out.
+    S.collect = (deadline, maxScan, maxElements) => {
+      const queue = [document], seenRoot = new Set(), candidates = [], list = [];
+      let more = false;
+      while (queue.length && seenRoot.size < 600 && performance.now() <= deadline) {
+        const root = queue.shift();
+        if (seenRoot.has(root)) continue;
+        seenRoot.add(root);
+        try { for (const el of root.querySelectorAll(loosePick)) candidates.push(el); } catch {}
+        const start = root.nodeType === 11 ? root : (root.documentElement || root.body || null);
+        if (!start) continue;
+        const walker = document.createTreeWalker(start, NodeFilter.SHOW_ELEMENT);
+        let node, walked = 0;
+        while ((node = walker.nextNode()) && walked++ < 4000) {
+          if (performance.now() > deadline) { more = true; break; }
+          if (node.shadowRoot && !seenRoot.has(node.shadowRoot)) queue.push(node.shadowRoot);
+        }
+        if (walked >= 4000) more = true;
+        let frames = [];
+        try { frames = root.querySelectorAll('iframe'); } catch {}
+        for (const frame of frames) {
+          let doc = null;
+          try { doc = frame.contentDocument; } catch {}
+          if (doc && !seenRoot.has(doc)) queue.push(doc);
+        }
+      }
+      if (queue.length) more = true;
+      let scanned = 0;
+      for (const el of candidates) {
+        if (el.tagName === 'BODY' || el.tagName === 'HTML') continue;
+        if (scanned >= maxScan || list.length >= maxElements || performance.now() > deadline) break;
+        scanned++;
+        // checkVisibility rejects display:none/visibility:hidden without forcing
+        // layout; only survivors pay for the rect that catches zero-area boxes.
+        if (el.checkVisibility ? !el.checkVisibility({ checkVisibilityCSS: true })
+          : (s => s.visibility === 'hidden' || s.display === 'none')(getComputedStyle(el))) continue;
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        if (!el.matches(pick)) {
+          const stateful = el.hasAttribute('aria-checked') || el.hasAttribute('aria-pressed');
+          if (!stateful && el.localName.indexOf('-') < 0) continue;
+          if (el.querySelector(pick) || (el.shadowRoot && el.shadowRoot.querySelector(pick))) continue;
+        }
+        list.push(el);
+      }
+      return { list, more: more || scanned < candidates.length || list.length >= maxElements };
+    };
+    // role and name as a person reads the control; base is the name without
+    // its state words (on, off, open ...), so a toggled control keeps its identity.
+    S.describe = (el) => {
+      let name = '';
+      const labelledby = el.getAttribute('aria-labelledby');
+      if (labelledby) {
+        const root = el.getRootNode();
+        name = labelledby.split(/\\s+/).map(id => {
+          const node = root.getElementById ? root.getElementById(id) : null;
+          return (node && (node.innerText || node.textContent) || '').trim();
+        }).filter(Boolean).join(' ').trim();
+      }
+      if (!name) name = (el.getAttribute('aria-label') || el.placeholder || el.title || '').trim();
+      if (!name && el.labels && el.labels[0]) {
+        const labelText = (el.labels[0].innerText || '').trim();
+        const own = (el.innerText || '').trim();
+        name = own && labelText.endsWith(own) ? labelText.slice(0, -own.length).trim() : labelText;
+      }
+      if (!name) name = (el.innerText || '').trim();
+      // A control inside a shadow root is usually named by its host (a slotted
+      // label, or a label attribute).
+      for (let host = el.getRootNode().host, hops = 0; !name && host && hops < 3; host = host.getRootNode().host, hops++) {
+        name = (host.getAttribute('aria-label') || host.getAttribute('label') || host.innerText || '').trim();
+      }
+      if (el.tagName === 'SELECT' && el.selectedIndex >= 0) {
+        const picked = (el.options[el.selectedIndex].label || el.options[el.selectedIndex].text || '').trim();
+        if (picked && picked !== name) name = (name ? name + ' ' : '') + picked;
+      }
+      const base = name.replace(/\\s+/g, ' ').trim().slice(0, 200);
+      const ariaChecked = el.getAttribute('aria-checked');
+      const checked = /^(checkbox|radio)$/.test(el.type) ? !!el.checked : ariaChecked === 'true' ? true : ariaChecked === 'false' ? false : null;
+      if (checked === true) name += ' on';
+      else if (checked === false) name += ' off';
+      else {
+        const pressed = el.getAttribute('aria-pressed');
+        if (pressed === 'true') name += ' on';
+        else if (pressed === 'false') name += ' off';
+      }
+      if (el.disabled || el.getAttribute('aria-disabled') === 'true') name += ' disabled';
+      const expanded = el.getAttribute('aria-expanded');
+      if (expanded === 'true') name += ' open';
+      else if (expanded === 'false') name += ' closed';
+      else if (el.tagName === 'SUMMARY' && el.parentElement && el.parentElement.tagName === 'DETAILS') name += el.parentElement.open ? ' open' : ' closed';
+      if (el.getAttribute('aria-selected') === 'true') name += ' selected';
+      if (el.getAttribute('aria-current') === 'page') name += ' current';
+      const type = el.type || '';
+      return { role: el.getAttribute('role') || el.tagName.toLowerCase(), name: name.trim().slice(0, 200), base, type,
+        value: type === 'password' ? '[password]' : String(el.value || '').slice(0, 200),
+        href: shortHref(typeof el.href === 'string' ? el.href : (el.getAttribute('href') || '')) };
+    };
+    // The text around a control that shares its name with others (the row,
+    // card or list item it sits in), without the control's own name: what
+    // tells one "Delete" from the next for a person reading the page.
+    S.rowOf = (el, name) => {
+      const up = (node) => node.parentElement || (node.getRootNode() && node.getRootNode().host) || null;
+      for (let node = up(el), hops = 0; node && hops < 4; node = up(node), hops++) {
+        if (node.tagName === 'BODY' || node.tagName === 'HTML') return '';
+        const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
+        if (text.length <= name.length + 1) continue;
+        if (text.length > 200) return '';
+        const at = name ? text.indexOf(name) : -1;
+        return (at >= 0 ? text.slice(0, at) + ' ' + text.slice(at + name.length) : text).replace(/\\s+/g, ' ').trim().slice(0, 60);
+      }
+      return '';
+    };
+    // Identity for a rebind: role, base name, row when the name repeats, and
+    // the address including a hash route. A repeated name with no row text to
+    // tell it apart has no identity (null) and is never rebound.
+    S.keys = (entries) => {
+      const count = new Map(), here = location.pathname + location.search + location.hash;
+      for (const x of entries) { const k = x.d.role + '\\u0001' + x.d.base; count.set(k, (count.get(k) || 0) + 1); }
+      for (const x of entries) {
+        const repeated = count.get(x.d.role + '\\u0001' + x.d.base) > 1;
+        if (repeated) x.row = S.rowOf(x.el, x.d.base);
+        x.key = repeated && !x.row ? null : [x.d.role, x.d.base, x.row || '', here].join('\\u0001');
+      }
+    };
+    // Lost refs by identity; a key two lost refs share maps to null (ambiguous).
+    const retired = () => {
+      const out = new Map();
+      for (const [ref, r] of S.byRef) if (r.key && !S.live(ref)) out.set(r.key, out.has(r.key) ? null : ref);
+      return out;
+    };
+    // whole is true for a full scan, the only list that knows which names
+    // repeat: refs handed out for a few controls (a name target, an overlay's
+    // close) get no identity, so they never rebind on a partial view.
+    S.assign = (entries, seed, whole = true) => {
+      S.n = Math.max(S.n, seed);
+      S.keys(entries);
+      if (!whole) for (const x of entries) x.key = null;
+      const fresh = entries.filter((x) => !S.refOf(x.el));
+      if (fresh.length) {
+        const lost = whole ? retired() : new Map(), count = new Map();
+        for (const x of fresh) count.set(x.key, (count.get(x.key) || 0) + 1);
+        for (const x of fresh) {
+          const old = x.key && count.get(x.key) === 1 ? lost.get(x.key) : null;
+          if (old) lost.delete(x.key);
+          const ref = old || 'e' + (++S.n);
+          S.byNode.set(x.el, ref);
+          S.byRef.set(ref, { node: new WeakRef(x.el), key: x.key });
+        }
+      }
+      for (const x of entries) { x.ref = S.byNode.get(x.el); if (whole) S.byRef.get(x.ref).key = x.key; }
+      // Lost refs only matter for a rebind; a long-lived page keeps the newest.
+      if (S.byRef.size > 3000) for (const [ref] of S.byRef) { if (S.byRef.size <= 2000) break; if (!S.live(ref)) S.byRef.delete(ref); }
+    };
+    // A fixed layer over a quarter or more of the viewport (a modal, a
+    // cookie banner) eats clicks meant for the page under it. It is named the
+    // way a person would read it, with the control that dismisses it,
+    // preferring the choice that shares nothing (close, no thanks, reject).
+    // listed is for a layer found by looking, not by a blocked click: an app
+    // whose whole shell is fixed holds most of the page's controls, and that
+    // is the page, not something over it.
+    S.layer = (el, listed = false) => {
+      let layer = null;
+      for (let node = el; node && node.nodeType === 1; node = node.parentElement || (node.getRootNode() && node.getRootNode().host) || null) {
+        if (typeof node.id === 'string' && node.id.indexOf('hermes-workspace-agent-cursor') === 0) return null;
+        if (getComputedStyle(node).position === 'fixed') layer = node;
+      }
+      if (!layer) return null;
+      const box = layer.getBoundingClientRect();
+      if (box.width * box.height < innerWidth * innerHeight * 0.25) return null;
+      if (listed && layer.querySelectorAll(pick).length * 2 > document.querySelectorAll(pick).length) return null;
+      const dialog = layer.matches('dialog,[role=dialog],[role=alertdialog]') ? layer : layer.querySelector('dialog,[role=dialog],[role=alertdialog]') || layer;
+      let name = (dialog.getAttribute('aria-label') || '').trim();
+      const labelledby = dialog.getAttribute('aria-labelledby');
+      if (!name && labelledby) name = labelledby.split(/\\s+/).map((id) => (document.getElementById(id) || {}).textContent || '').join(' ');
+      const heading = !name && dialog.querySelector('h1,h2,h3,h4,legend');
+      if (heading) name = heading.textContent || '';
+      // No title: its words, leaving out its buttons and links.
+      if (!name) {
+        const words = [], walk = document.createTreeWalker(dialog, NodeFilter.SHOW_TEXT);
+        for (let node; (node = walk.nextNode()) && words.join(' ').length < 80;) if (!node.parentElement.closest('button,a,[role=button]')) words.push(node.nodeValue);
+        name = words.join(' ');
+      }
+      // Nothing to read: name the element itself, the way an error would.
+      const tag = layer.localName + (layer.id ? '#' + layer.id : typeof layer.className === 'string' && layer.className.trim() ? '.' + layer.className.trim().split(/\\s+/)[0] : '');
+      const out = { name: name.replace(/\\s+/g, ' ').trim().slice(0, 80) || tag };
+      // A real dialog is searched on its own, and only a banner falls back to
+      // its accept choice: a confirm dialog's Continue is never offered as a way out.
+      const real = dialog !== layer || layer.matches('dialog,[role=dialog],[role=alertdialog]');
+      const controls = [...(real ? dialog : layer).querySelectorAll('button,a[href],[role=button],input[type=button],input[type=submit]')].filter((c) => c.getClientRects().length);
+      const label = (c) => S.describe(c).base;
+      const close = controls.find((c) => /^(close|dismiss|cancel|no|no,? thanks|not now|maybe later|skip|reject( all)?|decline( all)?|×|✕|x)$/i.test(label(c)) || /^(close|dismiss)/i.test(c.getAttribute('aria-label') || ''))
+        || (!real && controls.find((c) => /^(accept( all)?|got it|ok|okay|agree)$/i.test(label(c))));
+      if (close) {
+        if (!S.refOf(close)) S.assign([{ el: close, d: S.describe(close) }], S.n, false);
+        out.close = S.refOf(close);
+        out.closeName = label(close);
+      }
+      return { layer, out };
+    };
+    // Every such layer over a 3x3 grid of the viewport, stacked ones too
+    // (a newsletter modal over a cookie banner), topmost first.
+    S.overlays = () => {
+      const seen = new Set(), layers = new Set(), out = [];
+      for (const fy of [1 / 6, 1 / 2, 5 / 6]) for (const fx of [1 / 6, 1 / 2, 5 / 6]) {
+        for (const hit of document.elementsFromPoint(innerWidth * fx, innerHeight * fy)) {
+          if (seen.has(hit)) continue;
+          seen.add(hit);
+          if (getComputedStyle(hit).position !== 'fixed') continue;
+          const found = S.layer(hit, true);
+          if (found && !layers.has(found.layer)) { layers.add(found.layer); if (out.length < 3) out.push(found.out); }
+        }
+      }
+      return out;
+    };
+    // A control by the name a snapshot lists for it, the way a person names
+    // it: exact, then starting with, then containing the words; role (a tag
+    // or ARIA role such as link, button, textbox, checkbox) and row narrow it.
+    // Only an exact match (case and spacing aside) is acted on, and only when
+    // it is the one: several come back as candidates, and near matches
+    // ("Cancel subscription" for "Cancel") come back as suggestions, never a guess.
+    // cut says the page had more controls than the lookup read.
+    const norm = (text) => String(text || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    const implicit = (el, d) => {
+      if (el.getAttribute('role')) return d.role;
+      if (el.tagName === 'INPUT') return { checkbox: 'checkbox', radio: 'radio', submit: 'button', button: 'button', reset: 'button', range: 'slider', search: 'searchbox' }[d.type] || 'textbox';
+      return { a: 'link', select: 'combobox', textarea: 'textbox', summary: 'button' }[d.role] || d.role;
+    };
+    S.byName = (name, role, row) => {
+      const want = norm(name), wantRole = norm(role), wantRow = norm(row);
+      const found = S.collect(performance.now() + 400, 6000, 2000), cut = found.more;
+      const entries = found.list.map((el) => ({ el, d: S.describe(el) }));
+      S.keys(entries);
+      const pool = entries.filter((x) => (!wantRole || x.d.role === wantRole || implicit(x.el, x.d) === wantRole)
+        && (!wantRow || norm(x.row || S.rowOf(x.el, x.d.base)).includes(wantRow)));
+      const listed = (hits) => {
+        S.assign(hits, 0, false);
+        return hits.slice(0, 8).map((x) => ({ ref: x.ref, name: x.d.name, ...(x.row ? { row: x.row } : {}) }));
+      };
+      const exact = pool.filter((x) => norm(x.d.base) === want || norm(x.d.name) === want);
+      if (exact.length === 1) { S.assign(exact, 0, false); return { el: exact[0].el, ref: exact[0].ref, name: exact[0].d.name, cut }; }
+      if (exact.length) return { count: exact.length, many: listed(exact), cut };
+      const near = pool.filter((x) => norm(x.d.base).includes(want) || norm(x.d.name).includes(want));
+      return { near: listed(near), cut };
+    };
+    S.find = (ref) => {
+      const r = S.byRef.get(ref);
+      if (!r) return null;
+      const node = S.live(ref);
+      if (node) return node;
+      if (!r.key || retired().get(r.key) !== ref) return null;
+      const entries = S.collect(performance.now() + 300, 4000, 1000).list.map((el) => ({ el, d: S.describe(el) }));
+      S.keys(entries);
+      const twins = entries.filter((x) => x.key === r.key && !S.refOf(x.el));
+      if (twins.length !== 1) return null;
+      S.byNode.set(twins[0].el, ref);
+      r.node = new WeakRef(twins[0].el);
+      return twins[0].el;
+    };
+    return S;
+  })()`;
+}
+
+function snapshotExpression(opts = {}) {
   const int = (value, min, max, fallback) => Number.isInteger(value) ? Math.max(min, Math.min(max, value)) : fallback;
   const maxChars = int(opts.maxChars, 0, 20000, 6000);
   const maxElements = int(opts.maxElements, 0, 300, 150);
@@ -9,8 +318,10 @@ function snapshotExpression(generation, opts = {}) {
   // Controls matter more than prose: a heavy app page must still list its
   // buttons, so the scan gets a wider budget than the text walk.
   const elementMs = int(opts.elementMs, 5, 2000, 200);
-  const keep = int(opts.keep, 0, Number.MAX_SAFE_INTEGER, -1);
-  const restamp = int(opts.restamp, 0, Number.MAX_SAFE_INTEGER, -1);
+  // Ref numbers continue from the tab's last one, so a ref from an earlier
+  // document can never name a control in this one.
+  const seed = int(opts.seed, 0, Number.MAX_SAFE_INTEGER, 0);
+  const held = (Array.isArray(opts.held) ? opts.held : []).filter((ref) => typeof ref === 'string' && /^e\d+$/.test(ref)).slice(0, 400);
   const parseWaitMs = int(opts.parseWaitMs, 0, 5000, 400);
   const frameWaitMs = int(opts.frameWaitMs, 0, 5000, maxElements > 0 ? 1200 : 0);
   // effect reads also report which control holds focus and the value of the
@@ -119,162 +430,59 @@ function snapshotExpression(generation, opts = {}) {
       });
       settledMs = Math.round(performance.now() - settleStart);
     }
-    const shortHref = (raw) => {
-      if (!raw) return '';
-      try {
-        const url = new URL(raw, location.href);
-        if (url.protocol !== 'https:' && url.protocol !== 'http:' && url.protocol !== 'mailto:') return '';
-        if (url.protocol === 'http:' || url.protocol === 'https:') {
-          for (const key of [...url.searchParams.keys()]) {
-            if (/^(utm_|fbclid$|gclid$|mc_eid$|mc_cid$|igshid$|_hsenc$|_hsmi$)/.test(key)) url.searchParams.delete(key);
+    const shortHref = ${SHORT_HREF};
+    const items = [], R = ${maxElements > 0 ? refsSource(seed) : 'null'};
+    let gone = [], more = false;
+    if (R) {
+      const found = R.collect(performance.now() + ${elementMs}, ${maxScan}, ${maxElements});
+      more = found.more;
+      const entries = found.list.map((el) => ({ el, d: R.describe(el) }));
+      R.assign(entries, ${seed}, !found.more);
+      const listed = new Set();
+      for (const x of entries) {
+        const { el, d } = x;
+        listed.add(x.ref);
+        // Defaults stay out of the reply: an empty name, the implied type of a
+        // non-input, 'text', and the constant value of a checkbox or radio.
+        const item = { ref: x.ref, role: d.role };
+        if (d.name) item.name = d.name;
+        if (x.row) item.row = x.row;
+        if (d.type && el.tagName === 'INPUT' && d.type !== 'text') item.type = d.type;
+        if (d.value && !/^(checkbox|radio)$/.test(d.type)) item.value = d.value;
+        if (d.href) item.href = d.href;
+        if (el.disabled) item.disabled = true;
+        items.push(item);
+        if (wantEffect && !focused && el.getRootNode && el.getRootNode().activeElement === el) focused = { ref: x.ref, name: d.name };
+        if (wantEffect && !acted && (valueRef !== null || valueSel !== null)) {
+          let hit = valueRef !== null && x.ref === valueRef;
+          if (!hit && valueSel !== null) { try { hit = el.matches(valueSel); } catch {} }
+          if (hit) {
+            const kind = (el.type || '').toLowerCase();
+            if (/^(checkbox|radio)$/.test(kind)) acted = el.checked ? 'checked' : 'unchecked';
+            else if (el.isContentEditable) acted = (el.innerText || '').trim().slice(0, 1000);
+            else if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) acted = String(el.value == null ? '' : el.value).slice(0, 1000);
           }
-          url.hash = '';
-        }
-        return url.href.slice(0, 300);
-      } catch { return ''; }
-    };
-    const items = [];
-    const deadline = performance.now() + ${elementMs};
-    const pick = 'a[href],button,summary,input:not([type="hidden"]),textarea,select,[onclick],[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="treeitem"],[role="slider"],[role="combobox"],[role="textbox"],[role="searchbox"],[role="spinbutton"],[contenteditable="true"]';
-    // Widgets with no native tag or listed role: a state attribute, or a
-    // focusable custom element. Containers around real controls are skipped
-    // below so the host and the control inside its shadow root do not both show.
-    const loosePick = pick + ',[aria-checked],[aria-pressed],[tabindex]:not([tabindex^="-"])';
-    // Open shadow roots only. A closed root reads null here, which keeps the
-    // agent cursor (and anything else the page sealed) out of the snapshot.
-    const queue = [document];
-    const seenRoot = new Set();
-    const candidates = [];
-    let more = false;
-    while (queue.length && seenRoot.size < 600 && performance.now() <= deadline) {
-      const root = queue.shift();
-      if (seenRoot.has(root)) continue;
-      seenRoot.add(root);
-      let list = [];
-      try { list = root.querySelectorAll(loosePick); } catch {}
-      for (const el of list) candidates.push(el);
-      const start = root.nodeType === 11 ? root : (root.documentElement || root.body || null);
-      if (!start) continue;
-      const walker = document.createTreeWalker(start, NodeFilter.SHOW_ELEMENT);
-      let node, walked = 0;
-      while ((node = walker.nextNode()) && walked++ < 4000) {
-        if (performance.now() > deadline) { more = true; break; }
-        if (node.shadowRoot && !seenRoot.has(node.shadowRoot)) queue.push(node.shadowRoot);
-      }
-      if (walked >= 4000) more = true;
-      let frames = [];
-      try { frames = root.querySelectorAll('iframe'); } catch {}
-      for (const frame of frames) {
-        let doc = null;
-        try { doc = frame.contentDocument; } catch {}
-        if (doc && !seenRoot.has(doc)) queue.push(doc);
-      }
-    }
-    if (queue.length) more = true;
-    let scanned = 0;
-    for (const el of candidates) {
-      if (el.tagName === 'BODY' || el.tagName === 'HTML') continue;
-      if (scanned >= ${maxScan} || items.length >= ${maxElements} || performance.now() > deadline) break;
-      scanned++;
-      // checkVisibility rejects display:none/visibility:hidden without forcing
-      // layout; only survivors pay for the rect that catches zero-area boxes.
-      if (el.checkVisibility ? !el.checkVisibility({ checkVisibilityCSS: true })
-        : (s => s.visibility === 'hidden' || s.display === 'none')(getComputedStyle(el))) continue;
-      const r = el.getBoundingClientRect();
-      if (!r.width || !r.height) continue;
-      if (!el.matches(pick)) {
-        const stateful = el.hasAttribute('aria-checked') || el.hasAttribute('aria-pressed');
-        if (!stateful && el.localName.indexOf('-') < 0) continue;
-        if (el.querySelector(pick) || (el.shadowRoot && el.shadowRoot.querySelector(pick))) continue;
-      }
-      const ref = 's${generation}-' + (items.length + 1);
-      const kept = (el.getAttribute('data-hermes-workspace-ref') || '').split(' ').filter(token => token.startsWith('s${keep}-'));
-      // Held refs stay usable if the page re-rendered an identical tree: the
-      // caller drops them from its valid set unless the read comes back unchanged.
-      const tokens = new Set([...kept, ref]);
-      if (${restamp} >= 0) tokens.add('s${restamp}-' + (items.length + 1));
-      el.setAttribute('data-hermes-workspace-ref', [...tokens].join(' '));
-      let name = '';
-      const labelledby = el.getAttribute('aria-labelledby');
-      if (labelledby) {
-        const root = el.getRootNode();
-        name = labelledby.split(/\\s+/).map(id => {
-          const node = root.getElementById ? root.getElementById(id) : null;
-          return (node && (node.innerText || node.textContent) || '').trim();
-        }).filter(Boolean).join(' ').trim();
-      }
-      if (!name) name = (el.getAttribute('aria-label') || el.placeholder || el.title || '').trim();
-      if (!name && el.labels && el.labels[0]) {
-        const labelText = (el.labels[0].innerText || '').trim();
-        const own = (el.innerText || '').trim();
-        name = own && labelText.endsWith(own) ? labelText.slice(0, -own.length).trim() : labelText;
-      }
-      if (!name) name = (el.innerText || '').trim();
-      // A control inside a shadow root is usually named by its host (a slotted
-      // label, or a label attribute).
-      for (let host = el.getRootNode().host, hops = 0; !name && host && hops < 3; host = host.getRootNode().host, hops++) {
-        name = (host.getAttribute('aria-label') || host.getAttribute('label') || host.innerText || '').trim();
-      }
-      if (el.tagName === 'SELECT' && el.selectedIndex >= 0) {
-        const picked = (el.options[el.selectedIndex].label || el.options[el.selectedIndex].text || '').trim();
-        if (picked && picked !== name) name = (name ? name + ' ' : '') + picked;
-      }
-      const ariaChecked = el.getAttribute('aria-checked');
-      const checked = /^(checkbox|radio)$/.test(el.type) ? !!el.checked : ariaChecked === 'true' ? true : ariaChecked === 'false' ? false : null;
-      if (checked === true) name += ' on';
-      else if (checked === false) name += ' off';
-      else {
-        const pressed = el.getAttribute('aria-pressed');
-        if (pressed === 'true') name += ' on';
-        else if (pressed === 'false') name += ' off';
-      }
-      if (el.disabled || el.getAttribute('aria-disabled') === 'true') name += ' disabled';
-      const expanded = el.getAttribute('aria-expanded');
-      if (expanded === 'true') name += ' open';
-      else if (expanded === 'false') name += ' closed';
-      else if (el.tagName === 'SUMMARY' && el.parentElement && el.parentElement.tagName === 'DETAILS') name += el.parentElement.open ? ' open' : ' closed';
-      if (el.getAttribute('aria-selected') === 'true') name += ' selected';
-      if (el.getAttribute('aria-current') === 'page') name += ' current';
-      name = name.trim().slice(0, 200);
-      const role = el.getAttribute('role') || el.tagName.toLowerCase();
-      const type = el.type || '';
-      const value = type === 'password' ? '[password]' : String(el.value || '').slice(0, 200);
-      const rawHref = typeof el.href === 'string' ? el.href : (el.getAttribute('href') || '');
-      const href = shortHref(rawHref);
-      // Defaults stay out of the reply: an empty name, the implied type of a
-      // non-input, 'text', and the constant value of a checkbox or radio.
-      const item = { ref, role };
-      if (name) item.name = name;
-      if (type && el.tagName === 'INPUT' && type !== 'text') item.type = type;
-      if (value && !/^(checkbox|radio)$/.test(type)) item.value = value;
-      if (href) item.href = href;
-      if (el.disabled) item.disabled = true;
-      items.push(item);
-      if (wantEffect && !focused && el.getRootNode && el.getRootNode().activeElement === el) focused = { ref, kept: kept[0] || '', name };
-      if (wantEffect && !acted && (valueRef !== null || valueSel !== null)) {
-        let hit = false;
-        if (valueRef !== null && tokens.has(valueRef)) hit = true;
-        else if (valueSel !== null) { try { hit = el.matches(valueSel); } catch {} }
-        if (hit) {
-          const kind = (el.type || '').toLowerCase();
-          if (/^(checkbox|radio)$/.test(kind)) acted = el.checked ? 'checked' : 'unchecked';
-          else if (el.isContentEditable) acted = (el.innerText || '').trim().slice(0, 1000);
-          else if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) acted = String(el.value == null ? '' : el.value).slice(0, 1000);
         }
       }
+      // Refs the caller held that are no longer on the page or no longer
+      // shown, so a reply can drop them even when the scan was cut short.
+      gone = ${JSON.stringify(held)}.filter((ref) => {
+        if (listed.has(ref)) return false;
+        const node = R.live(ref);
+        return !node || (node.checkVisibility ? !node.checkVisibility({ checkVisibilityCSS: true }) : false) || !node.getClientRects().length;
+      });
     }
+    const overlays = R ? R.overlays() : [];
     // Focus can sit on an element the controls pick skipped (a tabindex div,
-    // a link under the scan cap). Report it anyway; only a still-valid ref
-    // token travels with it.
+    // a link under the scan cap). Report it anyway, with its ref if it has one.
     if (wantEffect && !focused) {
       let active = document.activeElement;
       while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
       if (active && active !== document.body && active !== document.documentElement) {
-        const tokens = (typeof active.getAttribute === 'function' ? active.getAttribute('data-hermes-workspace-ref') || '' : '').split(' ');
-        const keptRef = tokens.find((token) => token.startsWith('s${keep}-')) || '';
+        const ref = R ? R.refOf(active) : '';
         let name = (typeof active.getAttribute === 'function' ? (active.getAttribute('aria-label') || active.title || '') : '').trim();
         if (!name) name = (active.innerText || '').trim();
-        focused = { ref: '', kept: keptRef, name: name.slice(0, 200) };
+        focused = { ref, name: name.slice(0, 200) };
       }
     }
     // body.innerText pays a full-document render pass regardless of the slice;
@@ -341,14 +549,16 @@ function snapshotExpression(generation, opts = {}) {
       text = text.slice(0, ${maxChars});
       textSig = sigNodes + ':' + (sigHash >>> 0).toString(36);
     } else textCut = ${maxChars} <= 0 && !!document.body?.textContent?.trim();
-    return {title:document.title,url:location.href,sameDoc,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,elements:items,truncated:{text:textCut,elements:more || scanned < candidates.length || items.length >= ${maxElements}},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
+    return {title:document.title,url:location.href,sameDoc,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,elements:items,seq:R ? R.n : 0,gone,overlays,truncated:{text:textCut,elements:more},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
   })()`;
 }
 
+// webContents and frame execution hand back the same object with its keys in
+// a different order, so the order must not matter. Refs are part of it: a
+// control that came back under a new ref is a change the caller must hear about.
+const itemFingerprint = (item) => JSON.stringify(item, Object.keys(item).sort());
 function elementFingerprint(elements) {
-  // webContents and frame execution hand back the same object with its keys
-  // in a different order, so the order must not matter.
-  return JSON.stringify((elements || []).map(({ ref, ...rest }) => JSON.stringify(rest, Object.keys(rest).sort())));
+  return JSON.stringify((elements || []).map(itemFingerprint));
 }
 function elementsHash(elements) {
   return crypto.createHash('sha1').update(elementFingerprint(elements)).digest('hex');
@@ -545,32 +755,53 @@ function linesOf(text) {
 function lastReadOf(data) {
   return { url: data.url, lines: linesOf(data.text), coverage: data.truncated?.text ? data.text.length : null, sig: data.textSig || '' };
 }
-// An unchanged reply carries no elements, so the agent keeps acting on refs
-// from its last full snapshot (`base`); the page keeps those tokens too.
+// Every element read records what it saw, per ref, so the next action reply
+// can say what changed instead of resending the list. tab.refs holds every
+// ref issued in the tab; the page's store decides whether one still resolves.
+function noteScan(tab, data, generation) {
+  tab.scan = { generation, url: data.url, byRef: new Map(data.elements.map((item) => [item.ref, itemFingerprint(item)])) };
+  if (Number.isInteger(data.seq)) tab.refSeed = Math.max(tab.refSeed || 0, data.seq);
+  if (tab.refs.size > 5000) tab.refs.clear();
+  for (const item of [...data.elements, ...(data.overlays || []).map((o) => ({ ref: o.close }))]) if (item.ref) tab.refs.add(item.ref);
+}
 function settleSnapshot(tab, data, generation, since) {
   const hash = snapshotHash(data), previous = tab.snapshotStamp;
   const unchanged = !!previous && since !== undefined && previous.generation === since && previous.hash === hash;
-  const base = unchanged ? previous.base : generation;
-  tab.snapshotStamp = { generation, hash, base, url: data.url, elementsHash: elementsHash(data.elements) };
+  tab.snapshotStamp = { generation, hash, url: data.url, elementsHash: elementsHash(data.elements) };
   tab.lastRead = lastReadOf(data);
   tab.docMarked = true;
-  tab.refs = new Set(data.elements.map((item) => item.ref));
-  if (unchanged) for (let index = 1; index <= data.elements.length; index++) tab.refs.add(`s${base}-${index}`);
-  // sameDoc and textSig feed the diff baseline, not the reply.
-  const { sameDoc, textSig, ...page } = data;
-  return unchanged ? { unchanged: true, generation } : { ...page, generation };
+  noteScan(tab, data, generation);
+  // sameDoc, textSig, seq and gone feed the host's bookkeeping, not the reply.
+  const { sameDoc, textSig, seq, gone, overlays, ...page } = data;
+  return unchanged ? { unchanged: true, generation } : { ...page, ...(overlays && overlays.length ? { overlays } : {}), generation };
+}
+// A full list in an action reply stops here; unlisted says how many more a snapshot shows.
+const EFFECT_ELEMENTS = 40;
+// Past this share of the list, a delta costs about as much as the list.
+const DELTA_SHARE = 0.6;
+// What changed in the controls since the scan the caller holds: new or updated
+// elements, and refs that left the page. A scan cut short by its cap only
+// drops refs the page reports gone, not ones it merely did not reach.
+function controlsDelta(scan, data) {
+  const now = new Set(data.elements.map((item) => item.ref));
+  const gone = new Set(data.gone || []), capped = !!data.truncated?.elements;
+  return {
+    changed: data.elements.filter((item) => scan.byRef.get(item.ref) !== itemFingerprint(item)),
+    removed: [...scan.byRef.keys()].filter((ref) => !now.has(ref) && (!capped || gone.has(ref))),
+  };
 }
 // After an action, describe what it did to the page. The effect carries the
 // new visible text lines since the model's last read (bounded, capped at 600
-// chars) so a click answers with the state it produced; controls are sent
-// only when they changed, and an unchanged page keeps the generation and refs
-// the model already holds, so a later since= check still dedupes.
-async function readEffect(execute, tab, { parseWaitMs, navigated, target, settle } = {}) {
-  const previous = tab.snapshotStamp;
+// chars) so a click answers with the state it produced. Controls are sent only
+// when they changed: as changed[] and removed[] when the caller passed the
+// generation it holds (held) and the page did not navigate, otherwise as the
+// list. An unchanged page keeps the generation, so a later since= still dedupes.
+async function readEffect(execute, tab, { parseWaitMs, navigated, target, settle, held } = {}) {
+  const previous = tab.snapshotStamp, scan = tab.scan;
   const generation = Math.max(previous && Number.isInteger(previous.generation) ? previous.generation : 0, Number.isInteger(tab.generation) ? tab.generation : 0) + 1;
   let timer;
   const result = await Promise.race([
-    Promise.resolve(execute(snapshotExpression(generation, { maxChars: 8000, maxElements: 150, parseWaitMs, keep: previous ? previous.base : undefined, restamp: previous ? previous.base : undefined, effect: true, settle, valueFor: target }))),
+    Promise.resolve(execute(snapshotExpression({ maxChars: 8000, maxElements: 150, parseWaitMs, seed: tab.refSeed, held: scan ? [...scan.byRef.keys()] : [], effect: true, settle, valueFor: target }))),
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('controls')), 8000 + (parseWaitMs || 0)); }),
   ]).finally(() => clearTimeout(timer));
   if (!result || !Array.isArray(result.elements)) return null;
@@ -608,19 +839,23 @@ async function readEffect(execute, tab, { parseWaitMs, navigated, target, settle
   if (typeof result.settledMs === 'number') effect.settledMs = result.settledMs;
   if (result.acted !== undefined && result.acted !== null) effect.value = result.acted;
   if (result.focused) {
-    const ref = controlsSame ? result.focused.kept || result.focused.ref : result.focused.ref;
     effect.focused = {};
-    if (ref) effect.focused.ref = ref;
+    if (result.focused.ref) effect.focused.ref = result.focused.ref;
     if (result.focused.name) effect.focused.name = result.focused.name;
   }
-  if (controlsSame) {
-    tab.refs = new Set();
-    for (let index = 1; index <= result.elements.length; index++) tab.refs.add(`s${previous.base}-${index}`);
-    return { generation: previous.generation, effect };
-  }
+  // A dialog or banner over the page rides on every reply while it is there.
+  const overlays = result.overlays && result.overlays.length ? { overlays: result.overlays } : {};
+  if (Number.isInteger(result.seq)) tab.refSeed = Math.max(tab.refSeed || 0, result.seq);
+  if (controlsSame) return { generation: previous.generation, effect, ...overlays };
   tab.generation = generation;
   const settled = settleSnapshot(tab, result, generation);
-  return { elements: settled.elements.slice(0, 40), generation: settled.generation, effect };
+  if (!nav && scan && held === scan.generation) {
+    const delta = controlsDelta(scan, result);
+    if (delta.changed.length + delta.removed.length <= Math.max(8, result.elements.length * DELTA_SHARE)) return { ...delta, generation, effect, ...overlays };
+  }
+  const reply = { elements: settled.elements.slice(0, EFFECT_ELEMENTS), generation: settled.generation, effect, ...overlays };
+  if (settled.elements.length > EFFECT_ELEMENTS) reply.unlisted = settled.elements.length - EFFECT_ELEMENTS;
+  return reply;
 }
 
 function checkpointExpression(includeDrafts) {
@@ -660,4 +895,4 @@ function restoreExpression(checkpoint) {
     return {verification:restored === c.drafts.length ? 'ready' : 'review_required',restored,skipped:c.drafts.length-restored};
   })()`;
 }
-module.exports = { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, followUpInstallExpression, lastReadOf, FOLLOW_UP_KEY };
+module.exports = { refsSource, REFS_KEY, snapshotExpression, settleSnapshot, readEffect, controlsDelta, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, followUpInstallExpression, lastReadOf, FOLLOW_UP_KEY };

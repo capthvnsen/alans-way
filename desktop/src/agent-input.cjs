@@ -1,6 +1,6 @@
 // All input stays inside this tab's Chromium target. Never focus a native view,
 // activate a window, use the clipboard for typing, or move the system pointer.
-const { followUpArmExpression, followUpCloseExpression, FOLLOW_UP_KEY } = require('./browser-page.cjs');
+const { followUpArmExpression, followUpCloseExpression, FOLLOW_UP_KEY, REFS_KEY, refsSource } = require('./browser-page.cjs');
 const INPUT_ACTIONS = new Set(['move', 'click', 'double_click', 'right_click', 'drag', 'type', 'press', 'scroll', 'select']);
 const CLICKS = { click: { button: 'left', buttons: 1, count: 1 }, double_click: { button: 'left', buttons: 1, count: 2 }, right_click: { button: 'right', buttons: 2, count: 1 } };
 const POINTER_ACTIONS = new Set(['move', 'drag', ...Object.keys(CLICKS)]);
@@ -9,6 +9,13 @@ const CURSOR_ID = 'hermes-workspace-agent-cursor';
 // window global is how bot detectors spot injected state.
 const SUBMIT_KEY = 'hw.submit', SUBMIT_SEEN_KEY = 'hw.submitSeen';
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
+// Every ref an agent is handed raises the tab's seed, so a later document
+// numbers its refs past it and an old ref can never name a new control.
+function issueRef(tab, ref) {
+  tab.refs.add(ref);
+  tab.refSeed = Math.max(tab.refSeed || 0, Number(ref.slice(1)) || 0);
+}
+const staleRef = (ref) => fail(`Stale or unknown reference ${ref}: it does not name a control on this page now. Use a ref from your latest reply or snapshot.`, 409);
 
 // A wedged renderer leaves executeJavaScript pending forever and would
 // wedge tab.queue behind it. Bound every probe like snapshot's 10s race.
@@ -38,11 +45,14 @@ function readJs(wc, code, ms = 5000, retryAfter = 2500) {
   return withTimeout(Promise.race([first, late]), ms).finally(() => clearTimeout(timer));
 }
 
-// document.querySelector stays in the light DOM. Refs stamped inside an open
-// shadow root are found by walking those roots; a closed root is not readable.
-function locateElement(selectorSource) {
+// A ref resolves only through the page's ref store (see refsSource), which
+// follows a re-rendered control or answers null. document.querySelector stays
+// in the light DOM, so a selector walks open shadow roots and same-origin
+// frames; a closed root is not readable.
+function locateElement(target) {
+  if (target.ref) return `(window[Symbol.for(${JSON.stringify(REFS_KEY)})]?.find?.(${JSON.stringify(target.ref)}) || null)`;
   return `(() => {
-    const sel = ${selectorSource};
+    const sel = ${JSON.stringify(target.selector)};
     const queue = [document];
     const seen = new Set();
     for (let i = 0; i < queue.length && i < 600; i++) {
@@ -231,14 +241,17 @@ function cursorPath(from, to) {
   });
 }
 
-const selectorFor = (target) => JSON.stringify(target.ref ? `[data-hermes-workspace-ref~="${target.ref}"]` : target.selector);
-
 // One round trip finds the element, scrolls only when it is out of view, hit
 // tests it, readies focus for typing and reports what a click needs to know.
-function resolveScript(target, { focus = false, type = false, select = false, probe = false } = {}) {
+// seed is the tab's highest issued ref, for a name lookup that opens the store.
+function resolveScript(target, { focus = false, type = false, select = false, probe = false, seed = 0 } = {}) {
   return `(async () => {
-    const el = ${locateElement(selectorFor(target))};
-    if (!el || el.disabled || el.matches(':disabled') || el.closest('[inert]')) return { fail: 'missing or disabled' };
+    ${target.name ? `const named = ${refsSource(seed)}.byName(${JSON.stringify(target.name)}, ${JSON.stringify(target.role || '')}, ${JSON.stringify(target.row || '')});
+    if (named.near) return { fail: 'unnamed', near: named.near, cut: named.cut };
+    if (named.many) return { fail: 'ambiguous', many: named.many, count: named.count, cut: named.cut };
+    const el = named.el, ref = named.ref, resolved = named.name, partial = named.cut;` : `const el = ${locateElement(target)}, ref = undefined, resolved = undefined, partial = undefined;`}
+    if (!el) return { fail: ${target.ref ? "'stale'" : "'missing or disabled'"} };
+    if (el.disabled || el.matches(':disabled') || el.closest('[inert]')) return { fail: 'missing or disabled' };
     // A native select hidden behind a custom dropdown is chosen by value, so it needs no hit test.
     const loose = ${select} && el.tagName === 'SELECT';
     const view = el.ownerDocument.defaultView || window;
@@ -261,7 +274,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     const l = Math.max(0, r.left), t = Math.max(0, r.top), rr = Math.min(view.innerWidth, r.right), b = Math.min(view.innerHeight, r.bottom);
     const w = rr - l, h = b - t;
     if (!r.width || !r.height || w <= 0 || h <= 0) return loose ? { x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) } : { fail: 'no visible area' };
-    let point = null, coveredBy = '';
+    let point = null, coveredBy = null;
     for (const [fx, fy] of [[.5,.5],[.5,.25],[.5,.75],[.25,.5],[.75,.5],[.2,.2],[.8,.2],[.2,.8],[.8,.8]]) {
       const lx = Math.round(l + w * fx), ly = Math.round(t + h * fy);
       let hit = view.document.elementFromPoint(lx, ly);
@@ -290,10 +303,16 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
       // styled track) is operated through its label; a hit on that label is a hit on it.
       if (hit && !own && hit.closest) { const label = hit.closest('label'); own = !!label && label.control === el; }
       if (hit && (own || el.contains(hit))) { point = { x: lx + ox, y: ly + oy }; break; }
-      if (hit && !coveredBy && !own && !el.contains(hit)) coveredBy = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/)[0] : '');
+      if (hit && !coveredBy && !own && !el.contains(hit)) coveredBy = hit;
     }
     if (!point && loose) point = { x: Math.round(l + w / 2 + ox), y: Math.round(t + h / 2 + oy) };
-    if (!point) return { fail: coveredBy ? 'covered by ' + coveredBy : 'no clickable point' };
+    if (!point && coveredBy) {
+      // Name the dialog or banner in the way, and what closes it.
+      const store = window[Symbol.for(${JSON.stringify(REFS_KEY)})], found = store && store.layer ? store.layer(coveredBy) : null;
+      if (found) return { fail: 'covered', layer: found.out };
+      return { fail: 'covered by ' + coveredBy.tagName.toLowerCase() + (coveredBy.id ? '#' + coveredBy.id : typeof coveredBy.className === 'string' && coveredBy.className.trim() ? '.' + coveredBy.className.trim().split(/\\s+/)[0] : '') };
+    }
+    if (!point) return { fail: 'no clickable point' };
     if (${focus}) {
       if (${type} && (!(el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(el.type)) || el.readOnly)) return { fail: 'element cannot accept text' };
       el.focus({ preventScroll: true });
@@ -311,7 +330,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     }
     const submit = !!el.form && ((el.tagName === 'BUTTON' && (!kind || kind === 'submit')) || (el.tagName === 'INPUT' && kind === 'submit'));
     const link = !!el.closest('a[href]') && !/^#/.test(el.closest('a[href]').getAttribute('href') || '');
-    return { ...point, submit, nav: submit || link, hl: { x: Math.round(r.left + ox), y: Math.round(r.top + oy), width: Math.round(r.width), height: Math.round(r.height) } };
+    return { ...point, ref, resolved, partial, submit, nav: submit || link, hl: { x: Math.round(r.left + ox), y: Math.round(r.top + oy), width: Math.round(r.width), height: Math.round(r.height) } };
   })()`;
 }
 
@@ -323,8 +342,9 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
 function selectScript(target, body) {
   const tries = [body.value, body.label, body.option, body.text, body.choice].filter(item => typeof item === 'string').map(item => item.slice(0, 1000));
   return `(() => {
-    const el = ${locateElement(selectorFor(target))};
-    if (!el || el.tagName !== 'SELECT') return { fail: 'is not a select' };
+    const el = ${locateElement(target)};
+    if (!el) return { fail: ${target.ref ? "'stale'" : "'is not a select'"} };
+    if (el.tagName !== 'SELECT') return { fail: 'is not a select' };
     if (el.disabled) return { fail: 'disabled' };
     const tries = ${JSON.stringify(tries)};
     const text = (o) => (o.label || o.text || '').trim();
@@ -411,16 +431,20 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     if (!INPUT_ACTIONS.has(action)) throw fail('Unsupported agent input action.');
     if (action === 'type' && (typeof body.text !== 'string' || body.text.length > 20000)) throw fail('Provide text up to 20,000 characters.');
     const keyEvent = action === 'press' ? keyboardEvent(body) : null;
-    const knownRef = (ref) => typeof ref === 'string' && /^s\d+-\d+$/.test(ref) && tab.refs.has(ref);
-    if (body.ref !== undefined && !knownRef(body.ref)) throw fail('Stale or unknown reference. Request a fresh snapshot.', 409);
+    const knownRef = (ref) => typeof ref === 'string' && /^e\d+$/.test(ref) && tab.refs.has(ref);
+    if (body.ref !== undefined && !knownRef(body.ref)) throw staleRef(body.ref);
     if (body.selector !== undefined && (typeof body.selector !== 'string' || !body.selector || body.selector.length > 2000)) throw fail('Provide a CSS selector up to 2,000 characters.');
-    if ((action === 'type' || action === 'select') && !body.ref && !body.selector) throw fail(`${action === 'type' ? 'Typing' : 'Selecting'} requires an element reference or selector.`);
-    if (POINTER_ACTIONS.has(action) && !body.ref && !body.selector && (!Number.isFinite(body.x) || !Number.isFinite(body.y))) throw fail('Provide a fresh element reference, selector, or viewport x and y coordinates.');
+    for (const key of ['name', 'role', 'row']) if (body[key] !== undefined && (typeof body[key] !== 'string' || !body[key].trim() || body[key].length > 200)) throw fail(`${key} must be a non-empty string up to 200 characters.`);
+    if ((body.role !== undefined || body.row !== undefined) && body.name === undefined) throw fail('role and row narrow a name: pass name too.');
+    if (body.name !== undefined && (body.ref !== undefined || body.selector !== undefined)) throw fail('Target one way: a ref, a name or a selector.');
+    const targeted = body.ref !== undefined || body.selector !== undefined || body.name !== undefined;
+    if ((action === 'type' || action === 'select') && !targeted) throw fail(`${action === 'type' ? 'Typing' : 'Selecting'} requires a ref, a name or a selector.`);
+    if (POINTER_ACTIONS.has(action) && !targeted && (!Number.isFinite(body.x) || !Number.isFinite(body.y))) throw fail('Provide a ref, a name, a selector, or viewport x and y coordinates.');
     if (action === 'scroll' && [body.x, body.y].some(value => value !== undefined && !Number.isFinite(value))) throw fail('Scroll deltas must be finite numbers.');
     if (action === 'select' && ![body.value, body.label, body.option, body.text, body.choice].some(item => typeof item === 'string' && item.length <= 1000)) throw fail('Provide the option value, label, option, text or choice (up to 1,000 characters).');
     let to = null;
     if (action === 'drag') {
-      if (body.toRef !== undefined && !knownRef(body.toRef)) throw fail('Stale or unknown destination reference. Request a fresh snapshot.', 409);
+      if (body.toRef !== undefined && !knownRef(body.toRef)) throw staleRef(body.toRef);
       if (body.toSelector !== undefined && (typeof body.toSelector !== 'string' || !body.toSelector || body.toSelector.length > 2000)) throw fail('Provide a destination CSS selector up to 2,000 characters.');
       if (body.toRef || body.toSelector) to = { ref: body.toRef, selector: body.toSelector };
       else if (Number.isFinite(body.toX) && Number.isFinite(body.toY)) to = { x: body.toX, y: body.toY };
@@ -467,8 +491,25 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       return { x, y };
     }
     async function resolve(target, options) {
-      const found = await boundedJs(wc, resolveScript(target, options));
+      const found = await boundedJs(wc, resolveScript(target, { ...options, seed: tab.refSeed }));
       check();
+      if (found && found.fail === 'stale') throw staleRef(target.ref);
+      const listed = (items) => items.map((item) => `${item.ref} ${JSON.stringify(item.name || '')}${item.row ? ` (row ${JSON.stringify(item.row)})` : ''}`).join(', ');
+      const unread = found && found.cut ? ' The page has more controls than a name lookup reads; snapshot or scroll for the rest.' : '';
+      if (found && found.fail === 'unnamed') {
+        for (const item of found.near) issueRef(tab, item.ref);
+        throw fail(`No visible control is named exactly ${JSON.stringify(target.name)}${target.role ? ` with role ${target.role}` : ''}${target.row ? ` in a row with ${JSON.stringify(target.row)}` : ''}.${found.near.length ? ` Close matches: ${listed(found.near)}. Act on one by ref if it is the one you mean.` : ' Snapshot to see the controls on the page.'}${unread}`);
+      }
+      if (found && found.fail === 'ambiguous') {
+        for (const item of found.many) issueRef(tab, item.ref);
+        throw fail(`${found.count} controls match ${JSON.stringify(target.name)}: ${listed(found.many)}${found.count > found.many.length ? ', ...' : ''}. Act on one by ref, or narrow with role or row.${unread}`);
+      }
+      if (found && found.ref) issueRef(tab, found.ref);
+      if (found && found.fail === 'covered') {
+        const { name, close, closeName } = found.layer;
+        if (close) issueRef(tab, close);
+        throw fail(`Element is covered by ${JSON.stringify(name || 'an overlay')}. ${close ? `Close it first: click ${close} (${JSON.stringify(closeName)}), then retry.` : 'Close it first (press Escape or click its close control), then retry.'}`);
+      }
       if (!found || found.fail) throw fail(`Element is ${found ? found.fail : 'unavailable'}. Request a fresh snapshot or use a different selector.`);
       return found;
     }
@@ -487,12 +528,16 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       // action was two CDP round-trips on every dispatch.
       if (!tab.focusEmulation) { tab.focusEmulation = true; await send('Emulation.setFocusEmulationEnabled', { enabled: true }); }
       let point, found = {}, likelyNavigation = false, extra = {}, end = null;
+      let target = { ref: body.ref, selector: body.selector, name: body.name, role: body.role, row: body.row };
       // The source resolves last: scrolling it into view must not move a destination found earlier.
       if (to && (to.ref || to.selector)) end = await resolve(to);
-      if (body.ref || body.selector) {
-        found = await resolve(body, { focus: action === 'type' || action === 'press', type: action === 'type', select: action === 'select', probe: action === 'click' });
-        const { hl, submit, nav, ...xy } = found;
+      if (body.ref || body.selector || body.name) {
+        found = await resolve(target, { focus: action === 'type' || action === 'press', type: action === 'type', select: action === 'select', probe: action === 'click' });
+        const { hl, submit, nav, ref, resolved, partial, ...xy } = found;
         point = xy; found = { hl, submit, nav };
+        // A named control is the ref it resolved to from here on, and the reply
+        // says which, by its full name (a near match is visible).
+        if (ref) { target = { ref }; extra.ref = ref; extra.resolved = resolved; if (partial) extra.partial = true; }
       } else if (POINTER_ACTIONS.has(action)) point = await viewportPoint(body.x, body.y);
       const hl = found.hl || null;
       if (CLICKS[action] || action === 'move') {
@@ -510,7 +555,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
           // an uncancelled submit navigates, so a handled one needs no wait.
           if (found.submit) {
             const submitted = await boundedJs(wc, `(() => {
-              const el = ${locateElement(selectorFor(body))};
+              const el = ${locateElement(target)};
               return (el?.ownerDocument.defaultView || window)[Symbol.for(${JSON.stringify(SUBMIT_KEY)})] || null;
             })()`).catch(() => null);
             found.nav = submitted === 'navigates'; found.certain = found.nav;
@@ -537,10 +582,11 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       } else if (action === 'select') {
         await moveCursor(point, hl);
         await armFollowUp();
-        const picked = await boundedJs(wc, selectScript(body, body));
+        const picked = await boundedJs(wc, selectScript(target, body));
         check();
+        if (picked && picked.fail === 'stale') throw staleRef(body.ref);
         if (!picked || picked.fail) throw fail(`Element ${picked ? picked.fail : 'is unavailable'}${picked?.options ? ': ' + JSON.stringify(picked.options) : ''}.`);
-        extra = { matched: picked.matched };
+        extra.matched = picked.matched;
         cursor(point, 'click', hl);
       } else if (action === 'type') {
         // insertText is actual Chromium input (including input/beforeinput).

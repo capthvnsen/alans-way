@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, agentPageUrl, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, handbackRequest, nextHandback, liveHandback, HANDBACK_MS } = require('../src/core.cjs');
-const { snapshotExpression, settleSnapshot, readEffect } = require('../src/browser-page.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, handbackRequest, nextHandback, liveHandback, HANDBACK_MS, dialogAnswer, answerDialog } = require('../src/core.cjs');
+const { controlsDelta, snapshotExpression, settleSnapshot, readEffect } = require('../src/browser-page.cjs');
 const { locateElement } = require('../src/agent-input.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
 
@@ -167,26 +167,24 @@ test('a release with a reason waits for the human, then the give-back or 30 minu
   assert.equal(nextHandback(waiting, 'agent', 'human', null, 1001 + HANDBACK_MS), null);
   assert.equal(nextHandback({ botId: 'research', controller: 'human', humanLock: true }, 'human', 'agent', request, 1000), null, 'no hold on a tab the human took over');
 });
-test('an unchanged snapshot keeps the refs the agent already holds usable', () => {
-  const page = (generation, label = 'Send') => ({ url: 'https://a.example/', title: 'A', text: 'hello',
-    elements: [{ ref: `s${generation}-1`, role: 'button', name: label }, { ref: `s${generation}-2`, role: 'link', name: 'Home' }] });
+test('an unchanged snapshot answers unchanged and the refs the agent holds stay valid', () => {
+  const page = (label = 'Send') => ({ url: 'https://a.example/', title: 'A', text: 'hello', seq: 2,
+    elements: [{ ref: 'e1', role: 'button', name: label }, { ref: 'e2', role: 'link', name: 'Home' }] });
   const tab = { refs: new Set() };
-  assert.equal(settleSnapshot(tab, page(1), 1).elements.length, 2);
-  tab.refs.clear();
-  assert.deepEqual(settleSnapshot(tab, page(2), 2, 1), { unchanged: true, generation: 2 });
-  assert.ok(tab.refs.has('s1-1') && tab.refs.has('s1-2'), 'refs from the last full snapshot still resolve');
-  assert.match(snapshotExpression(3, { keep: tab.snapshotStamp.base }), /startsWith\('s1-'\)/);
-  tab.refs.clear();
-  assert.equal(settleSnapshot(tab, page(3), 3, 2).unchanged, true, 'dedupe chains on the latest generation');
-  assert.ok(tab.refs.has('s1-1'), 'the chain keeps pointing at the full snapshot the agent read');
-  const changed = settleSnapshot(tab, page(4, 'Sent'), 4, 3);
+  assert.equal(settleSnapshot(tab, page(), 1).elements.length, 2);
+  assert.equal(tab.refSeed, 2, 'the next document numbers its refs after these');
+  assert.deepEqual(settleSnapshot(tab, page(), 2, 1), { unchanged: true, generation: 2 });
+  assert.ok(tab.refs.has('e1') && tab.refs.has('e2'));
+  assert.equal(settleSnapshot(tab, page(), 3, 2).unchanged, true, 'dedupe chains on the latest generation');
+  const changed = settleSnapshot(tab, page('Sent'), 4, 3);
   assert.equal(changed.unchanged, undefined);
-  assert.equal(changed.elements[0].ref, 's4-1');
-  assert.ok(!tab.refs.has('s1-1'), 'refs from before a real change stay stale');
-  assert.equal(settleSnapshot(tab, page(5, 'Sent'), 5).unchanged, undefined, 'no since means a full reply');
+  assert.equal(changed.elements[0].ref, 'e1', 'a control keeps its ref when its name changes');
+  assert.equal(changed.seq, undefined, 'bookkeeping stays out of the reply');
+  assert.equal(settleSnapshot(tab, page('Sent'), 5).unchanged, undefined, 'no since means a full reply');
 });
+
 test('web snapshot names say on, off, and disabled', () => {
-  const source = snapshotExpression(1);
+  const source = snapshotExpression().replace(/\\"/g, '"');
   assert.match(source, /role="checkbox"/);
   assert.match(source, /name \+= ' on'/);
   assert.match(source, /name \+= ' off'/);
@@ -207,137 +205,144 @@ test('web snapshot names say on, off, and disabled', () => {
   assert.match(source, /aria-pressed/);
   assert.match(source, /getRootNode/);
   assert.match(source, /labelledby\.split\(\/\\s\+\/\)/);
-  assert.match(locateElement(JSON.stringify('button')), /node\.shadowRoot/);
-  assert.match(locateElement(JSON.stringify('button')), /contentDocument/);
+  assert.match(locateElement({ selector: 'button' }), /node\.shadowRoot/);
+  assert.match(locateElement({ selector: 'button' }), /contentDocument/);
+  assert.match(locateElement({ ref: 'e4' }), /Symbol\.for\("hw\.refs"\)\]\?\.find\?\.\("e4"\)/, 'a ref resolves through the page store, never an attribute');
+  assert.doesNotMatch(locateElement({ ref: 'e4' }), /querySelector/);
   assert.match(require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/agent-input.cjs'), 'utf8'), /frameElement/);
   assert.match(source, /name \+= ' selected'/);
   assert.match(source, /name \+= ' current'/);
   assert.match(source, /item\.disabled = true/);
-  assert.match(source, /if \(name\) item\.name = name;/);
-  assert.match(source, /el\.tagName === 'INPUT' && type !== 'text'/);
+  assert.match(source, /if \(d\.name\) item\.name = d\.name;/);
+  assert.match(source, /if \(x\.row\) item\.row = x\.row;/);
+  assert.match(source, /el\.tagName === 'INPUT' && d\.type !== 'text'/);
   assert.match(source, /\.slice\(0, 300\)/);
+  assert.doesNotMatch(snapshotExpression({ maxElements: 0 }), /hw\.refs/, 'a text read leaves the ref store alone');
 });
+
 test('an action read returns the new state and fresh controls', async () => {
   const tab = { refs: new Set(), generation: 4 };
   let code = '';
   const reply = await readEffect((expression) => {
     code = expression;
-    return { url: 'https://a.example/', title: 'A', text: 'Task 2: click Go', elements: [{ ref: 's5-1', role: 'button', name: 'Go' }], truncated: { text: false } };
+    return { url: 'https://a.example/', title: 'A', text: 'Task 2: click Go', elements: [{ ref: 'e5', role: 'button', name: 'Go' }], truncated: { text: false } };
   }, tab);
   assert.match(code, /text\.slice\(0, 8000\)/, 'the effect read walks bounded page text');
-  assert.match(code, /items\.length >= 150/);
-  assert.deepEqual(reply.elements, [{ ref: 's5-1', role: 'button', name: 'Go' }]);
+  assert.match(code, /R\.collect\(performance\.now\(\) \+ 200, 2000, 150\)/);
+  assert.deepEqual(reply.elements, [{ ref: 'e5', role: 'button', name: 'Go' }]);
   assert.equal(reply.generation, 5);
-  assert.ok(tab.refs.has('s5-1'));
+  assert.ok(tab.refs.has('e5'));
   assert.equal(reply.effect.changed, true);
   assert.equal(reply.effect.url, 'https://a.example/');
   assert.equal(reply.effect.text, 'Task 2: click Go');
 });
+
 test('an action read reports only the text lines it added', async () => {
   const tab = { refs: new Set(), generation: 1 };
   const first = 'step 1\nstep 2', second = 'step 1\nstep 2\nstep 3 appears';
-  settleSnapshot(tab, { url: 'https://a.example/', title: 'A', text: first, elements: [{ ref: 's1-1', role: 'button', name: 'Go' }] }, 1);
-  const reply = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: second, elements: [{ ref: 's2-1', role: 'button', name: 'Go' }] }), tab);
+  settleSnapshot(tab, { url: 'https://a.example/', title: 'A', text: first, elements: [{ ref: 'e1', role: 'button', name: 'Go' }] }, 1);
+  const reply = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: second, elements: [{ ref: 'e1', role: 'button', name: 'Go' }] }), tab);
   assert.equal(reply.effect.text, 'step 3 appears');
   assert.equal(reply.effect.changed, true);
-  const quiet = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: second, elements: [{ ref: 's3-1', role: 'button', name: 'Go' }] }), tab);
+  const quiet = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: second, elements: [{ ref: 'e1', role: 'button', name: 'Go' }] }), tab);
   assert.equal(quiet.effect.text, '', 'a second identical read adds nothing');
   assert.equal(quiet.effect.changed, false);
 });
 test('an action read keeps the last generation when the page did not change', async () => {
   const tab = { refs: new Set(), generation: 1 };
-  const page = { url: 'https://a.example/', title: 'A', text: 'hello', elements: [{ ref: 's1-1', role: 'button', name: 'Go' }] };
+  const page = { url: 'https://a.example/', title: 'A', text: 'hello', elements: [{ ref: 'e1', role: 'button', name: 'Go' }] };
   settleSnapshot(tab, page, 1);
-  tab.refs.clear();
-  const reply = await readEffect(() => ({ ...page, elements: [{ ref: 's9-1', role: 'button', name: 'Go' }] }), tab);
+  const reply = await readEffect(() => ({ ...page }), tab);
   assert.equal(reply.generation, 1);
   assert.equal(reply.elements, undefined);
+  assert.equal(reply.changed, undefined);
   assert.equal(reply.effect.changed, false);
   assert.equal(reply.effect.text, '');
-  assert.ok(tab.refs.has('s1-1'));
+  assert.ok(tab.refs.has('e1'));
   assert.equal(tab.generation, 1);
 });
+
 test('an action read keeps the snapshot baseline when controls match', async () => {
   const tab = { refs: new Set(), generation: 2 };
-  const page = { url: 'https://a.example/', title: 'A', text: 'a long document', elements: [{ ref: 's2-1', role: 'button', name: 'Go' }] };
+  const page = { url: 'https://a.example/', title: 'A', text: 'a long document', elements: [{ ref: 'e2', role: 'button', name: 'Go' }] };
   const settled = settleSnapshot(tab, page, 2);
   const stamp = tab.snapshotStamp.hash;
   let code = '';
   const reply = await readEffect((expression) => {
     code = expression;
-    return { url: page.url, title: page.title, text: page.text, elements: [{ ref: 's9-1', role: 'button', name: 'Go' }], truncated: { text: false } };
+    return { url: page.url, title: page.title, text: page.text, elements: [{ ref: 'e2', role: 'button', name: 'Go' }], truncated: { text: false } };
   }, tab);
   assert.match(code, /const wantEffect = true/, 'effect reads collect focus and value');
+  assert.match(code, /\["e2"\]\.filter/, 'the read asks which held refs are gone');
   assert.equal(reply.generation, settled.generation);
   assert.equal(reply.elements, undefined);
   assert.equal(reply.effect.changed, false);
   assert.equal(tab.snapshotStamp.hash, stamp);
-  assert.ok(tab.refs.has('s2-1'));
-  const changed = await readEffect(() => ({ url: page.url, title: page.title, text: page.text, elements: [{ ref: 's3-1', role: 'button', name: 'Sent' }] }), tab);
-  assert.equal(changed.elements[0].name, 'Sent');
+  const changed = await readEffect(() => ({ url: page.url, title: page.title, text: page.text, elements: [{ ref: 'e2', role: 'button', name: 'Sent' }] }), tab);
+  assert.equal(changed.elements[0].name, 'Sent', 'without the caller\'s generation the reply is the list');
   assert.equal(changed.effect.changed, true);
   assert.notEqual(tab.snapshotStamp.hash, stamp, 'a changed read becomes the new baseline');
   assert.equal(tab.snapshotStamp.generation, changed.generation);
-  assert.equal(tab.snapshotStamp.base, changed.generation);
-  assert.ok(tab.refs.has('s3-1') && !tab.refs.has('s2-1'), 'refs from the older generation are rejected');
+  assert.equal(tab.scan.generation, changed.generation);
 });
-test('two changed action reads never reuse a generation or revive older refs', async () => {
+
+test('two changed action reads never reuse a generation', async () => {
   const tab = { refs: new Set(), generation: 1 };
   const url = 'https://a.example/', title = 'A';
-  settleSnapshot(tab, { url, title, text: '', elements: [{ ref: 's1-1', role: 'button', name: 'One' }] }, 1);
-  const first = await readEffect(() => ({ url, title, text: '', elements: [{ ref: 's2-1', role: 'button', name: 'Two' }] }), tab);
-  const second = await readEffect(() => ({ url, title, text: '', elements: [{ ref: 's3-1', role: 'button', name: 'Three' }] }), tab);
+  settleSnapshot(tab, { url, title, text: '', elements: [{ ref: 'e1', role: 'button', name: 'One' }] }, 1);
+  const first = await readEffect(() => ({ url, title, text: '', elements: [{ ref: 'e2', role: 'button', name: 'Two' }] }), tab);
+  const second = await readEffect(() => ({ url, title, text: '', elements: [{ ref: 'e3', role: 'button', name: 'Three' }] }), tab);
   assert.ok(second.generation > first.generation);
-  assert.deepEqual([...tab.refs], ['s3-1']);
-  const again = await readEffect(() => ({ url, title, text: '', elements: [{ ref: 's4-1', role: 'button', name: 'Three' }] }), tab);
+  const again = await readEffect(() => ({ url, title, text: '', elements: [{ ref: 'e3', role: 'button', name: 'Three' }] }), tab);
   assert.equal(again.elements, undefined);
   assert.equal(again.generation, second.generation);
   assert.equal(again.effect.changed, false);
-  assert.deepEqual([...tab.refs], ['s3-1']);
-  assert.deepEqual(settleSnapshot(tab, { url, title, text: '', elements: [{ ref: 's5-1', role: 'button', name: 'Three' }] }, 5, second.generation), { unchanged: true, generation: 5 });
+  assert.deepEqual(settleSnapshot(tab, { url, title, text: '', elements: [{ ref: 'e3', role: 'button', name: 'Three' }] }, 5, second.generation), { unchanged: true, generation: 5 });
+  const renumbered = await readEffect(() => ({ url, title, text: '', elements: [{ ref: 'e4', role: 'button', name: 'Three' }] }), tab);
+  assert.equal(renumbered.elements[0].ref, 'e4', 'a control that came back under a new ref is a change');
 });
+
 test('identical controls on a different page are a navigation, not an unchanged reply', async () => {
   const tab = { refs: new Set(), generation: 1 };
   const controls = (ref) => [{ ref, role: 'button', name: 'Continue' }];
-  settleSnapshot(tab, { url: 'https://a.example/1', title: 'Step', text: '', elements: controls('s1-1') }, 1);
-  const moved = await readEffect(() => ({ url: 'https://a.example/2', title: 'Step', text: '', elements: controls('s2-1'), sameDoc: false }), tab);
+  settleSnapshot(tab, { url: 'https://a.example/1', title: 'Step', text: '', elements: controls('e1') }, 1);
+  const moved = await readEffect(() => ({ url: 'https://a.example/2', title: 'Step', text: '', elements: controls('e2'), sameDoc: false }), tab, { held: 1 });
   assert.equal(moved.effect.navigated, true);
   assert.equal(moved.effect.changed, true);
-  assert.equal(moved.elements[0].ref, 's2-1');
-  assert.deepEqual([...tab.refs], ['s2-1']);
+  assert.equal(moved.elements[0].ref, 'e2', 'a navigation answers with the list even when the caller held a generation');
   // A same-document URL change (pushState, hash) is not a navigation.
-  const rerouted = await readEffect(() => ({ url: 'https://a.example/2#frag', title: 'Step', text: '', elements: controls('s3-1'), sameDoc: true }), tab);
+  const rerouted = await readEffect(() => ({ url: 'https://a.example/2#frag', title: 'Step', text: '', elements: controls('e2'), sameDoc: true }), tab);
   assert.equal(rerouted.effect.navigated, false);
   assert.equal(rerouted.effect.url, 'https://a.example/2#frag');
 });
 test('an action read reports the value and focus of the element it touched', async () => {
   const tab = { refs: new Set(), generation: 1 };
-  const code = snapshotExpression(2, { effect: true, valueFor: { ref: 's1-1' } });
-  assert.match(code, /const wantEffect = true, wantSettle = false, valueRef = "s1-1"/);
-  assert.match(snapshotExpression(2, { effect: true, settle: true }), /wantSettle = true/, 'only settling reads watch for late mutations');
+  const code = snapshotExpression({ effect: true, valueFor: { ref: 'e1' } });
+  assert.match(code, /const wantEffect = true, wantSettle = false, valueRef = "e1"/);
+  assert.match(snapshotExpression({ effect: true, settle: true }), /wantSettle = true/, 'only settling reads watch for late mutations');
   assert.match(code, /activeElement === el\)/);
   assert.match(code, /el\.matches\(valueSel\)/);
-  const reply = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's2-1', role: 'input', name: 'Box' }], acted: 'typed text', focused: { ref: 's2-1', kept: '', name: 'Box' } }), tab);
+  const reply = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 'e2', role: 'input', name: 'Box' }], acted: 'typed text', focused: { ref: 'e2', name: 'Box' } }), tab);
   assert.equal(reply.effect.value, 'typed text');
-  assert.deepEqual(reply.effect.focused, { ref: 's2-1', name: 'Box' });
-  const same = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's3-1', role: 'input', name: 'Box' }], focused: { ref: 's3-1', kept: 's2-1', name: 'Box' } }), tab);
-  assert.equal(same.effect.focused.ref, 's2-1', 'an unchanged read names the held base ref');
+  assert.deepEqual(reply.effect.focused, { ref: 'e2', name: 'Box' });
   // Focus outside the picked controls still reports, with a name only.
-  const plain = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's4-1', role: 'input', name: 'Box' }], focused: { ref: '', kept: '', name: 'Plain div' } }), tab);
+  const plain = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 'e4', role: 'input', name: 'Box' }], focused: { ref: '', name: 'Plain div' } }), tab);
   assert.deepEqual(plain.effect.focused, { name: 'Plain div' });
 });
+
 test('snapshot bounds clamp and never splice caller text into page code', () => {
-  assert.match(snapshotExpression(3), /text\.slice\(0, 6000\)/);
-  assert.match(snapshotExpression(3, { maxChars: 999999 }), /text\.slice\(0, 20000\)/);
-  assert.match(snapshotExpression(3), /setT\(done, 400\)/);
-  assert.match(snapshotExpression(3), /seenParent/);
-  assert.match(snapshotExpression(3), /checkVisibilityCSS: true/);
-  assert.match(snapshotExpression(3), /utm_/);
-  assert.match(snapshotExpression(3), /src:shortHref/);
-  assert.match(snapshotExpression(3), /performance\.now\(\) > deadline\) \{ more = true; break; \}/);
-  assert.match(snapshotExpression(3), /\.slice\(0,8\)/);
-  assert.match(snapshotExpression(3), /searchParams\.delete/);
-  assert.doesNotMatch(snapshotExpression(3, { maxChars: '1);alert(1' }), /alert/);
+  assert.match(snapshotExpression(), /text\.slice\(0, 6000\)/);
+  assert.match(snapshotExpression({ maxChars: 999999 }), /text\.slice\(0, 20000\)/);
+  assert.match(snapshotExpression(), /setT\(done, 400\)/);
+  assert.match(snapshotExpression(), /seenParent/);
+  assert.match(snapshotExpression(), /checkVisibilityCSS: true/);
+  assert.match(snapshotExpression(), /utm_/);
+  assert.match(snapshotExpression(), /src:shortHref/);
+  assert.match(snapshotExpression(), /performance\.now\(\) > deadline\) \{ more = true; break; \}/);
+  assert.match(snapshotExpression(), /\.slice\(0,8\)/);
+  assert.match(snapshotExpression(), /searchParams\.delete/);
+  assert.doesNotMatch(snapshotExpression({ maxChars: '1);alert(1' }), /alert\(/);
+  assert.doesNotMatch(snapshotExpression({ seed: '1);alert(1', held: ['e1', '");alert(1'] }), /alert\(/);
 });
 test('tool results drop favicon images and keep the fields a model acts on', () => {
   const icon = 'data:image/png;base64,' + 'A'.repeat(4000);
@@ -438,14 +443,62 @@ test('a rejected page eval answers with the page message, not an empty body', ()
 
 test('control fingerprints ignore the key order the executor happens to return', async () => {
   const tab = { refs: new Set(), generation: 1 };
-  settleSnapshot(tab, { url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 's1-1', role: 'button', name: 'Go' }] }, 1);
-  const reply = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ name: 'Go', ref: 's2-1', role: 'button' }] }), tab);
+  settleSnapshot(tab, { url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 'e1', role: 'button', name: 'Go' }] }, 1);
+  const reply = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ name: 'Go', ref: 'e1', role: 'button' }] }), tab);
   assert.equal(reply.elements, undefined);
   assert.equal(reply.generation, 1);
   assert.equal(reply.effect.changed, false);
 });
 
-test('an unchanged read restamps the held refs onto the current nodes', () => {
-  assert.match(snapshotExpression(5, { keep: 2, restamp: 2 }), /if \(2 >= 0\) tokens\.add\('s2-' \+ \(items\.length \+ 1\)\)/);
-  assert.match(snapshotExpression(5, { keep: 2 }), /if \(-1 >= 0\) tokens/, 'no restamp unless asked');
+test('a caller holding the last generation gets only what changed', async () => {
+  const url = 'https://a.example/', title = 'A';
+  const rows = (n, extra = []) => [...Array.from({ length: n }, (_, i) => ({ ref: `e${i + 1}`, role: 'button', name: 'Open', row: `Order #${i + 1}` })), ...extra];
+  const tab = { refs: new Set(), generation: 1 };
+  settleSnapshot(tab, { url, title, text: '', elements: rows(20) }, 1);
+  const more = await readEffect(() => ({ url, title, text: '', elements: rows(25) }), tab, { held: 1 });
+  assert.deepEqual(more.changed.map((item) => item.ref), ['e21', 'e22', 'e23', 'e24', 'e25']);
+  assert.deepEqual(more.removed, []);
+  assert.equal(more.elements, undefined);
+  const renamed = rows(25).filter((item) => item.ref !== 'e3').map((item) => item.ref === 'e2' ? { ...item, name: 'Opened' } : item);
+  const next = await readEffect(() => ({ url, title, text: '', elements: renamed }), tab, { held: more.generation });
+  assert.deepEqual(next.changed, [{ ref: 'e2', role: 'button', name: 'Opened', row: 'Order #2' }]);
+  assert.deepEqual(next.removed, ['e3']);
+  const stale = await readEffect(() => ({ url, title, text: '', elements: rows(26) }), tab, { held: more.generation });
+  assert.equal(stale.elements.length, 26, 'a caller holding an older generation gets the list');
+  // A scan cut short drops only refs the page says are gone.
+  const capped = await readEffect(() => ({ url, title, text: '', elements: rows(10, [{ ref: 'e99', role: 'link', name: 'New' }]), truncated: { elements: true }, gone: ['e12'] }), tab, { held: stale.generation });
+  assert.deepEqual(capped.removed, ['e12']);
+  assert.deepEqual(capped.changed.map((item) => item.ref), ['e99']);
+  assert.deepEqual(controlsDelta({ byRef: new Map() }, { elements: [] }), { changed: [], removed: [] });
+});
+test('a long list in an action reply says how many controls it left out', async () => {
+  const tab = { refs: new Set(), generation: 1 };
+  const reply = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: Array.from({ length: 55 }, (_, i) => ({ ref: `e${i + 1}`, role: 'a', name: `Link ${i}` })) }), tab);
+  assert.equal(reply.elements.length, 40);
+  assert.equal(reply.unlisted, 15);
+  assert.ok(tab.refs.has('e55'), 'every scanned ref is valid, listed or not');
+});
+test('a dialog or banner over the page rides on snapshots and replies', async () => {
+  const tab = { refs: new Set(), generation: 1 };
+  const overlays = [{ name: 'Join our newsletter', close: 'e9', closeName: 'No thanks' }];
+  const snap = settleSnapshot(tab, { url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 'e1', role: 'button', name: 'Add' }], overlays }, 1);
+  assert.deepEqual(snap.overlays, overlays);
+  assert.ok(tab.refs.has('e9'), 'the close ref is usable even when the scan did not list it');
+  const quiet = await readEffect(() => ({ url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 'e1', role: 'button', name: 'Add' }], overlays }), tab);
+  assert.deepEqual(quiet.overlays, overlays);
+  const clear = settleSnapshot(tab, { url: 'https://a.example/', title: 'A', text: '', elements: [], overlays: [] }, 2);
+  assert.equal(clear.overlays, undefined);
+});
+
+test('an agent tab dismisses a confirm or prompt unless the action said how to answer', () => {
+  assert.deepEqual(answerDialog('alert', 'Saved', undefined), { record: { type: 'alert', message: 'Saved', accepted: true }, params: { accept: true } });
+  const dismissed = answerDialog('confirm', 'Delete?', undefined);
+  assert.equal(dismissed.params.accept, false);
+  assert.match(dismissed.record.note, /dialog: \{accept: true\}/);
+  assert.match(answerDialog('prompt', 'Name?', undefined).record.note, /text: "<answer>"/);
+  assert.deepEqual(answerDialog('prompt', 'Name?', { accept: true, text: 'eval-42' }).params, { accept: true, promptText: 'eval-42' });
+  assert.deepEqual(answerDialog('confirm', 'Delete?', { accept: false }).params, { accept: false });
+  assert.equal(answerDialog('beforeunload', '', { accept: false }).params.accept, true, 'leaving the page the agent navigated away from is never blocked');
+  assert.deepEqual(dialogAnswer({ accept: true, text: 'x' }), { accept: true, text: 'x' });
+  for (const bad of [null, true, {}, { accept: 'yes' }, { accept: true, text: 5 }, { accept: true, text: 'x'.repeat(1001) }]) assert.throws(() => dialogAnswer(bad), /dialog must be/);
 });

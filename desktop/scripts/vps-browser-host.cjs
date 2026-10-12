@@ -7,7 +7,7 @@ const fs = require('node:fs'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { CDP, AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
-const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, dialogAnswer, answerDialog } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
 const { createAgentInput, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
@@ -424,22 +424,32 @@ async function serve() {
       requireAgentRead(tab);
       const effect = await readEffect((code) => tab.view.webContents.executeJavaScript(code), tab, opts);
       requireAgentRead(tab);
-      if (effect) return { ...effect, ...takeDialogs(tab) };
-      return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.', ...takeDialogs(tab) };
+      if (effect) return { ...effect, ...takePageEvents(tab) };
+      return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.', ...takePageEvents(tab) };
     } catch (error) {
       if (error && error.status === 409) throw error;
-      return { effect: { ...EMPTY_EFFECT }, error: String(error && error.message || error), ...takeDialogs(tab) };
+      return { effect: { ...EMPTY_EFFECT }, error: String(error && error.message || error), ...takePageEvents(tab) };
     }
   }
-  function takeDialogs(tab) {
+  function takePageEvents(tab) {
     const dialogs = tab.dialogs;
     tab.dialogs = undefined;
-    return dialogs ? { dialogs } : {};
+    const opened = tab.opened;
+    tab.opened = undefined;
+    return { ...(dialogs ? { dialogs } : {}), ...(opened ? { opened: opened.filter((item) => tabs.has(item.tabId)).map((item) => ({ ...item, url: tabs.get(item.tabId).url || item.url, title: tabs.get(item.tabId).title || '', epoch: tabs.get(item.tabId).epoch })) } : {}) };
   }
+  // dialog on an action (or a batch step) answers the confirm or prompt that
+  // action raises; without it they are dismissed.
   async function vpsPerform(tab, body, botId, overseer, depth = 0) {
+    if (body.dialog === undefined) return vpsStep(tab, body, botId, overseer, depth);
+    const before = tab.dialogAnswer;
+    tab.dialogAnswer = dialogAnswer(body.dialog);
+    try { return await vpsStep(tab, body, botId, overseer, depth); } finally { tab.dialogAnswer = before; }
+  }
+  async function vpsStep(tab, body, botId, overseer, depth) {
     const wc = tab.view.webContents;
     requireActor(tab, botId, body.epoch, true, overseer);
-    const finish = async (payload, opts) => depth > 0 ? payload : { ...payload, ...(await actionEffect(tab, opts)) };
+    const finish = async (payload, opts) => depth > 0 ? payload : { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) };
     if (body.action === 'batch') {
       if (depth > 0) throw fail('Batches cannot nest.');
       const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
@@ -451,12 +461,14 @@ async function serve() {
         if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ ok: false, error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
         try { results.push({ ok: true, ...(await vpsPerform(tab, { ...step, epoch: body.epoch }, botId, overseer, 1)) }); }
         catch (error) { results.push({ ok: false, error: errorMessage(error) }); break; }
-        if (step.ref !== undefined || step.selector !== undefined) lastTarget = { ref: step.ref, selector: step.selector };
+        // A step aimed by name reports the ref it resolved to.
+        const ref = results.at(-1).ref || step.ref;
+        if (ref !== undefined || step.selector !== undefined) lastTarget = { ref, selector: step.selector };
         if (INPUT_ACTIONS.has(step.action) && step.action !== 'move') sawInput = true;
       }
       // A takeover mid-batch seals the accumulated step results too.
       requireActor(tab, botId, body.epoch, true, overseer);
-      return { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput })), dispatched: true };
+      return { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput, held: body.generation })), dispatched: true };
     }
     if (body.action === 'read') {
       const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
@@ -464,7 +476,7 @@ async function serve() {
       // A read step is the model's own baseline, so it must not plant the doc
       // marker: on a fresh document the missing marker is what lets the final
       // effect report the navigation it observed.
-      const data = await wc.executeJavaScript(snapshotExpression(tab.generation || 0, { maxChars, maxElements: 0, elementMs: 5, mark: false })).catch(() => null);
+      const data = await wc.executeJavaScript(snapshotExpression({ maxChars, maxElements: 0, elementMs: 5, mark: false })).catch(() => null);
       requireActor(tab, botId, body.epoch, true, overseer);
       if (data) { tab.lastRead = data.sameDoc === false ? null : lastReadOf(data); tab.docMarked = tab.docMarked || data.sameDoc === true; }
       return finish({ text: (data && typeof data.text === 'string' ? data.text : ''), dispatched: true });
@@ -532,7 +544,7 @@ async function serve() {
       if (!value || !value.found) throw fail(`wait timed out after ${value ? value.waited : Date.now() - hostStart}ms for ${gone ? 'absence of ' : ''}${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`, 408);
       // A successful wait observed the page, so it becomes the read baseline:
       // the final effect must not re-report what the wait already confirmed.
-      const waited = await wc.executeJavaScript(snapshotExpression(tab.generation || 0, { maxChars: 8000, maxElements: 0, elementMs: 5, mark: false })).catch(() => null);
+      const waited = await wc.executeJavaScript(snapshotExpression({ maxChars: 8000, maxElements: 0, elementMs: 5, mark: false })).catch(() => null);
       if (waited) { tab.lastRead = waited.sameDoc === false ? null : lastReadOf(waited); tab.docMarked = tab.docMarked || waited.sameDoc === true; }
       return finish({ waited: value.waited, dispatched: true });
     }
@@ -585,14 +597,14 @@ async function serve() {
       requireActor(tab, botId, body.epoch, true, overseer);
       didNavigate = await history(tab, body.action);
     } else throw fail('Unsupported VPS action.');
-    // Navigations retire every ref; page-touching steps keep the batch's refs
-    // valid so a later step can act on them (top-level calls still clear).
-    if (body.action !== 'move' && (depth === 0 || !INPUT_ACTIONS.has(body.action))) tab.refs.clear();
+    // Navigations retire every ref; input keeps them, and the page's ref
+    // store answers for any control the input removed.
+    if (!INPUT_ACTIONS.has(body.action)) tab.refs.clear();
     result.dispatched = true;
     // A move changes no page state; report it without paying for a read.
     if (body.action === 'move') return depth > 0 ? result : { ...result, effect: { ...EMPTY_EFFECT } };
     return finish(result,
-      { navigated: didNavigate, settle: INPUT_ACTIONS.has(body.action), target: body.ref !== undefined || body.selector !== undefined ? { ref: body.ref, selector: body.selector } : undefined });
+      { navigated: didNavigate, settle: INPUT_ACTIONS.has(body.action), target: result.ref || body.ref !== undefined || body.selector !== undefined ? { ref: result.ref || body.ref, selector: body.selector } : undefined });
   }
   const mirror = (() => { try { return JSON.parse(fs.readFileSync(mirrorFile)).bots || {}; } catch { return {}; } })();
   const saveMirror = () => write(mirrorFile, { bots: mirror });
@@ -727,19 +739,14 @@ async function serve() {
   }
   cdp.listeners.add((event) => {
     // An open dialog blocks every evaluate and input on its page, so an agent
-    // tab answers it at once and the next action reply says what it said. Only
-    // an alert or the leave-page prompt the agent's own navigation raised is
-    // accepted; a confirm or prompt guards a decision and is dismissed. A
-    // human's tab keeps its dialog for the human.
+    // tab answers it at once (answerDialog) and the next action reply says
+    // what it said. A human's tab keeps its dialog for the human.
     if (event.method === 'Page.javascriptDialogOpening') {
       const tab = sessionOwner.get(event.sessionId)?.tab;
       if (tab?.controller === 'agent') {
-        const accepted = event.params.type === 'alert' || event.params.type === 'beforeunload';
-        tab.dialogs = [...(tab.dialogs || []), {
-          type: event.params.type, message: String(event.params.message || '').slice(0, 500), accepted,
-          ...(accepted ? {} : { note: `Dismissed. To accept it, eval window.${event.params.type} = () => ${event.params.type === 'prompt' ? '"<answer>"' : 'true'} and repeat the action.` }),
-        }].slice(-20);
-        cdp.send('Page.handleJavaScriptDialog', { accept: accepted }, event.sessionId).catch(() => {});
+        const { record, params } = answerDialog(event.params.type, event.params.message, tab.dialogAnswer);
+        tab.dialogs = [...(tab.dialogs || []), record].slice(-20);
+        cdp.send('Page.handleJavaScriptDialog', params, event.sessionId).catch(() => {});
       }
     }
     if (event.method === 'Fetch.requestPaused') {
@@ -790,7 +797,6 @@ async function serve() {
         const moved = info.url !== tab.url;
         tab.url = info.url;
         tab.title = info.title;
-        if (moved) tab.refs.clear();
         const problem = tab.controller === 'agent' ? agentUrlProblem(info.url) : '';
         if (problem && moved) sendBack(tab, info.url, problem);
         else if (moved && tab.controller === 'agent') {
@@ -827,7 +833,11 @@ async function serve() {
             controller: parent.controller,
             epoch: 1,
           })
-            .then(persist)
+            .then((t) => {
+              // The next reply to the bot that opened it names it.
+              if (parent.controller === 'agent') parent.opened = [...(parent.opened || []), { tabId: t.id, url: info.url }].slice(-10);
+              return persist();
+            })
             .catch(() => {});
       }
     }
@@ -859,7 +869,7 @@ async function serve() {
         platform: process.platform,
         protocol: 1,
         session: 'shared-vps',
-        capabilities: ['tabs', 'snapshot', 'screenshot', 'background-input', 'control-epochs', 'checkpoint', 'agent-desktop'],
+        capabilities: ['tabs', 'snapshot', 'screenshot', 'background-input', 'control-epochs', 'checkpoint', 'agent-desktop', 'name-targets'],
         tabCount: tabs.size,
         browserUp: cdp.socket.readyState === 1,
         busy: [...tabs.values()].some((t) => (t.pendingActions || 0) > 0 || input.isDispatching(t)),
@@ -921,7 +931,7 @@ async function serve() {
           const generation = ++tab.generation;
           let timer;
           const data = await Promise.race([
-            wc.executeJavaScript(snapshotExpression(generation, { ...opts, keep: tab.snapshotStamp?.base, restamp: tab.snapshotStamp?.base })),
+            wc.executeJavaScript(snapshotExpression({ ...opts, seed: tab.refSeed })),
             new Promise((_, reject) => {
               timer = setTimeout(() => reject(fail('Snapshot timed out after 10s. The page may be unresponsive.', 503)), 10000);
             }),
