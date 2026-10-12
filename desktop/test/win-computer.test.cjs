@@ -120,11 +120,12 @@ test('the Windows driver keeps toggle state in the name past the length cap', ()
 
 // Runs the pure ref logic for real wherever a .NET SDK is installed (GitHub's Linux and Mac runners have one).
 test('the Windows ref book passes its checks under a C# 5 compiler off Windows', (t) => {
+  if (process.platform === 'win32') return t.skip('the full selftest runs with the in-box csc below');
   const env = { ...process.env, DOTNET_NOLOGO: '1', DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1' };
   const sdk = spawnSync('dotnet', ['--version'], { encoding: 'utf8', env });
   if (sdk.status !== 0) return t.skip('no .NET SDK');
   const cs = fs.readFileSync(source, 'utf8');
-  const usings = cs.split('\n').filter((line) => /^using System(\.Collections\.Generic|\.Globalization|\.IO|\.Text)?;$/.test(line));
+  const usings = cs.split(/\r?\n/).filter((line) => /^using System(\.Collections\.Generic|\.Globalization|\.IO|\.Text)?;$/.test(line));
   const pure = cs.slice(cs.indexOf('// <pure>'), cs.indexOf('// </pure>'));
   const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'win-refs-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
