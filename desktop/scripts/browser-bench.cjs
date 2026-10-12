@@ -296,7 +296,12 @@ class Agent {
         this.lastError = why;
         // A covering dialog or banner is closed first, the way a person would.
         if (/covered by/.test(why)) await this.dismissBlocker(why);
-        else if (/No visible control is named|controls match/.test(why)) this.namesFailed = true;
+        else if (/No visible control is named|controls match/.test(why)) {
+          this.namesFailed = true;
+          // A single close match is the one the model meant: it acts on that ref next.
+          const near = /Close matches: (e\d+) "([^"]*)"\. /.exec(why);
+          if (near) this.known = [...this.known, { ref: near[1], name: near[2] }];
+        }
         else if (!/stale|unknown ref|missing|not found/i.test(why)) throw new Error(why);
         else if (round > 0) await this.snapshot();
       }

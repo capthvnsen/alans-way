@@ -184,7 +184,10 @@ const rows = () => { w.innerHTML = ['A', 'B'].map((k) => '<div>' + '${long}' + '
 const view = () => { v.innerHTML = '<button>Save</button>'; v.querySelector('button').onclick = () => { out.textContent = 'saved ' + location.hash; }; };
 rows(); view(); addEventListener('hashchange', view);
 </script>`;
-const routes = { '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
+const hopA = `<!doctype html><title>hop a</title><a href="/hop-b">Go</a> <button>Alpha</button>`;
+const hopB = `<!doctype html><title>hop b</title><button onclick="out.textContent += 'B'">Beta</button><button onclick="out.textContent += 'G'">Gamma</button><button onclick="out.textContent += 'C'">Cancel subscription</button><p id="out"></p>`;
+const crowdPage = `<!doctype html><title>crowd</title>${Array.from({ length: 2100 }, (_, i) => `<button>Item ${i}</button>`).join('')}`;
+const routes = { '/hop-a': hopA, '/hop-b': hopB, '/crowd': crowdPage, '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
 const api = (route, method = 'GET', body, epoch) =>
@@ -744,7 +747,7 @@ test('a control can be named instead of referenced, inside shadow roots too', li
   assert.match(typed.data.results[0].ref, /^e\d+$/, 'a named step reports the ref it resolved to');
   assert.equal(await pageText(tab, '#out'), 'sent ORCA-7');
   const missing = await act(tab, { action: 'click', name: 'Launch' });
-  assert.match(missing.data.error, /No visible control is named "Launch"/);
+  assert.match(missing.data.error, /No visible control is named exactly "Launch"/);
   const todos = await openTab('/todos');
   const many = await act(todos, { action: 'click', name: 'Delete' });
   assert.match(many.data.error, /3 controls match "Delete": e\d+ "Delete" \(row "Walk dog"\)/);
@@ -796,4 +799,31 @@ test('rebinding needs evidence: no row text, another hash route, or a partial vi
   const stateful = await act(todos, { action: 'click', name: 'Walk dog off', role: 'checkbox' });
   assert.equal(stateful.status, 200, `a name as the snapshot lists it, state words included: ${JSON.stringify(stateful.data)}`);
   assert.equal(stateful.data.resolved, 'Walk dog off');
+});
+
+test('a name lookup that opens a new page\'s store numbers past every ref the tab handed out', live, async () => {
+  const tab = await openTab('/hop-a');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const lowest = snap.elements.map((e) => e.ref).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))[0];
+  // No read between the steps: the lookup on the new page opens its store.
+  const reply = await act(tab, { action: 'batch', steps: [{ action: 'click', name: 'Go' }, { action: 'click', name: 'Beta' }, { action: 'click', ref: lowest }] });
+  assert.deepEqual(reply.data.results.map((r) => r.ok), [true, true, false], JSON.stringify(reply.data.results));
+  assert.ok(Number(reply.data.results[1].ref.slice(1)) > Math.max(...snap.elements.map((e) => Number(e.ref.slice(1)))), `the new page reused an old number: ${reply.data.results[1].ref}`);
+  assert.match(reply.data.results[2].error, /Stale or unknown reference/);
+  assert.equal(await pageText(tab, '#out'), 'B', 'the old page\'s ref clicked nothing on the new page');
+});
+
+test('only an exact name acts; near matches come back as suggestions, and a cut-short lookup says so', live, async () => {
+  const tab = await openTab('/hop-b');
+  const near = await act(tab, { action: 'click', name: 'Cancel' });
+  assert.equal(near.status, 400);
+  assert.match(near.data.error, /No visible control is named exactly "Cancel"\. Close matches: e\d+ "Cancel subscription"/);
+  assert.equal(await pageText(tab, '#out'), '', 'a near match is never clicked');
+  const exact = await act(tab, { action: 'click', name: 'cancel  SUBSCRIPTION' });
+  assert.equal(exact.status, 200, 'case and spacing do not matter');
+  assert.equal(await pageText(tab, '#out'), 'C');
+  const crowd = await openTab('/crowd');
+  const cut = await act(crowd, { action: 'click', name: 'Item 3' });
+  assert.equal(cut.status, 200, JSON.stringify(cut.data));
+  assert.equal(cut.data.partial, true, 'a lookup that did not read the whole page says so');
 });

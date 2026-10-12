@@ -24,7 +24,11 @@ const PICK = 'a[href],button,summary,input:not([type="hidden"]),textarea,select,
 // has the same role, name, row and address and no other lost ref shares them.
 // Anything less certain is a stale ref, never a guess. Agent input resolves
 // refs through the same store (find), so a planted attribute cannot redirect one.
-function refsSource() {
+// seed is the highest ref the tab has handed out: whichever script first
+// opens a document's store (a snapshot, a name lookup), numbering continues
+// past it, so a ref remembered from an earlier page never names a control here.
+function refsSource(seed = 0) {
+  const floor = Number.isInteger(seed) && seed > 0 ? seed : 0;
   return `(() => {
     const key = Symbol.for(${JSON.stringify(REFS_KEY)});
     let S = window[key];
@@ -32,6 +36,7 @@ function refsSource() {
       S = { doc: document, n: 0, byRef: new Map(), byNode: new WeakMap() };
       try { Object.defineProperty(window, key, { value: S, configurable: true }); } catch { try { window[key] = S; } catch {} }
     }
+    S.n = Math.max(S.n, ${floor});
     const shortHref = ${SHORT_HREF};
     const pick = ${JSON.stringify(PICK)};
     // Widgets with no native tag or listed role: a state attribute, or a
@@ -235,7 +240,7 @@ function refsSource() {
       const close = controls.find((c) => /^(close|dismiss|cancel|no|no,? thanks|not now|maybe later|skip|reject( all)?|decline( all)?|×|✕|x)$/i.test(label(c)) || /^(close|dismiss)/i.test(c.getAttribute('aria-label') || ''))
         || (!real && controls.find((c) => /^(accept( all)?|got it|ok|okay|agree)$/i.test(label(c))));
       if (close) {
-        if (!S.refOf(close)) S.assign([{ el: close, d: S.describe(close) }], 0, false);
+        if (!S.refOf(close)) S.assign([{ el: close, d: S.describe(close) }], S.n, false);
         out.close = S.refOf(close);
         out.closeName = label(close);
       }
@@ -259,7 +264,10 @@ function refsSource() {
     // A control by the name a snapshot lists for it, the way a person names
     // it: exact, then starting with, then containing the words; role (a tag
     // or ARIA role such as link, button, textbox, checkbox) and row narrow it.
-    // One match is acted on; several come back as candidates, never a guess.
+    // Only an exact match (case and spacing aside) is acted on, and only when
+    // it is the one: several come back as candidates, and near matches
+    // ("Cancel subscription" for "Cancel") come back as suggestions, never a guess.
+    // cut says the page had more controls than the lookup read.
     const norm = (text) => String(text || '').toLowerCase().replace(/\\s+/g, ' ').trim();
     const implicit = (el, d) => {
       if (el.getAttribute('role')) return d.role;
@@ -268,18 +276,20 @@ function refsSource() {
     };
     S.byName = (name, role, row) => {
       const want = norm(name), wantRole = norm(role), wantRow = norm(row);
-      const entries = S.collect(performance.now() + 400, 6000, 2000).list.map((el) => ({ el, d: S.describe(el) }));
+      const found = S.collect(performance.now() + 400, 6000, 2000), cut = found.more;
+      const entries = found.list.map((el) => ({ el, d: S.describe(el) }));
       S.keys(entries);
       const pool = entries.filter((x) => (!wantRole || x.d.role === wantRole || implicit(x.el, x.d) === wantRole)
         && (!wantRow || norm(x.row || S.rowOf(x.el, x.d.base)).includes(wantRow)));
-      for (const test of [(n) => n === want, (n) => n.startsWith(want), (n) => n.includes(want)]) {
-        const hits = pool.filter((x) => test(norm(x.d.base)) || test(norm(x.d.name)));
-        if (!hits.length) continue;
+      const listed = (hits) => {
         S.assign(hits, 0, false);
-        if (hits.length === 1) return { el: hits[0].el, ref: hits[0].ref, name: hits[0].d.name };
-        return { count: hits.length, many: hits.slice(0, 8).map((x) => ({ ref: x.ref, name: x.d.name, ...(x.row ? { row: x.row } : {}) })) };
-      }
-      return null;
+        return hits.slice(0, 8).map((x) => ({ ref: x.ref, name: x.d.name, ...(x.row ? { row: x.row } : {}) }));
+      };
+      const exact = pool.filter((x) => norm(x.d.base) === want || norm(x.d.name) === want);
+      if (exact.length === 1) { S.assign(exact, 0, false); return { el: exact[0].el, ref: exact[0].ref, name: exact[0].d.name, cut }; }
+      if (exact.length) return { count: exact.length, many: listed(exact), cut };
+      const near = pool.filter((x) => norm(x.d.base).includes(want) || norm(x.d.name).includes(want));
+      return { near: listed(near), cut };
     };
     S.find = (ref) => {
       const r = S.byRef.get(ref);
@@ -421,7 +431,7 @@ function snapshotExpression(opts = {}) {
       settledMs = Math.round(performance.now() - settleStart);
     }
     const shortHref = ${SHORT_HREF};
-    const items = [], R = ${maxElements > 0 ? refsSource() : 'null'};
+    const items = [], R = ${maxElements > 0 ? refsSource(seed) : 'null'};
     let gone = [], more = false;
     if (R) {
       const found = R.collect(performance.now() + ${elementMs}, ${maxScan}, ${maxElements});

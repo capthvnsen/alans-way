@@ -125,7 +125,7 @@ const tools = [
 - To act and see what comes next in one call, use a batch: steps [<your action>, {action:"wait", text:"<a phrase from the current prompt>", gone:true}, {action:"read"}]. The reply then holds the next state: the read text and fresh element refs.
 - Every reply carries effect ({navigated, url, title, changed, text}, plus value and focused when an element took input) and the controls when they changed, so do not snapshot after acting. It reflects the page after the updates the action started (short timers, requests), so a separate read is rarely needed.
 - Pass generation from your last reply to get controls as changed[] and removed[] refs; after a navigation, or without it, elements[] lists the first 40 (unlisted counts the rest).
-- click, type, select and friends take a ref, a name as a snapshot lists it ({action:"click",name:"Next"}, no snapshot needed; role and row narrow it), a selector, or x,y. drag ends at toRef, toSelector, or toX,toY; press sends a key.
+- click, type, select and friends take a ref, an exact name as a snapshot lists it ({action:"click",name:"Next"}, no snapshot needed; role and row narrow it), a selector, or x,y. drag ends at toRef, toSelector, or toX,toY; press sends a key.
 - select takes the option by any of value, label, option, text or choice and answers matched; a miss lists the options.
 - wait takes a selector, text or url, and gone:true waits until it disappears. read returns {text} capped by maxChars (default 600). batch runs up to 25 steps; its reply has results[] per step plus one final effect.
 - opened[] lists tabs the action opened; dialogs[] says how JS dialogs were answered (a confirm or prompt is dismissed unless the action passed dialog:{accept:true, text}).
@@ -313,7 +313,13 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
         const { tabId, ...body } = args;
         result = body.action === 'claim' || body.action === 'release'
           ? await request(`${tabPath}/control`, 'POST', body.action === 'claim' ? { controller: 'agent' } : { controller: 'human', reason: body.reason, note: body.note })
-          : await request(`${tabPath}/actions`, 'POST', body);
+          : await request(`${tabPath}/actions`, 'POST', body).catch((error) => {
+            // A host from before name targets (one not yet updated) rejects a named step as untargeted.
+            const named = body.name !== undefined || (Array.isArray(body.steps) && body.steps.some((step) => step && step.name !== undefined));
+            if (named && /element reference or selector|fresh element reference, selector/i.test(error.message))
+              throw new Error(`${error.message} This browser host does not take name targets yet (it does not list name-targets in cua_alans_way_status). Act by ref from a snapshot until it is updated.`);
+            throw error;
+          });
         break;
       }
       default: throw new Error('Unknown browser tool.');

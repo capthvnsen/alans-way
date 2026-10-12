@@ -302,3 +302,22 @@ test('the agent-desktop flag follows the host and restarts the helper when it ch
   assert.equal(after.agentDesktop, '');
   assert.equal(after.closed, '1');
 });
+
+test('a named step sent to a host from before name targets says to act by ref', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
+  const old = http.createServer((_req, res) => { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Provide a fresh element reference, selector, or viewport x and y coordinates.' })); });
+  await new Promise((resolve) => old.listen(0, '127.0.0.1', resolve));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${old.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')], env: { ...process.env } });
+  const client = new Client({ name: 'browser-mcp-test', version: '1' });
+  t.after(async () => { await client.close().catch(() => {}); await transport.close().catch(() => {}); await new Promise((resolve) => old.close(resolve)); fs.rmSync(profile, { recursive: true, force: true }); });
+  await client.connect(transport);
+  const act = (args) => client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't1', epoch: 1, ...args } });
+  const named = await act({ action: 'click', name: 'Next' });
+  assert.equal(named.isError, true);
+  assert.match(named.content[0].text, /does not take name targets yet .*Act by ref/);
+  const inBatch = await act({ action: 'batch', steps: [{ action: 'click', name: 'Next' }] });
+  assert.match(inBatch.content[0].text, /does not take name targets yet/);
+  const plain = await act({ action: 'click', x: 5, y: 5 });
+  assert.doesNotMatch(plain.content[0].text, /name targets/, 'an unnamed failure keeps its own message');
+});

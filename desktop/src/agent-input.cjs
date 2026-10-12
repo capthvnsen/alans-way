@@ -243,12 +243,13 @@ function cursorPath(from, to) {
 
 // One round trip finds the element, scrolls only when it is out of view, hit
 // tests it, readies focus for typing and reports what a click needs to know.
-function resolveScript(target, { focus = false, type = false, select = false, probe = false } = {}) {
+// seed is the tab's highest issued ref, for a name lookup that opens the store.
+function resolveScript(target, { focus = false, type = false, select = false, probe = false, seed = 0 } = {}) {
   return `(async () => {
-    ${target.name ? `const named = ${refsSource()}.byName(${JSON.stringify(target.name)}, ${JSON.stringify(target.role || '')}, ${JSON.stringify(target.row || '')});
-    if (!named) return { fail: 'unnamed' };
-    if (named.many) return { fail: 'ambiguous', many: named.many, count: named.count };
-    const el = named.el, ref = named.ref, resolved = named.name;` : `const el = ${locateElement(target)}, ref = undefined, resolved = undefined;`}
+    ${target.name ? `const named = ${refsSource(seed)}.byName(${JSON.stringify(target.name)}, ${JSON.stringify(target.role || '')}, ${JSON.stringify(target.row || '')});
+    if (named.near) return { fail: 'unnamed', near: named.near, cut: named.cut };
+    if (named.many) return { fail: 'ambiguous', many: named.many, count: named.count, cut: named.cut };
+    const el = named.el, ref = named.ref, resolved = named.name, partial = named.cut;` : `const el = ${locateElement(target)}, ref = undefined, resolved = undefined, partial = undefined;`}
     if (!el) return { fail: ${target.ref ? "'stale'" : "'missing or disabled'"} };
     if (el.disabled || el.matches(':disabled') || el.closest('[inert]')) return { fail: 'missing or disabled' };
     // A native select hidden behind a custom dropdown is chosen by value, so it needs no hit test.
@@ -329,7 +330,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     }
     const submit = !!el.form && ((el.tagName === 'BUTTON' && (!kind || kind === 'submit')) || (el.tagName === 'INPUT' && kind === 'submit'));
     const link = !!el.closest('a[href]') && !/^#/.test(el.closest('a[href]').getAttribute('href') || '');
-    return { ...point, ref, resolved, submit, nav: submit || link, hl: { x: Math.round(r.left + ox), y: Math.round(r.top + oy), width: Math.round(r.width), height: Math.round(r.height) } };
+    return { ...point, ref, resolved, partial, submit, nav: submit || link, hl: { x: Math.round(r.left + ox), y: Math.round(r.top + oy), width: Math.round(r.width), height: Math.round(r.height) } };
   })()`;
 }
 
@@ -490,13 +491,18 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       return { x, y };
     }
     async function resolve(target, options) {
-      const found = await boundedJs(wc, resolveScript(target, options));
+      const found = await boundedJs(wc, resolveScript(target, { ...options, seed: tab.refSeed }));
       check();
       if (found && found.fail === 'stale') throw staleRef(target.ref);
-      if (found && found.fail === 'unnamed') throw fail(`No visible control is named ${JSON.stringify(target.name)}${target.role ? ` with role ${target.role}` : ''}${target.row ? ` in a row with ${JSON.stringify(target.row)}` : ''}. Snapshot to see the controls on the page.`);
+      const listed = (items) => items.map((item) => `${item.ref} ${JSON.stringify(item.name || '')}${item.row ? ` (row ${JSON.stringify(item.row)})` : ''}`).join(', ');
+      const unread = found && found.cut ? ' The page has more controls than a name lookup reads; snapshot or scroll for the rest.' : '';
+      if (found && found.fail === 'unnamed') {
+        for (const item of found.near) issueRef(tab, item.ref);
+        throw fail(`No visible control is named exactly ${JSON.stringify(target.name)}${target.role ? ` with role ${target.role}` : ''}${target.row ? ` in a row with ${JSON.stringify(target.row)}` : ''}.${found.near.length ? ` Close matches: ${listed(found.near)}. Act on one by ref if it is the one you mean.` : ' Snapshot to see the controls on the page.'}${unread}`);
+      }
       if (found && found.fail === 'ambiguous') {
         for (const item of found.many) issueRef(tab, item.ref);
-        throw fail(`${found.count} controls match ${JSON.stringify(target.name)}: ${found.many.map((item) => `${item.ref} ${JSON.stringify(item.name || '')}${item.row ? ` (row ${JSON.stringify(item.row)})` : ''}`).join(', ')}${found.count > found.many.length ? ', ...' : ''}. Act on one by ref, or narrow with role or row.`);
+        throw fail(`${found.count} controls match ${JSON.stringify(target.name)}: ${listed(found.many)}${found.count > found.many.length ? ', ...' : ''}. Act on one by ref, or narrow with role or row.${unread}`);
       }
       if (found && found.ref) issueRef(tab, found.ref);
       if (found && found.fail === 'covered') {
@@ -527,11 +533,11 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       if (to && (to.ref || to.selector)) end = await resolve(to);
       if (body.ref || body.selector || body.name) {
         found = await resolve(target, { focus: action === 'type' || action === 'press', type: action === 'type', select: action === 'select', probe: action === 'click' });
-        const { hl, submit, nav, ref, resolved, ...xy } = found;
+        const { hl, submit, nav, ref, resolved, partial, ...xy } = found;
         point = xy; found = { hl, submit, nav };
         // A named control is the ref it resolved to from here on, and the reply
         // says which, by its full name (a near match is visible).
-        if (ref) { target = { ref }; extra.ref = ref; extra.resolved = resolved; }
+        if (ref) { target = { ref }; extra.ref = ref; extra.resolved = resolved; if (partial) extra.partial = true; }
       } else if (POINTER_ACTIONS.has(action)) point = await viewportPoint(body.x, body.y);
       const hl = found.hl || null;
       if (CLICKS[action] || action === 'move') {
