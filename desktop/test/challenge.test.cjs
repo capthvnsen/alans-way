@@ -11,6 +11,7 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
 const { challengeExpression, challengeHitExpression, challengeProbeExpression, readEffect } = require('../src/browser-page.cjs');
+const { rawInputTarget } = require('../src/agent-input.cjs');
 const { challengeReply, captchaHandback, captchaWatchStep, viewerUrl } = require('../src/core.cjs');
 
 test('a second challenge from the same site within ten minutes tells the bot to back off', () => {
@@ -37,6 +38,9 @@ test('the automatic release names the site and the kind of check', () => {
   assert.deepEqual(h, { reason: 'captcha', note: 'Solve the Google "unusual traffic" check on www.google.com. The tab goes back to the agent once it clears.', auto: true, challenge: 'google_sorry' });
   assert.match(captchaHandback('https://shop.example/', { kind: 'hcaptcha' }).note, /^Solve the hCaptcha on shop\.example\./);
   assert.ok(captchaHandback(`https://${'a'.repeat(200)}.example/`, { kind: 'arkose' }).note.length <= 140);
+  // A back-off rides on the handback, so the bot still hears it after the tab comes back.
+  const repeat = captchaHandback('https://www.google.com/sorry/index', { kind: 'google_sorry', blocking: true, backOff: true, advice: 'Stop retrying it.' });
+  assert.equal(repeat.backOff, true); assert.equal(repeat.advice, 'Stop retrying it.');
 });
 
 test('the watch hands back only after a challenge it saw has cleared twice in a row and nobody is typing', () => {
@@ -63,9 +67,17 @@ test('the watch hands back only after a challenge it saw has cleared twice in a 
 test('the viewer address keeps no password, token or fragment', () => {
   assert.equal(viewerUrl('http://100.64.0.2:6080/vnc.html?autoconnect=1&password=hunter2&path=websockify#password=x'), 'http://100.64.0.2:6080/vnc.html?autoconnect=1&path=websockify');
   assert.equal(viewerUrl('https://u:p@desk.example/vnc.html?token=abc&apiKey=1'), 'https://desk.example/vnc.html');
+  assert.equal(viewerUrl('http://desk.example/vnc.html?pw=1&sig=2&jwt=3&resize=scale'), 'http://desk.example/vnc.html?resize=scale', 'only noVNC settings survive');
   assert.equal(viewerUrl('ws://desk.example/websockify'), '');
   assert.equal(viewerUrl(''), '');
   assert.equal(viewerUrl(undefined), '');
+});
+
+test('raw CDP input is aimed at every point it lands on, or at the focus for keys', () => {
+  assert.deepEqual(rawInputTarget('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 1, y: 2 }, { x: 3, y: 4 }] }).points.slice(1), [{ x: 1, y: 2 }, { x: 3, y: 4 }]);
+  assert.equal(rawInputTarget('Input.dispatchMouseEvent', { x: 5, y: 6 }).keyboard, false);
+  assert.deepEqual(rawInputTarget('Input.insertText', { text: 'hi' }), { points: [], keyboard: true });
+  assert.equal(rawInputTarget('Input.dispatchKeyEvent', { type: 'keyDown' }).keyboard, true);
 });
 
 test('a Cloudflare interstitial that clears by itself is waited out, so the reply shows the real page', async () => {
@@ -158,7 +170,10 @@ test('real Chromium: each kind of challenge is detected from its fixture, and lo
     hcaptcha: { kind: 'hcaptcha', blocking: false },
     'hcaptcha-challenge': { kind: 'hcaptcha', blocking: true },
     turnstile: { kind: 'turnstile', blocking: false },
+    'turnstile-shadow': { kind: 'turnstile', blocking: false },
     cloudflare: { kind: 'cloudflare', blocking: true },
+    'cloudflare-managed': { kind: 'cloudflare', blocking: true },
+    onboarding: null,
     arkose: { kind: 'arkose', blocking: true },
     plain: null,
   };

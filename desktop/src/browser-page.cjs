@@ -322,7 +322,9 @@ const CHALLENGE_SOURCE = `() => {
   const found = (kind, blocking, els, page) => ({ kind, blocking, page: page === true, els: els || [] });
   const path = location.pathname, title = document.title.trim();
   if (path.indexOf('/sorry/') === 0 && (/(^|\\.)google\\.[a-z.]+$/.test(location.hostname) || document.querySelector('#captcha-form'))) return found('google_sorry', true, null, true);
-  if (/^(just a moment|one more step|verify you are human)/i.test(title) || document.querySelector('#challenge-form,#challenge-stage,#challenge-running,#cf-challenge-running,#cf-please-wait')) return found('cloudflare', true, null, true);
+  // The title alone is an ordinary onboarding page's too, so it needs Cloudflare's own markers.
+  if (document.querySelector('#challenge-form,#challenge-stage,#challenge-running,#cf-challenge-running,#cf-please-wait')
+    || (/^(just a moment|one more step|verify you are human)/i.test(title) && (window._cf_chl_opt || document.querySelector('script[src*="/cdn-cgi/challenge-platform/"]')))) return found('cloudflare', true, null, true);
   const frames = [...document.querySelectorAll('iframe')].filter(shown);
   const src = (el) => String(el.src || '');
   const arkose = [...frames.filter((el) => /arkoselabs\\.com|funcaptcha\\.com/.test(src(el))), ...[...document.querySelectorAll('#FunCaptcha,#arkose-iframe,[data-e2e="enforcement-frame"]')].filter(shown)];
@@ -331,7 +333,8 @@ const CHALLENGE_SOURCE = `() => {
   if (hc.length && !solved('h-captcha-response')) return found('hcaptcha', hc.some((el) => /frame=challenge/.test(src(el))), hc);
   const rc = frames.filter((el) => /\\/recaptcha\\/(api2|enterprise)\\/(anchor|bframe)/.test(src(el)) && !/[?&]size=invisible/.test(src(el)));
   if (rc.length && !solved('g-recaptcha-response')) return found('recaptcha', rc.some((el) => /\\/bframe/.test(src(el))), rc);
-  const ts = [...frames.filter((el) => /challenges\\.cloudflare\\.com/.test(src(el))), ...[...document.querySelectorAll('.cf-turnstile')].filter(shown)];
+  // Turnstile draws its frame in a closed shadow root; its response field sits beside it.
+  const ts = [...frames.filter((el) => /challenges\\.cloudflare\\.com/.test(src(el))), ...[...document.querySelectorAll('.cf-turnstile'), ...[...document.querySelectorAll('input[name="cf-turnstile-response"]')].map((el) => el.parentElement)].filter((el) => el && shown(el))];
   if (ts.length && !solved('cf-turnstile-response')) return found('turnstile', false, ts);
   return null;
 }`;
@@ -344,7 +347,7 @@ function challengeExpression() {
 const CHALLENGE_HIT_SOURCE = `(points, keyboard) => {
   const c = (${CHALLENGE_SOURCE})();
   if (!c) return null;
-  const own = (el) => !!el && (c.els.some((w) => w === el || w.contains(el)) || !!(el.closest && el.closest('.g-recaptcha,.h-captcha,.cf-turnstile')));
+  const own = (el) => !!el && c.els.some((w) => w === el || w.contains(el));
   const hits = points.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y)).map((p) => document.elementFromPoint(p.x, p.y));
   if (keyboard) hits.push(document.activeElement);
   return c.page || hits.some(own) ? { kind: c.kind, blocking: c.blocking } : null;
@@ -876,7 +879,7 @@ async function passCloudflare(execute, ms = CLOUDFLARE_WAIT_MS, step = 500) {
 async function readEffect(execute, tab, opts = {}) {
   const reply = await readEffectOnce(execute, tab, opts);
   if (reply?.challenge?.kind !== 'cloudflare' || !(await passCloudflare(execute, opts.cloudflareWaitMs))) return reply;
-  return (await readEffectOnce(execute, tab, { ...opts, navigated: undefined, settle: false })) || reply;
+  return (await readEffectOnce(execute, tab, { ...opts, navigated: opts.navigated === true || undefined, settle: false })) || reply;
 }
 async function readEffectOnce(execute, tab, { parseWaitMs, navigated, target, settle, held } = {}) {
   const previous = tab.snapshotStamp, scan = tab.scan;
@@ -978,4 +981,4 @@ function restoreExpression(checkpoint) {
     return {verification:restored === c.drafts.length ? 'ready' : 'review_required',restored,skipped:c.drafts.length-restored};
   })()`;
 }
-module.exports = { refsSource, REFS_KEY, CHALLENGE_HIT_SOURCE, challengeExpression, challengeHitExpression, challengeProbeExpression, snapshotExpression, settleSnapshot, readEffect, controlsDelta, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, followUpInstallExpression, lastReadOf, FOLLOW_UP_KEY };
+module.exports = { refsSource, REFS_KEY, CHALLENGE_HIT_SOURCE, passCloudflare, challengeExpression, challengeHitExpression, challengeProbeExpression, snapshotExpression, settleSnapshot, readEffect, controlsDelta, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, followUpInstallExpression, lastReadOf, FOLLOW_UP_KEY };

@@ -9,10 +9,10 @@ const { spawn } = require('node:child_process');
 const { CDP, AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
 const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, liveHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, viewerUrl } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
-const { createAgentInput, refuseChallenge, tintScript, botAccent } = agentInputModule;
+const { createAgentInput, refuseChallenge, rawInputTarget, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
 const INPUT_ACTIONS = agentInputModule.INPUT_ACTIONS || new Set(['click', 'type', 'press', 'move', 'scroll']);
-const { snapshotExpression, settleSnapshot, readEffect, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('../src/browser-page.cjs');
+const { snapshotExpression, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('../src/browser-page.cjs');
 const root =
   process.env.HERMES_VPS_BROWSER_DATA ||
   (process.platform === 'darwin'
@@ -624,7 +624,7 @@ async function serve() {
         params.url = agentPageUrl(params.url);
       }
       // Raw input is input too: it may not land on a challenge either.
-      if (method.startsWith('Input.')) await refuseChallenge(wc, [{ x: params.x, y: params.y }], !/^Input\.dispatch(Mouse|Touch|DragEvent)/.test(method));
+      if (method.startsWith('Input.')) { const aim = rawInputTarget(method, params); await refuseChallenge(wc, aim.points, aim.keyboard); }
       let value = await Promise.race([
         wc.command(method, params),
         new Promise((_, reject) => setTimeout(() => reject(fail('cdp timed out after 20s.', 408)), 20000)),
@@ -983,12 +983,15 @@ async function serve() {
         const work = tab.queue.then(async () => {
           const generation = ++tab.generation;
           let timer;
-          const data = await Promise.race([
+          const read = () => Promise.race([
             wc.executeJavaScript(snapshotExpression({ ...opts, seed: tab.refSeed })),
             new Promise((_, reject) => {
               timer = setTimeout(() => reject(fail('Snapshot timed out after 10s. The page may be unresponsive.', 503)), 10000);
             }),
           ]).finally(() => clearTimeout(timer));
+          let data = await read();
+          // A Cloudflare check that clears by itself is waited out here too.
+          if (!human && data?.challenge?.kind === 'cloudflare' && await passCloudflare((code) => wc.executeJavaScript(code))) data = await read();
           if (!data || !Array.isArray(data.elements)) throw fail('Snapshot returned no page data.', 503);
           tab.url = data.url;
           tab.title = data.title;

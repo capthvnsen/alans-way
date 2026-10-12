@@ -25,10 +25,10 @@ const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked } = require('./vm-update.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
-const { createAgentInput, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
+const { createAgentInput, refuseChallenge, rawInputTarget, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
-const { snapshotExpression, settleSnapshot, readEffect, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
+const { snapshotExpression, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
 const { createVpsBrowser, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
@@ -671,7 +671,9 @@ function changeController(id, controller, source = 'human', handback = null) {
 function handleChallenge(tab, raw) {
   const url = tab.view.webContents.getURL();
   const challenge = challengeReply(tab, url, raw);
-  if (challenge?.blocking && tab.controller === 'agent') changeController(tab.id, 'human', 'agent', captchaHandback(url, challenge));
+  if (challenge?.blocking && tab.controller === 'agent') {
+    try { changeController(tab.id, 'human', 'agent', captchaHandback(url, challenge)); } catch (error) { logError('captcha release', error); }
+  }
   return challenge ? { challenge } : {};
 }
 // While a tab waits on a human for a CAPTCHA, a cheap page probe each second
@@ -1803,10 +1805,13 @@ async function snapshot(tab, opts = {}) {
     let timer;
     // A wedged renderer leaves executeJavaScript pending forever; bound it so
     // a snapshot can never outlive the connector's own timeout.
-    const result = await Promise.race([
+    const read = () => Promise.race([
       readJs(tab.view.webContents, snapshotExpression({ parseWaitMs: SNAPSHOT_PARSE_MS, ...opts, seed: tab.refSeed }), 20000),
       new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000); }),
     ]).finally(() => clearTimeout(timer));
+    let result = await read();
+    // A Cloudflare check that clears by itself is waited out here too.
+    if (result?.challenge?.kind === 'cloudflare' && await passCloudflare((code) => readJs(tab.view.webContents, code, 3000))) result = await read();
     if (!result || !Array.isArray(result.elements)) throw Object.assign(new Error('Snapshot returned no page data.'), { status: 503 });
     // A takeover while the page was being read seals the response.
     requireAgentRead(tab);
@@ -2098,7 +2103,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
       params.url = agentPageUrl(params.url);
     }
     // Raw input is input too: it may not land on a challenge either.
-    if (method.startsWith('Input.')) await refuseChallenge(wc, [{ x: params.x, y: params.y }], !/^Input\.dispatch(Mouse|Touch|DragEvent)/.test(method));
+    if (method.startsWith('Input.')) { const aim = rawInputTarget(method, params); await refuseChallenge(wc, aim.points, aim.keyboard); }
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     let cdpTimer;
     let value = await Promise.race([

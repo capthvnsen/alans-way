@@ -422,6 +422,10 @@ test('real Chromium: a CAPTCHA on a VM tab is refused to the bot, handed to the 
   const raw = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'cdp', method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', ...box, button: 'left', clickCount: 1 }, epoch: tab.epoch });
   assert.equal(raw.status, 409, 'raw input on the widget is refused too');
   assert.match(raw.data.error, /^challenge_present/);
+  const touch = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'cdp', method: 'Input.dispatchTouchEvent', params: { type: 'touchStart', touchPoints: [box] }, epoch: tab.epoch });
+  assert.equal(touch.status, 409, 'a raw touch on the widget is refused too');
+  const typed = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'type', selector: 'iframe', text: 'x', epoch: tab.epoch });
+  assert.match(typed.data.error, /^challenge_present/);
   const other = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#b', epoch: tab.epoch });
   assert.equal(other.status, 200, JSON.stringify(other.data));
 
@@ -449,7 +453,7 @@ test('real Chromium: a CAPTCHA on a VM tab is refused to the bot, handed to the 
   assert.equal(back.handback.resumed, 'auto');
   assert.ok(back.epoch > gated.data.tab.epoch, 'the give-back moves the epoch on');
   const stale = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'read', epoch: gated.data.tab.epoch });
-  assert.match(stale.data.error, /^(human_returned|stale_control_epoch)/);
+  assert.match(stale.data.error, /^human_returned/);
 
   // A second challenge from the same site within ten minutes: back off.
   const again = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'navigate', url: `http://test.example:${pa}/sorry/index?again`, epoch: back.epoch });

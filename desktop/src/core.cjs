@@ -221,7 +221,8 @@ function captchaHandback(url, challenge) {
   let host = 'this site';
   try { host = new URL(url).hostname || host; } catch {}
   const note = `Solve the ${CHALLENGE_NAMES[challenge.kind] || 'CAPTCHA'} on ${host}. The tab goes back to the agent once it clears.`;
-  return { reason: 'captcha', note: note.slice(0, 140), auto: true, challenge: challenge.kind };
+  // The back-off rides on the handback too, so a bot that gets the tab back still hears it.
+  return { reason: 'captcha', note: note.slice(0, 140), auto: true, challenge: challenge.kind, ...(challenge.backOff ? { backOff: true, advice: challenge.advice } : {}) };
 }
 // One step of the watch on a tab handed over for a CAPTCHA, fed a page probe
 // (challengeProbeExpression) about once a second. It hands the tab back once
@@ -235,14 +236,15 @@ function captchaWatchStep(watch, probe) {
   return { seen: watch.seen, clear, typing: probe.typing, resume: clear >= 2 };
 }
 // The live desktop viewer a person opens to solve a challenge on the VM: an
-// http(s) address with no credentials, secret-looking parameters or fragment
-// (noVNC also reads a password from the fragment).
+// http(s) address with no credentials or fragment (noVNC also reads a
+// password from the fragment), keeping only noVNC's harmless settings.
+const VIEWER_PARAMS = new Set(['autoconnect', 'reconnect', 'reconnect_delay', 'resize', 'quality', 'compression', 'show_dot', 'shared', 'view_only', 'view_clip', 'path', 'host', 'port', 'encrypt', 'bell', 'logging']);
 function viewerUrl(value) {
   try {
     const url = new URL(String(value || ''));
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
     url.username = ''; url.password = ''; url.hash = '';
-    for (const key of [...url.searchParams.keys()]) if (/pass|token|secret|key|auth/i.test(key)) url.searchParams.delete(key);
+    for (const key of [...url.searchParams.keys()]) if (!VIEWER_PARAMS.has(key)) url.searchParams.delete(key);
     return url.href;
   } catch { return ''; }
 }

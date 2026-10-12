@@ -47,9 +47,17 @@ function readJs(wc, code, ms = 5000, retryAfter = 2500) {
 
 // Bots never solve a challenge: input that would land on a CAPTCHA widget or
 // on a bot-check page is refused, and the reply says to hand the tab over.
+// Raw CDP input: the points it lands on (touches carry a list), or the focused
+// element for keys and text.
+function rawInputTarget(method, params) {
+  const keyboard = /^Input\.(dispatchKeyEvent|insertText|imeSetComposition)$/.test(method);
+  return { points: keyboard ? [] : [params, ...(Array.isArray(params.touchPoints) ? params.touchPoints : [])], keyboard };
+}
 function challengePresent(c) {
   return Object.assign(new Error(`challenge_present: this page shows a ${c.kind} challenge and bots never solve one. Release the tab with reason "captcha" (control: controller "human", reason "captcha") so the person can; it comes back to you once the challenge clears.`), { status: 409, code: 'challenge_present' });
 }
+// A probe that fails or times out lets the input through: the reads and the
+// hosts' automatic release still catch a blocking challenge.
 async function refuseChallenge(wc, points, keyboard = false) {
   const c = await boundedJs(wc, challengeHitExpression(points, keyboard), 3000).catch(() => null);
   if (typeof c?.kind === 'string') throw challengePresent(c);
@@ -557,7 +565,9 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       const hl = found.hl || null;
       // A bare key press goes to whatever has focus; the located actions
       // checked their own points.
-      if (action === 'press' && !point) { await refuseChallenge(wc, [], true); check(); }
+      // Only after a read saw a challenge: focus cannot reach a widget unannounced
+      // (clicking it is refused), and a bare Enter must not pay a round trip.
+      if (action === 'press' && !point && tab.challengeLog?.on) { await refuseChallenge(wc, [], true); check(); }
       if (CLICKS[action] || action === 'move') {
         await moveCursor(point, hl);
         if (CLICKS[action]) {
@@ -656,4 +666,4 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   return { perform, clear, isDispatching };
 }
 
-module.exports = { createAgentInput, refuseChallenge, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };
+module.exports = { createAgentInput, refuseChallenge, rawInputTarget, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };
