@@ -1,30 +1,42 @@
 'use strict';
 
 const MAX_TRACKED = 500;
+// An action reply lists only what changed when that is clearly smaller than
+// the whole tree; refs that all shift at once (Windows numbers them in tree
+// order) make a delta as big as the tree, so those replies stay whole.
+const DELTA_SHARE = 0.6;
+
+const canonical = (element) => JSON.stringify(Object.keys(element).sort().map((key) => [key, element[key]]));
 
 // Generation is a hash of the tree, so it is the same for every bot. What is
-// per bot is the last generation that bot was sent: a reply is "unchanged"
-// only relative to what that bot has already seen.
+// per bot is the last tree that bot was sent: a reply is "unchanged", or a
+// delta, only relative to what that bot has already seen.
 function createComputerSnapshots() {
   const sent = new Map();
-  const remember = (bot, pid, generation) => {
+  const remember = (bot, pid, tree) => {
     const key = `${bot}\u0000${pid}`;
-    const same = sent.get(key) === generation;
+    const before = sent.get(key);
     sent.delete(key);
-    sent.set(key, generation);
+    sent.set(key, { generation: tree.generation, elements: new Map(tree.elements.map((element) => [element.ref, canonical(element)])) });
     if (sent.size > MAX_TRACKED) sent.delete(sent.keys().next().value);
-    return same;
+    return before;
   };
   function snapshot(bot, pid, tree, since) {
-    remember(bot, pid, tree.generation);
+    if (Array.isArray(tree.elements)) remember(bot, pid, tree);
     if (Number.isInteger(since) && since === tree.generation) return { unchanged: true, generation: tree.generation };
     return tree;
   }
   function action(bot, pid, result) {
     if (!Number.isInteger(result.generation) || !Array.isArray(result.elements)) return result;
-    if (!remember(bot, pid, result.generation)) return result;
+    const before = remember(bot, pid, result);
     const { elements, truncated, ...rest } = result;
-    return { ...rest, unchanged: true, generation: result.generation };
+    if (before && before.generation === result.generation) return { ...rest, unchanged: true, generation: result.generation };
+    if (!before) return result;
+    const changed = elements.filter((element) => before.elements.get(element.ref) !== canonical(element));
+    const now = new Set(elements.map((element) => element.ref));
+    const removed = [...before.elements.keys()].filter((ref) => !now.has(ref));
+    if (JSON.stringify(changed).length + JSON.stringify(removed).length >= DELTA_SHARE * JSON.stringify(elements).length) return result;
+    return { ...rest, ...(truncated ? { truncated } : {}), changed, removed };
   }
   return { snapshot, action };
 }
