@@ -76,7 +76,7 @@ test('the Mac helper refuses password managers by policy before touching an app'
 
 test('the Mac helper re-walks with the request menubar flag, fails closed on focus errors and checks drag starts', () => {
   const swift = fs.readFileSync(path.join(__dirname, '../scripts/mac-computer.swift'), 'utf8');
-  assert.match(swift, /func ensureCache\(_ pid: pid_t, _ expected: Int\?, refs: \[String\], menubar: Bool\)/);
+  assert.match(swift, /func ensureCache\(_ pid: pid_t, _ expected: Int\?, refs: \[String\], menubar: Bool[,)]/);
   assert.match(swift, /try ensureCache\(pid, [^\n]*menubar: menubar\)/);
   assert.ok(!/refresh\(pid, menubar: false\)/.test(swift), 'no walk may hard-code menubar:false');
   const focus = swift.slice(swift.indexOf('func rejectSecureFocus'), swift.indexOf('func rejectSecure(_ node'));
@@ -84,6 +84,13 @@ test('the Mac helper re-walks with the request menubar flag, fails closed on foc
   assert.match(focus, /throw Fail\("focus_unverified"/);
   const drag = swift.slice(swift.indexOf('case "drag":'), swift.indexOf('case "scroll":'));
   assert.match(drag, /isSecure\(element\)/);
+});
+
+// Action runs are pinned inside ensureCache, which the selftest drives through a walk that pushes the caller's tree out.
+test('the Mac helper pins wait generations before walking', () => {
+  const swift = fs.readFileSync(path.join(__dirname, '../scripts/mac-computer.swift'), 'utf8');
+  const snapshot = swift.slice(swift.indexOf('case "snapshot":'), swift.indexOf('case "act":'));
+  assert.match(snapshot, /pin\(book, generation\)[\s\S]*refresh\(/);
 });
 
 test('the Mac helper checks focus before menu items, drag ends, and defaults to the snapshot menubar flag', () => {

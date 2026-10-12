@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { createHelper, createComputer, normalizeStep, normalizeKey, binaryCurrent, recordBuild } = require('../src/computer-helper.cjs');
+const { createHelper, createComputer, createComputerService, normalizeStep, normalizeKey, binaryCurrent, recordBuild } = require('../src/computer-helper.cjs');
 const { pickHelper, makeCompile } = require('../src/computer.cjs');
 
 const fake = path.join(__dirname, 'computer-fake-helper.cjs');
@@ -70,6 +70,21 @@ test('helper failures carry their code', async (t) => {
   const helper = fakeHelper('ok');
   t.after(() => helper.close());
   await assert.rejects(helper.request({ cmd: 'nope' }), (error) => error.code === 'bad_request' && /unknown command/.test(error.message));
+});
+
+test('snapshot pin is sent only when supplied', async (t) => {
+  const { driver, close } = fakeComputer('ok');
+  t.after(close);
+  assert.equal((await driver.snapshot(5, { pin: 7 })).pin, 7);
+  assert.equal('pin' in (await driver.snapshot(5)), false);
+});
+
+test('screenshot notes pass through only when supplied', async (t) => {
+  const elsewhere = fakeComputer('shot-elsewhere');
+  const here = fakeComputer('ok');
+  t.after(() => { elsewhere.close(); here.close(); });
+  assert.equal((await elsewhere.driver.screenshot(5)).note, 'Read only: elsewhere.');
+  assert.equal('note' in (await here.driver.screenshot(5)), false);
 });
 
 test('key names and combos normalise to one shape', () => {
@@ -146,6 +161,52 @@ test('a batch can act and then wait for what the action caused', async (t) => {
   assert.equal(reply.results.length, 3);
   assert.equal(reply.results[1].ok, true);
   assert.ok(Number.isInteger(reply.results[1].waitedMs));
+  assert.equal(reply.elements[0].name, 'Done');
+});
+
+test('wait polls pin the caller generation for later runs', async () => {
+  const options = [], generations = [];
+  let polls = 0;
+  const service = createComputerService({
+    snapshot: async (_pid, value) => {
+      options.push(value);
+      polls++;
+      return { ok: true, generation: 50 + polls, elements: [{ ref: 'c1', role: 'AXButton', name: polls < 3 ? 'Saving' : 'Saved' }] };
+    },
+    act: async (_pid, request) => {
+      generations.push(request.generation);
+      return { results: request.steps.map(() => ({ ok: true })), generation: 50, elements: [{ ref: 'c1', role: 'AXButton', name: 'Saving' }] };
+    },
+  });
+  const reply = await service.action('bot', 5, { action: 'batch', generation: 7, steps: [
+    { action: 'press', ref: 'c1' }, { action: 'wait', text: 'Saved' }, { action: 'press', ref: 'c1' },
+  ] });
+  assert.equal(reply.results.length, 3);
+  assert.ok(reply.results.every((item) => item.ok === true));
+  assert.ok(options.length >= 3);
+  assert.ok(options.every((value) => value.pin === 7));
+  assert.deepEqual(generations, [7, 7]);
+});
+
+test('no act run starts after the call deadline', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  let acts = 0;
+  const service = createComputerService({
+    snapshot: async () => assert.fail('wait should use the act tree'),
+    act: async (_pid, request) => {
+      acts++;
+      t.mock.timers.tick(30000);
+      return { results: request.steps.map(() => ({ ok: true })), generation: 50, elements: [{ ref: 'c1', role: 'AXButton', name: 'Done' }] };
+    },
+  });
+  const reply = await service.action('bot', 5, { action: 'batch', generation: 7, steps: [
+    { action: 'press', ref: 'c1' }, { action: 'wait', text: 'Done' }, { action: 'press', ref: 'c1' },
+    { action: 'wait', text: 'Done' }, { action: 'press', ref: 'c1' },
+  ] });
+  assert.equal(acts, 2);
+  assert.deepEqual(reply.results.map((item) => item.ok === true ? 'ok' : item.code), ['ok', 'ok', 'ok', 'ok', 'timeout']);
+  assert.ok(reply.results.slice(0, 4).every((item) => item.ok === true));
+  assert.match(reply.results[4].error, /did not run/);
   assert.equal(reply.elements[0].name, 'Done');
 });
 
