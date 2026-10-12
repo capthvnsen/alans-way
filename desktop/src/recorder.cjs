@@ -15,7 +15,10 @@ const SECRET_AUTOCOMPLETE = /(^|\s)(cc-[a-z-]+|one-time-code|current-password|ne
 // Fields whose id, name or label says they hold a secret stay redacted even
 // when the user keeps typed text.
 const SECRET_WORDS = new Set(['password', 'passwd', 'pwd', 'passcode', 'pin', 'otp', 'totp', 'token', 'secret', 'cvv', 'cvv2', 'cvc', 'csc', 'cvn', 'ssn', 'sin']);
-const SECRET_PHRASE = /security\s*code|social\s*security|verification\s*code|one[\s-]*time/i;
+// Matched against a label with case, spaces, _ and - removed, so security code,
+// security_code, security-code and securityCode all read securitycode. Card
+// fields often have no autocomplete attribute, only a name like ccnum.
+const SECRET_PHRASE = /securitycode|socialsecurity|verificationcode|onetime(code|pass|pin)|cardnum|cardno|creditcard|ccnum|ccno|cvc|cvv|cardexp|ccexp|exp(iry|iration)?(date|month|year|mm|yy)/;
 
 // Runs in an isolated world on each document of the recorded tab, so the page
 // can neither see nor call the binding. Only trusted (real user) events count,
@@ -113,7 +116,7 @@ const words = value => String(value || '').replace(/([a-z\d])([A-Z])/g, '$1 $2')
 function isSecret(raw) {
   if (raw.secret === true || SECRET_TYPES.test(String(raw.type || '')) || SECRET_AUTOCOMPLETE.test(String(raw.autocomplete || ''))) return true;
   const labels = [raw.name, raw.field, raw.selector].map(String);
-  return labels.some(label => SECRET_PHRASE.test(label) || words(label).some(word => SECRET_WORDS.has(word)));
+  return labels.some(label => SECRET_PHRASE.test(label.toLowerCase().replace(/[^a-z0-9]/g, '')) || words(label).some(word => SECRET_WORDS.has(word)));
 }
 
 // A page event becomes a step, or null when it is malformed or not from a web
@@ -147,9 +150,22 @@ function addStep(steps, step) {
   return steps;
 }
 
-// Typed text stays only when the user ticked "keep typed text".
-function finishSteps(steps, { keepTyped = false } = {}) {
-  return steps.map(step => step.action === 'type' && !keepTyped ? { ...step, value: REDACTED } : { ...step });
+// Typed text stays only when the user ticked "keep typed text". Without it,
+// a page that echoes what was typed must not carry it to disk either: a path
+// segment equal to a typed value (/search/<term>) is redacted, and a title
+// that contains one is replaced by the fallback (the site's host name).
+const plain = value => { try { value = decodeURIComponent(value); } catch {} return value.toLowerCase().replace(/[\s+_-]+/g, ' ').trim(); };
+function finishRecording(steps, { keepTyped = false, title = '', fallbackTitle = '' } = {}) {
+  if (keepTyped) return { title, steps: steps.map(step => ({ ...step })) };
+  const typed = steps.filter(step => step.action === 'type' && step.value !== REDACTED).map(step => plain(step.value)).filter(value => value.length >= 2);
+  const scrub = href => {
+    const url = new URL(href);
+    return url.origin + url.pathname.split('/').map(segment => segment && typed.includes(plain(segment)) ? REDACTED : segment).join('/');
+  };
+  return {
+    title: typed.some(value => value.length >= 3 && plain(title).includes(value)) || !title ? fallbackTitle : title,
+    steps: steps.map(step => ({ ...step, url: scrub(step.url), ...(step.action === 'type' ? { value: REDACTED } : {}) })),
+  };
 }
 
 // One private JSON file per recording under userData/recordings, cached in
@@ -201,4 +217,4 @@ function createRecordingStore(dir) {
   };
 }
 
-module.exports = { MAX_RECORDINGS, MAX_STEPS, REDACTED, BINDING, WORLD, PAGE_SCRIPT, normalizeEvent, navigateStep, addStep, finishSteps, createRecordingStore };
+module.exports = { MAX_RECORDINGS, MAX_STEPS, REDACTED, BINDING, WORLD, PAGE_SCRIPT, normalizeEvent, navigateStep, addStep, finishRecording, createRecordingStore };

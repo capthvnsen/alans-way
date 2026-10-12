@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
-const { REDACTED, MAX_RECORDINGS, PAGE_SCRIPT, normalizeEvent, navigateStep, addStep, finishSteps, createRecordingStore } = require('../src/recorder.cjs');
+const { REDACTED, MAX_RECORDINGS, PAGE_SCRIPT, normalizeEvent, navigateStep, addStep, finishRecording, createRecordingStore } = require('../src/recorder.cjs');
+const finishSteps = (steps, options) => finishRecording(steps, options).steps;
 
 const url = 'https://shop.example/login';
 const input = (extra) => normalizeEvent({ kind: 'input', url, role: 'input', name: 'Field', selector: '#f', type: 'text', autocomplete: '', value: 'typed', ...extra });
@@ -21,7 +22,15 @@ test('secret fields are always redacted, whatever the page sends', () => {
     { selector: 'input[name="reset_token"]' }, { name: 'Verification code' }]) {
     assert.equal(finishSteps([input({ ...extra, value: 'hunter2' })], { keepTyped: true })[0].value, REDACTED, `secret-named field ${JSON.stringify(extra)}`);
   }
-  for (const name of ['Shipping notes', 'Spinner', 'Pinterest handle', 'Tokenomics essay']) assert.equal(input({ name }).value, 'typed', `${name} is not a secret`);
+  // Underscored, hyphenated, camelCase and run-together names, and card fields with no autocomplete.
+  for (const label of ['security_code', 'securityCode', 'security-code', 'SECURITYCODE', 'verification_code', 'one_time_code', 'oneTimeCode', 'social_security_number',
+    'cardnumber', 'card_number', 'cardNumber', 'ccnum', 'cc_number', 'cc-no', 'creditCard', 'cvc2', 'card_cvv', 'exp_date', 'expDate', 'expiry_month', 'expiration-year', 'cc_exp', 'cardExpiry']) {
+    for (const key of ['name', 'field']) {
+      assert.equal(finishSteps([input({ [key]: label, value: 'hunter2' })], { keepTyped: true })[0].value, REDACTED, `${key} ${label}`);
+    }
+    assert.equal(finishSteps([input({ selector: `input[name="${label}"]`, value: 'hunter2' })], { keepTyped: true })[0].value, REDACTED, `selector ${label}`);
+  }
+  for (const name of ['Shipping notes', 'Spinner', 'Pinterest handle', 'Tokenomics essay', 'Phone time zone', 'Expected delivery', 'Account name', 'Card message']) assert.equal(input({ name }).value, 'typed', `${name} is not a secret`);
   assert.equal(input({ autocomplete: 'email' }).value, 'typed');
   assert.equal(input({ autocomplete: 'occ-note' }).value, 'typed', 'only whole cc-* tokens count');
 });
@@ -58,6 +67,24 @@ test('a field is never named by what was typed into it', () => {
   assert.equal(input({ name: 'Bio', value: 'Bio text here' }).name, 'Bio', 'a label that the text happens to start with stays');
   assert.equal(input({ name: 'Email', value: 'ada@example.com' }).name, 'Email');
   assert.equal(normalizeEvent({ kind: 'click', url, role: 'button', name: 'Save', selector: '#s' }).name, 'Save');
+});
+
+test('without keep typed text, a page echoing the typed text in its path or title does not carry it', () => {
+  const steps = [navigateStep('https://shop.example/find'), input({ url: 'https://shop.example/find', selector: '#q', value: 'Zebra umbrella 7731' }),
+    normalizeEvent({ kind: 'click', url: 'https://shop.example/find', role: 'button', name: 'Go', selector: '#go' }),
+    navigateStep('https://shop.example/search/zebra-umbrella-7731/page/2'), navigateStep('https://shop.example/q/Zebra%20umbrella%207731')];
+  const done = finishRecording(steps, { title: 'Results for Zebra Umbrella 7731 - Shop', fallbackTitle: 'shop.example' });
+  assert.equal(done.title, 'shop.example');
+  assert.deepEqual(done.steps.map(step => step.url), ['https://shop.example/find', 'https://shop.example/find', 'https://shop.example/find',
+    'https://shop.example/search/[redacted]/page/2', 'https://shop.example/q/[redacted]']);
+  assert.ok(!JSON.stringify(done).toLowerCase().includes('umbrella'));
+  assert.equal(finishRecording(steps, { title: 'Find - Shop', fallbackTitle: 'shop.example' }).title, 'Find - Shop', 'a title that does not echo stays');
+  assert.equal(finishRecording(steps, { title: '', fallbackTitle: 'shop.example' }).title, 'shop.example');
+  const kept = finishRecording(steps, { keepTyped: true, title: 'Results for Zebra Umbrella 7731', fallbackTitle: 'shop.example' });
+  assert.equal(kept.title, 'Results for Zebra Umbrella 7731', 'kept typed text may show in the title');
+  assert.equal(kept.steps[3].url, 'https://shop.example/search/zebra-umbrella-7731/page/2');
+  const short = finishRecording([navigateStep('https://a.example/page/2'), input({ value: '2' })], { title: 'Page 2', fallbackTitle: 'a.example' });
+  assert.equal(short.title, 'Page 2', 'a one-character value does not wipe titles');
 });
 
 test('steps merge keystrokes, redirects and the submit a click caused', () => {
