@@ -4,7 +4,8 @@
 # then update each Hermes profile's alans-way plugins through `hermes plugins
 # update` and drain-restart the gateway once when any plugin changed. Recent
 # hermes refuses the update while that profile's gateway runs; refused pairs
-# are retried once after a drain-stop, and the gateway always comes back up.
+# are retried once after every profile's gateway stops, and the gateways that
+# were running always come back up.
 #
 # The desktop app pipes this script over SSH (ssh <host> 'sh -s -- v0.3.2'),
 # so nothing is installed on the VM and no file is left behind. It only ever
@@ -280,6 +281,58 @@ list_profiles() {
   done
 }
 
+# Snapshot live standalone named gateways, then stop every profile. Modern
+# Hermes has one atomic --all operation; older versions need one call each.
+gateway_stop_every_profile() {
+  GW_NAMED=""
+  while read -r _gse_name _gse_home; do
+    [ "$_gse_name" != default ] || continue
+    _gse_text="$(cat "$_gse_home/gateway.pid" 2>/dev/null || true)"
+    case "$_gse_text" in
+      *'"pid"'*) _gse_pid="$(printf '%s\n' "$_gse_text" | sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)";;
+      *) _gse_pid="$(printf '%s' "$_gse_text" | tr -d '[:space:]')"
+         case "$_gse_pid" in ''|*[!0-9]*) _gse_pid="";; esac;;
+    esac
+    if [ -n "$_gse_pid" ] && ps -p "$_gse_pid" >/dev/null 2>&1; then
+      GW_NAMED="${GW_NAMED}${GW_NAMED:+
+}$_gse_name"
+    fi
+  done <<EOF
+$(list_profiles)
+EOF
+  if run_hermes 30 gateway stop --help | grep -q -- '--all'; then
+    run_hermes 30 gateway stop --all >/dev/null 2>&1
+    return $?
+  fi
+  _gse_stopped=false
+  while read -r _gse_name _gse_home; do
+    [ -n "$_gse_name" ] || continue
+    if [ "$_gse_name" = default ]; then
+      run_hermes 30 gateway stop >/dev/null 2>&1 && _gse_stopped=true
+    else
+      run_hermes 30 -p "$_gse_name" gateway stop >/dev/null 2>&1 && _gse_stopped=true
+    fi
+  done <<EOF
+$(list_profiles)
+EOF
+  [ "$_gse_stopped" = true ]
+}
+
+gateway_start_stopped_profiles() {
+  GW_CMD=""
+  run_hermes "$GATEWAY_TIMEOUT" gateway start >/dev/null 2>&1 || GW_CMD="hermes gateway start"
+  while read -r _gss_name; do
+    [ -n "$_gss_name" ] || continue
+    if ! run_hermes "$GATEWAY_TIMEOUT" -p "$_gss_name" gateway start >/dev/null 2>&1; then
+      _gss_cmd="hermes -p $_gss_name gateway start"
+      GW_CMD="${GW_CMD}${GW_CMD:+; }$_gss_cmd"
+    fi
+  done <<EOF
+$GW_NAMED
+EOF
+  [ -z "$GW_CMD" ] && GATEWAY_RESTARTED=true || GATEWAY_RESTARTED=false
+}
+
 # $1 = plugin manifest dir; prints its declared version ("" when unreadable).
 plugin_version() {
   sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"]\{1,\}\)"\{0,1\}[[:space:]]*$/\1/p' "$1/plugin.yaml" 2>/dev/null | head -1
@@ -448,14 +501,14 @@ update_hermes_plugins() {
   done <<EOF
 $(list_profiles)
 EOF
-  # A refusal only clears while the gateway is down. Drain-stop it, retry just
-  # the refused pairs, and always start it again. Under supervisord a bare
-  # `stop` escalates SIGTERM to SIGKILL past stopwaitsecs and can corrupt
-  # state.db mid-drain, so USR1 drains it first and the plain `stop` afterwards
-  # only ever fires at a fresh autorestart respawn (or nothing at all). When
-  # the wait ends with the pre-drain pid still running the gateway is left
-  # alone: stopping it would SIGKILL a mid-checkpoint process, the exact path
-  # this avoids.
+  # A refusal only clears while the gateway is down. Stop every profile's
+  # gateway, retry just the refused pairs, and restart the ones that ran. Under
+  # supervisord a bare `stop` escalates SIGTERM to SIGKILL past stopwaitsecs
+  # and can corrupt state.db mid-drain, so USR1 drains it first and the plain
+  # `stop` afterwards only ever fires at a fresh autorestart respawn (or
+  # nothing at all). When the wait ends with the pre-drain pid still running
+  # the gateway is left alone: stopping it would SIGKILL a mid-checkpoint
+  # process, the exact path this avoids.
   if [ -n "$REFUSED" ]; then
     if [ "$(budget_left)" -gt 25 ]; then
       say "stopping the agent gateway so the refused plugin updates can run"
@@ -512,10 +565,10 @@ EOF
         # Stock Hermes keeps its gateway under `hermes gateway`, not
         # necessarily a hermes-gateway unit; when neither stop lands, mirror
         # the restart path's last resort.
-        if [ "$GW_STOPPED" != true ] && run_hermes 30 gateway stop >/dev/null 2>&1; then
+        if [ "$GW_STOPPED" != true ] && gateway_stop_every_profile; then
           GW_VIA=hermes GW_STOPPED=true
         fi
-      elif run_hermes 30 gateway stop >/dev/null 2>&1; then
+      elif gateway_stop_every_profile; then
         GW_VIA=hermes GW_STOPPED=true
       fi
     else
@@ -555,13 +608,18 @@ EOF
             sudo -n systemctl start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
           fi;;
         hermes)
-          GW_CMD="hermes gateway start"
-          run_hermes "$GATEWAY_TIMEOUT" gateway start >/dev/null 2>&1 && GATEWAY_RESTARTED=true;;
+          gateway_start_stopped_profiles;;
       esac
       if [ "$GATEWAY_RESTARTED" = true ]; then say "agent gateway restarted"
       elif [ "$GW_VIA" = supervisor ]; then
         say "could not start the gateway; on the VM run: $GW_CMD (or: sudo $GW_CMD)"
       else say "could not start the gateway; on the VM run: $GW_CMD"; fi
+      # A default-profile restart cannot recover a failed standalone
+      # named-profile start; when only those failed, leave its exact
+      # remediation and result intact.
+      if [ "$GW_VIA" = hermes ] && [ "$GATEWAY_RESTARTED" != true ]; then
+        case "$GW_CMD" in "hermes gateway start"*) ;; *) return 0;; esac
+      fi
     else
       # The gateway stayed up; every refused pair reports blocked with the
       # full refusal text so the dialog can quote it.

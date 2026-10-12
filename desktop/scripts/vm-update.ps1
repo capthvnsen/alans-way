@@ -6,8 +6,8 @@
 # node_modules, the setup.sh Scheduled Task AlansWay_Browser, and the Hermes
 # plugins it updates through `hermes -p <profile> plugins update <name>`.
 # Recent hermes refuses the update while that profile's gateway runs; refused
-# pairs are retried once after the gateway stops, and the gateway always
-# comes back up.
+# pairs are retried once after every profile's gateway stops, and the gateways
+# that were running always come back up.
 # Consent gates are never answered: hermes gets an empty stdin and those
 # plugins come back as needs_approval. Installs recorded with a file://
 # source re-clone it, so the alans-way-agents clone is first advanced to its
@@ -26,6 +26,7 @@ $script:StartTime = Get-Date
 $script:HermesBin = ''
 $script:Changed = $false
 $script:Refused = @()
+$script:GatewayNamed = @()
 
 function Write-Result([bool]$Ok, [string]$Err) {
     @{ ok = $Ok; version = $script:Version; restarted = $script:Restarted; error = $Err;
@@ -102,6 +103,50 @@ function Get-Profiles([string]$Hhome) {
         }
     }
     return ,$list
+}
+
+# Snapshot live standalone named gateways, then stop every profile. Modern
+# Hermes has one atomic --all operation; older versions need one call each.
+function Stop-EveryGateway([string]$Hhome) {
+    $script:GatewayNamed = @()
+    $profiles = @(Get-Profiles $Hhome)
+    foreach ($prof in $profiles) {
+        if ($prof.name -eq 'default') { continue }
+        $gatewayPid = 0
+        $pidPath = Join-Path $prof.home 'gateway.pid'
+        if (Test-Path $pidPath) {
+            $text = ([string](Get-Content $pidPath -Raw -ErrorAction SilentlyContinue)).Trim()
+            if ($text -match '^\d+$') { $gatewayPid = [int]$text }
+            else { try { $gatewayPid = [int]($text | ConvertFrom-Json -ErrorAction Stop).pid } catch {} }
+        }
+        if ($gatewayPid -gt 0 -and (Get-Process -Id $gatewayPid -ErrorAction SilentlyContinue)) {
+            $script:GatewayNamed += $prof.name
+        }
+    }
+    $help = Invoke-Hermes 30 @('gateway', 'stop', '--help')
+    if ($help.out -match '--all') {
+        return ((Invoke-Hermes 30 @('gateway', 'stop', '--all')).code -eq 0)
+    }
+    $stopped = $false
+    foreach ($prof in $profiles) {
+        if ($prof.name -eq 'default') { $stopArgs = @('gateway', 'stop') }
+        else { $stopArgs = @('-p', $prof.name, 'gateway', 'stop') }
+        if ((Invoke-Hermes 30 $stopArgs).code -eq 0) { $stopped = $true }
+    }
+    return $stopped
+}
+
+function Start-StoppedGateways {
+    $failed = @()
+    if ((Invoke-Hermes (EnvInt 'ALANS_WAY_VM_GATEWAY_TIMEOUT' 180) @('gateway', 'start')).code -ne 0) {
+        $failed += 'hermes gateway start'
+    }
+    foreach ($name in $script:GatewayNamed) {
+        if ((Invoke-Hermes (EnvInt 'ALANS_WAY_VM_GATEWAY_TIMEOUT' 180) @('-p', $name, 'gateway', 'start')).code -ne 0) {
+            $failed += "hermes -p $name gateway start"
+        }
+    }
+    return @{ ok = $failed.Count -eq 0; failed = @($failed) }
 }
 
 function Get-PluginVersion([string]$Dir) {
@@ -246,13 +291,12 @@ function Update-HermesPlugins {
             Invoke-PluginUpdate $prof $name $before $repoRef $true
         }
     }
-    # A refusal only clears while the gateway is down. Stop it once, retry
-    # just the refused pairs, and always start it again.
+    # A refusal only clears while the gateway is down. Stop every profile's
+    # gateway, retry just the refused pairs, and restart the ones that ran.
     if ($script:Refused.Count -gt 0) {
         if ((BudgetLeft) -gt 25) {
             Write-Output 'vm-update: stopping the agent gateway so the refused plugin updates can run'
-            $r = Invoke-Hermes 30 @('gateway', 'stop')
-            if ($r.code -eq 0) { $gwStopped = $true }
+            if (Stop-EveryGateway $hhome) { $gwStopped = $true }
         } else {
             Write-Output 'vm-update: no time left to stop the gateway; the refused updates stay for the next run'
         }
@@ -268,10 +312,18 @@ function Update-HermesPlugins {
                     $script:Plugins += New-PluginEntry $f.prof.name $f.name $f.before $after 'blocked' $f.err $f.repoRef
                 }
             }
-            # The gateway always comes back up, whatever the retries found.
-            $r = Invoke-Hermes (EnvInt 'ALANS_WAY_VM_GATEWAY_TIMEOUT' 180) @('gateway', 'start')
-            if ($r.code -eq 0) { $script:GatewayRestarted = $true; Write-Output 'vm-update: agent gateway restarted' }
-            else { Write-Output 'vm-update: could not start the gateway; on the VM run: hermes gateway start' }
+            # Every gateway that was running comes back up, whatever the retries found.
+            $started = Start-StoppedGateways
+            if ($started.ok) {
+                $script:GatewayRestarted = $true
+                Write-Output 'vm-update: agent gateway restarted'
+            } else {
+                Write-Output "vm-update: could not start the gateway; on the VM run: $($started.failed -join '; ')"
+                # A default-profile restart cannot recover a failed standalone
+                # named-profile start; when only those failed, leave its exact
+                # remediation and result intact.
+                if ($started.failed -notcontains 'hermes gateway start') { return }
+            }
         } else {
             # The gateway stayed up; every refused pair reports blocked with
             # the full refusal text so the dialog can quote it.
