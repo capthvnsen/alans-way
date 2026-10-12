@@ -159,7 +159,7 @@ function readPreferences() {
 const prefsSaver = createSaver({
   snapshot() {
     if (!prefs) return null;
-    if (win && !win.isDestroyed()) prefs.savedTabs = [...tabs.values()].filter(tab => !tab.extensionPage && tab.view?.webContents && !tab.view.webContents.isDestroyed()).map((tab) => ({ url: tab.view.webContents.getURL(), botId: tab.botId }));
+    if (win && !win.isDestroyed()) prefs.savedTabs = [...tabs.values()].filter(tab => !tab.extensionPage && tab.view?.webContents && !tab.view.webContents.isDestroyed()).map((tab) => ({ url: tab.view.webContents.getURL() || tab.requestedUrl, botId: tab.botId })).filter((item) => item.url);
     return prefs;
   },
   write(text) {
@@ -515,7 +515,7 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
     webPreferences: { ...options?.webPreferences, preload: undefined, partition: 'persist:browser', contextIsolation: true, nodeIntegration: false, sandbox: true,
       webSecurity: true, plugins: true, backgroundThrottling: false } });
   view.setBackgroundColor('#0b0b0c');
-  const tab = { id: crypto.randomUUID(), view, botId: String(botId).slice(0, 100), controller, extensionPage, epoch: 1, title: 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
+  const tab = { id: crypto.randomUUID(), view, requestedUrl: targetUrl, botId: String(botId).slice(0, 100), controller, extensionPage, epoch: 1, title: 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
   if (controller === 'agent') tab.agentSince = Date.now();
   tabs.set(tab.id, tab);
   tab.host = backgroundHost();
@@ -2312,7 +2312,7 @@ function createWindow() {
   win.loadFile(path.join(ROOT, 'index.html'));
   remoteView.webContents.loadFile(path.join(ROOT, 'remote.html'));
   telegramView.webContents.loadURL(prefs.selectedBotId ? `${TELEGRAM}#${prefs.selectedBotId}` : TELEGRAM).catch(() => {});
-  for (const item of prefs.savedTabs.slice(0, 12)) {
+  for (const item of prefs.savedTabs.filter((item) => item.url && item.url !== 'about:blank').slice(0, 12)) {
     try {
       if (/^file:\/\//i.test(String(item.url))) createTab({ filePath: fileURLToPath(item.url), botId: item.botId, activate: false });
       else createTab({ url: item.url, botId: item.botId, activate: false });

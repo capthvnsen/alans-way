@@ -114,17 +114,23 @@ host (Linux, a macOS guest, or Git Bash on a Windows guest) as the account that
 owns the browser data, from this repository's checkout there:
 
 ```sh
-sh scripts/reboot-smoke.sh            # crash each service, verify it recovers
-sh scripts/reboot-smoke.sh --check    # health only
+sh scripts/reboot-smoke.sh                # verify health only (same as --check; run after a real reboot)
+sh scripts/reboot-smoke.sh --crash        # crash each service, verify it recovers (asks first)
+sh scripts/reboot-smoke.sh --crash --yes  # the same without asking, for scripts
 ```
 
-The default mode SIGKILLs, one at a time, every Chromium process on the managed
-profile, the broker, the keeper and mac-watch (skipped when not installed), then
-waits for each to come back under a new process and for the broker's
-`/v1/status` to report `browserUp: true`. It also fails if the profile is
-missing or sits under `/tmp`, `/var/tmp` or `/private/tmp`, which a reboot can clear. Open VPS tabs close; logins
-stay. Set `HERMES_VPS_BROWSER_DATA` if the data directory is not the default,
-and `SMOKE_TIMEOUT` (seconds, default 90) to change how long each step may take.
+The default mode only checks health. `--crash` SIGKILLs, one at a time, every
+Chromium process on the managed profile, the broker, the keeper and mac-watch
+(skipped when not installed), after asking on the terminal. `--yes` skips the
+question; without a terminal and without `--yes`, it refuses. It only matches
+node and Chrome-family (Chrome, Chromium or Edge) processes, so an editor or
+`tail` naming a service file is left alone. It waits for each service to come
+back under a new process and for the broker's `/v1/status` to report
+`browserUp: true`. It also fails if the profile is missing or sits under
+`/tmp`, `/var/tmp` or `/private/tmp`, which a reboot can clear. Open VPS tabs
+close; logins stay. Set `HERMES_VPS_BROWSER_DATA` if the data directory is not
+the default, and `SMOKE_TIMEOUT` (seconds, default 90) to change how long each
+step may take.
 
 For the real thing, reboot the host (`sudo reboot`, or restart the Windows PC),
 wait for it to come back without signing in to anything, then run
