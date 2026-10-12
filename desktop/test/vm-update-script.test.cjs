@@ -404,6 +404,22 @@ test('the Windows twin pins full tag refs and retries the fetch like the POSIX s
   assert.doesNotMatch(ps1, /--yes|--force/, 'no consent bypass flags');
 });
 
+// The Windows twin cannot run under the harness (no PowerShell on CI), so
+// these assert the live-gateway flow the POSIX script's tests execute: a
+// blocked classification, one gateway stop, refused-only retries, and a
+// start that always runs.
+test('the Windows twin ports the live-gateway refusal flow', () => {
+  const ps1 = fs.readFileSync(WINDOWS_SCRIPT, 'utf8');
+  assert.match(ps1, /Cannot update plugin files while the messaging gateway is running/,
+    'classifies the live-gateway refusal instead of treating it as a failure');
+  assert.match(ps1, /'blocked'/, 'the refusal reports its own blocked status');
+  assert.match(ps1, /'gateway', 'stop'/, 'stops the gateway once before retrying');
+  assert.match(ps1, /'gateway', 'start'/, 'always starts the gateway again');
+  assert.doesNotMatch(ps1, /--allow-live-gateway/, 'the dangerous bypass flag is never passed');
+  assert.doesNotMatch(ps1, /Select-Object -Last 2/,
+    'keeps the whole refusal text, not the old last-two-lines cut');
+});
+
 // --- Hermes plugin phase --------------------------------------------------
 // A fake `hermes` on PATH. Control files under the state dir decide outcomes:
 //   $STATE/mode.<profile>.<name>  update|current|consent|fail|caps

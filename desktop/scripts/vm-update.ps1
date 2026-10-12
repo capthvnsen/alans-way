@@ -5,6 +5,9 @@
 # It only ever touches the checkout setup.sh created, that checkout's
 # node_modules, the setup.sh Scheduled Task AlansWay_Browser, and the Hermes
 # plugins it updates through `hermes -p <profile> plugins update <name>`.
+# Recent hermes refuses the update while that profile's gateway runs; refused
+# pairs are retried once after the gateway stops, and the gateway always
+# comes back up.
 # Consent gates are never answered: hermes gets an empty stdin and those
 # plugins come back as needs_approval. Installs recorded with a file://
 # source re-clone it, so the alans-way-agents clone is first advanced to its
@@ -21,6 +24,8 @@ $script:Plugins = @()
 $script:GatewayRestarted = $false
 $script:StartTime = Get-Date
 $script:HermesBin = ''
+$script:Changed = $false
+$script:Refused = @()
 
 function Write-Result([bool]$Ok, [string]$Err) {
     @{ ok = $Ok; version = $script:Version; restarted = $script:Restarted; error = $Err;
@@ -156,6 +161,46 @@ function New-PluginEntry($profile, $name, $before, $after, $status, $err, $repoR
     return $e
 }
 
+# One bounded `plugins update` try for $Prof/$Name. Classifies the answer,
+# counts real movement toward $script:Changed, prints the say line and appends
+# the plugin entry - except with $Collect a live-gateway refusal is recorded
+# into $script:Refused instead, for the gateway-stop retry to replay. The
+# refusal is its own "blocked" status, not "failed", and the whole message is
+# kept: the last-two-lines cut dropped the "Cannot update" sentence and the
+# dialog showed it starting mid-sentence.
+function Invoke-PluginUpdate($Prof, $Name, $Before, $RepoRef, [bool]$Collect) {
+    $pdir = Join-Path $Prof.home 'plugins'
+    if ($Prof.name -eq 'default') { $updArgs = @('plugins', 'update', $Name) }
+    else { $updArgs = @('-p', $Prof.name, 'plugins', 'update', $Name) }
+    $r = Invoke-Hermes (EnvInt 'ALANS_WAY_VM_PLUGIN_TIMEOUT' 90) $updArgs
+    $after = Get-PluginVersion (Join-Path $pdir $Name)
+    if (-not $after) { $after = [string](Get-PluginMeta $pdir $Name).revision }
+    $st = ''; $err = ''
+    $full = ($r.out -replace '\r?\n', ' ').Trim()
+    if ($r.code -eq 124) { $st = 'failed'; $err = 'the hermes update timed out' }
+    elseif ($r.out.Contains('Cannot update plugin files while the messaging gateway is running')) {
+        $st = 'blocked'; $err = $full
+    }
+    elseif ($r.out -match '(?i)not applied|declined|confirm to continue|fail.?closed|not granted|new capabilities') { $st = 'needs_approval' }
+    elseif ($r.code -ne 0) { $st = 'failed'; $err = $full }
+    elseif ($r.out -match '(?i)already (up to date|at catalog pin)') { $st = 'current' }
+    else { $st = 'updated' }
+    if ($st -eq 'updated') { $script:Changed = $true }
+    elseif ($st -eq 'needs_approval' -and $r.out -match 'updated|Re-installed') {
+        # The code moved but new capabilities stay ungranted until reviewed.
+        $script:Changed = $true
+    }
+    elseif ($st -eq 'blocked' -and $Collect) {
+        # Refused while the gateway runs: collect the pair, report it after
+        # the stop-retry below (or as blocked when that never happens).
+        $script:Refused += @{ prof = $Prof; name = $Name; before = $Before; repoRef = $RepoRef; err = $err }
+        Write-Output "vm-update: plugin $Name ($($Prof.name)): blocked while the gateway runs"
+        return
+    }
+    Write-Output "vm-update: plugin $Name ($($Prof.name)): $st"
+    $script:Plugins += New-PluginEntry $Prof.name $Name $Before $after $st $err $RepoRef
+}
+
 function Update-HermesPlugins {
     $script:HermesBin = Find-Hermes
     if (-not $script:HermesBin) { Write-Output 'vm-update: no hermes CLI on this VM; skipping plugin updates'; return }
@@ -163,7 +208,9 @@ function Update-HermesPlugins {
     if (-not $hhome) { $hhome = "$env:LOCALAPPDATA\hermes" }
     Write-Output 'vm-update: updating Hermes plugins'
     $clones = @{}
-    $changed = $false
+    $script:Changed = $false
+    $script:Refused = @()
+    $gwStopped = $false
     $outOfTime = $false
     foreach ($prof in (Get-Profiles $hhome)) {
         if ($outOfTime) { break }
@@ -196,32 +243,47 @@ function Update-HermesPlugins {
                 Write-Output 'vm-update: plugin phase ran out of the time budget; remaining plugins will retry next update'
                 $outOfTime = $true; break
             }
-            if ($prof.name -eq 'default') { $updArgs = @('plugins', 'update', $name) }
-            else { $updArgs = @('-p', $prof.name, 'plugins', 'update', $name) }
-            $r = Invoke-Hermes (EnvInt 'ALANS_WAY_VM_PLUGIN_TIMEOUT' 90) $updArgs
-            $after = Get-PluginVersion $pp
-            if (-not $after) { $after = [string](Get-PluginMeta $pdir $name).revision }
-            $st = ''; $err = ''
-            if ($r.code -eq 124) { $st = 'failed'; $err = 'the hermes update timed out' }
-            elseif ($r.out -match '(?i)not applied|declined|confirm to continue|fail.?closed|not granted|new capabilities') { $st = 'needs_approval' }
-            elseif ($r.code -ne 0) {
-                $st = 'failed'
-                $err = (($r.out -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 2) -join ' ')
+            Invoke-PluginUpdate $prof $name $before $repoRef $true
+        }
+    }
+    # A refusal only clears while the gateway is down. Stop it once, retry
+    # just the refused pairs, and always start it again.
+    if ($script:Refused.Count -gt 0) {
+        if ((BudgetLeft) -gt 25) {
+            Write-Output 'vm-update: stopping the agent gateway so the refused plugin updates can run'
+            $r = Invoke-Hermes 30 @('gateway', 'stop')
+            if ($r.code -eq 0) { $gwStopped = $true }
+        } else {
+            Write-Output 'vm-update: no time left to stop the gateway; the refused updates stay for the next run'
+        }
+        if ($gwStopped) {
+            foreach ($f in $script:Refused) {
+                if ((BudgetLeft) -gt 15) {
+                    Invoke-PluginUpdate $f.prof $f.name $f.before $f.repoRef $false
+                } else {
+                    $fpdir = Join-Path $f.prof.home 'plugins'
+                    $after = Get-PluginVersion (Join-Path $fpdir $f.name)
+                    if (-not $after) { $after = [string](Get-PluginMeta $fpdir $f.name).revision }
+                    Write-Output "vm-update: plugin $($f.name) ($($f.prof.name)): blocked"
+                    $script:Plugins += New-PluginEntry $f.prof.name $f.name $f.before $after 'blocked' $f.err $f.repoRef
+                }
             }
-            elseif ($r.out -match '(?i)already (up to date|at catalog pin)') { $st = 'current' }
-            else { $st = 'updated' }
-            if ($st -eq 'updated') { $changed = $true }
-            elseif ($st -eq 'needs_approval' -and $r.out -match 'updated|Re-installed') {
-                # The code moved but new capabilities stay ungranted until reviewed.
-                $changed = $true
+            # The gateway always comes back up, whatever the retries found.
+            $r = Invoke-Hermes (EnvInt 'ALANS_WAY_VM_GATEWAY_TIMEOUT' 180) @('gateway', 'start')
+            if ($r.code -eq 0) { $script:GatewayRestarted = $true; Write-Output 'vm-update: agent gateway restarted' }
+            else { Write-Output 'vm-update: could not start the gateway; on the VM run: hermes gateway start' }
+        } else {
+            # The gateway stayed up; every refused pair reports blocked with
+            # the full refusal text so the dialog can quote it.
+            foreach ($f in $script:Refused) {
+                $script:Plugins += New-PluginEntry $f.prof.name $f.name $f.before $f.before 'blocked' $f.err $f.repoRef
             }
-            Write-Output "vm-update: plugin $name ($($prof.name)): $st"
-            $script:Plugins += New-PluginEntry $prof.name $name $before $after $st $err $repoRef
         }
     }
     # The gateway loads plugin code at start, so one drain-restart when
-    # anything actually changed.
-    if ($changed) {
+    # anything actually changed. Skipped when the bounce above already
+    # restarted it; run even when nothing changed if that bounce left it down.
+    if (-not $script:GatewayRestarted -and ($script:Changed -or $gwStopped)) {
         Write-Output 'vm-update: restarting the agent gateway'
         $r = Invoke-Hermes (EnvInt 'ALANS_WAY_VM_GATEWAY_TIMEOUT' 180) @('gateway', 'restart')
         if ($r.code -eq 0) { $script:GatewayRestarted = $true; Write-Output 'vm-update: agent gateway restarted' }
