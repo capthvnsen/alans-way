@@ -17,6 +17,11 @@ test('secret fields are always redacted, whatever the page sends', () => {
     assert.equal(finishSteps([step], { keepTyped: true })[0].value, REDACTED, 'keep typed text never keeps a secret');
   }
   assert.equal(normalizeEvent({ kind: 'change', url, type: '', autocomplete: 'cc-exp-year', value: '2031' }).value, REDACTED);
+  for (const extra of [{ name: 'Card PIN' }, { name: 'CVV' }, { name: 'Security code' }, { name: 'SSN' }, { field: 'otpCode' }, { field: 'cvc2 cardCvc' },
+    { selector: 'input[name="reset_token"]' }, { name: 'Verification code' }]) {
+    assert.equal(finishSteps([input({ ...extra, value: 'hunter2' })], { keepTyped: true })[0].value, REDACTED, `secret-named field ${JSON.stringify(extra)}`);
+  }
+  for (const name of ['Shipping notes', 'Spinner', 'Pinterest handle', 'Tokenomics essay']) assert.equal(input({ name }).value, 'typed', `${name} is not a secret`);
   assert.equal(input({ autocomplete: 'email' }).value, 'typed');
   assert.equal(input({ autocomplete: 'occ-note' }).value, 'typed', 'only whole cc-* tokens count');
 });
@@ -36,11 +41,23 @@ test('events become steps with the documented shape and nothing else', () => {
   assert.equal(normalizeEvent({ kind: 'click', url: 'file:///etc/passwd' }), null);
   assert.equal(normalizeEvent(null), null);
   assert.equal(normalizeEvent({ kind: 'click', url: 'https://me:secret@bank.example/a' }).url, 'https://bank.example/a', 'credentials in a URL are dropped');
-  assert.equal(navigateStep('https://a.example/login?user=ada&password=hunter2&next=%2Fhome').url, 'https://a.example/login?user=ada&password=%5Bredacted%5D&next=%2Fhome');
-  assert.equal(navigateStep('https://a.example/cb?code=abc&state=1#access_token=xyz').url, 'https://a.example/cb?code=%5Bredacted%5D&state=1');
-  assert.equal(navigateStep('https://a.example/search?q=shoes#reviews').url, 'https://a.example/search?q=shoes#reviews');
+  assert.equal(navigateStep('https://a.example/login?user=ada&password=hunter2').url, 'https://a.example/login', 'query strings never reach a step');
+  assert.equal(navigateStep('https://a.example/cb#access_token=xyz').url, 'https://a.example/cb');
+  assert.equal(navigateStep('https://a.example/reset/9f8a7c6b5d4e3f2a1b0c9d8e/confirm').url, 'https://a.example/reset/[redacted]/confirm');
+  assert.equal(navigateStep('https://a.example/invite/550e8400-e29b-41d4-a716-446655440000').url, 'https://a.example/invite/[redacted]');
+  assert.equal(navigateStep('https://a.example/magic/eyJhbGciOiJIUzI1NiJ9abc123XYZ').url, 'https://a.example/magic/[redacted]');
+  assert.equal(navigateStep('https://a.example/blog/how-to-file-taxes-2026/comments').url, 'https://a.example/blog/how-to-file-taxes-2026/comments', 'a slug is not a token');
+  assert.equal(navigateStep('https://a.example/orders/2026/10').url, 'https://a.example/orders/2026/10');
   assert.deepEqual(navigateStep('https://shop.example/'), { url: 'https://shop.example/', action: 'navigate', role: '', name: '', selector: '' });
   assert.equal(navigateStep('about:blank'), null);
+});
+
+test('a field is never named by what was typed into it', () => {
+  assert.equal(input({ name: 'Dear Ada, the contract is attached', value: 'Dear Ada, the contract is attached' }).name, '');
+  assert.equal(input({ name: 'x'.repeat(200), value: 'x'.repeat(300) }).name, '', 'a name cut from long contents');
+  assert.equal(input({ name: 'Bio', value: 'Bio text here' }).name, 'Bio', 'a label that the text happens to start with stays');
+  assert.equal(input({ name: 'Email', value: 'ada@example.com' }).name, 'Email');
+  assert.equal(normalizeEvent({ kind: 'click', url, role: 'button', name: 'Save', selector: '#s' }).name, 'Save');
 });
 
 test('steps merge keystrokes, redirects and the submit a click caused', () => {

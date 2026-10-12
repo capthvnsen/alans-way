@@ -13,7 +13,7 @@ fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboar
 process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
 require('../src/main.cjs');
 // Typed only, never served: if either string is anywhere in the profile, a secret reached disk.
-const PASSWORD = 'Tr0ub4dor-recorder-test-pw', CARD = '4111222233334444';
+const PASSWORD = 'Tr0ub4dor-recorder-test-pw', CARD = '4111222233334444', NOTE = 'Private note 8317 for Ada', BIO = 'Bio text 5521 never kept';
 const waitFor = async (read, predicate, timeout = 12000) => {
   const deadline = Date.now() + timeout;
   let value;
@@ -45,7 +45,7 @@ app.whenReady().then(async () => {
   server = http.createServer((req, res) => res.end(req.url === '/account'
     ? '<title>Account</title><button id="save">Save plan</button>'
     : `<title>Sign in</title><form><label>Email <input id="email" autocomplete="email"></label><label>Password <input id="pw" type="password"></label>
-       <label>Card <input id="card" autocomplete="cc-number"></label><input id="pin" type="password"><input type="hidden" id="token" value="x"></form><a id="next" href="/account">Continue</a>`));
+       <label>Card <input id="card" autocomplete="cc-number"></label><input id="pin" type="password"><div id="note" contenteditable="true" style="min-height:20px"></div><label>Bio <textarea id="bio"></textarea></label><input type="hidden" id="token" value="x"></form><a id="next" href="/account">Continue</a>`));
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const tab = await invoke('create-tab', { url: `${base}/login` });
@@ -59,7 +59,14 @@ app.whenReady().then(async () => {
     pageWc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
     await pause(150);
   };
-  const type = async (selector, text) => { await click(selector); await pageWc.insertText(text); await pause(150); };
+  // A click right after the Settings sheet closes can land before the tab view
+  // is back on screen, so retry until the field really has focus.
+  const type = async (selector, text, contents = pageWc) => {
+    const focused = () => contents.executeJavaScript(`document.activeElement === document.querySelector(${JSON.stringify(selector)})`);
+    for (let attempt = 0; attempt < 20 && !await focused(); attempt++) await (contents === pageWc ? click(selector) : contents.executeJavaScript(`document.querySelector(${JSON.stringify(selector)}).focus()`));
+    assert.ok(await focused(), `${selector} never took focus`);
+    await contents.insertText(text); await pause(150);
+  };
 
   // Recording needs a tab the human controls.
   await invoke('control', { id: tab.id, controller: 'agent' });
@@ -77,13 +84,15 @@ app.whenReady().then(async () => {
   await type('#pw', PASSWORD);
   await type('#card', CARD);
   await type('#pin', PASSWORD);
+  await type('#note', NOTE);
+  await type('#bio', BIO);
   await pageWc.executeJavaScript('document.getElementById("email").dispatchEvent(new Event("input", { bubbles: true }))');
   await click('#next');
   await loaded('/account');
   await pause(300);
   await click('#save');
-  await waitFor(getState, state => state.recording?.steps === 8);
-  await waitFor(() => evaluate('document.getElementById("recording-text").textContent'), text => text.includes('8 steps'));
+  await waitFor(getState, state => state.recording?.steps === 10);
+  await waitFor(() => evaluate('document.getElementById("recording-text").textContent'), text => text.includes('10 steps'));
   await evaluate('document.getElementById("recording-stop").click()');
   await waitFor(getState, state => !state.recording && state.recordings.length === 1);
   await waitFor(() => evaluate('document.getElementById("toast").textContent'), text => text.includes('shared with Scout'));
@@ -101,6 +110,8 @@ app.whenReady().then(async () => {
     { url: `${base}/login`, action: 'type', role: 'input', name: 'Password', selector: '#pw', value: '[redacted]' },
     { url: `${base}/login`, action: 'type', role: 'input', name: 'Card', selector: '#card', value: '[redacted]' },
     { url: `${base}/login`, action: 'type', role: 'input', name: '', selector: '#pin', value: '[redacted]' },
+    { url: `${base}/login`, action: 'type', role: 'div', name: '', selector: '#note', value: '[redacted]' },
+    { url: `${base}/login`, action: 'type', role: 'textarea', name: 'Bio', selector: '#bio', value: '[redacted]' },
     { url: `${base}/login`, action: 'click', role: 'a', name: 'Continue', selector: '#next' },
     { url: `${base}/account`, action: 'navigate', role: '', name: '', selector: '' },
     { url: `${base}/account`, action: 'click', role: 'button', name: 'Save plan', selector: '#save' },
@@ -138,7 +149,7 @@ app.whenReady().then(async () => {
   const freshWc = await waitFor(() => webContents.getAllWebContents().find(item => item.getURL().endsWith('?fresh')), Boolean);
   await waitFor(() => freshWc.executeJavaScript('document.readyState === "complete"').catch(() => false), Boolean);
   await invoke('record-start', { id: fresh.id });
-  await freshWc.executeJavaScript('document.getElementById("email").focus()'); await freshWc.insertText('x');
+  await type('#email', 'x', freshWc);
   await waitFor(getState, state => state.recording?.steps === 2);
   const claim = await api(`/v1/tabs/${fresh.id}/control`, '4242', 'POST', { controller: 'agent' });
   assert.equal(claim.status, 200, JSON.stringify(claim.data));
@@ -150,6 +161,7 @@ app.whenReady().then(async () => {
   await pause(500);
   for (const file of filesUnder(profile)) {
     const bytes = fs.readFileSync(file);
+    for (const text of [NOTE, BIO]) assert.ok(!bytes.includes(text) && !bytes.includes(Buffer.from(text, 'utf16le')), `typed text that was not kept is in ${file}`);
     assert.ok(!bytes.includes(PASSWORD) && !bytes.includes(Buffer.from(PASSWORD, 'utf16le')), `the password is in ${file}`);
     assert.ok(!bytes.includes(CARD) && !bytes.includes(Buffer.from(CARD, 'utf16le')), `the card number is in ${file}`);
   }

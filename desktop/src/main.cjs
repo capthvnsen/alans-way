@@ -688,16 +688,19 @@ async function activateTab(tabId) {
 }
 // One recording at a time, on a tab the human controls. The page script runs
 // in its own isolated world on each document (dom-ready); Page stays disabled
-// so the human keeps native dialogs. Steps live in memory until Stop.
-let recording = null;
+// so the human keeps native dialogs. The recording shows (and the Record
+// command returns) only once the script is in the page, so nothing typed
+// right after pressing Record is lost. Steps live in memory until Stop.
+let recording = null, recordingStarting = false;
 async function startRecording(id) {
   const tab = tabs.get(id);
+  const recordable = () => tabs.get(id) === tab && tab.controller === 'human' && !tab.extensionPage;
   if (!tab) throw new Error('Open a page to record first.');
-  if (recording) throw new Error('A recording is already running. Stop it first.');
-  if (tab.controller !== 'human' || tab.extensionPage) throw new Error('Take over this tab before recording it.');
+  if (recording || recordingStarting) throw new Error('A recording is already running. Stop it first.');
+  if (!recordable()) throw new Error('Take over this tab before recording it.');
   if (recordings.full()) throw new Error(`You have ${recorder.MAX_RECORDINGS} recordings. Delete one in Settings to record another.`);
   const wc = tab.view.webContents;
-  const rec = recording = { tabId: id, title: tab.title, steps: [], startedAt: Date.now() };
+  const rec = { tabId: id, title: tab.title, steps: [], startedAt: Date.now() };
   const add = (step) => { if (recording === rec) { recorder.addStep(rec.steps, step); broadcast(); } };
   rec.onMessage = (_event, method, params) => {
     if (method !== 'Runtime.bindingCalled' || params.name !== recorder.BINDING) return;
@@ -711,35 +714,45 @@ async function startRecording(id) {
     const { executionContextId } = await browserCommand(tab, 'Page.createIsolatedWorld', { frameId: frameTree.frame.id, worldName: recorder.WORLD });
     await browserCommand(tab, 'Runtime.evaluate', { expression: recorder.PAGE_SCRIPT, contextId: executionContextId });
   };
-  rec.onReady = () => { if (recording === rec) rec.inject().catch(() => {}); };
-  add(recorder.navigateStep(wc.getURL()));
+  rec.onReady = () => rec.inject().catch(() => {});
   wc.debugger.on('message', rec.onMessage);
   wc.on('did-navigate', rec.onNavigate);
   wc.on('did-navigate-in-page', rec.onInPage);
   wc.on('dom-ready', rec.onReady);
+  recordingStarting = true;
   try {
     await browserCommand(tab, 'Runtime.enable');
     await browserCommand(tab, 'Runtime.addBinding', { name: recorder.BINDING, executionContextName: recorder.WORLD });
     await rec.inject();
-  } catch (error) { stopRecording({ save: false }); throw new Error(`Could not record this page: ${errorMessage(error)}`); }
+    // A bot may have claimed the tab, or it closed, while the script went in.
+    if (!recordable()) throw new Error('the tab changed hands.');
+  } catch (error) {
+    detachRecorder(rec);
+    throw new Error(`Could not record this page: ${errorMessage(error)}`);
+  } finally { recordingStarting = false; }
+  recording = rec;
+  add(recorder.navigateStep(wc.getURL()));
   broadcast();
+}
+function detachRecorder(rec) {
+  const tab = tabs.get(rec.tabId), wc = tab?.view.webContents;
+  if (!wc || wc.isDestroyed()) return;
+  wc.debugger.removeListener('message', rec.onMessage);
+  wc.removeListener('did-navigate', rec.onNavigate).removeListener('did-navigate-in-page', rec.onInPage).removeListener('dom-ready', rec.onReady);
+  if (wc.debugger.isAttached()) {
+    browserCommand(tab, 'Runtime.removeBinding', { name: recorder.BINDING }).catch(() => {});
+    browserCommand(tab, 'Runtime.disable').catch(() => {});
+  }
 }
 function stopRecording({ save = true, keepTyped = false } = {}) {
   const rec = recording;
   if (!rec) return null;
   recording = null;
-  const tab = tabs.get(rec.tabId), wc = tab?.view.webContents;
-  if (wc && !wc.isDestroyed()) {
-    wc.debugger.removeListener('message', rec.onMessage);
-    wc.removeListener('did-navigate', rec.onNavigate).removeListener('did-navigate-in-page', rec.onInPage).removeListener('dom-ready', rec.onReady);
-    if (wc.debugger.isAttached()) {
-      browserCommand(tab, 'Runtime.removeBinding', { name: recorder.BINDING }).catch(() => {});
-      browserCommand(tab, 'Runtime.disable').catch(() => {});
-    }
-  }
+  detachRecorder(rec);
   try {
     // A lone starting page teaches nothing.
     if (!save || !rec.steps.some(step => step.action !== 'navigate')) return null;
+    const tab = tabs.get(rec.tabId);
     const title = rec.title && rec.title !== 'New tab' ? rec.title : (tab?.title || new URL(rec.steps[0].url).hostname);
     return recordings.save({ title, steps: recorder.finishSteps(rec.steps, { keepTyped }), keepTyped, sharedWith: prefs.selectedBotId ? [prefs.selectedBotId] : [] });
   } finally { broadcast(); }
