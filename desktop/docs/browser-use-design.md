@@ -153,7 +153,7 @@ Two others are not fixed here:
 | Dialogs | Per-tab dialog handling (reported) | alert accepted, confirm and prompt dismissed; accept by eval override | Same default; `dialog: {accept, text}` on the action answers them |
 | New tabs | Tab list API (reported) | List tabs to find a pop-up | The reply's `opened[]` names it |
 | Modals, cookie banners | Seen in screenshots; no confirmation needed for cookie banners (reported) | Seen only when a click failed | Listed in every reply with the ref that closes them, preferring reject or no thanks |
-| Sign-in wall | Pauses, secure form hidden from the model, phishing check | Agent sees a password field and releases the tab | Unchanged (hand-back with a reason is in flight on another branch) |
+| Sign-in wall | Pauses, secure form hidden from the model, phishing check | Agent sees a password field and releases the tab | Unchanged here; `release` now takes a reason and the app shows "<Bot> needs you" (#126, merged alongside) |
 | Watching | Shared view in the app, live cloud tab | Agent cursor, tint, element highlight in the app's tabs; VM tabs viewable | Unchanged |
 | Take-over | Stop or take over any time; I'm done hands back | Take over / Give to agent, with a control epoch that voids every pending agent action | Unchanged |
 | Consequential actions | Asks first (purchases, deletes, sending data) | Plugin skill and the operator's approvals | Unchanged |
@@ -215,12 +215,14 @@ What we do that it does not document:
      the confirm or prompt it raises. The default is still dismiss, and the
      note says how to accept.
 
-The tool descriptions say all of this in about 1.2k more characters (about
-300 tokens per turn, before prompt caching).
+The tool descriptions say all of this in 1.2k more characters (10,963 to
+12,179 for the browser tools on main with #126; about 300 tokens per turn,
+before prompt caching).
 
 ## Before and after
 
-`node scripts/browser-bench.cjs --runs 3`, medians per task. Calls are model
+`node scripts/browser-bench.cjs --runs 3`, medians per task. Before is
+origin/main at 4c77e86; after is this branch rebased on main with #126. Calls are model
 round trips (each tool call). Tokens are reply characters / 4, plus
 width x height / 750 for a screenshot. Tool ms is time inside the tools; it
 leaves out the 300 ms think time between calls and varies run to run. Calls
@@ -228,14 +230,65 @@ and tokens are close to deterministic. The bench's loop uses `generation`,
 names and `overlays` only where the checkout under test offers them, so the
 same loop runs on both.
 
-BENCH_TABLES
+**VM host code (vps-browser-host.cjs, local headless Chrome)**
+
+| Task | Pass | Calls | Snapshots | Tool errors | Tokens |
+|---|---|---|---|---|---|
+| search-open | 3/3 → 3/3 | 4 → 3 | 1 → 0 | 0 → 0 | 2,324 → 2,001 |
+| form-multifield | 3/3 → 3/3 | 3 → 3 | 1 → 1 | 0 → 0 | 1,280 → 1,275 |
+| infinite-list | 3/3 → 3/3 | 8 → 7 | 1 → 1 | 0 → 0 | 4,926 → 4,012 |
+| cookie-modal | 3/3 → 3/3 | 7 → 3 | 1 → 1 | 2 → 0 | 1,970 → 977 |
+| spa-rerender | 3/3 → 3/3 | 8 → 2 | 3 → 0 | 0 → 0 | 4,659 → 813 |
+| popup-tab | 3/3 → 3/3 | 7 → 5 | 2 → 1 | 0 → 0 | 2,346 → 1,706 |
+| confirm-dialog | 3/3 → 3/3 | 5 → 3 | 1 → 0 | 0 → 0 | 1,241 → 916 |
+| login-wall | 3/3 → 3/3 | 4 → 3 | 1 → 0 | 0 → 0 | 1,307 → 818 |
+| iframes | 3/3 → 3/3 | 8 → 8 | 1 → 1 | 0 → 0 | 2,549 → 2,283 |
+| pub-wiki-search | 3/3 → 3/3 | 4 → 4 | 1 → 1 | 0 → 0 | 4,385 → 4,413 |
+| pub-books-next | 3/3 → 3/3 | 6 → 3 | 3 → 1 | 0 → 0 | 16,350 → 6,593 |
+| pub-selenium-form | 3/3 → 3/3 | 3 → 3 | 1 → 1 | 0 → 0 | 1,073 → 1,077 |
+| **Total** | **36/36 → 36/36** | **67 → 47 (-30%)** | **17 → 8** | **2 → 0** | **44,410 → 26,884 (-39%)** |
+
+Tool time, summed medians: 11,435 ms → 9,442 ms.
+
+**Host tabs (the app under Electron)**
+
+| Task | Pass | Calls | Snapshots | Tool errors | Tokens |
+|---|---|---|---|---|---|
+| search-open | 3/3 → 3/3 | 4 → 3 | 1 → 0 | 0 → 0 | 2,001 → 1,694 |
+| form-multifield | 3/3 → 3/3 | 3 → 3 | 1 → 1 | 0 → 0 | 1,117 → 1,108 |
+| infinite-list | 3/3 → 3/3 | 8 → 7 | 1 → 1 | 0 → 0 | 4,177 → 3,415 |
+| cookie-modal | 3/3 → 3/3 | 7 → 3 | 1 → 1 | 2 → 0 | 1,555 → 827 |
+| spa-rerender | 3/3 → 3/3 | 8 → 2 | 3 → 0 | 0 → 0 | 4,054 → 670 |
+| popup-tab | 3/3 → 3/3 | 7 → 5 | 2 → 1 | 0 → 0 | 2,023 → 1,406 |
+| confirm-dialog | 3/3 → 3/3 | 5 → 3 | 1 → 0 | 0 → 0 | 862 → 651 |
+| login-wall | 3/3 → 3/3 | 4 → 3 | 1 → 0 | 0 → 0 | 1,110 → 646 |
+| iframes | 3/3 → 3/3 | 8 → 8 | 1 → 1 | 0 → 0 | 2,355 → 2,087 |
+| pub-wiki-search | 3/3 → 3/3 | 4 → 4 | 1 → 1 | 0 → 0 | 4,022 → 4,219 |
+| pub-books-next | 3/3 → 3/3 | 6 → 3 | 3 → 1 | 0 → 0 | 16,112 → 6,470 |
+| pub-selenium-form | 3/3 → 3/3 | 3 → 3 | 1 → 1 | 0 → 0 | 899 → 898 |
+| **Total** | **36/36 → 36/36** | **67 → 47 (-30%)** | **17 → 8** | **2 → 0** | **40,287 → 24,091 (-40%)** |
+
+Tool time, summed medians: 13,788 ms → 7,732 ms.
 
 The held-out eval (`node eval/run.cjs --mode oracle`, 20 browser tasks, 3
 runs each) checks that nothing regressed. Its oracles are scripted with
 eval and selectors, so they do not exercise the new features, and none of
 its pages were used to tune these changes.
 
-EVAL_TABLES
+| Engine | Pass | Mean wall | Mean tool calls | Mean reply bytes |
+|---|---|---|---|---|
+| VM host code | 59/60 → 60/60 | 985 → 905 ms | 5.1 → 5.1 | 10,098 → 10,803 |
+| Host tabs (app under Electron) | 51/60 → 54/60 | 2,418 → 1,326 ms | 5.3 → 5.1 | 9,709 → 12,069 |
+
+The failures that remain, on host tabs only, are in the eval's own oracles,
+not in the tools: `pub-wiki-multihop` clicks link pixels it measured by
+script and lands on the old page, and `pub-quotes-infinite-scroll` scrolls by
+script with page timers that a background tab in a minimized window
+throttles (3/3 each, before and after). Before, `pub-shadow-switch`,
+`pub-iframe-datepicker` and `fx-infinite-scroll-select` also failed once
+each; after, they passed. Replies are larger in this eval because its oracles
+snapshot with `maxElements: 300`, and rows and overlays add to every
+snapshot.
 
 The VM itself (the live Orgo VM through the installed app, public tasks only,
 because fixtures on this Mac are not reachable from it) was run for the
@@ -277,9 +330,9 @@ New choices an agent can make:
    hosts. Frame-qualified refs, and coordinates offset by the frame owner's
    box. The iframes task still costs a screenshot, a script and pixel clicks
    (8 calls).
-2. **Sign-in hand-back.** Detect a login wall and say so in the reply. Pair
-   it with the hand-back reason another branch is adding to `release`.
-3. **Tool definition size.** The browser tools are 11.3k characters. Moving
+2. **Sign-in detection.** Say in the reply when a page is a login wall, and
+   point at `release` with reason `login` (#126).
+3. **Tool definition size.** The browser tools are 12.2k characters. Moving
    the rarely used parts (`cdp`, `viewport`, drag details) into one line
    each would pay for this change's additions.
 4. **Shorter element entries.** Same-origin `href`s as paths would cut about

@@ -138,7 +138,7 @@ const freePort = () => new Promise((r) => { const s = http.createServer(); s.lis
 async function startEngine(engine) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-bench-'));
   const children = [];
-  const stop = async () => { for (const c of children) c.kill(); await sleep(300); fs.rmSync(dir, { recursive: true, force: true }); };
+  const stop = async () => { for (const c of children) c.kill(); await sleep(300); try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* a temp dir left behind is harmless */ } };
   if (engine === 'vm') {
     const chrome = findChrome();
     if (!chrome) throw new Error('no Chrome found (set HERMES_TEST_CHROME)');
