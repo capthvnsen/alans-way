@@ -94,6 +94,29 @@ app.whenReady().then(async () => {
   assert.ok(gaze.active && gaze.idle && gaze.neutral, 'Idle avatars stop and return to neutral pupils.');
   console.log('PASS: fixture-driven live avatar gaze and immediate idle reset in the real renderer.');
 
+  // The update popup is a DOM overlay painted below every attached view:
+  // showing it must hide the Telegram view and take native focus off it, and
+  // closing it must restore the layout. State broadcasts are blocked while
+  // the fixture drives, so an async refresh cannot re-render mid-assert.
+  if (telegram && !telegram.isDestroyed()) {
+    const telegramView = win.contentView.children.find(child => child.webContents === telegram);
+    assert.ok(telegramView, 'the Telegram view is a child of the window content view');
+    const realSend = wc.send.bind(wc);
+    wc.send = (channel, ...args) => { if (channel !== 'workspace:state') realSend(channel, ...args); };
+    try {
+      telegram.focus();
+      const real = await evaluate('window.workspace.getState()');
+      realSend('workspace:state', { ...real, update: { ...real.update, available: '9.9.9', popup: true } });
+      await waitFor(() => evaluate('!document.getElementById("update-popup").classList.contains("hidden")'), Boolean);
+      await waitFor(() => telegramView.getVisible() === false, Boolean);
+      assert.notEqual(webContents.getFocusedWebContents()?.id, telegram.id, 'a hidden Telegram view cannot keep native focus while the update popup is up');
+      realSend('workspace:state', real);
+      await waitFor(() => evaluate('document.getElementById("update-popup").classList.contains("hidden")'), Boolean);
+      await waitFor(() => telegramView.getVisible() === true, Boolean);
+    } finally { wc.send = realSend; }
+    console.log('PASS: the update popup obscures Telegram, takes native focus, and restores the views on close.');
+  }
+
   const PNG_ICON = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
   server = http.createServer((req, res) => {
     if (req.url === '/icon.png') { res.setHeader('Content-Type', 'image/png'); return res.end(PNG_ICON); }

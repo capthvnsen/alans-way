@@ -335,7 +335,10 @@ function renderUpdate() {
 function renderUpdatePopup() {
   const u = state.update || {}, popup = $('update-popup');
   const show = Boolean(u.popup || u.busy || (updatePopupPinned && u.available));
+  // The popup is a DOM overlay painted below every attached view, so showing
+  // or hiding it must reschedule the layout pass that obscures those views.
   popup.classList.toggle('hidden', !show);
+  scheduleLayout();
   if (!show) { updatePopupPinned = false; updatePopupFocused = false; return; }
   $('update-popup-title').textContent = u.busy ? 'Updating' : 'Update available';
   $('update-popup-copy').textContent = u.busy ? 'Your VMs update first, then this app.' : `Alan’s Workspace v${u.available} is ready. You have v${state.version}.`;
@@ -567,7 +570,7 @@ function rect(id) {
 }
 function scheduleLayout() {
   cancelAnimationFrame(resizeFrame);
-  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: modalOpen }));
+  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: modalOpen || !$('update-popup').classList.contains('hidden') }));
 }
 // The mini VM window is anchored bottom-right until dragged; its saved offset
 // is relative to the workspace pane and clamped so it can never get lost.

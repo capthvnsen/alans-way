@@ -1072,7 +1072,18 @@ async function claimWithToken(token) {
 }
 function registerIpc() {
   ipcMain.handle('workspace:get', (event) => { trustSender(event); return getState(); });
-  ipcMain.on('workspace:layout', (event, value) => { try { trustSender(event); layout = value || {}; applyLayout(); } catch {} });
+  ipcMain.on('workspace:layout', (event, value) => {
+    try {
+      trustSender(event);
+      const next = value || {};
+      // A DOM overlay (settings, the update popup) shows while the attached
+      // views hide. Keys must move to the page too, or Escape and typing keep
+      // landing in a view nobody can see.
+      if (next.obscured && !layout.obscured) win.webContents.focus();
+      layout = next;
+      applyLayout();
+    } catch {}
+  });
   const runCommand = async (event, command, value = {}) => {
     trustSender(event);
     switch (command) {
