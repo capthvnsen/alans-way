@@ -125,6 +125,24 @@ test('every saved VM updates in parallel under one timeout cap, before the app u
   assert.match(result.vms.find((v) => v.id === 'b').error, /disk full/);
 });
 
+test('a single-VM result carries the target id and label the retry record keys on', async () => {
+  // noteVmResult in main.cjs records under result.id; a bare updateVm result
+  // without it lands under the literal key "undefined" and the retry banner
+  // keeps showing the old version after a successful retry.
+  const ok = await createVmUpdater({ run: fakeRun({ code: 0, out: okLine(), err: '' }).run, readScript })
+    .updateVm(vm({ label: 'Mac VM' }), 'v0.3.2');
+  assert.equal(ok.id, 'agent');
+  assert.equal(ok.label, 'Mac VM');
+  const failed = await createVmUpdater({ run: fakeRun({ code: 0, out: JSON.stringify({ ok: false, version: '0.3.1', error: 'disk full' }), err: '' }).run, readScript })
+    .updateVm(vm(), 'v0.3.2');
+  assert.equal(failed.id, 'agent');
+  assert.equal(failed.label, 'VPS');
+  const thrown = await createVmUpdater({ run: () => Promise.reject(new Error('spawn failed')), readScript })
+    .updateVm(vm(), 'v0.3.2');
+  assert.equal(thrown.id, 'agent');
+  assert.equal(thrown.state, 'failed');
+});
+
 test('a VM that stays busy is skipped with a retry reason', async () => {
   const { run } = fakeRun({ code: 0, out: JSON.stringify({ ok: false, version: '0.3.1', restarted: false, error: 'busy' }), err: '' });
   const updater = createVmUpdater({ run, readScript });
