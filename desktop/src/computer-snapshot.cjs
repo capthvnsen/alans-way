@@ -2,8 +2,8 @@
 
 const MAX_TRACKED = 500;
 // An action reply lists only what changed when that is clearly smaller than
-// the whole tree; refs that all shift at once (Windows numbers them in tree
-// order) make a delta as big as the tree, so those replies stay whole.
+// the whole tree; refs that all shift at once (the Linux helper numbers them
+// in tree order) make a delta as big as the tree, so those replies stay whole.
 const DELTA_SHARE = 0.6;
 
 const canonical = (element) => JSON.stringify(Object.keys(element).sort().map((key) => [key, element[key]]));

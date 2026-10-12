@@ -45,8 +45,9 @@ test('the Windows driver speaks the shared desktop protocol', () => {
   ]) {
     assert.ok(cs.includes(message), `missing message ${message}`);
   }
-  assert.ok(cs.includes('"c" + (index + 1)'), 'refs use the c<N> scheme');
-  assert.ok(!/\$"/.test(cs) && !cs.includes('?.') && !cs.includes('nameof('), 'the in-box csc only speaks C# 5');
+  assert.ok(cs.includes('"c" + book.Next'), 'refs use the c<N> scheme');
+  assert.ok(!cs.includes('"c" + (i + 1)') && !cs.includes('"c" + (index + 1)'), 'refs are not positions in the tree');
+  assert.ok(!/\$"/.test(cs) && !cs.includes('?.') && !cs.includes('nameof(') && !cs.includes('=>'), 'the in-box csc only speaks C# 5');
 });
 
 test('the Windows driver keeps results when the post-step walk fails, sees UIA focus, and sends shift+letter', () => {
@@ -71,6 +72,68 @@ test('the Windows helper names a process from its image path first, then falls b
   const check = cs.slice(cs.indexOf('static void CheckApp(int pid)'), cs.indexOf('static double Clean('));
   assert.ok(check.indexOf('name.Length == 0') < check.indexOf('in_front'), 'an unknown name is still blocked');
   assert.ok(!/\bout var\b|=> *[{(a-z]/.test(name), 'the name lookup stays C# 5');
+});
+
+test('the Windows driver keeps refs on the RuntimeId and checks each ref against the tree the caller saw', () => {
+  const cs = fs.readFileSync(source, 'utf8');
+  const cache = cs.slice(cs.indexOf('static CacheRequest WalkCache()'), cs.indexOf('static string Role('));
+  assert.match(cache, /request\.Add\(AutomationElement\.RuntimeIdProperty\)/);
+  const ensure = cs.slice(cs.indexOf('static void EnsureRefs('), cs.indexOf('static Found RefOf('));
+  assert.match(ensure, /Refs\.Lookup\(book, generation\)/);
+  assert.match(ensure, /Refs\.StillSame\(then, now\)/);
+  assert.match(ensure, /"stale_ref: " \+ reference \+ " is gone or changed since your snapshot\. Take a fresh snapshot\."/);
+  const same = cs.slice(cs.indexOf('public static bool StillSame('), cs.indexOf('public static string Signature('));
+  assert.match(same, /then\.Key\.Length > 0/);
+  const signature = cs.slice(cs.indexOf('public static string Signature('), cs.indexOf('\n  }', cs.indexOf('public static string Signature(')));
+  assert.match(signature, /ordinal\.ToString\(CultureInfo\.InvariantCulture\)/);
+  const fingerprint = cs.slice(cs.indexOf('static int Fingerprint('), cs.indexOf('static Dictionary<string, object> ElementJson'));
+  assert.match(fingerprint, /Gen\.Line\(item\.Ref, item\.Role, item\.Name \+ "\|" \+ item\.Context/);
+  const refOf = cs.slice(cs.indexOf('static Found RefOf('), cs.indexOf('static Found HitAt('));
+  assert.ok(!refOf.includes('int.TryParse'), 'RefOf does not parse a positional index');
+  const put = cs.slice(cs.indexOf('static void CachePut('), cs.indexOf('static void CachePrune('));
+  assert.match(put, /refBooks\.Remove\(/);
+  const prune = cs.slice(cs.indexOf('static void CachePrune('), cs.indexOf('static Snap Cached('));
+  assert.match(prune, /refBooks\.Remove\(/);
+  const book = cs.slice(cs.indexOf('static Refs.Book RefBook('), cs.indexOf('static Snap DoWalk('));
+  assert.match(book, /created == 0 \|\|[^\n]*book\.Created != created/);
+  for (const check of [
+    'fresh refs', 'stable refs', 'empty key never binds by key', 'rebound ref refused',
+    'same control accepted', 'recycled row refused', 'shifted namesake refused',
+    'empty key refused', 'history capped', 'repeat generation skipped',
+    'evicted generation missing', 'runtime id key', 'toggle states',
+    'flipped toggle refused', 'mixed toggle refused',
+  ]) {
+    assert.ok(cs.includes(`"${check}"`), `missing selftest check ${check}`);
+  }
+});
+
+test('the Windows driver keeps toggle state in the name past the length cap', () => {
+  const cs = fs.readFileSync(source, 'utf8');
+  const read = cs.slice(cs.indexOf('static Found Read('), cs.indexOf('static Refs.Book RefBook('));
+  const cap = read.indexOf('name = Cap(name, NameCap);');
+  assert.ok(cap > 0, 'the label is capped on its own');
+  assert.ok(read.indexOf('Refs.ToggleSuffix(') > cap, 'toggle state is appended after the cap');
+  assert.ok(read.indexOf('" disabled"') > cap, 'disabled is appended after the cap');
+  assert.match(read, /item\.Name = name;/);
+  assert.ok(!/item\.Name = Cap\(name, NameCap\);\s*item\.Value/.test(read), 'the full name is not capped again');
+});
+
+// Runs the pure ref logic for real wherever a .NET SDK is installed (GitHub's Linux and Mac runners have one).
+test('the Windows ref book passes its checks under a C# 5 compiler off Windows', (t) => {
+  if (process.platform === 'win32') return t.skip('the full selftest runs with the in-box csc below');
+  const env = { ...process.env, DOTNET_NOLOGO: '1', DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1' };
+  const sdk = spawnSync('dotnet', ['--version'], { encoding: 'utf8', env });
+  if (sdk.status !== 0) return t.skip('no .NET SDK');
+  const cs = fs.readFileSync(source, 'utf8');
+  const usings = cs.split(/\r?\n/).filter((line) => /^using System(\.Collections\.Generic|\.Globalization|\.IO|\.Text)?;$/.test(line));
+  const pure = cs.slice(cs.indexOf('// <pure>'), cs.indexOf('// </pure>'));
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'win-refs-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'pure.cs'), `${usings.join('\n')}\n${pure}\nstatic class Harness { static void Main() { SelfTest.RefChecks(); Console.WriteLine("refs ok"); } }\n`);
+  fs.writeFileSync(path.join(dir, 'refs.csproj'), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net${sdk.stdout.trim().split('.')[0]}.0</TargetFramework><LangVersion>5</LangVersion><Nullable>disable</Nullable><ImplicitUsings>disable</ImplicitUsings></PropertyGroup></Project>`);
+  const run = spawnSync('dotnet', ['run', '--project', dir], { encoding: 'utf8', env, timeout: 120000 });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /refs ok/);
 });
 
 test('the Windows helper compiles and drives notepad', async (t) => {

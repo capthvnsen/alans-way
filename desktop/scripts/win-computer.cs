@@ -99,6 +99,10 @@ static class WinComputer {
     ControlType.Edit, ControlType.Document, ControlType.ComboBox,
   };
 
+  static readonly HashSet<ControlType> RowTypes = new HashSet<ControlType> {
+    ControlType.ListItem, ControlType.TreeItem, ControlType.DataItem,
+  };
+
   static bool Readable(ControlType type) {
     return Interactive.Contains(type) || type == ControlType.Text;
   }
@@ -122,9 +126,13 @@ static class WinComputer {
   class Found {
     public AutomationElement Element;
     public ControlType Type;
+    public string Ref = "";
+    public string Key = "";
     public string Role = "";
     public string Name = "";
     public string Value = "";
+    public string Context = "";
+    public int Ordinal;
     public double X, Y, Width, Height;
     public bool Password;
   }
@@ -134,17 +142,20 @@ static class WinComputer {
     public int Depth;
     public List<int> Kids;
     public Found Item;
+    public string Row;
   }
 
   class Snap {
     public int Generation;
     public List<Found> Items = new List<Found>();
+    public Dictionary<string, Found> ByRef = new Dictionary<string, Found>();
     public bool Truncated;
   }
 
   const int CacheMax = 16;
   const int GuardMs = 8000;
   static readonly Dictionary<int, Snap> cache = new Dictionary<int, Snap>();
+  static readonly Dictionary<int, Refs.Book> refBooks = new Dictionary<int, Refs.Book>();
   static readonly List<int> cacheOrder = new List<int>();
   static readonly Dictionary<int, Thread> hung = new Dictionary<int, Thread>();
   static CacheRequest walkCache;
@@ -303,6 +314,7 @@ static class WinComputer {
     var request = new CacheRequest();
     request.Add(AutomationElement.NameProperty);
     request.Add(AutomationElement.ControlTypeProperty);
+    request.Add(AutomationElement.RuntimeIdProperty);
     request.Add(AutomationElement.BoundingRectangleProperty);
     request.Add(AutomationElement.IsOffscreenProperty);
     request.Add(AutomationElement.IsEnabledProperty);
@@ -351,11 +363,13 @@ static class WinComputer {
       return null;
     }
     if (offscreen) { skip = true; return null; }
+    int[] id = null;
+    try { id = element.GetCachedPropertyValue(AutomationElement.RuntimeIdProperty) as int[]; } catch { }
     var item = new Found {
-      Element = element, Type = type, Role = Role(type), Password = password,
+      Element = element, Type = type, Key = Refs.Key(id), Role = Role(type), Password = password,
       X = Clean(bounds.X), Y = Clean(bounds.Y), Width = Math.Max(0, Clean(bounds.Width)), Height = Math.Max(0, Clean(bounds.Height)),
     };
-    if (!Readable(type)) return item;
+    if (!Readable(type)) { item.Name = Cap(name, NameCap); return item; }
     object pattern;
     string value = "";
     try {
@@ -369,14 +383,30 @@ static class WinComputer {
         name = name.Length == 0 ? rounded : name + " " + rounded;
       }
     } catch { }
+    // State goes after the cap: a ref's identity check compares names, so a long
+    // label must not cut off a toggle the user flipped since the caller looked.
+    name = Cap(name, NameCap);
     try {
       if (element.TryGetCachedPattern(TogglePattern.Pattern, out pattern))
-        name += ((TogglePattern)pattern).Cached.ToggleState == ToggleState.On ? " on" : " off";
+        name += Refs.ToggleSuffix((int)((TogglePattern)pattern).Cached.ToggleState);
     } catch { }
     if (!enabled) name += name.Length == 0 ? "disabled" : " disabled";
-    item.Name = Cap(name, NameCap);
+    item.Name = name;
     item.Value = Cap(value, ValueCap);
     return item;
+  }
+
+  static Refs.Book RefBook(int pid) {
+    long created;
+    ImagePath(pid, out created);
+    lock (cache) {
+      Refs.Book book;
+      if (created == 0 || !refBooks.TryGetValue(pid, out book) || book.Created != created) {
+        book = new Refs.Book { Created = created };
+        refBooks[pid] = book;
+      }
+      return book;
+    }
   }
 
   // Breadth-first from every window of the app, so one huge window cannot starve the rest;
@@ -414,6 +444,7 @@ static class WinComputer {
       Found item = Read(node.El, out skip, out failed);
       if (failed) truncated = true;
       if (skip) continue;
+      if (RowTypes.Contains(item.Type)) node.Row = item.Name;
       if (Readable(item.Type)) { node.Item = item; selected++; }
       if (node.Depth >= DepthCap) continue;
       AutomationElementCollection kids = null;
@@ -431,43 +462,69 @@ static class WinComputer {
       }
     }
     var snap = new Snap { Truncated = truncated };
-    foreach (int root in roots) Collect(nodes, root, snap.Items);
-    snap.Generation = Fingerprint(snap.Items);
+    foreach (int root in roots) Collect(nodes, root, snap.Items, "");
+    var keys = new List<string>();
+    var labels = new List<string>();
+    var namesakes = new Dictionary<string, int>();
+    foreach (Found item in snap.Items) {
+      string label = item.Role + "|" + item.Name;
+      int ordinal;
+      if (!namesakes.TryGetValue(label, out ordinal)) ordinal = 0;
+      namesakes[label] = ordinal + 1;
+      item.Ordinal = ordinal;
+      keys.Add(item.Key);
+      labels.Add(label + "|" + ordinal.ToString(CultureInfo.InvariantCulture));
+    }
+    Refs.Book book = RefBook(pid);
+    lock (book) {
+      List<string> refs = Refs.Assign(book, keys, labels);
+      var seen = new Dictionary<string, Refs.Seen>();
+      for (int i = 0; i < snap.Items.Count; i++) {
+        Found item = snap.Items[i];
+        item.Ref = refs[i];
+        snap.ByRef[item.Ref] = item;
+        seen[item.Ref] = new Refs.Seen {
+          Key = item.Key,
+          Signature = Refs.Signature(item.Role, item.Name, item.Context, item.Ordinal),
+        };
+      }
+      snap.Generation = Fingerprint(snap.Items);
+      Refs.Remember(book, snap.Generation, seen);
+    }
     return snap;
   }
 
-  static void Collect(List<Node> nodes, int index, List<Found> items) {
+  static void Collect(List<Node> nodes, int index, List<Found> items, string row) {
     var node = nodes[index];
-    if (node.Item != null) items.Add(node.Item);
+    if (node.Item != null) { node.Item.Context = row; items.Add(node.Item); }
     if (node.Kids == null) return;
-    foreach (int kid in node.Kids) Collect(nodes, kid, items);
+    string childRow = node.Row ?? row;
+    foreach (int kid in node.Kids) Collect(nodes, kid, items, childRow);
   }
 
   static int Fingerprint(List<Found> items) {
     var lines = new List<string>();
-    for (int i = 0; i < items.Count; i++) {
-      var item = items[i];
-      lines.Add(Gen.Line("c" + (i + 1), item.Role, item.Name, item.Value, true, item.X, item.Y, item.Width, item.Height));
-    }
+    foreach (Found item in items)
+      lines.Add(Gen.Line(item.Ref, item.Role, item.Name + "|" + item.Context, item.Value, true, item.X, item.Y, item.Width, item.Height));
     return Gen.Of(lines);
   }
 
-  static Dictionary<string, object> ElementJson(Found item, int index) {
+  static Dictionary<string, object> ElementJson(Found item) {
     var json = new Dictionary<string, object>();
-    json["ref"] = "c" + (index + 1);
+    json["ref"] = item.Ref;
     json["role"] = item.Role;
     json["name"] = item.Name;
     if (item.Value.Length > 0) json["value"] = item.Value;
-    json["x"] = item.X;
-    json["y"] = item.Y;
-    json["width"] = item.Width;
-    json["height"] = item.Height;
+    json["x"] = Gen.Whole(item.X);
+    json["y"] = Gen.Whole(item.Y);
+    json["width"] = Gen.Whole(item.Width);
+    json["height"] = Gen.Whole(item.Height);
     return json;
   }
 
   static void AddSnapshot(Dictionary<string, object> response, Snap snap) {
     var elements = new List<object>();
-    for (int i = 0; i < snap.Items.Count; i++) elements.Add(ElementJson(snap.Items[i], i));
+    foreach (Found item in snap.Items) elements.Add(ElementJson(item));
     response["generation"] = snap.Generation;
     response["elements"] = elements;
     if (snap.Truncated) response["truncated"] = true;
@@ -486,7 +543,12 @@ static class WinComputer {
       cache[pid] = snap;
       cacheOrder.Remove(pid);
       cacheOrder.Add(pid);
-      while (cacheOrder.Count > CacheMax) { cache.Remove(cacheOrder[0]); cacheOrder.RemoveAt(0); }
+      while (cacheOrder.Count > CacheMax) {
+        int dropped = cacheOrder[0];
+        cache.Remove(dropped);
+        refBooks.Remove(dropped);
+        cacheOrder.RemoveAt(0);
+      }
     }
   }
 
@@ -495,6 +557,7 @@ static class WinComputer {
       for (int i = cacheOrder.Count - 1; i >= 0; i--) {
         if (live.Contains(cacheOrder[i])) continue;
         cache.Remove(cacheOrder[i]);
+        refBooks.Remove(cacheOrder[i]);
         cacheOrder.RemoveAt(i);
       }
     }
@@ -507,20 +570,39 @@ static class WinComputer {
   }
 
   // Never trusts the cached generation: the tree is walked again and the cache replaced.
-  static void EnsureGeneration(int pid, int generation) {
+  static void EnsureRefs(int pid, int generation, List<string> refs) {
     Snap snap = DoWalk(pid);
     CachePut(pid, snap);
-    if (snap.Generation != generation) throw Err("stale_ref", "stale_ref: The app changed since your snapshot. Take a fresh snapshot.");
+    if (snap.Generation == generation) return;
+    Refs.Book book;
+    lock (cache) {
+      if (!refBooks.TryGetValue(pid, out book))
+        throw Err("stale_ref", "stale_ref: The app changed since your snapshot. Take a fresh snapshot.");
+    }
+    lock (book) {
+      Dictionary<string, Refs.Seen> seen = Refs.Lookup(book, generation);
+      if (seen == null) throw Err("stale_ref", "stale_ref: The app changed since your snapshot. Take a fresh snapshot.");
+      foreach (string reference in refs) {
+        Refs.Seen then;
+        Found found;
+        Refs.Seen now = null;
+        if (snap.ByRef.TryGetValue(reference, out found)) {
+          now = new Refs.Seen {
+            Key = found.Key,
+            Signature = Refs.Signature(found.Role, found.Name, found.Context, found.Ordinal),
+          };
+        }
+        if (!seen.TryGetValue(reference, out then) || !Refs.StillSame(then, now))
+          throw Err("stale_ref", "stale_ref: " + reference + " is gone or changed since your snapshot. Take a fresh snapshot.");
+      }
+    }
   }
 
   static Found RefOf(int pid, string reference) {
     var snap = Cached(pid);
-    int index;
-    if (reference == null || reference.Length < 2 || reference[0] != 'c'
-        || !int.TryParse(reference.Substring(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out index)
-        || index < 1 || index > snap.Items.Count)
+    Found found;
+    if (reference == null || !snap.ByRef.TryGetValue(reference, out found))
       throw Err("stale_ref", "Unknown ref. Take a fresh snapshot.");
-    var found = snap.Items[index - 1];
     try {
       found.Element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
     } catch (ElementNotAvailableException) {
@@ -1156,13 +1238,16 @@ static class WinComputer {
     var steps = req.ContainsKey("steps") ? req["steps"] as List<object> : null;
     if (steps == null || steps.Count == 0) throw Err("bad_request", "act needs steps.");
     bool needsRef = false;
+    var refs = new List<string>();
     foreach (object item in steps) {
       var step = item as Dictionary<string, object>;
       if (step == null) throw Err("bad_request", "Each step must be an object.");
+      string reference = Str(step, "ref");
+      if (reference.Length > 0) refs.Add(reference);
       string action = Str(step, "action");
       if (action == "press" || action == "type" || ((action == "double_click" || action == "right_click" || action == "scroll") && Has(step, "ref"))) needsRef = true;
     }
-    if (needsRef && Has(req, "generation") && req["generation"] is double) EnsureGeneration(pid, (int)(double)req["generation"]);
+    if (needsRef && Has(req, "generation") && req["generation"] is double) EnsureRefs(pid, (int)(double)req["generation"], refs);
     var results = new List<object>();
     bool anyOk = false;
     foreach (object item in steps) {
@@ -1461,6 +1546,95 @@ static class WinComputer {
 // <pure>
 // Everything below touches no desktop API, so selftest (and a throwaway harness) can run it anywhere.
 
+static class Refs {
+  public class Seen {
+    public string Key;
+    public string Signature;
+  }
+
+  public class Book {
+    public long Created;
+    public Dictionary<string, string> ByKey = new Dictionary<string, string>();
+    public Dictionary<string, string> ByLabel = new Dictionary<string, string>();
+    public int Next = 1;
+    public List<int> Generations = new List<int>();
+    public List<Dictionary<string, Seen>> History = new List<Dictionary<string, Seen>>();
+  }
+
+  public const int HistoryMax = 8;
+
+  public static string Key(int[] runtimeId) {
+    if (runtimeId == null || runtimeId.Length == 0) return "";
+    var parts = new string[runtimeId.Length];
+    for (int i = 0; i < runtimeId.Length; i++) parts[i] = runtimeId[i].ToString(CultureInfo.InvariantCulture);
+    return string.Join(".", parts);
+  }
+
+  public static List<string> Assign(Book book, List<string> keys, List<string> labels) {
+    var refs = new string[keys.Count];
+    var used = new HashSet<string>();
+    for (int i = 0; i < keys.Count; i++) {
+      string reference;
+      if (keys[i].Length > 0 && book.ByKey.TryGetValue(keys[i], out reference) && !used.Contains(reference)) {
+        refs[i] = reference;
+        used.Add(reference);
+      }
+    }
+    for (int i = 0; i < labels.Count; i++) {
+      if (refs[i] != null) continue;
+      string reference;
+      if (book.ByLabel.TryGetValue(labels[i], out reference) && !used.Contains(reference)) {
+        refs[i] = reference;
+        used.Add(reference);
+      }
+    }
+    var byKey = new Dictionary<string, string>();
+    var byLabel = new Dictionary<string, string>();
+    var result = new List<string>();
+    for (int i = 0; i < keys.Count; i++) {
+      string reference = refs[i];
+      if (reference == null) { reference = "c" + book.Next; book.Next++; }
+      if (keys[i].Length > 0) byKey[keys[i]] = reference;
+      byLabel[labels[i]] = reference;
+      result.Add(reference);
+    }
+    book.ByKey = byKey;
+    book.ByLabel = byLabel;
+    return result;
+  }
+
+  public static void Remember(Book book, int generation, Dictionary<string, Seen> seen) {
+    if (book.Generations.Count > 0 && book.Generations[book.Generations.Count - 1] == generation) return;
+    book.Generations.Add(generation);
+    book.History.Add(seen);
+    if (book.Generations.Count > HistoryMax) {
+      book.Generations.RemoveAt(0);
+      book.History.RemoveAt(0);
+    }
+  }
+
+  public static Dictionary<string, Seen> Lookup(Book book, int generation) {
+    for (int i = 0; i < book.Generations.Count; i++)
+      if (book.Generations[i] == generation) return book.History[i];
+    return null;
+  }
+
+  public static bool StillSame(Seen then, Seen now) {
+    return then != null && now != null && then.Key.Length > 0 && then.Key == now.Key && then.Signature == now.Signature;
+  }
+
+  // Win32/MSAA list items can have index-based RuntimeIds, so include the ordinal to reject shifted namesakes.
+  public static string Signature(string role, string name, string context, int ordinal) {
+    return role + "|" + name + "|" + context + "|" + ordinal.ToString(CultureInfo.InvariantCulture);
+  }
+
+  // UIA ToggleState: 0 off, 1 on, 2 indeterminate. Mixed must not read as off, or a
+  // press on a box the user set to mixed would pass the identity check.
+  public static string ToggleSuffix(int state) {
+    return state == 1 ? " on" : state == 0 ? " off" : " mixed";
+  }
+}
+
 static class Js {
   public static object Parse(string text) {
     int i = 0;
@@ -1623,9 +1797,13 @@ static class Js {
 }
 
 static class Gen {
+  public static long Whole(double value) {
+    if (double.IsNaN(value) || double.IsInfinity(value)) return 0;
+    return (long)Math.Floor(value + 0.5);
+  }
+
   static string Round(double value) {
-    if (double.IsNaN(value) || double.IsInfinity(value)) return "0";
-    return ((long)Math.Floor(value + 0.5)).ToString(CultureInfo.InvariantCulture);
+    return Whole(value).ToString(CultureInfo.InvariantCulture);
   }
 
   public static string Line(string reference, string role, string name, string value, bool hasBox, double x, double y, double width, double height) {
@@ -1730,7 +1908,51 @@ static class SelfTest {
     Check(Rules.ExeName("", "Notepad") == "Notepad.exe" && Rules.ExeName(null, "calc.exe") == "calc.exe", "exe name from process name");
     Check(Rules.ExeName("", "") == "" && Rules.ExeName(null, null) == "" && Rules.ExeName("C:\\dir\\", "") == "", "exe name unknown stays empty");
     Check(Rules.NormTitle("&Save As…\tCtrl+S") == "save as", "menu title");
+    RefChecks();
     return checks;
+  }
+
+  // Public so a harness off Windows can run these alone (Path.GetFileName there does not split on '\\').
+  public static void RefChecks() {
+    var book = new Refs.Book();
+    Check(string.Join(",", Refs.Assign(book,
+      new List<string> { "1.1", "1.2" },
+      new List<string> { "Button|Go|0", "Button|Go|1" }).ToArray()) == "c1,c2", "fresh refs");
+    Check(string.Join(",", Refs.Assign(book,
+      new List<string> { "1.3", "1.2", "1.4" },
+      new List<string> { "Button|New|0", "Button|Go|1", "Button|Go|0" }).ToArray()) == "c3,c2,c1", "stable refs");
+    var emptyBook = new Refs.Book();
+    Refs.Assign(emptyBook, new List<string> { "" }, new List<string> { "Button|One|0" });
+    Check(Refs.Assign(emptyBook, new List<string> { "" }, new List<string> { "Button|Two|0" })[0] == "c2"
+      && !emptyBook.ByKey.ContainsKey(""), "empty key never binds by key");
+    var then = new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "", 0) };
+    Check(!Refs.StillSame(then, new Refs.Seen { Key = "1.4", Signature = then.Signature }), "rebound ref refused");
+    Check(Refs.StillSame(then, new Refs.Seen { Key = "1.1", Signature = then.Signature }), "same control accepted");
+    Check(!Refs.StillSame(
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "Row 3", 0) },
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "Row 7", 0) }), "recycled row refused");
+    Check(!Refs.StillSame(
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "", 0) },
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "", 1) }), "shifted namesake refused");
+    Check(!Refs.StillSame(
+      new Refs.Seen { Key = "", Signature = Refs.Signature("Button", "Go", "", 0) },
+      new Refs.Seen { Key = "", Signature = Refs.Signature("Button", "Go", "", 0) }), "empty key refused");
+    var historyBook = new Refs.Book();
+    for (int i = 0; i < 9; i++) Refs.Remember(historyBook, i, new Dictionary<string, Refs.Seen>());
+    Check(historyBook.History.Count == Refs.HistoryMax, "history capped");
+    Dictionary<string, Refs.Seen> lastSeen = Refs.Lookup(historyBook, 8);
+    Refs.Remember(historyBook, 8, new Dictionary<string, Refs.Seen>());
+    Check(historyBook.History.Count == Refs.HistoryMax && object.ReferenceEquals(Refs.Lookup(historyBook, 8), lastSeen), "repeat generation skipped");
+    Check(Refs.Lookup(historyBook, 0) == null, "evicted generation missing");
+    Check(Refs.Key(new int[] { 1, -2, 3 }) == "1.-2.3" && Refs.Key(null) == "" && Refs.Key(new int[0]) == "", "runtime id key");
+    Check(Refs.ToggleSuffix(0) == " off" && Refs.ToggleSuffix(1) == " on" && Refs.ToggleSuffix(2) == " mixed", "toggle states");
+    string label = new string('x', 120);
+    Check(!Refs.StillSame(
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("CheckBox", label + Refs.ToggleSuffix(0), "", 0) },
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("CheckBox", label + Refs.ToggleSuffix(1), "", 0) }), "flipped toggle refused");
+    Check(!Refs.StillSame(
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("CheckBox", "Wrap" + Refs.ToggleSuffix(0), "", 0) },
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("CheckBox", "Wrap" + Refs.ToggleSuffix(2), "", 0) }), "mixed toggle refused");
   }
 }
 // </pure>
