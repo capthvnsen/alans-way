@@ -283,7 +283,7 @@ function getState() {
       vms: vmTargets(prefs).map((target) => ({ id: target.id, label: target.label, ...(vmProgress[target.id] || {}) })),
       vmRetry: vmRetryState(app.getVersion(), prefs.vmUpdates, vmTargets(prefs)), vmRetrying },
     bundleWarning: bundleWarningDismissed ? '' : setupCheck.bundleWarning(runningBundle(), app.getName()) || '',
-    onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? app.isInApplicationsFolder() : null,
+    onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? setupCheck.inRouterApplications(process.execPath) : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
     autoOpenLinks: prefs.autoOpenLinks !== false,
@@ -967,7 +967,7 @@ async function runSetupCheck() {
   const mac = process.platform === 'darwin';
   const local = {
     telegram: telegramStatus,
-    inApplications: mac && app.isPackaged ? app.isInApplicationsFolder() : null,
+    inApplications: mac && app.isPackaged ? setupCheck.inRouterApplications(process.execPath) : null,
     bundle: runningBundle(), productName: app.getName(),
     permissions: mac ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null,
     staleConnector: staleConnector(),
@@ -1274,9 +1274,11 @@ function registerIpc() {
       case 'test-agent-path': return testAgentPath();
       case 'setup-check': return runSetupCheck();
       case 'remove-old-connector': {
+        // The renderer toasts on a truthy reply, so return whether a copy was
+        // actually there to remove (other commands fall through to getState()).
         const stale = staleConnector();
         if (stale) fs.rmSync(stale, { recursive: true, force: true });
-        break;
+        return Boolean(stale);
       }
       case 'copy-report': {
         const errorLog = mainLog().tail(100);

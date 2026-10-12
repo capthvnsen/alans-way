@@ -1577,3 +1577,77 @@ for (const [label, lines, code, expected] of [
     assert.deepEqual(lastJson(res).verify, expected);
   });
 }
+
+test('--doctor on a server with no browser host checkout still reports profiles and plugins', async () => {
+  const missing = path.join(os.tmpdir(), 'definitely-missing-checkout');
+  const { bin, state, home } = doctorFixture();
+  addPlugin(home, 'default', 'alans-way', '0.6.0');
+  fs.writeFileSync(path.join(state, 'updates.default.json'), JSON.stringify([
+    { name: 'alans-way', class: 'catalog', current: 'bbb222', latest: 'ccc333', update_available: true }]));
+  const res = await runScript(['--doctor'], envFor(missing, makeDataDir(9), bin, {
+    ...pluginEnv(home, state), ALANS_WAY_VM_PLUGIN_REMOTE: path.join(os.tmpdir(), 'no-such-remote') }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.ok, true);
+  assert.equal(result.version, '');
+  assert.deepEqual(result.profiles, [{ profile: 'default', computerBackend: '',
+    plugins: [{ name: 'alans-way', version: '0.6.0', class: 'catalog', updateAvailable: true }], checked: true }]);
+});
+
+test('--doctor runs the setup audit when hermes is missing but setup.sh exists', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin(); // no hermes on PATH
+  const state = mktemp('vm-doctor-state-');
+  const home = makeHermesHome();
+  const port = await makeStatus({ version: '0.3.1', busy: false });
+  const data = makeDataDir(port);
+  const setupCalls = addSetupScript(data, ['  FAIL hermes is not installed'], 1);
+  const res = await runScript(['--doctor'], envFor(checkout, data, bin, {
+    HERMES_HOME: home, FAKE_HERMES_STATE: state, ALANS_WAY_VM_PLUGIN_REMOTE: path.join(os.tmpdir(), 'no-such-remote') }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(result.verify, { ran: true, fails: ['hermes is not installed'], warns: [] });
+  assert.equal(setupCalls().trim(), `--verify --hermes-home ${home}`);
+});
+
+test('--doctor finds setup.sh in its own repo clone when no profile has the plugin', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, state, home } = doctorFixture();
+  const port = await makeStatus({ version: '0.3.1', busy: false });
+  const data = makeDataDir(port);
+  // setup.sh clones its repo to ~/.local/share/alans-way-agents even for a
+  // catalog install; $HOME is the data dir in envFor.
+  const setupCalls = addSetupScript(path.join(data, '.local', 'share'), ['  FAIL no profile has the alans-way plugin'], 1);
+  const res = await runScript(['--doctor'], envFor(checkout, data, bin, {
+    ...pluginEnv(home, state), ALANS_WAY_VM_PLUGIN_REMOTE: path.join(os.tmpdir(), 'no-such-remote') }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(result.profiles, []);
+  assert.deepEqual(result.verify, { ran: true, fails: ['no profile has the alans-way plugin'], warns: [] });
+  assert.equal(setupCalls().trim(), `--verify --hermes-home ${home}`);
+});
+
+// A hermes that never answers must not outlive the run's budget on a server
+// without GNU timeout (a Mac); `bounded` falls back to a perl alarm there.
+test('--doctor bounds a hermes call that hangs', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const state = mktemp('vm-doctor-state-');
+  const home = makeHermesHome();
+  fs.writeFileSync(path.join(bin, 'hermes'), `#!/bin/sh
+if [ "\${1:-}" = "-p" ]; then shift 2; fi
+if [ "$1 $2 $3" = "plugins check-updates --json" ]; then sleep 300; fi
+echo "unexpected call: $*"; exit 2
+`, { mode: 0o755 });
+  addPlugin(home, 'default', 'alans-way', '0.6.0');
+  const port = await makeStatus({ version: '0.3.1', busy: false });
+  const start = Date.now();
+  const res = await runScript(['--doctor'], envFor(checkout, makeDataDir(port), bin, {
+    HERMES_HOME: home, FAKE_HERMES_STATE: state, ALANS_WAY_VM_DOCTOR_BUDGET: '40',
+    ALANS_WAY_VM_PLUGIN_REMOTE: path.join(os.tmpdir(), 'no-such-remote') }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(Date.now() - start < 60000, 'a hung hermes call was bounded by the run budget');
+  assert.deepEqual(result.profiles, [{ profile: 'default', computerBackend: '',
+    plugins: [{ name: 'alans-way', version: '0.6.0', class: '', updateAvailable: null }], checked: true }]);
+});

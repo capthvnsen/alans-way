@@ -15,7 +15,11 @@ const TAG_RE = /^v\d+\.\d+\.\d+$/;
 const SSH_OPTIONS = ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes'];
 const VM_TIMEOUT_MS = 300000;
 const CHECK_TIMEOUT_MS = 30000;
-const DOCTOR_TIMEOUT_MS = 120000;
+// The whole Check setup run should stay under two minutes: the reach probe
+// (15s) and the platform probe in guestKind (10s) run before this, so the
+// doctor cap keeps the worst case at ~115s. The guest-side doctor budget
+// (ALANS_WAY_VM_DOCTOR_BUDGET, 75s) stays under it so the result line lands.
+const DOCTOR_TIMEOUT_MS = 90000;
 // A remote-side cap a little under VM_TIMEOUT_MS: killing the local ssh does
 // not reliably kill a piped `sh -s` (no TTY, no SIGHUP), so where timeout(1)
 // exists the guest run terminates instead of orphaning an npm ci.

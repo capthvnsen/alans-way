@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { staleConnectorCopy, bundledConnectorReachable, buildFindings } = require('../src/setup-check.cjs');
+const { staleConnectorCopy, bundledConnectorReachable, inRouterApplications, buildFindings } = require('../src/setup-check.cjs');
 
 function userData(connectorPackage) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'setup-check-'));
@@ -37,6 +37,12 @@ test('the bundled connector counts as reachable only where the router looks for 
   assert.equal(reachable('linux', '/home/you/Downloads/alans-way-localapp-linux-x64/alans-way-localapp'), false);
   assert.equal(reachable('linux', '/opt/alans-way-localapp/alans-way-localapp', false), false, 'a dev run');
   assert.equal(reachable('win32', 'C:\\Program Files\\Open Alan\\Open Alan.exe'), false);
+});
+
+test('in Applications means /Applications, not ~/Applications', () => {
+  assert.equal(inRouterApplications('/Applications/Open Alan.app/Contents/MacOS/Open Alan'), true);
+  assert.equal(inRouterApplications('/Users/you/Applications/Open Alan.app/Contents/MacOS/Open Alan'), false);
+  assert.equal(inRouterApplications('/Users/you/Downloads/Open Alan.app/Contents/MacOS/Open Alan'), false);
 });
 
 const healthyServer = (over = {}) => ({
@@ -73,6 +79,17 @@ test('local problems carry their fix actions; non-Mac platforms skip the Mac-onl
   assert.equal(byTitle(findings, /connector/i).action, 'remove-old-connector');
   const linux = buildFindings(healthy({ platform: 'linux', local: { telegram: 'connected', inApplications: null, permissions: null, staleConnector: null } }));
   assert.equal(byTitle(linux, /Applications|Accessibility|Screen Recording/), undefined);
+});
+
+test('a Telegram session that is still arriving is a warning, not a sign-out', () => {
+  const local = (telegram) => ({ telegram, inApplications: true, permissions: null, staleConnector: null });
+  for (const status of ['loading', 'locked', 'offline', 'layout-changed']) {
+    const findings = buildFindings(healthy({ local: local(status) }));
+    const tg = byTitle(findings, /Telegram/);
+    assert.equal(tg.level, 'warn', status);
+    assert.doesNotMatch(tg.title, /Not signed in/, status);
+  }
+  assert.match(byTitle(buildFindings(healthy({ local: local('login') })), /Telegram/).title, /Not signed in/);
 });
 
 test('an unreachable server fails the connection and skips every server check', () => {
@@ -161,6 +178,18 @@ test('a server without the app installed points at the setup prompt', () => {
   assert.match(findings.find((f) => f.group === 'server').fix, /setup prompt/);
 });
 
+test('a server with no browser host checkout still shows its plugin and audit rows', () => {
+  const findings = buildFindings(healthy({ server: healthyServer({ version: '', hostVersion: '', hostCauses: ['no-chromium'] }) }));
+  const notInstalled = findings.find((f) => f.group === 'server' && /aren.t installed/.test(f.title));
+  assert.equal(notInstalled.level, 'fail');
+  assert.match(notInstalled.fix, /setup prompt/);
+  assert.equal(findings.some((f) => f.action === 'update-server'), false,
+    'updating cannot install a missing checkout; the setup prompt is the fix');
+  assert.equal(byTitle(findings, /alans-way 0\.7\.0 is the latest/).level, 'ok', 'plugin rows are not hidden');
+  assert.equal(byTitle(findings, /Chromium is not installed/).level, 'fail');
+  assert.equal(byTitle(findings, /audit/).title, 'Setup audit passed');
+});
+
 const { redactReport, buildReport } = require('../src/setup-check.cjs');
 
 test('redactReport removes each secret shape and keeps addresses, versions and hashes', () => {
@@ -203,6 +232,24 @@ test('redactReport removes the token, password, key and header shapes that slipp
     for (const secret of secrets) assert.equal(out.includes(secret), false, `${secret} leaked from ${text} as ${out}`);
     assert.equal(redactReport(out), out, 'buildReport redacts twice, so a second pass changes nothing');
   }
+});
+
+test('redactReport removes Python-repr pairs and quoted values that contain spaces', () => {
+  for (const [text, ...secrets] of [
+    ["{'telegram': {'token': 'py-repr-secret', 'chat_id': 5}}", 'py-repr-secret'],
+    ["{'password': 'spaced out secret'}", 'spaced out secret'],
+    [`{'api_key': "double-quoted repr secret"}`, 'double-quoted repr secret'],
+    ['db password="two word secret", retrying', 'two word secret'],
+    ["db password='two word secret', retrying", 'two word secret'],
+    ['hermes login --token "flag spaced secret" --verbose', 'flag spaced secret'],
+    ["hermes login --token 'flag spaced secret' --verbose", 'flag spaced secret'],
+    ['password: "yaml spaced secret"', 'yaml spaced secret'],
+  ]) {
+    const out = redactReport(text);
+    for (const secret of secrets) assert.equal(out.includes(secret), false, `${secret} leaked from ${text} as ${out}`);
+    assert.equal(redactReport(out), out, 'buildReport redacts twice, so a second pass changes nothing');
+  }
+  assert.match(redactReport('{"chat_id": 5, "name": "kept"}'), /kept/, 'non-secret pairs stay');
 });
 
 test('redactReport leaves the next line and plain words about keys and tokens alone', () => {
