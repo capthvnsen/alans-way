@@ -6,7 +6,7 @@
 // retries, and success. macOS only.
 //
 // Usage: node scripts/computer-bench.cjs [--root DIR] [--mode mcp,batch,plugin]
-//        [--think MS] [--runs N] [--json FILE]
+//        [--think MS] [--runs N] [--json FILE] [--visible]
 // --root loads src/computer.cjs from another checkout, to bench a baseline.
 // --think is the pause between reading a reply and acting on it, standing in
 // for model latency (default 600ms; the fixture clock ticks every 250ms).
@@ -22,6 +22,9 @@ const modes = arg('--mode', 'mcp,batch,plugin').split(',');
 const think = Number(arg('--think', 600));
 const runs = Number(arg('--runs', 1));
 const jsonOut = arg('--json');
+// The fixture sits off-screen unless --visible, where a checkout that only
+// captures on-screen windows (the baseline) can screenshot it.
+const visible = process.argv.includes('--visible');
 if (process.platform !== 'darwin') { console.error('computer-bench runs on macOS only.'); process.exit(1); }
 
 const { service, close } = require(path.join(root, 'src', 'computer.cjs'));
@@ -98,7 +101,7 @@ function quit() {
 async function launch() {
   buildApp();
   const t0 = Date.now();
-  spawnSync('open', ['-g', '-n', bundle]);
+  spawnSync('open', ['-g', '-n', bundle, ...(visible ? ['--args', '--visible'] : [])]);
   for (;;) {
     const app = (await service.apps()).find((a) => a.bundleId === BUNDLE_ID);
     if (app) {

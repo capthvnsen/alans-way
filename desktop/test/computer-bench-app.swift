@@ -89,7 +89,8 @@ final class Bench: NSObject {
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             window.isReleasedWhenClosed = false
             window.hidesOnDeactivate = false
-            window.level = .floating
+            // Floating joins a full-screen Space; a visible run wants an ordinary window.
+            if !CommandLine.arguments.contains("--visible") { window.level = .floating }
             // Off the right edge unless asked: Accessibility reads it all the same.
             let x = visible ? screen.maxX - 440 - CGFloat(index) * 380 : screen.maxX + 40 + CGFloat(index) * 440
             window.setFrameOrigin(NSPoint(x: x, y: screen.minY + 40))

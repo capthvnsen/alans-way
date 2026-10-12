@@ -326,12 +326,16 @@ func remember(_ book: RefBook, _ walk: Walk) {
 
 // MARK: windows Accessibility cannot see
 
+// Apps also own untitled off-screen windows that are never shown (a 500x500
+// one at the screen's bottom-left, menu-bar strips); a real window on another
+// Space has its title. Titles need Screen Recording; without it this says no.
 func hasOffscreenWindow(_ pid: pid_t) -> Bool {
     let info = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
     return info.contains { item in
         guard (item[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
               (item[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
               (item[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue != true,
+              !(item[kCGWindowName as String] as? String ?? "").isEmpty,
               let bounds = item[kCGWindowBounds as String] as? [String: Any] else { return false }
         return ((bounds["Width"] as? NSNumber)?.doubleValue ?? 0) >= 40 && ((bounds["Height"] as? NSNumber)?.doubleValue ?? 0) >= 40
     }
@@ -837,6 +841,7 @@ func captureWithScreenCaptureKit(_ pid: pid_t, maxWidth: Int) throws -> JSON {
     var best: SCWindow?
     for window in windows where window.owningApplication?.processID == pid && window.windowLayer == 0 {
         if window.frame.width < 40 || window.frame.height < 40 { continue }
+        if !window.isOnScreen && (window.title ?? "").isEmpty { continue }
         guard let current = best else { best = window; continue }
         if window.isOnScreen != current.isOnScreen { if window.isOnScreen { best = window }; continue }
         if window.frame.width * window.frame.height > current.frame.width * current.frame.height { best = window }
