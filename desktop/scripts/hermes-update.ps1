@@ -51,11 +51,15 @@ function Find-Hermes {
 
 # One bounded hermes call: stdin is an empty file so a prompt can only ever
 # read EOF ("no"), and the timeout keeps the call inside the run's remaining
-# budget so the JSON result line is always reached.
-function Invoke-Hermes([int]$Secs, [string[]]$HermesArgs) {
-    $left = (BudgetLeft) - 8
-    if ($left -le 0) { return @{ code = 124; out = '' } }
-    if ($Secs -gt $left) { $Secs = $left }
+# budget so the JSON result line is always reached. -Unbudgeted skips the
+# budget clamp: a gateway restart must be attempted even when nothing is left.
+function Invoke-Hermes([int]$Secs, [string[]]$HermesArgs, [switch]$Unbudgeted) {
+    if (-not $Unbudgeted) {
+        $left = (BudgetLeft) - 8
+        if ($left -le 0) { return @{ code = 124; out = '' } }
+        if ($Secs -gt $left) { $Secs = $left }
+    }
+    if ($Secs -le 0) { return @{ code = 124; out = '' } }
     $out = [IO.Path]::GetTempFileName()
     $err = [IO.Path]::GetTempFileName()
     $inp = [IO.Path]::GetTempFileName()
@@ -66,7 +70,12 @@ function Invoke-Hermes([int]$Secs, [string[]]$HermesArgs) {
         $p = Start-Process -FilePath $exe -ArgumentList $argLine -NoNewWindow -PassThru `
             -RedirectStandardOutput $out -RedirectStandardError $err -RedirectStandardInput $inp
         if ($p.WaitForExit($Secs * 1000)) { $code = $p.ExitCode }
-        else { try { $p.Kill() } catch {}; $code = 124 }
+        else {
+            # Kill the whole tree, not only the launcher: a .cmd/.bat shim
+            # leaves the real hermes process running after $p.Kill().
+            try { & taskkill /PID $p.Id /T /F 2>$null | Out-Null } catch { try { $p.Kill() } catch {} }
+            $code = 124
+        }
         $text = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue) + "`n" +
                 [string](Get-Content $err -Raw -ErrorAction SilentlyContinue)
         return @{ code = $code; out = $text }
@@ -116,6 +125,7 @@ if (-not $hhome) { $hhome = "$env:LOCALAPPDATA\hermes" }
 # multiplexer serves reports "running via the default-profile multiplexer";
 # stopping the default takes the mux down and starting it re-serves them, so
 # those are skipped here.
+$gwTimeout = EnvInt 'ALANS_WAY_HERMES_GATEWAY_TIMEOUT' 60
 $restart = @()
 foreach ($prof in (Get-Profiles $hhome)) {
     if ((BudgetLeft) -le 30) { Say 'ran out of the time budget; remaining gateways were not stopped'; break }
@@ -124,12 +134,18 @@ foreach ($prof in (Get-Profiles $hhome)) {
     if ($st.out -match '(?i)multiplexer') { continue }
     $restart += $prof.name
     Say "stopping the $($prof.name) gateway for the update"
-    $sp = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_GATEWAY_TIMEOUT' 60) (Gw-Args $prof.name 'stop')
+    $sp = Invoke-Hermes $gwTimeout (Gw-Args $prof.name 'stop')
     if ($sp.code -ne 0) { Say "gateway $($prof.name): stop did not finish: $(Tail-Text $sp.out 160)" }
 }
 
 Say 'running hermes update'
-$r = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_UPDATE_TIMEOUT' 200) @('update', '--yes', '--keep-stash')
+# The update may not eat the restart reserve: it gets at most the remaining
+# budget minus one gateway timeout per stopped gateway, so starting them back
+# always fits. A cap at zero never spawns - Invoke-Hermes returns 124 first.
+$upSecs = EnvInt 'ALANS_WAY_HERMES_UPDATE_TIMEOUT' 200
+$upCap = (BudgetLeft) - ($restart.Count * $gwTimeout) - 8
+if ($upCap -lt $upSecs) { $upSecs = $upCap }
+$r = Invoke-Hermes $upSecs @('update', '--yes', '--keep-stash')
 $ok = ($r.code -eq 0)
 $err = ''
 if ($r.code -eq 124) { $err = 'the hermes update timed out' }
@@ -138,21 +154,22 @@ elseif (-not $ok) {
     if (-not $err) { $err = "hermes update exited $($r.code)" }
 }
 $script:Updated = $ok -and ($r.out -notmatch '(?i)already up.to.date|nothing to update|no update available')
+
+# Start back exactly the gateways this run stopped - a failed update must not
+# leave the fleet's bots offline. Unbudgeted: the attempt happens even if the
+# update or a slow stop already spent the reserve.
+foreach ($name in $restart) {
+    $up = Invoke-Hermes $gwTimeout (Gw-Args $name 'start') -Unbudgeted
+    if ($up.code -eq 0) { $script:GatewayRestarted = $true; Say "gateway $($name): started" }
+    else { Say "gateway $($name): start failed: $(Tail-Text $up.out 160)" }
+}
+
 # The version read follows the update so an install that moved reports the new
 # one; a failed update still reports whatever version is on the machine now.
 $v = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_VERSION_TIMEOUT' 20) @('--version')
 $vm = [regex]::Match([string]$v.out, 'Hermes Agent v([0-9][0-9.]*)')
 if ($vm.Success) { $script:Version = $vm.Groups[1].Value }
 if ($ok) { Say 'hermes update finished' } else { Say "hermes update failed: $err" }
-
-# Start back exactly the gateways this run stopped - a failed update must not
-# leave the fleet's bots offline.
-foreach ($name in $restart) {
-    if ((BudgetLeft) -le 20) { Say 'ran out of the time budget; remaining gateways were not restarted'; break }
-    $up = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_GATEWAY_TIMEOUT' 60) (Gw-Args $name 'start')
-    if ($up.code -eq 0) { $script:GatewayRestarted = $true; Say "gateway $($name): started" }
-    else { Say "gateway $($name): start failed: $(Tail-Text $up.out 160)" }
-}
 
 # The message each profile's bot sends home: outcome, host and version so a
 # user with several machines can tell them apart. Characters cmd would read

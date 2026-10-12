@@ -124,6 +124,17 @@ test('hermes-update is locked out while an app or VM update runs', () => {
   assert.equal(updateLocked({ updateBusy: false, vmRetrying: false, hermesUpdating: false }), false);
 });
 
+// Regression guard for the one-way lock: all three cases in main.cjs must
+// gate on updateLocked with hermesUpdating passed in, so a revert to a bare
+// `if (update.busy) break` fails here.
+test('main.cjs routes every update command through the shared lock', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
+  for (const cmd of ['update-now', 'vm-update-retry', 'hermes-update']) {
+    const guard = new RegExp(`case '${cmd}':\\s*\\{\\s*if \\(updateLocked\\(\\{[^)]*hermesUpdating[^)]*\\}\\)\\)\\s*break`);
+    assert.match(src, guard, `${cmd} must refuse via updateLocked({ ..., hermesUpdating })`);
+  }
+});
+
 test('hermesUpdateDetail always reports whether the bot messaged', () => {
   const base = { version: '0.21.7', updated: true };
   assert.equal(hermesUpdateDetail({ ok: true, messaged: true, messages: [{ profile: 'default', sent: true, error: '' }], ...base }, 'VPS'),
