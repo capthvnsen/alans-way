@@ -46,8 +46,15 @@ func setPolicy(_ policy: JSON) {
     policyContains = (policy["contains"] as? [String] ?? []).map { $0.lowercased() }
 }
 
+// While the screen is locked Accessibility answers with menu-bar strips in
+// place of windows, so say so instead of handing back that tree.
+func screenLocked() -> Bool {
+    (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true
+}
+
 @discardableResult
 func checkApp(_ pid: pid_t) throws -> NSRunningApplication {
+    if screenLocked() { throw Fail("locked", "The screen is locked, so apps cannot be read or driven. Ask the user to unlock it, then retry.") }
     guard let app = NSRunningApplication(processIdentifier: pid), app.activationPolicy == .regular, !app.isTerminated else {
         throw Fail("not_found", "App not found.")
     }
