@@ -269,6 +269,8 @@ func describe(_ node: Node) {
     if role == "AXCheckBox" || role == "AXRadioButton", let number = (node.value as? NSNumber)?.doubleValue {
         name += number != 0 ? " on" : " off"
     }
+    // The raw state feeds the tree hash: a flip hidden by a cut label, mixed, or a triangle's state still changes it.
+    if toggles.contains(role), let number = node.value as? NSNumber { shown = String(number.intValue) }
     if !node.enabled { name += name.isEmpty ? "disabled" : " disabled" }
     node.name = String(name.prefix(120))
     node.shownValue = shown
@@ -461,6 +463,12 @@ func walkApp(_ pid: pid_t, menubar: Bool) throws -> Walk {
         for kid in node.kids { emit(kid, row) }
     }
     for root in roots { emit(root, "") }
+    let book = refBooks[pid] ?? RefBook()
+    refBooks[pid] = book
+    return record(found, book, truncated: truncated, hidden: hidden, note: note)
+}
+
+func record(_ found: [Node], _ book: RefBook, truncated: Bool = false, hidden: Int = 0, note: String? = nil) -> Walk {
     var namesakes: [String: Int] = [:]
     let items = found.map { node -> (key: AXKey, label: String) in
         let label = "\(node.role)|\(node.name)"
@@ -468,8 +476,6 @@ func walkApp(_ pid: pid_t, menubar: Bool) throws -> Walk {
         namesakes[label] = ordinal + 1
         return (AXKey(element: node.element), "\(label)|\(ordinal)")
     }
-    let book = refBooks[pid] ?? RefBook()
-    refBooks[pid] = book
     var elements: [Elem] = []
     var nodes: [String: Node] = [:]
     for (node, ref) in zip(found, assignRefs(items, book)) {
@@ -516,12 +522,15 @@ func refresh(_ pid: pid_t, menubar: Bool) throws -> Walk {
 // replace the cache, so the step uses what was just verified. A tree that moved
 // on elsewhere (a clock, a counter the last step bumped) still takes the action
 // when every ref it uses is the very control the caller saw, still labelled the same.
-func ensureCache(_ pid: pid_t, _ expected: Int?, refs: [String], menubar: Bool) throws {
+// The caller's tree is pinned before the walk, which could push it out of history.
+func ensureCache(_ pid: pid_t, _ expected: Int?, refs: [String], menubar: Bool, walker: (pid_t, Bool) throws -> Walk = { try refresh($0, menubar: $1) }) throws {
+    if let expected, let book = refBooks[pid] { pin(book, expected) }
+    if refs.isEmpty { return }
     guard let expected else {
         if caches[pid] == nil { _ = try refresh(pid, menubar: menubar) }
         return
     }
-    let walk = try refresh(pid, menubar: menubar)
+    let walk = try walker(pid, menubar)
     if walk.generation == expected { return }
     guard let seen = (refBooks[pid].flatMap { seenAt($0, expected) }) else {
         throw Fail("stale_ref", "stale_ref: The app changed since your snapshot. Take a fresh snapshot.")
@@ -1087,13 +1096,10 @@ func act(_ request: JSON) throws -> JSON {
     let pid = try pidOf(request)
     try requireAccessibility()
     try checkApp(pid)
-    if let generation = (request["generation"] as? NSNumber)?.intValue, let book = refBooks[pid] { pin(book, generation) }
     let steps = request["steps"] as? [JSON] ?? []
     let menubar = request["menubar"] as? Bool ?? caches[pid]?.menubar ?? false
     let refs = steps.compactMap { $0["ref"] as? String }
-    if !refs.isEmpty {
-        try ensureCache(pid, (request["generation"] as? NSNumber)?.intValue, refs: refs, menubar: menubar)
-    }
+    try ensureCache(pid, (request["generation"] as? NSNumber)?.intValue, refs: refs, menubar: menubar)
     var results: [JSON] = []
     var succeeded = false
     for step in steps {
@@ -1272,6 +1278,44 @@ func selftest() throws -> JSON {
     try expect(pickWindow([WindowCandidate(onScreen: false, titled: false, frame: CGRect(x: 0, y: 0, width: 100, height: 100))]) == nil, "untitled elsewhere window skipped")
     try expect(pickWindow([WindowCandidate(onScreen: true, titled: true, frame: CGRect(x: 0, y: 0, width: 39, height: 100))]) == nil, "small window skipped")
     try expect(pickWindow([]) == nil, "empty windows skipped")
+
+    // Through ensureCache with a fake walker: a toggle the user flipped after the snapshot must refuse the ref.
+    let fakePid: pid_t = -7
+    defer { refBooks[fakePid] = nil }
+    func stale(_ expected: Int, _ walk: () -> Walk) -> Bool {
+        do { try ensureCache(fakePid, expected, refs: ["c1"], menubar: false) { _, _ in walk() }; return false }
+        catch let failure as Fail { return failure.code == "stale_ref" } catch { return false }
+    }
+    for (index, (role, before, after)) in [("AXCheckBox", 0, 1), ("AXCheckBox", 1, 2), ("AXDisclosureTriangle", 0, 1), ("AXRadioButton", 1, 0)].enumerated() {
+        let toggleBook = RefBook()
+        refBooks[fakePid] = toggleBook
+        let toggle = Node(AXUIElementCreateApplication(pid_t(20 + index)), depth: 0, limit: 0)
+        toggle.role = role
+        toggle.title = String(repeating: "y", count: 130)
+        toggle.value = NSNumber(value: before)
+        describe(toggle)
+        let seen = record([toggle], toggleBook).generation
+        try expect(!stale(seen) { record([toggle], toggleBook) }, "\(role) unchanged accepted")
+        toggle.value = NSNumber(value: after)
+        describe(toggle)
+        try expect(stale(seen) { record([toggle], toggleBook) }, "\(role) \(before) to \(after) refused")
+    }
+    // The caller's tree is the oldest of eight and the walk pushes it out; pinning first keeps it.
+    let movingBook = RefBook()
+    refBooks[fakePid] = movingBook
+    let go = Node(AXUIElementCreateApplication(30), depth: 0, limit: 0)
+    go.role = "AXButton"
+    go.title = "Go"
+    let clock = Node(AXUIElementCreateApplication(31), depth: 0, limit: 0)
+    clock.role = "AXStaticText"
+    func tick(_ time: Int) -> Walk {
+        clock.value = "\(time)" as CFString
+        for node in [go, clock] { describe(node) }
+        return record([go, clock], movingBook)
+    }
+    let callerGeneration = tick(0).generation
+    for time in 1...7 { _ = tick(time) }
+    try expect(!stale(callerGeneration) { tick(8) }, "caller's tree pinned before the walk")
     return ["checks": checks]
 }
 
