@@ -84,6 +84,16 @@ fail() { json false "$VERSION" "$RESTARTED" "$1" "$PLUGINS_JSON" "$GATEWAY_RESTA
 have() { command -v "$1" >/dev/null 2>&1; }
 budget_left() { printf '%s' "$(( VM_BUDGET - ($(date +%s) - START_S) ))"; }
 
+# One bounded command: `timeout` where the guest has it, else a perl alarm
+# (a Mac server has perl but no GNU timeout), else the bare command. A call
+# killed by the perl alarm exits 142 (SIGALRM), not timeout's 124.
+bounded() {
+  _s="$1"; shift
+  if have timeout; then timeout "$_s" "$@"
+  elif have perl; then perl -e 'alarm shift; exec @ARGV' "$_s" "$@"
+  else "$@"; fi
+}
+
 # True only when systemd is the running service manager. A systemctl binary
 # alone is not enough: minimal VM images ship one that answers "offline".
 # When no systemctl exists, /run/systemd/system is the fallback marker.
@@ -241,15 +251,14 @@ hermes_bin() {
 }
 
 # One bounded hermes call: stdin is /dev/null so a consent prompt can only ever
-# read EOF ("no"), and `timeout` (when the guest has it) caps the call inside
-# the run's remaining budget so the JSON result line is always reached.
+# read EOF ("no"), and `bounded` caps the call inside the run's remaining
+# budget so the JSON result line is always reached.
 run_hermes() {
   _secs="$1"; shift
   _left=$(( $(budget_left) - 8 ))
   [ "$_left" -gt 0 ] || return 124
   [ "$_secs" -le "$_left" ] || _secs="$_left"
-  if have timeout; then timeout "$_secs" "$HERMES_BIN" "$@" </dev/null 2>&1
-  else "$HERMES_BIN" "$@" </dev/null 2>&1; fi
+  bounded "$_secs" "$HERMES_BIN" "$@" </dev/null 2>&1
 }
 
 # The profiles hermes counts: the default home plus every profile dir with the
@@ -346,7 +355,8 @@ plugin_entry() {
 # message is kept - the last-two-lines cut used to drop the "Cannot update"
 # sentence and the dialog showed it starting mid-sentence.
 plugin_update_status() {
-  if [ "$1" -eq 124 ]; then printf 'failed|the hermes update timed out'; return 0; fi
+  # 124 is timeout(1); 142 is the perl alarm fallback `bounded` uses.
+  if [ "$1" -eq 124 ] || [ "$1" -eq 142 ]; then printf 'failed|the hermes update timed out'; return 0; fi
   if printf '%s' "$2" | grep -qF 'Cannot update plugin files while the messaging gateway is running'; then
     printf 'blocked|%s' "$(printf '%s\n' "$2" | tr '\n' ' ')"
     return 0
@@ -642,17 +652,14 @@ EOF
 
 PLUGIN_REMOTE="${ALANS_WAY_VM_PLUGIN_REMOTE:-https://github.com/capthvnsen/alans-way-agents}"
 
-bounded() {
-  _s="$1"; shift
-  if have timeout; then timeout "$_s" "$@"
-  elif have perl; then perl -e 'alarm shift; exec @ARGV' "$_s" "$@"
-  else "$@"; fi
-}
-
 # The setup.sh the server was installed with: ~/alans-way-agents first (where
-# the setup prompt clones it), else the clone a profile's file:// plugin source names.
+# the setup prompt clones it), then setup.sh's own clone at
+# ~/.local/share/alans-way-agents, else the clone a profile's file:// plugin
+# source names.
 doctor_setup_script() {
-  if [ -f "$HOME/alans-way-agents/setup.sh" ]; then printf '%s' "$HOME/alans-way-agents/setup.sh"; return 0; fi
+  for _ds in "$HOME/alans-way-agents" "$HOME/.local/share/alans-way-agents"; do
+    [ -f "$_ds/setup.sh" ] && { printf '%s' "$_ds/setup.sh"; return 0; }
+  done
   _ds="$(plugin_meta "$1/plugins" alans-way | sed -n 's|.*"source"[[:space:]]*:[[:space:]]*"file://\([^"#]*\).*|\1|p' | head -1)"
   [ -n "$_ds" ] && [ -f "$_ds/setup.sh" ] && printf '%s' "$_ds/setup.sh"
 }
@@ -709,7 +716,7 @@ process.stdout.write(JSON.stringify({ ok: true, version, hostVersion: read("host
 '
 
 doctor() {
-  VM_BUDGET="${ALANS_WAY_VM_DOCTOR_BUDGET:-100}"
+  VM_BUDGET="${ALANS_WAY_VM_DOCTOR_BUDGET:-75}"
   node_bin || fail "node is not installed on this server"
   WORK="$(mktemp -d)" || fail "could not create a temp dir"
   trap 'rm -rf "$WORK"' EXIT
@@ -718,10 +725,13 @@ doctor() {
   bounded 15 "$GIT" ls-remote --tags --refs "$PLUGIN_REMOTE" 2>/dev/null \
     | sed -n 's|.*refs/tags/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$|\1|p' \
     | sort -t. -k1.2n -k2n -k3n | tail -1 > "$WORK/pluginTag"
+  HHOME="${HERMES_HOME:-$HOME/.hermes}"
+  _i=0
+  # The audit's script does not need hermes: find it before the profile loop so
+  # a server with no alans-way profiles, or no hermes CLI at all, still gets
+  # audited when setup.sh is on the machine.
+  _setup="$(doctor_setup_script "$HHOME")"
   if hermes_bin; then
-    HHOME="${HERMES_HOME:-$HOME/.hermes}"
-    _i=0
-    _setup="$(doctor_setup_script "$HHOME")"
     while read -r _pname _phome; do
       [ -n "$_pname" ] || continue
       [ -d "$_phome/plugins/alans-way" ] || [ -d "$_phome/plugins/alans-way-computer" ] || continue
@@ -738,14 +748,14 @@ doctor() {
     done <<EOF
 $(list_profiles)
 EOF
-    # One audit for the whole server: without --profile, setup.sh --verify
-    # already covers the default home and every profile that has a bot.
-    if [ -n "$_setup" ]; then
-      if [ "$(budget_left)" -le 10 ]; then touch "$WORK/verify-out-of-time"
-      else
-        bounded "$(( $(budget_left) - 5 ))" sh "$_setup" --verify --hermes-home "$HHOME" > "$WORK/verify" 2>&1 </dev/null
-        printf '%s' "$?" > "$WORK/verify-exit"
-      fi
+  fi
+  # One audit for the whole server: without --profile, setup.sh --verify
+  # already covers the default home and every profile that has a bot.
+  if [ -n "$_setup" ]; then
+    if [ "$(budget_left)" -le 10 ]; then touch "$WORK/verify-out-of-time"
+    else
+      bounded "$(( $(budget_left) - 5 ))" sh "$_setup" --verify --hermes-home "$HHOME" > "$WORK/verify" 2>&1 </dev/null
+      printf '%s' "$?" > "$WORK/verify-exit"
     fi
   fi
   [ -n "$(cat "$WORK/hostVersion")" ] || doctor_host_causes > "$WORK/causes"
@@ -753,9 +763,15 @@ EOF
 }
 
 # ---------------------------------------------------------------- main
-DIR="$(find_checkout)" \
-  || fail "no browser host checkout found (expected /opt/hermes-alans-way/browser or ~/.local/share/hermes-alans-way/app)"
-VERSION="$(json_field version < "$DIR/desktop/package.json")"
+# --check and an update need the browser host checkout; --doctor still reports
+# profiles, plugins and the setup audit on a server that never got one.
+DIR="$(find_checkout || true)"
+if [ -z "$DIR" ]; then
+  [ "$DOCTOR" = 1 ] || fail "no browser host checkout found (expected /opt/hermes-alans-way/browser or ~/.local/share/hermes-alans-way/app)"
+  VERSION=""
+else
+  VERSION="$(json_field version < "$DIR/desktop/package.json")"
+fi
 
 if [ "$CHECK" = 1 ]; then
   BODY="$(status_body)" || BODY=""

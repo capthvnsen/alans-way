@@ -41,11 +41,16 @@ const ROUTER_MAC_APPS = ['alans-way-localapp', 'Open Alan', "Hermes- Alan's way"
 const ROUTER_LINUX_ROOTS = ['/opt/alans-way-localapp-linux-x64', '/opt/alans-way-localapp',
   '$HOME/.local/share/alans-way-localapp-linux-x64', '$HOME/.local/share/alans-way-localapp'];
 
+// True when the running bundle sits at /Applications/<a listed name>.app, the
+// only place the router looks. Electron's isInApplicationsFolder() also passes
+// ~/Applications, which the router never checks.
+const inRouterApplications = (execPath) => ROUTER_MAC_APPS.includes(path.posix.resolve(String(execPath || ''), '../../..'));
+
 // The connector copy may only go when the router can find the app's own
 // connector instead; otherwise the copy is the only one this computer has.
 function bundledConnectorReachable({ platform, isPackaged, execPath, home }) {
   if (!isPackaged) return false;
-  if (platform === 'darwin') return ROUTER_MAC_APPS.includes(path.posix.resolve(execPath, '../../..'));
+  if (platform === 'darwin') return inRouterApplications(execPath);
   if (platform === 'linux') return ROUTER_LINUX_ROOTS.map((root) => root.replace('$HOME', home)).includes(path.posix.dirname(execPath));
   return false;
 }
@@ -59,9 +64,19 @@ function bundleWarning(bundle, productName) {
   return `Alan’s Workspace is running from ${WHERE[bundle.kind] || WHERE.other} (${bundle.path}). The copy at /Applications/${productName}.app is the one updates and your agent’s plugin expect. Quit this one and open that copy; delete the extra copy yourself when you’re ready.`;
 }
 
+// Telegram states that are not "signed out": the sidebar shows the same words.
+const TELEGRAM_TRANSIT = {
+  loading: ['Telegram is still connecting', 'Check again in a moment.'],
+  locked: ['Telegram is locked', 'Unlock Telegram, then check again.'],
+  offline: ['Telegram is offline', 'It retries on its own; check again in a moment.'],
+  'layout-changed': ['Telegram’s layout changed', 'Bot chats may not load until Alan’s Workspace is updated. Update it, then check again.'],
+};
+
 function computerRows({ platform, local }) {
+  const transit = TELEGRAM_TRANSIT[local.telegram];
   const rows = [local.telegram === 'connected'
     ? row('computer', 'ok', 'Signed in to Telegram')
+    : transit ? row('computer', 'warn', ...transit)
     : row('computer', 'fail', 'Not signed in to Telegram', 'Scan the QR code on the left with your phone: Telegram → Settings → Devices → Link Desktop Device.')];
   if (platform === 'darwin') {
     if (local.inApplications === true) rows.push(row('computer', 'ok', 'Alan’s Workspace is in Applications'));
@@ -114,14 +129,19 @@ function serverRows({ appVersion, server }) {
     return [row(s, 'fail', missing ? 'Alan’s Tools aren’t installed on the server' : 'The server check failed', missing ? SETUP_PROMPT : server.error || '')];
   }
   const rows = [];
-  if (isNewer(appVersion, server.version)) rows.push(row(s, 'fail', 'The server is on an older version', `Server ${server.version}, this app ${appVersion}.`, 'update-server'));
+  // An empty version means the server has no browser host checkout; the
+  // profile, plugin and audit rows below still apply.
+  if (!server.version) rows.push(row(s, 'fail', 'Alan’s Tools aren’t installed on the server', SETUP_PROMPT));
+  else if (isNewer(appVersion, server.version)) rows.push(row(s, 'fail', 'The server is on an older version', `Server ${server.version}, this app ${appVersion}.`, 'update-server'));
   else if (isNewer(server.version, appVersion)) rows.push(row(s, 'warn', 'The server is newer than this app', 'Update this app.'));
   else rows.push(row(s, 'ok', `Server tools are on ${server.version}`));
   const causes = (server.hostCauses || []).filter((c) => HOST_CAUSES[c]);
+  // With no tools on the server there is no browser host to update: real
+  // causes still surface, and the missing-tools row above carries the fix.
   if (!server.hostVersion && causes.length) for (const c of causes) rows.push(row(s, 'fail', ...HOST_CAUSES[c]));
-  else if (!server.hostVersion) rows.push(row(s, 'fail', 'The server’s browser is not running', 'Update the server to restart it.', 'update-server'));
-  else if (server.hostVersion !== server.version) rows.push(row(s, 'warn', 'The server’s browser is running an older version', 'Update the server to restart it.', 'update-server'));
-  else rows.push(row(s, 'ok', 'The server’s browser is running'));
+  else if (server.version && !server.hostVersion) rows.push(row(s, 'fail', 'The server’s browser is not running', 'Update the server to restart it.', 'update-server'));
+  else if (server.version && server.hostVersion && server.hostVersion !== server.version) rows.push(row(s, 'warn', 'The server’s browser is running an older version', 'Update the server to restart it.', 'update-server'));
+  else if (server.version && server.hostVersion) rows.push(row(s, 'ok', 'The server’s browser is running'));
   const profiles = server.profiles || [];
   if (!profiles.length) rows.push(row(s, 'warn', 'No Hermes profile on the server has the Alan’s Way Plugin', SETUP_PROMPT));
   for (const p of profiles) {
@@ -155,6 +175,13 @@ const SECRETS = [
   // "…token…": "value" in JSON, then the same pair escaped inside stringified JSON.
   [/("[\w-]*(?:token|secret|password|api[_-]?key|authorization)"\s*:\s*")(?:[^"\\]|\\.)*"/gi, '$1[removed]"'],
   [/(\\"[\w-]*(?:token|secret|password|api[_-]?key|authorization)\\"\s*:\s*\\")(?:[^"\\]|\\[^"])*\\"/gi, '$1[removed]\\"'],
+  // '…token…': 'value' in a Python repr, with either value quote.
+  [/('[\w-]*(?:token|secret|password|api[_-]?key|authorization)'\s*:\s*')(?:[^'\\]|\\.)*'/gi, "$1[removed]'"],
+  [/('[\w-]*(?:token|secret|password|api[_-]?key|authorization)'\s*:\s*")(?:[^"\\]|\\.)*"/gi, '$1[removed]"'],
+  // --token "…", key="…" and key: "…" with a quoted value that may hold spaces;
+  // these run before the unquoted rule so only the quoted span is cut.
+  [/((?<![\w-])(?:--[\w-]*(?:token|secret|password|key)[ \t]+|[\w-]*(?:token|secret|password|key)[ \t]*[=:][ \t]*)")(?:[^"\\]|\\.)*"/gi, '$1[removed]"'],
+  [/((?<![\w-])(?:--[\w-]*(?:token|secret|password|key)[ \t]+|[\w-]*(?:token|secret|password|key)[ \t]*[=:][ \t]*)')(?:[^'\\]|\\.)*'/gi, "$1[removed]'"],
   // --token value, key=value, key: value and URL queries. A plain word needs
   // =, : or a -- flag after it, so prose about keys and tokens stays.
   [/((?<![\w-])(?:--[\w-]*(?:token|secret|password|key)[ \t]+|[\w-]*(?:token|secret|password|key)[ \t]*[=:][ \t]*)["']?)[^\s"'&]+/gi, '$1[removed]'],
@@ -191,4 +218,4 @@ function buildReport({ now = new Date(), app, serverAddress, computerAddress, fi
   return redactReport(lines.join('\n'));
 }
 
-module.exports = { bundleWarning, staleConnectorCopy, bundledConnectorReachable, buildFindings, redactReport, buildReport };
+module.exports = { bundleWarning, staleConnectorCopy, bundledConnectorReachable, inRouterApplications, buildFindings, redactReport, buildReport };
