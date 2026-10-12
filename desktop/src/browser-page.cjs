@@ -154,37 +154,44 @@ function refsSource() {
       }
       return '';
     };
-    // Identity for a rebind: role, base name, row when the name repeats, and the address.
+    // Identity for a rebind: role, base name, row when the name repeats, and
+    // the address including a hash route. A repeated name with no row text to
+    // tell it apart has no identity (null) and is never rebound.
     S.keys = (entries) => {
-      const count = new Map(), here = location.pathname + location.search;
+      const count = new Map(), here = location.pathname + location.search + location.hash;
       for (const x of entries) { const k = x.d.role + '\\u0001' + x.d.base; count.set(k, (count.get(k) || 0) + 1); }
       for (const x of entries) {
-        if (count.get(x.d.role + '\\u0001' + x.d.base) > 1) x.row = S.rowOf(x.el, x.d.base);
-        x.key = [x.d.role, x.d.base, x.row || '', here].join('\\u0001');
+        const repeated = count.get(x.d.role + '\\u0001' + x.d.base) > 1;
+        if (repeated) x.row = S.rowOf(x.el, x.d.base);
+        x.key = repeated && !x.row ? null : [x.d.role, x.d.base, x.row || '', here].join('\\u0001');
       }
     };
     // Lost refs by identity; a key two lost refs share maps to null (ambiguous).
     const retired = () => {
       const out = new Map();
-      for (const [ref, r] of S.byRef) if (!S.live(ref)) out.set(r.key, out.has(r.key) ? null : ref);
+      for (const [ref, r] of S.byRef) if (r.key && !S.live(ref)) out.set(r.key, out.has(r.key) ? null : ref);
       return out;
     };
-    S.assign = (entries, seed) => {
+    // whole is true for a full scan, the only list that knows which names
+    // repeat: refs handed out for a few controls (a name target, an overlay's
+    // close) get no identity, so they never rebind on a partial view.
+    S.assign = (entries, seed, whole = true) => {
       S.n = Math.max(S.n, seed);
       S.keys(entries);
+      if (!whole) for (const x of entries) x.key = null;
       const fresh = entries.filter((x) => !S.refOf(x.el));
       if (fresh.length) {
-        const lost = retired(), count = new Map();
+        const lost = whole ? retired() : new Map(), count = new Map();
         for (const x of fresh) count.set(x.key, (count.get(x.key) || 0) + 1);
         for (const x of fresh) {
-          const old = count.get(x.key) === 1 ? lost.get(x.key) : null;
+          const old = x.key && count.get(x.key) === 1 ? lost.get(x.key) : null;
           if (old) lost.delete(x.key);
           const ref = old || 'e' + (++S.n);
           S.byNode.set(x.el, ref);
           S.byRef.set(ref, { node: new WeakRef(x.el), key: x.key });
         }
       }
-      for (const x of entries) { x.ref = S.byNode.get(x.el); S.byRef.get(x.ref).key = x.key; }
+      for (const x of entries) { x.ref = S.byNode.get(x.el); if (whole) S.byRef.get(x.ref).key = x.key; }
       // Lost refs only matter for a rebind; a long-lived page keeps the newest.
       if (S.byRef.size > 3000) for (const [ref] of S.byRef) { if (S.byRef.size <= 2000) break; if (!S.live(ref)) S.byRef.delete(ref); }
     };
@@ -220,12 +227,15 @@ function refsSource() {
       // Nothing to read: name the element itself, the way an error would.
       const tag = layer.localName + (layer.id ? '#' + layer.id : typeof layer.className === 'string' && layer.className.trim() ? '.' + layer.className.trim().split(/\\s+/)[0] : '');
       const out = { name: name.replace(/\\s+/g, ' ').trim().slice(0, 80) || tag };
-      const controls = [...layer.querySelectorAll('button,a[href],[role=button],input[type=button],input[type=submit]')].filter((c) => c.getClientRects().length);
+      // A real dialog is searched on its own, and only a banner falls back to
+      // its accept choice: a confirm dialog's Continue is never offered as a way out.
+      const real = dialog !== layer || layer.matches('dialog,[role=dialog],[role=alertdialog]');
+      const controls = [...(real ? dialog : layer).querySelectorAll('button,a[href],[role=button],input[type=button],input[type=submit]')].filter((c) => c.getClientRects().length);
       const label = (c) => S.describe(c).base;
-      const close = controls.find((c) => /^(close|dismiss|no,? thanks|not now|maybe later|skip|reject( all)?|decline( all)?|×|✕|x)$/i.test(label(c)) || /^(close|dismiss)/i.test(c.getAttribute('aria-label') || ''))
-        || controls.find((c) => /^(accept( all)?|got it|ok|okay|agree|continue)$/i.test(label(c)));
+      const close = controls.find((c) => /^(close|dismiss|cancel|no|no,? thanks|not now|maybe later|skip|reject( all)?|decline( all)?|×|✕|x)$/i.test(label(c)) || /^(close|dismiss)/i.test(c.getAttribute('aria-label') || ''))
+        || (!real && controls.find((c) => /^(accept( all)?|got it|ok|okay|agree)$/i.test(label(c))));
       if (close) {
-        if (!S.refOf(close)) S.assign([{ el: close, d: S.describe(close) }], 0);
+        if (!S.refOf(close)) S.assign([{ el: close, d: S.describe(close) }], 0, false);
         out.close = S.refOf(close);
         out.closeName = label(close);
       }
@@ -263,10 +273,10 @@ function refsSource() {
       const pool = entries.filter((x) => (!wantRole || x.d.role === wantRole || implicit(x.el, x.d) === wantRole)
         && (!wantRow || norm(x.row || S.rowOf(x.el, x.d.base)).includes(wantRow)));
       for (const test of [(n) => n === want, (n) => n.startsWith(want), (n) => n.includes(want)]) {
-        const hits = pool.filter((x) => test(norm(x.d.base)));
+        const hits = pool.filter((x) => test(norm(x.d.base)) || test(norm(x.d.name)));
         if (!hits.length) continue;
-        S.assign(hits, 0);
-        if (hits.length === 1) return { el: hits[0].el, ref: hits[0].ref };
+        S.assign(hits, 0, false);
+        if (hits.length === 1) return { el: hits[0].el, ref: hits[0].ref, name: hits[0].d.name };
         return { count: hits.length, many: hits.slice(0, 8).map((x) => ({ ref: x.ref, name: x.d.name, ...(x.row ? { row: x.row } : {}) })) };
       }
       return null;
@@ -276,7 +286,7 @@ function refsSource() {
       if (!r) return null;
       const node = S.live(ref);
       if (node) return node;
-      if (retired().get(r.key) !== ref) return null;
+      if (!r.key || retired().get(r.key) !== ref) return null;
       const entries = S.collect(performance.now() + 300, 4000, 1000).list.map((el) => ({ el, d: S.describe(el) }));
       S.keys(entries);
       const twins = entries.filter((x) => x.key === r.key && !S.refOf(x.el));
@@ -417,7 +427,7 @@ function snapshotExpression(opts = {}) {
       const found = R.collect(performance.now() + ${elementMs}, ${maxScan}, ${maxElements});
       more = found.more;
       const entries = found.list.map((el) => ({ el, d: R.describe(el) }));
-      R.assign(entries, ${seed});
+      R.assign(entries, ${seed}, !found.more);
       const listed = new Set();
       for (const x of entries) {
         const { el, d } = x;
@@ -825,6 +835,7 @@ async function readEffect(execute, tab, { parseWaitMs, navigated, target, settle
   }
   // A dialog or banner over the page rides on every reply while it is there.
   const overlays = result.overlays && result.overlays.length ? { overlays: result.overlays } : {};
+  if (Number.isInteger(result.seq)) tab.refSeed = Math.max(tab.refSeed || 0, result.seq);
   if (controlsSame) return { generation: previous.generation, effect, ...overlays };
   tab.generation = generation;
   const settled = settleSnapshot(tab, result, generation);

@@ -65,7 +65,7 @@ function wsParse(buffer) {
 function stubEvaluate(pages, sessionId, expression) {
   const page = pages.get(sessionId) || { url: 'about:blank', title: 'Stub page' };
   // Like a page, a document numbers its control after the tab's seed and keeps that ref.
-  const seed = Number((/R\.assign\(entries, (\d+)\)/.exec(expression) || [])[1] || 0);
+  const seed = Number((/R\.assign\(entries, (\d+),/.exec(expression) || [])[1] || 0);
   if (expression.includes('items.push')) {
     page.ref ||= `e${seed + 1}`;
     return { title: page.title, url: page.url, text: 'stub page text',
@@ -449,10 +449,10 @@ test('a repeat snapshot numbers new refs after the ones the tab issued', async (
   const first = main.stub.calls.length;
   await api(`/v1/tabs/${tab.id}/snapshot`);
   const read = (from) => main.stub.calls.slice(from).find((c) => c.method === 'Runtime.evaluate' && c.params.expression.includes('R.assign(entries,'));
-  assert.match(read(first).params.expression, /R\.assign\(entries, 0\)/);
+  assert.match(read(first).params.expression, /R\.assign\(entries, 0,/);
   const before = main.stub.calls.length;
   await api(`/v1/tabs/${tab.id}/snapshot`);
-  assert.match(read(before).params.expression, /R\.assign\(entries, 1\)/, 'the seed is the highest ref the page reported');
+  assert.match(read(before).params.expression, /R\.assign\(entries, 1,/, 'the seed is the highest ref the page reported');
 });
 
 test('a failed navigation closes the tab it opened instead of leaking it', async () => {

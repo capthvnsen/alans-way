@@ -9,6 +9,12 @@ const CURSOR_ID = 'hermes-workspace-agent-cursor';
 // window global is how bot detectors spot injected state.
 const SUBMIT_KEY = 'hw.submit', SUBMIT_SEEN_KEY = 'hw.submitSeen';
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
+// Every ref an agent is handed raises the tab's seed, so a later document
+// numbers its refs past it and an old ref can never name a new control.
+function issueRef(tab, ref) {
+  tab.refs.add(ref);
+  tab.refSeed = Math.max(tab.refSeed || 0, Number(ref.slice(1)) || 0);
+}
 const staleRef = (ref) => fail(`Stale or unknown reference ${ref}: it does not name a control on this page now. Use a ref from your latest reply or snapshot.`, 409);
 
 // A wedged renderer leaves executeJavaScript pending forever and would
@@ -242,7 +248,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     ${target.name ? `const named = ${refsSource()}.byName(${JSON.stringify(target.name)}, ${JSON.stringify(target.role || '')}, ${JSON.stringify(target.row || '')});
     if (!named) return { fail: 'unnamed' };
     if (named.many) return { fail: 'ambiguous', many: named.many, count: named.count };
-    const el = named.el, ref = named.ref;` : `const el = ${locateElement(target)}, ref = undefined;`}
+    const el = named.el, ref = named.ref, resolved = named.name;` : `const el = ${locateElement(target)}, ref = undefined, resolved = undefined;`}
     if (!el) return { fail: ${target.ref ? "'stale'" : "'missing or disabled'"} };
     if (el.disabled || el.matches(':disabled') || el.closest('[inert]')) return { fail: 'missing or disabled' };
     // A native select hidden behind a custom dropdown is chosen by value, so it needs no hit test.
@@ -323,7 +329,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     }
     const submit = !!el.form && ((el.tagName === 'BUTTON' && (!kind || kind === 'submit')) || (el.tagName === 'INPUT' && kind === 'submit'));
     const link = !!el.closest('a[href]') && !/^#/.test(el.closest('a[href]').getAttribute('href') || '');
-    return { ...point, ref, submit, nav: submit || link, hl: { x: Math.round(r.left + ox), y: Math.round(r.top + oy), width: Math.round(r.width), height: Math.round(r.height) } };
+    return { ...point, ref, resolved, submit, nav: submit || link, hl: { x: Math.round(r.left + ox), y: Math.round(r.top + oy), width: Math.round(r.width), height: Math.round(r.height) } };
   })()`;
 }
 
@@ -429,6 +435,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     if (body.selector !== undefined && (typeof body.selector !== 'string' || !body.selector || body.selector.length > 2000)) throw fail('Provide a CSS selector up to 2,000 characters.');
     for (const key of ['name', 'role', 'row']) if (body[key] !== undefined && (typeof body[key] !== 'string' || !body[key].trim() || body[key].length > 200)) throw fail(`${key} must be a non-empty string up to 200 characters.`);
     if ((body.role !== undefined || body.row !== undefined) && body.name === undefined) throw fail('role and row narrow a name: pass name too.');
+    if (body.name !== undefined && (body.ref !== undefined || body.selector !== undefined)) throw fail('Target one way: a ref, a name or a selector.');
     const targeted = body.ref !== undefined || body.selector !== undefined || body.name !== undefined;
     if ((action === 'type' || action === 'select') && !targeted) throw fail(`${action === 'type' ? 'Typing' : 'Selecting'} requires a ref, a name or a selector.`);
     if (POINTER_ACTIONS.has(action) && !targeted && (!Number.isFinite(body.x) || !Number.isFinite(body.y))) throw fail('Provide a ref, a name, a selector, or viewport x and y coordinates.');
@@ -488,13 +495,13 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       if (found && found.fail === 'stale') throw staleRef(target.ref);
       if (found && found.fail === 'unnamed') throw fail(`No visible control is named ${JSON.stringify(target.name)}${target.role ? ` with role ${target.role}` : ''}${target.row ? ` in a row with ${JSON.stringify(target.row)}` : ''}. Snapshot to see the controls on the page.`);
       if (found && found.fail === 'ambiguous') {
-        for (const item of found.many) tab.refs.add(item.ref);
+        for (const item of found.many) issueRef(tab, item.ref);
         throw fail(`${found.count} controls match ${JSON.stringify(target.name)}: ${found.many.map((item) => `${item.ref} ${JSON.stringify(item.name || '')}${item.row ? ` (row ${JSON.stringify(item.row)})` : ''}`).join(', ')}${found.count > found.many.length ? ', ...' : ''}. Act on one by ref, or narrow with role or row.`);
       }
-      if (found && found.ref) tab.refs.add(found.ref);
+      if (found && found.ref) issueRef(tab, found.ref);
       if (found && found.fail === 'covered') {
         const { name, close, closeName } = found.layer;
-        if (close) tab.refs.add(close);
+        if (close) issueRef(tab, close);
         throw fail(`Element is covered by ${JSON.stringify(name || 'an overlay')}. ${close ? `Close it first: click ${close} (${JSON.stringify(closeName)}), then retry.` : 'Close it first (press Escape or click its close control), then retry.'}`);
       }
       if (!found || found.fail) throw fail(`Element is ${found ? found.fail : 'unavailable'}. Request a fresh snapshot or use a different selector.`);
@@ -520,10 +527,11 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       if (to && (to.ref || to.selector)) end = await resolve(to);
       if (body.ref || body.selector || body.name) {
         found = await resolve(target, { focus: action === 'type' || action === 'press', type: action === 'type', select: action === 'select', probe: action === 'click' });
-        const { hl, submit, nav, ref, ...xy } = found;
+        const { hl, submit, nav, ref, resolved, ...xy } = found;
         point = xy; found = { hl, submit, nav };
-        // A named control is the ref it resolved to from here on, and the reply says which.
-        if (ref) { target = { ref }; extra.ref = ref; }
+        // A named control is the ref it resolved to from here on, and the reply
+        // says which, by its full name (a near match is visible).
+        if (ref) { target = { ref }; extra.ref = ref; extra.resolved = resolved; }
       } else if (POINTER_ACTIONS.has(action)) point = await viewportPoint(body.x, body.y);
       const hl = found.hl || null;
       if (CLICKS[action] || action === 'move') {

@@ -623,7 +623,7 @@ function takeDialogs(tab) {
 function takeOpened(tab) {
   const opened = tab.opened;
   tab.opened = undefined;
-  return opened ? { opened: opened.filter((item) => tabs.has(item.tabId)).map((item) => ({ ...item, title: tabs.get(item.tabId).title || '', epoch: tabs.get(item.tabId).epoch })) } : {};
+  return opened ? { opened: opened.filter((item) => tabs.has(item.tabId)).map((item) => ({ ...item, url: tabs.get(item.tabId).view.webContents.getURL() || item.url, title: tabs.get(item.tabId).title || '', epoch: tabs.get(item.tabId).epoch })) } : {};
 }
 function changeController(id, controller, source = 'human', handback = null) {
   const tab = tabs.get(id);

@@ -177,7 +177,14 @@ const popupPage = `<!doctype html><title>vault</title><button onclick="window.op
 run.onclick = () => { alert('Starting'); const ok = confirm('Delete the scratch files?'); out.textContent = 'ok=' + ok + ' name=' + (ok ? prompt('Name this run', 'run') : null); };
 </script>`;
 const shellPage = `<!doctype html><title>app</title><div style="position:fixed;inset:0;overflow:auto"><nav><a href="/a">Inbox</a> <a href="/b">Sent</a> <a href="/c">Drafts</a></nav><h1>Inbox</h1><button>Compose</button><button>Close</button></div>`;
-const routes = { '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
+const long = 'x'.repeat(240);
+const reviewPage = `<!doctype html><title>review</title><div id="w"></div><div id="v"></div><p id="out">none</p>
+<div id="ask" style="position:fixed;inset:0;background:#0008"><div role="dialog" aria-label="Delete project?"><button onclick="out.textContent='continued'">Continue</button><button onclick="ask.remove()">Cancel</button></div></div><script>
+const rows = () => { w.innerHTML = ['A', 'B'].map((k) => '<div>' + '${long}' + ' <button>Delete</button></div>').join(''); w.querySelectorAll('button').forEach((b, i) => { b.onclick = () => { out.textContent = 'deleted ' + i; rows(); }; }); };
+const view = () => { v.innerHTML = '<button>Save</button>'; v.querySelector('button').onclick = () => { out.textContent = 'saved ' + location.hash; }; };
+rows(); view(); addEventListener('hashchange', view);
+</script>`;
+const routes = { '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
 const api = (route, method = 'GET', body, epoch) =>
@@ -765,4 +772,28 @@ test('a reply names the tab its action opened and answers dialogs the way the ac
   assert.equal(await pageText(tab, '#out'), 'ok=true name=eval-42');
   const after = await act(tab, { action: 'click', name: 'Run cleanup' });
   assert.equal(after.data.dialogs[1].accepted, false, 'an answer lasts only for the action that carried it');
+});
+
+test('rebinding needs evidence: no row text, another hash route, or a partial view never rebind', live, async () => {
+  const tab = await openTab('/review#/a');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  assert.equal(snap.overlays[0].closeName, 'Cancel', 'a confirm dialog offers Cancel, never Continue');
+  await act(tab, { action: 'click', ref: snap.overlays[0].close });
+  const [first, second] = snap.elements.filter((e) => e.name === 'Delete');
+  assert.equal(first.row, undefined, 'rows too long to read give no row');
+  assert.equal((await act(tab, { action: 'click', ref: first.ref })).status, 200);
+  const stale = await act(tab, { action: 'click', ref: second.ref });
+  assert.equal(stale.status, 409, `a repeated name with no row text was rebound: ${JSON.stringify(stale.data)}`);
+  assert.equal(await pageText(tab, '#out'), 'deleted 0');
+  const save = snap.elements.find((e) => e.name === 'Save');
+  await act(tab, { action: 'eval', code: "location.hash = '#/b'" });
+  const moved = await act(tab, { action: 'click', ref: save.ref });
+  assert.equal(moved.status, 409, `a ref followed a control onto another hash route: ${JSON.stringify(moved.data)}`);
+  assert.equal(await pageText(tab, '#out'), 'deleted 0');
+  const both = await act(tab, { action: 'click', ref: save.ref, name: 'Save' });
+  assert.match(both.data.error, /Target one way/);
+  const todos = await openTab('/todos');
+  const stateful = await act(todos, { action: 'click', name: 'Walk dog off', role: 'checkbox' });
+  assert.equal(stateful.status, 200, `a name as the snapshot lists it, state words included: ${JSON.stringify(stateful.data)}`);
+  assert.equal(stateful.data.resolved, 'Walk dog off');
 });
