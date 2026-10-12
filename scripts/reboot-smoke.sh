@@ -69,7 +69,7 @@ is_target() {
   case "$1" in
     # Linux comm is cut to 15 chars.
     node|nodejs|chrome|chromium|chromium-browse*|msedge) return 0;;
-    "Google Chrome"|"Google Chrome Helper"*|Chromium|"Chromium Helper"*|"Microsoft Edge"|"Microsoft Edge Helper"*) return 0;;
+    "Google Chrome"|"Google Chrome Helper"*|"Google Chrome for Testing"|"Google Chrome for Testing Helper"*|Chromium|"Chromium Helper"*|"Microsoft Edge"|"Microsoft Edge Helper"*) return 0;;
   esac
   return 1
 }

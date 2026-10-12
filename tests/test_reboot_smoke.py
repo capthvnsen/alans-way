@@ -223,6 +223,16 @@ class RebootSmokeTests(unittest.TestCase):
         self.assertNotIn("[y/N]", result.stderr)
         self.assert_services_replaced_and_bystanders_alive()
 
+    def test_crash_kills_chrome_for_testing(self):
+        comms = {self.original["chrome"]: "Google Chrome for Testing",
+                 self.original["helper"]: "Google Chrome for Testing Helper (Renderer)"}
+        self.entries = [(pid, comms.get(pid, comm), restart, cmdline)
+                        for pid, comm, restart, cmdline in self.entries]
+        self._write_entries()
+        result = self._run("--crash", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_services_replaced_and_bystanders_alive()
+
     def test_a_bystander_is_not_a_keeper(self):
         self.entries = [entry for entry in self.entries if entry[0] != self.original["keeper"]]
         self._write_entries()
