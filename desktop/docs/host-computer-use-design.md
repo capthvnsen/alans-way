@@ -188,6 +188,19 @@ reading each reply; **batch** is one snapshot then one batch; **plugin**
 emulates the alans-way-computer provider (capture = snapshot + screenshot,
 action replies discarded, a final capture to read the result).
 
+The tables below were measured before the code-review fixes. Repeat runs on
+the final code match them per run (calls, stale_ref and text tokens):
+
+| Runs | Baseline mcp / batch | Final mcp / batch |
+|---|---|---|
+| 3 | 12/21 / 12/21 | 20/21 / 21/21 |
+| 5 | not run | 35/35 / 35/35 |
+
+The one miss was "switch window" in mcp mode, 20 seconds after the screen
+unlocked: that loop reads the action reply without a `wait`, and the text
+view had not updated yet. It did not repeat in the next 5 runs. The batch
+loop, which waits for the text, passed every run.
+
 **mcp**
 
 | Task | Pass | Calls | stale_ref | Text tokens |
