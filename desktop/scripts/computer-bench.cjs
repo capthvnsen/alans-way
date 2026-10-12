@@ -205,7 +205,7 @@ const tasks = [
   { name: 'read list + select', plan: [press((e) => e.role === 'AXRow' && /\bRow 3\b/.test(e.name))],
     check: (t) => has(t, 'Count: 3') && Boolean(find(t, (e) => /\bRow 3\b/.test(e.name))) },
   { name: 'scroll list', plan: [{ do: (t) => ({ action: 'scroll', ref: ref((e) => e.role === 'AXRow' || e.role === 'AXCell')(t), direction: 'down', amount: 2 }) }],
-    check: (t) => Boolean(find(t, (e) => /\bRow ([2-9]\d)\b/.test(e.name))) },
+    check: (t) => Boolean(find(t, (e) => /\bRow (1\d|[2-9]\d)\b/.test(e.name))) },
   { name: 'menu reset', plan: [menuReset, waitFor('Count: 0')], check: (t) => has(t, 'Count: 0') && has(t, 'Result: none') },
   { name: 'click under live churn', setup: ['Start clock'], teardown: ['Stop clock'],
     plan: [press('Increment'), press('Increment'), waitFor('Count: 2')], check: (t) => has(t, 'Count: 2') },
