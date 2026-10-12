@@ -118,6 +118,11 @@ test('update-now and vm-update-retry are locked out while a hermes update runs',
   assert.equal(updateLocked({}), false, 'an idle machine is not locked');
 });
 
+test('every update path is locked out while "Update everything" runs', () => {
+  assert.equal(updateLocked({ updatingAll: true }), true);
+  assert.equal(updateLocked({ updateBusy: false, vmRetrying: false, hermesUpdating: false, updatingAll: false }), false);
+});
+
 test('hermes-update is locked out while an app or VM update runs', () => {
   assert.equal(updateLocked({ updateBusy: true }), true);
   assert.equal(updateLocked({ vmRetrying: true }), true);
@@ -129,9 +134,9 @@ test('hermes-update is locked out while an app or VM update runs', () => {
 // `if (update.busy) break` fails here.
 test('main.cjs routes every update command through the shared lock', () => {
   const src = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
-  for (const cmd of ['update-now', 'vm-update-retry', 'hermes-update']) {
-    const guard = new RegExp(`case '${cmd}':\\s*\\{\\s*if \\(updateLocked\\(\\{[^)]*hermesUpdating[^)]*\\}\\)\\)\\s*break`);
-    assert.match(src, guard, `${cmd} must refuse via updateLocked({ ..., hermesUpdating })`);
+  for (const cmd of ['update-now', 'vm-update-retry', 'hermes-update', 'update-all', 'update-all-restart']) {
+    const guard = new RegExp(`case '${cmd}':\\s*\\{\\s*if \\(updateLocked\\(\\{[^)]*hermesUpdating, updatingAll[^)]*\\}\\)`);
+    assert.match(src, guard, `${cmd} must refuse via updateLocked({ ..., hermesUpdating, updatingAll })`);
   }
 });
 
@@ -276,6 +281,41 @@ test('a profile whose send fails is recorded without losing the update result', 
   assert.equal(result.ok, true);
   assert.equal(result.messaged, true);
   assert.deepEqual(result.messages.map((m) => [m.profile, m.sent]), [['default', true], ['coder', false]]);
+});
+
+test('quiet mode updates without messaging; the message waits for the end of "Update everything"', async () => {
+  const { bin, state, log, sendLog } = makeHermes();
+  const res = await runScript(envFor(bin, state, { HERMES_HOME: makeHermesHome(), ALANS_WAY_HERMES_QUIET: '1' }));
+  const result = lastJson(res);
+  assert.equal(result.ok, true);
+  assert.equal(result.updated, true);
+  assert.deepEqual([result.messaged, result.messages], [false, []]);
+  assert.match(fs.readFileSync(log, 'utf8'), /^hermes update --yes --keep-stash$/m);
+  assert.equal(fs.existsSync(sendLog), false, 'no bot was asked to send anything');
+});
+
+test('report mode skips the update and every profile sends the given text, prelude and all', () => {
+  const { bin, state, log, sendLog } = makeHermes();
+  const env = envFor(bin, state, { HERMES_HOME: makeHermesHome() });
+  // The app prepends the assignment to the piped script (vm-update.cjs).
+  const input = `ALANS_WAY_HERMES_REPORT='Update everything finished. Now on Hermes 0.21.7.'\n${fs.readFileSync(SCRIPT, 'utf8')}`;
+  const res = spawnSync('sh', ['-s'], { input, env: { ...process.env, ...env }, encoding: 'utf8', timeout: 30000 });
+  const result = lastJson({ stdout: res.stdout, stderr: res.stderr });
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual([result.ok, result.updated, result.messaged], [true, false, true]);
+  assert.doesNotMatch(fs.readFileSync(log, 'utf8'), /hermes update/, 'no second update');
+  const sends = fs.readFileSync(sendLog, 'utf8');
+  assert.match(sends, /^send default: Update everything finished\. Now on Hermes 0\.21\.7\.$/m);
+  assert.match(sends, /^send coder: Update everything finished\. Now on Hermes 0\.21\.7\.$/m);
+});
+
+test('the Windows twin carries the same quiet and report switches', () => {
+  const ps1 = fs.readFileSync(WINDOWS_SCRIPT, 'utf8');
+  assert.match(ps1, /\$quiet = \$env:ALANS_WAY_HERMES_QUIET/);
+  assert.match(ps1, /\$report = \$env:ALANS_WAY_HERMES_REPORT/);
+  assert.match(ps1, /if \(\$report\) \{ break \}/, 'report mode never stops a gateway');
+  assert.match(ps1, /if \(\$report\) \{ \$r = @\{ code = 0; out = '' \} \} else \{/, 'report mode never runs hermes update');
+  assert.match(ps1, /if \(\$quiet\) \{\s+Say 'the message waits/, 'quiet mode sends nothing');
 });
 
 test('a machine without the hermes CLI fails cleanly', async () => {

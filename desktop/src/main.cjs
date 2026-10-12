@@ -23,7 +23,8 @@ const { createLog } = require('./main-log.cjs');
 const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
-const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked } = require('./vm-update.cjs');
+const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, pluginStatusText, LOCAL_TARGET } = require('./vm-update.cjs');
+const { latestPluginTag, versionRecord, describeVersions, runSteps, summarizeRun, reportText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -89,6 +90,10 @@ const vmUpdater = createVmUpdater({ log: (label, error) => logError(label, error
 const vmProgress = {};
 let vmRetrying = false;
 let hermesUpdating = false;
+// "Update everything" from the bottom bar: its lock flag and the last run's
+// step rows, closing summary and whether a staged app update awaits a restart.
+let updatingAll = false;
+let updateRun = { steps: [], summary: '', restart: false };
 let lastSetupCheck = null;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
@@ -141,7 +146,7 @@ const recordings = recorder.createRecordingStore(path.join(app.getPath('userData
 let pointerTimer, activityTimer, idleTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, vmUpdates: {},
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, vmUpdates: {}, versionCache: {},
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -286,6 +291,8 @@ function getState() {
       snoozedUntil: prefs.updateSnoozedUntil || 0,
       vms: vmTargets(prefs).map((target) => ({ id: target.id, label: target.label, ...(vmProgress[target.id] || {}) })),
       vmRetry: vmRetryState(app.getVersion(), prefs.vmUpdates, vmTargets(prefs)), vmRetrying },
+    versions: describeVersions({ app: app.getVersion(), appUpdate: update.available, cache: prefs.versionCache }),
+    updateAll: { busy: updatingAll, ...updateRun },
     bundleWarning: bundleWarningDismissed ? '' : setupCheck.bundleWarning(runningBundle(), app.getName()) || '',
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? setupCheck.inRouterApplications(process.execPath) : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
@@ -830,19 +837,76 @@ function noteVmResult(result) {
     : { version: result.version || previous.version || '', failed: result.error || 'The VM update failed.' } };
 }
 // After relaunch (and at every start) each saved VM reports its checkout
-// version; a VM behind the app surfaces through update.vmRetry.
+// version; a VM behind the app surfaces through update.vmRetry. The same
+// probe feeds the bottom bar: the machine's Hermes, plugin and gateway, plus
+// the newest plugin tag on GitHub. No saved server means the Hermes on this
+// computer. Callers skip it while an update holds the machine: `hermes update
+// --check` fetches into the same checkout `hermes update` is moving.
+let versionsChecking = false;
 async function checkVmVersions() {
-  // Records outlive their VM when a target is removed or an older build wrote
-  // a bad id; drop them so only live VMs can ever steer the retry banner.
-  const targets = vmTargets(prefs);
-  prefs.vmUpdates = pruneVmUpdates(prefs.vmUpdates, targets);
-  for (const target of targets) {
-    const result = await vmUpdater.checkVm(target);
-    if (!result.ok) continue;
-    const entry = vmCheckEntry(prefs.vmUpdates?.[target.id], result);
-    if (entry) prefs.vmUpdates = { ...(prefs.vmUpdates || {}), [target.id]: entry };
+  if (versionsChecking) return;
+  versionsChecking = true;
+  try {
+    // Records outlive their VM when a target is removed or an older build wrote
+    // a bad id; drop them so only live VMs can ever steer the retry banner.
+    const targets = vmTargets(prefs);
+    prefs.vmUpdates = pruneVmUpdates(prefs.vmUpdates, targets);
+    const target = targets[0] || LOCAL_TARGET;
+    const [result, pluginLatest] = await Promise.all([vmUpdater.checkVm(target), latestPluginTag().catch(() => '')]);
+    if (result.ok && !target.local) {
+      const entry = vmCheckEntry(prefs.vmUpdates?.[target.id], result);
+      if (entry) prefs.vmUpdates = { ...(prefs.vmUpdates || {}), [target.id]: entry };
+    }
+    prefs.versionCache = versionRecord(prefs.versionCache, { target, check: result, pluginLatest, now: Date.now() });
+    savePreferencesSoon(); broadcast();
+  } finally { versionsChecking = false; }
+}
+const VERSIONS_EVERY_MS = 30 * 60 * 1000;
+const checkVersionsWhenIdle = () => {
+  if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) return;
+  checkVmVersions().catch((error) => logError('vm-check', error));
+};
+// Hands over to the new app build: electron-updater installs on quit, an
+// unsigned Mac swaps its own bundle and relaunches.
+async function restartIntoUpdate() {
+  if (updateDriver === 'electron-updater') {
+    // quitAndInstall closes windows without a before-quit, so the close
+    // handler would hide the window instead and the app would never exit.
+    isQuitting = true;
+    mainLog().write('updater', 'quitAndInstall called');
+    armQuitWatchdog({ exit: (code) => app.exit(code), log: (text) => mainLog().write('updater', text) });
+    require('electron-updater').autoUpdater.quitAndInstall();
+    return;
   }
-  savePreferencesSoon(); broadcast();
+  await macUpdate.installMacUpdate({ tag: update.tag, bundlePath: path.resolve(process.execPath, '../../..') });
+  savePreferences(); app.relaunch(); app.exit(0);
+}
+// One "Update everything" step against the agent machine (or this app). Each
+// reuses the flow its own button runs: hermes-update (quiet: the bot reports
+// once at the end), vm-update --plugins, the tag update, and the app updater.
+async function runUpdateStep(step, target) {
+  if (step.id === 'hermes') {
+    const result = await vmUpdater.hermesUpdateVm(target, { quiet: true });
+    return { ok: result.ok, error: result.error, version: result.version,
+      detail: result.ok ? (result.updated ? `Updated to ${result.version || 'the latest version'}` : 'Already up to date') : '' };
+  }
+  if (step.id === 'plugin') {
+    const result = await vmUpdater.updatePluginsVm(target);
+    // A plugin that failed or stayed blocked is this step's failure; needs
+    // approval and skipped are warnings the detail line carries.
+    const bad = result.plugins.find((p) => p.status === 'failed' || p.status === 'blocked');
+    const after = result.plugins.find((p) => p.name === 'alans-way' && p.after)?.after;
+    return { ok: result.ok && !bad, error: result.ok ? pluginStatusText(bad) : result.error, version: after,
+      detail: result.pluginLines.map((line) => line.text).join(' ') };
+  }
+  if (step.id === 'host') {
+    const result = await vmUpdater.updateVm(target, `v${step.to}`);
+    noteVmResult(result); savePreferences();
+    return { ok: result.ok, error: result.error, version: result.version, detail: result.ok ? `Running ${result.version}` : '' };
+  }
+  // The app only stages here; the restart is the user's click.
+  const staged = updateDriver === 'electron-updater' ? update.ready : updateDriver === 'self' && Boolean(update.tag);
+  return staged ? { ok: true, detail: 'Downloaded. Restart to finish.' } : { ok: false, error: 'The app update is not downloaded yet; try again in a few minutes.' };
 }
 // Offline or rate-limited checks stay quiet for the user; only the first failure is logged, and the next check retries.
 let updateDriver = 'none';
@@ -851,7 +915,7 @@ function startUpdates() {
   if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
   if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
   if (prefs.updateSnoozedUntil) { prefs.updateSnoozedUntil = 0; savePreferencesSoon(); }
-  checkVmVersions().catch((error) => logError('vm-check', error));
+  checkVersionsWhenIdle(); setInterval(checkVersionsWhenIdle, VERSIONS_EVERY_MS);
   if (!app.isPackaged) return;
   // Only a Developer ID signed Mac app can use electron-updater (Squirrel
   // verifies the update signature); unsigned installs keep swapping the dmg.
@@ -1350,6 +1414,7 @@ function registerIpc() {
           // When the VM's SSH address moves to a different host, the noVNC
           // viewer follows unless remoteUrl was deliberately pointed elsewhere.
           const followed = followVmRemoteUrl(prefs.vpsBrowser.sshHost, sshHost, prefs.remoteUrl);
+          if (sshHost !== prefs.vpsBrowser?.sshHost) { prefs.versionCache = {}; setTimeout(checkVersionsWhenIdle, 0); }
           prefs.vpsBrowser={sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}; if(!sshHost)prefs.vmUpdates={}; vpsBrowserStatus='connecting'; refreshVpsTabs();
           if (followed) { prefs.remoteUrl = followed; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         }
@@ -1432,7 +1497,7 @@ function registerIpc() {
       case 'mac-permissions': return process.platform === 'darwin' ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null;
       case 'open-mac-privacy': if (process.platform === 'darwin') shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${value.pane === 'screen' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility'}`); break;
       case 'update-now': {
-        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating })) break;
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
         const autoUpdate = updateDriver === 'electron-updater';
         const tag = autoUpdate ? `v${update.available}` : update.tag;
         if (autoUpdate ? !update.ready : !tag) break;
@@ -1450,23 +1515,14 @@ function registerIpc() {
             noteVmResult(result); broadcast();
           }
           savePreferences();
-          if (autoUpdate) {
-            // quitAndInstall closes windows without a before-quit, so the close
-            // handler would hide the window instead and the app would never exit.
-            isQuitting = true;
-            mainLog().write('updater', 'quitAndInstall called');
-            armQuitWatchdog({ exit: (code) => app.exit(code), log: (text) => mainLog().write('updater', text) });
-            require('electron-updater').autoUpdater.quitAndInstall();
-            break;
-          }
-          await macUpdate.installMacUpdate({ tag: update.tag, bundlePath: path.resolve(process.execPath, '../../..') });
+          await restartIntoUpdate();
         }
         catch (error) { update.busy = false; update.error = error.message; broadcast(); throw error; }
-        savePreferences(); app.relaunch(); app.exit(0); break;
+        break;
       }
       case 'update-later': prefs.updateSnoozedUntil = snoozeUntil(Date.now()); savePreferences(); broadcast(); break;
       case 'vm-update-retry': {
-        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating })) break;
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
         vmRetrying = true; broadcast();
         const tag = `v${app.getVersion()}`;
         try {
@@ -1486,7 +1542,7 @@ function registerIpc() {
       // each profile's bot messages the user from its own chat. Never runs
       // alongside the app's own VM update, which touches the same machine.
       case 'hermes-update': {
-        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating })) break;
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
         const target = vmTargets(prefs)[0];
         if (!target) throw new Error('Save the agent machine SSH address first.');
         hermesUpdating = true;
@@ -1494,6 +1550,41 @@ function registerIpc() {
           const result = await vmUpdater.hermesUpdateVm(target);
           return { ok: result.ok, detail: hermesUpdateDetail(result, target.label) };
         } finally { hermesUpdating = false; }
+      }
+      case 'versions-refresh': checkVersionsWhenIdle(); break;
+      // The bottom bar's "Update everything", sent only after the user
+      // confirmed the plan in the popover. Server first (Hermes, then the
+      // plugin that must match it), then the browser host, then this app,
+      // which only stages: the restart waits for "Restart to finish". Then
+      // the versions refresh and the bot reports once in Telegram.
+      case 'update-all': {
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
+        const { steps } = describeVersions({ app: app.getVersion(), appUpdate: update.available, cache: prefs.versionCache });
+        if (!steps.length) break;
+        const target = vmTargets(prefs)[0] || LOCAL_TARGET;
+        updatingAll = true; updateRun = { steps: [], summary: '', restart: false }; broadcast();
+        try {
+          mainLog().write('update all', `start ${steps.map((step) => `${step.id} ${step.from}->${step.to}`).join(', ')}`);
+          const rows = await runSteps(steps, (step) => runUpdateStep(step, target), (next) => { updateRun.steps = next; broadcast(); });
+          mainLog().write('update all', rows.map((row) => `${row.id} ${row.state}${row.error ? ` ${row.error}` : ''}`).join(', '));
+          await checkVmVersions().catch((error) => logError('vm-check', error));
+          const where = target.local ? 'this computer' : 'server';
+          updateRun = { steps: rows, restart: rows.some((row) => row.id === 'app' && row.state === 'done'),
+            summary: summarizeRun(rows, { gatewayRunning: prefs.versionCache?.gatewayRunning ?? null, where }) };
+          broadcast();
+          if (prefs.versionCache?.hermes) {
+            const sent = await vmUpdater.hermesUpdateVm(target, { report: reportText(rows) });
+            updateRun = { ...updateRun, summary: `${updateRun.summary} ${sent.messaged ? 'Your bot messaged you on Telegram.' : 'The bot could not message you on Telegram.'}` };
+          }
+        } finally { updatingAll = false; broadcast(); }
+        break;
+      }
+      case 'update-all-restart': {
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll }) || !updateRun.restart) break;
+        update.busy = true; broadcast();
+        try { await restartIntoUpdate(); }
+        catch (error) { update.busy = false; update.error = error.message; broadcast(); throw error; }
+        break;
       }
       case 'open-download-page': shell.openExternal(`https://openalan.com/download/${HOST_LABEL === 'windows' ? 'windows' : 'mac'}`); break;
       case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/v${app.getVersion()}`); break;

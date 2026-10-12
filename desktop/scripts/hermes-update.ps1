@@ -5,6 +5,8 @@
 # it stopped - success or failure - then `hermes --version` for the report and
 # `hermes [-p <profile>] send -t telegram <text>` for every profile so each
 # bot reports the result in its usual chat.
+# Like the POSIX twin, ALANS_WAY_HERMES_QUIET=1 updates without the message and
+# ALANS_WAY_HERMES_REPORT=<text> only sends that text ("Update everything").
 # The last stdout line is one JSON result:
 # {"ok":bool,"version":"x.y.z","updated":bool,"error":"...","messaged":bool,
 #  "gatewayRestarted":bool,"messages":[{"profile":"...","sent":bool,"error":"..."}]}
@@ -118,6 +120,8 @@ $script:HermesBin = Find-Hermes
 if (-not $script:HermesBin) { Write-Result $false 'no hermes CLI on this machine'; exit 1 }
 $hhome = $env:HERMES_HOME
 if (-not $hhome) { $hhome = "$env:LOCALAPPDATA\hermes" }
+$quiet = $env:ALANS_WAY_HERMES_QUIET
+$report = $env:ALANS_WAY_HERMES_REPORT
 
 # `hermes update` refuses while a gateway holds the install on Windows, so
 # every profile reporting a live gateway is stopped first and - success or
@@ -128,6 +132,7 @@ if (-not $hhome) { $hhome = "$env:LOCALAPPDATA\hermes" }
 $gwTimeout = EnvInt 'ALANS_WAY_HERMES_GATEWAY_TIMEOUT' 60
 $restart = @()
 foreach ($prof in (Get-Profiles $hhome)) {
+    if ($report) { break }
     if ((BudgetLeft) -le 30) { Say 'ran out of the time budget; remaining gateways were not stopped'; break }
     $st = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_STATUS_TIMEOUT' 20) (Gw-Args $prof.name 'status')
     if ($st.out -notmatch '(?i)gateway is running') { continue }
@@ -138,14 +143,16 @@ foreach ($prof in (Get-Profiles $hhome)) {
     if ($sp.code -ne 0) { Say "gateway $($prof.name): stop did not finish: $(Tail-Text $sp.out 160)" }
 }
 
-Say 'running hermes update'
-# The update may not eat the restart reserve: it gets at most the remaining
-# budget minus one gateway timeout per stopped gateway, so starting them back
-# always fits. A cap at zero never spawns - Invoke-Hermes returns 124 first.
-$upSecs = EnvInt 'ALANS_WAY_HERMES_UPDATE_TIMEOUT' 200
-$upCap = (BudgetLeft) - ($restart.Count * $gwTimeout) - 8
-if ($upCap -lt $upSecs) { $upSecs = $upCap }
-$r = Invoke-Hermes $upSecs @('update', '--yes', '--keep-stash')
+if ($report) { $r = @{ code = 0; out = '' } } else {
+    Say 'running hermes update'
+    # The update may not eat the restart reserve: it gets at most the remaining
+    # budget minus one gateway timeout per stopped gateway, so starting them back
+    # always fits. A cap at zero never spawns - Invoke-Hermes returns 124 first.
+    $upSecs = EnvInt 'ALANS_WAY_HERMES_UPDATE_TIMEOUT' 200
+    $upCap = (BudgetLeft) - ($restart.Count * $gwTimeout) - 8
+    if ($upCap -lt $upSecs) { $upSecs = $upCap }
+    $r = Invoke-Hermes $upSecs @('update', '--yes', '--keep-stash')
+}
 $ok = ($r.code -eq 0)
 $err = ''
 if ($r.code -eq 124) { $err = 'the hermes update timed out' }
@@ -153,7 +160,7 @@ elseif (-not $ok) {
     $err = Tail-Text $r.out 300
     if (-not $err) { $err = "hermes update exited $($r.code)" }
 }
-$script:Updated = $ok -and ($r.out -notmatch '(?i)already up.to.date|nothing to update|no update available')
+$script:Updated = $ok -and -not $report -and ($r.out -notmatch '(?i)already up.to.date|nothing to update|no update available')
 
 # Start back exactly the gateways this run stopped - a failed update must not
 # leave the fleet's bots offline. Unbudgeted: the attempt happens even if the
@@ -169,7 +176,7 @@ foreach ($name in $restart) {
 $v = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_VERSION_TIMEOUT' 20) @('--version')
 $vm = [regex]::Match([string]$v.out, 'Hermes Agent v([0-9][0-9.]*)')
 if ($vm.Success) { $script:Version = $vm.Groups[1].Value }
-if ($ok) { Say 'hermes update finished' } else { Say "hermes update failed: $err" }
+if ($report) {} elseif ($ok) { Say 'hermes update finished' } else { Say "hermes update failed: $err" }
 
 # The message each profile's bot sends home: outcome, host and version so a
 # user with several machines can tell them apart. Characters cmd would read
@@ -183,9 +190,12 @@ if ($ok) {
     $short = $err; if ($short.Length -gt 200) { $short = $short.Substring(0, 200) }
     $msg = "Hermes update failed${where}: $short"
 }
+if ($report) { $msg = $report }
 $msg = ($msg -replace '[&|<>^%"]', ' ')
 
-if ((BudgetLeft) -gt 15) {
+if ($quiet) {
+    Say 'the message waits for the end of the update'
+} elseif ((BudgetLeft) -gt 15) {
     Say 'telling your bot to message you'
     foreach ($prof in (Get-Profiles $hhome)) {
         if ((BudgetLeft) -le 12) { Say 'ran out of the time budget; remaining profiles were not messaged'; break }
@@ -205,7 +215,7 @@ if ((BudgetLeft) -gt 15) {
 } else {
     Say 'no time left to message you'
 }
-if ((-not $script:Messaged) -and $ok) { Say 'no profile could message you; the result is only in this report' }
+if ((-not $script:Messaged) -and $ok -and -not $quiet) { Say 'no profile could message you; the result is only in this report' }
 
 Write-Result $ok $err
 if ($ok) { exit 0 } else { exit 1 }
