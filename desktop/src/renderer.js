@@ -1046,12 +1046,19 @@ $('modal').onclick = (event) => { if (event.target === $('modal')) closeModal();
 $('update-now').onclick = () => command('update-now');
 $('update-later').onclick = () => { updatePopupPinned = false; command('update-later'); };
 $('vm-banner-retry').onclick = () => command('vm-update-retry');
-$('update-all').onclick = () => { updateAllOpen = true; updateAllView = state?.updateAll?.busy ? 'run' : 'plan'; renderUpdateAll(); };
+// Opening re-checks the machine, so the plan does not lean on a cache that can
+// be half an hour old; it re-renders when the answer lands.
+$('update-all').onclick = () => { updateAllOpen = true; updateAllView = state?.updateAll?.busy ? 'run' : 'plan'; renderUpdateAll(); if (updateAllView === 'plan') command('versions-refresh'); };
 $('update-all-cancel').onclick = closeUpdateAll;
 $('update-all-go').onclick = () => {
   // The run view starts empty, not on a previous run's rows, until main's
   // first broadcast lands.
-  if (updateAllView === 'plan') { updateAllView = 'run'; state.updateAll = { busy: true, steps: [] }; renderUpdateAll(); command('update-all').then(() => api.getState()).then(render); }
+  if (updateAllView === 'plan') { updateAllView = 'run'; state.updateAll = { busy: true, steps: [] }; renderUpdateAll(); command('update-all').then((reply) => {
+    // Main refuses while another update holds the lock, or when nothing is
+    // behind any more; go back to the plan and say why instead of a blank run.
+    if (reply?.refused) { updateAllView = 'plan'; toast(reply.refused); }
+    return api.getState();
+  }).then(render); }
   else command('update-all-restart');
 };
 $('update-all-popup').onclick = (event) => { if (event.target === $('update-all-popup')) closeUpdateAll(); };

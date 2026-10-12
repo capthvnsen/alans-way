@@ -22,8 +22,8 @@ const parseHermesVersion = (text) => /Hermes Agent v(\d+\.\d+\.\d+)/.exec(String
 // available is null when there was no verdict (offline, a docker install).
 function parseHermesCheck(text) {
   const t = String(text || '');
+  if (/up to date|no newer release|no update available/i.test(t)) return { available: false, latest: '' };
   if (/update available|release available/i.test(t)) return { available: true, latest: /release available:.*?\bv(\d+\.\d+\.\d+)/i.exec(t)?.[1] || '' };
-  if (/up to date|no newer release/i.test(t)) return { available: false, latest: '' };
   return { available: null, latest: '' };
 }
 
@@ -39,7 +39,7 @@ function newestTag(names) {
 
 // ponytail: first 100 tags only; page through when the plugin repo outgrows that.
 async function latestPluginTag(fetchImpl = fetch) {
-  const res = await fetchImpl(`https://api.github.com/repos/${PLUGIN_REPO}/tags?per_page=100`, { headers: { accept: 'application/vnd.github+json' } });
+  const res = await fetchImpl(`https://api.github.com/repos/${PLUGIN_REPO}/tags?per_page=100`, { headers: { accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(10000) });
   if (!res.ok) return '';
   const tags = await res.json();
   return newestTag(Array.isArray(tags) ? tags.map((tag) => tag?.name) : []);
@@ -127,9 +127,15 @@ async function runSteps(steps, runStep, onChange = () => {}) {
 function summarizeRun(rows, { gatewayRunning = null, where = 'server' } = {}) {
   const failed = rows.find((row) => row.state === 'failed');
   const named = (state) => rows.filter((row) => row.state === state).map((row) => row.name);
+  // A step can finish without moving (already current, or a catalog pin
+  // behind the newest tag); it is named, never counted as updated.
+  const stayed = rows.filter((row) => row.state === 'done' && row.id !== 'app' && row.to === row.from).map((row) => `${row.name} (${row.from})`);
   const parts = [];
-  if (!failed) parts.push(rows.some((row) => row.id === 'app') ? 'Everything is updated. Restart to finish the app update.' : 'Everything is updated.');
-  else {
+  if (!failed) {
+    parts.push(stayed.length ? 'Done.' : 'Everything is updated.');
+    if (stayed.length) parts.push(`Still on the same version: ${stayed.join(', ')}.`);
+    if (rows.some((row) => row.id === 'app')) parts.push('Restart to finish the app update.');
+  } else {
     parts.push(`${failed.name} did not update: ${failed.error.replace(/[.!?]?\s*$/, '.')}`);
     if (named('done').length) parts.push(`Updated: ${named('done').join(', ')}.`);
     if (named('skipped').length) parts.push(`Not started, still on the old version: ${named('skipped').join(', ')}.`);
@@ -141,11 +147,12 @@ function summarizeRun(rows, { gatewayRunning = null, where = 'server' } = {}) {
 // The one message the bot sends home when the run ends, success or not.
 function reportText(rows) {
   const failed = rows.find((row) => row.state === 'failed');
-  const done = rows.filter((row) => row.state === 'done' && row.id !== 'app').map((row) => `${SHORT[row.id]} ${row.to}`);
+  const done = rows.filter((row) => row.state === 'done' && row.id !== 'app' && row.to !== row.from).map((row) => `${SHORT[row.id]} ${row.to}`);
+  const same = rows.filter((row) => row.state === 'done' && row.id !== 'app' && row.to === row.from).map((row) => `${SHORT[row.id]} ${row.from}`);
   const app = rows.find((row) => row.id === 'app' && row.state === 'done');
   const head = failed ? `Update everything stopped at the ${SHORT[failed.id]}: ${failed.error}.` : 'Update everything finished.';
   const skipped = rows.filter((row) => row.state === 'skipped').map((row) => SHORT[row.id]);
-  return [head, done.length ? `Now on ${done.join(', ')}.` : '', skipped.length ? `Not started: ${skipped.join(', ')}.` : '',
+  return [head, done.length ? `Now on ${done.join(', ')}.` : '', same.length ? `Unchanged: ${same.join(', ')}.` : '', skipped.length ? `Not started: ${skipped.join(', ')}.` : '',
     app ? `The app installs ${app.to} when you restart it.` : ''].filter(Boolean).join(' ');
 }
 

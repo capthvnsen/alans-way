@@ -291,7 +291,7 @@ function getState() {
       snoozedUntil: prefs.updateSnoozedUntil || 0,
       vms: vmTargets(prefs).map((target) => ({ id: target.id, label: target.label, ...(vmProgress[target.id] || {}) })),
       vmRetry: vmRetryState(app.getVersion(), prefs.vmUpdates, vmTargets(prefs)), vmRetrying },
-    versions: describeVersions({ app: app.getVersion(), appUpdate: update.available, cache: prefs.versionCache }),
+    versions: describeVersions({ app: app.getVersion(), appUpdate: stagedAppVersion(), cache: prefs.versionCache }),
     updateAll: { busy: updatingAll, ...updateRun },
     bundleWarning: bundleWarningDismissed ? '' : setupCheck.bundleWarning(runningBundle(), app.getName()) || '',
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? setupCheck.inRouterApplications(process.execPath) : null,
@@ -842,25 +842,33 @@ function noteVmResult(result) {
 // the newest plugin tag on GitHub. No saved server means the Hermes on this
 // computer. Callers skip it while an update holds the machine: `hermes update
 // --check` fetches into the same checkout `hermes update` is moving.
-let versionsChecking = false;
-async function checkVmVersions() {
-  if (versionsChecking) return;
-  versionsChecking = true;
-  try {
-    // Records outlive their VM when a target is removed or an older build wrote
-    // a bad id; drop them so only live VMs can ever steer the retry banner.
-    const targets = vmTargets(prefs);
-    prefs.vmUpdates = pruneVmUpdates(prefs.vmUpdates, targets);
-    const target = targets[0] || LOCAL_TARGET;
-    const [result, pluginLatest] = await Promise.all([vmUpdater.checkVm(target), latestPluginTag().catch(() => '')]);
-    if (result.ok && !target.local) {
-      const entry = vmCheckEntry(prefs.vmUpdates?.[target.id], result);
-      if (entry) prefs.vmUpdates = { ...(prefs.vmUpdates || {}), [target.id]: entry };
-    }
-    prefs.versionCache = versionRecord(prefs.versionCache, { target, check: result, pluginLatest, now: Date.now() });
-    savePreferencesSoon(); broadcast();
-  } finally { versionsChecking = false; }
+// One probe at a time: a caller arriving mid-probe shares the running one.
+let versionsProbe = null;
+function checkVmVersions() {
+  versionsProbe ||= probeVersions().finally(() => { versionsProbe = null; });
+  return versionsProbe;
 }
+async function probeVersions() {
+  // Records outlive their VM when a target is removed or an older build wrote
+  // a bad id; drop them so only live VMs can ever steer the retry banner.
+  const targets = vmTargets(prefs);
+  prefs.vmUpdates = pruneVmUpdates(prefs.vmUpdates, targets);
+  const target = targets[0] || LOCAL_TARGET;
+  const [result, pluginLatest] = await Promise.all([vmUpdater.checkVm(target), latestPluginTag().catch(() => '')]);
+  // The server address changed while this probe ran: its answer describes
+  // the old machine, so drop it and probe the new one.
+  if ((vmTargets(prefs)[0]?.sshHost || '') !== (target.sshHost || '')) { setTimeout(checkVersionsWhenIdle, 0); return; }
+  if (result.ok && !target.local) {
+    const entry = vmCheckEntry(prefs.vmUpdates?.[target.id], result);
+    if (entry) prefs.vmUpdates = { ...(prefs.vmUpdates || {}), [target.id]: entry };
+  }
+  prefs.versionCache = versionRecord(prefs.versionCache, { target, check: result, pluginLatest, now: Date.now() });
+  savePreferencesSoon(); broadcast();
+}
+// The app version "Update everything" may plan for: only a build the updater
+// has staged, so the browser host never moves to a version the app cannot
+// install (update-now has the same guard).
+const stagedAppVersion = () => (updateDriver === 'electron-updater' ? update.ready : updateDriver === 'self' && Boolean(update.tag)) ? update.available : '';
 const VERSIONS_EVERY_MS = 30 * 60 * 1000;
 const checkVersionsWhenIdle = () => {
   if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) return;
@@ -895,7 +903,8 @@ async function runUpdateStep(step, target) {
     // A plugin that failed or stayed blocked is this step's failure; needs
     // approval and skipped are warnings the detail line carries.
     const bad = result.plugins.find((p) => p.status === 'failed' || p.status === 'blocked');
-    const after = result.plugins.find((p) => p.name === 'alans-way' && p.after)?.after;
+    // The version it actually reached; a run that moved nothing stays on `from`.
+    const after = result.plugins.find((p) => p.name === 'alans-way' && p.after)?.after || step.from;
     return { ok: result.ok && !bad, error: result.ok ? pluginStatusText(bad) : result.error, version: after,
       detail: result.pluginLines.map((line) => line.text).join(' ') };
   }
@@ -905,8 +914,7 @@ async function runUpdateStep(step, target) {
     return { ok: result.ok, error: result.error, version: result.version, detail: result.ok ? `Running ${result.version}` : '' };
   }
   // The app only stages here; the restart is the user's click.
-  const staged = updateDriver === 'electron-updater' ? update.ready : updateDriver === 'self' && Boolean(update.tag);
-  return staged ? { ok: true, detail: 'Downloaded. Restart to finish.' } : { ok: false, error: 'The app update is not downloaded yet; try again in a few minutes.' };
+  return stagedAppVersion() ? { ok: true, detail: 'Downloaded. Restart to finish.' } : { ok: false, error: 'The app update is not downloaded yet; try again in a few minutes.' };
 }
 // Offline or rate-limited checks stay quiet for the user; only the first failure is logged, and the next check retries.
 let updateDriver = 'none';
@@ -1558,15 +1566,20 @@ function registerIpc() {
       // which only stages: the restart waits for "Restart to finish". Then
       // the versions refresh and the bot reports once in Telegram.
       case 'update-all': {
-        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
-        const { steps } = describeVersions({ app: app.getVersion(), appUpdate: update.available, cache: prefs.versionCache });
-        if (!steps.length) break;
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) return { refused: 'Another update is already running. Try again when it finishes.' };
+        const { steps } = describeVersions({ app: app.getVersion(), appUpdate: stagedAppVersion(), cache: prefs.versionCache });
+        if (!steps.length) return { refused: 'Everything is already up to date.' };
         const target = vmTargets(prefs)[0] || LOCAL_TARGET;
         updatingAll = true; updateRun = { steps: [], summary: '', restart: false }; broadcast();
         try {
+          // A probe already in flight finishes first: its `hermes update
+          // --check` fetches into the checkout `hermes update` moves.
+          await versionsProbe?.catch(() => {});
           mainLog().write('update all', `start ${steps.map((step) => `${step.id} ${step.from}->${step.to}`).join(', ')}`);
           const rows = await runSteps(steps, (step) => runUpdateStep(step, target), (next) => { updateRun.steps = next; broadcast(); });
           mainLog().write('update all', rows.map((row) => `${row.id} ${row.state}${row.error ? ` ${row.error}` : ''}`).join(', '));
+          // Wait out any probe that started before the run, then take a fresh one.
+          await versionsProbe?.catch(() => {});
           await checkVmVersions().catch((error) => logError('vm-check', error));
           const where = target.local ? 'this computer' : 'server';
           updateRun = { steps: rows, restart: rows.some((row) => row.id === 'app' && row.state === 'done'),

@@ -51,14 +51,16 @@ hermes_bin() {
 }
 
 # One bounded hermes call: stdin is /dev/null so a prompt can only ever read
-# EOF ("no"), and `timeout` (when the guest has it) caps the call inside the
-# run's remaining budget so the JSON result line is always reached.
+# EOF ("no"), and `timeout` (or a perl alarm: a Mac has perl but no GNU
+# timeout) caps the call inside the run's remaining budget so the JSON result
+# line is always reached. The alarm exits 142, not timeout's 124.
 run_hermes() {
   _secs="$1"; shift
   _left=$(( $(budget_left) - 8 ))
   [ "$_left" -gt 0 ] || return 124
   [ "$_secs" -le "$_left" ] || _secs="$_left"
   if have timeout; then timeout "$_secs" "$HERMES_BIN_RES" "$@" </dev/null 2>&1
+  elif have perl; then perl -e 'alarm shift; exec @ARGV' "$_secs" "$HERMES_BIN_RES" "$@" </dev/null 2>&1
   else "$HERMES_BIN_RES" "$@" </dev/null 2>&1; fi
 }
 
@@ -101,7 +103,7 @@ VERSION="$(run_hermes "$VERSION_TIMEOUT" --version | sed -n 's/^Hermes Agent v\(
 case "$UPD_RC" in
   0) UPDATED=true ERR=""
      printf '%s' "$UPD_OUT" | grep -Eiq 'already up.to.date|nothing to update|no update available' && UPDATED=false;;
-  124) ERR='the hermes update timed out';;
+  124|142) ERR='the hermes update timed out';;
   *) ERR="$(tail_text "$UPD_OUT")"; [ -n "$ERR" ] || ERR="hermes update exited $UPD_RC";;
 esac
 [ -n "$REPORT" ] && UPDATED=false

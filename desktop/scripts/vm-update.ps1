@@ -423,7 +423,8 @@ if ($env:ALANS_WAY_VM_CHECK -eq '1') {
 }
 
 if ($env:ALANS_WAY_VM_PLUGINS -eq '1') {
-    try { Update-HermesPlugins } catch { Write-Output "vm-update: plugin update stopped: $($_.Exception.Message)" }
+    # Here the plugin phase is the whole run, so a throw is the run's failure.
+    try { Update-HermesPlugins } catch { Fail "plugin update stopped: $($_.Exception.Message)" }
     Write-Result $true ''
     exit 0
 }

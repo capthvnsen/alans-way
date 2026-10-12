@@ -20,6 +20,7 @@ test('hermes update --check verdicts: release channel, branch install, current, 
   assert.deepEqual(parseHermesCheck('✓ Already up to date.'), { available: false, latest: '' });
   assert.deepEqual(parseHermesCheck('✓ Up to date with the latest release (stable v0.21.6 (abc123)).'), { available: false, latest: '' });
   assert.deepEqual(parseHermesCheck('✓ No newer release: stable v0.21.6 (abc123).'), { available: false, latest: '' });
+  assert.deepEqual(parseHermesCheck('no update available'), { available: false, latest: '' });
   assert.deepEqual(parseHermesCheck(''), { available: null, latest: '' });
   assert.deepEqual(parseHermesCheck('✗ Not a git repository — cannot check for updates.'), { available: null, latest: '' });
 });
@@ -128,4 +129,11 @@ test('a clean run ends with the app staged for restart and one report for the bo
   assert.deepEqual(rows.map((row) => row.state), ['done', 'done', 'done', 'done']);
   assert.equal(summarizeRun(rows), 'Everything is updated. Restart to finish the app update.');
   assert.equal(reportText(rows), 'Update everything finished. Now on Hermes 0.21.7, plugin 0.21.1, browser host 0.21.5. The app installs 0.21.5 when you restart it.');
+});
+
+test('a step that finished without moving is named as unchanged, never claimed as updated', async () => {
+  // A catalog install stays on its reviewed pin even when a newer tag exists.
+  const rows = await runSteps(STEPS.slice(0, 2), async (step) => ({ ok: true, version: step.id === 'plugin' ? '0.21.0' : '0.21.7' }));
+  assert.equal(summarizeRun(rows), 'Done. Still on the same version: Alan’s Way plugin (0.21.0).');
+  assert.equal(reportText(rows), 'Update everything finished. Now on Hermes 0.21.7. Unchanged: plugin 0.21.0.');
 });

@@ -65,6 +65,8 @@ app.whenReady().then(async () => {
   const click = (id) => evaluate(`document.getElementById(${JSON.stringify(id)}).click()`);
   const lines = () => evaluate('[...document.querySelectorAll("#update-all-steps .update-line")].map((p) => p.className.replace("update-line", "").trim() + "|" + p.textContent)');
   const version = app.getVersion();
+  // Probes (start, dialog open, after the run) are reads; `work` is what changed things.
+  const work = () => calls.filter((c) => !c.startsWith('check'));
 
   // The bar: compact versions, the update arrow, and the details on hover.
   const bar = await waitFor(() => text('version-label'), (t) => t.includes('Hermes'), 12000, 'the versions in the bar');
@@ -86,7 +88,8 @@ app.whenReady().then(async () => {
   assert.equal(await text('update-all-go'), 'Update everything');
   await click('update-all-cancel');
   assert.equal(await hidden('update-all-popup'), true);
-  assert.deepEqual(calls, ['check agent'], 'Cancel runs nothing');
+  assert.deepEqual(work(), [], 'Cancel runs nothing');
+  assert.ok(calls.filter((c) => c === 'check agent').length >= 2, 'opening the dialog re-checks the machine');
 
   // Confirm: Hermes runs first and quietly (the bot reports at the end).
   await click('update-all');
@@ -98,11 +101,11 @@ app.whenReady().then(async () => {
   assert.equal(await text('update-all'), 'Updating…');
 
   // One lock: every other update entry point refuses while this runs.
-  const before = calls.length;
+  const before = work().length;
   await invoke('hermes-update');
   await invoke('vm-update-retry', { force: true });
-  await invoke('update-all');
-  assert.equal(calls.length, before, 'Update Hermes, VM retry and a second Update everything all wait');
+  assert.deepEqual(await invoke('update-all'), { refused: 'Another update is already running. Try again when it finishes.' });
+  assert.equal(work().length, before, 'Update Hermes, VM retry and a second Update everything all wait');
 
   // The plugin step fails: the browser host never starts, the summary says
   // what is left, versions refresh and the bot reports once.
@@ -116,7 +119,8 @@ app.whenReady().then(async () => {
   assert.ok(!calls.some((c) => c.startsWith('host')), 'nothing after the failure ran');
   assert.equal(await text('update-all-copy'), 'Alan’s Way plugin did not update: Plugin update failed: registry unreachable. Updated: Hermes. '
     + 'Not started, still on the old version: Browser host. Your bot messaged you on Telegram.');
-  assert.deepEqual(calls.slice(before), ['plugin agent', 'check agent',
+  assert.ok(calls.lastIndexOf('check agent') > calls.indexOf('plugin agent'), 'the versions refresh after the run');
+  assert.deepEqual(work().slice(before), ['plugin agent',
     'report Update everything stopped at the plugin: Plugin update failed: registry unreachable. Now on Hermes 0.21.7. Not started: browser host.']);
   assert.equal(await hidden('update-all-go'), true, 'no app update staged, so no restart offered');
   assert.equal(await text('version-label'), `Alan’s Workspace ${version} · Hermes 0.21.7 (server) · Plugin 0.21.0`, 'the bar shows the refreshed versions');
