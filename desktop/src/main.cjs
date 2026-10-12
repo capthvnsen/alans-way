@@ -23,7 +23,7 @@ const { createLog } = require('./main-log.cjs');
 const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
-const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail } = require('./vm-update.cjs');
+const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked } = require('./vm-update.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -1335,7 +1335,7 @@ function registerIpc() {
       case 'mac-permissions': return process.platform === 'darwin' ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null;
       case 'open-mac-privacy': if (process.platform === 'darwin') shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${value.pane === 'screen' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility'}`); break;
       case 'update-now': {
-        if (update.busy) break;
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating })) break;
         const autoUpdate = updateDriver === 'electron-updater';
         const tag = autoUpdate ? `v${update.available}` : update.tag;
         if (autoUpdate ? !update.ready : !tag) break;
@@ -1369,7 +1369,7 @@ function registerIpc() {
       }
       case 'update-later': prefs.updateSnoozedUntil = snoozeUntil(Date.now()); savePreferences(); broadcast(); break;
       case 'vm-update-retry': {
-        if (vmRetrying || update.busy) break;
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating })) break;
         vmRetrying = true; broadcast();
         const tag = `v${app.getVersion()}`;
         try {
@@ -1389,7 +1389,7 @@ function registerIpc() {
       // each profile's bot messages the user from its own chat. Never runs
       // alongside the app's own VM update, which touches the same machine.
       case 'hermes-update': {
-        if (hermesUpdating || update.busy || vmRetrying) break;
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating })) break;
         const target = vmTargets(prefs)[0];
         if (!target) throw new Error('Save the agent machine SSH address first.');
         hermesUpdating = true;

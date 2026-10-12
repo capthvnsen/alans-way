@@ -1,24 +1,27 @@
 # hermes-update.ps1 - Windows guest twin of hermes-update.sh. The desktop app
-# pipes this file over ssh stdin (via cmd so any sshd shell works). It runs
-# `hermes update --yes` once (the update restarts the fleet's own services),
-# `hermes --version` for the report, then `hermes [-p <profile>] send
-# -t telegram <text>` for every profile so each bot reports the result in its
-# usual chat - even when the update failed.
+# pipes this file over ssh stdin (via cmd so any sshd shell works). It stops
+# every running hermes gateway (`hermes update` refuses while one is up on
+# Windows), runs `hermes update --yes --keep-stash` once, starts the gateways
+# it stopped - success or failure - then `hermes --version` for the report and
+# `hermes [-p <profile>] send -t telegram <text>` for every profile so each
+# bot reports the result in its usual chat.
 # The last stdout line is one JSON result:
 # {"ok":bool,"version":"x.y.z","updated":bool,"error":"...","messaged":bool,
-#  "messages":[{"profile":"...","sent":bool,"error":"..."}]}
+#  "gatewayRestarted":bool,"messages":[{"profile":"...","sent":bool,"error":"..."}]}
 # Written for Windows PowerShell 5.1 (no ?? or ?:).
 $ErrorActionPreference = 'Stop'
 $script:Version = ''
 $script:Updated = $false
 $script:Messaged = $false
+$script:GatewayRestarted = $false
 $script:Messages = @()
 $script:StartTime = Get-Date
 $script:HermesBin = ''
 
 function Write-Result([bool]$Ok, [string]$Err) {
     @{ ok = $Ok; version = $script:Version; updated = $script:Updated; error = $Err;
-       messaged = $script:Messaged; messages = @($script:Messages) } |
+       messaged = $script:Messaged; gatewayRestarted = $script:GatewayRestarted;
+       messages = @($script:Messages) } |
         ConvertTo-Json -Compress -Depth 4 | Write-Output
 }
 function Say([string]$Text) { Write-Output "hermes-update: $Text" }
@@ -95,10 +98,38 @@ function Get-Profiles([string]$Hhome) {
     return ,$list
 }
 
+# gateway subcommand args for one profile: `gateway <x>` for the default,
+# `-p <name> gateway <x>` for named ones.
+function Gw-Args([string]$Name, [string]$Sub) {
+    if ($Name -eq 'default') { return @('gateway', $Sub) }
+    return @('-p', $Name, 'gateway', $Sub)
+}
+
 $script:HermesBin = Find-Hermes
 if (-not $script:HermesBin) { Write-Result $false 'no hermes CLI on this machine'; exit 1 }
+$hhome = $env:HERMES_HOME
+if (-not $hhome) { $hhome = "$env:LOCALAPPDATA\hermes" }
+
+# `hermes update` refuses while a gateway holds the install on Windows, so
+# every profile reporting a live gateway is stopped first and - success or
+# failure - started again afterward. A named profile the default-profile
+# multiplexer serves reports "running via the default-profile multiplexer";
+# stopping the default takes the mux down and starting it re-serves them, so
+# those are skipped here.
+$restart = @()
+foreach ($prof in (Get-Profiles $hhome)) {
+    if ((BudgetLeft) -le 30) { Say 'ran out of the time budget; remaining gateways were not stopped'; break }
+    $st = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_STATUS_TIMEOUT' 20) (Gw-Args $prof.name 'status')
+    if ($st.out -notmatch '(?i)gateway is running') { continue }
+    if ($st.out -match '(?i)multiplexer') { continue }
+    $restart += $prof.name
+    Say "stopping the $($prof.name) gateway for the update"
+    $sp = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_GATEWAY_TIMEOUT' 60) (Gw-Args $prof.name 'stop')
+    if ($sp.code -ne 0) { Say "gateway $($prof.name): stop did not finish: $(Tail-Text $sp.out 160)" }
+}
+
 Say 'running hermes update'
-$r = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_UPDATE_TIMEOUT' 200) @('update', '--yes')
+$r = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_UPDATE_TIMEOUT' 200) @('update', '--yes', '--keep-stash')
 $ok = ($r.code -eq 0)
 $err = ''
 if ($r.code -eq 124) { $err = 'the hermes update timed out' }
@@ -114,6 +145,15 @@ $vm = [regex]::Match([string]$v.out, 'Hermes Agent v([0-9][0-9.]*)')
 if ($vm.Success) { $script:Version = $vm.Groups[1].Value }
 if ($ok) { Say 'hermes update finished' } else { Say "hermes update failed: $err" }
 
+# Start back exactly the gateways this run stopped - a failed update must not
+# leave the fleet's bots offline.
+foreach ($name in $restart) {
+    if ((BudgetLeft) -le 20) { Say 'ran out of the time budget; remaining gateways were not restarted'; break }
+    $up = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_GATEWAY_TIMEOUT' 60) (Gw-Args $name 'start')
+    if ($up.code -eq 0) { $script:GatewayRestarted = $true; Say "gateway $($name): started" }
+    else { Say "gateway $($name): start failed: $(Tail-Text $up.out 160)" }
+}
+
 # The message each profile's bot sends home: outcome, host and version so a
 # user with several machines can tell them apart. Characters cmd would read
 # as syntax (when hermes resolves to a .cmd shim) never reach the message.
@@ -128,8 +168,6 @@ if ($ok) {
 }
 $msg = ($msg -replace '[&|<>^%"]', ' ')
 
-$hhome = $env:HERMES_HOME
-if (-not $hhome) { $hhome = "$env:LOCALAPPDATA\hermes" }
 if ((BudgetLeft) -gt 15) {
     Say 'telling your bot to message you'
     foreach ($prof in (Get-Profiles $hhome)) {

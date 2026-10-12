@@ -158,12 +158,13 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
       const messages = (Array.isArray(result.messages) ? result.messages : [])
         .map((m) => ({ profile: String(m?.profile || ''), sent: m?.sent === true, error: String(m?.error || '') }));
       const base = { version: String(result.version || ''), updated: result.updated === true,
-        messaged: result.messaged === true || messages.some((m) => m.sent), messages };
+        messaged: result.messaged === true || messages.some((m) => m.sent), messages,
+        gatewayRestarted: result.gatewayRestarted === true };
       if (result.ok === true) return { ok: true, state: 'ok', error: '', ...base };
       return { ok: false, state: 'failed', error: String(result.error || 'The Hermes update failed without a reason.'), ...base };
     } catch (error) {
       log('hermes-update', error);
-      return { ok: false, state: 'failed', error: tail(error.message) || 'The Hermes update failed.', version: '', updated: false, messaged: false, messages: [] };
+      return { ok: false, state: 'failed', error: tail(error.message) || 'The Hermes update failed.', version: '', updated: false, messaged: false, messages: [], gatewayRestarted: false };
     }
   }
 
@@ -206,6 +207,15 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
 
 function shouldShowUpdatePopup({ available, snoozedUntil, now, busy } = {}) {
   return Boolean(available) && !busy && Number(now) >= Number(snoozedUntil || 0);
+}
+
+// One lock for every path that mutates the agent machines: the app update
+// flow (update.busy), a VM update retry (vmRetrying) and a manual `hermes
+// update` (hermesUpdating) all stop/start the same gateways and plugin trees.
+// Every entry point checks the whole lock; a partial check is how two update
+// paths end up running on the same machine at once.
+function updateLocked({ updateBusy = false, vmRetrying = false, hermesUpdating = false } = {}) {
+  return Boolean(updateBusy || vmRetrying || hermesUpdating);
 }
 const snoozeUntil = (now) => Number(now) + SNOOZE_MS;
 
@@ -310,4 +320,4 @@ function vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd } = {}) {
   return lines;
 }
 
-module.exports = { createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, vmPhaseText, pluginStatusText, vmPluginLines, hermesUpdateDetail, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS, DOCTOR_TIMEOUT_MS, HERMES_UPDATE_TIMEOUT_MS, TAG_RE };
+module.exports = { createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, updateLocked, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, vmPhaseText, pluginStatusText, vmPluginLines, hermesUpdateDetail, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS, DOCTOR_TIMEOUT_MS, HERMES_UPDATE_TIMEOUT_MS, TAG_RE };

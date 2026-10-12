@@ -5,8 +5,10 @@
 #
 # The desktop app pipes this script over SSH (ssh <host> 'sh -s'), so nothing
 # is installed on the machine and no file is left behind. It only ever runs
-# the hermes CLI itself: `hermes update --yes` once (the update restarts the
-# fleet's own services), `hermes --version` for the report, and
+# the hermes CLI itself: `hermes update --yes --keep-stash` once (the update
+# restarts the fleet's own services, and --keep-stash leaves local source
+# edits parked in git stash instead of silently restoring them), `hermes
+# --version` for the report, and
 # `hermes [-p <profile>] send -t telegram <text>` for every profile hermes
 # would count. The message goes out even when the update fails - a failed
 # update is exactly the report nobody should have to go looking for.
@@ -82,7 +84,7 @@ msg_entry() {
 
 hermes_bin || fail 'no hermes CLI on this machine'
 say 'running hermes update'
-UPD_OUT="$(run_hermes "$UPDATE_TIMEOUT" update --yes)"
+UPD_OUT="$(run_hermes "$UPDATE_TIMEOUT" update --yes --keep-stash)"
 UPD_RC=$?
 # The version read follows the update so an install that moved reports the new
 # one; a failed update still reports whatever version is on the machine now.

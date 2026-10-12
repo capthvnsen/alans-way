@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync, spawn } = require('node:child_process');
-const { createVmUpdater, hermesUpdateDetail, HERMES_UPDATE_TIMEOUT_MS } = require('../src/vm-update.cjs');
+const { createVmUpdater, hermesUpdateDetail, updateLocked, HERMES_UPDATE_TIMEOUT_MS } = require('../src/vm-update.cjs');
 
 const SCRIPT = path.join(__dirname, '../scripts/hermes-update.sh');
 const WINDOWS_SCRIPT = path.join(__dirname, '../scripts/hermes-update.ps1');
@@ -67,10 +67,11 @@ test('the POSIX hermes-update script is piped over ssh stdin under the update ti
 });
 
 test('a Windows guest gets the PowerShell twin over cmd', async () => {
-  const { calls, run } = fakeRun({ code: 0, out: okLine(), err: '' });
+  const { calls, run } = fakeRun({ code: 0, out: okLine({ gatewayRestarted: true }), err: '' });
   const updater = createVmUpdater({ run, readScript });
   const result = await updater.hermesUpdateVm(vm({ scriptPath: 'C:\\Users\\a b\\app\\desktop\\scripts\\vps-browser-host.cjs' }));
   assert.equal(result.ok, true);
+  assert.equal(result.gatewayRestarted, true, 'the Windows script reports the gateway came back up');
   assert.equal(calls[0].opts.input, SCRIPTS['hermes-update.ps1']);
   assert.match(calls[0].args.at(-1), /powershell/);
   assert.doesNotMatch(calls[0].args.at(-1), /ALANS_WAY_VM_TAG/);
@@ -105,6 +106,22 @@ test('an unreachable guest reports a failure instead of throwing', async () => {
   const result = await updater.hermesUpdateVm(vm());
   assert.equal(result.ok, false);
   assert.match(result.error, /Could not reach the VM over SSH/);
+});
+
+// The update lock is one shared predicate all three main.cjs entry points
+// consult before starting work on the agent machine: update-now, vm-update-
+// retry and hermes-update. Both directions are covered so a one-sided check
+// can never regress into two concurrent updates on the same machine.
+test('update-now and vm-update-retry are locked out while a hermes update runs', () => {
+  assert.equal(updateLocked({ hermesUpdating: true }), true);
+  assert.equal(updateLocked({ updateBusy: false, vmRetrying: false, hermesUpdating: true }), true);
+  assert.equal(updateLocked({}), false, 'an idle machine is not locked');
+});
+
+test('hermes-update is locked out while an app or VM update runs', () => {
+  assert.equal(updateLocked({ updateBusy: true }), true);
+  assert.equal(updateLocked({ vmRetrying: true }), true);
+  assert.equal(updateLocked({ updateBusy: false, vmRetrying: false, hermesUpdating: false }), false);
 });
 
 test('hermesUpdateDetail always reports whether the bot messaged', () => {
@@ -210,7 +227,7 @@ test('hermes update runs, then every live profile messages the user', async () =
   assert.equal(result.messaged, true);
   assert.deepEqual(result.messages.map((m) => [m.profile, m.sent]), [['default', true], ['coder', true]]);
   const calls = fs.readFileSync(log, 'utf8');
-  assert.match(calls, /^hermes update --yes$/m);
+  assert.match(calls, /^hermes update --yes --keep-stash$/m, 'local edits stay parked in git stash');
   const sends = fs.readFileSync(sendLog, 'utf8');
   assert.match(sends, /^send default: Hermes update finished on .+\. Now on v9\.9\.9\.$/m);
   assert.match(sends, /^send coder: Hermes update finished on .+\. Now on v9\.9\.9\.$/m);
