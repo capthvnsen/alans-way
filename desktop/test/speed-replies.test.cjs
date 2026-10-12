@@ -173,7 +173,10 @@ const overlayPage = `<!doctype html><title>shop</title><div style="height:40vh">
 const shadowNamePage = `<!doctype html><title>named</title><x-card></x-card><a href="/nav-b">Next</a><p id="out">idle</p><script>
 customElements.define('x-card', class extends HTMLElement { constructor() { super(); const r = this.attachShadow({ mode: 'open' }); r.innerHTML = '<input aria-label="Callsign"><button>Transmit</button>'; r.querySelector('button').onclick = () => { out.textContent = 'sent ' + r.querySelector('input').value; }; } });
 </script>`;
-const routes = { '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
+const popupPage = `<!doctype html><title>vault</title><button onclick="window.open('/nav-b', '_blank')">Reveal code</button><button id="run">Run cleanup</button><p id="out">not run</p><script>
+run.onclick = () => { alert('Starting'); const ok = confirm('Delete the scratch files?'); out.textContent = 'ok=' + ok + ' name=' + (ok ? prompt('Name this run', 'run') : null); };
+</script>`;
+const routes = { '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
 const api = (route, method = 'GET', body, epoch) =>
@@ -740,4 +743,23 @@ test('a control can be named instead of referenced, inside shadow roots too', li
   assert.equal(await act(todos, { action: 'eval', code: "[...document.querySelectorAll('li')].map((li) => li.textContent.trim()).join('|')" }).then((r) => r.data.value), 'Walk dog Delete|Old task Delete');
   const nav = await act(tab, { action: 'click', name: 'Next', role: 'link' });
   assert.equal(nav.data.effect.navigated, true, JSON.stringify(nav.data.effect));
+});
+
+test('a reply names the tab its action opened and answers dialogs the way the action said', live, async () => {
+  const tab = await openTab('/popup');
+  const opened = await act(tab, { action: 'click', name: 'Reveal code' });
+  assert.equal(opened.data.opened?.length, 1, JSON.stringify(opened.data));
+  assert.match(opened.data.opened[0].tabId, /^[\w-]+$/);
+  assert.ok(Number.isInteger(opened.data.opened[0].epoch));
+  const popup = (await api(`/v1/tabs/${opened.data.opened[0].tabId}/snapshot`)).data;
+  assert.match(popup.text, /Page B body/, 'the opened tab is readable by its id');
+  const dismissed = await act(tab, { action: 'click', name: 'Run cleanup' });
+  assert.deepEqual(dismissed.data.dialogs.map((d) => [d.type, d.accepted]), [['alert', true], ['confirm', false]]);
+  assert.match(dismissed.data.dialogs[1].note, /dialog: \{accept: true\}/);
+  assert.equal(await pageText(tab, '#out'), 'ok=false name=null');
+  const answered = await act(tab, { action: 'click', name: 'Run cleanup', dialog: { accept: true, text: 'eval-42' } });
+  assert.deepEqual(answered.data.dialogs.map((d) => [d.type, d.accepted]), [['alert', true], ['confirm', true], ['prompt', true]]);
+  assert.equal(await pageText(tab, '#out'), 'ok=true name=eval-42');
+  const after = await act(tab, { action: 'click', name: 'Run cleanup' });
+  assert.equal(after.data.dialogs[1].accepted, false, 'an answer lasts only for the action that carried it');
 });

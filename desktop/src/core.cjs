@@ -292,10 +292,26 @@ function errorMessage(error) {
   return message ? String(message) : 'Request failed.';
 }
 
+// An agent tab answers a JS dialog at once: an alert or the leave-page prompt
+// is accepted, and a confirm or prompt guards a decision, so it is dismissed
+// unless the action that raised it said how to answer (dialog: {accept, text}).
+function dialogAnswer(value) {
+  if (!value || typeof value !== 'object' || typeof value.accept !== 'boolean' || (value.text !== undefined && (typeof value.text !== 'string' || value.text.length > 1000)))
+    throw Object.assign(new Error('dialog must be {accept: true or false, text?: the prompt answer up to 1,000 characters}.'), { status: 400 });
+  return { accept: value.accept, ...(typeof value.text === 'string' ? { text: value.text } : {}) };
+}
+function answerDialog(type, message, answer) {
+  const decided = type === 'confirm' || type === 'prompt';
+  const accepted = decided ? !!(answer && answer.accept) : true;
+  const record = { type, message: String(message || '').slice(0, 500), accepted };
+  if (decided && !answer) record.note = `Dismissed. To accept it, repeat the action with dialog: {accept: true${type === 'prompt' ? ', text: "<answer>"' : ''}}.`;
+  return { record, params: { accept: accepted, ...(accepted && type === 'prompt' && answer && answer.text !== undefined ? { promptText: answer.text } : {}) } };
+}
+
 // The VPS browser host stays on the script it loaded. A replaced file should
 // restart only while nothing is in flight, so a click is not cut off.
 function hostShouldReload(mtime, started, inFlight) {
   return inFlight === 0 && Number(mtime) > Number(started);
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback };
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog };

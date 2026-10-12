@@ -213,7 +213,9 @@ function refsSource() {
         for (let node; (node = walk.nextNode()) && words.join(' ').length < 80;) if (!node.parentElement.closest('button,a,[role=button]')) words.push(node.nodeValue);
         name = words.join(' ');
       }
-      const out = { name: name.replace(/\\s+/g, ' ').trim().slice(0, 80) };
+      // Nothing to read: name the element itself, the way an error would.
+      const tag = layer.localName + (layer.id ? '#' + layer.id : typeof layer.className === 'string' && layer.className.trim() ? '.' + layer.className.trim().split(/\\s+/)[0] : '');
+      const out = { name: name.replace(/\\s+/g, ' ').trim().slice(0, 80) || tag };
       const controls = [...layer.querySelectorAll('button,a[href],[role=button],input[type=button],input[type=submit]')].filter((c) => c.getClientRects().length);
       const label = (c) => S.describe(c).base;
       const close = controls.find((c) => /^(close|dismiss|no,? thanks|not now|maybe later|skip|reject( all)?|decline( all)?|×|✕|x)$/i.test(label(c)) || /^(close|dismiss)/i.test(c.getAttribute('aria-label') || ''))

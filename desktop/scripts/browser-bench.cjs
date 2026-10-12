@@ -89,6 +89,11 @@ m.querySelectorAll('button')[1].onclick=()=>m.remove();document.body.append(m)},
 const R=()=>{l.innerHTML=t.map(([x,d],i)=>'<li><label><input type=checkbox data-i='+i+(d?' checked':'')+'> '+x+'</label> <button data-d='+i+'>Delete</button></li>').join('');
 l.querySelectorAll('input').forEach(c=>c.onchange=()=>{t[c.dataset.i][1]=c.checked?1:0;R()});l.querySelectorAll('button').forEach(b=>b.onclick=()=>{t.splice(b.dataset.d,1);R()});report('todos',t.map(([x,d])=>x+(d?'+':'')).join(','))};
 document.getElementById('new').onkeydown=e=>{if(e.key==='Enter'&&e.target.value){t.push([e.target.value,0]);e.target.value='';R()}};R();`);
+  p['/vault'] = () => page('Vault', `<main><h1>Vault</h1><button id=g>Reveal access code</button><p>Codes open in a separate window.</p><label>Access code <input id=code></label> <button id=v>Verify</button><p id=o></p></main>`,
+  `g.onclick=()=>window.open('/vault/code','_blank');v.onclick=()=>{o.textContent=code.value===${JSON.stringify(s.code)}?'Verified':'Wrong code';report('vault',o.textContent)}`);
+  p['/vault/code'] = () => page('Access code', `<main><h1>Your access code</h1><p>Code: <b>${s.code}</b></p></main>`);
+  p['/drafts'] = page('Drafts', `<main><h1>Drafts</h1><ul><li>Q3 plan <button id=d>Delete draft</button></li></ul><p id=o>1 draft</p></main>`,
+  `d.onclick=()=>{if(confirm('Delete this draft?')){o.textContent='Draft deleted';report('drafts','deleted')}}`);
   p['/home'] = page('Store', `<main><h1>Welcome back</h1><p>New arrivals every week.</p><a href="/orders">Order history</a> <a href="/shop">Shop notebooks</a></main>`);
   p['/login'] = page('Sign in', `<main><h1>Sign in to continue</h1><form><label>Email <input name=email type=email></label><br><label>Password <input name=pw type=password></label><br><button type=button>Sign in</button></form><a href="/forgot">Forgot password?</a> <button type=button>Continue with Google</button></main>`,
   `document.addEventListener('input',()=>report('login','typed'))`);
@@ -117,7 +122,7 @@ function startFixtures(bind) {
   });
   return new Promise((resolve) => server.listen(0, bind, () => {
     s.port = server.address().port;
-    resolve({ state: s, reset: () => { s.reports = {}; }, close: () => server.close() });
+    resolve({ state: s, reset: () => { s.reports = {}; s.code = 'K' + (100000 + Math.floor(Math.random() * 900000)); }, close: () => server.close() });
   }));
 }
 
@@ -376,6 +381,33 @@ const tasks = [
       return 'done';
     },
     check: (fx) => fx.reports.todos === 'Walk dog+,Pay rent+,Call mom,Buy milk' },
+  { id: 'popup-tab', what: 'read a code from a pop-up tab, enter it in the first tab', fixture: true,
+    async run(a, fx) {
+      await a.open(fx.url('/vault'));
+      const r = await a.call('cua_alans_way_action', { tabId: a.tab.id, epoch: a.tab.epoch, ...(a.opts.names ? { name: 'Reveal access code' } : { ref: await a.need(/^reveal access code/i) }), action: 'click' });
+      let popup = r.opened && r.opened[0] && r.opened[0].tabId;
+      if (!popup) {
+        // Nothing in the reply says where the pop-up went: list the tabs.
+        const tabs = await a.call('cua_alans_way_tabs', {});
+        popup = (Array.isArray(tabs) ? tabs : tabs.tabs).find((t) => /vault\/code/.test(t.url || '')).id;
+      }
+      const code = /Code: (K\d+)/.exec((await a.call('cua_alans_way_snapshot', { tabId: popup, maxElements: 0 })).text)[1];
+      await a.run([{ action: 'type', target: [/^access code/i], text: code }, { action: 'click', target: [/^verify/i], named: ['verify'] }]);
+      return a.answer(/Verified|Wrong code/);
+    },
+    check: (fx, ans) => ans === 'Verified' && fx.reports.vault === 'Verified' },
+  { id: 'confirm-dialog', what: 'delete a draft behind a confirm dialog', fixture: true,
+    async run(a, fx) {
+      await a.open(fx.url('/drafts'));
+      const click = async (extra = {}) => a.act({ action: 'click', ...(a.opts.names ? { name: 'Delete draft' } : { ref: await a.need(/^delete draft/i) }), ...extra });
+      const r = await click();
+      const note = (r.dialogs || []).map((d) => d.note || '').join(' ');
+      // The reply says how to accept: repeat with dialog, or override confirm by eval first.
+      if (/dialog: \{accept/.test(note)) await click({ dialog: { accept: true } });
+      else if (/eval window\.confirm/.test(note)) { await a.act({ action: 'eval', code: 'window.confirm=()=>true;1' }); await click(); }
+      return a.answer(/Draft deleted/);
+    },
+    check: (fx, ans) => fx.reports.drafts === 'deleted' && /Draft deleted/.test(ans) },
   { id: 'login-wall', what: 'reach order history, stop at the sign-in page and hand back', fixture: true,
     async run(a, fx) {
       await a.open(fx.url('/home'));

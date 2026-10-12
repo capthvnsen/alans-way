@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, agentPageUrl, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, handbackRequest, nextHandback, liveHandback, HANDBACK_MS } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, handbackRequest, nextHandback, liveHandback, HANDBACK_MS, dialogAnswer, answerDialog } = require('../src/core.cjs');
 const { controlsDelta, snapshotExpression, settleSnapshot, readEffect } = require('../src/browser-page.cjs');
 const { locateElement } = require('../src/agent-input.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
@@ -488,4 +488,17 @@ test('a dialog or banner over the page rides on snapshots and replies', async ()
   assert.deepEqual(quiet.overlays, overlays);
   const clear = settleSnapshot(tab, { url: 'https://a.example/', title: 'A', text: '', elements: [], overlays: [] }, 2);
   assert.equal(clear.overlays, undefined);
+});
+
+test('an agent tab dismisses a confirm or prompt unless the action said how to answer', () => {
+  assert.deepEqual(answerDialog('alert', 'Saved', undefined), { record: { type: 'alert', message: 'Saved', accepted: true }, params: { accept: true } });
+  const dismissed = answerDialog('confirm', 'Delete?', undefined);
+  assert.equal(dismissed.params.accept, false);
+  assert.match(dismissed.record.note, /dialog: \{accept: true\}/);
+  assert.match(answerDialog('prompt', 'Name?', undefined).record.note, /text: "<answer>"/);
+  assert.deepEqual(answerDialog('prompt', 'Name?', { accept: true, text: 'eval-42' }).params, { accept: true, promptText: 'eval-42' });
+  assert.deepEqual(answerDialog('confirm', 'Delete?', { accept: false }).params, { accept: false });
+  assert.equal(answerDialog('beforeunload', '', { accept: false }).params.accept, true, 'leaving the page the agent navigated away from is never blocked');
+  assert.deepEqual(dialogAnswer({ accept: true, text: 'x' }), { accept: true, text: 'x' });
+  for (const bad of [null, true, {}, { accept: 'yes' }, { accept: true, text: 5 }, { accept: true, text: 'x'.repeat(1001) }]) assert.throws(() => dialogAnswer(bad), /dialog must be/);
 });

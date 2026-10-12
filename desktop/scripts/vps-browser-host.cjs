@@ -7,7 +7,7 @@ const fs = require('node:fs'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { CDP, AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
-const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, dialogAnswer, answerDialog } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
 const { createAgentInput, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
@@ -424,19 +424,29 @@ async function serve() {
       requireAgentRead(tab);
       const effect = await readEffect((code) => tab.view.webContents.executeJavaScript(code), tab, opts);
       requireAgentRead(tab);
-      if (effect) return { ...effect, ...takeDialogs(tab) };
-      return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.', ...takeDialogs(tab) };
+      if (effect) return { ...effect, ...takePageEvents(tab) };
+      return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.', ...takePageEvents(tab) };
     } catch (error) {
       if (error && error.status === 409) throw error;
-      return { effect: { ...EMPTY_EFFECT }, error: String(error && error.message || error), ...takeDialogs(tab) };
+      return { effect: { ...EMPTY_EFFECT }, error: String(error && error.message || error), ...takePageEvents(tab) };
     }
   }
-  function takeDialogs(tab) {
+  function takePageEvents(tab) {
     const dialogs = tab.dialogs;
     tab.dialogs = undefined;
-    return dialogs ? { dialogs } : {};
+    const opened = tab.opened;
+    tab.opened = undefined;
+    return { ...(dialogs ? { dialogs } : {}), ...(opened ? { opened: opened.filter((item) => tabs.has(item.tabId)).map((item) => ({ ...item, url: tabs.get(item.tabId).url || item.url, title: tabs.get(item.tabId).title || '', epoch: tabs.get(item.tabId).epoch })) } : {}) };
   }
+  // dialog on an action (or a batch step) answers the confirm or prompt that
+  // action raises; without it they are dismissed.
   async function vpsPerform(tab, body, botId, overseer, depth = 0) {
+    if (body.dialog === undefined) return vpsStep(tab, body, botId, overseer, depth);
+    const before = tab.dialogAnswer;
+    tab.dialogAnswer = dialogAnswer(body.dialog);
+    try { return await vpsStep(tab, body, botId, overseer, depth); } finally { tab.dialogAnswer = before; }
+  }
+  async function vpsStep(tab, body, botId, overseer, depth) {
     const wc = tab.view.webContents;
     requireActor(tab, botId, body.epoch, true, overseer);
     const finish = async (payload, opts) => depth > 0 ? payload : { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) };
@@ -729,19 +739,14 @@ async function serve() {
   }
   cdp.listeners.add((event) => {
     // An open dialog blocks every evaluate and input on its page, so an agent
-    // tab answers it at once and the next action reply says what it said. Only
-    // an alert or the leave-page prompt the agent's own navigation raised is
-    // accepted; a confirm or prompt guards a decision and is dismissed. A
-    // human's tab keeps its dialog for the human.
+    // tab answers it at once (answerDialog) and the next action reply says
+    // what it said. A human's tab keeps its dialog for the human.
     if (event.method === 'Page.javascriptDialogOpening') {
       const tab = sessionOwner.get(event.sessionId)?.tab;
       if (tab?.controller === 'agent') {
-        const accepted = event.params.type === 'alert' || event.params.type === 'beforeunload';
-        tab.dialogs = [...(tab.dialogs || []), {
-          type: event.params.type, message: String(event.params.message || '').slice(0, 500), accepted,
-          ...(accepted ? {} : { note: `Dismissed. To accept it, eval window.${event.params.type} = () => ${event.params.type === 'prompt' ? '"<answer>"' : 'true'} and repeat the action.` }),
-        }].slice(-20);
-        cdp.send('Page.handleJavaScriptDialog', { accept: accepted }, event.sessionId).catch(() => {});
+        const { record, params } = answerDialog(event.params.type, event.params.message, tab.dialogAnswer);
+        tab.dialogs = [...(tab.dialogs || []), record].slice(-20);
+        cdp.send('Page.handleJavaScriptDialog', params, event.sessionId).catch(() => {});
       }
     }
     if (event.method === 'Fetch.requestPaused') {
@@ -828,7 +833,11 @@ async function serve() {
             controller: parent.controller,
             epoch: 1,
           })
-            .then(persist)
+            .then((t) => {
+              // The next reply to the bot that opened it names it.
+              if (parent.controller === 'agent') parent.opened = [...(parent.opened || []), { tabId: t.id, url: info.url }].slice(-10);
+              return persist();
+            })
             .catch(() => {});
       }
     }
