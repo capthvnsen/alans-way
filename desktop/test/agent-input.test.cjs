@@ -460,3 +460,14 @@ test('a page script that sets up later work or submits on its own needs approval
   await quiet.agent.guard(quiet.tab, { action: 'eval', code: 'setTimeout(go, 9)', [APPROVED]: true });
 });
 
+// The receipt alans-way-agents #89 (1515ce6, settleApproval) attaches to the
+// one forward the user approved, built the same way.
+test('the router\'s approval receipt is accepted once, for its tab and epoch', async () => {
+  const f = fixture({ found: { look: { names: ['Place order'], field: false, form: null } } });
+  const entry = { commit: { kind: 'purchase', summary: 'x'.repeat(200) }, bound: { tabId: f.tab.id, epoch: f.tab.epoch } };
+  const receipt = { nonce: require('node:crypto').randomUUID(), kind: entry.commit.kind, summary: entry.commit.summary, issuedAt: Date.now(), tabId: entry.bound.tabId, epoch: entry.bound.epoch };
+  await approved(f, { action: 'click', name: 'Place order' }, receipt);
+  assert.equal(pointer(f).filter(call => call.type === 'mousePressed').length, 1);
+  await assert.rejects(approved(f, { action: 'click', name: 'Place order' }, receipt), /already used/);
+});
+

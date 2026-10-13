@@ -58,14 +58,16 @@ test('a same-origin address that reads like an action is one; another origin or 
 test('the commit name list is the one the router was given', () => {
   assert.deepEqual(COMMIT_PATTERNS.names, [
     'place order', 'place your order', 'complete order', 'order now', 'purchase', 'buy',
-    'pay(?:ment)?', 'confirm', 'book', 'complete booking', 'reserv(?:e|ation)',
-    'send', 'post', 'publish', 'reply', 'comment', 'submit', 'easy apply',
-    'delete', 'remove', 'close account', 'subscribe', 'donate', 'transfer', 'schedule', 'bid',
-    'bestellen', 'kauf abschlie(?:ß|ss)en', 'kaufen', 'bezahlen',
-    'commander', 'payer', 'valider la commande', 'confirmer la commande', 'réserver',
-    'comprar', 'pagar', 'realizar pedido', 'confirmar pedido',
+    'pay(?:ment)?', 'confirm', 'book', 'complete booking', 'reserv(?:e|ation)', 'send',
+    'post', 'publish', 'reply', 'comment', 'submit', 'easy apply',
+    'delete', 'remove', 'close account', 'subscribe', 'donate', 'transfer',
+    'schedule', 'bid', 'bestellen', 'kauf abschlie(?:ß|ss)en', 'kaufen', 'bezahlen',
+    'buchen', 'reservieren', 'bestellung abschicken', 'senden', 'löschen', 'commander',
+    'payer', 'valider (?:la|votre) commande', 'confirmer', 'réserver', 'réservation', 'passer la commande',
+    'acheter', 'envoyer', 'supprimer', 'comprar', 'pagar', 'reservar',
+    'finalizar compra', 'enviar', 'eliminar', 'realizar pedido', 'confirmar',
   ]);
-  assert.equal(COMMIT_PATTERNS.notCommit.length, 6);
+  assert.equal(COMMIT_PATTERNS.notCommit.length, 10);
 });
 
 // The router (alans-way-agents PR #89) reads its own commit-patterns.json.
