@@ -1,6 +1,8 @@
 // All input stays inside this tab's Chromium target. Never focus a native view,
 // activate a window, use the clipboard for typing, or move the system pointer.
-const { followUpArmExpression, followUpCloseExpression, FOLLOW_UP_KEY, REFS_KEY, refsSource, CHALLENGE_HIT_SOURCE, challengeExpression, challengeHitExpression } = require('./browser-page.cjs');
+const { followUpArmExpression, followUpCloseExpression, FOLLOW_UP_KEY, REFS_KEY, PICK, refsSource, CHALLENGE_HIT_SOURCE, challengeExpression, challengeHitExpression } = require('./browser-page.cjs');
+const { looksLikeCommit, isActionUrl, READ_ONLY_CDP } = require('./commit-patterns.cjs');
+const { cdpMethodError } = require('./core.cjs');
 const INPUT_ACTIONS = new Set(['move', 'click', 'double_click', 'right_click', 'drag', 'type', 'press', 'scroll', 'select']);
 const CLICKS = { click: { button: 'left', buttons: 1, count: 1 }, double_click: { button: 'left', buttons: 1, count: 2 }, right_click: { button: 'right', buttons: 2, count: 1 } };
 const POINTER_ACTIONS = new Set(['move', 'drag', ...Object.keys(CLICKS)]);
@@ -16,6 +18,23 @@ function issueRef(tab, ref) {
   tab.refSeed = Math.max(tab.refSeed || 0, Number(ref.slice(1)) || 0);
 }
 const staleRef = (ref) => fail(`Stale or unknown reference ${ref}: it does not name a control on this page now. Use a ref from your latest reply or snapshot.`, 409);
+// The commit check. The router asks the user before a commit and judges the
+// action from outside; this is the last look, at the element the input will
+// actually reach. Unapproved, a commit-looking target is refused the way the
+// router refuses it and nothing is sent. Only agent input passes through here.
+const COMMIT_KINDS = ['purchase', 'booking', 'send', 'post', 'submit', 'delete', 'account_change'];
+const APPROVAL_MS = 120000, APPROVAL_SKEW_MS = 5000;
+// Set by approve() on an action whose approval checked out; a request body is
+// JSON, so it cannot carry this key itself. Batch steps inherit it.
+const APPROVED = Symbol('approved');
+const commitRequired = (why) => fail(`commit_required: ${why}. It did not run. Repeat the call with commit: {kind, summary, amount?, currency?, counterparty?} so the user can approve it.`, 403);
+const LOOKS = 'looks like it buys, books, sends, posts, submits or deletes';
+// Page script that sets up later work (a timer, an observer, an event
+// handler) or sends something itself (a request, a form submit) could commit
+// after this check, once the page shows "Place order"; it needs approval on
+// any page. A source-text check, so it stops the plain forms, not a script
+// built to hide them (see the PR's residual risk).
+const DEFERRED = /\b(?:setTimeout|setInterval|requestAnimationFrame|requestIdleCallback|queueMicrotask|MutationObserver|IntersectionObserver|ResizeObserver|PerformanceObserver|addEventListener|requestSubmit|fetch|XMLHttpRequest|sendBeacon|WebSocket|EventSource|Worker|SharedWorker)\b|\b(?:eval|Function|import)\s*\(|\.submit\s*\(|\bon(?:click|dblclick|mouse\w*|pointer\w*|key\w*|touch\w*|load|error|focus\w*|blur|change|input|submit|scroll|animation\w*|transition\w*|message|hashchange|popstate)\s*=(?!=)|"on[a-z]+"/;
 
 // A wedged renderer leaves executeJavaScript pending forever and would
 // wedge tab.queue behind it. Bound every probe like snapshot's 10s race.
@@ -90,6 +109,89 @@ function locateElement(target) {
       }
     }
     return null;
+  })()`;
+}
+
+// The page side of the commit check: the names a person reads on what an
+// action lands on. Matching happens in Node, against commit-patterns.cjs.
+function commitSource(seed) {
+  return `(() => {
+    const S = ${refsSource(seed)}, pick = ${JSON.stringify(PICK)};
+    const up = (n) => n.parentElement || (n.getRootNode && n.getRootNode().host) || null;
+    const clean = (list) => [...new Set(list.map(t => String(t || '').replace(/\\s+/g, ' ').trim().slice(0, 200)).filter(Boolean))].slice(0, 12);
+    // Its label, its own short text (an aria-label can say "Next" over a
+    // visible "Place order"), a submit input's value, and for an icon-only
+    // control the aria-label, title or alt inside it.
+    const read = (el) => {
+      const out = [S.describe(el).base], text = (el.innerText || '').trim();
+      if (text.length <= 80) out.push(text);
+      if (el.tagName === 'INPUT' && /^(submit|image|button|reset)$/.test(el.type)) out.push(el.value || el.alt || (/^(submit|image)$/.test(el.type) ? 'Submit' : ''));
+      if (!out[0]) for (const n of el.querySelectorAll('[aria-label],[title],img[alt],svg title')) out.push(n.getAttribute('aria-label') || n.getAttribute('title') || n.getAttribute('alt') || n.textContent);
+      return out;
+    };
+    const C = {};
+    // What a press on el reaches: the control around it, or for a bare
+    // element (a styled div), it and the wrappers around it that hold no control.
+    C.at = (el) => {
+      if (!el || el.nodeType !== 1) return [];
+      // A click on a label clicks its control too (a hidden submit, say); a
+      // field's label (a newsletter checkbox) presses nothing.
+      const label = el.closest('label'), out = label && label.control && label.control !== el && !C.field(label.control) ? read(label.control) : [];
+      for (let n = el, hops = 0; n && n.nodeType === 1 && hops < 8; n = up(n), hops++) if (n.matches(pick)) return clean([...out, ...read(n)]);
+      for (let n = el, hops = 0; n && n.nodeType === 1 && hops < 4 && n !== n.ownerDocument.body && !n.querySelector(pick) && (n.innerText || '').length <= 80; n = up(n), hops++) out.push(...read(n));
+      return clean(out);
+    };
+    C.field = (el) => !!el && el.nodeType === 1 && (el.isContentEditable || el.matches('textarea,select,input:not([type=submit]):not([type=image]):not([type=button]):not([type=reset]),[role=textbox],[role=searchbox],[role=combobox]'));
+    // The names of the controls Enter in el's form would submit with; null outside a form.
+    C.form = (el) => el && el.form ? clean([...el.form.elements].filter(c => (c.tagName === 'BUTTON' || c.tagName === 'INPUT') && (c.type === 'submit' || c.type === 'image')).flatMap(read)) : null;
+    C.opaque = (el) => { if (!el || (el.tagName !== 'IFRAME' && el.tagName !== 'FRAME')) return false; try { return !el.contentDocument; } catch { return true; } };
+    C.look = (el) => el === 'frame' || C.opaque(el) ? { frame: true } : el ? { names: C.at(el), field: C.field(el), form: C.form(el) } : null;
+    // The element at a viewport point, through open shadow roots and
+    // same-origin frames; 'frame' for a cross-origin frame, which cannot be read.
+    C.hit = (x, y) => {
+      let doc = document;
+      for (let depth = 0; depth < 10; depth++) {
+        let el = doc.elementFromPoint(x, y);
+        while (el && el.shadowRoot) { const deeper = el.shadowRoot.elementFromPoint(x, y); if (!deeper || deeper === el) break; el = deeper; }
+        if (!el || (el.tagName !== 'IFRAME' && el.tagName !== 'FRAME')) return el;
+        let inner = null;
+        try { inner = el.contentDocument; } catch {}
+        if (!inner) return 'frame';
+        const r = el.getBoundingClientRect();
+        x -= r.left + el.clientLeft; y -= r.top + el.clientTop; doc = inner;
+      }
+      return null;
+    };
+    C.focus = () => {
+      let a = document.activeElement;
+      for (let depth = 0; a && depth < 10; depth++) {
+        if (a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+        else if (a.tagName === 'IFRAME' || a.tagName === 'FRAME') { let doc = null; try { doc = a.contentDocument; } catch {} if (!doc) return 'frame'; a = doc.activeElement; }
+        else break;
+      }
+      return a;
+    };
+    // Predict focus() without calling it: tabindex=-1 is programmatically
+    // focusable too. A plain wrapper leaves the existing deep focus alone.
+    C.recipient = (el) => {
+      const visible = el && el.getClientRects().length && !['hidden', 'collapse'].includes(el.ownerDocument.defaultView.getComputedStyle(el).visibility);
+      const focusable = visible && !el.matches(':disabled') && !el.closest('[inert]') &&
+        ((el.isContentEditable && !el.parentElement?.isContentEditable) || Number.isFinite(parseInt(el.getAttribute('tabindex'), 10)) ||
+          el.matches('input:not([type=hidden]),button,select,textarea,a[href],area[href],iframe,frame,object,embed,audio[controls],video[controls]') ||
+          (el.tagName === 'SUMMARY' && el.parentElement?.tagName === 'DETAILS' && el.parentElement.querySelector('summary') === el));
+      // A delegating host chooses a descendant in Chromium; treat that
+      // unreadable destination conservatively, like an opaque frame.
+      if (visible && el.shadowRoot?.delegatesFocus) return 'frame';
+      return focusable ? el : C.focus();
+    };
+    // The names of every visible control a press would set off (a field's
+    // label, such as a "Pay rent" checkbox, is not one): what the page shows.
+    C.page = () => {
+      const names = new Set();
+      for (const el of S.collect(performance.now() + 400, 6000, 2000).list) { if (C.field(el)) continue; for (const n of C.at(el)) names.add(n); if (names.size >= 1500) break; }
+      return { origin: location.origin, names: [...names] };
+    };
+    return C;
   })()`;
 }
 
@@ -261,7 +363,7 @@ function cursorPath(from, to) {
 // dry (a bot's dry run on a tab the human holds) checks without scrolling,
 // focusing or listening on their page; an off-screen target defers its hit
 // test to the real run.
-function resolveScript(target, { focus = false, type = false, select = false, probe = false, dry = false, seed = 0 } = {}) {
+function resolveScript(target, { focus = false, type = false, select = false, probe = false, dry = false, look = false, inspect = false, seed = 0 } = {}) {
   return `(async () => {
     ${target.name ? `const named = ${refsSource(seed)}.byName(${JSON.stringify(target.name)}, ${JSON.stringify(target.role || '')}, ${JSON.stringify(target.row || '')});
     if (named.near) return { fail: 'unnamed', near: named.near, cut: named.cut };
@@ -273,6 +375,12 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     const inside = (${CHALLENGE_HIT_SOURCE})([], false, [el]);
     if (inside) return { fail: 'challenge', challenge: inside };
     if (el.disabled || el.matches(':disabled') || el.closest('[inert]')) return { fail: 'missing or disabled' };
+    if (${inspect}) {
+      const C = ${commitSource(seed)}, recipient = C.recipient(el);
+      const challenge = (${CHALLENGE_HIT_SOURCE})([], recipient === C.focus(), recipient && recipient !== 'frame' ? [recipient] : []);
+      if (challenge) return { fail: 'challenge', challenge };
+      return { look: C.look(recipient), ref, resolved, partial };
+    }
     // A native select hidden behind a custom dropdown is chosen by value, so it needs no hit test.
     const loose = ${select} && el.tagName === 'SELECT';
     const view = el.ownerDocument.defaultView || window;
@@ -296,7 +404,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     const l = Math.max(0, r.left), t = Math.max(0, r.top), rr = Math.min(view.innerWidth, r.right), b = Math.min(view.innerHeight, r.bottom);
     const w = rr - l, h = b - t;
     if (!r.width || !r.height || w <= 0 || h <= 0) return loose ? { x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) } : { fail: 'no visible area' };
-    let point = null, coveredBy = null, coveredAt = null;
+    let point = null, coveredBy = null, coveredAt = null, at = null;
     for (const [fx, fy] of [[.5,.5],[.5,.25],[.5,.75],[.25,.5],[.75,.5],[.2,.2],[.8,.2],[.2,.8],[.8,.8]]) {
       const lx = Math.round(l + w * fx), ly = Math.round(t + h * fy);
       let hit = view.document.elementFromPoint(lx, ly);
@@ -324,7 +432,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
       // A visually hidden checkbox or radio (pointer-events:none behind a
       // styled track) is operated through its label; a hit on that label is a hit on it.
       if (hit && !own && hit.closest) { const label = hit.closest('label'); own = !!label && label.control === el; }
-      if (hit && (own || el.contains(hit))) { point = { x: lx + ox, y: ly + oy }; break; }
+      if (hit && (own || el.contains(hit))) { point = { x: lx + ox, y: ly + oy }; at = hit; break; }
       if (hit && !coveredBy && !own && !el.contains(hit)) { coveredBy = hit; coveredAt = { x: lx + ox, y: ly + oy }; }
     }
     // Bots never solve a challenge: a point on one (or under its pop-up) is refused.
@@ -355,7 +463,11 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     }
     const submit = !!el.form && ((el.tagName === 'BUTTON' && (!kind || kind === 'submit')) || (el.tagName === 'INPUT' && kind === 'submit'));
     const link = !!el.closest('a[href]') && !/^#/.test(el.closest('a[href]').getAttribute('href') || '');
-    return { ...point, ref, resolved, partial, submit, nav: submit || link, hl: { x: Math.round(r.left + ox), y: Math.round(r.top + oy), width: Math.round(r.width), height: Math.round(r.height) } };
+    ${look ? `// What the press will reach, followed through frames and shadow roots
+    // from the point it lands on: a frame or host target hides its inside.
+    const C = ${commitSource(seed)}, deep = C.hit(point.x, point.y), look = C.look(deep === 'frame' || C.opaque(at) ? 'frame' : el);
+    if (look.names) look.names = [...new Set([...look.names, ...C.at(at), ...(deep === 'frame' ? [] : C.at(deep))])];` : 'const look = undefined;'}
+    return { ...point, ref, resolved, partial, submit, nav: submit || link, look, hl: { x: Math.round(r.left + ox), y: Math.round(r.top + oy), width: Math.round(r.width), height: Math.round(r.height) } };
   })()`;
 }
 
@@ -431,8 +543,75 @@ function watchNavigation(wc, delay) {
   };
 }
 
-function createAgentInput({ command, requireActor, botName = () => 'Agent', onBusy = () => {}, isVisible = () => true, delay = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+function createAgentInput({ command, requireActor, botName = () => 'Agent', onBusy = () => {}, isVisible = () => true, delay = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now }) {
   const states = new WeakMap();
+  const usedNonces = new Map();
+  const preflightApprovals = new WeakMap(), carriedApprovals = new WeakMap();
+  const invalidApproval = (why) => fail(`approval_invalid: ${why}. It did not run. Ask the user to approve it again.`, 403);
+  // The router sends approval: {nonce, kind, summary, issuedAt, tabId, epoch}
+  // on the one action the user approved (a batch carries it for all its
+  // steps). It counts once, within 120s, on that tab and control epoch;
+  // anything else carrying an approval is refused outright.
+  function validateApproval(tab, body, epoch = tab.epoch) {
+    if (body.approval === undefined) return;
+    const a = body.approval, at = now();
+    const invalid = invalidApproval;
+    if (!a || typeof a !== 'object' || typeof a.nonce !== 'string' || !/^[\w-]{16,128}$/.test(a.nonce) || !COMMIT_KINDS.includes(a.kind)
+      || typeof a.summary !== 'string' || a.summary.length > 200 || !Number.isFinite(a.issuedAt)) throw invalid('approval needs nonce, kind, summary, issuedAt, tabId and epoch');
+    for (const [nonce, until] of usedNonces) if (until < at) usedNonces.delete(nonce);
+    if (at - a.issuedAt > APPROVAL_MS || a.issuedAt - at > APPROVAL_SKEW_MS) throw invalid('the approval expired');
+    if (a.tabId !== tab.id || a.epoch !== epoch) throw invalid('the approval is for another tab or control epoch');
+    if (usedNonces.has(a.nonce)) throw invalid('the approval was already used');
+    return a;
+  }
+  function approve(tab, body) {
+    const carried = carriedApprovals.get(body);
+    const epoch = carried && carried.tab === tab && carried.to === tab.epoch && carried.approval === body.approval ? carried.from : tab.epoch;
+    const a = validateApproval(tab, body, epoch);
+    if (!a) return;
+    if (tab.preflight) preflightApprovals.set(a, { tab, epoch });
+    else {
+      usedNonces.set(a.nonce, a.issuedAt + APPROVAL_MS + APPROVAL_SKEW_MS);
+      carriedApprovals.delete(body);
+    }
+    body[APPROVED] = true;
+  }
+  // Called only by the serialized takeover path before changing control,
+  // after its generation/epoch recheck. JSON cannot forge the WeakMap evidence.
+  function carryApproval(tab, body, from) {
+    if (body.approval === undefined) return;
+    const checked = preflightApprovals.get(body.approval);
+    if (!checked || checked.tab !== tab || checked.epoch !== from || tab.epoch !== from)
+      throw invalidApproval('the approval is for another tab or control epoch');
+    const a = validateApproval(tab, body, from);
+    preflightApprovals.delete(a);
+    carriedApprovals.set(body, { tab, approval: a, from, to: from + 1 });
+  }
+  const pageNames = (tab) => readJs(tab.view.webContents, `${commitSource(tab.refSeed)}.page()`).then(page => page && Array.isArray(page.names) ? page : null, () => null);
+  // Page script and DevTools calls that can act, while the page shows a
+  // commit control; a reload there (it may resubmit); a same-origin address
+  // that reads like an action. Read-only DevTools calls pass.
+  async function guard(tab, body) {
+    if (body[APPROVED]) return;
+    const method = body.action === 'cdp' ? String(body.method || '') : '';
+    // A method the host refuses anyway gets that refusal, not this one.
+    if (method && cdpMethodError(method)) return;
+    const script = body.action === 'eval' || (!!method && !READ_ONLY_CDP.test(method));
+    const reload = body.action === 'reload' || method === 'Page.reload';
+    const url = body.action === 'navigate' ? body.url : method === 'Page.navigate' && body.params ? body.params.url : undefined;
+    if (!script && !reload && typeof url !== 'string') return;
+    const what = body.action === 'eval' ? 'a page script' : `the DevTools call ${method.slice(0, 60)}`;
+    const source = body.action === 'eval' ? String(body.code || '') : /^(?:Runtime|DOM)\./.test(method) ? JSON.stringify(body.params || {}) : '';
+    const later = source && (DEFERRED.exec(source) || /javascript:/i.exec(source));
+    if (later) throw commitRequired(`${what} that uses ${later[0].slice(0, 40)} can act after this check (a timer, observer or event handler) or submit on its own (a request or form submit). Use the wait or read action instead`);
+    const page = await pageNames(tab);
+    if (!page) { if (script) throw commitRequired(`the page did not answer the commit check, so ${what} could set off a commit control`); return; }
+    const live = page.names.find(looksLikeCommit);
+    if (!live) return;
+    if (script) throw commitRequired(`${what} here could set off "${live}"`);
+    if (reload) throw commitRequired(`reloading here could resubmit "${live}"`);
+    if (isActionUrl(url, page.origin)) throw commitRequired(`${url.slice(0, 80)} looks like an address that confirms, orders, pays, submits or deletes`);
+  }
   function state(tab) {
     if (!states.has(tab)) states.set(tab, { active: 0, revision: 0 });
     return states.get(tab);
@@ -466,6 +645,8 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     if (!INPUT_ACTIONS.has(action)) throw fail('Unsupported agent input action.');
     if (action === 'type' && (typeof body.text !== 'string' || body.text.length > 20000)) throw fail('Provide text up to 20,000 characters.');
     const keyEvent = action === 'press' ? keyboardEvent(body) : null;
+    const enterOrSpace = keyEvent && (keyEvent.windowsVirtualKeyCode === 13 || keyEvent.windowsVirtualKeyCode === 32 || /[\r\n]/.test(keyEvent.text || ''));
+    const gated = !body[APPROVED] && (['click', 'double_click', 'right_click', 'drag', 'select'].includes(action) || enterOrSpace);
     const knownRef = (ref) => typeof ref === 'string' && /^e\d+$/.test(ref) && tab.refs.has(ref);
     if (body.ref !== undefined && !knownRef(body.ref)) throw staleRef(body.ref);
     if (body.selector !== undefined && (typeof body.selector !== 'string' || !body.selector || body.selector.length > 2000)) throw fail('Provide a CSS selector up to 2,000 characters.');
@@ -556,6 +737,33 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       if (!found || found.fail) throw fail(`Element is ${found ? found.fail : 'unavailable'}. Request a fresh snapshot or use a different selector.`);
       return found;
     }
+    const probe = async (expression) => { const look = await boundedJs(wc, `(() => { const C = ${commitSource(tab.refSeed)}; return ${expression}; })()`).catch(() => null); check(); return look && typeof look === 'object' ? look : null; };
+    // A target is judged by its names, and Enter in a field by the controls
+    // its form submits with. Enter in a field outside a form (a chat box that
+    // sends on Enter), or in a form with no named submit control, is judged by
+    // the page: it is refused while the page shows a commit control, as the
+    // router does. An unnamed control is the router's to refuse.
+    // Input landing in a cross-origin frame (an embedded booking or payment
+    // widget) has no name the app can read, so it needs approval; a page that
+    // did not answer fails closed when it shows a commit control.
+    async function judge(look) {
+      const what = action === 'press' ? `pressing ${keyEvent.key === ' ' ? 'Space' : 'Enter'}` : `a ${action.replace('_', '-')}`;
+      if (look && look.frame) throw commitRequired(`${what} here lands in a cross-origin frame, where the app cannot read what it would set off`);
+      const pageCheck = async (where) => {
+        const page = await pageNames(tab);
+        check();
+        if (!page) throw commitRequired(`the page did not answer the commit check, so ${what} could set off a commit control`);
+        const live = page.names.find(looksLikeCommit);
+        if (live) throw commitRequired(`${what} ${where} here could set off "${live.slice(0, 80)}"`);
+      };
+      if (!look) return pageCheck('where the app cannot read the page');
+      // Clicking into a field, a checkbox or a select, or typing a space, submits nothing.
+      if (look.field && (action !== 'press' || keyEvent.windowsVirtualKeyCode === 32)) return;
+      const enterInField = action === 'press' && look.field;
+      const hit = ((enterInField ? look.form : look.names) || []).find(looksLikeCommit);
+      if (hit) throw commitRequired(enterInField ? `pressing Enter here submits the form with "${hit.slice(0, 80)}", which ${LOOKS}` : `"${hit.slice(0, 80)}" ${LOOKS}`);
+      if (enterInField && !(look.form && look.form.length)) return pageCheck(look.form ? 'in a form with no named submit control' : 'in a field outside a form');
+    }
     // The page-side tracker counts the follow-up work the action starts (its
     // short timers and requests) so the effect read can wait it out. Arm just
     // before the real dispatch; a failed probe must not stall the action.
@@ -574,19 +782,36 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       // Focus emulation persists for the tab's agent lifetime; toggling it per
       // action was two CDP round-trips on every dispatch.
       if (!tab.focusEmulation && !tab.preflight) { tab.focusEmulation = true; await send('Emulation.setFocusEmulationEnabled', { enabled: true }); }
-      let point, found = {}, likelyNavigation = false, extra = {}, end = null;
+      let point, anticipated, found = {}, likelyNavigation = false, extra = {}, end = null;
       let target = { ref: body.ref, selector: body.selector, name: body.name, role: body.role, row: body.row };
+      // Judge the keyboard recipient before resolve can scroll or focus.
+      // Dry takeover validation and real execution use the same prediction.
+      if (action === 'press' && targeted) {
+        anticipated = await resolve(target, { inspect: true });
+        if (gated) await judge(anticipated.look);
+      }
       // The source resolves last: scrolling it into view must not move a destination found earlier.
-      if (to && (to.ref || to.selector)) end = await resolve(to);
+      if (to && (to.ref || to.selector)) end = await resolve(to, { look: gated });
       if (body.ref || body.selector || body.name) {
-        found = await resolve(target, { focus: action === 'type' || action === 'press', type: action === 'type', select: action === 'select', probe: action === 'click' });
-        const { hl, submit, nav, ref, resolved, partial, ...xy } = found;
-        point = xy; found = { hl, submit, nav };
+        found = await resolve(target, { focus: action === 'type' || action === 'press', type: action === 'type', select: action === 'select', probe: action === 'click', look: gated });
+        const { hl, submit, nav, ref, resolved, partial, look, ...xy } = found;
+        point = xy; found = { hl, submit, nav, look };
         // A named control is the ref it resolved to from here on, and the reply
         // says which, by its full name (a near match is visible).
         if (ref) { target = { ref }; extra.ref = ref; extra.resolved = resolved; if (partial) extra.partial = true; }
       } else if (POINTER_ACTIONS.has(action)) point = await viewportPoint(body.x, body.y);
       const hl = found.hl || null;
+      // The commit check comes after every challenge check: input aimed at a
+      // CAPTCHA is the person's (challenge_present), never an approval's.
+      if (gated) {
+        // A key goes to whatever has focus; the press branch checks it for a
+        // challenge too, but only after this, so check it here first.
+        if (action === 'press' && !(tab.preflight && anticipated)) { await refuseChallenge(wc, [], true); check(); }
+        const at = (x, y) => probe(`C.look(C.hit(${Number(x)}, ${Number(y)}))`);
+        // A key goes to whatever holds focus, which a target that cannot take focus leaves elsewhere.
+        await judge(action === 'press' ? (tab.preflight && anticipated ? anticipated.look : await probe('C.look(C.focus())')) : found.look || await at(point.x, point.y));
+        if (action === 'drag') await judge(end ? end.look : (await viewportPoint(to.x, to.y), await at(to.x, to.y)));
+      }
       if (CLICKS[action] || action === 'move') {
         await moveCursor(point, hl);
         if (CLICKS[action]) {
@@ -611,7 +836,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
           cursor(point, 'click', hl);
         }
       } else if (action === 'drag') {
-        const { hl: endHl, submit, nav, ...target } = end || await viewportPoint(to.x, to.y);
+        const { hl: endHl, submit, nav, look, ref, resolved, partial, ...target } = end || await viewportPoint(to.x, to.y);
         await moveCursor(point, hl);
         await armFollowUp();
         const path = cursorPath(point, target);
@@ -660,7 +885,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         // A key goes to whatever has focus, wherever that is (a frame, a shadow
         // root, a widget the page focused itself), so every press checks it.
         // The check rides on the follow-up arm: no extra round trip.
-        const armed = await boundedJs(wc, `(() => { const challenge = (${CHALLENGE_HIT_SOURCE})([], true); return { challenge, armed: !challenge && ${followUpArmExpression()} }; })()`, 3000).catch(() => { throw checkFailed(); });
+        const armed = await boundedJs(wc, `(() => { const challenge = (${CHALLENGE_HIT_SOURCE})([], ${!(tab.preflight && anticipated)}); return { challenge, armed: !challenge && ${tab.preflight ? 'null' : followUpArmExpression()} }; })()`, 3000).catch(() => { throw checkFailed(); });
         check();
         if (typeof armed?.challenge?.kind === 'string') throw challengePresent(armed.challenge);
         await keys(keyEvent);
@@ -699,7 +924,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       }
     }
   }
-  return { perform, clear, isDispatching };
+  return { perform, clear, isDispatching, approve, carryApproval, guard };
 }
 
-module.exports = { createAgentInput, PREFLIGHT_READY, refuseChallenge, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };
+module.exports = { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };

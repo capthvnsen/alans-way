@@ -105,7 +105,7 @@ const CDP_METHOD_RE = /^(Page|Runtime|Input|Emulation|Network|DOM|DOMSnapshot|Ac
 // interception and persistent script injection all stay denied. Fetch and
 // Storage are excluded from the allowed domains entirely.
 const CDP_BLOCKED = new Set([
-  'Page.addScriptToEvaluateOnNewDocument', 'Page.removeScriptToEvaluateOnNewDocument',
+  'Page.addScriptToEvaluateOnNewDocument', 'Page.removeScriptToEvaluateOnNewDocument', 'Page.addScriptToEvaluateOnLoad', 'Network.replayXHR',
   'Page.setInterceptFileChooserDialog', 'Page.handleFileChooser', 'Page.setDownloadBehavior', 'Page.getCookies',
   'Page.navigateToHistoryEntry',
   'DOM.setFileInputFiles',

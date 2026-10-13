@@ -1038,4 +1038,4 @@ function restoreExpression(checkpoint) {
     return {verification:restored === c.drafts.length ? 'ready' : 'review_required',restored,skipped:c.drafts.length-restored};
   })()`;
 }
-module.exports = { refsSource, REFS_KEY, CHALLENGE_HIT_SOURCE, passCloudflare, challengeExpression, challengeHitExpression, challengeProbeExpression, snapshotExpression, settleSnapshot, readEffect, controlsDelta, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, followUpInstallExpression, lastReadOf, FOLLOW_UP_KEY };
+module.exports = { refsSource, REFS_KEY, PICK, CHALLENGE_HIT_SOURCE, passCloudflare, challengeExpression, challengeHitExpression, challengeProbeExpression, snapshotExpression, settleSnapshot, readEffect, controlsDelta, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, followUpInstallExpression, lastReadOf, FOLLOW_UP_KEY };

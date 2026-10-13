@@ -9,7 +9,7 @@ const { spawn } = require('node:child_process');
 const { CDP, AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
 const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, liveHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe, viewerUrl } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
-const { createAgentInput, refuseChallenge, tintScript, botAccent } = agentInputModule;
+const { createAgentInput, APPROVED, refuseChallenge, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
 const INPUT_ACTIONS = agentInputModule.INPUT_ACTIONS || new Set(['click', 'type', 'press', 'move', 'scroll']);
 const { snapshotExpression, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('../src/browser-page.cjs');
@@ -500,6 +500,7 @@ async function serve() {
   async function vpsStep(tab, body, botId, overseer, depth) {
     const wc = tab.view.webContents;
     requireActor(tab, botId, body.epoch, true, overseer);
+    if (depth === 0) input.approve(tab, body);
     const finish = async (payload, opts) => depth > 0 ? payload : { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) };
     if (body.action === 'batch') {
       if (depth > 0) throw fail('Batches cannot nest.');
@@ -510,7 +511,7 @@ async function serve() {
       for (const step of steps) {
         if (!step || typeof step !== 'object') { results.push({ ok: false, error: 'Invalid step.' }); break; }
         if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ ok: false, error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
-        try { results.push({ ok: true, ...(await vpsPerform(tab, { ...step, epoch: body.epoch }, botId, overseer, 1)) }); }
+        try { results.push({ ok: true, ...(await vpsPerform(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, overseer, 1)) }); }
         catch (error) { results.push({ ok: false, error: errorMessage(error) }); break; }
         // A step aimed by name reports the ref it resolved to.
         const ref = results.at(-1).ref || step.ref;
@@ -521,6 +522,8 @@ async function serve() {
       requireActor(tab, botId, body.epoch, true, overseer);
       return { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput, held: body.generation })), dispatched: true };
     }
+    // Page script and DevTools calls are checked in their branches, after the challenge preflight.
+    if (body.action !== 'cdp' && body.action !== 'eval') await input.guard(tab, body);
     if (body.action === 'read') {
       const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
       requireAgentRead(tab);
@@ -537,6 +540,7 @@ async function serve() {
       if (!code || code.length > 16384) throw fail('eval needs a code string (max 16KB).');
       // Page script can reach a widget anywhere on the page.
       await refuseChallenge(wc);
+      await input.guard(tab, body);
       let value = await Promise.race([
         wc.executeJavaScript(code),
         new Promise((_, reject) => setTimeout(() => reject(fail('eval timed out after 15s.', 408)), 15000)),
@@ -628,6 +632,8 @@ async function serve() {
       // While a challenge is on the page, only read-only methods run: raw input,
       // script and DOM writes could all reach the widget.
       if (!cdpChallengeSafe(method, params)) await refuseChallenge(wc);
+      // A challenge answers first: input or script aimed at a CAPTCHA goes to the person, not to approval.
+      await input.guard(tab, { ...body, params });
       let value = await Promise.race([
         wc.command(method, params),
         new Promise((_, reject) => setTimeout(() => reject(fail('cdp timed out after 20s.', 408)), 20000)),
@@ -925,7 +931,7 @@ async function serve() {
         platform: process.platform,
         protocol: 1,
         session: 'shared-vps',
-        capabilities: ['tabs', 'snapshot', 'screenshot', 'background-input', 'control-epochs', 'checkpoint', 'agent-desktop', 'name-targets'],
+        capabilities: ['tabs', 'snapshot', 'screenshot', 'background-input', 'control-epochs', 'checkpoint', 'agent-desktop', 'name-targets', 'commit-check'],
         tabCount: tabs.size,
         browserUp: cdp.socket.readyState === 1,
         busy: [...tabs.values()].some((t) => (t.pendingActions || 0) > 0 || input.isDispatching(t)),

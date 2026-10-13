@@ -26,7 +26,7 @@ const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, pluginStatusText, LOCAL_TARGET } = require('./vm-update.cjs');
 const { latestPluginTag, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
-const { createAgentInput, PREFLIGHT_READY, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
+const { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { snapshotExpression, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
@@ -2198,21 +2198,22 @@ async function performStep(tab, body, botId, depth, isAborted) {
   requireActor(tab, botId, body.epoch, true, overseer);
   const wc = tab.view.webContents;
   if (depth === 0) await syncDialogGuard(tab);
+  if (depth === 0) agentInput.approve(tab, body);
   const reply = (payload) => depth > 0 ? payload : actionReply(tab, payload);
   const finish = async (payload, opts) => depth > 0 ? payload : actionReply(tab, { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) });
   if (body.action === 'batch') {
     if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
     const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
     if (!steps.length) throw Object.assign(new Error('batch needs a non-empty steps array (max 25).'), { status: 400 });
-    // A dry run checks the first step: later ones may aim at what it finds.
-    if (tab.preflight) return performAction(tab, { ...steps[0], epoch: body.epoch }, botId, 1, isAborted);
+    // Takeover validates just the first step, with the batch's approval mark.
+    if (tab.preflight) return performAction(tab, { ...steps[0], epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, 1, isAborted);
     const results = [], started = Date.now();
     let lastTarget, sawInput = false;
     for (const step of steps) {
       if (!step || typeof step !== 'object') { results.push({ ok: false, error: 'Invalid step.' }); break; }
       if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ ok: false, error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
       if (isAborted()) { results.push({ ok: false, error: 'The request was closed; remaining steps were not run.' }); break; }
-      try { results.push({ ok: true, ...(await performAction(tab, { ...step, epoch: body.epoch }, botId, 1, isAborted)) }); }
+      try { results.push({ ok: true, ...(await performAction(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, 1, isAborted)) }); }
       catch (error) { results.push({ ok: false, error: errorMessage(error) }); break; }
       // A step aimed by name reports the ref it resolved to.
       const ref = results.at(-1).ref || step.ref;
@@ -2223,6 +2224,8 @@ async function performStep(tab, body, botId, depth, isAborted) {
     requireActor(tab, botId, body.epoch, true, overseer);
     return actionReply(tab, { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput, held: body.generation })), dispatched: true });
   }
+  // Page script and DevTools calls are checked in their branches, after the challenge preflight.
+  if (body.action !== 'cdp' && body.action !== 'eval') await agentInput.guard(tab, body);
   if (body.action === 'read') {
     const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
     dryRun(tab);
@@ -2241,6 +2244,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     const wc = tab.view.webContents;
     // Page script can reach a widget anywhere on the page.
     await refuseChallenge(wc);
+    await agentInput.guard(tab, body);
     let evalTimer;
     dryRun(tab);
     let value = await Promise.race([
@@ -2347,6 +2351,8 @@ async function performStep(tab, body, botId, depth, isAborted) {
     // While a challenge is on the page, only read-only methods run: raw input,
     // script and DOM writes could all reach the widget.
     if (!cdpChallengeSafe(method, params)) await refuseChallenge(wc);
+    // A challenge answers first: input or script aimed at a CAPTCHA goes to the person, not to approval.
+    await agentInput.guard(tab, { ...body, params });
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     dryRun(tab);
     let cdpTimer;
@@ -2428,7 +2434,7 @@ function startApi() {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
       const overseer = isOverseer(botId);
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets'], tabCount: tabs.size+vpsTabs.size });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets', 'commit-check'], tabCount: tabs.size+vpsTabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await Promise.race([
           telegramView.webContents.executeJavaScript(`(() => ({
