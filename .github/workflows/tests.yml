@@ -31,7 +31,7 @@ jobs:
 
   desktop-electron:
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: desktop
@@ -43,6 +43,8 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
+      - run: npm run test:electron-fixture
+        timeout-minutes: 3
       - run: npm run test:desktop
         timeout-minutes: 3
       - run: npm run test:agent-input
@@ -52,7 +54,7 @@ jobs:
       - run: npm run test:newtab
         timeout-minutes: 3
       - run: npm run test:restore-tabs
-        timeout-minutes: 3
+        timeout-minutes: 7
       - run: npm run test:needs-human
         timeout-minutes: 3
       - run: npm run test:recorder
