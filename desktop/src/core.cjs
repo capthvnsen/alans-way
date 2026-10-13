@@ -113,6 +113,20 @@ const CDP_BLOCKED = new Set([
   'Network.clearBrowserCookies', 'Network.clearBrowserCache', 'Network.loadNetworkResource',
   'Network.setRequestInterception', 'Network.continueInterceptedRequest',
 ]);
+// While a challenge is on the page only these run: reads and domain toggles,
+// plus leaving the page. Everything else can script, write the DOM or send
+// input, and a new method stays refused until it is listed here. A navigate
+// with a frameId could replace a challenge's own frame, so only the
+// top-frame form (no frameId) leaves the page.
+const CDP_CHALLENGE_SAFE = new Set([
+  'Page.enable', 'Page.disable', 'Page.navigate', 'Page.stopLoading', 'Page.captureScreenshot', 'Page.getLayoutMetrics', 'Page.getFrameTree', 'Page.getNavigationHistory',
+  'DOM.enable', 'DOM.disable', 'DOM.getDocument', 'DOM.getFlattenedDocument', 'DOM.querySelector', 'DOM.querySelectorAll', 'DOM.describeNode', 'DOM.getBoxModel', 'DOM.getContentQuads', 'DOM.getOuterHTML', 'DOM.getAttributes', 'DOM.getNodeForLocation',
+  'DOMSnapshot.enable', 'DOMSnapshot.disable', 'DOMSnapshot.captureSnapshot',
+  'Accessibility.enable', 'Accessibility.disable', 'Accessibility.getFullAXTree', 'Accessibility.getPartialAXTree', 'Accessibility.queryAXTree', 'Accessibility.getRootAXNode', 'Accessibility.getChildAXNodes',
+  'CSS.enable', 'CSS.disable', 'CSS.getComputedStyleForNode', 'CSS.getMatchedStylesForNode', 'CSS.getInlineStylesForNode',
+  'Network.enable', 'Network.disable', 'Log.enable', 'Log.disable',
+]);
+const cdpChallengeSafe = (method, params = {}) => CDP_CHALLENGE_SAFE.has(method) && !(method === 'Page.navigate' && params.frameId !== undefined);
 function cdpMethodError(method) {
   if (CDP_BLOCKED.has(method)) return `cdp method ${method} is not available to agents.`;
   if (!CDP_METHOD_RE.test(method)) return 'Unsupported CDP method. Allowed domains: Page, Runtime, Input, Emulation, Network, DOM, DOMSnapshot, Accessibility, CSS, Log.';
@@ -196,6 +210,66 @@ function nextHandback(tab, controller, source, request, now = Date.now()) {
   }
   return source === 'human' && awaiting ? { ...current, state: 'human_returned', returnedAt: now } : null;
 }
+// Challenges (CAPTCHAs, bot checks) a tab met, per origin: one counts when the
+// last read saw none there. Two inside ten minutes tell the bot to stop
+// retrying that site.
+const CHALLENGE_WINDOW_MS = 10 * 60000;
+const CHALLENGE_NAMES = { recaptcha: 'reCAPTCHA', hcaptcha: 'hCaptcha', turnstile: 'Cloudflare check', cloudflare: 'Cloudflare check', google_sorry: 'Google "unusual traffic" check', arkose: 'Arkose puzzle' };
+function challengeReply(tab, url, challenge, now = Date.now()) {
+  const log = tab.challengeLog ||= { on: '', seen: {} };
+  if (!challenge) { log.on = ''; return undefined; }
+  let origin = '', host = 'This site';
+  try { const u = new URL(url); origin = u.origin; host = u.hostname || host; } catch {}
+  for (const key of Object.keys(log.seen)) if (log.seen[key].every((at) => now - at >= CHALLENGE_WINDOW_MS)) delete log.seen[key];
+  const times = (log.seen[origin] || []).filter((at) => now - at < CHALLENGE_WINDOW_MS);
+  if (log.on !== origin) times.push(now);
+  log.seen[origin] = times;
+  log.on = origin;
+  const reply = { kind: challenge.kind, blocking: challenge.blocking === true };
+  if (times.length >= 2) Object.assign(reply, { backOff: true, advice: `${host} has challenged ${times.length} times in 10 minutes. Stop retrying it and use another source.` });
+  return reply;
+}
+// The N2 release the host makes itself when a blocking challenge lands on a
+// bot's tab. The note names the site and the kind of check.
+function captchaHandback(url, challenge) {
+  let host = 'this site';
+  try { host = new URL(url).hostname || host; } catch {}
+  const note = `Solve the ${CHALLENGE_NAMES[challenge.kind] || 'CAPTCHA'} on ${host}. The tab goes back to the agent once it clears.`;
+  // The back-off rides on the handback too, so a bot that gets the tab back still hears it.
+  return { reason: 'captcha', note: note.slice(0, 140), auto: true, challenge: challenge.kind, ...(challenge.backOff ? { backOff: true, advice: challenge.advice } : {}) };
+}
+// One step of the watch on a tab handed over for a CAPTCHA, fed a page probe
+// (challengeProbeExpression) about once a second. It hands the tab back once
+// a challenge it saw is gone (a navigation, or the widget removed or solved)
+// on two reads in a row, the page is not loading, and the focused field held
+// still between them (the person is not typing). resume says to give it back.
+function captchaWatchStep(watch, probe) {
+  if (!probe || probe.loading) return { ...watch, clear: 0, resume: false };
+  if (probe.challenge) return { seen: true, clear: 0, typing: probe.typing, resume: false };
+  // A focused field with text in it is a person mid-form, typing or not.
+  const filled = /^[1-9]/.test(probe.typing || '');
+  const clear = watch.seen && !filled && probe.typing === watch.typing ? watch.clear + 1 : 0;
+  return { seen: watch.seen, clear, typing: probe.typing, resume: clear >= CAPTCHA_QUIET_READS };
+}
+// The watch reads once a second: about six quiet seconds before the hand-back.
+const CAPTCHA_QUIET_READS = 6;
+// The live desktop viewer a person opens to solve a challenge on the VM: an
+// http(s) address with no credentials or fragment (noVNC also reads a
+// password from the fragment), keeping only noVNC's harmless settings. A
+// value that could carry a nested address or query (a token tucked into
+// path) is dropped, and path may only name noVNC's own websockify endpoint.
+const VIEWER_PARAMS = new Set(['autoconnect', 'reconnect', 'reconnect_delay', 'resize', 'quality', 'compression', 'show_dot', 'shared', 'view_only', 'view_clip', 'path', 'host', 'port', 'encrypt', 'bell', 'logging']);
+function viewerUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    url.username = ''; url.password = ''; url.hash = '';
+    for (const [key, value] of [...url.searchParams]) {
+      if (!VIEWER_PARAMS.has(key) || /[?=@]|\/\//.test(value) || (key === 'path' && value !== 'websockify')) url.searchParams.delete(key);
+    }
+    return url.href;
+  } catch { return ''; }
+}
 function awaitingHumanError(h) {
   return Object.assign(new Error(`awaiting_human: this tab was handed to the human (${h.reason}). Wait until they give it back; read the tab state later.`), { status: 409 });
 }
@@ -216,7 +290,9 @@ function requireActor(tab, botId, epoch, mutate = false, overseer = false, now =
 // A handoff source stays human-only so the task has one live copy, and a
 // destination that did not verify (login redirect, lost drafts) waits for the
 // human. Humans clear either by giving the tab to an agent themselves.
-function requireAgentClaim(tab, now = Date.now()) {
+// autoTakeover (a Setting, on by default) lets a bot take back a tab the human
+// took over; a tab the bot handed over or one being recorded stays theirs.
+function requireAgentClaim(tab, now = Date.now(), { autoTakeover = false, recording = false } = {}) {
   const h = tab.handoff;
   if (h && (h.phase === 'handed_off' || (h.phase === 'review_required' && h.verification !== 'ready')))
     throw Object.assign(new Error(h.phase === 'handed_off'
@@ -227,8 +303,18 @@ function requireAgentClaim(tab, now = Date.now()) {
   // release or the idle-expiry clock stays retakeable.
   const handback = liveHandback(tab, now);
   if (handback && handback.state === 'awaiting_human') throw awaitingHumanError(handback);
-  if (tab.controller === 'human' && tab.humanLock)
+  if (recording)
+    throw Object.assign(new Error('recording_in_progress: the human is recording a task on this tab. Open your own tab, or read the tab state later.'), { status: 409 });
+  if (tab.controller === 'human' && tab.humanLock && !autoTakeover)
     throw Object.assign(new Error('human_has_control: the human took this tab over; only they can hand it back.'), { status: 409 });
+  if (tab.controller === 'human' && autoTakeover && tab.tookBackUntil > now)
+    throw Object.assign(new Error(`human_took_back: the human pressed Take back, so leave this tab to them for ${Math.ceil((tab.tookBackUntil - now) / 1000)}s. Open your own tab, or tell them what you need.`), { status: 409 });
+}
+// Input in the last 3 seconds holds a takeover until the human pauses, for
+// 10 seconds at most, so a bot never yanks the page mid-keystroke.
+const TAKEOVER_GRACE_MS = 3000, TAKEOVER_MAX_MS = 10000;
+function takeoverDelay(lastInput, started, now = Date.now()) {
+  return Math.max(0, Math.min((lastInput || 0) + TAKEOVER_GRACE_MS, started + TAKEOVER_MAX_MS) - now);
 }
 function reviewedHandoff(handoff) {
   return handoff && handoff.phase !== 'reviewed' ? { ...handoff, phase: 'reviewed', reviewedAt: Date.now() } : handoff;
@@ -238,7 +324,7 @@ function requireAgentRead(tab, now = Date.now()) {
   if (tab.controller !== 'human') return;
   const handback = liveHandback(tab, now);
   if (handback && handback.state === 'awaiting_human') throw awaitingHumanError(handback);
-  throw Object.assign(new Error('Tab is under human control.'), { status: 409 });
+  throw Object.assign(new Error('Tab is under human control. Claim it to take it back, then read.'), { status: 409 });
 }
 
 function isAuthorized(header, token) {
@@ -314,4 +400,4 @@ function hostShouldReload(mtime, started, inFlight) {
   return inFlight === 0 && Number(mtime) > Number(started);
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog };
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, viewerUrl, cdpChallengeSafe };

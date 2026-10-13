@@ -11,7 +11,7 @@ function fixture(options = {}) {
   const tab = { botId: 'bot', controller: 'agent', epoch: 1, refs: new Set(['e1', 'e2']), view: { webContents: Object.assign(new EventEmitter(), {
     isDestroyed: () => false,
     setIgnoreMenuShortcuts: value => shortcuts.push(value),
-    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('elementFromPoint') ? found : code.includes('hw.submit') ? (options.submitted ?? null) : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : found; },
+    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : code.includes('elementFromPoint') ? found : code.includes('hw.submit') ? (options.submitted ?? null) : found; },
     focus: () => { throw new Error('Native focus must never be used.'); },
     sendInputEvent: () => { throw new Error('Native input must never be used.'); },
   }) } };

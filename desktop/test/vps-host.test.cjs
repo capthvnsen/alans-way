@@ -229,7 +229,7 @@ test('bots cannot read a human-controlled tab until control is taken', async () 
     for (const read of ['snapshot', 'screenshot']) {
       const blocked = await api(`/v1/tabs/${held.id}/${read}`, 'GET', undefined, { bot });
       assert.equal(blocked.status, 409, `${bot} ${read} on a human tab`);
-      assert.equal(blocked.data.error, 'Tab is under human control.');
+      assert.equal(blocked.data.error, 'Tab is under human control. Claim it to take it back, then read.');
     }
   }
   const meta = await api(`/v1/tabs/${held.id}`, 'GET', undefined, { bot: 'overseer-1' });

@@ -26,6 +26,8 @@
     "test:cloud-telegram": "electron test/cloud-telegram-electron.cjs",
     "test:needs-human": "electron test/needs-human-electron.cjs",
     "test:recorder": "electron test/recorder-electron.cjs",
+    "test:auto-takeover": "electron test/auto-takeover-electron.cjs && electron test/auto-takeover-commit-electron.cjs",
+    "test:captcha": "electron test/captcha-handback-electron.cjs",
     "test:update-all": "electron test/update-all-electron.cjs",
     "eval": "node eval/run.cjs",
     "build:preload": "node scripts/build-preload.cjs",
@@ -47,6 +49,8 @@
     "pretest:pdf-viewer": "npm run build:preload",
     "pretest:needs-human": "npm run build:preload",
     "pretest:recorder": "npm run build:preload",
+    "pretest:auto-takeover": "npm run build:preload",
+    "pretest:captcha": "npm run build:preload",
     "pretest:update-all": "npm run build:preload"
   },
   "dependencies": {
