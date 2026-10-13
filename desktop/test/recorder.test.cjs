@@ -30,13 +30,12 @@ test('secret fields are always redacted, whatever the page sends', () => {
     }
     assert.equal(finishSteps([input({ selector: `input[name="${label}"]`, value: 'hunter2' })], { keepTyped: true })[0].value, REDACTED, `selector ${label}`);
   }
-  for (const name of ['Shipping notes', 'Spinner', 'Pinterest handle', 'Tokenomics essay', 'Phone time zone', 'Expected delivery', 'Account name', 'Card message',
-    // "card no"/"cc no" spellings count only at a word edge (camelCase splits
-    // words too) and at the end of the name or before a digit or "number";
-    // these are not card fields.
-    'Gift card note', 'postcard_notes', 'postcardNotes', 'acc_no', 'accNo', 'card_notify', 'cardNoted', 'cc notes']) assert.equal(input({ name }).value, 'typed', `${name} is not a secret`);
+  for (const name of ['Shipping notes', 'Spinner', 'Pinterest handle', 'Tokenomics essay', 'Phone time zone', 'Expected delivery', 'Account name', 'Card message']) assert.equal(input({ name }).value, 'typed', `${name} is not a secret`);
   for (const label of ['card_no', 'cardno', 'cardNo', 'paymentCardNo', 'ccno', 'ccNo', 'cc_no', 'card no 4', 'ccno2', 'cc no number', 'your_card_no',
-    'paymentcardno', 'customerccno', 'paymentcardno_field', 'billing-ccnonumber']) {
+    'paymentcardno', 'customerccno', 'paymentcardno_field', 'billing-ccnonumber',
+    // Any run of card+no / cc+no counts, however it is split or prefixed: a
+    // harmless note field that also matches loses only its typed text.
+    'paymentcard_no', 'billingcard_no', 'customercc_no', 'paymentcardNo', 'visaccno', 'paymentcardnoinput', 'customerccnofield', 'postcard_notes']) {
     for (const key of ['name', 'field']) {
       assert.equal(finishSteps([input({ [key]: label, value: 'hunter2' })], { keepTyped: true })[0].value, REDACTED, `${key} ${label}`);
     }
@@ -141,7 +140,7 @@ test('typed terms never reach the recording file on disk', () => {
   // A camelCase card field redacts its value even when typed text is kept.
   store.save({ title: 'Pay', steps: finishSteps([input({ field: 'paymentCardNo', value: 'cn-90425' })], { keepTyped: true }), keepTyped: true });
   // Run-together lowercase card fields with a prefix are card fields too.
-  for (const field of ['paymentcardno', 'customerccno']) {
+  for (const field of ['paymentcardno', 'customerccno', 'paymentcard_no', 'billingcard_no', 'customercc_no', 'paymentcardNo', 'visaccno']) {
     store.save({ title: 'Pay', steps: finishSteps([input({ field, selector: `input[name="${field}"]`, value: 'cn-90425' })], { keepTyped: true }), keepTyped: true });
   }
   // A typed term echoed in a path, title, type-step name/selector or click

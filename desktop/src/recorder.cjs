@@ -18,15 +18,7 @@ const SECRET_WORDS = new Set(['password', 'passwd', 'pwd', 'passcode', 'pin', 'o
 // Matched against a label with case, spaces, _ and - removed, so security code,
 // security_code, security-code and securityCode all read securitycode. Card
 // fields often have no autocomplete attribute, only a name like ccnum.
-const SECRET_PHRASE = /securitycode|socialsecurity|verificationcode|onetime(code|pass|pin)|cardnum|creditcard|ccnum|cvc|cvv|cardexp|ccexp|exp(iry|iration)?(date|month|year|mm|yy)/;
-// "card no" and "cc no" count only at a word edge, ending the name or before
-// a digit or "number". It is matched against the label split into words, so
-// spaces, _- and camelCase all mark edges: paymentCardNo is a card field,
-// postcard_notes, gift card note and acc_no are not.
-const CARD_NO = /(^|[^a-z0-9])(?:card|cc)[\s._-]*no(?:[\s._-]*number)?($|[^a-z])/;
-// A run-together lowercase word ending in "cardno"/"ccno" (paymentcardno,
-// customerccno, ccno2) is a card field too; "acc" before "no" is not.
-const CARD_NO_TAIL = /(?:card|(?<!a)cc)no(?:number)?\d*$/;
+const SECRET_PHRASE = /securitycode|socialsecurity|verificationcode|onetime(code|pass|pin)|cardnum|cardno|creditcard|ccnum|ccno|cvc|cvv|cardexp|ccexp|exp(iry|iration)?(date|month|year|mm|yy)/;
 
 // Runs in an isolated world on each document of the recorded tab, so the page
 // can neither see nor call the binding. Only trusted (real user) events count,
@@ -124,10 +116,7 @@ const words = value => String(value || '').replace(/([a-z\d])([A-Z])/g, '$1 $2')
 function isSecret(raw) {
   if (raw.secret === true || SECRET_TYPES.test(String(raw.type || '')) || SECRET_AUTOCOMPLETE.test(String(raw.autocomplete || ''))) return true;
   const labels = [raw.name, raw.field, raw.selector].map(String);
-  return labels.some(label => {
-    const parts = words(label);
-    return SECRET_PHRASE.test(label.toLowerCase().replace(/[^a-z0-9]/g, '')) || CARD_NO.test(parts.join(' ')) || parts.some(word => SECRET_WORDS.has(word) || CARD_NO_TAIL.test(word));
-  });
+  return labels.some(label => SECRET_PHRASE.test(label.toLowerCase().replace(/[^a-z0-9]/g, '')) || words(label).some(word => SECRET_WORDS.has(word)));
 }
 
 // A page event becomes a step, or null when it is malformed or not from a web
