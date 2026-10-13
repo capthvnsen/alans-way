@@ -483,3 +483,46 @@ test('Enter in a field outside a form, or in a form with no named submit, is jud
   }
 });
 
+
+test('dry approval checks preserve the receipt for one real dispatch', async () => {
+  const f = fixture();
+  const approval = approvalFor(f);
+  f.tab.preflight = true;
+  f.agent.approve(f.tab, { approval });
+  f.agent.approve(f.tab, { approval });
+  f.tab.preflight = false;
+  f.agent.approve(f.tab, { approval });
+  assert.throws(() => f.agent.approve(f.tab, { approval }), /already used/);
+});
+
+test('only a dry-validated receipt carries across one takeover, retaining nonce/tab/epoch binding', () => {
+  const f = fixture();
+  const receipt = approvalFor(f);
+  const body = { approval: receipt };
+  assert.throws(() => f.agent.carryApproval(f.tab, body, 1), /another tab or control epoch/);
+  f.tab.preflight = true;
+  f.agent.approve(f.tab, { approval: receipt });
+  f.tab.preflight = false;
+  assert.throws(() => f.agent.carryApproval({ ...f.tab }, body, 1), /another tab or control epoch/);
+  assert.throws(() => f.agent.carryApproval(f.tab, { approval: { ...receipt } }, 1), /another tab or control epoch/);
+  f.tab.epoch = 2;
+  assert.throws(() => f.agent.carryApproval(f.tab, body, 1), /another tab or control epoch/);
+  f.tab.epoch = 1;
+  f.agent.carryApproval(f.tab, body, 1);
+  f.tab.epoch = 3;
+  assert.throws(() => f.agent.approve(f.tab, body), /another tab or control epoch/);
+  f.tab.epoch = 2;
+  assert.throws(() => f.agent.approve(f.tab, { approval: receipt }), /another tab or control epoch/, 'JSON cannot carry the internal transfer');
+  f.agent.approve(f.tab, body);
+  assert.throws(() => f.agent.approve(f.tab, body), /already used|another tab or control epoch/);
+});
+
+test('a receipt expiring after dry validation is still refused at takeover', () => {
+  const f = fixture(); let clock = Date.now();
+  f.agent = createAgentInput({ command: async () => ({}), requireActor, now: () => clock });
+  const approval = approvalFor(f, { issuedAt: clock });
+  f.tab.preflight = true; f.agent.approve(f.tab, { approval });
+  f.tab.preflight = false;
+  clock += 120001;
+  assert.throws(() => f.agent.carryApproval(f.tab, { approval }, 1), /expired/);
+});

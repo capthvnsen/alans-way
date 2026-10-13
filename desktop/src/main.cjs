@@ -1971,6 +1971,8 @@ async function performStep(tab, body, botId, depth, isAborted) {
     if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
     const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
     if (!steps.length) throw Object.assign(new Error('batch needs a non-empty steps array (max 25).'), { status: 400 });
+    // Takeover validates just the first step, with the batch's approval mark.
+    if (tab.preflight) return performAction(tab, { ...steps[0], epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, 1, isAborted);
     const results = [], started = Date.now();
     let lastTarget, sawInput = false;
     for (const step of steps) {

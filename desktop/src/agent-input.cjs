@@ -171,6 +171,19 @@ function commitSource(seed) {
       }
       return a;
     };
+    // Predict focus() without calling it: tabindex=-1 is programmatically
+    // focusable too. A plain wrapper leaves the existing deep focus alone.
+    C.recipient = (el) => {
+      const visible = el && el.getClientRects().length && !['hidden', 'collapse'].includes(el.ownerDocument.defaultView.getComputedStyle(el).visibility);
+      const focusable = visible && !el.matches(':disabled') && !el.closest('[inert]') &&
+        ((el.isContentEditable && !el.parentElement?.isContentEditable) || Number.isFinite(parseInt(el.getAttribute('tabindex'), 10)) ||
+          el.matches('input:not([type=hidden]),button,select,textarea,a[href],area[href],iframe,frame,object,embed,audio[controls],video[controls]') ||
+          (el.tagName === 'SUMMARY' && el.parentElement?.tagName === 'DETAILS' && el.parentElement.querySelector('summary') === el));
+      // A delegating host chooses a descendant in Chromium; treat that
+      // unreadable destination conservatively, like an opaque frame.
+      if (visible && el.shadowRoot?.delegatesFocus) return 'frame';
+      return focusable ? el : C.focus();
+    };
     // The names of every visible control a press would set off (a field's
     // label, such as a "Pay rent" checkbox, is not one): what the page shows.
     C.page = () => {
@@ -347,7 +360,7 @@ function cursorPath(from, to) {
 // One round trip finds the element, scrolls only when it is out of view, hit
 // tests it, readies focus for typing and reports what a click needs to know.
 // seed is the tab's highest issued ref, for a name lookup that opens the store.
-function resolveScript(target, { focus = false, type = false, select = false, probe = false, look = false, seed = 0 } = {}) {
+function resolveScript(target, { focus = false, type = false, select = false, probe = false, look = false, inspect = false, seed = 0 } = {}) {
   return `(async () => {
     ${target.name ? `const named = ${refsSource(seed)}.byName(${JSON.stringify(target.name)}, ${JSON.stringify(target.role || '')}, ${JSON.stringify(target.row || '')});
     if (named.near) return { fail: 'unnamed', near: named.near, cut: named.cut };
@@ -359,6 +372,12 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     const inside = (${CHALLENGE_HIT_SOURCE})([], false, [el]);
     if (inside) return { fail: 'challenge', challenge: inside };
     if (el.disabled || el.matches(':disabled') || el.closest('[inert]')) return { fail: 'missing or disabled' };
+    if (${inspect}) {
+      const C = ${commitSource(seed)}, recipient = C.recipient(el);
+      const challenge = (${CHALLENGE_HIT_SOURCE})([], recipient === C.focus(), recipient && recipient !== 'frame' ? [recipient] : []);
+      if (challenge) return { fail: 'challenge', challenge };
+      return { look: C.look(recipient), ref, resolved, partial };
+    }
     // A native select hidden behind a custom dropdown is chosen by value, so it needs no hit test.
     const loose = ${select} && el.tagName === 'SELECT';
     const view = el.ownerDocument.defaultView || window;
@@ -517,22 +536,46 @@ function watchNavigation(wc, delay) {
 function createAgentInput({ command, requireActor, botName = () => 'Agent', onBusy = () => {}, isVisible = () => true, delay = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now }) {
   const states = new WeakMap();
   const usedNonces = new Map();
+  const preflightApprovals = new WeakMap(), carriedApprovals = new WeakMap();
+  const invalidApproval = (why) => fail(`approval_invalid: ${why}. It did not run. Ask the user to approve it again.`, 403);
   // The router sends approval: {nonce, kind, summary, issuedAt, tabId, epoch}
   // on the one action the user approved (a batch carries it for all its
   // steps). It counts once, within 120s, on that tab and control epoch;
   // anything else carrying an approval is refused outright.
-  function approve(tab, body) {
+  function validateApproval(tab, body, epoch = tab.epoch) {
     if (body.approval === undefined) return;
     const a = body.approval, at = now();
-    const invalid = (why) => fail(`approval_invalid: ${why}. It did not run. Ask the user to approve it again.`, 403);
+    const invalid = invalidApproval;
     if (!a || typeof a !== 'object' || typeof a.nonce !== 'string' || !/^[\w-]{16,128}$/.test(a.nonce) || !COMMIT_KINDS.includes(a.kind)
       || typeof a.summary !== 'string' || a.summary.length > 200 || !Number.isFinite(a.issuedAt)) throw invalid('approval needs nonce, kind, summary, issuedAt, tabId and epoch');
     for (const [nonce, until] of usedNonces) if (until < at) usedNonces.delete(nonce);
     if (at - a.issuedAt > APPROVAL_MS || a.issuedAt - at > APPROVAL_SKEW_MS) throw invalid('the approval expired');
-    if (a.tabId !== tab.id || a.epoch !== tab.epoch) throw invalid('the approval is for another tab or control epoch');
+    if (a.tabId !== tab.id || a.epoch !== epoch) throw invalid('the approval is for another tab or control epoch');
     if (usedNonces.has(a.nonce)) throw invalid('the approval was already used');
-    usedNonces.set(a.nonce, a.issuedAt + APPROVAL_MS + APPROVAL_SKEW_MS);
+    return a;
+  }
+  function approve(tab, body) {
+    const carried = carriedApprovals.get(body);
+    const epoch = carried && carried.tab === tab && carried.to === tab.epoch && carried.approval === body.approval ? carried.from : tab.epoch;
+    const a = validateApproval(tab, body, epoch);
+    if (!a) return;
+    if (tab.preflight) preflightApprovals.set(a, { tab, epoch });
+    else {
+      usedNonces.set(a.nonce, a.issuedAt + APPROVAL_MS + APPROVAL_SKEW_MS);
+      carriedApprovals.delete(body);
+    }
     body[APPROVED] = true;
+  }
+  // Called only by the serialized takeover path before changing control,
+  // after its generation/epoch recheck. JSON cannot forge the WeakMap evidence.
+  function carryApproval(tab, body, from) {
+    if (body.approval === undefined) return;
+    const checked = preflightApprovals.get(body.approval);
+    if (!checked || checked.tab !== tab || checked.epoch !== from || tab.epoch !== from)
+      throw invalidApproval('the approval is for another tab or control epoch');
+    const a = validateApproval(tab, body, from);
+    preflightApprovals.delete(a);
+    carriedApprovals.set(body, { tab, approval: a, from, to: from + 1 });
   }
   const pageNames = (tab) => readJs(tab.view.webContents, `${commitSource(tab.refSeed)}.page()`).then(page => page && Array.isArray(page.names) ? page : null, () => null);
   // Page script and DevTools calls that can act, while the page shows a
@@ -717,8 +760,14 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       // Focus emulation persists for the tab's agent lifetime; toggling it per
       // action was two CDP round-trips on every dispatch.
       if (!tab.focusEmulation) { tab.focusEmulation = true; await send('Emulation.setFocusEmulationEnabled', { enabled: true }); }
-      let point, found = {}, likelyNavigation = false, extra = {}, end = null;
+      let point, anticipated, found = {}, likelyNavigation = false, extra = {}, end = null;
       let target = { ref: body.ref, selector: body.selector, name: body.name, role: body.role, row: body.row };
+      // Judge the keyboard recipient before resolve can scroll or focus.
+      // Dry takeover validation and real execution use the same prediction.
+      if (action === 'press' && targeted) {
+        anticipated = await resolve(target, { inspect: true });
+        if (gated) await judge(anticipated.look);
+      }
       // The source resolves last: scrolling it into view must not move a destination found earlier.
       if (to && (to.ref || to.selector)) end = await resolve(to, { look: gated });
       if (body.ref || body.selector || body.name) {
@@ -735,10 +784,10 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       if (gated) {
         // A key goes to whatever has focus; the press branch checks it for a
         // challenge too, but only after this, so check it here first.
-        if (action === 'press') { await refuseChallenge(wc, [], true); check(); }
+        if (action === 'press' && !(tab.preflight && anticipated)) { await refuseChallenge(wc, [], true); check(); }
         const at = (x, y) => probe(`C.look(C.hit(${Number(x)}, ${Number(y)}))`);
         // A key goes to whatever holds focus, which a target that cannot take focus leaves elsewhere.
-        await judge(action === 'press' ? await probe('C.look(C.focus())') : found.look || await at(point.x, point.y));
+        await judge(action === 'press' ? (tab.preflight && anticipated ? anticipated.look : await probe('C.look(C.focus())')) : found.look || await at(point.x, point.y));
         if (action === 'drag') await judge(end ? end.look : (await viewportPoint(to.x, to.y), await at(to.x, to.y)));
       }
       if (CLICKS[action] || action === 'move') {
@@ -807,7 +856,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         // A key goes to whatever has focus, wherever that is (a frame, a shadow
         // root, a widget the page focused itself), so every press checks it.
         // The check rides on the follow-up arm: no extra round trip.
-        const armed = await boundedJs(wc, `(() => { const challenge = (${CHALLENGE_HIT_SOURCE})([], true); return { challenge, armed: !challenge && ${followUpArmExpression()} }; })()`, 3000).catch(() => { throw checkFailed(); });
+        const armed = await boundedJs(wc, `(() => { const challenge = (${CHALLENGE_HIT_SOURCE})([], ${!(tab.preflight && anticipated)}); return { challenge, armed: !challenge && ${tab.preflight ? 'null' : followUpArmExpression()} }; })()`, 3000).catch(() => { throw checkFailed(); });
         check();
         if (typeof armed?.challenge?.kind === 'string') throw challengePresent(armed.challenge);
         await keys(keyEvent);
@@ -844,7 +893,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       if (!own.active) onBusy(tab, false);
     }
   }
-  return { perform, clear, isDispatching, approve, guard };
+  return { perform, clear, isDispatching, approve, carryApproval, guard };
 }
 
 module.exports = { createAgentInput, APPROVED, refuseChallenge, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };

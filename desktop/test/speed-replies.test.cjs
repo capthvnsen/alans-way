@@ -871,6 +871,9 @@ test('the app refuses an unapproved commit at dispatch, however it is targeted, 
   await refused({ action: 'click', selector: '#inner' }, 'a same-origin frame whose inside is a commit button');
   await refused({ action: 'double_click', name: 'Place order' }, 'a double click');
   await refused({ action: 'press', name: 'Email', key: 'Enter' }, 'Enter in a field whose form places the order');
+  // A refused targeted Enter now leaves focus untouched; focus the field
+  // with a harmless Space before testing an untargeted carriage return.
+  assert.equal((await act(tab, { action: 'press', name: 'Email', key: 'Space' })).status, 200);
   await refused({ action: 'press', key: '\r' }, 'a raw carriage return in the focused field');
   await refused({ action: 'eval', code: 'document.title' }, 'a page script');
   await refused({ action: 'cdp', method: 'Runtime.evaluate', params: { expression: '1' } }, 'Runtime.evaluate');

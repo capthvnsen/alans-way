@@ -117,6 +117,26 @@ app.whenReady().then(async () => {
   await assert.rejects(agent.guard(tab, { action: 'eval', code: '1' }), /commit_required: a page script here could set off "Buy now"/);
   assert.equal(await value(view.webContents, 'result.textContent'), 'Confirmed: Enter submits', 'a refused click sends nothing');
   console.log('PASS: an icon-only commit button and a page script are refused at dispatch in Electron.');
+  // Refusal must happen before focusing a targeted commit button: the next
+  // human key still belongs to their field, and no focus handler may run.
+  await value(view.webContents, `entry.focus(); window.focusEffects = 0; document.getElementById('buy').addEventListener('focus', () => window.focusEffects++);`);
+  for (const key of ['Space', 'Enter']) {
+    const before = await value(view.webContents, '({focus:document.activeElement.id,scroll:scrollY,effects:window.focusEffects})');
+    await assert.rejects(perform({ action: 'press', selector: '#buy', key }), /commit_required/);
+    assert.deepEqual(await value(view.webContents, '({focus:document.activeElement.id,scroll:scrollY,effects:window.focusEffects})'), before, 'refused targeted key preserves focus, scroll and page effects');
+  }
+  await value(view.webContents, `const plain = document.createElement('div'); plain.id = 'plain'; plain.textContent = 'Wrapper'; document.body.prepend(plain); document.getElementById('buy').focus();`);
+  const fallback = await value(view.webContents, '({focus:document.activeElement.id,scroll:scrollY,effects:window.focusEffects})');
+  await assert.rejects(perform({ action: 'press', selector: '#plain', key: 'Space' }), /commit_required/);
+  assert.deepEqual(await value(view.webContents, '({focus:document.activeElement.id,scroll:scrollY,effects:window.focusEffects})'), fallback, 'a nonfocusable target retains the real keyboard recipient');
+  await perform({ action: 'press', selector: '#entry', key: 'Space' });
+  assert.equal(await value(view.webContents, 'document.activeElement.id'), 'entry', 'a focusable field receives the key despite prior focus on a commit button');
+  await value(view.webContents, `const far = document.createElement('button'); far.id = 'far'; far.textContent = 'Place order'; far.style.cssText = 'position:absolute;top:2500px'; document.body.append(far);`);
+  const offscreen = await value(view.webContents, '({focus:document.activeElement.id,scroll:scrollY,effects:window.focusEffects})');
+  await assert.rejects(perform({ action: 'press', selector: '#far', key: 'Enter' }), /commit_required/);
+  assert.deepEqual(await value(view.webContents, '({focus:document.activeElement.id,scroll:scrollY,effects:window.focusEffects})'), offscreen, 'offscreen keyboard refusal does not scroll');
+  console.log('PASS: targeted Space/Enter refusal leaves focus, scroll and page effects unchanged.');
+
   await perform({ action: 'move', x: 420, y: 210 });
   await eventuallyEquals(() => value(view.webContents, 'events.filter(e=>e.type==="pointermove").at(-1)'), { type: 'pointermove', trusted: true, key: undefined, x: 420, y: 210 });
   assert.match(await value(view.webContents, 'document.getElementById("hermes-workspace-agent-cursor").style.transform'), /420px, 210px/);
