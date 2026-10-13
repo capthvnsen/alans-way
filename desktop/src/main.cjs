@@ -699,7 +699,14 @@ async function claimTab(tab, botId, { isClosed = () => false, overseer = false, 
     };
     recheck();
     if (tab.controller === 'agent') return describeTab(tab);
-    if (preflight) { await preflight(); recheck(); if (tab.controller === 'agent') return describeTab(tab); }
+    // Input during the dry run restarts the grace (still 10 seconds at most).
+    while (preflight) {
+      await preflight(); recheck();
+      if (tab.controller === 'agent') return describeTab(tab);
+      const ms = takeoverDelay(tab.lastHumanInput, started);
+      if (ms <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, ms)); recheck();
+    }
   }
   // The notice is for a tab the human took or used, not one a bot released
   // that sat idle.
@@ -724,9 +731,9 @@ const STALE_WAIT = 'stale_control_epoch: the tab changed while you waited (the h
 // A dry run (tab.preflight) acts for a tab the human still holds: it needs the
 // tab's bot and an unchanged epoch, and stops at the first change to the page.
 function requireActor(tab, botId, epoch, mutate = false, overseer = false, now = Date.now()) {
-  if (!tab.preflight || !mutate) return requireActorCore(tab, botId, epoch, mutate, overseer, now);
+  if (!tab.preflight || !mutate || tab.controller === 'agent') return requireActorCore(tab, botId, epoch, mutate, overseer, now);
   requireActorCore(tab, botId, epoch, false, overseer, now);
-  if (tab.controller === 'agent' || epoch !== tab.epoch) throw Object.assign(new Error(STALE_WAIT), { status: 409 });
+  if (epoch !== tab.epoch) throw Object.assign(new Error(STALE_WAIT), { status: 409 });
 }
 function dryRun(tab) { if (tab.preflight) throw PREFLIGHT_READY; }
 const STALE_HUMAN_EPOCH = 'stale_control_epoch: the human took this tab and may have changed the page. Claim it (control, controller "agent") to take it back, read it, then act.';
@@ -2390,7 +2397,9 @@ function startApi() {
             await checkAction(tab, body, botId);
             // A tab that stays the human's says why before any epoch advice.
             requireAgentClaim(tab, Date.now(), claimRules(tab));
-            if (body.epoch !== tab.epoch) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
+            // The generation the bot holds says whether the human moved the page since.
+            const generation = Number.isInteger(body.generation) ? body.generation : tab.generation;
+            if (body.epoch !== tab.epoch || generation !== tab.generation) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
             held = { humanLock: tab.humanLock, humanSince: tab.humanSince, botId: tab.botId, handoff: tab.handoff };
             const preflight = async () => {
               tab.preflight = true;
@@ -2398,7 +2407,7 @@ function startApi() {
               catch (error) { if (error !== PREFLIGHT_READY) throw error; }
               finally { tab.preflight = false; }
             };
-            taken = body.epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch: body.epoch, generation: tab.generation, preflight })).epoch;
+            taken = body.epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch: body.epoch, generation, preflight })).epoch;
           }
           // An action the page refused before any input or navigation reached it
           // (a challenge, a commit check, a missing control) hands the tab
@@ -2446,7 +2455,7 @@ function startApi() {
           requireActor(tab, botId, undefined, false, overseer);
           requireAgentClaim(tab, Date.now(), claimRules(tab));
           if (epoch !== tab.epoch) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
-          epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch })).epoch;
+          epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch, generation: tab.generation })).epoch;
         }
         if (closed) throw Object.assign(new Error('The request was closed before the tab closed.'), { status: 499 });
         requireActor(tab, botId, epoch, true, overseer); closeTab(tab.id); return send(200, { closed: true });

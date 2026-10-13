@@ -172,6 +172,7 @@ app.whenReady().then(async () => {
     assert.equal(await banner(), '');
   }
   assert.equal(await pageWc.executeJavaScript('document.getElementById("pick").value'), 'Red');
+  assert.deepEqual(await pageWc.executeJavaScript('[document.activeElement.id, scrollY]'), ['q', 0], 'dry runs leave the human\'s focus and scroll alone');
 
   // The human following a link on the page during the grace wait voids the
   // pending action: it never types into the new page.
@@ -189,6 +190,12 @@ app.whenReady().then(async () => {
   assert.equal(await controller(tab.id), 'human');
   assert.equal((await api(`/v1/tabs/${tab.id}`)).data.epoch, before);
   assert.notEqual(await pageWc.executeJavaScript('document.getElementById("q").value'), 'OLD ACTION', 'nothing typed into the new page');
+  // A generation from before the human moved the page is refused without a wait or a takeover.
+  started = Date.now();
+  const moved = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'read', epoch: before, generation: 0 });
+  assert.equal(moved.status, 409); assert.match(moved.data.error, /^stale_control_epoch: the human took this tab/);
+  assert.ok(Date.now() - started < 1000);
+  assert.equal((await api(`/v1/tabs/${tab.id}`)).data.epoch, before);
   // A plain claim holds no epoch, so the human navigating does not void it.
   await humanTypes(pageWc, 'c');
   pending = api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' });

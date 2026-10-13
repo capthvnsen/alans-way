@@ -244,7 +244,10 @@ function cursorPath(from, to) {
 // One round trip finds the element, scrolls only when it is out of view, hit
 // tests it, readies focus for typing and reports what a click needs to know.
 // seed is the tab's highest issued ref, for a name lookup that opens the store.
-function resolveScript(target, { focus = false, type = false, select = false, probe = false, seed = 0 } = {}) {
+// dry (a bot's dry run on a tab the human holds) checks without scrolling,
+// focusing or listening on their page; an off-screen target defers its hit
+// test to the real run.
+function resolveScript(target, { focus = false, type = false, select = false, probe = false, dry = false, seed = 0 } = {}) {
   return `(async () => {
     ${target.name ? `const named = ${refsSource(seed)}.byName(${JSON.stringify(target.name)}, ${JSON.stringify(target.role || '')}, ${JSON.stringify(target.row || '')});
     if (named.near) return { fail: 'unnamed', near: named.near, cut: named.cut };
@@ -257,6 +260,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     const view = el.ownerDocument.defaultView || window;
     const box = el.getBoundingClientRect();
     if (view !== window || box.top < 0 || box.left < 0 || box.bottom > innerHeight || box.right > innerWidth || !box.width || !box.height) {
+      if (${dry}) return { deferred: true };
       el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       // Hidden tabs never fire rAF; the timer keeps the wait bounded.
       await Promise.race([new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))), new Promise(r => setTimeout(r, 80))]);
@@ -315,14 +319,14 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     if (!point) return { fail: 'no clickable point' };
     if (${focus}) {
       if (${type} && (!(el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(el.type)) || el.readOnly)) return { fail: 'element cannot accept text' };
-      el.focus({ preventScroll: true });
-      if (${type}) {
+      if (!${dry}) el.focus({ preventScroll: true });
+      if (${type} && !${dry}) {
         if (typeof el.select === 'function') el.select();
         else { const doc = el.ownerDocument; const range = doc.createRange(); range.selectNodeContents(el); const s = el.getRootNode().getSelection?.() || doc.getSelection(); s.removeAllRanges(); s.addRange(range); }
       }
     }
     const kind = (el.type || '').toLowerCase();
-    if (${probe}) {
+    if (${probe} && !${dry}) {
       const sKey = Symbol.for(${JSON.stringify(SUBMIT_KEY)}), seenKey = Symbol.for(${JSON.stringify(SUBMIT_SEEN_KEY)});
       try { Object.defineProperty(view, sKey, { value: null, writable: true, configurable: true }); } catch { view[sKey] = null; }
       view[seenKey] ||= (event) => { view[sKey] = event.defaultPrevented ? 'handled' : 'navigates'; };
@@ -504,8 +508,9 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       return { x, y };
     }
     async function resolve(target, options) {
-      const found = await boundedJs(wc, resolveScript(target, { ...options, seed: tab.refSeed }));
+      const found = await boundedJs(wc, resolveScript(target, { ...options, dry: !!tab.preflight, seed: tab.refSeed }));
       check();
+      if (found && found.deferred) dry();
       if (found && found.fail === 'stale') throw staleRef(target.ref);
       const listed = (items) => items.map((item) => `${item.ref} ${JSON.stringify(item.name || '')}${item.row ? ` (row ${JSON.stringify(item.row)})` : ''}`).join(', ');
       const unread = found && found.cut ? ' The page has more controls than a name lookup reads; snapshot or scroll for the rest.' : '';
@@ -532,9 +537,13 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     const armFollowUp = () => { dry(); return boundedJs(wc, followUpArmExpression(), 3000).catch(() => {}); };
     const closeFollowUp = () => boundedJs(wc, followUpCloseExpression(), 3000).catch(() => {});
     const watching = watchNavigation(wc, delay);
-    own.active++;
-    if (own.active === 1) onBusy(tab, true);
-    wc.setIgnoreMenuShortcuts(true);
+    // A dry run is not a dispatch: the human's input during it still counts.
+    const live = !tab.preflight;
+    if (live) {
+      own.active++;
+      if (own.active === 1) onBusy(tab, true);
+      wc.setIgnoreMenuShortcuts(true);
+    }
     let succeeded = false;
     try {
       // Focus emulation persists for the tab's agent lifetime; toggling it per
@@ -649,10 +658,12 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         // Failures release the per-tab focus hold; success leaves it on until
         // clear() runs on teardown or a control change.
         if (!succeeded && tab.focusEmulation) { tab.focusEmulation = false; await command(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {}); }
-        wc.setIgnoreMenuShortcuts(false);
+        if (live) wc.setIgnoreMenuShortcuts(false);
       }
-      own.active--;
-      if (!own.active) onBusy(tab, false);
+      if (live) {
+        own.active--;
+        if (!own.active) onBusy(tab, false);
+      }
     }
   }
   return { perform, clear, isDispatching };
