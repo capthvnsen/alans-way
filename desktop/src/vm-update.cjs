@@ -158,7 +158,7 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
       const plugins = Array.isArray(result.plugins) ? result.plugins : [];
       const gatewayRestarted = result.gatewayRestarted === true;
       const gatewayRestartCmd = result.gatewayRestartCmd;
-      if (result.ok === true) return { id: vm.id, label: vm.label, ok: true, state: 'ok', version: String(result.version || String(tag || '').replace(/^v/, '')),
+      if (result.ok === true) return { id: vm.id, label: vm.label, ok: true, state: 'ok', version: String(result.version || ''),
         plugins, gatewayRestarted, pluginLines: vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd }) };
       const error = String(result.error || 'The VM update failed without a reason.');
       return { id: vm.id, label: vm.label, ok: false, state: error === 'busy' ? 'busy' : 'failed', version: String(result.version || ''), error: error === 'busy' ? 'VM busy, will retry' : error,
@@ -311,8 +311,9 @@ function pluginStatusText(p, { qualified = false } = {}) {
     case 'updated':
       return p.before && p.after && p.before !== p.after
         ? `${subject} updated (${ver(p.before)} to ${ver(p.after)})` : `${subject} updated`;
-    case 'current': return `${subject} is current`;
-    case 'needs_approval': return `${subject} update needs your approval. On your VM run: ${cmd}`;
+    case 'current': return `${subject} is current${p.error ? `: ${p.error}` : ''}`;
+    case 'needs_approval': return `${subject} update needs your approval${p.error ? `: ${p.error}` : ''}. On your VM run: ${cmd}`;
+    case 'blocked': return `${subject} update blocked: ${p.error || 'the gateway is running'}`;
     case 'skipped': return `${subject} update skipped: ${p.error || 'local changes'}`;
     default: return `${subject} update failed: ${p.error || 'unknown reason'}`;
   }
@@ -344,7 +345,7 @@ function vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd } = {}) {
     text: pluginStatusText(p, { qualified }),
     tone: p.status === 'updated' ? 'ok' : p.status === 'current' ? 'info' : 'warn',
   }));
-  if (gatewayRestarted === false && list.some((p) => p.status === 'updated')) {
+  if (gatewayRestarted === false && list.some((p) => p.status === 'updated' || (p.status === 'current' && /^version unchanged or unverified:/.test(p.error || '')))) {
     // The guest names the restart that works there: a supervisorctl command
     // when the gateway runs under a service manager like supervisord.
     const cmd = String(gatewayRestartCmd || 'hermes gateway restart');

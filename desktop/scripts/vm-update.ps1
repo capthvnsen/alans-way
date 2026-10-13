@@ -170,15 +170,32 @@ function Get-PluginMeta([string]$Pdir, [string]$Name) {
 # Advances an alans-way-agents clone to its newest release tag, forward only -
 # the tag resolves as refs/tags/<tag>^{commit} so a branch can never stand in
 # for it. Returns "moved|<ref>", "ahead|<ref>", "skipped|<reason>" or "none|".
+# Native stderr must be captured even under Windows PowerShell's Stop policy.
+function Invoke-Git([string[]]$GitArgs) {
+    $oldPolicy = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $out = (git @GitArgs 2>&1 | Out-String).Trim()
+        $code = $LASTEXITCODE
+        $out = $out -replace '([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@', '$1[redacted]@'
+        $out = $out -replace '(https?://[^?\s]+)\?[^\s]*', '$1?[redacted]'
+        return @{ code = $code; out = ($out -replace '\r?\n', ' ') }
+    } finally { $ErrorActionPreference = $oldPolicy }
+}
+
 function Update-Clone([string]$Dir) {
     if (-not (Test-Path "$Dir\.git")) { return 'none|' }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return 'skipped|git is not available' }
     $url = ''
     try { $url = [string](git -C $Dir remote get-url origin 2>$null) } catch {}
     if ($url -notmatch 'alans-way-agents') { return 'none|' }
-    git -C $Dir fetch --tags origin 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { git -C $Dir fetch --unshallow --tags origin 2>&1 | Out-Null }
-    if ($LASTEXITCODE -ne 0) { Write-Output "vm-update: plugin clone fetch reported a problem; using the refs already in $Dir" }
+    $r = Invoke-Git @('-C', $Dir, 'fetch', '--tags', 'origin')
+    if ($r.code -ne 0) { $r = Invoke-Git @('-C', $Dir, 'fetch', '--unshallow', '--tags', 'origin') }
+    if ($r.code -ne 0) { return "skipped|clone fetch failed: $($r.out)" }
+    if ([string](git -C $Dir rev-parse --is-shallow-repository 2>$null) -eq 'true') {
+        $r = Invoke-Git @('-C', $Dir, 'fetch', '--unshallow', '--tags', 'origin')
+        if ($r.code -ne 0) { return "skipped|shallow history could not be fetched: $($r.out)" }
+    }
     $tag = git -C $Dir tag -l 'v*' 2>$null |
         Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
         Sort-Object { [version]($_ -replace '^v', '') } | Select-Object -Last 1
@@ -195,9 +212,9 @@ function Update-Clone([string]$Dir) {
     if (git -C $Dir status --porcelain 2>$null | Select-Object -First 1) { return 'skipped|local changes' }
     git -C $Dir merge-base --is-ancestor $head $want 2>$null
     if ($LASTEXITCODE -ne 0) { return "skipped|not an ancestor of $tag" }
-    git -C $Dir -c advice.detachedHead=false checkout -q "refs/tags/$tag" 2>$null
-    if ($LASTEXITCODE -eq 0 -and [string](git -C $Dir rev-parse HEAD 2>$null) -eq $want) { return "moved|$tag" }
-    return "skipped|could not check out $tag"
+    $r = Invoke-Git @('-C', $Dir, '-c', 'advice.detachedHead=false', 'checkout', '-q', "refs/tags/$tag")
+    if ($r.code -eq 0 -and [string](git -C $Dir rev-parse HEAD 2>$null) -eq $want) { return "moved|$tag" }
+    return "skipped|could not check out $tag`: $($r.out)"
 }
 
 function New-PluginEntry($profile, $name, $before, $after, $status, $err, $repoRef) {
@@ -227,11 +244,16 @@ function Invoke-PluginUpdate($Prof, $Name, $Before, $RepoRef, [bool]$Collect) {
     elseif ($r.out.Contains('Cannot update plugin files while the messaging gateway is running')) {
         $st = 'blocked'; $err = $full
     }
-    elseif ($r.out -match '(?i)not applied|declined|confirm to continue|fail.?closed|not granted|new capabilities') { $st = 'needs_approval' }
+    elseif ($r.out -match '(?i)not applied|declined|confirm to continue|fail.?closed|not granted|new capabilities') { $st = 'needs_approval'; $err = $full }
     elseif ($r.code -ne 0) { $st = 'failed'; $err = $full }
-    elseif ($r.out -match '(?i)already (up to date|at catalog pin)') { $st = 'current' }
+    elseif ($r.out -match '(?i)already (up to date|at catalog pin)') { $st = 'current'; $err = $full }
     else { $st = 'updated' }
-    if ($st -eq 'updated') { $script:Changed = $true }
+    if ($st -eq 'updated') {
+        $script:Changed = $true
+        if (-not $after -or $after -eq $Before) {
+            $st = 'current'; $err = "version unchanged or unverified: $full"
+        }
+    }
     elseif ($st -eq 'needs_approval' -and $r.out -match 'updated|Re-installed') {
         # The code moved but new capabilities stay ungranted until reviewed.
         $script:Changed = $true
@@ -257,9 +279,7 @@ function Update-HermesPlugins {
     $script:Changed = $false
     $script:Refused = @()
     $gwStopped = $false
-    $outOfTime = $false
     foreach ($prof in (Get-Profiles $hhome)) {
-        if ($outOfTime) { break }
         $pdir = Join-Path $prof.home 'plugins'
         foreach ($name in @('alans-way', 'alans-way-computer')) {
             $pp = Join-Path $pdir $name
@@ -267,6 +287,11 @@ function Update-HermesPlugins {
             $meta = Get-PluginMeta $pdir $name
             $before = Get-PluginVersion $pp
             if (-not $before) { $before = [string]$meta.revision }
+            if ((BudgetLeft) -le 15) {
+                Write-Output 'vm-update: plugin phase ran out of the time budget; remaining plugins will retry next update'
+                $script:Plugins += New-PluginEntry $prof.name $name $before $before 'skipped' 'plugin phase ran out of the time budget; retry the update' ''
+                continue
+            }
             $repoRef = ''
             $src = ''
             # Catalog installs carry a "catalog" block (and a marker file):
@@ -284,10 +309,6 @@ function Update-HermesPlugins {
                     $script:Plugins += New-PluginEntry $prof.name $name $before $before 'skipped' $oc[1] ''
                     continue
                 }
-            }
-            if ((BudgetLeft) -le 15) {
-                Write-Output 'vm-update: plugin phase ran out of the time budget; remaining plugins will retry next update'
-                $outOfTime = $true; break
             }
             Invoke-PluginUpdate $prof $name $before $repoRef $true
         }
@@ -446,16 +467,31 @@ while ($true) {
 
 Push-Location $Checkout
 try {
-    git fetch --tags origin 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { git fetch --unshallow --tags origin 2>&1 | Out-Null }
-    if ($LASTEXITCODE -ne 0) { git fetch --depth=1000000 --tags origin 2>&1 | Out-Null }
-    if ($LASTEXITCODE -ne 0) { Write-Output 'vm-update: git fetch reported a problem; trying the objects already in the checkout' }
-    # Only a real tag may satisfy the pin: resolve refs/tags/$Tag fully so a
-    # same-named branch or lightweight ref can never stand in for it.
+    $fetch = Invoke-Git @('fetch', '--tags', 'origin')
+    if ($fetch.code -ne 0) { $fetch = Invoke-Git @('fetch', '--unshallow', '--tags', 'origin') }
+    if ($fetch.code -ne 0) { $fetch = Invoke-Git @('fetch', '--depth=1000000', '--tags', 'origin') }
+    if ($fetch.code -ne 0) { Write-Output 'vm-update: git fetch reported a problem; trying the objects already in the checkout' }
+    if ([string](git rev-parse --is-shallow-repository 2>$null) -eq 'true') {
+        $fetch = Invoke-Git @('fetch', '--unshallow', '--tags', 'origin')
+        if ($fetch.code -ne 0) { Fail "shallow history could not be fetched: $($fetch.out)" }
+    }
     $want = (git rev-parse --verify -q "refs/tags/${Tag}^{commit}" 2>$null)
-    if (-not $want) { Fail "tag $Tag is not in the checkout and could not be fetched" }
-    git -c advice.detachedHead=false checkout -q "refs/tags/$Tag" 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { Fail "could not check out $Tag" }
+    if (-not $want) {
+        $fetch = Invoke-Git @('fetch', 'origin', "refs/tags/$Tag`:refs/tags/$Tag")
+        $want = (git rev-parse --verify -q "refs/tags/${Tag}^{commit}" 2>$null)
+    }
+    if (-not $want) { Fail "tag $Tag is not in the checkout and could not be fetched: $($fetch.out)" }
+    $r = Invoke-Git @('status', '--porcelain')
+    if ($r.code -ne 0) { Fail "could not inspect checkout: $($r.out)" }
+    $dirty = @(git status --porcelain 2>$null)
+    if ($dirty.Count -gt 0) {
+        $files = ($dirty | Select-Object -First 5 | ForEach-Object { $_.Substring(3) }) -join ', '
+        Fail "checkout blocked by $($dirty.Count) local change(s): $files; save, commit or stash them in $Checkout, then retry $Tag"
+    }
+    $r = Invoke-Git @('merge-base', '--is-ancestor', 'HEAD', $want)
+    if ($r.code -ne 0) { Fail "checkout HEAD is not an ancestor of $Tag; refusing a rollback or divergent checkout. Review origin and local commits in $Checkout" }
+    $r = Invoke-Git @('-c', 'advice.detachedHead=false', 'checkout', '-q', "refs/tags/$Tag")
+    if ($r.code -ne 0) { Fail "could not check out $Tag`: $($r.out); review git status in $Checkout" }
     $head = (git rev-parse HEAD 2>$null)
     if ($head -ne $want) { Fail "checkout did not land on $Tag; refusing to run it" }
     Write-Output "vm-update: checkout pinned at $Tag"

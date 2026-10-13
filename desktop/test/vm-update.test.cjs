@@ -423,3 +423,18 @@ test('doctorVm says when the server check ran out of time or stopped without a r
   const check = await createVmUpdater({ run: fakeRun({ code: null, out: '', err: '' }).run, readScript }).checkVm(vm());
   assert.equal(check.error, 'Could not reach the VM over SSH. exit null', 'checkVm keeps its message');
 });
+
+test('a successful guest with no version never manufactures the requested host version', async () => {
+  const { run } = fakeRun({ code: 0, out: JSON.stringify({ ok: true, restarted: true }), err: '' });
+  const result = await createVmUpdater({ run, readScript }).updateVm(vm(), 'v0.21.5');
+  assert.equal(result.version, '', 'the caller must be able to warn that the target is unverified');
+});
+
+
+test('same-version code reported applied still exposes a failed gateway restart', () => {
+  const lines = vmPluginLines({ gatewayRestarted: false, plugins: [
+    { name: 'alans-way', before: '0.7.0', after: '0.7.0', status: 'current', error: 'version unchanged or unverified: Plugin alans-way updated.' },
+  ] });
+  assert.equal(lines.at(-1).tone, 'warn');
+  assert.match(lines.at(-1).text, /needs a restart/);
+});

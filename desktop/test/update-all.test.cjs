@@ -3,7 +3,7 @@
 // update-available comparison, and step orchestration with a failure midway.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText } = require('../src/update-all.cjs');
+const { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText, runLogText, pluginStepResult } = require('../src/update-all.cjs');
 
 test('versions compare by SemVer precedence, pre-releases and build metadata included', () => {
   // The semver.org §11 example chain, each strictly older than the next.
@@ -123,7 +123,7 @@ test('steps run in order; a failure midway stops the rest and they are reported 
   const rows = await runSteps(STEPS, async (step) => {
     ran.push(step.id);
     if (step.id === 'plugin') return { ok: false, error: 'Plugin update failed: registry unreachable' };
-    return { ok: true, detail: 'fine', version: step.id === 'hermes' ? '0.21.7' : '' };
+    return { ok: true, detail: 'fine', version: step.to };
   }, (snapshot) => seen.push(snapshot.map((row) => row.state).join(',')));
   assert.deepEqual(ran, ['hermes', 'plugin'], 'nothing after the failure runs');
   assert.deepEqual(rows.map((row) => row.state), ['done', 'failed', 'skipped', 'skipped']);
@@ -150,7 +150,7 @@ test('a step that throws is a failure with its message; the actual version repla
 });
 
 test('a clean run ends with the app staged for restart and one report for the bot', async () => {
-  const rows = await runSteps(STEPS, async () => ({ ok: true }));
+  const rows = await runSteps(STEPS, async (step) => ({ ok: true, version: step.to }));
   assert.deepEqual(rows.map((row) => row.state), ['done', 'done', 'done', 'done']);
   assert.equal(summarizeRun(rows), 'Everything is updated. Restart to finish the app update.');
   assert.equal(reportText(rows), 'Update everything finished. Now on Hermes 0.21.7, plugin 0.21.1, browser host 0.21.5. The app installs 0.21.5 when you restart it.');
@@ -159,8 +159,10 @@ test('a clean run ends with the app staged for restart and one report for the bo
 test('a step that finished without moving is named as unchanged, never claimed as updated', async () => {
   // A catalog install stays on its reviewed pin even when a newer tag exists.
   const rows = await runSteps(STEPS.slice(0, 2), async (step) => ({ ok: true, version: step.id === 'plugin' ? '0.21.0' : '0.21.7' }));
-  assert.equal(summarizeRun(rows), 'Done. Still on the same version: Alan’s Way plugin (0.21.0).');
-  assert.equal(reportText(rows), 'Update everything finished. Now on Hermes 0.21.7. Unchanged: plugin 0.21.0.');
+  assert.equal(rows[1].state, 'warn');
+  assert.match(summarizeRun(rows), /Alan’s Way plugin unchanged 0\.21\.0 \(wanted 0\.21\.1\)/);
+  assert.match(reportText(rows), /plugin unchanged 0\.21\.0 \(wanted 0\.21\.1\)/);
+  assert.match(reportText(rows), /Now on Hermes 0\.21\.7/);
 });
 
 test('Restart to finish asks first while a bot is mid-task, naming who', () => {
@@ -169,4 +171,61 @@ test('Restart to finish asks first while a bot is mid-task, naming who', () => {
   assert.equal(restartWarning(['Scout', 'Ada', 'Scout']).message, 'Scout and Ada are working in a tab right now.', 'one name per bot');
   assert.equal(restartWarning(['A', 'B', 'C']).message, 'A, B and C are working in a tab right now.');
   assert.match(restartWarning(['Scout']).detail, /interrupts that task/);
+});
+
+// Alex's log: --plugins exits ok, but the installed 0.7.0 never reaches 0.21.5.
+test('an ok plugin result below its target is a warning in UI, bot report and main log', async () => {
+  const step = { id: 'plugin', name: 'Alan’s Way plugin', from: '0.7.0', to: '0.21.5' };
+  for (const reason of ['already at catalog pin abc123', 'clone skipped: local changes', 'not an ancestor of v0.21.5', 'blocked while the gateway runs']) {
+    const rows = await runSteps([step], async () => ({ ok: true, version: '0.7.0', detail: reason }));
+    assert.equal(rows[0].state, 'warn');
+    assert.equal(rows[0].to, '0.21.5', 'preserve the missed target');
+    assert.equal(rows[0].version, '0.7.0');
+    assert.match(runLogText(rows), /plugin unchanged 0\.7\.0 \(wanted 0\.21\.5\)/);
+    for (const text of [summarizeRun(rows), reportText(rows), runLogText(rows)]) {
+      assert.ok(text.includes(reason), text);
+      assert.doesNotMatch(text, /Everything is updated|plugin done|Now on plugin|Updated: Alan/);
+    }
+  }
+});
+
+test('missing or partial version evidence never proves a concrete target was reached', async () => {
+  for (const id of ['hermes', 'plugin', 'host']) {
+    for (const version of ['', 'unknown', '0.21.4']) {
+      const rows = await runSteps([{ id, name: id, from: '0.7.0', to: '0.21.5' }], async () => ({ ok: true, version }));
+      assert.equal(rows[0].state, 'warn', `${id}: ${version}`);
+    }
+  }
+});
+
+test('a warning continues the remaining steps and retains every per-plugin detail in the log', async () => {
+  const detail = 'Plugin alans-way (default) is current: catalog pin; Plugin alans-way (work) update skipped: local changes';
+  const rows = await runSteps(STEPS.slice(1), async (step) => step.id === 'plugin'
+    ? { ok: true, version: step.from, detail } : { ok: true, version: step.to });
+  assert.deepEqual(rows.map((r) => r.state), ['warn', 'done', 'done']);
+  assert.ok(runLogText(rows).includes(detail));
+  assert.match(summarizeRun(rows), /Updated: Browser host, Alan’s Workspace/);
+});
+
+
+test('the plugin step checks every profile and includes statuses, errors and restart warnings', async () => {
+  const step = { id: 'plugin', name: 'Alan’s Way plugin', from: '0.7.0', to: '0.21.5' };
+  for (const status of ['current', 'skipped', 'needs_approval', 'blocked', 'failed']) {
+    const result = { ok: true, gatewayRestarted: true, plugins: [
+      { profile: 'default', name: 'alans-way', before: '0.7.0', after: '0.21.5', status: 'updated' },
+      { profile: 'work', name: 'alans-way', before: '0.7.0', after: '0.7.0', status, error: 'fixture reason' },
+    ] };
+    const rows = await runSteps([step], async () => pluginStepResult(result, step));
+    assert.equal(rows[0].state, 'warn');
+    assert.match(runLogText(rows), /alans-way \(work\).*fixture reason/);
+    assert.match(runLogText(rows), /0\.21\.5/);
+  }
+  const missing = await runSteps([step], async () => pluginStepResult({ ok: true, plugins: [] }, step));
+  assert.equal(missing[0].state, 'warn');
+  assert.match(runLogText(missing), /No alans-way plugin was visited/);
+  const restart = await runSteps([step], async () => pluginStepResult({ ok: true, gatewayRestarted: false, plugins: [
+    { name: 'alans-way', before: '0.7.0', after: '0.21.5', status: 'updated' },
+  ] }, step));
+  assert.equal(restart[0].state, 'warn');
+  assert.match(runLogText(restart), /needs a restart/);
 });

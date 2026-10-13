@@ -5,6 +5,7 @@
 // update steps in order (Hermes, its plugin, the browser host, then this app)
 // with the first failure stopping the rest.
 const { redactReport } = require('./setup-check.cjs');
+const { vmPluginLines } = require('./vm-update.cjs');
 
 const PLUGIN_REPO = 'capthvnsen/alans-way-agents';
 const NAMES = { hermes: 'Hermes', plugin: 'Alan’s Way plugin', host: 'Browser host', app: 'Alan’s Workspace' };
@@ -118,13 +119,23 @@ function describeVersions({ app, appUpdate = '', cache, formatTime = (ms) => new
   return { text: parts.join(' · '), tooltip: lines.join('\n'), steps, hasUpdate };
 }
 
-// Runs the steps in order. A runner answers { ok, detail, error, version }; a
-// throw is a failure with its message. A finished step's version replaces the
-// planned target; a failed one keeps the target it missed. Detail and error
-// text comes from the machine's output, so it is redacted like Check setup. The first failure stops the rest:
-// they end 'skipped', so the popover can say exactly what never ran.
+// Convert every profile's plugin result into evidence for the single step.
+// A successful guest process is not proof that any plugin reached its target.
+function pluginStepResult(result, step) {
+  const plugins = Array.isArray(result?.plugins) ? result.plugins : [];
+  const installed = plugins.filter((p) => p.name === 'alans-way');
+  const missed = installed.find((p) => compareVersions(p.after, step.to) === null || compareVersions(p.after, step.to) < 0);
+  const version = (missed || installed[0])?.after || '';
+  const lines = vmPluginLines(result);
+  return { ok: result?.ok === true, error: result?.error || '', version,
+    warning: !installed.length || lines.some((line) => line.tone === 'warn'),
+    detail: lines.length ? lines.map((line) => line.text).join(' ') : 'No alans-way plugin was visited; check its profile, install path and Hermes CLI.' };
+}
+
+// A failure stops the remaining steps. A version shortfall is a warning:
+// the other components can still update, and only proven targets get a tick.
 async function runSteps(steps, runStep, onChange = () => {}) {
-  const rows = steps.map((step) => ({ ...step, state: 'pending', detail: '', error: '' }));
+  const rows = steps.map((step) => ({ ...step, state: 'pending', detail: '', error: '', version: '' }));
   const emit = () => onChange(rows.map((row) => ({ ...row })));
   let stopped = false;
   emit();
@@ -133,10 +144,16 @@ async function runSteps(steps, runStep, onChange = () => {}) {
     row.state = 'running'; emit();
     let result;
     try { result = await runStep(row); } catch (error) { result = { ok: false, error: error?.message || String(error) }; }
-    row.state = result?.ok === false ? 'failed' : 'done';
+    row.version = redactReport(String(result?.version || ''));
     row.detail = redactReport(String(result?.detail || ''));
-    row.error = row.state === 'failed' ? redactReport(String(result?.error || 'it failed without a reason')) : '';
-    if (result?.version && row.state === 'done') row.to = String(result.version);
+    const comparison = compareVersions(row.version, row.to);
+    const reached = row.id === 'app' || (row.to === 'latest'
+      ? Boolean(row.version) && (result?.updated === true || compareVersions(row.version, row.from) > 0)
+      : comparison !== null && comparison >= 0);
+    row.state = result?.ok !== true ? 'failed' : !reached || result?.warning ? 'warn' : 'done';
+    row.error = row.state === 'failed' ? redactReport(String(result?.error || 'it failed without a reason'))
+      : row.state === 'warn' ? redactReport(String(result?.error || row.detail || (row.version ? 'The installed version did not reach the target.' : 'The installed version could not be verified.'))) : '';
+    if (row.version && row.state === 'done') row.to = row.version;
     stopped = row.state === 'failed';
     emit();
   }
@@ -144,37 +161,41 @@ async function runSteps(steps, runStep, onChange = () => {}) {
   return rows;
 }
 
-// The closing line under the steps: what failed, what already changed, what
-// never ran (and so stays on its old version), and whether the bot is back.
+function warningText(row, subject = row.name) {
+  const version = row.version ? `${compareVersions(row.version, row.from) === 0 ? 'unchanged' : 'on'} ${row.version}` : 'version unverified';
+  return `${subject} ${version} (wanted ${row.to}): ${row.error}`;
+}
+
+// The same verdict and per-plugin reasons are visible in the log and UI.
+function runLogText(rows) {
+  return rows.map((row) => row.state === 'warn' ? warningText(row, row.id)
+    : `${row.id} ${row.state}${row.error ? ` ${row.error}` : ''}${row.detail && row.detail !== row.error ? `: ${row.detail}` : ''}`).join(', ');
+}
+
 function summarizeRun(rows, { gatewayRunning = null, where = 'server' } = {}) {
   const failed = rows.find((row) => row.state === 'failed');
   const named = (state) => rows.filter((row) => row.state === state).map((row) => row.name);
-  // A step can finish without moving (already current, or a catalog pin
-  // behind the newest tag); it is named, never counted as updated.
-  const stayed = rows.filter((row) => row.state === 'done' && row.id !== 'app' && row.to === row.from).map((row) => `${row.name} (${row.from})`);
+  const warnings = rows.filter((row) => row.state === 'warn');
   const parts = [];
-  if (!failed) {
-    parts.push(stayed.length ? 'Done.' : 'Everything is updated.');
-    if (stayed.length) parts.push(`Still on the same version: ${stayed.join(', ')}.`);
-    if (rows.some((row) => row.id === 'app')) parts.push('Restart to finish the app update.');
-  } else {
-    parts.push(`${failed.name} did not update: ${failed.error.replace(/[.!?]?\s*$/, '.')}`);
-    if (named('done').length) parts.push(`Updated: ${named('done').join(', ')}.`);
-    if (named('skipped').length) parts.push(`Not started, still on the old version: ${named('skipped').join(', ')}.`);
-  }
+  if (failed) parts.push(`${failed.name} did not update: ${failed.error.replace(/[.!?]?\s*$/, '.')}`);
+  else if (!warnings.length) parts.push('Everything is updated.');
+  for (const row of warnings) parts.push(`${warningText(row).replace(/[.!?]?\s*$/, '.')}`);
+  if ((failed || warnings.length) && named('done').length) parts.push(`Updated: ${named('done').join(', ')}.`);
+  if (named('skipped').length) parts.push(`Not started, still on the old version: ${named('skipped').join(', ')}.`);
+  if (!failed && rows.some((row) => row.id === 'app' && row.state === 'done')) parts.push('Restart to finish the app update.');
   if (gatewayRunning === false) parts.push(`Hermes says your bot’s gateway is not running on the ${where}. Start it there (hermes gateway start, or your service manager).`);
   return parts.join(' ');
 }
 
-// The one message the bot sends home when the run ends, success or not.
 function reportText(rows) {
   const failed = rows.find((row) => row.state === 'failed');
+  const warnings = rows.filter((row) => row.state === 'warn');
   const done = rows.filter((row) => row.state === 'done' && row.id !== 'app' && row.to !== row.from).map((row) => `${SHORT[row.id]} ${row.to}`);
-  const same = rows.filter((row) => row.state === 'done' && row.id !== 'app' && row.to === row.from).map((row) => `${SHORT[row.id]} ${row.from}`);
   const app = rows.find((row) => row.id === 'app' && row.state === 'done');
-  const head = failed ? `Update everything stopped at the ${SHORT[failed.id]}: ${failed.error}.` : 'Update everything finished.';
+  const head = failed ? `Update everything stopped at the ${SHORT[failed.id]}: ${failed.error}.`
+    : warnings.length ? 'Update everything finished with warnings.' : 'Update everything finished.';
   const skipped = rows.filter((row) => row.state === 'skipped').map((row) => SHORT[row.id]);
-  return [head, done.length ? `Now on ${done.join(', ')}.` : '', same.length ? `Unchanged: ${same.join(', ')}.` : '', skipped.length ? `Not started: ${skipped.join(', ')}.` : '',
+  return [head, ...warnings.map((row) => `${warningText(row, SHORT[row.id])}.`), done.length ? `Now on ${done.join(', ')}.` : '', skipped.length ? `Not started: ${skipped.join(', ')}.` : '',
     app ? `The app installs ${app.to} when you restart it.` : ''].filter(Boolean).join(' ');
 }
 
@@ -187,4 +208,4 @@ function restartWarning(names) {
   return { message: `${who} working in a tab right now.`, detail: 'Restarting interrupts that task. The update installs whenever you restart, so you can wait until they finish.' };
 }
 
-module.exports = { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText };
+module.exports = { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText, pluginStepResult, runLogText, warningText };
