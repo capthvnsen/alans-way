@@ -119,6 +119,7 @@ before(async () => {
     '/alert': page(`<button id=b onclick="alert('hello there');document.title='after'">b</button>`),
     '/shadow': page(`<x-btn></x-btn><script>customElements.define('x-btn', class extends HTMLElement { connectedCallback() { const r = this.attachShadow({ mode: 'open' }); r.innerHTML = '<button>Shadow Go</button>'; r.querySelector('button').onclick = () => { document.title = 'shadow-clicked'; }; } });</script>`),
     '/confirm': page(`<button id=b onclick="document.title = confirm('Delete everything?') ? 'yes' : 'no'">b</button>`),
+    '/captcha-order': page(`<form><div class="g-recaptcha"><iframe id="w" title="reCAPTCHA" width="304" height="78" style="position:fixed;left:20px;top:200px;border:0"></iframe><textarea name="g-recaptcha-response" style="display:none"></textarea></div><button id="po" type="submit">Place order</button></form><script>w.src='http://127.0.0.1:'+location.port+'/recaptcha/api2/anchor?k=x&size=normal'</script>`),
     '/captcha-form': page(`<form><div class="g-recaptcha"><iframe title="reCAPTCHA" width="304" height="78" src="/recaptcha/api2/anchor?k=x&size=normal"></iframe><textarea name="g-recaptcha-response" style="display:none"></textarea></div><button id=b type=button onclick="document.title='other'">Other</button></form>`),
     '/sorry/index': page(`<title>unusual traffic</title><form id="captcha-form" action="index" method="post"><div class="g-recaptcha"><iframe width="304" height="78" src="/recaptcha/api2/anchor?k=x&size=normal"></iframe></div></form><p>Our systems have detected unusual traffic from your computer network.</p>`),
     '/readonly': page(`<input id=d readonly value=x><script>d.addEventListener('keydown', (e) => { if (e.key === 'Enter') document.title = 'entered'; });</script>`),
@@ -406,6 +407,22 @@ test('real Chromium: a confirm is dismissed, never approved on the agent\'s beha
   assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
   assert.deepEqual(clicked.data.dialogs.map((d) => [d.type, d.message, d.accepted]), [['confirm', 'Delete everything?', false]]);
   assert.equal(await title(tab), 'no');
+});
+
+test('real Chromium: input aimed at a CAPTCHA on a page with a commit control is the person\'s, not an approval\'s', { skip: skipNoChrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/captcha-order` })).data;
+  for (const [body, what] of [
+    [{ action: 'cdp', method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: 60, y: 230, button: 'left', clickCount: 1 } }, 'raw DevTools input'],
+    [{ action: 'click', x: 60, y: 230 }, 'a click by position'],
+    [{ action: 'click', selector: '#w' }, 'a click on the widget frame'],
+  ]) {
+    const reply = await act(tab, body);
+    assert.equal(reply.status, 409, `${what}: ${JSON.stringify(reply.data)}`);
+    assert.match(reply.data.error, /^challenge_present/, what);
+  }
+  const order = await act(tab, { action: 'click', name: 'Place order' });
+  assert.equal(order.status, 403, JSON.stringify(order.data));
+  assert.match(order.data.error, /^commit_required: "Place order"/);
 });
 
 test('real Chromium: a CAPTCHA on a VM tab is refused to the bot, handed to the person with the viewer, and handed back once it clears', { skip: skipNoChrome, timeout: 60000 }, async () => {

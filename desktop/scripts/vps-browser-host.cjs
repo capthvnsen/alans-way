@@ -522,7 +522,8 @@ async function serve() {
       requireActor(tab, botId, body.epoch, true, overseer);
       return { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput, held: body.generation })), dispatched: true };
     }
-    await input.guard(tab, body);
+    // Page script and DevTools calls are checked in their branches, after the challenge preflight.
+    if (body.action !== 'cdp' && body.action !== 'eval') await input.guard(tab, body);
     if (body.action === 'read') {
       const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
       requireAgentRead(tab);
@@ -539,6 +540,7 @@ async function serve() {
       if (!code || code.length > 16384) throw fail('eval needs a code string (max 16KB).');
       // Page script can reach a widget anywhere on the page.
       await refuseChallenge(wc);
+      await input.guard(tab, body);
       let value = await Promise.race([
         wc.executeJavaScript(code),
         new Promise((_, reject) => setTimeout(() => reject(fail('eval timed out after 15s.', 408)), 15000)),
@@ -630,6 +632,8 @@ async function serve() {
       // While a challenge is on the page, only read-only methods run: raw input,
       // script and DOM writes could all reach the widget.
       if (!cdpChallengeSafe(method, params)) await refuseChallenge(wc);
+      // A challenge answers first: input or script aimed at a CAPTCHA goes to the person, not to approval.
+      await input.guard(tab, { ...body, params });
       let value = await Promise.race([
         wc.command(method, params),
         new Promise((_, reject) => setTimeout(() => reject(fail('cdp timed out after 20s.', 408)), 20000)),

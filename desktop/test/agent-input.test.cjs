@@ -11,7 +11,7 @@ function fixture(options = {}) {
   const tab = { id: 'tab-1', botId: 'bot', controller: 'agent', epoch: 1, refs: new Set(['e1', 'e2']), view: { webContents: Object.assign(new EventEmitter(), {
     isDestroyed: () => false,
     setIgnoreMenuShortcuts: value => shortcuts.push(value),
-    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.includes('.page()') ? (options.page ?? { origin: 'https://shop.example', names: [] }) : code.includes('return C.look(C.') ? (options.probe ?? null) : code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : code.includes('elementFromPoint') ? found : code.includes('hw.submit') ? (options.submitted ?? null) : found; },
+    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.endsWith('([], true)') ? (options.challenge ?? null) : code.includes('.page()') ? (options.page ?? { origin: 'https://shop.example', names: [] }) : code.includes('return C.look(C.') ? (options.probe ?? null) : code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : code.includes('elementFromPoint') ? found : code.includes('hw.submit') ? (options.submitted ?? null) : found; },
     focus: () => { throw new Error('Native focus must never be used.'); },
     sendInputEvent: () => { throw new Error('Native input must never be used.'); },
   }) } };
@@ -439,5 +439,12 @@ test('a key is judged by the element that holds focus, not by a target that coul
   const f = fixture({ found: { look: { names: ['Shipping notes'], field: false, form: null } }, probe: { names: ['Pay now'], field: false, form: null } });
   await assert.rejects(f.perform({ action: 'press', ref: 'e1', key: 'Enter' }), /commit_required: "Pay now"/);
   assert.equal(f.calls.filter(call => call.type === 'keyDown').length, 0);
+});
+
+test('a key aimed at a CAPTCHA answers challenge_present before the commit check', async () => {
+  const f = fixture({ probe: { frame: true }, challenge: { kind: 'recaptcha' }, page: PAGE_WITH_ORDER });
+  f.tab.challengeLog = { on: 'recaptcha' };
+  await assert.rejects(f.perform({ action: 'press', key: 'Enter' }), err => err.code === 'challenge_present');
+  assert.deepEqual(dispatched(f), []);
 });
 

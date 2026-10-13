@@ -46,10 +46,12 @@ const CONFUSABLE = {
   '\u03B1': 'a', '\u03B5': 'e', '\u03B9': 'i', '\u03BA': 'k', '\u03BD': 'v', '\u03BF': 'o', '\u03C1': 'p', '\u03C4': 't', '\u03C5': 'u', '\u03C7': 'x', '\u03B3': 'y', '\u0131': 'i', '\u0261': 'g',
 };
 const CONFUSABLES = new RegExp(`[${Object.keys(CONFUSABLE).join('')}]`, 'g');
-function normalizeName(name) {
-  return String(name ?? '').normalize('NFKC').replace(INVISIBLE, '').replace(CONFUSABLES, (ch) => CONFUSABLE[ch])
-    .replace(/\s+/g, ' ').trim().toLowerCase();
-}
-const looksLikeCommit = (name) => isCommitName(normalizeName(name));
+// The plain reading (width, invisible marks, spacing and case undone) keeps
+// a name written in Cyrillic or Greek, so words from those scripts in the list
+// still match; the folded reading also maps look-alikes to Latin. A name is a
+// commit if either reading is.
+const plainName = (name) => String(name ?? '').normalize('NFKC').replace(INVISIBLE, '').replace(/\s+/g, ' ').trim().toLowerCase();
+const normalizeName = (name) => plainName(String(name ?? '').normalize('NFKC').replace(CONFUSABLES, (ch) => CONFUSABLE[ch]));
+const looksLikeCommit = (name) => isCommitName(plainName(name)) || isCommitName(normalizeName(name));
 
-module.exports = { COMMIT_PATTERNS, isCommitName, normalizeName, looksLikeCommit, isActionUrl, READ_ONLY_CDP };
+module.exports = { COMMIT_PATTERNS, isCommitName, plainName, normalizeName, looksLikeCommit, isActionUrl, READ_ONLY_CDP };

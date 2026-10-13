@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { COMMIT_PATTERNS, isCommitName, normalizeName, looksLikeCommit, isActionUrl } = require('../src/commit-patterns.cjs');
+const { COMMIT_PATTERNS, isCommitName, plainName, normalizeName, looksLikeCommit, isActionUrl } = require('../src/commit-patterns.cjs');
 
 const COMMITS = ['Place order', 'Place your order', 'Pay', 'Buy now', 'Buy-now', 'buy_now', 'Purchase', 'Confirm and pay', 'Complete booking', 'Book now', 'Reserve',
   'Request to book', 'Confirm order', 'Submit order', 'Order now', 'Send', 'Post', 'Publish', 'Submit', 'Easy Apply', 'Delete', 'Subscribe', 'Donate', 'Transfer',
@@ -31,7 +31,8 @@ test('names are folded before matching: NFKC, zero-width and bidi marks, Cyrilli
     assert.equal(isCommitName(sly), false, `the raw router regex misses ${JSON.stringify(sly)}`);
     assert.equal(looksLikeCommit(sly), true, `folded, ${JSON.stringify(sly)} is a commit`);
   }
-  assert.equal(looksLikeCommit('Send c\u043Ede'), false, 'folding keeps a look-alike exception working');
+  assert.equal(looksLikeCommit('Send c\u043Ede'), true, 'a spoofed look-alike exception is judged by its plain reading too, and refused');
+  assert.equal(plainName('\u041A\u0443\u043F\u0438\u0442\u044C'), '\u043A\u0443\u043F\u0438\u0442\u044C', 'the plain reading keeps a Cyrillic word whole, for Cyrillic entries in the list');
 });
 
 test('a same-origin address that reads like an action is one; another origin or an ordinary place page is not', () => {

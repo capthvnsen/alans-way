@@ -1988,7 +1988,8 @@ async function performStep(tab, body, botId, depth, isAborted) {
     requireActor(tab, botId, body.epoch, true, overseer);
     return actionReply(tab, { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput, held: body.generation })), dispatched: true });
   }
-  await agentInput.guard(tab, body);
+  // Page script and DevTools calls are checked in their branches, after the challenge preflight.
+  if (body.action !== 'cdp' && body.action !== 'eval') await agentInput.guard(tab, body);
   if (body.action === 'read') {
     const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
     requireAgentRead(tab);
@@ -2006,6 +2007,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     const wc = tab.view.webContents;
     // Page script can reach a widget anywhere on the page.
     await refuseChallenge(wc);
+    await agentInput.guard(tab, body);
     let evalTimer;
     let value = await Promise.race([
       frameOf(wc).executeJavaScript(code, true),
@@ -2109,6 +2111,8 @@ async function performStep(tab, body, botId, depth, isAborted) {
     // While a challenge is on the page, only read-only methods run: raw input,
     // script and DOM writes could all reach the widget.
     if (!cdpChallengeSafe(method, params)) await refuseChallenge(wc);
+    // A challenge answers first: input or script aimed at a CAPTCHA goes to the person, not to approval.
+    await agentInput.guard(tab, { ...body, params });
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     let cdpTimer;
     let value = await Promise.race([

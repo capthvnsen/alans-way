@@ -717,13 +717,18 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         // says which, by its full name (a near match is visible).
         if (ref) { target = { ref }; extra.ref = ref; extra.resolved = resolved; if (partial) extra.partial = true; }
       } else if (POINTER_ACTIONS.has(action)) point = await viewportPoint(body.x, body.y);
+      const hl = found.hl || null;
+      // The commit check comes after every challenge check: input aimed at a
+      // CAPTCHA is the person's (challenge_present), never an approval's.
       if (gated) {
+        // A key goes to whatever has focus; the press branch checks it for a
+        // challenge too, but only after this, so check it here first.
+        if (action === 'press') { await refuseChallenge(wc, [], true); check(); }
         const at = (x, y) => probe(`C.look(C.hit(${Number(x)}, ${Number(y)}))`);
         // A key goes to whatever holds focus, which a target that cannot take focus leaves elsewhere.
         await judge(action === 'press' ? await probe('C.look(C.focus())') : found.look || await at(point.x, point.y));
-        if (action === 'drag') await judge(end ? end.look : await at(to.x, to.y));
+        if (action === 'drag') await judge(end ? end.look : (await viewportPoint(to.x, to.y), await at(to.x, to.y)));
       }
-      const hl = found.hl || null;
       if (CLICKS[action] || action === 'move') {
         await moveCursor(point, hl);
         if (CLICKS[action]) {
