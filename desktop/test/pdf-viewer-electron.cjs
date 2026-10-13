@@ -210,7 +210,7 @@ if (typeof electron === 'string') {
       check(`${id} click opens viewer tab`, !!clicked);
       if (clicked) check(`${id} click keeps opener active`, (await state()).activeTabId, humanId);
     }
-    const nativeDrop = async (target, name) => {
+    const nativeDrop = async (target, name, point = { x: 300, y: 100 }) => {
       // Activation reparents a view. Wait for its compositor frame before
       // Chromium hit-tests the drag, especially for the viewer's child frame.
       await target.capturePage();
@@ -218,7 +218,7 @@ if (typeof electron === 'string') {
       if (!wasAttached) target.debugger.attach('1.3');
       try {
         const data = { items: [], files: [path.join(profile, name)], dragOperationsMask: 1 };
-        for (const type of ['dragEnter', 'dragOver', 'drop']) await target.debugger.sendCommand('Input.dispatchDragEvent', { type, x: 300, y: 100, data });
+        for (const type of ['dragEnter', 'dragOver', 'drop']) await target.debugger.sendCommand('Input.dispatchDragEvent', { type, ...point, data });
       } finally { if (!wasAttached) target.debugger.detach(); }
     };
     // Page upload handlers run first in both browser and Telegram sessions.
@@ -255,7 +255,9 @@ if (typeof electron === 'string') {
         // The child frame's hit-test surface follows its resize after activation.
         await frame.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
       }
-      await nativeDrop(target, name);
+      // Use the viewer toolbar: the native PDF plugin surface below it can
+      // consume Chromium drag input without delivering DOM drag events.
+      await nativeDrop(target, name, target !== human && target !== win.webContents ? { x: 300, y: 20 } : undefined);
       if (baseline) await new Promise(r => setTimeout(r, 300));
       else await waitFor(state, s => s.tabs.filter(t => t.url === fileUrl(name)).length > before);
       check(`PDF drop onto ${target === human ? 'web tab' : target === win.webContents ? 'window' : 'PDF viewer'}`, (await state()).tabs.filter(t => t.url === fileUrl(name)).length > before);
