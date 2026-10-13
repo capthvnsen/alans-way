@@ -24,7 +24,7 @@ const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, pluginStatusText, LOCAL_TARGET } = require('./vm-update.cjs');
-const { latestPluginTag, versionRecord, describeVersions, runSteps, summarizeRun, reportText } = require('./update-all.cjs');
+const { latestPluginTag, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -869,6 +869,13 @@ async function probeVersions() {
 // has staged, so the browser host never moves to a version the app cannot
 // install (update-now has the same guard).
 const stagedAppVersion = () => (updateDriver === 'electron-updater' ? update.ready : updateDriver === 'self' && Boolean(update.tag)) ? update.available : '';
+// Every update path takes its lock, then waits out a probe already in flight.
+const waitForVersionCheck = () => versionsProbe?.catch(() => {});
+// While "Update everything" runs, quitting must not install the staged app
+// build: the app would come back ahead of a half-updated server.
+function holdAppInstall(hold) {
+  if (updateDriver === 'electron-updater') require('electron-updater').autoUpdater.autoInstallOnAppQuit = !hold;
+}
 const VERSIONS_EVERY_MS = 30 * 60 * 1000;
 const checkVersionsWhenIdle = () => {
   if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) return;
@@ -1516,6 +1523,7 @@ function registerIpc() {
         // Every saved VM first, then this app. A VM failure or timeout is
         // recorded for the retry banner and never blocks the app update.
         try {
+          await waitForVersionCheck();
           mainLog().write('vm update', `start ${tag} for ${targets.map((t) => t.id).join(',') || 'no targets'}`);
           for (const result of await vmUpdater.updateAll(tag, targets, noteVmProgress)) {
             mainLog().write('vm update', `${result.id} ${result.ok ? `ok ${result.version || ''}` : `failed ${result.error || ''}`}`.trim());
@@ -1534,6 +1542,7 @@ function registerIpc() {
         vmRetrying = true; broadcast();
         const tag = `v${app.getVersion()}`;
         try {
+          await waitForVersionCheck();
           for (const target of vmTargets(prefs)) {
             const entry = prefs.vmUpdates?.[target.id] || {};
             if (!value.force && !entry.failed && !(entry.version && macUpdate.isNewer(app.getVersion(), entry.version))) continue;
@@ -1555,6 +1564,7 @@ function registerIpc() {
         if (!target) throw new Error('Save the agent machine SSH address first.');
         hermesUpdating = true;
         try {
+          await waitForVersionCheck();
           const result = await vmUpdater.hermesUpdateVm(target);
           return { ok: result.ok, detail: hermesUpdateDetail(result, target.label) };
         } finally { hermesUpdating = false; }
@@ -1570,16 +1580,16 @@ function registerIpc() {
         const { steps } = describeVersions({ app: app.getVersion(), appUpdate: stagedAppVersion(), cache: prefs.versionCache });
         if (!steps.length) return { refused: 'Everything is already up to date.' };
         const target = vmTargets(prefs)[0] || LOCAL_TARGET;
-        updatingAll = true; updateRun = { steps: [], summary: '', restart: false }; broadcast();
+        updatingAll = true; updateRun = { steps: [], summary: '', restart: false }; holdAppInstall(true); broadcast();
         try {
           // A probe already in flight finishes first: its `hermes update
           // --check` fetches into the checkout `hermes update` moves.
-          await versionsProbe?.catch(() => {});
+          await waitForVersionCheck();
           mainLog().write('update all', `start ${steps.map((step) => `${step.id} ${step.from}->${step.to}`).join(', ')}`);
           const rows = await runSteps(steps, (step) => runUpdateStep(step, target), (next) => { updateRun.steps = next; broadcast(); });
           mainLog().write('update all', rows.map((row) => `${row.id} ${row.state}${row.error ? ` ${row.error}` : ''}`).join(', '));
           // Wait out any probe that started before the run, then take a fresh one.
-          await versionsProbe?.catch(() => {});
+          await waitForVersionCheck();
           await checkVmVersions().catch((error) => logError('vm-check', error));
           const where = target.local ? 'this computer' : 'server';
           updateRun = { steps: rows, restart: rows.some((row) => row.id === 'app' && row.state === 'done'),
@@ -1589,11 +1599,18 @@ function registerIpc() {
             const sent = await vmUpdater.hermesUpdateVm(target, { report: reportText(rows) });
             updateRun = { ...updateRun, summary: `${updateRun.summary} ${sent.messaged ? 'Your bot messaged you on Telegram.' : 'The bot could not message you on Telegram.'}` };
           }
-        } finally { updatingAll = false; broadcast(); }
+        } catch (error) {
+          // The dialog shows why the run stopped instead of an empty summary.
+          updateRun = { ...updateRun, summary: `Update everything stopped: ${setupCheck.redactReport(error.message)}` };
+          throw error;
+        } finally { updatingAll = false; holdAppInstall(false); broadcast(); }
         break;
       }
       case 'update-all-restart': {
         if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll }) || !updateRun.restart) break;
+        // Restarting cuts off any bot mid-task in a tab here; ask first.
+        const warning = restartWarning(Object.keys(computeBotWork()).map((id) => nameForBot(id) || 'An agent'));
+        if (warning && (await dialog.showMessageBox(win, { type: 'warning', buttons: ['Wait', 'Restart anyway'], defaultId: 0, cancelId: 0, ...warning })).response !== 1) break;
         update.busy = true; broadcast();
         try { await restartIntoUpdate(); }
         catch (error) { update.busy = false; update.error = error.message; broadcast(); throw error; }

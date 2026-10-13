@@ -140,6 +140,30 @@ test('main.cjs routes every update command through the shared lock', () => {
   }
 });
 
+// Source guards for the rules a stubbed Electron run cannot reach: every
+// update path waits out an in-flight version probe once it holds the lock;
+// a restart over a working bot asks first; quitting mid-run never installs
+// the staged app.
+const caseBody = (src, cmd) => src.slice(src.indexOf(`case '${cmd}': {`), src.indexOf('\n      case ', src.indexOf(`case '${cmd}': {`) + 10));
+test('every update path waits for an in-flight version check before touching the machine', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
+  for (const cmd of ['update-now', 'vm-update-retry', 'hermes-update', 'update-all']) {
+    const body = caseBody(src, cmd);
+    assert.match(body, /await waitForVersionCheck\(\)/, `${cmd} must wait for the probe`);
+    assert.ok(body.indexOf('updateLocked') < body.indexOf('waitForVersionCheck'), `${cmd} takes the lock before waiting`);
+  }
+});
+test('Restart to finish asks before interrupting a working bot, and a run holds the app install', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
+  const restart = caseBody(src, 'update-all-restart');
+  assert.ok(restart.indexOf('restartWarning(') > 0 && restart.indexOf('restartWarning(') < restart.indexOf('restartIntoUpdate('), 'warns before restarting');
+  assert.match(restart, /computeBotWork\(\)/);
+  const run = caseBody(src, 'update-all');
+  assert.match(run, /holdAppInstall\(true\)/);
+  assert.match(run, /finally \{[^}]*holdAppInstall\(false\)/, 'the hold always lifts');
+  assert.match(src, /autoInstallOnAppQuit = !hold/);
+});
+
 test('hermesUpdateDetail always reports whether the bot messaged', () => {
   const base = { version: '0.21.7', updated: true };
   assert.equal(hermesUpdateDetail({ ok: true, messaged: true, messages: [{ profile: 'default', sent: true, error: '' }], ...base }, 'VPS'),

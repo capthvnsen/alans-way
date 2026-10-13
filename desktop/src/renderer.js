@@ -387,7 +387,7 @@ function renderUpdatePopup() {
 // plan first and nothing runs until its button is clicked; then it shows each
 // step's progress, the closing summary and, when the app staged an update,
 // "Restart to finish".
-let updateAllOpen = false, updateAllView = 'plan';
+let updateAllOpen = false, updateAllView = 'plan', updateAllError = '';
 const STEP_MARK = { pending: '·', running: '…', done: '✓', failed: '✗', skipped: '–' };
 function renderVersions() {
   const v = state.versions || {}, run = state.updateAll || {};
@@ -416,7 +416,8 @@ function renderUpdateAll() {
     if (steps.some((step) => step.id !== 'app')) list.append(element('p', 'update-line warn', 'Your bots restart briefly while the server updates.'));
     if (steps.some((step) => step.id === 'app')) list.append(element('p', 'update-line', 'The app update installs when you click Restart to finish.'));
   } else {
-    $('update-all-copy').textContent = run.busy ? 'Updating. You can keep working; this takes a few minutes.' : run.summary || '';
+    $('update-all-copy').textContent = run.busy ? 'Updating. You can keep working; this takes a few minutes.'
+      : run.summary || (updateAllError ? `Update everything stopped: ${updateAllError}` : '');
     for (const row of run.steps || []) {
       const tail = row.state === 'failed' ? `: ${row.error}` : row.state === 'skipped' ? ' (not started)' : row.detail ? ` · ${row.detail}` : '';
       list.append(element('p', `update-line ${row.state}`, `${STEP_MARK[row.state] || ''} ${row.name}: ${row.from} → ${row.to}${tail}`));
@@ -1053,12 +1054,17 @@ $('update-all-cancel').onclick = closeUpdateAll;
 $('update-all-go').onclick = () => {
   // The run view starts empty, not on a previous run's rows, until main's
   // first broadcast lands.
-  if (updateAllView === 'plan') { updateAllView = 'run'; state.updateAll = { busy: true, steps: [] }; renderUpdateAll(); command('update-all').then((reply) => {
-    // Main refuses while another update holds the lock, or when nothing is
-    // behind any more; go back to the plan and say why instead of a blank run.
-    if (reply?.refused) { updateAllView = 'plan'; toast(reply.refused); }
-    return api.getState();
-  }).then(render); }
+  if (updateAllView === 'plan') {
+    updateAllView = 'run'; updateAllError = ''; state.updateAll = { busy: true, steps: [] }; renderUpdateAll();
+    // api.command, not command(): a failure lands in the dialog itself, never
+    // a toast behind an empty run view. Main refuses while another update
+    // holds the lock or when nothing is behind; that goes back to the plan.
+    api.command('update-all').then((reply) => {
+      if (reply?.refused) { updateAllView = 'plan'; toast(reply.refused); }
+    }).catch((error) => { updateAllError = error?.message || String(error); })
+      .then(() => api.getState()).then(render)
+      .catch((error) => { state.updateAll = { busy: false, steps: [] }; updateAllError ||= error?.message || String(error); renderUpdateAll(); });
+  }
   else command('update-all-restart');
 };
 $('update-all-popup').onclick = (event) => { if (event.target === $('update-all-popup')) closeUpdateAll(); };

@@ -4,7 +4,6 @@
 // what the agent machine reports, deciding what is behind, and running the
 // update steps in order (Hermes, its plugin, the browser host, then this app)
 // with the first failure stopping the rest.
-const { isNewer } = require('./mac-update.cjs');
 const { redactReport } = require('./setup-check.cjs');
 
 const PLUGIN_REPO = 'capthvnsen/alans-way-agents';
@@ -12,6 +11,29 @@ const NAMES = { hermes: 'Hermes', plugin: 'Alan’s Way plugin', host: 'Browser 
 // The Telegram report travels as plain text (vm-update.cjs plainText), so it
 // uses names without the curly apostrophe.
 const SHORT = { hermes: 'Hermes', plugin: 'plugin', host: 'browser host', app: 'app' };
+
+// SemVer 2.0 precedence (semver.org §11). mac-update's isNewer only takes
+// plain X.Y.Z, so an installed 1.2.0-rc.1 or a 1.2.0+build would never count
+// as behind. Pre-release identifiers compare numerically when both are
+// numbers (rc.10 > rc.2), numbers sort below words, a release beats its
+// pre-releases, and build metadata never matters. null when unparseable.
+const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$/;
+function compareVersions(a, b) {
+  const x = SEMVER.exec(String(a || '').trim()), y = SEMVER.exec(String(b || '').trim());
+  if (!x || !y) return null;
+  for (let i = 1; i <= 3; i++) if (Number(x[i]) !== Number(y[i])) return Number(x[i]) > Number(y[i]) ? 1 : -1;
+  if (!x[4] || !y[4]) return x[4] ? -1 : y[4] ? 1 : 0;
+  const p = x[4].split('.'), q = y[4].split('.');
+  for (let i = 0; i < Math.max(p.length, q.length); i++) {
+    if (p[i] === undefined || q[i] === undefined) return p[i] === undefined ? -1 : 1;
+    const pn = /^\d+$/.test(p[i]), qn = /^\d+$/.test(q[i]);
+    if (pn && qn) { if (Number(p[i]) !== Number(q[i])) return Number(p[i]) > Number(q[i]) ? 1 : -1; }
+    else if (pn !== qn) return pn ? -1 : 1;
+    else if (p[i] !== q[i]) return p[i] > q[i] ? 1 : -1;
+  }
+  return 0;
+}
+const isNewer = (a, b) => compareVersions(a, b) === 1;
 
 // "Hermes Agent v0.21.6+763.g1fd1827 (2026.9.24) · stable" -> "0.21.6".
 const parseHermesVersion = (text) => /Hermes Agent v(\d+\.\d+\.\d+)/.exec(String(text || ''))?.[1] || '';
@@ -156,4 +178,13 @@ function reportText(rows) {
     app ? `The app installs ${app.to} when you restart it.` : ''].filter(Boolean).join(' ');
 }
 
-module.exports = { parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText };
+// The question asked before "Restart to finish" when bots are mid-task in a
+// tab here; null when nobody is working.
+function restartWarning(names) {
+  const list = [...new Set(names || [])];
+  if (!list.length) return null;
+  const who = list.length === 1 ? `${list[0]} is` : `${list.slice(0, -1).join(', ')} and ${list.at(-1)} are`;
+  return { message: `${who} working in a tab right now.`, detail: 'Restarting interrupts that task. The update installs whenever you restart, so you can wait until they finish.' };
+}
+
+module.exports = { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText };

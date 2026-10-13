@@ -3,7 +3,32 @@
 // update-available comparison, and step orchestration with a failure midway.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText } = require('../src/update-all.cjs');
+const { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText } = require('../src/update-all.cjs');
+
+test('versions compare by SemVer precedence, pre-releases and build metadata included', () => {
+  // The semver.org §11 example chain, each strictly older than the next.
+  const chain = ['1.0.0-alpha', '1.0.0-alpha.1', '1.0.0-alpha.beta', '1.0.0-beta', '1.0.0-beta.2', '1.0.0-beta.11', '1.0.0-rc.1', '1.0.0'];
+  for (let i = 0; i < chain.length - 1; i++) {
+    assert.equal(compareVersions(chain[i], chain[i + 1]), -1, `${chain[i]} < ${chain[i + 1]}`);
+    assert.equal(compareVersions(chain[i + 1], chain[i]), 1, `${chain[i + 1]} > ${chain[i]}`);
+  }
+  assert.equal(compareVersions('1.2.0', '1.2.0-rc.1'), 1, 'a release beats its release candidate');
+  assert.equal(compareVersions('1.2.0-rc.10', '1.2.0-rc.2'), 1, 'numeric identifiers compare as numbers');
+  assert.equal(compareVersions('0.21.10', '0.21.9'), 1);
+  assert.equal(compareVersions('1.2.0+build.7', '1.2.0'), 0, 'build metadata never matters');
+  assert.equal(compareVersions('v1.2.0', '1.2.0+abc'), 0);
+  assert.equal(compareVersions('1.2.0-rc.1+b2', '1.2.0-rc.1+b1'), 0);
+  assert.equal(compareVersions('1.2', '1.2.0'), null);
+  assert.equal(compareVersions('', '1.2.0'), null);
+  assert.equal(compareVersions('1.2.0-', '1.2.0'), null);
+});
+
+test('an installed pre-release or build-tagged plugin still counts as behind its release', () => {
+  const cache = { where: 'server', hermes: '0.21.6', hermesUpdate: false, plugin: '0.21.1-rc.2', pluginLatest: '0.21.1', host: '0.21.4+20261012' };
+  assert.deepEqual(planSteps({ app: '0.21.4', cache }).map((s) => [s.id, s.from, s.to]), [['plugin', '0.21.1-rc.2', '0.21.1']],
+    'the host on 0.21.4+build is the app version, so it does not join');
+  assert.deepEqual(planSteps({ app: '0.21.5-rc.10', cache: { ...cache, plugin: '0.21.1', host: '0.21.5-rc.2' } }).map((s) => [s.id, s.to]), [['host', '0.21.5-rc.10']]);
+});
 
 test('the Hermes version comes from the --version banner, build suffixes dropped', () => {
   assert.equal(parseHermesVersion('Hermes Agent v0.21.6+763.g1fd1827 (2026.9.24) · stable · local 1fd182772671'), '0.21.6');
@@ -136,4 +161,12 @@ test('a step that finished without moving is named as unchanged, never claimed a
   const rows = await runSteps(STEPS.slice(0, 2), async (step) => ({ ok: true, version: step.id === 'plugin' ? '0.21.0' : '0.21.7' }));
   assert.equal(summarizeRun(rows), 'Done. Still on the same version: Alan’s Way plugin (0.21.0).');
   assert.equal(reportText(rows), 'Update everything finished. Now on Hermes 0.21.7. Unchanged: plugin 0.21.0.');
+});
+
+test('Restart to finish asks first while a bot is mid-task, naming who', () => {
+  assert.equal(restartWarning([]), null);
+  assert.equal(restartWarning(['Scout']).message, 'Scout is working in a tab right now.');
+  assert.equal(restartWarning(['Scout', 'Ada', 'Scout']).message, 'Scout and Ada are working in a tab right now.', 'one name per bot');
+  assert.equal(restartWarning(['A', 'B', 'C']).message, 'A, B and C are working in a tab right now.');
+  assert.match(restartWarning(['Scout']).detail, /interrupts that task/);
 });

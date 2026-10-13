@@ -18,17 +18,19 @@ process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10
 // main.cjs destructures these at load, so patching the exports first swaps
 // the real ssh-driven updater and the GitHub read for recorders.
 const calls = [];
-let hermesNow = '0.21.6', releaseHermes;
+let hermesNow = '0.21.6', releaseHermes, checkGate = null, failReport = false;
 const hermesGate = new Promise((resolve) => { releaseHermes = resolve; });
 require('../src/update-all.cjs').latestPluginTag = async () => '0.21.1';
 require('../src/vm-update.cjs').createVmUpdater = () => ({
   checkVm: async (target) => {
     calls.push(`check ${target.id}`);
+    if (checkGate) await checkGate.promise;
     return { ok: true, version: '0.21.3', hostVersion: '0.21.3', busy: false, hermesVersion: `Hermes Agent v${hermesNow} (2026.9.24) · stable`,
       hermesCheck: hermesNow === '0.21.6' ? '→ Selected release available: stable v0.21.7 (71d34bad1045)' : '✓ Up to date with the latest release (stable v0.21.7 (71d34bad1045)).',
       pluginVersion: '0.21.0', gatewayRunning: true };
   },
   hermesUpdateVm: async (target, opts = {}) => {
+    if (opts.report && failReport) throw new Error('relay down');
     if (opts.report) { calls.push(`report ${opts.report}`); return { ok: true, messaged: true, messages: [{ profile: 'default', sent: true }] }; }
     calls.push(`hermes ${target.id} quiet=${opts.quiet === true}`);
     if (opts.quiet) await hermesGate;
@@ -130,6 +132,30 @@ app.whenReady().then(async () => {
   assert.equal(await hidden('update-all-popup'), true);
   await click('update-all');
   assert.deepEqual((await lines()).slice(0, 2), ['|Alan’s Way plugin: 0.21.0 → 0.21.1', `|Browser host: 0.21.3 → ${version}`], 'Hermes is current now');
+
+  await click('update-all-cancel');
+
+  // Other update buttons wait out a version check already in flight: its
+  // `hermes update --check` fetches into the checkout an update moves.
+  await waitFor(() => evaluate('document.getElementById("update-all-popup").classList.contains("hidden")'), Boolean);
+  let release; checkGate = { promise: new Promise((r) => { release = r; }) };
+  invoke('versions-refresh');
+  await waitFor(() => calls.at(-1), (c) => c === 'check agent', 3000, 'the probe to start');
+  const updating = invoke('hermes-update');
+  await new Promise((r) => setTimeout(r, 400));
+  assert.ok(!calls.includes('hermes agent quiet=false'), 'Update Hermes waits for the probe');
+  checkGate = null; release();
+  await updating;
+  assert.ok(calls.indexOf('hermes agent quiet=false') > calls.lastIndexOf('check agent'), 'and runs once it finished');
+
+  // An error that escapes the steps lands in the dialog, never a blank run.
+  failReport = true;
+  await click('update-all');
+  await waitFor(lines, (l) => l.length > 0, 3000, 'the plan');
+  await click('update-all-go');
+  await waitFor(() => text('update-all-copy'), (t) => t.startsWith('Update everything stopped:'), 8000, 'the error in the dialog');
+  assert.match(await text('update-all-copy'), /relay down/);
+  assert.equal(await evaluate('document.getElementById("update-all-cancel").disabled'), false, 'and it can be closed');
 
   console.log('PASS: the bottom bar shows versions with details on hover; Update everything confirms first, runs in order under one lock, stops at a failure and reports once.');
   app.quit();
