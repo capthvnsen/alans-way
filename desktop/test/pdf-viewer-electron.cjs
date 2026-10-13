@@ -193,12 +193,21 @@ if (typeof electron === 'string') {
     // File.path or a renderer-supplied path. Cover both shell and web view.
     for (const [target, name] of [[win.webContents, 'restore.pdf'], [human, 'finder.pdf'], [tabContents(`${base}/blank.pdf`)[0], 'picker.pdf']]) {
       const before = (await state()).tabs.filter(t => t.url === fileUrl(name)).length;
+      if (target !== win.webContents) {
+        const dropTab = (await state()).tabs.find(t => t.url === target.getURL());
+        await command('activate', { id: dropTab.id }); target.focus();
+      }
+      if (target !== human && target !== win.webContents && !baseline) {
+        const frame = await viewerOf(target);
+        await waitFor(() => frame.executeJavaScript('window.workspacePdfDropInstalled === true').catch(() => false));
+      }
       target.debugger.attach('1.3');
       try {
         const data = { items: [], files: [path.join(profile, name)], dragOperationsMask: 1 };
         await target.debugger.sendCommand('Input.dispatchDragEvent', { type: 'dragEnter', x: 300, y: 100, data });
         await target.debugger.sendCommand('Input.dispatchDragEvent', { type: 'drop', x: 300, y: 100, data });
-        await new Promise(r => setTimeout(r, 300));
+        if (baseline) await new Promise(r => setTimeout(r, 300));
+        else await waitFor(state, s => s.tabs.filter(t => t.url === fileUrl(name)).length > before);
       } finally { target.debugger.detach(); }
       check(`PDF drop onto ${target === human ? 'web tab' : target === win.webContents ? 'window' : 'PDF viewer'}`, (await state()).tabs.filter(t => t.url === fileUrl(name)).length > before);
     }
