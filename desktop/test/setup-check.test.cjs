@@ -234,6 +234,25 @@ test('redactReport removes the token, password, key and header shapes that slipp
   }
 });
 
+test('redactReport removes URL credentials and GitHub tokens, keeping the host', () => {
+  const classic = `ghp_${'A1b2C3d4'.repeat(4)}abcd`, oauth = `gho_${'Z9'.repeat(18)}`, app = `ghs_${'k'.repeat(36)}`;
+  const user = `ghu_${'u'.repeat(36)}`, refresh = `ghr_${'r'.repeat(36)}`, fine = `github_pat_11ABCDEFG0${'x'.repeat(70)}`;
+  for (const [text, keep, ...secrets] of [
+    ['fatal: could not read from https://alex:hunter2@github.com/capthvnsen/alans-way-agents.git', 'github.com/capthvnsen', 'alex:hunter2', 'hunter2'],
+    ['git remote: http://bot:p%40ss@gitlab.example:8443/x.git', 'gitlab.example:8443', 'p%40ss'],
+    [`remote: Invalid username or token ${classic} for push`, 'for push', classic],
+    [`GH_TOKEN=${fine} gh api`, 'gh api', fine],
+    [`tokens ${oauth} ${app} ${user} ${refresh}`, 'tokens', oauth, app, user, refresh],
+  ]) {
+    const out = redactReport(text);
+    for (const secret of secrets) assert.equal(out.includes(secret), false, `${secret} leaked from ${text} as ${out}`);
+    assert.ok(out.includes(keep), `${keep} should survive in ${out}`);
+    assert.equal(redactReport(out), out, 'a second pass changes nothing');
+  }
+  for (const text of ['ssh root@77.42.86.93 failed', 'clone ssh://git@github.com/x.git', 'GET http://127.0.0.1:9465/v1/status', 'see https://github.com/capthvnsen/alans-way-agents'])
+    assert.equal(redactReport(text), text, 'addresses without a password stay readable');
+});
+
 test('redactReport removes Python-repr pairs and quoted values that contain spaces', () => {
   for (const [text, ...secrets] of [
     ["{'telegram': {'token': 'py-repr-secret', 'chat_id': 5}}", 'py-repr-secret'],
