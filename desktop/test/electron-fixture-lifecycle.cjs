@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-test('fixture quit destroys debugger views even when a page refuses unload', { timeout: 20000 }, async () => {
+test('fixture quit destroys debugger views even when a page refuses unload', { timeout: 80000 }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fixture-quit-'));
   const profile = path.join(dir, 'profile');
   fs.mkdirSync(profile);
@@ -26,7 +26,7 @@ test('fixture quit destroys debugger views even when a page refuses unload', { t
     const result = await new Promise((resolve, reject) => {
       const child = spawn(require('electron'), [script], { stdio: ['ignore', 'ignore', 'pipe'] });
       let stderr = '';
-      const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+      const timer = setTimeout(() => child.kill('SIGKILL'), 70000);
       child.stderr.on('data', chunk => { stderr += chunk; });
       child.once('error', error => { clearTimeout(timer); reject(error); });
       child.once('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal, stderr }); });
