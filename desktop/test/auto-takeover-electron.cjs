@@ -175,9 +175,16 @@ app.whenReady().then(async () => {
   await sleep(500);
   await invoke('navigate', { id: tab.id, url: `${base}/moved` });
   const voided = await pending;
-  assert.equal(voided.status, 409); assert.match(voided.data.error, /^stale_control_epoch: the tab changed hands/);
+  assert.equal(voided.status, 409); assert.match(voided.data.error, /^stale_control_epoch: the tab changed while you waited/);
   assert.equal(await controller(tab.id), 'human');
   assert.notEqual(await pageWc.executeJavaScript('document.getElementById("q").value'), 'late', 'nothing typed into the new page');
+  // A plain claim holds no epoch, so the human navigating does not void it.
+  await humanTypes(pageWc, 'c');
+  pending = api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' });
+  await sleep(500);
+  await invoke('navigate', { id: tab.id, url: `${base}/again` });
+  assert.equal((await pending).status, 200);
+  await invoke('control', { id: tab.id, controller: 'human' });
 
   // Take back during the grace wait voids a pending claim too.
   await humanTypes(pageWc, 't');

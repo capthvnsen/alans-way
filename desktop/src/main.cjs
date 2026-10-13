@@ -672,12 +672,14 @@ function changeController(id, controller, source = 'human', handback = null) {
 // A bot's claim, or an action on a tab the human holds, takes the tab back when
 // Settings allow it (on by default). The claim rules run before and after the
 // grace wait: the human may hand the tab over or start recording meanwhile.
-async function claimTab(tab, botId, { isClosed = () => false, overseer = false } = {}) {
+// A caller holding an epoch (an action or a close) needs the tab unchanged
+// since it read it; a plain claim gets a fresh epoch either way.
+async function claimTab(tab, botId, { isClosed = () => false, overseer = false, epoch } = {}) {
   const rules = () => { const autoTakeover = prefs.autoTakeover !== false; return { autoTakeover, recording: autoTakeover && recording?.tabId === tab.id }; };
   requireAgentClaim(tab, Date.now(), rules());
   const auto = rules().autoTakeover && tab.controller === 'human';
   if (auto) {
-    const started = Date.now(), from = tab.epoch;
+    const started = Date.now();
     for (let ms; (ms = takeoverDelay(tab.lastHumanInput, started)) > 0;) await new Promise((resolve) => setTimeout(resolve, ms));
     if (isClosed()) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
     if (!tabs.has(tab.id)) throw Object.assign(new Error('Tab not found.'), { status: 404 });
@@ -685,7 +687,8 @@ async function claimTab(tab, botId, { isClosed = () => false, overseer = false }
     // Another bot's claim, Take back or a navigation may have moved the tab
     // while this one waited.
     if (tab.botId !== 'shared') requireActor(tab, botId, undefined, false, overseer);
-    if (tab.epoch !== from) throw Object.assign(new Error('stale_control_epoch: the tab changed hands while you waited. Read the tab state and retry.'), { status: 409 });
+    if (epoch !== undefined && tab.epoch !== epoch) throw Object.assign(new Error('stale_control_epoch: the tab changed while you waited (the human navigated, or another claim landed). Claim it, read it, then act.'), { status: 409 });
+    if (tab.controller === 'agent') return describeTab(tab);
   }
   // The notice is for a tab the human took or used, not one a bot released
   // that sat idle.
@@ -2356,8 +2359,8 @@ function startApi() {
           if (tab.controller !== 'agent' && prefs.autoTakeover !== false) {
             await checkAction(tab, body, botId);
             if (body.epoch !== tab.epoch) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
-            held = { humanLock: tab.humanLock, humanSince: tab.humanSince };
-            taken = body.epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer })).epoch;
+            held = { humanLock: tab.humanLock, humanSince: tab.humanSince, botId: tab.botId, handoff: tab.handoff };
+            taken = body.epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch: body.epoch })).epoch;
           }
           // An action the page refused before any input or navigation reached it
           // (a challenge, a commit check, a missing control) hands the tab
@@ -2366,11 +2369,15 @@ function startApi() {
           let moved = false;
           const onMove = () => { moved = true; };
           const unrun = () => taken && tab.epoch === taken && tab.controller === 'agent' && (tab.inputsSent || 0) === inputs && !moved;
-          const giveBack = () => { changeController(tab.id, 'human', 'human'); Object.assign(tab, held); broadcast(); };
+          const giveBack = () => {
+            try { changeController(tab.id, 'human', 'human'); Object.assign(tab, held); broadcast(); } catch (error) { logError('takeover undo', error); }
+          };
           wc.on('did-start-navigation', onMove);
           try {
             const result = await performAction(tab, body, botId, 0, () => closed);
-            if (Array.isArray(result?.results) && !result.results.some((step) => step.ok) && unrun()) giveBack();
+            // Batch steps report errors without a status: only an input first
+            // step that failed before reaching the page counts as refused.
+            if (INPUT_ACTIONS.has(body.steps?.[0]?.action) && result?.results?.[0]?.ok === false && unrun()) giveBack();
             return result;
           } catch (error) {
             if (([400, 403, 409].includes(error?.status) || error?.code === 'stale_ref') && unrun()) giveBack();
@@ -2400,7 +2407,7 @@ function startApi() {
         if (tab.controller !== 'agent' && prefs.autoTakeover !== false) {
           requireActor(tab, botId, undefined, false, overseer);
           if (epoch !== tab.epoch) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
-          epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer })).epoch;
+          epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch })).epoch;
         }
         if (closed) throw Object.assign(new Error('The request was closed before the tab closed.'), { status: 499 });
         requireActor(tab, botId, epoch, true, overseer); closeTab(tab.id); return send(200, { closed: true });

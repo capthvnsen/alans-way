@@ -456,7 +456,9 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
 
     // The API owner serializes perform() with screenshots and navigation in
     // tab.queue. Checks after awaits also stop an already queued revoked action.
-    const send = async (method, params) => { check(); if (method.startsWith('Input.')) tab.inputsSent = (tab.inputsSent || 0) + 1; const result = await withTimeout(command(tab, method, params), 10000); check(); return result; };
+    // inputsSent counts what reached the page (a hover alone does not), so a
+    // takeover for an action refused before then can be undone.
+    const send = async (method, params) => { check(); if (method.startsWith('Input.') && params?.type !== 'mouseMoved') tab.inputsSent = (tab.inputsSent || 0) + 1; const result = await withTimeout(command(tab, method, params), 10000); check(); return result; };
     const visible = isVisible(tab) !== false;
     const accent = botAccent(botId);
     let mouseDown = null, keyDown = null;
@@ -585,6 +587,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       } else if (action === 'select') {
         await moveCursor(point, hl);
         await armFollowUp();
+        tab.inputsSent = (tab.inputsSent || 0) + 1;
         const picked = await boundedJs(wc, selectScript(target, body));
         check();
         if (picked && picked.fail === 'stale') throw staleRef(body.ref);
