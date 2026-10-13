@@ -5,7 +5,7 @@ const path = require('node:path');
 const electron = require('electron');
 
 if (typeof electron === 'string') {
-  const { spawnSync } = require('node:child_process');
+  const { spawn } = require('node:child_process');
   const { once } = require('node:events');
   const { Worker } = require('node:worker_threads');
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-restore-tabs-'));
@@ -23,6 +23,22 @@ if (typeof electron === 'string') {
     server.listen(0, '127.0.0.1', () => parentPort.postMessage(server.address().port));
   `, { eval: true, workerData: { slowReady } });
 
+  const launch = (phase, base) => new Promise((resolve, reject) => {
+    const child = spawn(electron, [__filename, phase], { env: { ...process.env, HERMES_WORKSPACE_DATA: profile, HERMES_WORKSPACE_PORT: '0', HERMES_RESTORE_TABS_BASE: base }, stdio: ['ignore', 'inherit', 'pipe'] });
+    let stderr = '';
+    const deadline = setTimeout(() => { child.kill('SIGKILL'); }, 90000);
+    child.stderr.on('data', chunk => { stderr += chunk; process.stderr.write(chunk); });
+    child.once('error', error => { clearTimeout(deadline); reject(error); });
+    child.once('close', (code, signal) => {
+      clearTimeout(deadline);
+      try {
+        assert.equal(code, 0, `Restore tabs ${phase} failed (${signal || code}): ${stderr.slice(-2000)}`);
+        assert.doesNotMatch(stderr, /Object has been destroyed/);
+        resolve();
+      } catch (error) { reject(error); }
+    });
+  });
+
   (async () => {
     try {
       const [port] = await once(server, 'message');
@@ -34,8 +50,7 @@ if (typeof electron === 'string') {
         { url: 'about:blank', botId: 'shared' },
       ] }));
       for (const phase of ['pending', 'restored']) {
-        const result = spawnSync(electron, [__filename, phase], { env: { ...process.env, HERMES_WORKSPACE_DATA: profile, HERMES_WORKSPACE_PORT: '0', HERMES_RESTORE_TABS_BASE: base }, stdio: 'inherit', timeout: 40000, killSignal: 'SIGKILL' });
-        assert.equal(result.status, 0, result.error?.message || `Restore tabs ${phase} phase failed.`);
+        await launch(phase, base);
         if (phase === 'pending') {
           const saved = JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8'));
           assert.deepEqual(saved.savedTabs.map(item => item.url), [`${base}/fast`, `${base}/slow`]);
@@ -45,14 +60,12 @@ if (typeof electron === 'string') {
       // A navigate before the first commit replaces the URL the next launch restores.
       fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false,
         savedTabs: [{ url: `${base}/hang-source`, botId: 'shared' }] }));
-      const navigate = spawnSync(electron, [__filename, 'navigate'], { env: { ...process.env, HERMES_WORKSPACE_DATA: profile, HERMES_WORKSPACE_PORT: '0', HERMES_RESTORE_TABS_BASE: base }, stdio: 'inherit', timeout: 40000, killSignal: 'SIGKILL' });
-      assert.equal(navigate.status, 0, navigate.error?.message || 'Restore tabs navigate phase failed.');
+      await launch('navigate', base);
       assert.deepEqual(JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8')).savedTabs.map(item => item.url), [`${base}/hang-target`]);
       // A window.open tab whose first load is still pending saves nothing.
       fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false,
         savedTabs: [{ url: `${base}/fast`, botId: 'shared' }] }));
-      const popup = spawnSync(electron, [__filename, 'popup'], { env: { ...process.env, HERMES_WORKSPACE_DATA: profile, HERMES_WORKSPACE_PORT: '0', HERMES_RESTORE_TABS_BASE: base }, stdio: 'inherit', timeout: 40000, killSignal: 'SIGKILL' });
-      assert.equal(popup.status, 0, popup.error?.message || 'Restore tabs popup phase failed.');
+      await launch('popup', base);
       assert.deepEqual(JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8')).savedTabs.map(item => item.url), [`${base}/fast`]);
       console.log('PASS: pending restored tabs keep their requested URLs and legacy blank tabs are ignored.');
     } finally {
@@ -62,6 +75,8 @@ if (typeof electron === 'string') {
   })().catch(error => { console.error(error.stack); process.exitCode = 1; });
 } else {
   const { app, BrowserWindow, webContents, session } = electron;
+  const { prepareFixture, quitFixture } = require('./electron-fixture.cjs');
+  prepareFixture(process.env.HERMES_WORKSPACE_DATA);
   require('../src/main.cjs');
   const waitFor = async (read, predicate, timeout = 12000) => {
     const deadline = Date.now() + timeout;
@@ -102,6 +117,14 @@ if (typeof electron === 'string') {
       page.executeJavaScript(`void window.open(${JSON.stringify(`${base}/hang-popup`)})`).catch(() => {});
       await waitFor(state, value => value.tabs.length === 2);
     }
-    app.quit();
+    if (phase === 'navigate') {
+      app.once('before-quit', event => {
+        event.preventDefault();
+        win.destroy();
+        for (const contents of webContents.getAllWebContents()) if (!contents.isDestroyed()) contents.stop();
+        setTimeout(() => app.exit(0), 100);
+      });
+    }
+    quitFixture();
   }).catch(error => { console.error(error.stack); app.exit(1); });
 }

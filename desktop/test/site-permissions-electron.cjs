@@ -2,9 +2,9 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), http = require('node:http');
 const { app, BrowserWindow, webContents, session, dialog } = require('electron');
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-permissions-'));
-process.env.HERMES_WORKSPACE_DATA = profile;
-process.env.HERMES_WORKSPACE_PORT = '0';
+const profile = process.env.HERMES_TEST_PROFILE || fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-permissions-'));
+const { prepareFixture, quitFixture } = require('./electron-fixture.cjs');
+prepareFixture(profile);
 fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({preview:false}));
 let prompts = 0; dialog.showMessageBox = async () => { prompts++; return {response:0}; };
 require('../src/main.cjs');
@@ -33,8 +33,16 @@ app.whenReady().then(async () => {
   await evaluate('document.getElementById("settings-button").click()');
   assert.equal(await evaluate('document.getElementById("permission-origin").placeholder'), 'https://www.google.com');
   assert.equal(await until(() => evaluate(`document.querySelector('#site-permissions select')?.value`), Boolean), 'block');
-  await evaluate('document.getElementById("modal-close").click()');
-  await new Promise(resolve => setTimeout(resolve, 100));
+  await evaluate(`(() => {
+    const frame = window.requestAnimationFrame;
+    window.__fixtureFrame = frame;
+    window.requestAnimationFrame = callback => frame(() => setTimeout(callback, 250));
+    document.getElementById("modal-close").click();
+  })()`);
+  await evaluate(`new Promise(resolve => requestAnimationFrame(resolve)).then(() => {
+    window.requestAnimationFrame = window.__fixtureFrame;
+    delete window.__fixtureFrame;
+  })`);
   await invoke('set-site-permission', {origin, permission:'geolocation', decision:'allow'});
   assert.equal(await browser.executeJavaScript('navigator.permissions.query({name:"geolocation"}).then(p => p.state)'), 'granted');
   await invoke('control', {id:tab.id, controller:'agent'});
@@ -44,5 +52,5 @@ app.whenReady().then(async () => {
   assert.equal(await request(), 1);
   console.log('PASS: actual Chromium repeat location requests, remembered denial across reload, persisted preferences, Settings UI, per-site grant/revoke and agent takeover denial.');
   console.log('Runtime:', JSON.stringify({electron:process.versions.electron, chromium:process.versions.chrome, prompts}));
-  server.close(); app.quit();
+  quitFixture(server);
 }).catch(error => { console.error(error.stack); server?.close(); app.exit(1); });

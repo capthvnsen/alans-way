@@ -41,12 +41,13 @@ test('a crashed helper is replaced on the next request', async (t) => {
 });
 
 test('a silent helper times out, is killed, and the next request starts fresh', async (t) => {
-  const helper = createHelper({ command: async (kind) => [process.execPath, fake, kind], timeoutMs: 300 });
-  t.after(() => { delete process.env.FAKE_MODE; helper.close(); });
-  process.env.FAKE_MODE = 'hang';
+  const env = { ...process.env, FAKE_MODE: 'hang' };
+  const helper = createHelper({ command: async (kind) => [process.execPath, fake, kind], env, timeoutMs: 300 });
+  t.after(() => helper.close());
   await assert.rejects(helper.request({ cmd: 'apps' }), /timed out/);
-  process.env.FAKE_MODE = 'ok';
-  assert.equal((await helper.request({ cmd: 'apps' })).ok, true);
+  env.FAKE_MODE = 'ok';
+  env.FAKE_STARTUP_DELAY_MS = '500';
+  assert.equal((await helper.request({ cmd: 'apps', timeoutMs: 10000 })).ok, true);
 });
 
 test('a helper that cannot start falls back to one process per request', async (t) => {
