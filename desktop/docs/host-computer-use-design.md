@@ -142,13 +142,15 @@ its last capture, which turned every state-changing step into a `stale_ref`.
    row named. Fixes the list and scroll tasks.
 2. **Stable refs and per-ref checks.** A ref follows its control
    (AXUIElement identity, then role, name and position among namesakes for
-   apps that rebuild their tree). The helper keeps the last eight trees it
-   handed out; a ref action with an older generation still runs when every
-   ref it uses is the same control (the same AXUIElement) with the role,
-   name and enclosing row the caller saw, and otherwise fails naming the
-   ref. A ref re-bound by label, or a button in a recycled table row, never
-   passes. Fixes live churn and removes the provider's stale retries without
-   changing the provider.
+   apps that rebuild their tree). The helper keeps the last eight trees plus
+   up to four the caller is still acting from, pinned by every action and wait
+   poll, so a long batch's later steps still check against the caller's tree.
+   A ref action with an older generation still runs when every ref it uses is
+   the same control (the same AXUIElement) with the role, name and enclosing
+   row the caller saw; a toggle must also still have the state the caller saw.
+   Otherwise it fails naming the ref. A ref re-bound by label, or a button in
+   a recycled table row, never passes. Fixes live churn and removes the
+   provider's stale retries without changing the provider.
 3. **Delta replies.** An action reply lists `changed[]` and `removed[]`
    against what that bot was last sent, when the caller passes that tree's
    generation (so a lost reply gets the whole tree) and the delta is under
@@ -157,11 +159,13 @@ its last capture, which turned every state-changing step into a `stale_ref`.
 4. **`wait` step.** `{action:"wait", text, gone, timeout}` polls the tree, so
    a batch acts and confirms in one call. Steps after a wait still carry the
    caller's generation; a run or a wait that fails after earlier steps ran is
-   reported in `results`, not thrown; all waits in one call share 45 s.
+   reported in `results`, not thrown. Waits and act runs start only within 45 s.
 5. **Say why a tree is empty.** No readable window gives a `note`: on another
    Space, minimized or hidden (with the fix), or no windows (use the menus).
-   Window screenshots include off-screen windows, preferring on-screen ones
-   and skipping the untitled never-shown windows apps own.
+   Screenshots come from the app's windows on the current Space. Only when it
+   has none there do they use its titled window elsewhere, and the reply's
+   note says it is read only. The macOS 13 screencapture path stays
+   current-Space only.
 6. **`locked`.** Found during the bench: with the screen locked,
    Accessibility returns the menu-bar strips as an app's windows (78 empty
    menu items for the fixture, no controls). The helper now fails fast with
@@ -263,8 +267,35 @@ this work) already batches: 4/4 tasks pass in one call each, 124 ms to 761 ms,
    sits after the name cap so a long label cannot hide a flip.
    Compile-checked on Mac against .NET Framework 4.8 reference assemblies at
    C# 5, and the ref checks run under `dotnet` in `npm test`; the Windows CI
-   job builds with the in-box `csc` and runs selftest and Notepad. Not driven
-   by hand on a real PC yet.
+   job builds with the in-box `csc` and runs selftest and Notepad. Check it by
+   hand on a real PC (Windows 10/11, not elevated, the app in the background)
+   with one long-lived session — refs and generations only live inside a
+   single process, so run `win-computer.exe serve` once and type one JSON
+   request per line:
+
+       {"cmd":"apps"}                              → find the target's pid
+       {"cmd":"snapshot","pid":<pid>}              → note a ref cN and "generation" G
+       {"cmd":"act","pid":<pid>,"generation":G,"steps":[{"action":"press","ref":"cN"}]}
+
+   - [ ] `win-computer.exe selftest` prints `{"ok":true,"checks":N}`.
+   - [ ] Notepad: snapshot, `type` into the edit ref through `act`, snapshot
+         again — the edit control keeps its `cN`.
+   - [ ] An app with a ticking clock or progress text: press a ref with the
+         older generation — it runs and does not return `stale_ref`.
+   - [ ] A list that rebuilds rows (Explorer's file list): snapshot, add a
+         file so rows shift, press an old row ref with the old generation —
+         it fails with exactly `stale_ref: cN is gone or changed since your
+         snapshot. Take a fresh snapshot.` and no different file is pressed.
+   - [ ] A checkbox (Notepad Format > Word Wrap or a Settings toggle):
+         snapshot, flip it by hand, press its ref with the old generation —
+         the same `cN is gone or changed` message, and the box stays where
+         the user left it.
+   - [ ] A tree item (Explorer's navigation tree): snapshot, expand or
+         collapse the item by hand, press its ref with the old generation —
+         the same `cN is gone or changed` message; the press must not undo
+         the user's expansion.
+   - [ ] Policy is unchanged: a blocklisted app, a password field, an
+         elevated app and the front app are refused with the same codes.
 5. **Screenshot scale.** Captures use the Retina backing scale, so a 420 pt
    window is an 840 px image. 1x would quarter the image cost at some text
    legibility; worth a bench with a vision model before changing.
@@ -279,7 +310,7 @@ cd desktop
 node scripts/computer-bench.cjs                      # mcp, batch, plugin
 node scripts/computer-bench.cjs --mode plugin --visible
 node scripts/computer-bench.cjs --root /path/to/other/checkout/desktop   # baseline
-node scripts/browser-bench.cjs                       # needs the app running
+node scripts/browser-bench.cjs                       # see browser-use-design.md
 ```
 
 The fixture (`test/computer-bench-app.swift`) is built into a temporary

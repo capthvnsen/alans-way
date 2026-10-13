@@ -1,21 +1,21 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { createAgentInput, keyboardEvent, botAccent, cursorPath, boundedJs } = require('../src/agent-input.cjs');
+const { createAgentInput, APPROVED, keyboardEvent, botAccent, cursorPath, boundedJs } = require('../src/agent-input.cjs');
 const { requireActor } = require('../src/core.cjs');
 
 function fixture(options = {}) {
   const calls = [], scripts = [], shortcuts = [];
   let hook = async () => {};
-  const found = { x: 40, y: 60, ...options.found };
-  const tab = { botId: 'bot', controller: 'agent', epoch: 1, refs: new Set(['s1-1', 's1-2']), view: { webContents: Object.assign(new EventEmitter(), {
+  const found = { x: 40, y: 60, look: { names: [], field: false, form: null }, ...options.found };
+  const tab = { id: 'tab-1', botId: 'bot', controller: 'agent', epoch: 1, refs: new Set(['e1', 'e2']), view: { webContents: Object.assign(new EventEmitter(), {
     isDestroyed: () => false,
     setIgnoreMenuShortcuts: value => shortcuts.push(value),
-    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('elementFromPoint') ? found : code.includes('hw.submit') ? (options.submitted ?? null) : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : found; },
+    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.endsWith('([], true)') ? (options.challenge ?? null) : code.includes('.page()') ? (options.page ?? { origin: 'https://shop.example', names: [] }) : code.includes('return C.look(C.') ? (options.probe ?? null) : code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : code.includes('elementFromPoint') ? found : code.includes('hw.submit') ? (options.submitted ?? null) : found; },
     focus: () => { throw new Error('Native focus must never be used.'); },
     sendInputEvent: () => { throw new Error('Native input must never be used.'); },
   }) } };
-  const agent = createAgentInput({ requireActor, isVisible: () => options.visible !== false, delay: options.delay || (async () => {}), command: async (_tab, method, params) => { assert.equal(_tab, tab); calls.push({ method, ...params }); await hook(method, params); return {}; } });
+  const agent = createAgentInput({ requireActor, now: options.now, isVisible: () => options.visible !== false, delay: options.delay || (async () => {}), command: async (_tab, method, params) => { assert.equal(_tab, tab); calls.push({ method, ...params }); await hook(method, params); return {}; } });
   return { tab, agent, calls, scripts, shortcuts, hook: callback => { hook = callback; }, perform: body => agent.perform(tab, { epoch: 1, ...body }, 'bot') };
 }
 const pointer = f => f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').map(({ type, x, y, button, buttons, clickCount }) => ({ type, x, y, button, buttons, clickCount }));
@@ -31,7 +31,7 @@ test('pointer and keyboard dispatch only to the assigned tab, in order, with a s
     await new Promise(resolve => setImmediate(resolve));
     pending = false;
   });
-  const result = await f.perform({ action: 'click', ref: 's1-1' });
+  const result = await f.perform({ action: 'click', ref: 'e1' });
   assert.equal(result.input, 'tab-cdp');
   assert.deepEqual(f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').map(({ type, x, y }) => ({ type, x, y })), [
     { type: 'mouseMoved', x: 40, y: 60 }, { type: 'mousePressed', x: 40, y: 60 }, { type: 'mouseReleased', x: 40, y: 60 },
@@ -68,7 +68,7 @@ test('a tab the human is not watching skips the glide and its pacing', async () 
   let paced = 0;
   const f = fixture({ visible: false, delay: async () => { paced++; } });
   f.tab.agentCursor = { x: 10, y: 10 };
-  await f.perform({ action: 'click', ref: 's1-1' });
+  await f.perform({ action: 'click', ref: 'e1' });
   assert.equal(paced, 0);
   assert.equal(f.scripts.filter(code => code.includes('"path":[')).length, 0, 'no tween for a hidden tab');
   assert.equal(pointer(f).filter(call => call.type === 'mouseMoved').length, 1);
@@ -78,7 +78,7 @@ test('a tab the human is not watching skips the glide and its pacing', async () 
 
 test('the locate script scrolls only when out of view and never waits on rAF alone', async () => {
   const f = fixture();
-  await f.perform({ action: 'click', ref: 's1-1' });
+  await f.perform({ action: 'click', ref: 'e1' });
   const locate = f.scripts.find(code => code.includes('elementFromPoint'));
   assert.match(locate, /box\.top < 0/, 'an in-view element is not scrolled');
   assert.match(locate, /setTimeout\(r, 80\)/, 'the rAF wait has a timer fallback');
@@ -102,20 +102,20 @@ test('an overlay or probe that never answers cannot hang an action', async () =>
 });
 
 test('stale epoch, ownership and malformed targets fail before input or focus emulation', async () => {
-  for (const body of [{ epoch: 2, action: 'click', ref: 's1-1' }, { action: 'type', ref: 's1-99', text: 'hello' }, { action: 'move', x: NaN, y: 10 }, { action: 'type', ref: 's1-1', text: 'x'.repeat(20001) }]) {
+  for (const body of [{ epoch: 2, action: 'click', ref: 'e1' }, { action: 'type', ref: 'e99', text: 'hello' }, { action: 'move', x: NaN, y: 10 }, { action: 'type', ref: 'e1', text: 'x'.repeat(20001) }]) {
     const f = fixture(); await assert.rejects(f.perform(body)); assert.equal(f.calls.length, 0);
   }
   const f = fixture();
-  await assert.rejects(f.agent.perform(f.tab, { epoch: 1, action: 'click', ref: 's1-1' }, 'other'), /different bot/);
+  await assert.rejects(f.agent.perform(f.tab, { epoch: 1, action: 'click', ref: 'e1' }, 'other'), /different bot/);
   f.tab.controller = 'human';
-  await assert.rejects(f.perform({ action: 'click', ref: 's1-1' }), /human_has_control/);
+  await assert.rejects(f.perform({ action: 'click', ref: 'e1' }), /human_has_control/);
   assert.equal(f.calls.length, 0);
 });
 
 test('takeover during target resolution prevents all subsequent pointer input', async () => {
   const f = fixture();
   f.hook(async method => { if (method === 'evaluate') f.tab.controller = 'human'; });
-  await assert.rejects(f.perform({ action: 'click', ref: 's1-1' }), /human_has_control/);
+  await assert.rejects(f.perform({ action: 'click', ref: 'e1' }), /human_has_control/);
   assert.equal(f.calls.some(call => call.method.startsWith('Input.')), false);
   assert.equal(f.calls.at(-1).enabled, false);
 });
@@ -123,7 +123,7 @@ test('takeover during target resolution prevents all subsequent pointer input', 
 test('revocation between mouse down and up cannot complete a click on the old target', async () => {
   const f = fixture();
   f.hook(async (method, params) => { if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') f.tab.epoch++; });
-  await assert.rejects(f.perform({ action: 'click', ref: 's1-1' }), /stale_control_epoch/);
+  await assert.rejects(f.perform({ action: 'click', ref: 'e1' }), /stale_control_epoch/);
   const released = f.calls.filter(call => call.type === 'mouseReleased');
   assert.deepEqual(released.map(({ x, y, clickCount }) => ({ x, y, clickCount })), [{ x: -1, y: -1, clickCount: 0 }]);
   assert.equal(f.calls.at(-1).enabled, false);
@@ -131,11 +131,11 @@ test('revocation between mouse down and up cannot complete a click on the old ta
 
 test('typing is Chromium text input; empty replacement deletes the selected text', async () => {
   const f = fixture();
-  await f.perform({ action: 'type', ref: 's1-1', text: 'Agent text' });
+  await f.perform({ action: 'type', ref: 'e1', text: 'Agent text' });
   assert.ok(f.calls.some(call => call.method === 'Input.insertText' && call.text === 'Agent text'));
   assert.ok(f.scripts.some(code => code.includes('el.select()')));
   f.calls.length = 0;
-  await f.perform({ action: 'type', ref: 's1-1', text: '' });
+  await f.perform({ action: 'type', ref: 'e1', text: '' });
   assert.deepEqual(f.calls.filter(call => call.method === 'Input.dispatchKeyEvent').map(call => [call.type, call.key]), [['keyDown', 'Backspace'], ['keyUp', 'Backspace']]);
 });
 
@@ -165,7 +165,7 @@ test('focus emulation is held across actions and released once on clear', async 
 test('input failure always disables focus emulation and restores shortcut handling', async () => {
   const f = fixture();
   f.hook(async method => { if (method === 'Input.insertText') throw new Error('Target detached'); });
-  await assert.rejects(f.perform({ action: 'type', ref: 's1-1', text: 'hello' }), /Target detached/);
+  await assert.rejects(f.perform({ action: 'type', ref: 'e1', text: 'hello' }), /Target detached/);
   assert.equal(f.calls.at(-1).enabled, false);
   assert.deepEqual(f.shortcuts, [true, false]);
   assert.equal(f.agent.isDispatching(f.tab), false);
@@ -197,9 +197,20 @@ test('clearing cancels a pending action and removes the separate cursor', async 
   assert.equal(f.calls.some(call => call.method.startsWith('Input.')), false);
 });
 
+test('a name lookup cut short by the control cap refuses instead of acting', async () => {
+  const f = fixture({ found: { x: 40, y: 60, ref: 'e9', resolved: 'Go', partial: true } });
+  await assert.rejects(f.perform({ action: 'click', name: 'Go' }), /not confirmed as the only match.*e9/);
+  assert.equal(f.calls.some(call => call.method.startsWith('Input.')), false, 'no input is dispatched on a guess');
+  assert.ok(f.tab.refs.has('e9'), 'the resolved ref is still issued so the agent can opt in');
+  // A ref or selector target never consults the name lookup and still acts.
+  const byRef = fixture();
+  await byRef.perform({ action: 'click', ref: 'e1' });
+  assert.equal(byRef.calls.some(call => call.type === 'mousePressed'), true);
+});
+
 test('a submit button gets a real click, not a synthetic submit', async () => {
   const f = fixture({ found: { submit: true, nav: true } });
-  await f.perform({ action: 'click', ref: 's1-2' });
+  await f.perform({ action: 'click', ref: 'e2' });
   assert.equal(f.scripts.some(code => code.includes('requestSubmit')), false);
   assert.equal(pointer(f).filter(call => call.type === 'mousePressed').length, 1, 'trusted input carries the click, the submitter and its handlers');
   assert.match(f.scripts.find(code => code.includes('elementFromPoint')), /addEventListener\('submit'/, 'a click on a submit button watches for the submit');
@@ -208,10 +219,10 @@ test('a submit button gets a real click, not a synthetic submit', async () => {
 test('a submit the page handles does not wait for a navigation, an uncancelled one does', async () => {
   let waited = 0;
   const handled = fixture({ found: { submit: true }, submitted: 'handled', delay: async () => { waited++; } });
-  await handled.perform({ action: 'click', ref: 's1-2' });
+  await handled.perform({ action: 'click', ref: 'e2' });
   assert.equal(waited, 0);
   const real = fixture({ found: { submit: true }, submitted: 'navigates', delay: async () => { waited++; } });
-  await real.perform({ action: 'click', ref: 's1-2' });
+  await real.perform({ action: 'click', ref: 'e2' });
   assert.equal(waited, 1, 'an uncancelled submit gives the navigation its start window');
 });
 
@@ -239,12 +250,12 @@ test('editing shortcuts carry macOS commands, but never clipboard ones', () => {
 
 test('double and right clicks send the right buttons and click counts', async () => {
   const f = fixture();
-  await f.perform({ action: 'double_click', ref: 's1-1' });
+  await f.perform({ action: 'double_click', ref: 'e1' });
   assert.deepEqual(pointer(f).slice(1).map(({ type, button, buttons, clickCount }) => [type, button, buttons, clickCount]), [
     ['mousePressed', 'left', 1, 1], ['mouseReleased', 'left', 0, 1], ['mousePressed', 'left', 1, 2], ['mouseReleased', 'left', 0, 2],
   ]);
   f.calls.length = 0;
-  await f.perform({ action: 'right_click', ref: 's1-1' });
+  await f.perform({ action: 'right_click', ref: 'e1' });
   assert.deepEqual(pointer(f).slice(1).map(({ type, button, buttons, clickCount }) => [type, button, buttons, clickCount]), [
     ['mousePressed', 'right', 2, 1], ['mouseReleased', 'right', 0, 1],
   ]);
@@ -254,13 +265,13 @@ test('double and right clicks send the right buttons and click counts', async ()
 test('a revoked right click releases the right button outside the viewport', async () => {
   const f = fixture();
   f.hook(async (method, params) => { if (params.type === 'mousePressed') f.tab.epoch++; });
-  await assert.rejects(f.perform({ action: 'right_click', ref: 's1-1' }), /stale_control_epoch/);
+  await assert.rejects(f.perform({ action: 'right_click', ref: 'e1' }), /stale_control_epoch/);
   assert.deepEqual(pointer(f).filter(call => call.type === 'mouseReleased').map(({ x, y, button }) => ({ x, y, button })), [{ x: -1, y: -1, button: 'right' }]);
 });
 
 test('drag presses at the source, moves with the button held and releases at the destination', async () => {
   const f = fixture({ visible: false });
-  await f.perform({ action: 'drag', ref: 's1-1', toX: 300, toY: 200 });
+  await f.perform({ action: 'drag', ref: 'e1', toX: 300, toY: 200 });
   const events = pointer(f);
   assert.deepEqual(events[0], { type: 'mouseMoved', x: 40, y: 60, button: 'none', buttons: 0, clickCount: undefined });
   assert.deepEqual(events[1], { type: 'mousePressed', x: 40, y: 60, button: 'left', buttons: 1, clickCount: 1 });
@@ -268,32 +279,32 @@ test('drag presses at the source, moves with the button held and releases at the
   assert.ok(moves.length >= 2 && moves.every(call => call.type === 'mouseMoved' && call.buttons === 1));
   assert.deepEqual(events.at(-1), { type: 'mouseReleased', x: 300, y: 200, button: 'left', buttons: 0, clickCount: 1 });
   assert.deepEqual({ x: f.tab.agentCursor.x, y: f.tab.agentCursor.y }, { x: 300, y: 200 });
-  await assert.rejects(f.perform({ action: 'drag', ref: 's1-1' }), /destination/);
-  await assert.rejects(f.perform({ action: 'drag', ref: 's1-1', toRef: 's9-9' }), /Stale/);
-  await assert.rejects(f.perform({ action: 'drag', ref: 's1-1', toX: 9999, toY: 5 }), /inside the tab viewport/);
+  await assert.rejects(f.perform({ action: 'drag', ref: 'e1' }), /destination/);
+  await assert.rejects(f.perform({ action: 'drag', ref: 'e1', toRef: 'e909' }), /Stale/);
+  await assert.rejects(f.perform({ action: 'drag', ref: 'e1', toX: 9999, toY: 5 }), /inside the tab viewport/);
 });
 
 test('drag to an element resolves the destination before the source', async () => {
   const f = fixture({ visible: false });
-  await f.perform({ action: 'drag', ref: 's1-1', toRef: 's1-2' });
+  await f.perform({ action: 'drag', ref: 'e1', toRef: 'e2' });
   const locates = f.scripts.filter(code => code.includes('elementFromPoint'));
   assert.equal(locates.length, 2);
-  assert.ok(locates[0].includes('s1-2') && locates[1].includes('s1-1'), 'the destination is found first so scrolling the source cannot move it');
+  assert.ok(locates[0].includes('e2') && locates[1].includes('e1'), 'the destination is found first so scrolling the source cannot move it');
 });
 
 test('select picks an option by value or label and reports it', async () => {
   const f = fixture();
-  const result = await f.perform({ action: 'select', ref: 's1-1', label: 'Beta' });
+  const result = await f.perform({ action: 'select', ref: 'e1', label: 'Beta' });
   assert.deepEqual(result.matched, { by: 'label', value: 'b', label: 'Beta' });
   const script = f.scripts.find(code => code.includes('has no option matching'));
   assert.ok(script.includes('"Beta"') && script.includes("dispatchEvent(new Event('change'"));
-  await assert.rejects(f.perform({ action: 'select', ref: 's1-1' }), /value, label, option, text or choice/);
-  await assert.rejects(f.perform({ action: 'select', x: 1, label: 'Beta' }), /requires an element/);
+  await assert.rejects(f.perform({ action: 'select', ref: 'e1' }), /value, label, option, text or choice/);
+  await assert.rejects(f.perform({ action: 'select', x: 1, label: 'Beta' }), /requires a ref, a name or a selector/);
   const loose = fixture();
-  await loose.perform({ action: 'select', ref: 's1-1', value: 'b' });
+  await loose.perform({ action: 'select', ref: 'e1', value: 'b' });
   assert.match(loose.scripts.find(code => code.includes('elementFromPoint')), /const loose = true && el\.tagName === 'SELECT'/, 'select resolves without a hit test');
   const g = fixture({ select: { fail: 'has no option matching that value or label', options: [{ value: 'a', label: 'Alpha' }] } });
-  await assert.rejects(g.perform({ action: 'select', ref: 's1-1', value: 'zzz' }), /no option matching.*Alpha/);
+  await assert.rejects(g.perform({ action: 'select', ref: 'e1', value: 'zzz' }), /no option matching.*Alpha/);
 });
 
 test('a click that starts a navigation answers after DOMContentLoaded, not before', async () => {
@@ -301,7 +312,7 @@ test('a click that starts a navigation answers after DOMContentLoaded, not befor
   const wc = f.tab.view.webContents;
   f.hook(async (method, params) => { if (params.type === 'mouseReleased') wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false }); });
   let done = false;
-  const pending = f.perform({ action: 'click', ref: 's1-2' }).then(result => { done = true; return result; });
+  const pending = f.perform({ action: 'click', ref: 'e2' }).then(result => { done = true; return result; });
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(done, false, 'still waiting on the new document');
   wc.emit('dom-ready');
@@ -314,7 +325,7 @@ test('same-document navigations and quiet clicks do not wait', async () => {
   const f = fixture();
   const wc = f.tab.view.webContents;
   f.hook(async (method, params) => { if (params.type === 'mouseReleased') wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true }); });
-  await f.perform({ action: 'click', ref: 's1-2' });
+  await f.perform({ action: 'click', ref: 'e2' });
   await f.perform({ action: 'press', key: 'Tab' });
 });
 
@@ -340,4 +351,189 @@ test('a link click waits for a slow load to start, but an in-page route change e
   // must be prompt is the end of the wait once the route change was seen.
   assert.ok(emittedAt > 0 && Date.now() - emittedAt < 250, 'an in-page route change does not wait out the window');
   watchSpa.stop();
+});
+
+const PAGE_WITH_ORDER = { origin: 'https://shop.example', names: ['Add to cart', 'Place order'] };
+const dispatched = f => f.calls.filter(call => call.method.startsWith('Input.'));
+const approvalFor = (f, extra = {}) => ({ nonce: 'n-' + Math.random().toString(36).slice(2).padEnd(16, '0'), kind: 'purchase', summary: 'Desk lamp', issuedAt: Date.now(), tabId: f.tab.id, epoch: f.tab.epoch, ...extra });
+const approved = async (f, body, approval = approvalFor(f)) => { body = { epoch: 1, ...body, approval }; f.agent.approve(f.tab, body); return f.agent.perform(f.tab, body, 'bot'); };
+
+test('a click whose resolved target reads as a commit is refused before any input, and runs once approved', async () => {
+  const f = fixture({ found: { look: { names: ['Plаce ​order'], field: false, form: null } } });
+  await assert.rejects(f.perform({ action: 'click', name: 'x' }), err => err.status === 403 && /^commit_required: "Pl.*" looks like it buys/.test(err.message));
+  await assert.rejects(f.perform({ action: 'right_click', name: 'x' }), /commit_required/);
+  assert.deepEqual(dispatched(f), [], 'nothing was sent');
+  await approved(f, { action: 'click', name: 'x' });
+  assert.deepEqual(pointer(f).map(call => call.type), ['mouseMoved', 'mousePressed', 'mouseReleased']);
+});
+
+test('look-alike names pass: Add to cart, Send code, a Pay with picker, Purchase history, a filter chip delete', async () => {
+  for (const name of ['Add to cart', 'Send code', 'Pay with Google Pay', 'Purchase history', 'Delete filter']) {
+    const f = fixture({ found: { look: { names: [name], field: false, form: null } } });
+    await f.perform({ action: 'click', name });
+    assert.equal(pointer(f).filter(call => call.type === 'mousePressed').length, 1, name);
+  }
+});
+
+test('Enter in a field is judged by its form\'s submit controls; a space in a field or a click into one is not', async () => {
+  const field = { names: ['Email'], field: true, form: ['Place order'] };
+  const f = fixture({ found: { look: field }, probe: field });
+  for (const key of ['Enter', 'Return', '\r', '\n']) {
+    await assert.rejects(f.perform({ action: 'press', ref: 'e1', key }), /commit_required: pressing Enter here submits the form with "Place order"/, key);
+    await assert.rejects(f.perform({ action: 'press', key }), /commit_required: pressing Enter/, `${key} on the focused field`);
+  }
+  assert.deepEqual(dispatched(f), []);
+  await f.perform({ action: 'press', ref: 'e1', key: ' ' });
+  await f.perform({ action: 'click', ref: 'e1' });
+  const search = fixture({ found: { look: { names: ['Search'], field: true, form: ['Search'] } } });
+  await search.perform({ action: 'press', ref: 'e1', key: 'Enter' });
+  assert.equal(search.calls.filter(call => call.type === 'keyDown').length, 1, 'Enter in a search form submits');
+});
+
+test('input landing in a cross-origin frame needs approval; an unreadable point fails closed only on a commit page', async () => {
+  const frame = fixture({ probe: { frame: true } });
+  await assert.rejects(frame.perform({ action: 'click', x: 100, y: 100 }), /commit_required: a click here lands in a cross-origin frame/);
+  await assert.rejects(frame.perform({ action: 'press', key: 'Enter' }), /commit_required: pressing Enter here lands in a cross-origin frame/);
+  await assert.rejects(frame.perform({ action: 'drag', ref: 'e1', toX: 300, toY: 300 }), /cross-origin frame/, 'a drag judges where it drops');
+  assert.deepEqual(dispatched(frame), []);
+  await approved(frame, { action: 'click', x: 100, y: 100 });
+  const blank = fixture({ probe: null, page: PAGE_WITH_ORDER });
+  await assert.rejects(blank.perform({ action: 'click', x: 100, y: 100 }), /where the app cannot read the page here could set off "Place order"/);
+  const quiet = fixture({ probe: null });
+  await quiet.perform({ action: 'click', x: 100, y: 100 });
+  const named = fixture({ probe: { names: ['Place order'], field: false, form: null } });
+  await assert.rejects(named.perform({ action: 'double_click', x: 100, y: 100 }), /commit_required: "Place order"/, 'a coordinate is hit-tested to its control');
+});
+
+test('an approval counts once, within 120s, on its own tab and epoch, and a bad one refuses the action', async () => {
+  let clock = 1_000_000;
+  const f = fixture({ now: () => clock, found: { look: { names: ['Buy now'], field: false, form: null } } });
+  const once = approvalFor(f, { issuedAt: clock });
+  await approved(f, { action: 'click', ref: 'e1' }, once);
+  await assert.rejects(approved(f, { action: 'click', ref: 'e1' }, once), err => err.status === 403 && /^approval_invalid: the approval was already used/.test(err.message));
+  clock += 121000;
+  await assert.rejects(approved(f, { action: 'click', ref: 'e1' }, approvalFor(f, { issuedAt: clock - 120001 })), /expired/);
+  await assert.rejects(approved(f, { action: 'click', ref: 'e1' }, approvalFor(f, { issuedAt: clock + 6000 })), /expired/, 'a clock far ahead is not trusted');
+  await approved(f, { action: 'click', ref: 'e1' }, approvalFor(f, { issuedAt: clock + 4000 }));
+  await assert.rejects(approved(f, { action: 'click', ref: 'e1' }, approvalFor(f, { issuedAt: clock, epoch: 2 })), /another tab or control epoch/);
+  await assert.rejects(approved(f, { action: 'click', ref: 'e1' }, approvalFor(f, { issuedAt: clock, tabId: 'tab-2' })), /another tab or control epoch/);
+  for (const bad of [null, 'yes', { nonce: 'short', kind: 'purchase', summary: 's', issuedAt: clock }, approvalFor(f, { kind: 'shopping' }), approvalFor(f, { summary: 'x'.repeat(201) }), approvalFor(f, { issuedAt: 'now' })])
+    assert.throws(() => f.agent.approve(f.tab, { approval: bad }), /approval_invalid: approval needs/);
+  const body = { action: 'click', ref: 'e1', [APPROVED]: true };
+  assert.equal(body[APPROVED], true, 'only approve() sets the mark; JSON cannot carry a symbol key');
+  assert.equal(JSON.parse(JSON.stringify(body))[APPROVED], undefined);
+});
+
+test('page scripts, acting DevTools calls, reloads and action addresses are refused while the page shows a commit control', async () => {
+  const live = fixture({ page: PAGE_WITH_ORDER });
+  const refuse = (body, pattern) => assert.rejects(live.agent.guard(live.tab, body), pattern, JSON.stringify(body));
+  await refuse({ action: 'eval', code: '1' }, /commit_required: a page script here could set off "Place order"/);
+  for (const method of ['Runtime.evaluate', 'Runtime.callFunctionOn', 'Input.dispatchMouseEvent', 'DOM.setAttributeValue'])
+    await refuse({ action: 'cdp', method }, new RegExp(`the DevTools call ${method.replace('.', '\\.')} here`));
+  await refuse({ action: 'reload' }, /reloading here could resubmit/);
+  await refuse({ action: 'cdp', method: 'Page.reload' }, /reloading here could resubmit/);
+  await refuse({ action: 'navigate', url: 'https://shop.example/checkout/complete' }, /looks like an address that confirms/);
+  await refuse({ action: 'cdp', method: 'Page.navigate', params: { url: 'shop.example/orders/7/delete' } }, /looks like an address/);
+  for (const body of [{ action: 'cdp', method: 'DOM.getDocument' }, { action: 'cdp', method: 'Accessibility.getFullAXTree' }, { action: 'cdp', method: 'Emulation.setDeviceMetricsOverride' },
+    { action: 'navigate', url: 'https://other.example/checkout/complete' }, { action: 'navigate', url: 'https://shop.example/maps/place/x' }, { action: 'read' }, { action: 'wait', text: 'x' },
+    { action: 'cdp', method: 'Page.addScriptToEvaluateOnNewDocument' }, { action: 'eval', code: '1', [APPROVED]: true }])
+    await live.agent.guard(live.tab, body);
+  const quiet = fixture();
+  await quiet.agent.guard(quiet.tab, { action: 'eval', code: '1' });
+  await quiet.agent.guard(quiet.tab, { action: 'reload' });
+  const silent = fixture({ page: 'no answer' });
+  await assert.rejects(silent.agent.guard(silent.tab, { action: 'eval', code: '1' }), /did not answer the commit check/, 'a page that does not answer fails closed for scripts');
+  await silent.agent.guard(silent.tab, { action: 'navigate', url: 'https://shop.example/pay' });
+});
+
+test('a key is judged by the element that holds focus, not by a target that could not take it', async () => {
+  const f = fixture({ found: { look: { names: ['Shipping notes'], field: false, form: null } }, probe: { names: ['Pay now'], field: false, form: null } });
+  await assert.rejects(f.perform({ action: 'press', ref: 'e1', key: 'Enter' }), /commit_required: "Pay now"/);
+  assert.equal(f.calls.filter(call => call.type === 'keyDown').length, 0);
+});
+
+test('a key aimed at a CAPTCHA answers challenge_present before the commit check', async () => {
+  const f = fixture({ probe: { frame: true }, challenge: { kind: 'recaptcha' }, page: PAGE_WITH_ORDER });
+  f.tab.challengeLog = { on: 'recaptcha' };
+  await assert.rejects(f.perform({ action: 'press', key: 'Enter' }), err => err.code === 'challenge_present');
+  assert.deepEqual(dispatched(f), []);
+});
+
+test('a page script that sets up later work or submits on its own needs approval on any page', async () => {
+  const quiet = fixture();
+  for (const code of ['setInterval(() => document.querySelector("#place")?.click(), 500)', 'setTimeout(go, 9)', 'new MutationObserver(go).observe(document, { subtree: true })', 'fetch("/orders", { method: "POST" })',
+    'new XMLHttpRequest()', 'document.forms[0].requestSubmit()', 'document.forms[0].submit()', 'document.body.addEventListener("click", go)', 'button.onclick = go', 'a.href = "JavaScript:go()"', 'new Function("go()")()', 'navigator.sendBeacon("/x")'])
+    await assert.rejects(quiet.agent.guard(quiet.tab, { action: 'eval', code }), /commit_required: a page script that uses .* can act after this check/, code);
+  for (const [method, params] of [['Runtime.evaluate', { expression: 'setTimeout(go, 9)' }], ['Runtime.callFunctionOn', { functionDeclaration: 'function () { this.requestSubmit(); }' }], ['DOM.setAttributeValue', { nodeId: 3, name: 'onclick', value: 'go()' }], ['DOM.setOuterHTML', { nodeId: 3, outerHTML: '<img src=x onerror=go()>' }]])
+    await assert.rejects(quiet.agent.guard(quiet.tab, { action: 'cdp', method, params }), /commit_required: the DevTools call .* that uses/, method);
+  for (const code of ['document.title', '[...document.querySelectorAll("li")].map(li => li.textContent)', '(() => { function f(x) { return x; } return typeof f === "function"; })()', 'document.querySelector("button[type=submit]").textContent', 'typeof f.onsubmit'])
+    await quiet.agent.guard(quiet.tab, { action: 'eval', code });
+  await quiet.agent.guard(quiet.tab, { action: 'eval', code: 'setTimeout(go, 9)', [APPROVED]: true });
+});
+
+// The receipt alans-way-agents #89 (1515ce6, settleApproval) attaches to the
+// one forward the user approved, built the same way.
+test('the router\'s approval receipt is accepted once, for its tab and epoch', async () => {
+  const f = fixture({ found: { look: { names: ['Place order'], field: false, form: null } } });
+  const entry = { commit: { kind: 'purchase', summary: 'x'.repeat(200) }, bound: { tabId: f.tab.id, epoch: f.tab.epoch } };
+  const receipt = { nonce: require('node:crypto').randomUUID(), kind: entry.commit.kind, summary: entry.commit.summary, issuedAt: Date.now(), tabId: entry.bound.tabId, epoch: entry.bound.epoch };
+  await approved(f, { action: 'click', name: 'Place order' }, receipt);
+  assert.equal(pointer(f).filter(call => call.type === 'mousePressed').length, 1);
+  await assert.rejects(approved(f, { action: 'click', name: 'Place order' }, receipt), /already used/);
+});
+
+test('Enter in a field outside a form, or in a form with no named submit, is judged by the page', async () => {
+  for (const form of [null, []]) {
+    const field = { names: ['Message'], field: true, form };
+    const live = fixture({ found: { look: field }, probe: field, page: { origin: 'https://chat.example', names: ['Delete conversation'] } });
+    await assert.rejects(live.perform({ action: 'press', ref: 'e1', key: 'Enter' }), new RegExp(`commit_required: pressing Enter in ${form ? 'a form with no named submit control' : 'a field outside a form'} here could set off "Delete conversation"`));
+    assert.deepEqual(dispatched(live), []);
+    const quiet = fixture({ found: { look: field }, probe: field, page: { origin: 'https://chat.example', names: ['Search'] } });
+    await quiet.perform({ action: 'press', ref: 'e1', key: 'Enter' });
+    assert.equal(quiet.calls.filter(call => call.type === 'keyDown').length, 1, 'a page with no commit control lets Enter through');
+  }
+});
+
+
+test('dry approval checks preserve the receipt for one real dispatch', async () => {
+  const f = fixture();
+  const approval = approvalFor(f);
+  f.tab.preflight = true;
+  f.agent.approve(f.tab, { approval });
+  f.agent.approve(f.tab, { approval });
+  f.tab.preflight = false;
+  f.agent.approve(f.tab, { approval });
+  assert.throws(() => f.agent.approve(f.tab, { approval }), /already used/);
+});
+
+test('only a dry-validated receipt carries across one takeover, retaining nonce/tab/epoch binding', () => {
+  const f = fixture();
+  const receipt = approvalFor(f);
+  const body = { approval: receipt };
+  assert.throws(() => f.agent.carryApproval(f.tab, body, 1), /another tab or control epoch/);
+  f.tab.preflight = true;
+  f.agent.approve(f.tab, { approval: receipt });
+  f.tab.preflight = false;
+  assert.throws(() => f.agent.carryApproval({ ...f.tab }, body, 1), /another tab or control epoch/);
+  assert.throws(() => f.agent.carryApproval(f.tab, { approval: { ...receipt } }, 1), /another tab or control epoch/);
+  f.tab.epoch = 2;
+  assert.throws(() => f.agent.carryApproval(f.tab, body, 1), /another tab or control epoch/);
+  f.tab.epoch = 1;
+  f.agent.carryApproval(f.tab, body, 1);
+  f.tab.epoch = 3;
+  assert.throws(() => f.agent.approve(f.tab, body), /another tab or control epoch/);
+  f.tab.epoch = 2;
+  assert.throws(() => f.agent.approve(f.tab, { approval: receipt }), /another tab or control epoch/, 'JSON cannot carry the internal transfer');
+  f.agent.approve(f.tab, body);
+  assert.throws(() => f.agent.approve(f.tab, body), /already used|another tab or control epoch/);
+});
+
+test('a receipt expiring after dry validation is still refused at takeover', () => {
+  const f = fixture(); let clock = Date.now();
+  f.agent = createAgentInput({ command: async () => ({}), requireActor, now: () => clock });
+  const approval = approvalFor(f, { issuedAt: clock });
+  f.tab.preflight = true; f.agent.approve(f.tab, { approval });
+  f.tab.preflight = false;
+  clock += 120001;
+  assert.throws(() => f.agent.carryApproval(f.tab, { approval }, 1), /expired/);
 });

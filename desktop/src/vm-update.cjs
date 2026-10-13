@@ -14,7 +14,9 @@ const { isNewer } = require('./mac-update.cjs');
 const TAG_RE = /^v\d+\.\d+\.\d+$/;
 const SSH_OPTIONS = ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes'];
 const VM_TIMEOUT_MS = 300000;
-const CHECK_TIMEOUT_MS = 30000;
+// The check also asks Hermes for its version, `update --check` (a git fetch)
+// and gateway status, which took 15s on a live server.
+const CHECK_TIMEOUT_MS = 90000;
 // The whole Check setup run should stay under two minutes: the reach probe
 // (15s) and the platform probe in guestKind (10s) run before this, so the
 // doctor cap keeps the worst case at ~115s. The guest-side doctor budget
@@ -24,8 +26,15 @@ const DOCTOR_TIMEOUT_MS = 90000;
 // not reliably kill a piped `sh -s` (no TTY, no SIGHUP), so where timeout(1)
 // exists the guest run terminates instead of orphaning an npm ci.
 const VM_TIMEOUT_REMOTE_S = 285;
+const HERMES_UPDATE_TIMEOUT_MS = 300000;
+const HERMES_UPDATE_REMOTE_S = 285;
 const SNOOZE_MS = 24 * 60 * 60 * 1000;
 const SCRIPTS = { posix: 'vm-update.sh', windows: 'vm-update.ps1' };
+const HERMES_UPDATE_SCRIPTS = { posix: 'hermes-update.sh', windows: 'hermes-update.ps1' };
+
+// A Hermes on the app's own machine (no saved server) runs the same scripts
+// through the local shell instead of ssh.
+const LOCAL_TARGET = Object.freeze({ id: 'local', label: 'this computer', local: true });
 
 const tail = (text) => String(text || '').trim().split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 300);
 
@@ -46,9 +55,9 @@ function parseResultLine(output) {
   return null;
 }
 
-function defaultRun(bin, args, { input, timeoutMs = 45000, onStdout } = {}) {
+function defaultRun(bin, args, { input, timeoutMs = 45000, onStdout, verbatim = false } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { timeout: timeoutMs });
+    const child = spawn(bin, args, { timeout: timeoutMs, windowsVerbatimArguments: verbatim });
     let out = '', err = '';
     child.stdout.on('data', (c) => {
       if (out.length < 40000) out += c;
@@ -65,39 +74,58 @@ const defaultReadScript = (name) => fs.readFileSync(path.join(__dirname, '..', '
 
 function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log = () => {} } = {}) {
   const ssh = (host, remote, opts) => run('ssh', [...SSH_OPTIONS, host, remote], opts);
+  // The remote command is what sshd would hand the guest's shell; locally the
+  // same string goes to sh, or to cmd with the whole line quoted once more so
+  // /s strips only that outer pair and the inner cmd /c line stays intact.
+  const exec = (vm, remote, opts) => !vm.local ? ssh(String(vm.sshHost || '').trim(), remote, opts)
+    : process.platform === 'win32' ? run(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${remote}"`], { ...opts, verbatim: true })
+    : run('/bin/sh', ['-c', remote], opts);
 
   // A saved scriptPath ending in a drive letter means the guest runs Windows
   // (setup schedules tasks there); a POSIX path means sh. Without one, node
   // is guaranteed on the guest because the services run it.
   async function guestKind(vm) {
+    if (vm.local) return process.platform === 'win32' ? 'windows' : 'posix';
     if (/^[A-Za-z]:/.test(vm.scriptPath || '')) return 'windows';
     if ((vm.scriptPath || '').startsWith('/')) return 'posix';
     const probe = await ssh(vm.sshHost, 'node -p process.platform', { timeoutMs: 10000 });
     return /win32/.test(probe.out) ? 'windows' : 'posix';
   }
 
-  function remoteFor(kind, { tag, check, doctor }) {
+  function remoteFor(kind, { tag, check, doctor, hermesUpdate, plugins }) {
     if (kind === 'windows') {
-      const setting = check ? 'ALANS_WAY_VM_CHECK=1' : `ALANS_WAY_VM_TAG=${tag}`;
       // cmd exists under every Windows sshd shell (cmd, PowerShell, Git Bash).
+      if (hermesUpdate) return { script: HERMES_UPDATE_SCRIPTS.windows, remote: 'cmd /d /c "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command -"' };
+      const setting = check ? 'ALANS_WAY_VM_CHECK=1' : plugins ? 'ALANS_WAY_VM_PLUGINS=1' : `ALANS_WAY_VM_TAG=${tag}`;
       return { script: SCRIPTS.windows, remote: `cmd /d /c "set ${setting}&& powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command -"` };
+    }
+    if (hermesUpdate) {
+      const timeoutJson = `printf '%s\\n' '{"ok":false,"version":"","updated":false,"error":"the update timed out on the VM","messaged":false,"messages":[]}'`;
+      return { script: HERMES_UPDATE_SCRIPTS.posix,
+        remote: `if command -v timeout >/dev/null 2>&1; then timeout ${HERMES_UPDATE_REMOTE_S} sh -s; rc=$?; if [ "$rc" -eq 124 ]; then ${timeoutJson}; fi; exit "$rc"; else exec sh -s; fi` };
     }
     if (doctor) return { script: SCRIPTS.posix, remote: 'sh -s -- --doctor' };
     if (check) return { script: SCRIPTS.posix, remote: 'sh -s -- --check' };
+    const args = plugins ? '--plugins' : tag;
     const timeoutJson = `printf '%s\\n' '{"ok":false,"version":"","restarted":false,"error":"the update timed out on the VM"}'`;
     return { script: SCRIPTS.posix,
-      remote: `if command -v timeout >/dev/null 2>&1; then timeout ${VM_TIMEOUT_REMOTE_S} sh -s -- ${tag}; rc=$?; if [ "$rc" -eq 124 ]; then ${timeoutJson}; fi; exit "$rc"; else exec sh -s -- ${tag}; fi` };
+      remote: `if command -v timeout >/dev/null 2>&1; then timeout ${VM_TIMEOUT_REMOTE_S} sh -s -- ${args}; rc=$?; if [ "$rc" -eq 124 ]; then ${timeoutJson}; fi; exit "$rc"; else exec sh -s -- ${args}; fi` };
   }
 
-  async function runGuest(vm, { tag, check = false, doctor = false, timeoutMs = VM_TIMEOUT_MS, onProgress } = {}) {
-    const host = String(vm.sshHost || '').trim();
-    if (!isSshTarget(host)) return { ok: false, state: 'failed', error: 'The saved VM SSH address is invalid. Re-enter it as user@host or host.' };
-    if (!check && !doctor && !TAG_RE.test(String(tag))) return { ok: false, state: 'failed', error: `Refusing non-release tag "${tag}".` };
+  // `vars` become shell (or $env:) assignments ahead of the piped script, so
+  // values reach it without touching the remote command line. Values are
+  // reduced to plain text first; nothing in them can quote its way out.
+  async function runGuest(vm, { tag, check = false, doctor = false, hermesUpdate = false, plugins = false, vars = {}, timeoutMs = VM_TIMEOUT_MS, onProgress } = {}) {
+    if (!vm.local && !isSshTarget(String(vm.sshHost || '').trim())) return { ok: false, state: 'failed', error: 'The saved VM SSH address is invalid. Re-enter it as user@host or host.' };
+    if (!check && !doctor && !hermesUpdate && !plugins && !TAG_RE.test(String(tag))) return { ok: false, state: 'failed', error: `Refusing non-release tag "${tag}".` };
     const kind = await guestKind(vm);
     if (doctor && kind === 'windows') return { ok: false, error: 'windows' };
-    const { script, remote } = remoteFor(kind, { tag, check, doctor });
+    const { script, remote } = remoteFor(kind, { tag, check, doctor, hermesUpdate, plugins });
     let text;
     try { text = readScript(script); } catch { return { ok: false, state: 'failed', error: `The bundled ${script} is missing; reinstall the app.` }; }
+    const prelude = Object.entries(vars).map(([name, value]) => kind === 'windows'
+      ? `$env:${name} = '${plainText(value)}'\n` : `${name}='${plainText(value)}'\n`).join('');
+    text = prelude + text;
     // The guest script narrates phases as "vm-update: <text>" lines; forward the
     // ones that map to UI text so the popup can say what it is doing.
     let pending = '';
@@ -110,7 +138,7 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
         if (mapped) onProgress(vm.id, mapped);
       }
     } : undefined;
-    const res = await ssh(host, remote, { input: text, timeoutMs, onStdout });
+    const res = await exec(vm, remote, { input: text, timeoutMs, onStdout });
     const result = parseResultLine(res.out) || {};
     if (doctor && !Object.keys(result).length) return { ok: false, error: res.code === null ? 'The server check ran out of time.'
       : `The server check stopped without a report: ${tail(`${res.out}\n${res.err}`) || `exit ${res.code}`}` };
@@ -122,13 +150,15 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
   // Every result carries the target's id/label: callers key per-VM progress
   // and the persistent prefs.vmUpdates retry record off result.id directly,
   // whether the result came from updateVm or updateAll.
-  async function updateVm(vm, tag, onProgress) {
+  // `pluginsOnly` runs just the Hermes plugin phase (vm-update --plugins): no
+  // tag, no browser host checkout needed, so it also works on a local Hermes.
+  async function updateVm(vm, tag, onProgress, { pluginsOnly = false } = {}) {
     try {
-      const result = await runGuest(vm, { tag, onProgress });
+      const result = await runGuest(vm, { tag, plugins: pluginsOnly, onProgress });
       const plugins = Array.isArray(result.plugins) ? result.plugins : [];
       const gatewayRestarted = result.gatewayRestarted === true;
       const gatewayRestartCmd = result.gatewayRestartCmd;
-      if (result.ok === true) return { id: vm.id, label: vm.label, ok: true, state: 'ok', version: String(result.version || tag.replace(/^v/, '')),
+      if (result.ok === true) return { id: vm.id, label: vm.label, ok: true, state: 'ok', version: String(result.version || String(tag || '').replace(/^v/, '')),
         plugins, gatewayRestarted, pluginLines: vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd }) };
       const error = String(result.error || 'The VM update failed without a reason.');
       return { id: vm.id, label: vm.label, ok: false, state: error === 'busy' ? 'busy' : 'failed', version: String(result.version || ''), error: error === 'busy' ? 'VM busy, will retry' : error,
@@ -139,11 +169,36 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
     }
   }
 
+  // The settings "Update Hermes" button: `hermes update` on the guest, then
+  // each profile's bot messages the user through `hermes send`. The guest
+  // script reports both halves in one JSON result; a message that could not
+  // be sent never masks the update outcome.
+  // `quiet` updates without the message; `report` skips the update and only
+  // sends that text. "Update everything" uses both to message once at the end.
+  async function hermesUpdateVm(vm, { quiet = false, report = '' } = {}) {
+    try {
+      const vars = report ? { ALANS_WAY_HERMES_REPORT: report } : quiet ? { ALANS_WAY_HERMES_QUIET: '1' } : {};
+      const result = await runGuest(vm, { hermesUpdate: true, vars, timeoutMs: HERMES_UPDATE_TIMEOUT_MS });
+      const messages = (Array.isArray(result.messages) ? result.messages : [])
+        .map((m) => ({ profile: String(m?.profile || ''), sent: m?.sent === true, error: String(m?.error || '') }));
+      const base = { version: String(result.version || ''), updated: result.updated === true,
+        messaged: result.messaged === true || messages.some((m) => m.sent), messages,
+        gatewayRestarted: result.gatewayRestarted === true };
+      if (result.ok === true) return { ok: true, state: 'ok', error: '', ...base };
+      return { ok: false, state: 'failed', error: String(result.error || 'The Hermes update failed without a reason.'), ...base };
+    } catch (error) {
+      log('hermes-update', error);
+      return { ok: false, state: 'failed', error: tail(error.message) || 'The Hermes update failed.', version: '', updated: false, messaged: false, messages: [], gatewayRestarted: false };
+    }
+  }
+
   async function checkVm(vm) {
     try {
       const result = await runGuest(vm, { check: true, timeoutMs: CHECK_TIMEOUT_MS });
       if (result.ok !== true) return { ok: false, error: String(result.error || 'check failed') };
-      return { ok: true, version: String(result.version || ''), hostVersion: String(result.hostVersion || ''), busy: result.busy === true };
+      return { ok: true, version: String(result.version || ''), hostVersion: String(result.hostVersion || ''), busy: result.busy === true,
+        hermesVersion: String(result.hermesVersion || ''), hermesCheck: String(result.hermesCheck || ''),
+        pluginVersion: String(result.pluginVersion || ''), gatewayRunning: typeof result.gatewayRunning === 'boolean' ? result.gatewayRunning : null };
     } catch (error) {
       log('vm-check', error);
       return { ok: false, error: tail(error.message) || 'check failed' };
@@ -173,12 +228,28 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
     return { vms, app };
   }
 
-  return { updateVm, checkVm, doctorVm, updateAll, updateAppAndVms };
+  const updatePluginsVm = (vm, onProgress) => updateVm(vm, '', onProgress, { pluginsOnly: true });
+
+  return { updateVm, updatePluginsVm, hermesUpdateVm, checkVm, doctorVm, updateAll, updateAppAndVms };
 }
 
 function shouldShowUpdatePopup({ available, snoozedUntil, now, busy } = {}) {
   return Boolean(available) && !busy && Number(now) >= Number(snoozedUntil || 0);
 }
+
+// One lock for every path that mutates the agent machines: the app update
+// flow (update.busy), a VM update retry (vmRetrying), a manual `hermes
+// update` (hermesUpdating) and "Update everything" (updatingAll) all stop/start
+// the same gateways and plugin trees. Every entry point checks the whole
+// lock; a partial check is how two update paths end up running on the same
+// machine at once.
+function updateLocked({ updateBusy = false, vmRetrying = false, hermesUpdating = false, updatingAll = false } = {}) {
+  return Boolean(updateBusy || vmRetrying || hermesUpdating || updatingAll);
+}
+
+// Text that can sit inside single quotes in sh and PowerShell, and survive
+// cmd: letters, digits, spaces and plain punctuation only.
+const plainText = (value) => String(value || '').replace(/[^A-Za-z0-9 .,:;()+\/-]/g, '').slice(0, 300);
 const snoozeUntil = (now) => Number(now) + SNOOZE_MS;
 
 // The persistent banner shown after relaunch while any saved VM still runs an
@@ -247,6 +318,22 @@ function pluginStatusText(p, { qualified = false } = {}) {
   }
 }
 
+// One settings line for a hermesUpdateVm result. The message half is always
+// reported alongside the update outcome: the button's promise is that the bot
+// tells the user, so a send that could not happen must be said out loud.
+function hermesUpdateDetail(result, label) {
+  const where = label ? ` on the ${label}` : '';
+  const messaged = result?.messaged === true;
+  if (result?.ok) {
+    const what = result.updated === false ? 'Hermes is already up to date' : `Hermes updated${result.version ? ` to v${result.version}` : ''}`;
+    if (messaged) return `${what}${where}; your bot messaged you on Telegram.`;
+    const first = (result.messages || []).find((m) => !m.sent && m.error)?.error || '';
+    return `${what}${where}, but the bot could not message you${first ? `: ${first}` : ' (no Hermes profile answered)'}`;
+  }
+  const err = String(result?.error || 'The Hermes update failed.');
+  return messaged ? `${err} Your bot still messaged you.` : err;
+}
+
 // The plugin lines shown under a VM's update result, plus a warning when new
 // plugin code never got loaded because the gateway restart did not finish.
 // Plugin problems are warnings; they never change the VM's ok/failed state.
@@ -266,4 +353,4 @@ function vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd } = {}) {
   return lines;
 }
 
-module.exports = { createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, vmPhaseText, pluginStatusText, vmPluginLines, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS, DOCTOR_TIMEOUT_MS, TAG_RE };
+module.exports = { createVmUpdater, vmTargets, LOCAL_TARGET, plainText, parseResultLine, shouldShowUpdatePopup, updateLocked, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, vmPhaseText, pluginStatusText, vmPluginLines, hermesUpdateDetail, VM_TIMEOUT_MS, CHECK_TIMEOUT_MS, DOCTOR_TIMEOUT_MS, HERMES_UPDATE_TIMEOUT_MS, TAG_RE };

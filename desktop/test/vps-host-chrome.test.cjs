@@ -9,6 +9,10 @@ const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
+const crypto = require('node:crypto');
+// Test harness scripts that use timers or requests carry an approval, as a
+// router-approved call would (see the app's commit check).
+const harnessApproval = (tab, epoch = tab.epoch) => ({ nonce: crypto.randomUUID(), kind: 'submit', summary: 'test harness script', issuedAt: Date.now(), tabId: tab.id, epoch });
 
 function findChrome() {
   const home = os.homedir();
@@ -119,6 +123,9 @@ before(async () => {
     '/alert': page(`<button id=b onclick="alert('hello there');document.title='after'">b</button>`),
     '/shadow': page(`<x-btn></x-btn><script>customElements.define('x-btn', class extends HTMLElement { connectedCallback() { const r = this.attachShadow({ mode: 'open' }); r.innerHTML = '<button>Shadow Go</button>'; r.querySelector('button').onclick = () => { document.title = 'shadow-clicked'; }; } });</script>`),
     '/confirm': page(`<button id=b onclick="document.title = confirm('Delete everything?') ? 'yes' : 'no'">b</button>`),
+    '/captcha-order': page(`<form><div class="g-recaptcha"><iframe id="w" title="reCAPTCHA" width="304" height="78" style="position:fixed;left:20px;top:200px;border:0"></iframe><textarea name="g-recaptcha-response" style="display:none"></textarea></div><button id="po" type="submit">Place order</button></form><script>w.src='http://127.0.0.1:'+location.port+'/recaptcha/api2/anchor?k=x&size=normal'</script>`),
+    '/captcha-form': page(`<form><div class="g-recaptcha"><iframe title="reCAPTCHA" width="304" height="78" src="/recaptcha/api2/anchor?k=x&size=normal"></iframe><textarea name="g-recaptcha-response" style="display:none"></textarea></div><button id=b type=button onclick="document.title='other'">Other</button></form>`),
+    '/sorry/index': page(`<title>unusual traffic</title><form id="captcha-form" action="index" method="post"><div class="g-recaptcha"><iframe width="304" height="78" src="/recaptcha/api2/anchor?k=x&size=normal"></iframe></div></form><p>Our systems have detected unusual traffic from your computer network.</p>`),
     '/readonly': page(`<input id=d readonly value=x><script>d.addEventListener('keydown', (e) => { if (e.key === 'Enter') document.title = 'entered'; });</script>`),
     '/i.png': (res) => { res.setHeader('content-type', 'image/png'); res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')); },
   };
@@ -212,13 +219,13 @@ test('real Chromium: an agent page cannot reach loopback or metadata by redirect
 
   const ok = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/ok` })).data;
   // open answers once the page is readable, so wait for its load event before counting images.
-  const loadedImages = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: "new Promise((r) => document.readyState === 'complete' ? r() : addEventListener('load', r)).then(() => [...document.images].filter((i) => i.complete && i.naturalWidth).length)", epoch: ok.epoch });
+  const loadedImages = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: "new Promise((r) => document.readyState === 'complete' ? r() : addEventListener('load', r)).then(() => [...document.images].filter((i) => i.complete && i.naturalWidth).length)", epoch: ok.epoch, approval: harnessApproval(ok) });
   assert.equal(loadedImages.data.value, 3, 'ordinary subresources still load through the filter');
   const viaEval = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: `location.href='http://u@127.0.0.1:${pb}/secret?eval';1`, epoch: ok.epoch });
   assert.equal(viaEval.status, 200);
   // The probe's own request passes through the same Fetch check that stopped
   // the navigation, so its rejection is the awaited proof the guard ran.
-  const probe = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: `fetch('http://127.0.0.1:${pb}/secret?eval-probe',{mode:'no-cors'}).then(function(){return 'reached'},function(){return 'denied'})`, epoch: ok.epoch });
+  const probe = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: `fetch('http://127.0.0.1:${pb}/secret?eval-probe',{mode:'no-cors'}).then(function(){return 'reached'},function(){return 'denied'})`, epoch: ok.epoch, approval: harnessApproval(ok) });
   assert.equal(probe.data && probe.data.value, 'denied', `the request guard did not stop the probe: ${JSON.stringify(probe.data)}`);
   assert.deepEqual(hits.filter((h) => !h.startsWith('UPGRADE ')), [], 'script navigation is stopped too');
 });
@@ -404,4 +411,85 @@ test('real Chromium: a confirm is dismissed, never approved on the agent\'s beha
   assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
   assert.deepEqual(clicked.data.dialogs.map((d) => [d.type, d.message, d.accepted]), [['confirm', 'Delete everything?', false]]);
   assert.equal(await title(tab), 'no');
+});
+
+test('real Chromium: input aimed at a CAPTCHA on a page with a commit control is the person\'s, not an approval\'s', { skip: skipNoChrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/captcha-order` })).data;
+  for (const [body, what] of [
+    [{ action: 'cdp', method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: 60, y: 230, button: 'left', clickCount: 1 } }, 'raw DevTools input'],
+    [{ action: 'click', x: 60, y: 230 }, 'a click by position'],
+    [{ action: 'click', selector: '#w' }, 'a click on the widget frame'],
+  ]) {
+    const reply = await act(tab, body);
+    assert.equal(reply.status, 409, `${what}: ${JSON.stringify(reply.data)}`);
+    assert.match(reply.data.error, /^challenge_present/, what);
+  }
+  const order = await act(tab, { action: 'click', name: 'Place order' });
+  assert.equal(order.status, 403, JSON.stringify(order.data));
+  assert.match(order.data.error, /^commit_required: "Place order"/);
+});
+
+test('real Chromium: a CAPTCHA on a VM tab is refused to the bot, handed to the person with the viewer, and handed back once it clears', { skip: skipNoChrome, timeout: 60000 }, async () => {
+  const h = await spawnHost({ ALANS_WAY_VIEWER_URL: 'http://192.0.2.9:6080/vnc.html?autoconnect=1&password=hunter2' });
+  const ha = (route, method, body, opts) => h.api(route, method, body, { bot: 'own-bot', ...opts });
+  let tab = (await ha('/v1/tabs', 'POST', { url: `http://test.example:${pa}/captcha-form` })).data;
+  const snap = await ha(`/v1/tabs/${tab.id}/snapshot`);
+  assert.deepEqual(snap.data.challenge, { kind: 'recaptcha', blocking: false }, 'a widget in a form is reported, not handed over');
+  assert.equal(snap.data.tab.controller, 'agent');
+  const widget = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: 'iframe', epoch: tab.epoch });
+  assert.equal(widget.status, 409);
+  assert.match(widget.data.error, /^challenge_present: .*reason "captcha"/);
+  // Page script could click the widget itself, so it is refused while one is on the page.
+  const script = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: `document.querySelector('iframe').getBoundingClientRect().top`, epoch: tab.epoch });
+  assert.equal(script.status, 409); assert.equal(script.data.code, 'challenge_present');
+  // Raw CDP is held to read-only methods while the widget is there.
+  for (const [method, params] of [['Runtime.evaluate', { expression: '1' }], ['Runtime.callFunctionOn', { functionDeclaration: 'function () {}' }], ['Page.setDocumentContent', { frameId: 'x', html: '<script>parent.document.title = "written"</script>' }], ['DOM.setOuterHTML', { nodeId: 1, outerHTML: '<p></p>' }]]) {
+    const refused = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'cdp', method, params, epoch: tab.epoch });
+    assert.equal(refused.status, 409, method); assert.equal(refused.data.code, 'challenge_present', method);
+  }
+  assert.equal((await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'cdp', method: 'DOM.getDocument', params: {}, epoch: tab.epoch })).status, 200, 'reads still work');
+  const viewerCdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+  const box = await (await viewerCdp.page(tab.targetId)).executeJavaScript(`(() => { const r = document.querySelector('iframe').getBoundingClientRect(); return { x: r.left + 20, y: r.top + 20 }; })()`);
+  const raw = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'cdp', method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', ...box, button: 'left', clickCount: 1 }, epoch: tab.epoch });
+  assert.equal(raw.status, 409, 'raw input on the widget is refused too');
+  assert.match(raw.data.error, /^challenge_present/);
+  const touch = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'cdp', method: 'Input.dispatchTouchEvent', params: { type: 'touchStart', touchPoints: [box] }, epoch: tab.epoch });
+  assert.equal(touch.status, 409, 'a raw touch on the widget is refused too');
+  const typed = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'type', selector: 'iframe', text: 'x', epoch: tab.epoch });
+  assert.match(typed.data.error, /^challenge_present/);
+  const other = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#b', epoch: tab.epoch });
+  assert.equal(other.status, 200, JSON.stringify(other.data));
+
+  // A whole-page check is handed over at once, with the viewer and no secrets.
+  const gated = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'navigate', url: `http://test.example:${pa}/sorry/index`, epoch: tab.epoch });
+  assert.equal(gated.status, 200, JSON.stringify(gated.data));
+  assert.deepEqual(gated.data.challenge, { kind: 'google_sorry', blocking: true });
+  assert.equal(gated.data.tab.controller, 'human');
+  assert.equal(gated.data.tab.handback.state, 'awaiting_human');
+  assert.equal(gated.data.tab.handback.reason, 'captcha');
+  assert.match(gated.data.tab.handback.note, /Google "unusual traffic" check on test\.example/);
+  assert.equal(gated.data.tab.handback.viewerUrl, 'http://192.0.2.9:6080/vnc.html?autoconnect=1');
+  assert.equal(JSON.stringify(gated.data).includes('hunter2'), false);
+  const claim = await ha(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' });
+  assert.equal(claim.status, 409);
+  assert.match(claim.data.error, /^awaiting_human/);
+  assert.equal((await ha(`/v1/tabs/${tab.id}/snapshot`)).status, 409);
+
+  // The person solves it in the viewer and the page moves on; the tab comes back.
+  try { await (await viewerCdp.page(gated.data.tab.targetId)).executeJavaScript(`location.href = '/ok'`); } finally { viewerCdp.socket.close(); }
+  const back = await until(async () => { const t = (await ha(`/v1/tabs/${tab.id}`)).data; return t.controller === 'agent' && t; }, 20000);
+  assert.ok(back, 'the tab returned to the bot');
+  assert.equal(back.handback.state, 'human_returned');
+  assert.equal(back.handback.resumed, 'auto');
+  assert.ok(back.epoch > gated.data.tab.epoch, 'the give-back moves the epoch on');
+  const stale = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'read', epoch: gated.data.tab.epoch });
+  assert.match(stale.data.error, /^human_returned/);
+  const cleared = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: '1 + 1', epoch: back.epoch });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.data)); assert.equal(cleared.data.value, 2, 'page script works again once the check is gone');
+
+  // A second challenge from the same site within ten minutes: back off.
+  const again = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'navigate', url: `http://test.example:${pa}/sorry/index?again`, epoch: back.epoch });
+  assert.equal(again.status, 200, JSON.stringify(again.data));
+  assert.equal(again.data.challenge.backOff, true);
+  assert.match(again.data.challenge.advice, /Stop retrying it and use another source/);
 });

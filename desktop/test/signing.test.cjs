@@ -58,10 +58,21 @@ test('the publish config feeds GitHub releases', () => {
 
 test('the release workflow ships the blockmaps electron-updater diffs against', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'release.yml'), 'utf8');
-  const releaseUpload = workflow.split('\n').find((line) => line.includes('gh release upload'));
-  for (const name of ['OpenAlan-mac.zip.blockmap', 'OpenAlan-windows-setup.exe.blockmap']) {
-    assert.ok(workflow.includes(`desktop/dist/${name}`), `${name} is missing from the build artifacts`);
-    assert.ok(releaseUpload.includes(`dist/${name}`), `${name} is missing from the release upload`);
+  const build = workflow.slice(workflow.indexOf('\n  build:'), workflow.indexOf('\n  upload:'));
+  assert.match(build, /fail-fast: false/, 'a failed Linux leg must not cancel the Mac and Windows legs');
+  assert.match(build, /continue-on-error: \$\{\{ matrix\.optional \|\| false \}\}/, 'only the optional Linux leg may fail');
+  const upload = workflow.slice(workflow.indexOf('\n  upload:'), workflow.indexOf('\n  publish:'));
+  const required = upload.match(/files=\(([^)]*)\)/)?.[1] ?? '';
+  const optional = upload.split('\n').find((line) => line.includes('for f in')) ?? '';
+  assert.match(upload, /gh release upload [^\n]*"\$\{files\[@\]\}"/, 'the release upload no longer sends the files list');
+  for (const name of ['OpenAlan-mac.dmg', 'OpenAlan-mac.zip', 'OpenAlan-mac.zip.blockmap', 'OpenAlan-windows-setup.exe', 'OpenAlan-windows-setup.exe.blockmap', 'latest.yml', 'latest-mac.yml']) {
+    assert.ok(workflow.includes(`desktop/dist/${name}\n`), `${name} is missing from the build artifacts`);
+    assert.ok(required.includes(`dist/${name} `) || required.includes(`dist/${name}\n`), `${name} is missing from the required release upload`);
+  }
+  for (const name of ['OpenAlan-linux.AppImage', 'latest-linux.yml']) {
+    assert.ok(workflow.includes(`desktop/dist/${name}\n`), `${name} is missing from the build artifacts`);
+    assert.ok(optional.includes(`dist/${name}`), `${name} is missing from the optional release upload`);
+    assert.ok(!required.includes(`dist/${name}`), `${name} must stay optional so a failed Linux leg cannot block the release`);
   }
 });
 

@@ -31,7 +31,7 @@ test('browser MCP exposes close and reports non-JSON host errors cleanly', { tim
     'cua_alans_way_status', 'cua_alans_way_tabs', 'cua_alans_way_open',
     'cua_alans_way_snapshot', 'cua_alans_way_screenshot', 'cua_alans_way_close',
     'workspace_computer_apps', 'workspace_computer_snapshot', 'workspace_computer_screenshot', 'workspace_computer_menu', 'workspace_computer_action',
-    'cua_alans_way_action',
+    'cua_alans_way_action', 'cua_alans_way_recordings',
   ]);
   const result = await client.callTool({ name: 'cua_alans_way_status', arguments: {} });
   assert.equal(result.isError, true);
@@ -71,6 +71,40 @@ test('open rejects an unrecognized host instead of dropping it', { timeout: 8000
   assert.equal((await open({})).isError, undefined, 'an omitted host still works');
   assert.deepEqual(seen.filter((s) => s.line === 'POST /v1/tabs').map((s) => s.body.host), ['vps', 'local', undefined],
     'the bad host never reached the app');
+});
+
+test('the recordings tool is read-only and asks the app for this bot only', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
+  const seen = [];
+  const host = http.createServer((req, res) => {
+    seen.push(`${req.method} ${req.url} ${req.headers['x-hermes-bot']}`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(req.url === '/v1/recordings' ? '{"recordings":[]}' : '{"id":"rec-12345678","steps":[]}');
+  });
+  await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')],
+    env: { ...process.env },
+  });
+  const client = new Client({ name: 'browser-mcp-test', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {});
+    await transport.close().catch(() => {});
+    await new Promise((resolve) => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const tool = (await client.listTools()).tools.find((item) => item.name === 'cua_alans_way_recordings');
+  assert.equal(tool.annotations.readOnlyHint, true);
+  assert.deepEqual(tool.inputSchema.properties.action.enum, ['list', 'get']);
+  assert.match(tool.description, /skill_manage/);
+  const call = (args) => client.callTool({ name: 'cua_alans_way_recordings', arguments: args });
+  assert.equal((await call({ action: 'list' })).isError, undefined);
+  assert.equal((await call({ action: 'get', id: 'rec-12345678' })).isError, undefined);
+  assert.equal((await call({ action: 'get' })).isError, true);
+  assert.deepEqual(seen, ['GET /v1/recordings mcp-test', 'GET /v1/recordings/rec-12345678 mcp-test']);
 });
 
 test('browser tool results omit favicon images', { timeout: 8000 }, async (t) => {
@@ -214,6 +248,42 @@ test('browser MCP exposes select, double click, right click and drag, and forwar
   assert.deepEqual(received, { controller: 'agent' });
 });
 
+test('a named action on a host without name-targets is refused before it is sent', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
+  const seen = [];
+  const host = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    seen.push({ line: req.method + ' ' + req.url, body: raw ? JSON.parse(raw) : undefined });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(req.url === '/v1/status' ? '{"capabilities":["tabs","snapshot"]}' : '{"dispatched":true}');
+  });
+  await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')],
+    env: { ...process.env },
+  });
+  const client = new Client({ name: 'browser-mcp-test', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {});
+    await transport.close().catch(() => {});
+    await new Promise((resolve) => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const action = (args) => client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't', epoch: 2, ...args } });
+  const press = await action({ action: 'press', name: 'Go', key: 'Enter' });
+  assert.equal(press.isError, true);
+  assert.match(press.content[0].text, /does not take name targets yet.*Act by ref/);
+  const batch = await action({ action: 'batch', steps: [{ action: 'scroll', name: 'More' }] });
+  assert.equal(batch.isError, true);
+  assert.ok(!seen.some((entry) => entry.line === 'POST /v1/tabs/t/actions'), 'the named step never reached the host');
+  const byRef = await action({ action: 'press', ref: 'e1', key: 'Enter' });
+  assert.equal(byRef.isError, undefined, 'ref actions need no capability');
+  assert.equal(seen.filter((entry) => entry.line === 'GET /v1/status').length, 1, 'the capability answer is cached');
+});
+
 async function computerHost(t, capabilities, hostLabel) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
   const seen = [];
@@ -223,7 +293,7 @@ async function computerHost(t, capabilities, hostLabel) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(req.url === '/v1/status' ? JSON.stringify({ capabilities, ...(hostLabel ? { host: hostLabel } : {}) })
       : req.url === '/v1/computer/apps' ? JSON.stringify({ apps: [{ pid: 7, name: 'app-api-marker' }] })
-      : req.url.includes('/screenshot') ? JSON.stringify({ image: 'AAAA', imageWidth: 1, imageHeight: 1, windowX: 0, windowY: 0, windowWidth: 1, windowHeight: 1 })
+      : req.url.includes('/screenshot') ? JSON.stringify({ image: 'AAAA', imageWidth: 1, imageHeight: 1, windowX: 0, windowY: 0, windowWidth: 1, windowHeight: 1, note: 'Read only: elsewhere.' })
       : JSON.stringify({ generation: 4, via: 'app-api-marker' }));
   });
   await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
@@ -260,6 +330,7 @@ test('computer tools go through the app API when the connected app advertises co
   assert.match(await call('workspace_computer_action', { pid: 7, action: 'batch', generation: 4, menubar: true, steps: [{ action: 'press', ref: 'a1' }] }), /app-api-marker/);
   const shot = await client.callTool({ name: 'workspace_computer_screenshot', arguments: { pid: 7, maxWidth: 640 } });
   assert.equal(shot.isError, undefined);
+  assert.match(JSON.parse(shot.content[1].text).note, /^Read only: elsewhere\. Click coordinates stay/);
   const lines = seen.map((entry) => entry.line);
   assert.deepEqual(lines.filter((line) => line !== 'GET /v1/status'), [
     'GET /v1/computer/apps',
@@ -300,4 +371,23 @@ test('the agent-desktop flag follows the host and restarts the helper when it ch
   const after = await apps();
   assert.equal(after.agentDesktop, '');
   assert.equal(after.closed, '1');
+});
+
+test('a named step sent to a host from before name targets says to act by ref', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
+  const old = http.createServer((_req, res) => { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Provide a fresh element reference, selector, or viewport x and y coordinates.' })); });
+  await new Promise((resolve) => old.listen(0, '127.0.0.1', resolve));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${old.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')], env: { ...process.env } });
+  const client = new Client({ name: 'browser-mcp-test', version: '1' });
+  t.after(async () => { await client.close().catch(() => {}); await transport.close().catch(() => {}); await new Promise((resolve) => old.close(resolve)); fs.rmSync(profile, { recursive: true, force: true }); });
+  await client.connect(transport);
+  const act = (args) => client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't1', epoch: 1, ...args } });
+  const named = await act({ action: 'click', name: 'Next' });
+  assert.equal(named.isError, true);
+  assert.match(named.content[0].text, /does not take name targets yet .*Act by ref/);
+  const inBatch = await act({ action: 'batch', steps: [{ action: 'click', name: 'Next' }] });
+  assert.match(inBatch.content[0].text, /does not take name targets yet/);
+  const plain = await act({ action: 'click', x: 5, y: 5 });
+  assert.doesNotMatch(plain.content[0].text, /name targets/, 'an unnamed failure keeps its own message');
 });

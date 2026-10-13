@@ -1,5 +1,5 @@
 // A stand-in for the platform helpers: speaks protocol v2 over stdio.
-// Behaviour is steered by env FAKE_MODE: ok | crash-on-serve | hang | die-after-init | crash-mid-act.
+// Behaviour is steered by env FAKE_MODE: ok | crash-on-serve | hang | die-after-init | crash-mid-act | shot-elsewhere.
 const readline = require('node:readline');
 const mode = process.env.FAKE_MODE || 'ok';
 const command = process.argv[2];
@@ -19,7 +19,11 @@ const handle = (request) => {
   ], policy });
   if (mode === 'snapshot-in-front' && request.cmd === 'snapshot') return reply({ id: request.id, ok: false, code: 'in_front', error: 'That app is the one in front.' });
   if (mode === 'snapshot-not-found' && request.cmd === 'snapshot') return reply({ id: request.id, ok: false, code: 'not_found', error: 'App not found.' });
-  if (request.cmd === 'snapshot') return reply({ id: request.id, ok: true, generation: 7, elements: [{ ref: 'c1', role: 'AXButton', name: 'Go' }], helper: process.pid, policy });
+  if (request.cmd === 'snapshot') return reply({ id: request.id, ok: true, generation: 7, elements: [{ ref: 'c1', role: 'AXButton', name: 'Go' }], helper: process.pid, policy, pin: request.pin });
+  if (request.cmd === 'shot') return reply({
+    id: request.id, ok: true, image: 'x', imageWidth: 1, imageHeight: 1, windowX: 0, windowY: 0, windowWidth: 1, windowHeight: 1,
+    ...(mode === 'shot-elsewhere' ? { note: 'Read only: elsewhere.' } : {}),
+  });
   if (request.cmd === 'act') {
     if ((request.generation !== undefined && request.generation !== 7) || request.steps.some((step) => step.ref === 'gone')) return reply({ id: request.id, ok: false, code: 'stale_ref', error: 'The app changed since your snapshot. Take a fresh snapshot.' });
     const results = request.steps.map((step) => (step.action === 'scroll' ? { ok: false, code: 'unsupported_action', error: 'No scroll here.' } : { ok: true, cursorMoved: false }));

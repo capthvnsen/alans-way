@@ -9,7 +9,7 @@ const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 const client = new Client({ name: 'background-browser-regression', version: '1' });
 const actor = 'background-browser-regression';
-const server = http.createServer((_req, res) => res.end(`<!doctype html><title>Background browser regression</title><style>body{font:20px system-ui;padding:40px}input,button{font:inherit;padding:12px}</style><form id="form"><label>Test phrase<input id="phrase" aria-label="Test phrase"></label><button>Confirm test</button></form><p id="result">Waiting</p><script>form.onsubmit=e=>{e.preventDefault();result.textContent='Confirmed: '+phrase.value}</script>`));
+const server = http.createServer((_req, res) => res.end(`<!doctype html><title>Background browser regression</title><style>body{font:20px system-ui;padding:40px}input,button{font:inherit;padding:12px}</style><form id="form"><label>Test phrase<input id="phrase" aria-label="Test phrase"></label><button>Check test</button></form><p id="result">Waiting</p><script>form.onsubmit=e=>{e.preventDefault();result.textContent='Confirmed: '+phrase.value}</script>`));
 let tab, connection;
 async function tool(name, args = {}) {
   const result = await client.callTool({ name, arguments: args });
@@ -32,7 +32,7 @@ async function poll(predicate) {
     snap = await snapshot();
   }
   const typed = snap.elements.find(el => el.name === 'Test phrase').value;
-  await tool('cua_alans_way_action', { tabId: tab.id, epoch: tab.epoch, action: 'click', ref: snap.elements.find(el => el.name === 'Confirm test').ref });
+  await tool('cua_alans_way_action', { tabId: tab.id, epoch: tab.epoch, action: 'click', ref: snap.elements.find(el => el.name === 'Check test').ref });
   snap = await poll(s => s.text.includes('Confirmed: Background input works'));
   let screenshot = false, screenshotError = '';
   try { const shot = await tool('cua_alans_way_screenshot', { tabId: tab.id, format: 'png' }); screenshot = shot.mimeType === 'image/png' && Buffer.from(shot.data, 'base64').length > 1000; }

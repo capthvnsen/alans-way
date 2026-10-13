@@ -13,6 +13,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const crypto = require('node:crypto');
+// Test harness scripts that use timers or requests carry an approval, as a
+// router-approved call would (see the app's commit check).
+const harnessApproval = (tab, epoch = tab.epoch) => ({ nonce: crypto.randomUUID(), kind: 'submit', summary: 'test harness script', issuedAt: Date.now(), tabId: tab.id, epoch });
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
 const { followUpArmExpression, followUpCloseExpression, snapshotExpression, FOLLOW_UP_KEY } = require('../src/browser-page.cjs');
@@ -46,24 +50,24 @@ const tasks = [
   { prompt: 'Click the Continue link', steps: (els) => [{ action: 'click', ref: pick(els, (e) => /Continue/.test(e.name || ''), 'Continue') }], next: 'Task 3:' },
   { prompt: 'Check the Agree checkbox', steps: (els) => [{ action: 'click', ref: pick(els, (e) => e.type === 'checkbox', 'Agree') }], next: 'Task 4:' },
   { prompt: 'Choose Banana in the fruit select', steps: (els) => [{ action: 'select', ref: pick(els, (e) => e.role === 'select', 'fruit select'), text: 'Banana' }], next: 'Task 5:' },
-  { prompt: 'Type a word and send the first form', steps: (els) => [{ action: 'type', ref: pick(els, (e) => e.role === 'input' && !e.type, 'first input'), text: 'hello' }, { action: 'click', ref: pick(els, (e) => /Send/.test(e.name || ''), 'Send') }], next: 'Task 6:' },
+  { prompt: 'Type a word and send the first form', steps: (els) => [{ action: 'type', ref: pick(els, (e) => e.role === 'input' && !e.type, 'first input'), text: 'hello' }, { action: 'click', ref: pick(els, (e) => /^Go$/.test(e.name || ''), 'Go') }], next: 'Task 6:' },
   { prompt: 'Click the Finish button', steps: (els) => [{ action: 'click', ref: pick(els, (e) => /Finish/.test(e.name || ''), 'Finish') }], next: 'Task 7:' },
   { prompt: 'Click the Proceed link', steps: (els) => [{ action: 'click', ref: pick(els, (e) => /Proceed/.test(e.name || ''), 'Proceed') }], next: 'Task 8:' },
   { prompt: 'Check the Confirm checkbox', steps: (els) => [{ action: 'click', ref: pick(els, (e) => e.type === 'checkbox', 'Confirm') }], next: 'Task 9:' },
   { prompt: 'Choose Cherry in the dessert select', steps: (els) => [{ action: 'select', ref: pick(els, (e) => e.role === 'select', 'dessert select'), choice: 'Cherry' }], next: 'Task 10:' },
-  { prompt: 'Type a word and send the second form', steps: (els) => [{ action: 'type', ref: pick(els, (e) => e.role === 'input' && !e.type, 'second input'), text: 'done' }, { action: 'click', ref: pick(els, (e) => /Send/.test(e.name || ''), 'Send') }], next: 'All 10 tasks done' },
+  { prompt: 'Type a word and send the second form', steps: (els) => [{ action: 'type', ref: pick(els, (e) => e.role === 'input' && !e.type, 'second input'), text: 'done' }, { action: 'click', ref: pick(els, (e) => /^Go$/.test(e.name || ''), 'Go') }], next: 'All 10 tasks done' },
 ];
 const sections = [
   `<div id="task1"><p>Task 1: Click the Start button</p><button id="t1" onclick="advance(1)">Start</button></div>`,
   `<div id="task2" class="hidden"><p>Task 2: Click the Continue link</p><a id="t2" href="#" onclick="advance(2);return false">Continue</a></div>`,
   `<div id="task3" class="hidden"><p>Task 3: Check the Agree checkbox</p><label><input id="t3" type="checkbox" onchange="advance(3)"> Agree</label></div>`,
   `<div id="task4" class="hidden"><p>Task 4: Choose Banana in the fruit select</p><select id="t4" onchange="advance(4)"><option value="">Pick a fruit</option><option value="a">Apple</option><option value="b">Banana</option><option value="c">Cherry</option></select></div>`,
-  `<div id="task5" class="hidden"><p>Task 5: Type a word and send the first form</p><form onsubmit="advance(5);return false"><input id="t5in"><button id="t5go" type="submit">Send</button></form></div>`,
+  `<div id="task5" class="hidden"><p>Task 5: Type a word and send the first form</p><form onsubmit="advance(5);return false"><input id="t5in"><button id="t5go" type="submit">Go</button></form></div>`,
   `<div id="task6" class="hidden"><p>Task 6: Click the Finish button</p><button id="t6" onclick="advance(6)">Finish</button></div>`,
   `<div id="task7" class="hidden"><p>Task 7: Click the Proceed link</p><a id="t7" href="#" onclick="advance(7);return false">Proceed</a></div>`,
   `<div id="task8" class="hidden"><p>Task 8: Check the Confirm checkbox</p><label><input id="t8" type="checkbox" onchange="advance(8)"> Confirm</label></div>`,
   `<div id="task9" class="hidden"><p>Task 9: Choose Cherry in the dessert select</p><select id="t9" onchange="advance(9)"><option value="">Pick a dessert</option><option value="p">Pie</option><option value="c">Cake</option><option value="ch">Cherry</option></select></div>`,
-  `<div id="task10" class="hidden"><p>Task 10: Type a word and send the second form</p><form onsubmit="advance(10);return false"><input id="t10in"><button id="t10go" type="submit">Send</button></form></div>`,
+  `<div id="task10" class="hidden"><p>Task 10: Type a word and send the second form</p><form onsubmit="advance(10);return false"><input id="t10in"><button id="t10go" type="submit">Go</button></form></div>`,
   `<div id="done" class="hidden"><p>All 10 tasks done</p></div>`,
 ];
 const benchPage = `<!doctype html><title>bench</title><style>.hidden{display:none}</style>
@@ -149,7 +153,64 @@ customElements.define('x-switch', class extends HTMLElement { constructor() { su
 customElements.define('x-aria', class extends HTMLElement { constructor() { super(); this.style.display = 'inline-block'; this.textContent = 'o'; this.onclick = () => this.setAttribute('aria-checked', this.getAttribute('aria-checked') === 'true' ? 'false' : 'true'); } });
 customElements.define('x-tab', class extends HTMLElement {});
 </script>`;
-const routes = { '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage };
+// A list the page re-renders from scratch on every change, two identical
+// rows that re-render too, a decoy wearing a ref attribute, and a modal over
+// a cookie banner over the button an agent wants.
+const todoPage = `<!doctype html><title>todos</title><input id="new" aria-label="New todo"><ul id="l"></ul><p id="tick">0</p><script>
+let t = [['Walk dog', 0], ['Pay rent', 0], ['Old task', 0]];
+setInterval(() => { tick.textContent = String(Number(tick.textContent) + 1); }, 100);
+const R = () => { l.innerHTML = t.map(([x, d], i) => '<li><label><input type="checkbox" data-i="' + i + '"' + (d ? ' checked' : '') + '> ' + x + '</label> <button data-d="' + i + '">Hide</button></li>').join('');
+  l.querySelectorAll('input').forEach((c) => { c.onchange = () => { t[c.dataset.i][1] = c.checked ? 1 : 0; R(); }; });
+  l.querySelectorAll('button').forEach((b) => { b.onclick = () => { t.splice(b.dataset.d, 1); R(); }; }); };
+document.getElementById('new').onkeydown = (e) => { if (e.key === 'Enter' && e.target.value) { t.push([e.target.value, 0]); e.target.value = ''; R(); } };
+R();
+</script>`;
+const twinPage = `<!doctype html><title>twins</title><div id="w"></div><p id="out">none</p><script>
+let n = 0;
+const R = () => { w.innerHTML = '<div><button>Same</button></div><div><button>Same</button></div>'; w.querySelectorAll('button').forEach((b, i) => { b.onclick = () => { out.textContent = 'clicked ' + i + ' after ' + n; n++; R(); }; }); };
+R();
+</script>`;
+const decoyPage = `<!doctype html><title>decoy</title><button id="bad" data-hermes-workspace-ref="e1" onclick="out.textContent='decoy'">Reset layout</button><button id="good" onclick="out.textContent='good'">Save</button><p id="out">none</p>`;
+const overlayPage = `<!doctype html><title>shop</title><div style="height:40vh"></div><button id="add" onclick="out.textContent='added'">Add to cart</button><p id="out">empty</p>
+<div id="cookies" style="position:fixed;left:0;right:0;bottom:0;height:50vh;background:#222;color:#fff">We use cookies. <button onclick="cookies.remove()">Accept all</button><button onclick="cookies.remove()">Reject all</button></div>
+<div id="modal" style="position:fixed;inset:0;background:#0008"><div role="dialog" aria-label="Join our newsletter" style="background:#fff;margin:80px;padding:20px"><button>Subscribe</button><button onclick="modal.remove()">No thanks</button></div></div>`;
+const shadowNamePage = `<!doctype html><title>named</title><x-card></x-card><a href="/nav-b">Next</a><p id="out">idle</p><script>
+customElements.define('x-card', class extends HTMLElement { constructor() { super(); const r = this.attachShadow({ mode: 'open' }); r.innerHTML = '<input aria-label="Callsign"><button>Transmit</button>'; r.querySelector('button').onclick = () => { out.textContent = 'sent ' + r.querySelector('input').value; }; } });
+</script>`;
+const popupPage = `<!doctype html><title>vault</title><button onclick="window.open('/nav-b', '_blank')">Reveal code</button><button id="run">Run cleanup</button><p id="out">not run</p><script>
+run.onclick = () => { alert('Starting'); const ok = confirm('Delete the scratch files?'); out.textContent = 'ok=' + ok + ' name=' + (ok ? prompt('Name this run', 'run') : null); };
+</script>`;
+const shellPage = `<!doctype html><title>app</title><div style="position:fixed;inset:0;overflow:auto"><nav><a href="/a">Inbox</a> <a href="/b">Sent</a> <a href="/c">Drafts</a></nav><h1>Inbox</h1><button>Compose</button><button>Close</button></div>`;
+const long = 'x'.repeat(240);
+const reviewPage = `<!doctype html><title>review</title><div id="w"></div><div id="v"></div><p id="out">none</p>
+<div id="ask" style="position:fixed;inset:0;background:#0008"><div role="dialog" aria-label="Delete project?"><button onclick="out.textContent='continued'">Continue</button><button onclick="ask.remove()">Cancel</button></div></div><script>
+const rows = () => { w.innerHTML = ['A', 'B'].map((k) => '<div>' + '${long}' + ' <button>Hide</button></div>').join(''); w.querySelectorAll('button').forEach((b, i) => { b.onclick = () => { out.textContent = 'deleted ' + i; rows(); }; }); };
+const view = () => { v.innerHTML = '<button>Save</button>'; v.querySelector('button').onclick = () => { out.textContent = 'saved ' + location.hash; }; };
+rows(); view(); addEventListener('hashchange', view);
+</script>`;
+const hopA = `<!doctype html><title>hop a</title><a href="/hop-b">Go</a> <button>Alpha</button>`;
+const hopB = `<!doctype html><title>hop b</title><button onclick="out.textContent += 'B'">Beta</button><button onclick="out.textContent += 'G'">Gamma</button><button onclick="out.textContent += 'C'">Cancel subscription</button><p id="out"></p>`;
+const crowdPage = `<!doctype html><title>crowd</title>${Array.from({ length: 2100 }, (_, i) => `<button>Item ${i}</button>`).join('')}`;
+// A checkout for the app's commit check: every way of reaching "Place order"
+// the router's review rounds found, beside look-alikes that must still work.
+// Each control writes did:<what> into #out; the page shows commit controls, so
+// the test reads it with read, not eval.
+const did = (what) => `onclick="out.textContent='did:${what}'"`;
+const checkoutPage = `<!doctype html><meta charset="utf-8"><title>checkout</title><style>button{margin:4px}</style>
+<form id="f" onsubmit="event.preventDefault();out.textContent='did:order'"><input id="email" aria-label="Email"><button type="button" ${did('cart')}>Add to cart</button><button type="submit" id="place" style="position:fixed;left:400px;top:300px;width:140px;height:40px">Place order</button></form>
+<button type="button" ${did('code')}>Send code</button><button type="button" ${did('gpay')}>Pay with Google Pay</button><a href="#h" ${did('history')}>Purchase history</a><button type="button" ${did('chip')}>Delete filter</button>
+<button id="icon" aria-label="Delete" ${did('icon')}><svg width="16" height="16"><rect width="16" height="16"/></svg></button><button id="titled" title="Buy now" ${did('titled')}><svg width="16" height="16"><circle cx="8" cy="8" r="8"/></svg></button><button id="sly" ${did('sly')}>P\u0430\u200By</button>
+<label for="hidden-pay" id="lbl">Continue to review</label><input type="submit" id="hidden-pay" form="f" value="Pay" style="display:none"><button id="masked" aria-label="Next" ${did('masked')}>Place order</button>
+<iframe id="inner" style="width:220px;height:60px" srcdoc="<body style='margin:0'><button style='width:100%;height:56px' onclick=&quot;parent.out.textContent='did:inner'&quot;>Pay now</button>"></iframe>
+<button id="reveal" onclick="if(!window.shown){shown=1;const b=document.createElement('button');b.textContent='Confirm and pay';b.onclick=()=>out.textContent='did:revealed';document.body.appendChild(b)}">Continue</button>
+<p id="out">none</p>`;
+// An embedded widget from another origin (a booking or payment frame): the
+// app cannot read a name inside it.
+const embedPage = `<!doctype html><title>embed</title><button onclick="out.textContent='did:plain'">Plain</button><p id="out">none</p><iframe id="xo" title="Booking" style="position:fixed;left:300px;top:200px;width:300px;height:150px"></iframe><script>xo.onload=()=>{out.textContent='ready'};xo.src='http://127.0.0.1:'+location.port+'/frame-inner'</script>`;
+// A chat box that sends on Enter, outside any form, with an unlabeled send icon.
+const chatPage = `<!doctype html><title>chat</title><textarea aria-label="Message" onkeydown="if(event.key==='Enter'){event.preventDefault();out.textContent='did:sent'}"></textarea><button><svg width="16" height="16"><path d="M0 0l16 8-16 8z"/></svg></button><button onclick="out.textContent='did:deleted'">Delete conversation</button><p id="out">none</p>`;
+const quietChatPage = `<!doctype html><title>notes</title><textarea aria-label="Note" onkeydown="if(event.key==='Enter'){event.preventDefault();out.textContent='did:noted'}"></textarea><p id="out">none</p>`;
+const routes = { '/hop-a': hopA, '/hop-b': hopB, '/crowd': crowdPage, '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage, '/checkout': checkoutPage, '/embed': embedPage, '/chat': chatPage, '/notes': quietChatPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
 const api = (route, method = 'GET', body, epoch) =>
@@ -247,7 +308,7 @@ test('ten sequential tasks each complete in one action call', { skip: !chrome &&
     // leaves no controls behind, so its list is empty.
     assert.ok(Array.isArray(reply.data.elements), `task ${i + 1} reply lacks an elements list: ${JSON.stringify(reply.data)}`);
     if (i + 1 < tasks.length) assert.ok(reply.data.elements.length, `task ${i + 1} reply lacks fresh element refs`);
-    assert.ok(reply.data.elements.every((el) => /^s\d+-\d+$/.test(el.ref)), `task ${i + 1} refs malformed: ${JSON.stringify(reply.data.elements)}`);
+    assert.ok(reply.data.elements.every((el) => /^e\d+$/.test(el.ref)), `task ${i + 1} refs malformed: ${JSON.stringify(reply.data.elements)}`);
     elements = reply.data.elements;
     if (i === 0) {
       assert.equal(reply.data.effect.navigated, false);
@@ -347,7 +408,7 @@ test('a click landing inside the delivery window still counts the work it starte
       return true;
     })()`);
     assert.equal(scheduled, true, 'the close ran and the late click was scheduled on the raw timer');
-    const data = await evalOnTab(snapshotExpression(90, { effect: true, settle: true }));
+    const data = await evalOnTab(snapshotExpression({ effect: true, settle: true }));
     assert.ok(data && typeof data.text === 'string', `the settle read returned nothing: ${JSON.stringify(data)}`);
     assert.ok(data.text.includes('Fetched payload text'), `the late click's fetch escaped the settle: ${JSON.stringify(data.text).slice(0, 300)} settledMs=${data.settledMs}`);
   } finally {
@@ -496,7 +557,7 @@ test('wrapped setTimeout, clearTimeout, fetch and XHR behave normally', { skip: 
   const click = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#qb', epoch: tab.epoch });
   assert.equal(click.status, 200, JSON.stringify(click.data));
   const probe = await api(`/v1/tabs/${tab.id}/actions`, 'POST', {
-    action: 'eval', epoch: tab.epoch,
+    action: 'eval', epoch: tab.epoch, approval: harnessApproval(tab),
     code: `(async () => {
       const fired = [];
       const id = setTimeout(function () { fired.push('fired'); }, 0);
@@ -533,7 +594,7 @@ test('the wrappers are indistinguishable from the natives they replaced', { skip
     stringKeys: Object.getOwnPropertyNames(window).filter(function (k) { return /hermes|followup|hw\\./i.test(k); }),
     symbolKeys: Object.getOwnPropertySymbols(window).map(String).filter(function (s) { return /hermes|workspace/i.test(s); }),
   })`;
-  const evalOn = (epoch) => api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: probeCode, epoch });
+  const evalOn = (epoch) => api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: probeCode, epoch, approval: harnessApproval(tab, epoch) });
   // Before the first arm the tracker is already planted by the document-start
   // seed, already disguised, and inert.
   const early = await evalOn(tab.epoch);
@@ -627,3 +688,268 @@ test('custom elements and ARIA widgets in shadow roots become refs that toggle',
   const checked = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: "document.querySelector('x-switch').shadowRoot.querySelector('input').checked", epoch: tab.epoch });
   assert.equal(checked.data.value, true, `click did not toggle: ${JSON.stringify(click)}`);
 });
+
+const live = { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 };
+const openTab = async (route) => { const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}${route}` })).data; assert.ok(tab.id, `tab did not open: ${stderr}`); return tab; };
+const act = (tab, body) => api(`/v1/tabs/${tab.id}/actions`, 'POST', { epoch: tab.epoch, ...body });
+const pageText = async (tab, selector) => (await act(tab, { action: 'eval', code: `document.querySelector(${JSON.stringify(selector)}).textContent` })).data.value;
+
+test('refs from one snapshot survive a page that re-renders its list after every step', live, async () => {
+  const tab = await openTab('/todos');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const ref = (rx, role) => snap.elements.find((e) => rx.test(e.name || '') && (!role || e.role === role)).ref;
+  const deletes = snap.elements.filter((e) => e.name === 'Hide');
+  assert.deepEqual(deletes.map((e) => e.row), ['Walk dog', 'Pay rent', 'Old task'], 'repeated names carry their row');
+  const reply = await act(tab, { action: 'batch', generation: snap.generation, steps: [
+    { action: 'type', ref: ref(/New todo/), text: 'Buy milk' }, { action: 'press', key: 'Enter' },
+    { action: 'click', ref: ref(/^Walk dog/, 'input') }, { action: 'click', ref: ref(/^Pay rent/, 'input') },
+    { action: 'click', ref: deletes.find((e) => e.row === 'Old task').ref }] });
+  assert.ok(reply.data.results.every((r) => r.ok), JSON.stringify(reply.data.results));
+  const state = await act(tab, { action: 'eval', code: "[...document.querySelectorAll('li')].map((li) => li.textContent.trim().replace(/\\s+Hide$/, '') + (li.querySelector('input').checked ? '+' : '')).join(',')" });
+  assert.equal(state.data.value, 'Walk dog+,Pay rent+,Buy milk');
+  // With the caller's generation the reply is a delta, and the ticking counter is not a control change.
+  assert.ok(Array.isArray(reply.data.changed) && Array.isArray(reply.data.removed), JSON.stringify(reply.data));
+  assert.ok(reply.data.removed.includes(deletes[2].ref), 'the deleted row\'s Hide is reported removed');
+  assert.equal(reply.data.elements, undefined);
+});
+
+test('a re-rendered control with an identical twin goes stale instead of guessing', live, async () => {
+  const tab = await openTab('/twins');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const [first, second] = snap.elements.filter((e) => e.name === 'Same');
+  assert.ok(first && second);
+  const one = await act(tab, { action: 'click', ref: second.ref });
+  assert.equal(one.status, 200, JSON.stringify(one.data));
+  assert.equal(await pageText(tab, '#out'), 'clicked 1 after 0');
+  // The reply re-listed the twins under fresh refs; the old ones name nothing.
+  const stale = await act(tab, { action: 'click', ref: first.ref });
+  assert.equal(stale.status, 409, JSON.stringify(stale.data));
+  assert.match(stale.data.error, /Stale or unknown reference/);
+  assert.equal(await pageText(tab, '#out'), 'clicked 1 after 0', 'nothing was clicked on a guess');
+});
+
+test('a ref attribute planted by the page cannot redirect a ref, and a new document voids the old ones', live, async () => {
+  const tab = await openTab('/decoy');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const save = snap.elements.find((e) => e.name === 'Save');
+  const reply = await act(tab, { action: 'click', ref: save.ref });
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.equal(await pageText(tab, '#out'), 'good');
+  const decoy = snap.elements.find((e) => e.name === 'Reset layout');
+  await act(tab, { action: 'navigate', url: `http://bench.example:${port}/decoy` });
+  const old = await act(tab, { action: 'click', ref: decoy.ref });
+  assert.equal(old.status, 409, `a ref from the old document still acted: ${JSON.stringify(old.data)}`);
+  const fresh = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const oldest = Math.max(...snap.elements.map((e) => Number(e.ref.slice(1))));
+  assert.ok(fresh.elements.every((e) => Number(e.ref.slice(1)) > oldest), 'refs in a new document never reuse old numbers');
+});
+
+test('dialogs and banners over the page are named with what closes them', live, async () => {
+  const tab = await openTab('/overlay');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  assert.equal(snap.overlays.length, 2, JSON.stringify(snap.overlays));
+  assert.equal(snap.overlays[0].name, 'Join our newsletter');
+  assert.equal(snap.overlays[0].closeName, 'No thanks');
+  assert.equal(snap.overlays[1].closeName, 'Reject all', 'the choice that shares nothing is offered first');
+  const add = snap.elements.find((e) => e.name === 'Add to cart');
+  const covered = await act(tab, { action: 'click', ref: add.ref });
+  assert.equal(covered.status, 400);
+  assert.match(covered.data.error, new RegExp(`covered by "Join our newsletter"\\. Close it first: click ${snap.overlays[0].close} \\("No thanks"\\)`));
+  const done = await act(tab, { action: 'batch', steps: snap.overlays.map((o) => ({ action: 'click', ref: o.close })).concat({ action: 'click', ref: add.ref }) });
+  assert.ok(done.data.results.every((r) => r.ok), JSON.stringify(done.data.results));
+  assert.equal(await pageText(tab, '#out'), 'added');
+  assert.equal(done.data.overlays, undefined, 'a cleared page carries no overlays');
+  const shell = await openTab('/shell');
+  assert.equal((await api(`/v1/tabs/${shell.id}/snapshot`)).data.overlays, undefined, 'an app whose whole shell is fixed is the page, not an overlay');
+});
+
+test('a control can be named instead of referenced, inside shadow roots too', live, async () => {
+  const tab = await openTab('/named');
+  const typed = await act(tab, { action: 'batch', steps: [{ action: 'type', name: 'callsign', text: 'ORCA-7' }, { action: 'click', name: 'Transmit', role: 'button' }] });
+  assert.ok(typed.data.results.every((r) => r.ok), JSON.stringify(typed.data.results));
+  assert.match(typed.data.results[0].ref, /^e\d+$/, 'a named step reports the ref it resolved to');
+  assert.equal(await pageText(tab, '#out'), 'sent ORCA-7');
+  const missing = await act(tab, { action: 'click', name: 'Launch' });
+  assert.match(missing.data.error, /No visible control is named exactly "Launch"/);
+  const todos = await openTab('/todos');
+  const many = await act(todos, { action: 'click', name: 'Hide' });
+  assert.match(many.data.error, /3 controls match "Hide": e\d+ "Hide" \(row "Walk dog"\)/);
+  const one = await act(todos, { action: 'click', name: 'Hide', row: 'pay rent' });
+  assert.equal(one.status, 200, JSON.stringify(one.data));
+  assert.equal(await act(todos, { action: 'eval', code: "[...document.querySelectorAll('li')].map((li) => li.textContent.trim()).join('|')" }).then((r) => r.data.value), 'Walk dog Hide|Old task Hide');
+  const nav = await act(tab, { action: 'click', name: 'Next', role: 'link' });
+  assert.equal(nav.data.effect.navigated, true, JSON.stringify(nav.data.effect));
+});
+
+test('a reply names the tab its action opened and answers dialogs the way the action said', live, async () => {
+  const tab = await openTab('/popup');
+  const opened = await act(tab, { action: 'click', name: 'Reveal code' });
+  assert.equal(opened.data.opened?.length, 1, JSON.stringify(opened.data));
+  assert.match(opened.data.opened[0].tabId, /^[\w-]+$/);
+  assert.ok(Number.isInteger(opened.data.opened[0].epoch));
+  const popup = (await api(`/v1/tabs/${opened.data.opened[0].tabId}/snapshot`)).data;
+  assert.match(popup.text, /Page B body/, 'the opened tab is readable by its id');
+  const dismissed = await act(tab, { action: 'click', name: 'Run cleanup' });
+  assert.deepEqual(dismissed.data.dialogs.map((d) => [d.type, d.accepted]), [['alert', true], ['confirm', false]]);
+  assert.match(dismissed.data.dialogs[1].note, /dialog: \{accept: true\}/);
+  assert.equal(await pageText(tab, '#out'), 'ok=false name=null');
+  const answered = await act(tab, { action: 'click', name: 'Run cleanup', dialog: { accept: true, text: 'eval-42' } });
+  assert.deepEqual(answered.data.dialogs.map((d) => [d.type, d.accepted]), [['alert', true], ['confirm', true], ['prompt', true]]);
+  assert.equal(await pageText(tab, '#out'), 'ok=true name=eval-42');
+  const after = await act(tab, { action: 'click', name: 'Run cleanup' });
+  assert.equal(after.data.dialogs[1].accepted, false, 'an answer lasts only for the action that carried it');
+});
+
+test('rebinding needs evidence: no row text, another hash route, or a partial view never rebind', live, async () => {
+  const tab = await openTab('/review#/a');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  assert.equal(snap.overlays[0].closeName, 'Cancel', 'a confirm dialog offers Cancel, never Continue');
+  await act(tab, { action: 'click', ref: snap.overlays[0].close });
+  const [first, second] = snap.elements.filter((e) => e.name === 'Hide');
+  assert.equal(first.row, undefined, 'rows too long to read give no row');
+  assert.equal((await act(tab, { action: 'click', ref: first.ref })).status, 200);
+  const stale = await act(tab, { action: 'click', ref: second.ref });
+  assert.equal(stale.status, 409, `a repeated name with no row text was rebound: ${JSON.stringify(stale.data)}`);
+  assert.equal(await pageText(tab, '#out'), 'deleted 0');
+  const save = snap.elements.find((e) => e.name === 'Save');
+  await act(tab, { action: 'eval', code: "location.hash = '#/b'" });
+  const moved = await act(tab, { action: 'click', ref: save.ref });
+  assert.equal(moved.status, 409, `a ref followed a control onto another hash route: ${JSON.stringify(moved.data)}`);
+  assert.equal(await pageText(tab, '#out'), 'deleted 0');
+  const both = await act(tab, { action: 'click', ref: save.ref, name: 'Save' });
+  assert.match(both.data.error, /Target one way/);
+  const todos = await openTab('/todos');
+  const stateful = await act(todos, { action: 'click', name: 'Walk dog off', role: 'checkbox' });
+  assert.equal(stateful.status, 200, `a name as the snapshot lists it, state words included: ${JSON.stringify(stateful.data)}`);
+  assert.equal(stateful.data.resolved, 'Walk dog off');
+});
+
+test('a name lookup that opens a new page\'s store numbers past every ref the tab handed out', live, async () => {
+  const tab = await openTab('/hop-a');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const lowest = snap.elements.map((e) => e.ref).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))[0];
+  // No read between the steps: the lookup on the new page opens its store.
+  const reply = await act(tab, { action: 'batch', steps: [{ action: 'click', name: 'Go' }, { action: 'click', name: 'Beta' }, { action: 'click', ref: lowest }] });
+  assert.deepEqual(reply.data.results.map((r) => r.ok), [true, true, false], JSON.stringify(reply.data.results));
+  assert.ok(Number(reply.data.results[1].ref.slice(1)) > Math.max(...snap.elements.map((e) => Number(e.ref.slice(1)))), `the new page reused an old number: ${reply.data.results[1].ref}`);
+  assert.match(reply.data.results[2].error, /Stale or unknown reference/);
+  assert.equal(await pageText(tab, '#out'), 'B', 'the old page\'s ref clicked nothing on the new page');
+});
+
+test('only an exact name acts; near matches come back as suggestions, and a cut-short lookup says so', live, async () => {
+  const tab = await openTab('/hop-b');
+  const near = await act(tab, { action: 'click', name: 'Cancel' });
+  assert.equal(near.status, 400);
+  assert.match(near.data.error, /No visible control is named exactly "Cancel"\. Close matches: e\d+ "Cancel subscription"/);
+  assert.equal(await pageText(tab, '#out'), '', 'a near match is never clicked');
+  const exact = await act(tab, { action: 'click', name: 'cancel  SUBSCRIPTION' });
+  assert.equal(exact.status, 200, 'case and spacing do not matter');
+  assert.equal(await pageText(tab, '#out'), 'C');
+  const crowd = await openTab('/crowd');
+  const cut = await act(crowd, { action: 'click', name: 'Item 3' });
+  assert.equal(cut.status, 409, `a lookup that did not read the whole page never acts: ${JSON.stringify(cut.data)}`);
+  assert.match(cut.data.error, /not confirmed as the only match/);
+  // The refusal hands back the ref it resolved to, so the caller can opt in.
+  const ref = /It resolved to (e\d+)/.exec(cut.data.error)?.[1];
+  assert.ok(ref, `the refusal names the resolved ref: ${cut.data.error}`);
+  const retry = await act(crowd, { action: 'click', ref });
+  assert.equal(retry.status, 200, JSON.stringify(retry.data));
+});
+
+test('the app refuses an unapproved commit at dispatch, however it is targeted, and lets look-alikes through', live, async () => {
+  const tab = await openTab('/checkout');
+  const out = async () => /did:\w+|none/.exec((await act(tab, { action: 'read', maxChars: 4000 })).data.text)[0];
+  const refused = async (body, what) => {
+    const reply = await act(tab, body);
+    assert.equal(reply.status, 403, `${what}: ${JSON.stringify(reply.data)}`);
+    assert.match(reply.data.error, /^commit_required: /, what);
+    assert.equal(await out(), 'none', `${what} reached the page`);
+  };
+  await refused({ action: 'click', name: 'Place order' }, 'a name target');
+  await refused({ action: 'click', selector: 'form > button:last-child' }, 'a structural selector');
+  await refused({ action: 'click', selector: '#icon' }, 'an icon-only button named by aria-label');
+  await refused({ action: 'click', selector: '#titled' }, 'an icon-only button named by title');
+  await refused({ action: 'click', selector: '#sly' }, 'a name spelled with a Cyrillic letter and a zero-width space');
+  await refused({ action: 'click', x: 470, y: 320 }, 'a click by position');
+  await refused({ action: 'click', selector: '#lbl' }, 'a label whose control is a hidden Pay submit');
+  await refused({ action: 'click', selector: '#masked' }, 'an aria-label that hides a visible "Place order"');
+  await refused({ action: 'click', selector: '#inner' }, 'a same-origin frame whose inside is a commit button');
+  await refused({ action: 'double_click', name: 'Place order' }, 'a double click');
+  await refused({ action: 'press', name: 'Email', key: 'Enter' }, 'Enter in a field whose form places the order');
+  // A refused targeted Enter now leaves focus untouched; focus the field
+  // with a harmless Space before testing an untargeted carriage return.
+  assert.equal((await act(tab, { action: 'press', name: 'Email', key: 'Space' })).status, 200);
+  await refused({ action: 'press', key: '\r' }, 'a raw carriage return in the focused field');
+  await refused({ action: 'eval', code: 'document.title' }, 'a page script');
+  await refused({ action: 'cdp', method: 'Runtime.evaluate', params: { expression: '1' } }, 'Runtime.evaluate');
+  await refused({ action: 'cdp', method: 'Input.dispatchKeyEvent', params: { type: 'keyDown', key: 'Enter' } }, 'raw DevTools input');
+  await refused({ action: 'reload' }, 'a reload of a page with a commit control');
+  await refused({ action: 'navigate', url: `http://bench.example:${port}/checkout/complete` }, 'a same-origin action address');
+  const batch = await act(tab, { action: 'batch', steps: [{ action: 'type', name: 'Email', text: 'a@b.co' }, { action: 'click', name: 'Place order' }] });
+  assert.deepEqual(batch.data.results.map((r) => r.ok), [true, false], JSON.stringify(batch.data.results));
+  assert.match(batch.data.results[1].error, /^commit_required: "Place order"/);
+  assert.equal(await out(), 'none');
+  // A control the reply revealed is judged by its live name, whatever the router has seen.
+  const shown = await act(tab, { action: 'click', name: 'Continue' });
+  assert.equal(shown.status, 200, JSON.stringify(shown.data));
+  const revealed = [...(shown.data.elements || []), ...(shown.data.changed || [])].find((e) => e.name === 'Confirm and pay');
+  assert.ok(revealed, JSON.stringify(shown.data));
+  await refused({ action: 'click', ref: revealed.ref }, 'a button a delta revealed');
+
+  for (const [name, what] of [['Add to cart', 'cart'], ['Send code', 'code'], ['Pay with Google Pay', 'gpay'], ['Purchase history', 'history'], ['Delete filter', 'chip']]) {
+    const reply = await act(tab, { action: 'click', name });
+    assert.equal(reply.status, 200, `${name}: ${JSON.stringify(reply.data)}`);
+    assert.equal(await out(), `did:${what}`, name);
+  }
+  assert.equal((await act(tab, { action: 'press', name: 'Email', key: ' ' })).status, 200, 'a space in a field submits nothing');
+  assert.equal((await act(tab, { action: 'click', name: 'Email' })).status, 200, 'clicking into a field submits nothing');
+  assert.equal((await act(tab, { action: 'cdp', method: 'DOM.getDocument' })).status, 200, 'a read-only DevTools call passes');
+  const inject = await act(tab, { action: 'cdp', method: 'Page.addScriptToEvaluateOnNewDocument', params: { source: '1' } });
+  assert.equal(inject.status, 400);
+  assert.match(inject.data.error, /not available to agents/);
+});
+
+test('input that lands in a cross-origin frame needs approval, since the app cannot read a name there', live, async () => {
+  const tab = await openTab('/embed');
+  assert.equal((await act(tab, { action: 'wait', text: 'ready' })).status, 200);
+  for (const [body, what] of [[{ action: 'click', x: 400, y: 260 }, 'a click by position'], [{ action: 'click', selector: '#xo' }, 'a click on the frame element']]) {
+    const reply = await act(tab, body);
+    assert.equal(reply.status, 403, `${what}: ${JSON.stringify(reply.data)}`);
+    assert.match(reply.data.error, /^commit_required: .*cross-origin frame/, what);
+  }
+  assert.equal((await act(tab, { action: 'click', name: 'Plain' })).status, 200, 'the page around the frame still works');
+});
+
+test('an approval lets one commit through once, on its tab and epoch, within 120 seconds', live, async () => {
+  const tab = await openTab('/checkout');
+  const out = async () => /did:\w+|none/.exec((await act(tab, { action: 'read', maxChars: 4000 })).data.text)[0];
+  const approval = (extra = {}) => ({ nonce: crypto.randomUUID(), kind: 'purchase', summary: 'One desk lamp', issuedAt: Date.now(), tabId: tab.id, epoch: tab.epoch, ...extra });
+  const once = approval();
+  const ok = await act(tab, { action: 'batch', approval: once, steps: [{ action: 'type', name: 'Email', text: 'a@b.co' }, { action: 'click', name: 'Place order' }] });
+  assert.deepEqual(ok.data.results.map((r) => r.ok), [true, true], JSON.stringify(ok.data));
+  assert.equal(await out(), 'did:order');
+  const again = await act(tab, { action: 'click', name: 'Buy now', approval: once });
+  assert.equal(again.status, 403);
+  assert.match(again.data.error, /^approval_invalid: the approval was already used/);
+  for (const [extra, why] of [[{ issuedAt: Date.now() - 121000 }, /expired/], [{ issuedAt: Date.now() + 60000 }, /expired/], [{ epoch: tab.epoch + 1 }, /another tab or control epoch/], [{ tabId: 'another-tab' }, /another tab or control epoch/], [{ kind: 'shopping' }, /needs nonce, kind/]]) {
+    const reply = await act(tab, { action: 'click', selector: '#titled', approval: approval(extra) });
+    assert.equal(reply.status, 403, JSON.stringify(extra));
+    assert.match(reply.data.error, why);
+  }
+  assert.equal(await out(), 'did:order', 'no refused approval reached the page');
+  const script = await act(tab, { action: 'eval', code: 'document.querySelector("#out").textContent', approval: approval() });
+  assert.equal(script.data.value, 'did:order', 'an approved page script runs');
+});
+
+test('Enter in a field outside a form is refused while the page shows a commit control, and passes where it shows none', live, async () => {
+  const chat = await openTab('/chat');
+  const refused = await act(chat, { action: 'press', name: 'Message', key: 'Enter' });
+  assert.equal(refused.status, 403, JSON.stringify(refused.data));
+  assert.match(refused.data.error, /^commit_required: pressing Enter in a field outside a form here could set off "Delete conversation"/);
+  assert.match((await act(chat, { action: 'read', maxChars: 2000 })).data.text, /none/);
+  const notes = await openTab('/notes');
+  const passed = await act(notes, { action: 'press', name: 'Note', key: 'Enter' });
+  assert.equal(passed.status, 200, JSON.stringify(passed.data));
+  assert.equal(await pageText(notes, '#out'), 'did:noted');
+});
+

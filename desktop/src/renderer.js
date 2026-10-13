@@ -1,5 +1,5 @@
 const api = window.workspace;
-let state, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '', handoffBusy = false;
+let state, lastRecording = null, resumeToasts = new Set(), stoppedRecordingAt = 0, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '', handoffBusy = false;
 const $ = (id) => document.getElementById(id);
 function element(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; }
 function toast(message) { $('toast').textContent = message; $('toast').classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.add('hidden'), 5000); }
@@ -263,7 +263,7 @@ function render(next) {
     $('presence-status').textContent = window.HermesAvatars.activityLabel(bot.activity);
     $('presence-status').classList.toggle('active', window.HermesAvatars.isActive(bot.activity));
   }
-  renderBots(); renderTabs(); renderSettingsBots(); renderSitePermissions(); renderExtensions(); renderDownloads();
+  renderBots(); renderTabs(); renderSettingsBots(); renderRecordings(); renderSitePermissions(); renderExtensions(); renderDownloads();
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
   const remote = state.activeTabId==='vps';
   $('vm-toggle').title = remote ? 'Return to browser' : 'Expand virtual desktop';
@@ -313,6 +313,29 @@ function render(next) {
     $('needs-you-banner').style.setProperty('--h', String(tab.agentHue ?? 168));
     $('needs-you-text').textContent = `${agentName} needs you: ${needsYou.note || HANDBACK_TEXT[needsYou.reason] || 'take a look.'}`;
   }
+  // Main clears the takeover notice a few seconds after a bot took the tab.
+  const takeover = tab?.takeover && tab.controller === 'agent';
+  $('takeover-banner').classList.toggle('hidden', !takeover);
+  if (takeover) {
+    $('takeover-banner').style.setProperty('--h', String(tab.agentHue ?? 168));
+    $('takeover-text').textContent = `${agentName} took over this tab`;
+  }
+  // The app gave a CAPTCHA tab back on its own once the challenge cleared.
+  for (const item of state.tabs) {
+    const key = item.handback?.resumed === 'auto' ? `${item.id}:${item.handback.returnedAt}` : '';
+    if (key && !resumeToasts.has(key)) { resumeToasts.add(key); toast('Thanks, continuing.'); }
+  }
+  // Recording runs only on a tab the human controls; a bot taking it, or the
+  // tab closing, stops and saves it in main.
+  const recording = state.recording;
+  $('record-button').disabled = !recording && (!tab || tab.controller !== 'human' || tab.extensionPage);
+  $('record-button').classList.toggle('recording', !!recording);
+  $('record-button').setAttribute('aria-pressed', String(!!recording));
+  $('record-button').title = recording ? 'Stop recording and save' : tab?.controller === 'agent' ? 'Take over this tab to record a task' : 'Record a task to teach your agent';
+  $('recording-banner').classList.toggle('hidden', !recording);
+  if (recording) $('recording-text').textContent = `Recording${recording.tabId === tab?.id ? '' : ' another tab'} · ${recording.steps} ${recording.steps === 1 ? 'step' : 'steps'}. Do the task once. Passwords, card numbers and codes are never saved.`;
+  if (lastRecording && !recording && lastRecording.startedAt !== stoppedRecordingAt) toast('Recording stopped. Anything it caught is in Settings → Recordings.');
+  lastRecording = recording;
   $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? `${agentName}${tab.agentBusy ? ' is working' : ' is browsing'}` : 'You'} in control${tab.controller === 'agent' ? ' · Take over anytime' : ''} · ${hostName(tab.host)}${tab.handoff?.phase==='handed_off'?` · Handed off to the ${hostName(tab.handoff.destinationHost)} (agents continue there)`:tab.handoff&&tab.handoff.phase!=='reviewed'?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `${remoteName()} · ${state.remoteStatus}` : 'Ready';
   renderUpdate();
   $('connection-status').textContent = state.api.ready ? 'Browser connector ready' : state.api.error ? 'Browser connector unavailable' : 'Browser connector starting…';
@@ -331,6 +354,7 @@ function renderUpdate() {
   note.classList.toggle('hidden', !label); note.textContent = label; note.disabled = !!u.busy;
   note.onclick = () => { if (u.error) command('open-download-page'); else { updatePopupPinned = true; renderUpdatePopup(); } };
   renderUpdatePopup();
+  renderVersions();
   renderVmBanner();
   $('bundle-banner').classList.toggle('hidden', !state.bundleWarning);
   $('bundle-banner-text').textContent = state.bundleWarning || '';
@@ -371,6 +395,54 @@ function renderUpdatePopup() {
   now.textContent = u.busy ? 'Updating…' : 'Update now';
   if (!updatePopupFocused) { updatePopupFocused = true; now.focus(); }
 }
+// The bottom bar's versions and "Update everything". The dialog shows the
+// plan first and nothing runs until its button is clicked; then it shows each
+// step's progress, the closing summary and, when the app staged an update,
+// "Restart to finish".
+let updateAllOpen = false, updateAllView = 'plan', updateAllError = '';
+const STEP_MARK = { pending: '·', running: '…', done: '✓', failed: '✗', skipped: '–' };
+function renderVersions() {
+  const v = state.versions || {}, run = state.updateAll || {};
+  const label = $('version-label');
+  label.textContent = v.text || `v${state.version}`;
+  label.title = `${v.tooltip ? `${v.tooltip}\n` : ''}Click for the v${state.version} release notes`;
+  const button = $('update-all');
+  button.textContent = run.busy ? 'Updating…' : v.hasUpdate ? '↑ Update' : 'Update';
+  button.classList.toggle('has-update', !!v.hasUpdate);
+  button.title = v.hasUpdate ? 'Updates are available. Review them before anything runs.' : 'Check what can be updated';
+  renderUpdateAll();
+}
+function renderUpdateAll() {
+  const popup = $('update-all-popup'), v = state.versions || {}, run = state.updateAll || {};
+  const show = updateAllOpen || !!run.busy;
+  const wasHidden = popup.classList.contains('hidden');
+  popup.classList.toggle('hidden', !show);
+  scheduleLayout();
+  if (!show) return;
+  const planning = updateAllView === 'plan' && !run.busy;
+  const steps = v.steps || [], list = $('update-all-steps'), go = $('update-all-go'), cancel = $('update-all-cancel');
+  list.replaceChildren();
+  if (planning) {
+    $('update-all-copy').textContent = steps.length ? 'This updates, in this order:' : 'Everything is up to date.';
+    for (const step of steps) list.append(element('p', 'update-line', `${step.name}: ${step.from} → ${step.to}`));
+    if (steps.some((step) => step.id !== 'app')) list.append(element('p', 'update-line warn', 'Your bots restart briefly while the server updates.'));
+    if (steps.some((step) => step.id === 'app')) list.append(element('p', 'update-line', 'The app update installs when you click Restart to finish.'));
+  } else {
+    $('update-all-copy').textContent = run.busy ? 'Updating. You can keep working; this takes a few minutes.'
+      : run.summary || (updateAllError ? `Update everything stopped: ${updateAllError}` : '');
+    for (const row of run.steps || []) {
+      const tail = row.state === 'failed' ? `: ${row.error}` : row.state === 'skipped' ? ' (not started)' : row.detail ? ` · ${row.detail}` : '';
+      list.append(element('p', `update-line ${row.state}`, `${STEP_MARK[row.state] || ''} ${row.name}: ${row.from} → ${row.to}${tail}`));
+    }
+  }
+  go.classList.toggle('hidden', planning ? false : !run.restart || run.busy);
+  go.textContent = planning ? 'Update everything' : 'Restart to finish';
+  go.disabled = planning ? !steps.length : false;
+  cancel.textContent = planning ? 'Cancel' : 'Close';
+  cancel.disabled = !!run.busy;
+  if (wasHidden) (go.disabled || go.classList.contains('hidden') ? cancel : go).focus();
+}
+function closeUpdateAll() { if (state?.updateAll?.busy) return; updateAllOpen = false; renderUpdateAll(); }
 function renderVmBanner() {
   const u = state.update || {}, retry = u.vmRetry || {};
   const banner = $('vm-banner');
@@ -580,7 +652,7 @@ function rect(id) {
 }
 function scheduleLayout() {
   cancelAnimationFrame(resizeFrame);
-  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: modalOpen || !$('update-popup').classList.contains('hidden') }));
+  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: modalOpen || !$('update-popup').classList.contains('hidden') || !$('update-all-popup').classList.contains('hidden') }));
 }
 // The mini VM window is anchored bottom-right until dragged; its saved offset
 // is relative to the workspace pane and clamped so it can never get lost.
@@ -667,6 +739,30 @@ function renderSettingsBots() {
   }
 }
 const permissionLabels = { geolocation: 'Precise location', 'geolocation-approximate': 'General area', notifications: 'Notifications', camera: 'Camera', microphone: 'Microphone', 'clipboard-read': 'Read clipboard' };
+function renderRecordings() {
+  const list = $('recordings-list');
+  if (!modalOpen || !list) return;
+  const signature = JSON.stringify([state.recordings, state.bots.map(bot => [bot.id, bot.name])]);
+  if (list.dataset.signature === signature) return;
+  list.dataset.signature = signature; list.replaceChildren();
+  if (!state.recordings.length) list.append(element('p', 'settings-note', 'No recordings yet.'));
+  for (const item of state.recordings) {
+    const row = element('div', 'setting-row'), copy = element('span', 'visibility-copy');
+    copy.append(element('span', 'visibility-name', item.title), element('span', 'visibility-username',
+      `${item.steps} ${item.steps === 1 ? 'step' : 'steps'} · ${new Date(item.createdAt).toLocaleString()}${item.keepTyped ? ' · typed text kept' : ''}`));
+    const remove = element('button', 'secondary-button', 'Delete'); remove.setAttribute('aria-label', `Delete recording ${item.title}`);
+    remove.onclick = () => command('recording-delete', { id: item.id });
+    const shares = element('div', 'recording-shares');
+    shares.append(element('span', '', 'Shared with'));
+    for (const bot of state.bots) {
+      const label = element('label'), box = element('input');
+      box.type = 'checkbox'; box.dataset.botId = bot.id; box.checked = item.sharedWith.includes(bot.id);
+      box.onchange = () => command('recording-share', { id: item.id, botIds: [...shares.querySelectorAll('input:checked')].map(input => input.dataset.botId) });
+      label.append(box, ` ${bot.name}`); shares.append(label);
+    }
+    row.append(copy, remove); list.append(row, shares);
+  }
+}
 function permissionChoice(selected, onChange) {
   const select = element('select');
   for (const [value, label] of [['block', 'Block'], ['allow', 'Allow'], ['ask', 'Use default']]) {
@@ -785,6 +881,8 @@ function showSettings() {
   const avatars = element('button', 'secondary-button', 'Customize bot avatars');
   avatars.onclick = () => showAvatarEditor(); body.append(avatars);
   body.append(element('p', 'settings-note', 'Pick a marble avatar or import your own. Eyes follow your mouse only while Telegram reports activity.'), element('hr', 'section-divider'));
+  body.append(element('h3', '', 'Recordings'), element('p', 'settings-note', 'Teach a bot a task: on a tab you control, press ● in the browser toolbar, do the task once, then Stop and save. A recording is a list of clicks, typed fields and pages, never video. Passwords, card numbers, one-time codes and hidden fields are never saved; other typed text is kept only if you tick Keep typed text. Each bot sees only the recordings shared with it, and can turn one into a skill. Up to 20 recordings.'));
+  const recordingsList = element('div'); recordingsList.id = 'recordings-list'; body.append(recordingsList, element('hr', 'section-divider')); renderRecordings();
   showSitePermissionSettings(body);
   showCookieSettings(body);
   const label = element('label', '', 'Remote desktop connection'); label.htmlFor = 'remote-url';
@@ -834,7 +932,16 @@ function showSettings() {
   checkSetup.onclick = () => runSetupCheck(checkSetup, checkResults);
   const report = element('button', 'secondary-button', 'Copy report'); report.onclick = copyReport;
   const support = element('button', 'link-button', 'Get help on Discord ↗'); support.onclick = () => command('open-support');
-  body.append(vpsField, sshField, element('div', 'setting-row'), sshSave, agentSetup, agentPrompt, agentUpdate, agentTest, wizard, agentResult, checkSetup, report, support, checkResults);
+  const hermesUpdate = element('button', 'secondary-button', 'Update Hermes');
+  const hermesResult = element('p', 'settings-note', '');
+  hermesUpdate.onclick = async () => {
+    hermesUpdate.disabled = true;
+    hermesResult.textContent = `Running hermes update on the ${remoteName()}; this can take a few minutes. Your bot will message you when it finishes.`;
+    const result = await command('hermes-update');
+    hermesUpdate.disabled = false;
+    hermesResult.textContent = result && typeof result === 'object' ? `${result.ok ? '✓' : '✗'} ${result.detail}` : '✗ The update did not run.';
+  };
+  body.append(vpsField, sshField, element('div', 'setting-row'), sshSave, agentSetup, agentPrompt, agentUpdate, agentTest, wizard, agentResult, checkSetup, report, support, checkResults, hermesUpdate, hermesResult);
   const primaryField = element('div', 'field'), primaryLabel = element('label', '', 'Primary bot'); primaryLabel.htmlFor = 'primary-bot';
   const primarySelect = element('select'); primarySelect.id = 'primary-bot';
   const none = element('option', '', 'None (defaults to the overseer bot)'); none.value = ''; primarySelect.append(none);
@@ -846,9 +953,13 @@ function showSettings() {
   const linkToggle = element('button', 'secondary-button', state.autoOpenLinks ? 'On' : 'Off');
   linkToggle.onclick = async () => { const next = !state.autoOpenLinks; await command('settings', { autoOpenLinks: next }); state.autoOpenLinks = next; linkToggle.textContent = next ? 'On' : 'Off'; };
   linkRow.append(linkToggle); body.append(linkRow);
+  const takeoverRow = element('div', 'setting-row'); takeoverRow.append(element('span', '', 'Let bots take over tabs automatically'));
+  const takeoverToggle = element('button', 'secondary-button', state.autoTakeover ? 'On' : 'Off');
+  takeoverToggle.onclick = async () => { const next = !state.autoTakeover; await command('settings', { autoTakeover: next }); state.autoTakeover = next; takeoverToggle.textContent = next ? 'On' : 'Off'; };
+  takeoverRow.append(takeoverToggle); body.append(takeoverRow);
   body.append(element('p', 'settings-note', `A link sent by you or a bot opens a local tab assigned to that bot, so both of you can see it. If this computer is unreachable, the bot opens its own copy on the ${remoteName()} desktop instead.`));
   body.append(element('p', 'settings-note', 'The setup installs the Alan’s Way Plugin on your gateway host and wires this computer’s browser connector for the selected bot. Run once per bot.'));
-  body.append(element('p', 'settings-note', `Taking over a local tab blocks new agent actions on that tab. ${remoteName()} control currently uses your existing shared desktop; it does not pause your Hermes bots.`));
+  body.append(element('p', 'settings-note', `When bots take over automatically, a bot takes back a local tab you took over the next time it acts, once you pause for 3 seconds; Take back returns it to you and keeps bots off it for a minute. A tab a bot handed you, or one you are recording, stays yours. Turned off, taking over a local tab blocks new agent actions on that tab. ${remoteName()} control currently uses your existing shared desktop; it does not pause your Hermes bots.`));
   body.append(element('hr', 'section-divider'));
   const sync = element('button', 'secondary-button', 'Sync Telegram bots'); sync.onclick = () => { command('sync-telegram'); toast('Reading Telegram’s bot chat list…'); };
   body.append(sync, element('p', 'settings-note', 'Bot discovery reads Telegram Web A’s local cache. Newly opened bot chats appear after Telegram saves them. Your Telegram session and browser logins stay on this computer.'));
@@ -918,6 +1029,21 @@ $('home-search').onsubmit = (event) => submitUrl(event, 'home-address');
 document.querySelectorAll('[data-url]').forEach((button) => { button.onclick = () => command('create-tab', { url: button.dataset.url }); });
 for (const action of ['back', 'forward', 'reload']) $(action).onclick = () => command('history', { id: state.activeTabId, action });
 $('control-button').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: tab.controller === 'agent' ? 'human' : 'agent' }); };
+async function stopRecording(save) {
+  stoppedRecordingAt = state.recording?.startedAt || 0;
+  const saved = await command('record-stop', { save, keepTyped: $('recording-keep').checked });
+  const bot = state.bots.find(item => item.id === state.selectedBotId);
+  if (saved) toast(`Saved “${saved.title}” (${saved.steps} steps)${bot ? `, shared with ${bot.name}. Ask ${bot.name} to turn it into a skill` : '. Share it with a bot in Settings → Recordings'}.`);
+  else if (saved === null && save) toast('Nothing was recorded.');
+}
+$('record-button').onclick = () => {
+  if (state.recording) return stopRecording(true);
+  $('recording-keep').checked = false;
+  command('record-start', { id: state.activeTabId });
+};
+$('recording-stop').onclick = () => stopRecording(true);
+$('recording-discard').onclick = () => stopRecording(false);
+$('takeover-take-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: 'human', takeBack: true }); };
 $('needs-you-give-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: 'agent' }); };
 $('handoff-button').onclick = async () => {
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
@@ -938,6 +1064,28 @@ $('modal').onclick = (event) => { if (event.target === $('modal')) closeModal();
 $('update-now').onclick = () => command('update-now');
 $('update-later').onclick = () => { updatePopupPinned = false; command('update-later'); };
 $('vm-banner-retry').onclick = () => command('vm-update-retry');
+// Opening re-checks the machine, so the plan does not lean on a cache that can
+// be half an hour old; it re-renders when the answer lands.
+$('update-all').onclick = () => { updateAllOpen = true; updateAllView = state?.updateAll?.busy ? 'run' : 'plan'; renderUpdateAll(); if (updateAllView === 'plan') command('versions-refresh'); };
+$('update-all-cancel').onclick = closeUpdateAll;
+$('update-all-go').onclick = () => {
+  // The run view starts empty, not on a previous run's rows, until main's
+  // first broadcast lands.
+  if (updateAllView === 'plan') {
+    updateAllView = 'run'; updateAllError = ''; state.updateAll = { busy: true, steps: [] }; renderUpdateAll();
+    // api.command, not command(): a failure lands in the dialog itself, never
+    // a toast behind an empty run view. Main refuses while another update
+    // holds the lock or when nothing is behind; that goes back to the plan.
+    api.command('update-all').then((reply) => {
+      if (reply?.refused) { updateAllView = 'plan'; toast(reply.refused); }
+    }).catch((error) => { updateAllError = error?.message || String(error); })
+      .then(() => api.getState()).then(render)
+      .catch((error) => { state.updateAll = { busy: false, steps: [] }; updateAllError ||= error?.message || String(error); renderUpdateAll(); });
+  }
+  else command('update-all-restart');
+};
+$('update-all-popup').onclick = (event) => { if (event.target === $('update-all-popup')) closeUpdateAll(); };
+$('update-all-popup').addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); closeUpdateAll(); } });
 $('update-popup').onclick = (event) => { if (event.target === $('update-popup') && !state?.update?.busy) $('update-later').click(); };
 $('update-popup').addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {

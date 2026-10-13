@@ -10,9 +10,10 @@ const REQUEST_TIMEOUT_MS = 20000;
 const ONCE_RETRY_MS = 60000;
 const STEP_LIMIT = 25;
 const WAIT_POLL_MS = 150;
-// All waits in one call share this, well under the connector's 90s abort, so
-// a batch never keeps acting after its caller has given up on it.
-const WAIT_BUDGET_MS = 45000;
+// Waits and act runs in one call start only within this budget. A run started
+// just before it ends can still take REQUEST_TIMEOUT_MS (20 s), keeping the call
+// well under the connector's 90 s abort.
+const CALL_BUDGET_MS = 45000;
 const READ_ONLY = new Set(['apps', 'snapshot', 'shot', 'menu']);
 
 function helperError(response) {
@@ -246,7 +247,7 @@ function createComputerService(driver) {
 
   // Polls the tree until an element's name or value contains the text (or no
   // longer does), so one call can act and then confirm what the action caused.
-  async function waitFor(pid, step, tree, menubar, deadline) {
+  async function waitFor(pid, step, tree, menubar, pin, deadline) {
     const needle = step.text.toLowerCase();
     const present = (current) => current.elements.some((element) => `${element.name || ''}\n${element.value || ''}`.toLowerCase().includes(needle));
     const started = Date.now();
@@ -258,7 +259,7 @@ function createComputerService(driver) {
       }
       if (tree) await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS));
       try {
-        const { ok, ...latest } = await driver.snapshot(pid, { menubar });
+        const { ok, ...latest } = await driver.snapshot(pid, { menubar, pin });
         tree = latest;
       } catch (error) {
         // The app quitting is what a wait for its text to go can be waiting for.
@@ -277,13 +278,13 @@ function createComputerService(driver) {
       throw fail('stale_ref', 'Pass the generation from your latest snapshot with every action that uses a ref.');
     const menubar = body.menubar === true;
     const results = [];
-    const deadline = Date.now() + WAIT_BUDGET_MS;
+    const deadline = Date.now() + CALL_BUDGET_MS;
     let tree = null;
     // Steps run in runs between waits. Every run carries the caller's own
     // generation, so a ref is always checked against the tree the caller saw.
     for (let at = 0; at < steps.length;) {
       if (steps[at].action === 'wait') {
-        const waited = await waitFor(pid, steps[at++], tree, menubar, deadline);
+        const waited = await waitFor(pid, steps[at++], tree, menubar, body.generation, deadline);
         tree = waited.tree;
         results.push(waited.result);
         if (waited.result.ok === false) break;
@@ -291,6 +292,10 @@ function createComputerService(driver) {
       }
       let end = at;
       while (end < steps.length && steps[end].action !== 'wait') end++;
+      if (Date.now() >= deadline) {
+        results.push({ ok: false, code: 'timeout', error: `Out of time: this call used its ${CALL_BUDGET_MS / 1000}s, so this step and the ones after it did not run. The tree in this reply is the latest; continue in a new call.` });
+        break;
+      }
       let reply;
       try { reply = await driver.act(pid, { steps: steps.slice(at, end), generation: body.generation, menubar }); }
       catch (error) {
@@ -333,8 +338,8 @@ function createComputer({ command, env }) {
   const helper = createHelper({ command, env });
   const driver = {
     apps: async () => (await helper.request({ cmd: 'apps' })).apps || [],
-    snapshot: async (pid, { menubar } = {}) => {
-      const { id, ...tree } = await helper.request({ cmd: 'snapshot', pid, ...(menubar ? { menubar: true } : {}) });
+    snapshot: async (pid, { menubar, pin } = {}) => {
+      const { id, ...tree } = await helper.request({ cmd: 'snapshot', pid, ...(menubar ? { menubar: true } : {}), ...(Number.isInteger(pin) ? { pin } : {}) });
       return tree;
     },
     act: async (pid, { steps, generation, menubar }) => {
@@ -350,6 +355,7 @@ function createComputer({ command, env }) {
       return {
         image: shot.image, imageWidth: shot.imageWidth, imageHeight: shot.imageHeight,
         windowX: shot.windowX, windowY: shot.windowY, windowWidth: shot.windowWidth, windowHeight: shot.windowHeight,
+        ...(shot.note ? { note: shot.note } : {}),
       };
     },
     close: () => helper.close(),

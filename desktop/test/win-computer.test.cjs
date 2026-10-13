@@ -78,8 +78,11 @@ test('the Windows driver keeps refs on the RuntimeId and checks each ref against
   const cs = fs.readFileSync(source, 'utf8');
   const cache = cs.slice(cs.indexOf('static CacheRequest WalkCache()'), cs.indexOf('static string Role('));
   assert.match(cache, /request\.Add\(AutomationElement\.RuntimeIdProperty\)/);
+  assert.match(cache, /request\.Add\(ExpandCollapsePattern\.ExpandCollapseStateProperty\)/, 'expand/collapse state rides on the walk cache');
   const ensure = cs.slice(cs.indexOf('static void EnsureRefs('), cs.indexOf('static Found RefOf('));
   assert.match(ensure, /Refs\.Lookup\(book, generation\)/);
+  assert.ok(ensure.indexOf('Refs.Lookup(book, generation)') < ensure.indexOf('DoWalk(pid)'), "the caller's record is read before the walk replaces it");
+  assert.ok(!ensure.includes('snap.Generation == generation'), 'an unchanged generation still compares each ref');
   assert.match(ensure, /Refs\.StillSame\(then, now\)/);
   assert.match(ensure, /"stale_ref: " \+ reference \+ " is gone or changed since your snapshot\. Take a fresh snapshot\."/);
   const same = cs.slice(cs.indexOf('public static bool StillSame('), cs.indexOf('public static string Signature('));
@@ -96,12 +99,17 @@ test('the Windows driver keeps refs on the RuntimeId and checks each ref against
   assert.match(prune, /refBooks\.Remove\(/);
   const book = cs.slice(cs.indexOf('static Refs.Book RefBook('), cs.indexOf('static Snap DoWalk('));
   assert.match(book, /created == 0 \|\|[^\n]*book\.Created != created/);
+  const walk = cs.slice(cs.indexOf('static Snap DoWalk('), cs.indexOf('static void Collect('));
+  assert.match(walk, /Refs\.Conflicts\(book, snap\.Generation, seen\)/, 'a conflicting tree claims a fresh generation');
   for (const check of [
     'fresh refs', 'stable refs', 'empty key never binds by key', 'rebound ref refused',
     'same control accepted', 'recycled row refused', 'shifted namesake refused',
-    'empty key refused', 'history capped', 'repeat generation skipped',
-    'evicted generation missing', 'runtime id key', 'toggle states',
+    'empty key refused', 'history capped', 'repeat generation keeps its record',
+    'evicted generation missing', 'unchanged tree keeps its generation',
+    'rebuilt control claims a new generation', 'changed expansion claims a new generation',
+    'free generation never conflicts', 'runtime id key', 'toggle states',
     'flipped toggle refused', 'mixed toggle refused',
+    'changed expansion refused', 'same expansion accepted',
   ]) {
     assert.ok(cs.includes(`"${check}"`), `missing selftest check ${check}`);
   }

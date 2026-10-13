@@ -64,10 +64,14 @@ function wsParse(buffer) {
 }
 function stubEvaluate(pages, sessionId, expression) {
   const page = pages.get(sessionId) || { url: 'about:blank', title: 'Stub page' };
-  if (expression.includes('items.push'))
+  // Like a page, a document numbers its control after the tab's seed and keeps that ref.
+  const seed = Number((/R\.assign\(entries, (\d+),/.exec(expression) || [])[1] || 0);
+  if (expression.includes('items.push')) {
+    page.ref ||= `e${seed + 1}`;
     return { title: page.title, url: page.url, text: 'stub page text',
-      elements: [{ ref: 's1-1', role: 'button', name: 'Stub button', type: '', value: '', href: '', disabled: false }],
+      elements: [{ ref: page.ref, role: 'button', name: 'Stub button', type: '', value: '', href: '', disabled: false }], seq: Number(page.ref.slice(1)),
       viewport: { width: 900, height: 700, deviceScaleFactor: 1 }, iframes: [] };
+  }
   if (expression.includes('document.readyState')) {
     if (String(page.url).includes('slow.example')) return { url: page.url, title: page.title, ready: 'loading' };
     return { url: page.url, title: page.title, ready: 'complete' };
@@ -99,7 +103,7 @@ function createStubCdp() {
       }
       case 'Page.navigate':
         if (String(params.url).includes('fail.example')) return { __error: 'net::ERR_FAILED' };
-        if (page) page.url = String(params.url).includes('redirect.example') ? 'https://login.example/' : params.url;
+        if (page) { page.url = String(params.url).includes('redirect.example') ? 'https://login.example/' : params.url; page.ref = undefined; }
         return {};
       case 'Network.setCookies':
         return params.cookies.some((c) => c.name === 'bad') ? { __error: 'Invalid cookie fields' } : {};
@@ -225,7 +229,7 @@ test('bots cannot read a human-controlled tab until control is taken', async () 
     for (const read of ['snapshot', 'screenshot']) {
       const blocked = await api(`/v1/tabs/${held.id}/${read}`, 'GET', undefined, { bot });
       assert.equal(blocked.status, 409, `${bot} ${read} on a human tab`);
-      assert.equal(blocked.data.error, 'Tab is under human control.');
+      assert.equal(blocked.data.error, 'Tab is under human control. Claim it to take it back, then read.');
     }
   }
   const meta = await api(`/v1/tabs/${held.id}`, 'GET', undefined, { bot: 'overseer-1' });
@@ -419,7 +423,7 @@ test('request mode answers in ASCII only so a PowerShell shell cannot mangle UTF
   assert.equal(listed.title, 'Caf\u00e9 \u65e5\u672c \ud83d\ude00', 'the escapes decode back to the same text');
 });
 
-test('a title-only change keeps the snapshot refs; a navigation drops them', async () => {
+test('title and address changes keep the snapshot refs; a navigation the host drives drops them', async () => {
   const tab = (await api('/v1/tabs', 'POST', { url: 'http://refs.example/' })).data;
   const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
   const click = () => api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', ref: snap.elements[0].ref, epoch: tab.epoch });
@@ -428,21 +432,27 @@ test('a title-only change keeps the snapshot refs; a navigation drops them', asy
   await until(async () => (await api(`/v1/tabs/${tab.id}`)).data.title === 'New title (1)');
   const kept = await click();
   assert.ok(!/Stale or unknown/.test(kept.data.error || ''), 'unread-count title churn must not invalidate refs');
+  // An in-page route change keeps the document; the page's ref store answers
+  // for the controls it replaced, so the host does not void every ref.
   main.stub.send('Target.targetInfoChanged', info('http://refs.example/next', 'Next'));
   await until(async () => (await api(`/v1/tabs/${tab.id}`)).data.url === 'http://refs.example/next');
+  const routed = await click();
+  assert.ok(!/Stale or unknown/.test(routed.data.error || ''), 'a route change is not a reason to void refs');
+  await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'navigate', url: 'http://refs.example/other', epoch: tab.epoch });
   const dropped = await click();
   assert.equal(dropped.status, 409);
   assert.match(dropped.data.error, /Stale or unknown/);
 });
 
-test('a repeat snapshot asks the page to restamp the held refs', async () => {
+test('a repeat snapshot numbers new refs after the ones the tab issued', async () => {
   const tab = (await api('/v1/tabs', 'POST', { url: 'http://restamp.example/' })).data;
+  const first = main.stub.calls.length;
   await api(`/v1/tabs/${tab.id}/snapshot`);
+  const read = (from) => main.stub.calls.slice(from).find((c) => c.method === 'Runtime.evaluate' && c.params.expression.includes('R.assign(entries,'));
+  assert.match(read(first).params.expression, /R\.assign\(entries, 0,/);
   const before = main.stub.calls.length;
   await api(`/v1/tabs/${tab.id}/snapshot`);
-  const read = main.stub.calls.slice(before).find((c) => c.method === 'Runtime.evaluate' && c.params.expression.includes('tokens.add'));
-  assert.ok(read, 'the second snapshot ran the page expression');
-  assert.ok(!read.params.expression.includes('if (-1 >= 0) tokens'), 'restamp is on once a baseline exists');
+  assert.match(read(before).params.expression, /R\.assign\(entries, 1,/, 'the seed is the highest ref the page reported');
 });
 
 test('a failed navigation closes the tab it opened instead of leaking it', async () => {
