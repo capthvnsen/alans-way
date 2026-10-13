@@ -367,7 +367,7 @@ test('look-alike names pass: Add to cart, Send code, a Pay with picker, Purchase
 test('Enter in a field is judged by its form\'s submit controls; a space in a field or a click into one is not', async () => {
   const field = { names: ['Email'], field: true, form: ['Place order'] };
   const f = fixture({ found: { look: field }, probe: field });
-  for (const key of ['Enter', 'Return', '\r']) {
+  for (const key of ['Enter', 'Return', '\r', '\n']) {
     await assert.rejects(f.perform({ action: 'press', ref: 'e1', key }), /commit_required: pressing Enter here submits the form with "Place order"/, key);
     await assert.rejects(f.perform({ action: 'press', key }), /commit_required: pressing Enter/, `${key} on the focused field`);
   }
@@ -433,5 +433,11 @@ test('page scripts, acting DevTools calls, reloads and action addresses are refu
   const silent = fixture({ page: 'no answer' });
   await assert.rejects(silent.agent.guard(silent.tab, { action: 'eval', code: '1' }), /did not answer the commit check/, 'a page that does not answer fails closed for scripts');
   await silent.agent.guard(silent.tab, { action: 'navigate', url: 'https://shop.example/pay' });
+});
+
+test('a key is judged by the element that holds focus, not by a target that could not take it', async () => {
+  const f = fixture({ found: { look: { names: ['Shipping notes'], field: false, form: null } }, probe: { names: ['Pay now'], field: false, form: null } });
+  await assert.rejects(f.perform({ action: 'press', ref: 'e1', key: 'Enter' }), /commit_required: "Pay now"/);
+  assert.equal(f.calls.filter(call => call.type === 'keyDown').length, 0);
 });
 

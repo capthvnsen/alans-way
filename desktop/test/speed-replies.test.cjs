@@ -197,6 +197,8 @@ const checkoutPage = `<!doctype html><meta charset="utf-8"><title>checkout</titl
 <form id="f" onsubmit="event.preventDefault();out.textContent='did:order'"><input id="email" aria-label="Email"><button type="button" ${did('cart')}>Add to cart</button><button type="submit" id="place" style="position:fixed;left:400px;top:300px;width:140px;height:40px">Place order</button></form>
 <button type="button" ${did('code')}>Send code</button><button type="button" ${did('gpay')}>Pay with Google Pay</button><a href="#h" ${did('history')}>Purchase history</a><button type="button" ${did('chip')}>Delete filter</button>
 <button id="icon" aria-label="Delete" ${did('icon')}><svg width="16" height="16"><rect width="16" height="16"/></svg></button><button id="titled" title="Buy now" ${did('titled')}><svg width="16" height="16"><circle cx="8" cy="8" r="8"/></svg></button><button id="sly" ${did('sly')}>P\u0430\u200By</button>
+<label for="hidden-pay" id="lbl">Continue to review</label><input type="submit" id="hidden-pay" form="f" value="Pay" style="display:none"><button id="masked" aria-label="Next" ${did('masked')}>Place order</button>
+<iframe id="inner" style="width:220px;height:60px" srcdoc="<body style='margin:0'><button style='width:100%;height:56px' onclick=&quot;parent.out.textContent='did:inner'&quot;>Pay now</button>"></iframe>
 <button id="reveal" onclick="if(!window.shown){shown=1;const b=document.createElement('button');b.textContent='Confirm and pay';b.onclick=()=>out.textContent='did:revealed';document.body.appendChild(b)}">Continue</button>
 <p id="out">none</p>`;
 // An embedded widget from another origin (a booking or payment frame): the
@@ -858,6 +860,9 @@ test('the app refuses an unapproved commit at dispatch, however it is targeted, 
   await refused({ action: 'click', selector: '#titled' }, 'an icon-only button named by title');
   await refused({ action: 'click', selector: '#sly' }, 'a name spelled with a Cyrillic letter and a zero-width space');
   await refused({ action: 'click', x: 470, y: 320 }, 'a click by position');
+  await refused({ action: 'click', selector: '#lbl' }, 'a label whose control is a hidden Pay submit');
+  await refused({ action: 'click', selector: '#masked' }, 'an aria-label that hides a visible "Place order"');
+  await refused({ action: 'click', selector: '#inner' }, 'a same-origin frame whose inside is a commit button');
   await refused({ action: 'double_click', name: 'Place order' }, 'a double click');
   await refused({ action: 'press', name: 'Email', key: 'Enter' }, 'Enter in a field whose form places the order');
   await refused({ action: 'press', key: '\r' }, 'a raw carriage return in the focused field');

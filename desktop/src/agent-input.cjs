@@ -113,10 +113,12 @@ function commitSource(seed) {
     const S = ${refsSource(seed)}, pick = ${JSON.stringify(PICK)};
     const up = (n) => n.parentElement || (n.getRootNode && n.getRootNode().host) || null;
     const clean = (list) => [...new Set(list.map(t => String(t || '').replace(/\\s+/g, ' ').trim().slice(0, 200)).filter(Boolean))].slice(0, 12);
-    // Its label, a submit input's value, and for an icon-only control the
-    // aria-label, title or alt inside it.
+    // Its label, its own short text (an aria-label can say "Next" over a
+    // visible "Place order"), a submit input's value, and for an icon-only
+    // control the aria-label, title or alt inside it.
     const read = (el) => {
-      const out = [S.describe(el).base];
+      const out = [S.describe(el).base], text = (el.innerText || '').trim();
+      if (text.length <= 80) out.push(text);
       if (el.tagName === 'INPUT' && /^(submit|image|button|reset)$/.test(el.type)) out.push(el.value || el.alt || (/^(submit|image)$/.test(el.type) ? 'Submit' : ''));
       if (!out[0]) for (const n of el.querySelectorAll('[aria-label],[title],img[alt],svg title')) out.push(n.getAttribute('aria-label') || n.getAttribute('title') || n.getAttribute('alt') || n.textContent);
       return out;
@@ -126,8 +128,10 @@ function commitSource(seed) {
     // element (a styled div), it and the wrappers around it that hold no control.
     C.at = (el) => {
       if (!el || el.nodeType !== 1) return [];
-      for (let n = el, hops = 0; n && n.nodeType === 1 && hops < 8; n = up(n), hops++) if (n.matches(pick)) return clean(read(n));
-      const out = [];
+      // A click on a label clicks its control too (a hidden submit, say); a
+      // field's label (a newsletter checkbox) presses nothing.
+      const label = el.closest('label'), out = label && label.control && label.control !== el && !C.field(label.control) ? read(label.control) : [];
+      for (let n = el, hops = 0; n && n.nodeType === 1 && hops < 8; n = up(n), hops++) if (n.matches(pick)) return clean([...out, ...read(n)]);
       for (let n = el, hops = 0; n && n.nodeType === 1 && hops < 4 && n !== n.ownerDocument.body && !n.querySelector(pick) && (n.innerText || '').length <= 80; n = up(n), hops++) out.push(...read(n));
       return clean(out);
     };
@@ -430,8 +434,10 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     }
     const submit = !!el.form && ((el.tagName === 'BUTTON' && (!kind || kind === 'submit')) || (el.tagName === 'INPUT' && kind === 'submit'));
     const link = !!el.closest('a[href]') && !/^#/.test(el.closest('a[href]').getAttribute('href') || '');
-    ${look ? `const C = ${commitSource(seed)}, look = C.look(C.opaque(at) ? at : el);
-    if (look.names) look.names = [...new Set([...look.names, ...C.at(at)])];` : 'const look = undefined;'}
+    ${look ? `// What the press will reach, followed through frames and shadow roots
+    // from the point it lands on: a frame or host target hides its inside.
+    const C = ${commitSource(seed)}, deep = C.hit(point.x, point.y), look = C.look(deep === 'frame' || C.opaque(at) ? 'frame' : el);
+    if (look.names) look.names = [...new Set([...look.names, ...C.at(at), ...(deep === 'frame' ? [] : C.at(deep))])];` : 'const look = undefined;'}
     return { ...point, ref, resolved, partial, submit, nav: submit || link, look, hl: { x: Math.round(r.left + ox), y: Math.round(r.top + oy), width: Math.round(r.width), height: Math.round(r.height) } };
   })()`;
 }
@@ -575,7 +581,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     if (!INPUT_ACTIONS.has(action)) throw fail('Unsupported agent input action.');
     if (action === 'type' && (typeof body.text !== 'string' || body.text.length > 20000)) throw fail('Provide text up to 20,000 characters.');
     const keyEvent = action === 'press' ? keyboardEvent(body) : null;
-    const enterOrSpace = keyEvent && (keyEvent.windowsVirtualKeyCode === 13 || keyEvent.windowsVirtualKeyCode === 32);
+    const enterOrSpace = keyEvent && (keyEvent.windowsVirtualKeyCode === 13 || keyEvent.windowsVirtualKeyCode === 32 || /[\r\n]/.test(keyEvent.text || ''));
     const gated = !body[APPROVED] && (['click', 'double_click', 'right_click', 'drag', 'select'].includes(action) || enterOrSpace);
     const knownRef = (ref) => typeof ref === 'string' && /^e\d+$/.test(ref) && tab.refs.has(ref);
     if (body.ref !== undefined && !knownRef(body.ref)) throw staleRef(body.ref);
@@ -713,7 +719,8 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       } else if (POINTER_ACTIONS.has(action)) point = await viewportPoint(body.x, body.y);
       if (gated) {
         const at = (x, y) => probe(`C.look(C.hit(${Number(x)}, ${Number(y)}))`);
-        await judge(found.look || await (action === 'press' ? probe('C.look(C.focus())') : at(point.x, point.y)));
+        // A key goes to whatever holds focus, which a target that cannot take focus leaves elsewhere.
+        await judge(action === 'press' ? await probe('C.look(C.focus())') : found.look || await at(point.x, point.y));
         if (action === 'drag') await judge(end ? end.look : await at(to.x, to.y));
       }
       const hl = found.hl || null;
