@@ -39,30 +39,39 @@ function makeHermes(shim = 'cmd') {
   fs.writeFileSync(path.join(state, 'gateway-status'), 'gateway is running\n');
   const paths = { log: path.join(state, 'hermes.log'), sends: path.join(state, 'sends.log'), gateways: path.join(state, 'gateways.log') };
   fs.writeFileSync(path.join(bin, `hermes.${shim}`), `@echo off\r
-setlocal EnableDelayedExpansion\r
+setlocal\r
 >> "%FAKE_HERMES_STATE%\\hermes.log" echo hermes %*\r
 set "cmd=%~1" & set "sub=%~2"\r
 if "%cmd%"=="-p" (set "cmd=%~3" & set "sub=%~4")\r
-if "%cmd%"=="--version" (echo Hermes Agent v9.9.9 test & exit /b 0)\r
-if "%cmd%"=="update" (\r
-  if exist "%FAKE_HERMES_STATE%\\hang.ps1" (powershell -NoProfile -ExecutionPolicy Bypass -File "%FAKE_HERMES_STATE%\\hang.ps1" & exit /b 0)\r
-  type "%FAKE_HERMES_STATE%\\update-out" 2>nul\r
-  set rc=0\r
-  if exist "%FAKE_HERMES_STATE%\\update-rc" (set /p rc=<"%FAKE_HERMES_STATE%\\update-rc")\r
-  exit /b !rc!\r
-)\r
-if "%cmd%"=="gateway" (\r
-  if "%sub%"=="status" (type "%FAKE_HERMES_STATE%\\gateway-status" 2>nul) else (>> "%FAKE_HERMES_STATE%\\gateways.log" echo %*)\r
-  if "%sub%"=="start" if exist "%FAKE_HERMES_STATE%\\gateway-start-rc" (\r
-    set /p rc=<"%FAKE_HERMES_STATE%\\gateway-start-rc"\r
-    exit /b !rc!\r
-  )\r
-  exit /b 0\r
-)\r
-if "%cmd%"=="send" (\r
-  >> "%FAKE_HERMES_STATE%\\sends.log" echo %*\r
-  exit /b 0\r
-)\r
+if "%cmd%"=="--version" goto version\r
+if "%cmd%"=="update" goto update\r
+if "%cmd%"=="gateway" goto gateway\r
+if "%cmd%"=="send" goto send\r
+exit /b 0\r
+:version\r
+echo Hermes Agent v9.9.9 test\r
+exit /b 0\r
+:update\r
+if exist "%FAKE_HERMES_STATE%\\hang.ps1" goto hang\r
+type "%FAKE_HERMES_STATE%\\update-out" 2>nul\r
+set rc=0\r
+if exist "%FAKE_HERMES_STATE%\\update-rc" set /p rc=<"%FAKE_HERMES_STATE%\\update-rc"\r
+exit /b %rc%\r
+:hang\r
+powershell -NoProfile -ExecutionPolicy Bypass -File "%FAKE_HERMES_STATE%\\hang.ps1"\r
+exit /b %errorlevel%\r
+:gateway\r
+if "%sub%"=="status" goto status\r
+>> "%FAKE_HERMES_STATE%\\gateways.log" echo %*\r
+if not "%sub%"=="start" exit /b 0\r
+if not exist "%FAKE_HERMES_STATE%\\gateway-start-rc" exit /b 0\r
+set /p rc=<"%FAKE_HERMES_STATE%\\gateway-start-rc"\r
+exit /b %rc%\r
+:status\r
+type "%FAKE_HERMES_STATE%\\gateway-status" 2>nul\r
+exit /b 0\r
+:send\r
+>> "%FAKE_HERMES_STATE%\\sends.log" echo %*\r
 exit /b 0\r
 `);
   return { state, bin, home, ...paths };
@@ -190,13 +199,17 @@ test('nonzero update and restart exits are preserved even without error output',
   const f = makeHermes();
   fs.writeFileSync(path.join(f.state, 'update-rc'), '7');
   fs.writeFileSync(path.join(f.state, 'gateway-start-rc'), '9');
+  const start = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `""${path.join(f.bin, 'hermes.cmd')}" gateway start"`], {
+    encoding: 'utf8', timeout: 10000, env: { ...process.env, FAKE_HERMES_STATE: f.state },
+  });
+  assert.equal(start.status, 9, 'the fake CLI must actually fail a gateway start: ' + start.stderr + start.stdout);
   const res = runScript(f);
   const result = lastJson(res);
   assert.equal(res.status, 1, res.stderr + res.stdout);
   assert.equal(result.ok, false);
   assert.equal(result.updated, false);
   assert.equal(result.error, 'hermes update exited 7');
-  assert.equal(result.gatewayRestarted, false, 'failed starts must never be reported as successful');
+  assert.equal(result.gatewayRestarted, false, 'failed starts must never be reported as successful: ' + res.stdout);
   assert.match(fs.readFileSync(f.gateways, 'utf8'), /^-p writer gateway start$/m, 'all stopped gateways still get a restart attempt');
 });
 
