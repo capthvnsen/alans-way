@@ -5,6 +5,7 @@
 // update steps in order (Hermes, its plugin, the browser host, then this app)
 // with the first failure stopping the rest.
 const { redactReport } = require('./setup-check.cjs');
+const { vmPluginLines } = require('./vm-update.cjs');
 
 const PLUGIN_REPO = 'capthvnsen/alans-way-agents';
 const NAMES = { hermes: 'Hermes', plugin: 'Alan’s Way plugin', host: 'Browser host', app: 'Alan’s Workspace' };
@@ -12,31 +13,14 @@ const NAMES = { hermes: 'Hermes', plugin: 'Alan’s Way plugin', host: 'Browser 
 // uses names without the curly apostrophe.
 const SHORT = { hermes: 'Hermes', plugin: 'plugin', host: 'browser host', app: 'app' };
 
-// SemVer 2.0 precedence (semver.org §11). mac-update's isNewer only takes
-// plain X.Y.Z, so an installed 1.2.0-rc.1 or a 1.2.0+build would never count
-// as behind. Pre-release identifiers compare numerically when both are
-// numbers (rc.10 > rc.2), numbers sort below words, a release beats its
-// pre-releases, and build metadata never matters. null when unparseable.
-const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$/;
-function compareVersions(a, b) {
-  const x = SEMVER.exec(String(a || '').trim()), y = SEMVER.exec(String(b || '').trim());
-  if (!x || !y) return null;
-  for (let i = 1; i <= 3; i++) if (Number(x[i]) !== Number(y[i])) return Number(x[i]) > Number(y[i]) ? 1 : -1;
-  if (!x[4] || !y[4]) return x[4] ? -1 : y[4] ? 1 : 0;
-  const p = x[4].split('.'), q = y[4].split('.');
-  for (let i = 0; i < Math.max(p.length, q.length); i++) {
-    if (p[i] === undefined || q[i] === undefined) return p[i] === undefined ? -1 : 1;
-    const pn = /^\d+$/.test(p[i]), qn = /^\d+$/.test(q[i]);
-    if (pn && qn) { if (Number(p[i]) !== Number(q[i])) return Number(p[i]) > Number(q[i]) ? 1 : -1; }
-    else if (pn !== qn) return pn ? -1 : 1;
-    else if (p[i] !== q[i]) return p[i] > q[i] ? 1 : -1;
-  }
-  return 0;
-}
+const { normalizeVersion, compareVersions, validVersionToken } = require('./update-version.cjs');
 const isNewer = (a, b) => compareVersions(a, b) === 1;
 
 // "Hermes Agent v0.21.6+763.g1fd1827 (2026.9.24) · stable" -> "0.21.6".
-const parseHermesVersion = (text) => /Hermes Agent v(\d+\.\d+\.\d+)/.exec(String(text || ''))?.[1] || '';
+function probeVersion(token) {
+  return validVersionToken(token) ? token.split('+')[0] : '';
+}
+const parseHermesVersion = (text) => probeVersion(/Hermes Agent v([^\s]+)/.exec(String(text || ''))?.[1]);
 
 // `hermes update --check` exits 0 whether or not an update exists; the verdict
 // is the text. A release channel names its target ("Selected release
@@ -45,7 +29,7 @@ const parseHermesVersion = (text) => /Hermes Agent v(\d+\.\d+\.\d+)/.exec(String
 function parseHermesCheck(text) {
   const t = String(text || '');
   if (/up to date|no newer release|no update available/i.test(t)) return { available: false, latest: '' };
-  if (/update available|release available/i.test(t)) return { available: true, latest: /release available:.*?\bv(\d+\.\d+\.\d+)/i.exec(t)?.[1] || '' };
+  if (/update available|release available/i.test(t)) return { available: true, latest: probeVersion(/release available:.*?\bv([^\s]+)/i.exec(t)?.[1]) };
   return { available: null, latest: '' };
 }
 
@@ -76,8 +60,12 @@ function versionRecord(previous, { target, check, pluginLatest = '', now }) {
   const stamp = { where, checkedAt: now, pluginLatest: pluginLatest || base.pluginLatest || '' };
   if (!check?.ok) return { ...base, ...stamp, offline: true };
   const verdict = parseHermesCheck(check.hermesCheck);
-  return { ...stamp, offline: false, hermes: parseHermesVersion(check.hermesVersion),
-    hermesUpdate: verdict.available, hermesLatest: verdict.latest, plugin: String(check.pluginVersion || ''),
+  const hermes = parseHermesVersion(check.hermesVersion);
+  return { ...stamp, offline: false, hermes,
+    // A check verdict proves the CLI ran; without a valid version it is unverified, not absent.
+    ...((check.hermesVersion || check.hermesCheck) && !hermes ? { hermesUnverified: true } : {}),
+    hermesUpdate: hermes ? verdict.available : null, hermesLatest: verdict.latest, plugin: String(check.pluginVersion || ''),
+    ...(Array.isArray(check.plugins) ? { plugins: check.plugins.filter((p) => ['alans-way', 'alans-way-computer'].includes(p?.name)) } : {}),
     host: String(check.hostVersion || check.version || ''), gatewayRunning: typeof check.gatewayRunning === 'boolean' ? check.gatewayRunning : null };
 }
 
@@ -89,8 +77,16 @@ function versionRecord(previous, { target, check, pluginLatest = '', now }) {
 function planSteps({ app, appUpdate = '', cache } = {}) {
   const c = cache || {};
   const steps = [];
-  if (c.hermes && !c.offline && c.hermesUpdate !== false) steps.push({ id: 'hermes', from: c.hermes, to: c.hermesLatest || 'latest' });
-  if (c.plugin && !c.offline && c.pluginLatest && isNewer(c.pluginLatest, c.plugin)) steps.push({ id: 'plugin', from: c.plugin, to: c.pluginLatest });
+  if ((c.hermes || c.hermesUnverified) && !c.offline && (compareVersions(c.hermes, c.hermes) === null || c.hermesUpdate !== false)) steps.push({ id: 'hermes', from: c.hermes || 'unverified', to: c.hermesLatest || 'latest' });
+  const plugins = Array.isArray(c.plugins) ? c.plugins : [];
+  // A legacy scalar cannot certify companion plugins or named profiles.
+  const incomplete = (!Array.isArray(c.plugins) && Boolean(c.where || c.plugin)) ||
+    (!plugins.length && Boolean(c.plugin)) || plugins.some((p) => !p?.name || !p.profile);
+  const stale = plugins.find((p) => {
+    const comparison = compareVersions(p?.version || p?.after, c.pluginLatest);
+    return comparison === null || comparison < 0;
+  });
+  if (!c.offline && (incomplete || c.pluginLatest && stale)) steps.push({ id: 'plugin', from: stale?.version || stale?.after || c.plugin || 'unverified', to: c.pluginLatest || 'latest' });
   const appTarget = appUpdate && isNewer(appUpdate, app) ? appUpdate : app;
   if (c.where === 'server' && c.host && !c.offline && isNewer(appTarget, c.host)) steps.push({ id: 'host', from: c.host, to: appTarget });
   if (appTarget !== app) steps.push({ id: 'app', from: app, to: appTarget });
@@ -110,21 +106,40 @@ function describeVersions({ app, appUpdate = '', cache, formatTime = (ms) => new
   const lines = [`Alan’s Workspace ${app}${behind('app') ? ` · ${appUpdate} ready to install` : ''}`];
   if (c.offline) lines.push(`Hermes: offline, ${where} did not answer${c.hermes ? ` (last seen ${c.hermes})` : ''}`);
   else if (c.hermes) lines.push(`Hermes ${c.hermes} on ${where}${c.hermesUpdate ? ` · ${c.hermesLatest || 'an update'} available` : c.hermesUpdate === false ? ' · up to date' : ''}`);
-  else if (c.where) lines.push(`Hermes: not found on ${where}`);
-  if (c.plugin) lines.push(`Alan’s Way plugin ${c.plugin}${behind('plugin') ? ` · ${c.pluginLatest} on GitHub` : ''}`);
+  else if (c.where) lines.push(`Hermes: ${c.hermesUnverified ? 'version unverified' : 'not found'} on ${where}`);
+  if (Array.isArray(c.plugins)) for (const p of c.plugins) lines.push(`${p.name} (${p.profile || 'default'}) ${p.version || p.after || 'version unverified'}${behind('plugin') ? ` · ${c.pluginLatest} on GitHub` : ''}`);
+  else if (c.plugin || c.where) lines.push(`Alan’s Way plugin ${c.plugin || 'version unverified'} · profiles unverified${c.pluginLatest ? ` · ${c.pluginLatest} on GitHub` : ''}`);
   if (c.where === 'server' && c.host) lines.push(`Browser host ${c.host} on the server${behind('host') ? ` · ${behind('host').to} goes with this app` : ''}`);
   lines.push(c.checkedAt ? `Checked ${formatTime(c.checkedAt)}` : 'Not checked yet');
   const hasUpdate = steps.some((step) => step.id !== 'hermes') || c.hermesUpdate === true;
   return { text: parts.join(' · '), tooltip: lines.join('\n'), steps, hasUpdate };
 }
 
-// Runs the steps in order. A runner answers { ok, detail, error, version }; a
-// throw is a failure with its message. A finished step's version replaces the
-// planned target; a failed one keeps the target it missed. Detail and error
-// text comes from the machine's output, so it is redacted like Check setup. The first failure stops the rest:
-// they end 'skipped', so the popover can say exactly what never ran.
+// Convert every profile's plugin result into evidence for the single step.
+// A successful guest process is not proof that any plugin reached its target.
+function pluginStepResult(result, step) {
+  const plugins = Array.isArray(result?.plugins) ? result.plugins : [];
+  const installed = plugins.filter((p) => ['alans-way', 'alans-way-computer'].includes(p.name));
+  const missed = installed.find((p) => compareVersions(p.after, step.to) === null || compareVersions(p.after, step.to) < 0);
+  const version = (missed || installed[0])?.after || '';
+  const lines = vmPluginLines({ ...result, plugins: installed }, { target: step.to });
+  const detail = lines.length ? lines.map((line) => line.text).join(' ') : 'No alans-way plugin was visited; check its profile, install path and Hermes CLI.';
+  return { ok: result?.ok === true, error: result?.error ? `${result.error} ${detail}` : '', version,
+    warning: !installed.length || Boolean(missed) || lines.some((line) => line.tone === 'warn'),
+    detail };
+}
+
+function comparisonLatest(row, result) {
+  const before = normalizeVersion(result?.before || row.from);
+  const movement = compareVersions(row.version, before);
+  return movement !== null && (movement > 0 || result?.current === true ||
+    (result?.updated === true && result?.before && movement === 0 && row.version !== before));
+}
+
+// A failure stops the remaining steps. A version shortfall is a warning:
+// the other components can still update, and only proven targets get a tick.
 async function runSteps(steps, runStep, onChange = () => {}) {
-  const rows = steps.map((step) => ({ ...step, state: 'pending', detail: '', error: '' }));
+  const rows = steps.map((step) => ({ ...step, state: 'pending', detail: '', error: '', version: '' }));
   const emit = () => onChange(rows.map((row) => ({ ...row })));
   let stopped = false;
   emit();
@@ -133,10 +148,17 @@ async function runSteps(steps, runStep, onChange = () => {}) {
     row.state = 'running'; emit();
     let result;
     try { result = await runStep(row); } catch (error) { result = { ok: false, error: error?.message || String(error) }; }
-    row.state = result?.ok === false ? 'failed' : 'done';
+    row.version = redactReport(normalizeVersion(result?.version));
     row.detail = redactReport(String(result?.detail || ''));
-    row.error = row.state === 'failed' ? redactReport(String(result?.error || 'it failed without a reason')) : '';
-    if (result?.version && row.state === 'done') row.to = String(result.version);
+    const comparison = compareVersions(row.version, row.to);
+    const reached = row.id === 'app' || (row.to === 'latest'
+      ? comparisonLatest(row, result)
+      : comparison !== null && comparison >= 0);
+    row.state = result?.ok !== true ? 'failed' : !reached || result?.warning ? 'warn' : 'done';
+    row.error = row.state === 'failed' ? redactReport(String(result?.error || 'it failed without a reason'))
+      : row.state === 'warn' ? redactReport(String(result?.error || row.detail || (compareVersions(row.version, row.version) !== null ? 'The installed version did not reach the target.' : 'The installed version could not be verified.'))) : '';
+    row.warningText = row.state === 'warn' ? warningText(row) : '';
+    if (row.version && row.state === 'done') row.to = row.version;
     stopped = row.state === 'failed';
     emit();
   }
@@ -144,37 +166,41 @@ async function runSteps(steps, runStep, onChange = () => {}) {
   return rows;
 }
 
-// The closing line under the steps: what failed, what already changed, what
-// never ran (and so stays on its old version), and whether the bot is back.
+function warningText(row, subject = row.name) {
+  const version = compareVersions(row.version, row.version) !== null ? `${compareVersions(row.version, row.from) === 0 ? 'unchanged' : 'on'} ${row.version}` : 'version unverified';
+  return `${subject} ${version} (wanted ${row.to}): ${row.error}`;
+}
+
+// The same verdict and per-plugin reasons are visible in the log and UI.
+function runLogText(rows) {
+  return rows.map((row) => row.state === 'warn' ? warningText(row, row.id)
+    : `${row.id} ${row.state}${row.error ? ` ${row.error}` : ''}${row.detail && row.detail !== row.error ? `: ${row.detail}` : ''}`).join(', ');
+}
+
 function summarizeRun(rows, { gatewayRunning = null, where = 'server' } = {}) {
   const failed = rows.find((row) => row.state === 'failed');
   const named = (state) => rows.filter((row) => row.state === state).map((row) => row.name);
-  // A step can finish without moving (already current, or a catalog pin
-  // behind the newest tag); it is named, never counted as updated.
-  const stayed = rows.filter((row) => row.state === 'done' && row.id !== 'app' && row.to === row.from).map((row) => `${row.name} (${row.from})`);
+  const warnings = rows.filter((row) => row.state === 'warn');
   const parts = [];
-  if (!failed) {
-    parts.push(stayed.length ? 'Done.' : 'Everything is updated.');
-    if (stayed.length) parts.push(`Still on the same version: ${stayed.join(', ')}.`);
-    if (rows.some((row) => row.id === 'app')) parts.push('Restart to finish the app update.');
-  } else {
-    parts.push(`${failed.name} did not update: ${failed.error.replace(/[.!?]?\s*$/, '.')}`);
-    if (named('done').length) parts.push(`Updated: ${named('done').join(', ')}.`);
-    if (named('skipped').length) parts.push(`Not started, still on the old version: ${named('skipped').join(', ')}.`);
-  }
+  if (failed) parts.push(`${failed.name} did not update: ${failed.error.replace(/[.!?]?\s*$/, '.')}`);
+  else if (!warnings.length) parts.push('Everything is updated.');
+  for (const row of warnings) parts.push(`${warningText(row).replace(/[.!?]?\s*$/, '.')}`);
+  if ((failed || warnings.length) && named('done').length) parts.push(`Updated: ${named('done').join(', ')}.`);
+  if (named('skipped').length) parts.push(`Not started, still on the old version: ${named('skipped').join(', ')}.`);
+  if (!failed && rows.some((row) => row.id === 'app' && row.state === 'done')) parts.push('Restart to finish the app update.');
   if (gatewayRunning === false) parts.push(`Hermes says your bot’s gateway is not running on the ${where}. Start it there (hermes gateway start, or your service manager).`);
   return parts.join(' ');
 }
 
-// The one message the bot sends home when the run ends, success or not.
 function reportText(rows) {
   const failed = rows.find((row) => row.state === 'failed');
+  const warnings = rows.filter((row) => row.state === 'warn');
   const done = rows.filter((row) => row.state === 'done' && row.id !== 'app' && row.to !== row.from).map((row) => `${SHORT[row.id]} ${row.to}`);
-  const same = rows.filter((row) => row.state === 'done' && row.id !== 'app' && row.to === row.from).map((row) => `${SHORT[row.id]} ${row.from}`);
   const app = rows.find((row) => row.id === 'app' && row.state === 'done');
-  const head = failed ? `Update everything stopped at the ${SHORT[failed.id]}: ${failed.error}.` : 'Update everything finished.';
+  const head = failed ? `Update everything stopped at the ${SHORT[failed.id]}: ${failed.error}.`
+    : warnings.length ? 'Update everything finished with warnings.' : 'Update everything finished.';
   const skipped = rows.filter((row) => row.state === 'skipped').map((row) => SHORT[row.id]);
-  return [head, done.length ? `Now on ${done.join(', ')}.` : '', same.length ? `Unchanged: ${same.join(', ')}.` : '', skipped.length ? `Not started: ${skipped.join(', ')}.` : '',
+  return [head, ...warnings.map((row) => `${warningText(row, SHORT[row.id])}.`), done.length ? `Now on ${done.join(', ')}.` : '', skipped.length ? `Not started: ${skipped.join(', ')}.` : '',
     app ? `The app installs ${app.to} when you restart it.` : ''].filter(Boolean).join(' ');
 }
 
@@ -187,4 +213,4 @@ function restartWarning(names) {
   return { message: `${who} working in a tab right now.`, detail: 'Restarting interrupts that task. The update installs whenever you restart, so you can wait until they finish.' };
 }
 
-module.exports = { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText };
+module.exports = { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText, pluginStepResult, runLogText, warningText };

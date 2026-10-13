@@ -181,11 +181,12 @@ test('checkVm asks the guest for checkout and live versions under a short cap', 
 
 test('checkVm passes through the Hermes half for the bottom bar', async () => {
   const line = JSON.stringify({ ok: true, version: '', hostVersion: '', busy: false, hermesVersion: 'Hermes Agent v0.21.6 (x)',
-    hermesCheck: '✓ Already up to date.', pluginVersion: '0.21.0', gatewayRunning: false });
+    hermesCheck: '✓ Already up to date.', pluginVersion: '0.21.0', plugins: [{ name: 'alans-way-computer', profile: 'work', version: '0.7.0' }], gatewayRunning: false });
   const { run } = fakeRun({ code: 0, out: `${line}\n`, err: '' });
   const result = await createVmUpdater({ run, readScript }).checkVm(vm());
   assert.deepEqual([result.ok, result.hermesVersion, result.hermesCheck, result.pluginVersion, result.gatewayRunning],
     [true, 'Hermes Agent v0.21.6 (x)', '✓ Already up to date.', '0.21.0', false]);
+  assert.deepEqual(result.plugins, [{ name: 'alans-way-computer', profile: 'work', version: '0.7.0' }]);
   const { run: older } = fakeRun({ code: 0, out: '{"ok":true,"version":"0.3.1","hostVersion":"0.3.1","busy":false}\n', err: '' });
   assert.equal((await createVmUpdater({ run: older, readScript }).checkVm(vm())).gatewayRunning, null, 'an older guest script reports no gateway verdict');
 });
@@ -422,4 +423,19 @@ test('doctorVm says when the server check ran out of time or stopped without a r
     { ok: false, error: 'The server check stopped without a report: progress sh: node: not found' });
   const check = await createVmUpdater({ run: fakeRun({ code: null, out: '', err: '' }).run, readScript }).checkVm(vm());
   assert.equal(check.error, 'Could not reach the VM over SSH. exit null', 'checkVm keeps its message');
+});
+
+test('a successful guest with no version never manufactures the requested host version', async () => {
+  const { run } = fakeRun({ code: 0, out: JSON.stringify({ ok: true, restarted: true }), err: '' });
+  const result = await createVmUpdater({ run, readScript }).updateVm(vm(), 'v0.21.5');
+  assert.equal(result.version, '', 'the caller must be able to warn that the target is unverified');
+});
+
+
+test('same-version code reported applied still exposes a failed gateway restart', () => {
+  const lines = vmPluginLines({ gatewayRestarted: false, plugins: [
+    { name: 'alans-way', before: '0.7.0', after: '0.7.0', status: 'current', error: 'version unchanged or unverified: Plugin alans-way updated.' },
+  ] });
+  assert.equal(lines.at(-1).tone, 'warn');
+  assert.match(lines.at(-1).text, /needs a restart/);
 });

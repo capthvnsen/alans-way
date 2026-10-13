@@ -400,7 +400,7 @@ function renderUpdatePopup() {
 // step's progress, the closing summary and, when the app staged an update,
 // "Restart to finish".
 let updateAllOpen = false, updateAllView = 'plan', updateAllError = '';
-const STEP_MARK = { pending: '·', running: '…', done: '✓', failed: '✗', skipped: '–' };
+const STEP_MARK = { pending: '·', running: '…', done: '✓', warn: '⚠', failed: '✗', skipped: '–' };
 function renderVersions() {
   const v = state.versions || {}, run = state.updateAll || {};
   const label = $('version-label');
@@ -431,6 +431,10 @@ function renderUpdateAll() {
     $('update-all-copy').textContent = run.busy ? 'Updating. You can keep working; this takes a few minutes.'
       : run.summary || (updateAllError ? `Update everything stopped: ${updateAllError}` : '');
     for (const row of run.steps || []) {
+      if (row.state === 'warn') {
+        list.append(element('p', 'update-line warn', `⚠ ${row.warningText}`));
+        continue;
+      }
       const tail = row.state === 'failed' ? `: ${row.error}` : row.state === 'skipped' ? ' (not started)' : row.detail ? ` · ${row.detail}` : '';
       list.append(element('p', `update-line ${row.state}`, `${STEP_MARK[row.state] || ''} ${row.name}: ${row.from} → ${row.to}${tail}`));
     }

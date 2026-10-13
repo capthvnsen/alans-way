@@ -10,6 +10,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { isSshTarget } = require('./core.cjs');
 const { isNewer } = require('./mac-update.cjs');
+const { compareVersions, normalizeVersion } = require('./update-version.cjs');
+const { redactReport } = require('./setup-check.cjs');
 
 const TAG_RE = /^v\d+\.\d+\.\d+$/;
 const SSH_OPTIONS = ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes'];
@@ -115,7 +117,7 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
   // `vars` become shell (or $env:) assignments ahead of the piped script, so
   // values reach it without touching the remote command line. Values are
   // reduced to plain text first; nothing in them can quote its way out.
-  async function runGuest(vm, { tag, check = false, doctor = false, hermesUpdate = false, plugins = false, vars = {}, timeoutMs = VM_TIMEOUT_MS, onProgress } = {}) {
+  async function runGuestRaw(vm, { tag, check = false, doctor = false, hermesUpdate = false, plugins = false, vars = {}, timeoutMs = VM_TIMEOUT_MS, onProgress } = {}) {
     if (!vm.local && !isSshTarget(String(vm.sshHost || '').trim())) return { ok: false, state: 'failed', error: 'The saved VM SSH address is invalid. Re-enter it as user@host or host.' };
     if (!check && !doctor && !hermesUpdate && !plugins && !TAG_RE.test(String(tag))) return { ok: false, state: 'failed', error: `Refusing non-release tag "${tag}".` };
     const kind = await guestKind(vm);
@@ -140,11 +142,42 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
     } : undefined;
     const res = await exec(vm, remote, { input: text, timeoutMs, onStdout });
     const result = parseResultLine(res.out) || {};
-    if (doctor && !Object.keys(result).length) return { ok: false, error: res.code === null ? 'The server check ran out of time.'
-      : `The server check stopped without a report: ${tail(`${res.out}\n${res.err}`) || `exit ${res.code}`}` };
+    if (doctor && !Object.keys(result).length) return res.code === null ? { ok: false, error: 'The server check ran out of time.' }
+      : { ok: false, executionError: { prefix: 'The server check stopped without a report: ', text: `${res.out}\n${res.err}`, fallback: `exit ${res.code}` } };
     if (res.code !== 0 && !Object.keys(result).length)
-      return { ok: false, state: 'failed', error: `Could not reach the VM over SSH. ${tail(res.err) || `exit ${res.code}`}` };
+      return { ok: false, state: 'failed', executionError: { prefix: 'Could not reach the VM over SSH. ', text: res.err, fallback: `exit ${res.code}` } };
     return result;
+  }
+
+  // One app boundary for guest JSON, raw execution failures and exceptions.
+  // No settings, persistent record, report or logger receives unsanitized data.
+  function sanitizeGuest(value) {
+    // Older guests may already have cut off a URL's scheme. Remove its
+    // remaining userinfo and query/fragment before any app consumer sees it.
+    if (typeof value === 'string') return redactReport(value)
+      .replace(/[^\s/]+@/g, '[redacted]@').replace(/[?#][^\s]*/g, '[redacted]');
+    if (Array.isArray(value)) return value.map(sanitizeGuest);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
+      .map(([key, item]) => [sanitizeGuest(key), sanitizeGuest(item)]));
+    return value;
+  }
+  async function runGuest(vm, opts) {
+    try {
+      const result = sanitizeGuest(await runGuestRaw(vm, opts));
+      // Truncate only after redaction: a long URL must not lose the syntax
+      // the redactor needs to recognize a credential.
+      if (result.executionError) {
+        const { prefix, text, fallback } = result.executionError;
+        result.error = prefix + (tail(text) || fallback);
+        delete result.executionError;
+      }
+      return result;
+    }
+    catch (error) {
+      const reason = sanitizeGuest(error?.message || String(error));
+      log('vm-guest', reason);
+      return { ok: false, state: 'failed', error: tail(reason) || 'The guest operation failed.' };
+    }
   }
 
   // Every result carries the target's id/label: callers key per-VM progress
@@ -158,14 +191,15 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
       const plugins = Array.isArray(result.plugins) ? result.plugins : [];
       const gatewayRestarted = result.gatewayRestarted === true;
       const gatewayRestartCmd = result.gatewayRestartCmd;
-      if (result.ok === true) return { id: vm.id, label: vm.label, ok: true, state: 'ok', version: String(result.version || String(tag || '').replace(/^v/, '')),
-        plugins, gatewayRestarted, pluginLines: vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd }) };
+      if (result.ok === true) return { id: vm.id, label: vm.label, ok: true, state: 'ok', version: String(result.version || ''),
+        plugins, gatewayRestarted, pluginLines: vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd }, { target: pluginsOnly ? '' : normalizeVersion(tag) }) };
       const error = String(result.error || 'The VM update failed without a reason.');
       return { id: vm.id, label: vm.label, ok: false, state: error === 'busy' ? 'busy' : 'failed', version: String(result.version || ''), error: error === 'busy' ? 'VM busy, will retry' : error,
-        plugins, gatewayRestarted, pluginLines: vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd }) };
+        plugins, gatewayRestarted, pluginLines: vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd }, { target: pluginsOnly ? '' : normalizeVersion(tag) }) };
     } catch (error) {
+      error = sanitizeGuest(error?.message || String(error));
       log('vm-update', error);
-      return { id: vm.id, label: vm.label, ok: false, state: 'failed', error: tail(error.message) || 'The VM update failed.', plugins: [], gatewayRestarted: false, pluginLines: [] };
+      return { id: vm.id, label: vm.label, ok: false, state: 'failed', error: tail(error) || 'The VM update failed.', plugins: [], gatewayRestarted: false, pluginLines: [] };
     }
   }
 
@@ -181,14 +215,15 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
       const result = await runGuest(vm, { hermesUpdate: true, vars, timeoutMs: HERMES_UPDATE_TIMEOUT_MS });
       const messages = (Array.isArray(result.messages) ? result.messages : [])
         .map((m) => ({ profile: String(m?.profile || ''), sent: m?.sent === true, error: String(m?.error || '') }));
-      const base = { version: String(result.version || ''), updated: result.updated === true,
+      const base = { version: String(result.version || ''), before: String(result.before || ''), current: result.current === true, updated: result.updated === true,
         messaged: result.messaged === true || messages.some((m) => m.sent), messages,
         gatewayRestarted: result.gatewayRestarted === true };
-      if (result.ok === true) return { ok: true, state: 'ok', error: '', ...base };
+      if (result.ok === true) return { ok: true, state: 'ok', error: String(result.error || ''), ...base };
       return { ok: false, state: 'failed', error: String(result.error || 'The Hermes update failed without a reason.'), ...base };
     } catch (error) {
+      error = sanitizeGuest(error?.message || String(error));
       log('hermes-update', error);
-      return { ok: false, state: 'failed', error: tail(error.message) || 'The Hermes update failed.', version: '', updated: false, messaged: false, messages: [], gatewayRestarted: false };
+      return { ok: false, state: 'failed', error: tail(error) || 'The Hermes update failed.', version: '', updated: false, messaged: false, messages: [], gatewayRestarted: false };
     }
   }
 
@@ -198,10 +233,11 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
       if (result.ok !== true) return { ok: false, error: String(result.error || 'check failed') };
       return { ok: true, version: String(result.version || ''), hostVersion: String(result.hostVersion || ''), busy: result.busy === true,
         hermesVersion: String(result.hermesVersion || ''), hermesCheck: String(result.hermesCheck || ''),
-        pluginVersion: String(result.pluginVersion || ''), gatewayRunning: typeof result.gatewayRunning === 'boolean' ? result.gatewayRunning : null };
+        pluginVersion: String(result.pluginVersion || ''), ...(Array.isArray(result.plugins) ? { plugins: result.plugins } : {}), gatewayRunning: typeof result.gatewayRunning === 'boolean' ? result.gatewayRunning : null };
     } catch (error) {
+      error = sanitizeGuest(error?.message || String(error));
       log('vm-check', error);
-      return { ok: false, error: tail(error.message) || 'check failed' };
+      return { ok: false, error: tail(error) || 'check failed' };
     }
   }
 
@@ -211,8 +247,9 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
       const result = await runGuest(vm, { doctor: true, timeoutMs: DOCTOR_TIMEOUT_MS });
       return result.ok === true ? result : { ok: false, error: String(result.error || 'The server check failed.') };
     } catch (error) {
+      error = sanitizeGuest(error?.message || String(error));
       log('vm-doctor', error);
-      return { ok: false, error: tail(error.message) || 'The server check failed.' };
+      return { ok: false, error: tail(error) || 'The server check failed.' };
     }
   }
 
@@ -301,18 +338,19 @@ function vmPhaseText(line) {
 
 // One UI line for a plugin result. `qualified` adds the plugin name (and the
 // profile for named profiles) when a VM reports more than one entry.
-function pluginStatusText(p, { qualified = false } = {}) {
+function pluginStatusText(p, { qualified = false, subject: namedSubject = '' } = {}) {
   const name = String(p?.name || '');
   const profile = String(p?.profile || '');
-  const subject = qualified ? `Plugin ${profile && profile !== 'default' ? `${name} (${profile})` : name}` : 'Plugin';
+  const subject = namedSubject || (qualified ? `Plugin ${profile && profile !== 'default' ? `${name} (${profile})` : name}` : 'Plugin');
   const cmd = `hermes${profile && profile !== 'default' ? ` -p ${profile}` : ''} plugins update ${name}`;
   const ver = (v) => `v${String(v || '').replace(/^v/, '')}`;
   switch (p?.status) {
     case 'updated':
       return p.before && p.after && p.before !== p.after
         ? `${subject} updated (${ver(p.before)} to ${ver(p.after)})` : `${subject} updated`;
-    case 'current': return `${subject} is current`;
-    case 'needs_approval': return `${subject} update needs your approval. On your VM run: ${cmd}`;
+    case 'current': return `${subject} is current${p.error ? `: ${p.error}` : ''}`;
+    case 'needs_approval': return `${subject} update needs your approval${p.error ? `: ${p.error}` : ''}. On your VM run: ${cmd}`;
+    case 'blocked': return `${subject} update blocked: ${p.error || 'the gateway is running'}`;
     case 'skipped': return `${subject} update skipped: ${p.error || 'local changes'}`;
     default: return `${subject} update failed: ${p.error || 'unknown reason'}`;
   }
@@ -325,7 +363,11 @@ function hermesUpdateDetail(result, label) {
   const where = label ? ` on the ${label}` : '';
   const messaged = result?.messaged === true;
   if (result?.ok) {
-    const what = result.updated === false ? 'Hermes is already up to date' : `Hermes updated${result.version ? ` to v${result.version}` : ''}`;
+    const valid = compareVersions(result.version, result.version) !== null;
+    const movement = compareVersions(result.version, result.before);
+    const moved = movement !== null && (movement > 0 || (result.updated === true && movement === 0 && normalizeVersion(result.version) !== normalizeVersion(result.before)));
+    const what = moved ? `Hermes updated${result.version ? ` to v${result.version}` : ''}` : valid && result.current === true ? 'Hermes is already up to date'
+      : `Hermes update warning: ${redactReport(result.error || 'version unchanged or unverified')}`;
     if (messaged) return `${what}${where}; your bot messaged you on Telegram.`;
     const first = (result.messages || []).find((m) => !m.sent && m.error)?.error || '';
     return `${what}${where}, but the bot could not message you${first ? `: ${first}` : ' (no Hermes profile answered)'}`;
@@ -337,14 +379,20 @@ function hermesUpdateDetail(result, label) {
 // The plugin lines shown under a VM's update result, plus a warning when new
 // plugin code never got loaded because the gateway restart did not finish.
 // Plugin problems are warnings; they never change the VM's ok/failed state.
-function vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd } = {}) {
+function vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd } = {}, { target = '' } = {}) {
   const list = Array.isArray(plugins) ? plugins : [];
   const qualified = list.length > 1;
-  const lines = list.map((p) => ({
-    text: pluginStatusText(p, { qualified }),
-    tone: p.status === 'updated' ? 'ok' : p.status === 'current' ? 'info' : 'warn',
-  }));
-  if (gatewayRestarted === false && list.some((p) => p.status === 'updated')) {
+  const lines = list.map((p) => {
+    const comparison = target ? compareVersions(p.after, target) : null;
+    const missed = target && (comparison === null || comparison < 0);
+    const subject = `Plugin ${p.name || 'unknown'} (${p.profile || 'default'})`;
+    const evidence = missed ? `${subject} ${comparison === null ? 'version unverified' : `on ${normalizeVersion(p.after)}`} (wanted ${target}): ${p.error || p.status || 'no version evidence'}`
+      : target ? pluginStatusText(p, { subject })
+      : pluginStatusText(p, { qualified });
+    return { text: redactReport(evidence),
+      tone: missed ? 'warn' : p.status === 'updated' ? 'ok' : p.status === 'current' ? 'info' : 'warn' };
+  });
+  if (gatewayRestarted === false && list.some((p) => p.status === 'updated' || (p.status === 'current' && /^version unchanged or unverified:/.test(p.error || '')))) {
     // The guest names the restart that works there: a supervisorctl command
     // when the gateway runs under a service manager like supervisord.
     const cmd = String(gatewayRestartCmd || 'hermes gateway restart');

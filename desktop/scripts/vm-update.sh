@@ -83,8 +83,10 @@ VERSION="" RESTARTED=false PLUGINS_JSON="" GATEWAY_RESTARTED=false
 GW_CMD="hermes gateway restart" GW_EXTRA="" GW_NAMED_CMD=""
 START_S="$(date +%s)"
 
-say() { printf 'vm-update: %s\n' "$*"; }
-json_string() { printf '%s' "$1" | tr '\n\t' '  ' | tr -d '\000-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-300; }
+# Git errors can include an authenticated remote URL. Keep the cause, not credentials.
+safe_git_error() { sed -E 's#([[:alpha:]][[:alnum:]+.-]*://)[^/@[:space:]]+@#\1[redacted]@#g; s#([[:alpha:]][[:alnum:]+.-]*://[^?#[:space:]]+)[?#][^[:space:]]*#\1[redacted]#g' | tr '\n' ' '; }
+say() { printf 'vm-update: %s\n' "$(printf '%s' "$*" | safe_git_error)"; }
+json_string() { printf '%s' "$1" | safe_git_error | tr '\n\t' '  ' | tr -d '\000-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-300; }
 json() { printf '{"ok":%s,"version":"%s","restarted":%s,"error":"%s","plugins":[%s],"gatewayRestarted":%s%s}\n' "$1" "$2" "$3" "$(json_string "$4")" "$5" "$6" "$GW_EXTRA"; }
 fail() { json false "$VERSION" "$RESTARTED" "$1" "$PLUGINS_JSON" "$GATEWAY_RESTARTED"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -99,6 +101,49 @@ bounded() {
   elif have perl; then perl -e 'alarm shift; exec @ARGV' "$_s" "$@"
   else "$@"; fi
 }
+
+# Git gets the smaller of its call cap and the remaining VM budget, with one
+# second reserved for the result. A dedicated process group includes helpers
+# (ssh, credential helpers, hooks). Kill the whole group on deadline; never
+# fall back to an unbounded command when no process supervisor is available.
+run_git_command() {
+  _git_left=$(( $(budget_left) - 1 ))
+  _git_secs="${ALANS_WAY_VM_GIT_TIMEOUT:-60}"
+  case "$_git_secs" in ''|*[!0-9]*) _git_secs=60;; esac
+  [ "$_git_secs" -gt 0 ] 2>/dev/null || _git_secs=60
+  [ "$_git_left" -gt 0 ] || { echo 'git timed out: VM time budget exhausted' >&2; return 124; }
+  [ "$_git_secs" -le "$_git_left" ] || _git_secs="$_git_left"
+  if have perl; then
+    perl -MPOSIX=setpgid -e '
+      my $secs = shift; my $pid = fork(); defined($pid) or die "git supervisor fork failed";
+      if (!$pid) { setpgid(0, 0) == 0 or die "git process group failed"; exec @ARGV; exit 127; }
+      setpgid($pid, $pid);
+      $SIG{ALRM} = sub { kill "KILL", -$pid; waitpid($pid, 0); print STDERR "git timed out after ${secs}s\n"; exit 124; };
+      alarm $secs; waitpid($pid, 0); my $status = $?; alarm 0;
+      # Also clean up helpers left by a command that has already exited.
+      kill "KILL", -$pid;
+      exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
+    ' "$_git_secs" "$@" </dev/null
+  elif have python3; then
+    python3 -c '
+import os,signal,subprocess,sys
+p=subprocess.Popen(sys.argv[2:], start_new_session=True)
+try:
+ code=p.wait(timeout=int(sys.argv[1]))
+except subprocess.TimeoutExpired:
+ code=124; print("git timed out after "+sys.argv[1]+"s",file=sys.stderr)
+finally:
+ try: os.killpg(p.pid,signal.SIGKILL)
+ except ProcessLookupError: pass
+ p.wait()
+sys.exit(code if code>=0 else 128-code)
+' "$_git_secs" "$@" </dev/null
+  else
+    echo 'git cannot run within the time budget: perl or python3 is required' >&2
+    return 124
+  fi
+}
+run_git() { run_git_command "$GIT" "$@"; }
 
 # True only when systemd is the running service manager. A systemctl binary
 # alone is not enough: minimal VM images ship one that answers "offline".
@@ -353,7 +398,8 @@ EOF
 
 # $1 = plugin manifest dir; prints its declared version ("" when unreadable).
 plugin_version() {
-  sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"]\{1,\}\)"\{0,1\}[[:space:]]*$/\1/p' "$1/plugin.yaml" 2>/dev/null | head -1
+  sed -n 's/^version:[[:space:]]*//p' "$1/plugin.yaml" 2>/dev/null | head -1 | \
+    sed -E "s/[[:space:]]+#.*$//; s/^[[:space:]]*['\"]?v?//; s/['\"]?[[:space:]]*$//"
 }
 # $1 = install-metadata entry; prints its recorded revision ("" when absent).
 plugin_rev() {
@@ -361,14 +407,19 @@ plugin_rev() {
 }
 
 # $1 = plugins dir, $2 = plugin name; prints the plugin's .install-metadata.json
-# entry. Braces are counted so pretty-printed and compact JSON both resolve to
-# the one block for that plugin name.
+# entry. Parse JSON so another plugin's source/catalog on the same line
+# cannot masquerade as this plugin's metadata. Never read the whole registry
+# as though it were one entry (old compact registries hit that path).
 plugin_meta() {
   [ -f "$1/.install-metadata.json" ] || return 0
-  awk -v key="$2" '
-    !inblk && match($0, "\"" key "\"[ \t]*:[ \t]*{") { inblk=1; n=0 }
-    inblk { print; n += gsub(/{/, "{") - gsub(/}/, "}"); if (n <= 0) exit }
-  ' "$1/.install-metadata.json" 2>/dev/null
+  if node_bin; then
+    "$NODE_BIN" -e 'try { const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(m[process.argv[2]]) process.stdout.write(JSON.stringify(m[process.argv[2]],null,2)); } catch {}' "$1/.install-metadata.json" "$2"
+  elif have python3; then
+    python3 -c 'import json,sys
+try:
+ m=json.load(open(sys.argv[1])); print(json.dumps(m.get(sys.argv[2],{}),indent=2))
+except (OSError,ValueError): pass' "$1/.install-metadata.json" "$2"
+  fi
 }
 
 # $1 = clone dir. Advances an alans-way-agents clone to its newest release tag,
@@ -378,30 +429,50 @@ plugin_meta() {
 clone_refresh() {
   _cr="$1"
   [ -d "$_cr/.git" ] || { echo "none"; return 0; }
-  _cr_url="$("$GIT" -C "$_cr" remote get-url origin 2>/dev/null || true)"
+  _cr_url="$(run_git -C "$_cr" remote get-url origin 2>&1)"; _cr_rc=$?
+  [ "$_cr_rc" -ne 124 ] || { echo "skipped $_cr_url"; return 0; }
+  [ "$_cr_rc" -eq 0 ] || { echo "none"; return 0; }
   case "$_cr_url" in *alans-way-agents*) ;; *) echo "none"; return 0;; esac
-  "$GIT" -C "$_cr" fetch --tags origin >/dev/null 2>&1 \
-    || "$GIT" -C "$_cr" fetch --unshallow --tags origin >/dev/null 2>&1 \
-    || say "plugin clone fetch reported a problem; using the refs already in $_cr"
-  _cr_tag="$("$GIT" -C "$_cr" tag -l 'v*' 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1.2n -k2n -k3n | tail -1)"
+  _cr_fetch="$(run_git -C "$_cr" fetch --tags origin 2>&1)"; _cr_rc=$?
+  [ "$_cr_rc" -ne 124 ] || { echo "skipped $_cr_fetch"; return 0; }
+  if [ "$_cr_rc" -ne 0 ]; then
+    _cr_fetch="$(run_git -C "$_cr" fetch --unshallow --tags origin 2>&1)" \
+      || { echo "skipped clone fetch failed: $(printf '%s' "$_cr_fetch" | safe_git_error)"; return 0; }
+  fi
+  _cr_shallow="$(run_git -C "$_cr" rev-parse --is-shallow-repository 2>&1)" \
+    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_shallow" | safe_git_error)"; return 0; }
+  if [ "$_cr_shallow" = true ]; then
+    _cr_fetch="$(run_git -C "$_cr" fetch --unshallow --tags origin 2>&1)" \
+      || { echo "skipped shallow history could not be fetched: $(printf '%s' "$_cr_fetch" | safe_git_error)"; return 0; }
+  fi
+  _cr_tags="$(run_git -C "$_cr" tag -l 'v*' 2>&1)" \
+    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_tags" | safe_git_error)"; return 0; }
+  _cr_tag="$(printf '%s\n' "$_cr_tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1.2n -k2n -k3n | tail -1)"
   [ -n "$_cr_tag" ] || { echo "none"; return 0; }
-  _cr_want="$("$GIT" -C "$_cr" rev-parse --verify -q "refs/tags/$_cr_tag^{commit}" 2>/dev/null || true)"
-  _cr_head="$("$GIT" -C "$_cr" rev-parse HEAD 2>/dev/null || true)"
+  _cr_want="$(run_git -C "$_cr" rev-parse --verify -q "refs/tags/$_cr_tag^{commit}" 2>&1)" \
+    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_want" | safe_git_error)"; return 0; }
+  _cr_head="$(run_git -C "$_cr" rev-parse HEAD 2>&1)" \
+    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_head" | safe_git_error)"; return 0; }
   [ -n "$_cr_want" ] && [ -n "$_cr_head" ] || { echo "none"; return 0; }
-  if "$GIT" -C "$_cr" merge-base --is-ancestor "$_cr_want" "$_cr_head" 2>/dev/null; then
-    echo "ahead $("$GIT" -C "$_cr" describe --tags --always 2>/dev/null || printf '%s' "$_cr_head" | cut -c1-12)"
+  _cr_ancestry="$(run_git -C "$_cr" merge-base --is-ancestor "$_cr_want" "$_cr_head" 2>&1)"; _cr_rc=$?
+  [ "$_cr_rc" -le 1 ] || { echo "skipped git ancestry check failed: $(printf '%s' "$_cr_ancestry" | safe_git_error)"; return 0; }
+  if [ "$_cr_rc" -eq 0 ]; then
+    echo "ahead $(run_git -C "$_cr" describe --tags --always 2>/dev/null || printf '%s' "$_cr_head" | cut -c1-12)"
     return 0
   fi
-  if [ -n "$("$GIT" -C "$_cr" status --porcelain 2>/dev/null | head -1)" ]; then
+  _cr_dirty="$(run_git -C "$_cr" status --porcelain 2>&1)" \
+    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_dirty" | safe_git_error)"; return 0; }
+  if [ -n "$_cr_dirty" ]; then
     echo "skipped local changes"; return 0
   fi
-  "$GIT" -C "$_cr" merge-base --is-ancestor "$_cr_head" "$_cr_want" 2>/dev/null \
-    || { echo "skipped not an ancestor of $_cr_tag"; return 0; }
-  if "$GIT" -C "$_cr" -c advice.detachedHead=false checkout -q "refs/tags/$_cr_tag" 2>/dev/null \
-      && [ "$("$GIT" -C "$_cr" rev-parse HEAD 2>/dev/null)" = "$_cr_want" ]; then
+  _cr_ancestry="$(run_git -C "$_cr" merge-base --is-ancestor "$_cr_head" "$_cr_want" 2>&1)"; _cr_rc=$?
+  [ "$_cr_rc" -le 1 ] || { echo "skipped git ancestry check failed: $(printf '%s' "$_cr_ancestry" | safe_git_error)"; return 0; }
+  [ "$_cr_rc" -eq 0 ] || { echo "skipped not an ancestor of $_cr_tag"; return 0; }
+  if _cr_err="$(run_git -C "$_cr" -c advice.detachedHead=false checkout -q "refs/tags/$_cr_tag" 2>&1)" \
+      && [ "$(run_git -C "$_cr" rev-parse HEAD 2>/dev/null)" = "$_cr_want" ]; then
     echo "moved $_cr_tag"; return 0
   fi
-  echo "skipped could not check out $_cr_tag"
+  echo "skipped could not check out $_cr_tag: $(printf '%s' "$_cr_err" | safe_git_error)"
 }
 
 # $1 = cached clone record path - echoes its recorded outcome or "".
@@ -433,10 +504,10 @@ plugin_update_status() {
     return 0
   fi
   if printf '%s' "$2" | grep -Eiq 'not applied|declined|confirm to continue|fail.?closed|not granted|new capabilities'; then
-    printf 'needs_approval|'; return 0
+    printf 'needs_approval|%s' "$(printf '%s' "$2" | tr '\n' ' ')"; return 0
   fi
   if [ "$1" -ne 0 ]; then printf 'failed|%s' "$(printf '%s\n' "$2" | tr '\n' ' ')"; return 0; fi
-  if printf '%s' "$2" | grep -Eiq 'already (up to date|at catalog pin)'; then printf 'current|'; return 0; fi
+  if printf '%s' "$2" | grep -Eiq 'already (up to date|at catalog pin)'; then printf 'current|%s' "$(printf '%s' "$2" | tr '\n' ' ')"; return 0; fi
   printf 'updated|'
 }
 
@@ -457,6 +528,11 @@ plugin_update_try() {
   [ -n "$_pu_after" ] || _pu_after="$(plugin_rev "$(plugin_meta "$_pu_ph/plugins" "$2")")"
   _pu_cls="$(plugin_update_status "$_pu_rc" "$_pu_out")"
   _pu_st="${_pu_cls%%|*}"; _pu_err="${_pu_cls#*|}"
+  [ "$_pu_st" = updated ] && CHANGED=true
+  if [ "$_pu_st" = updated ] && { [ -z "$_pu_after" ] || [ "$_pu_after" = "$3" ]; }; then
+    _pu_st=current
+    _pu_err="version unchanged or unverified: $(printf '%s' "$_pu_out" | tr '\n' ' ')"
+  fi
   case "$_pu_st" in
     updated) CHANGED=true;;
     needs_approval)
@@ -489,6 +565,10 @@ update_hermes_plugins() {
       _meta="$(plugin_meta "$_pdir" "$_name")"
       _before="$(plugin_version "$_pdir/$_name")"
       [ -n "$_before" ] || _before="$(plugin_rev "$_meta")"
+      if [ "$(budget_left)" -le 15 ]; then
+        PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$_pname" "$_name" "$_before" "$_before" skipped "plugin phase ran out of the time budget; retry the update")"
+        continue
+      fi
       _repo_ref=""
       # Catalog installs carry a "catalog" block (and a .hermes-catalog.json
       # marker): their reviewed pin is moved by `plugins update`, never here.
@@ -513,7 +593,6 @@ update_hermes_plugins() {
               continue;;
           esac;;
       esac
-      [ "$(budget_left)" -gt 15 ] || { say "plugin phase ran out of the time budget; remaining plugins will retry next update"; break 2; }
       plugin_update_try "$_pname" "$_name" "$_before" "$_repo_ref" collect
     done
   done <<EOF
@@ -860,12 +939,12 @@ EOF
 
 # The Hermes half of --check, for the app's bottom bar: the raw `hermes
 # --version` line, the verdict lines of `hermes update --check` (read-only, it
-# only fetches), the alans-way plugin version (default profile first) and
+# only fetches), every managed plugin/profile version (default first) and
 # whether the default gateway runs. The app parses the raw text, so a Hermes
 # on the app's own machine and one on a server share one parser.
 hermes_fields() {
   HHOME="${HERMES_HOME:-$HOME/.hermes}"
-  _hf_ver="" _hf_check="" _hf_gw=null _hf_plugin=""
+  _hf_ver="" _hf_check="" _hf_gw=null _hf_plugin="" _hf_plugins=""
   if hermes_bin; then
     _hf_ver="$(run_hermes 20 --version | sed -n '/Hermes Agent v/{p;q;}')"
     _hf_check="$(run_hermes 45 update --check | grep -Ei 'available|up to date|no newer release' | head -3)"
@@ -875,13 +954,19 @@ hermes_fields() {
   fi
   while read -r _hf_name _hf_home; do
     [ -n "$_hf_name" ] || continue
-    _hf_plugin="$(plugin_version "$_hf_home/plugins/alans-way")"
-    [ -n "$_hf_plugin" ] && break
+    for _hf_managed in alans-way alans-way-computer; do
+      [ -d "$_hf_home/plugins/$_hf_managed" ] || continue
+      _hf_installed="$(plugin_version "$_hf_home/plugins/$_hf_managed")"
+      # Keep the scalar field for older apps, but never stop collecting evidence.
+      if [ "$_hf_managed" = alans-way ] && [ -z "$_hf_plugin" ]; then _hf_plugin="$_hf_installed"; fi
+      _hf_entry="$(printf '{"name":"%s","profile":"%s","version":"%s"}' "$_hf_managed" "$(json_string "$_hf_name")" "$(json_string "$_hf_installed")")"
+      _hf_plugins="${_hf_plugins}${_hf_plugins:+,}$_hf_entry"
+    done
   done <<EOF
 $(list_profiles)
 EOF
-  printf ',"hermesVersion":"%s","hermesCheck":"%s","pluginVersion":"%s","gatewayRunning":%s' \
-    "$(json_string "$_hf_ver")" "$(json_string "$_hf_check")" "$(json_string "$_hf_plugin")" "$_hf_gw"
+  printf ',"hermesVersion":"%s","hermesCheck":"%s","pluginVersion":"%s","plugins":[%s],"gatewayRunning":%s' \
+    "$(json_string "$_hf_ver")" "$(json_string "$_hf_check")" "$(json_string "$_hf_plugin")" "$_hf_plugins" "$_hf_gw"
 }
 
 # ---------------------------------------------------------------- main
@@ -939,17 +1024,46 @@ if ! [ -w "$DIR" ]; then
   fi
 fi
 
-$SUDO "$GIT" -C "$DIR" fetch --tags origin >/dev/null 2>&1 \
-  || $SUDO "$GIT" -C "$DIR" fetch --unshallow --tags origin >/dev/null 2>&1 \
-  || $SUDO "$GIT" -C "$DIR" fetch --depth=1000000 --tags origin >/dev/null 2>&1 \
-  || say "git fetch reported a problem; trying the objects already in the checkout"
-# Only a real tag may satisfy the pin: resolve refs/tags/$TAG fully so a
-# same-named branch or lightweight ref can never stand in for it.
-WANT="$($SUDO "$GIT" -C "$DIR" rev-parse --verify -q "refs/tags/$TAG^{commit}" 2>/dev/null || true)"
-[ -n "$WANT" ] || fail "tag $TAG is not in the checkout and could not be fetched"
-$SUDO "$GIT" -C "$DIR" -c advice.detachedHead=false checkout -q "refs/tags/$TAG" \
-  || fail "could not check out $TAG"
-HEAD_NOW="$($SUDO "$GIT" -C "$DIR" rev-parse HEAD 2>/dev/null || true)"
+FETCH_ERROR="$(run_git_command $SUDO "$GIT" -C "$DIR" fetch --tags origin 2>&1)"; FETCH_RC=$?
+[ "$FETCH_RC" -ne 124 ] || fail "$FETCH_ERROR"
+if [ "$FETCH_RC" -ne 0 ]; then
+  FETCH_ERROR="$(run_git_command $SUDO "$GIT" -C "$DIR" fetch --unshallow --tags origin 2>&1)"; FETCH_RC=$?
+  [ "$FETCH_RC" -ne 124 ] || fail "$FETCH_ERROR"
+fi
+if [ "$FETCH_RC" -ne 0 ]; then
+  FETCH_ERROR="$(run_git_command $SUDO "$GIT" -C "$DIR" fetch --depth=1000000 --tags origin 2>&1)"; FETCH_RC=$?
+  [ "$FETCH_RC" -ne 124 ] || fail "$FETCH_ERROR"
+fi
+[ "$FETCH_RC" -eq 0 ] || say "git fetch reported a problem; trying the objects already in the checkout"
+# A successful tag fetch can still leave shallow ancestry truncated.
+SHALLOW="$(run_git_command $SUDO "$GIT" -C "$DIR" rev-parse --is-shallow-repository 2>&1)" \
+  || fail "git inspection failed: $(printf '%s' "$SHALLOW" | safe_git_error)"
+if [ "$SHALLOW" = true ]; then
+  FETCH_ERROR="$(run_git_command $SUDO "$GIT" -C "$DIR" fetch --unshallow --tags origin 2>&1)" \
+    || fail "shallow history could not be fetched: $(printf '%s' "$FETCH_ERROR" | safe_git_error)"
+fi
+# Only a real tag may satisfy the pin; retry its explicit ref when absent.
+WANT="$(run_git_command $SUDO "$GIT" -C "$DIR" rev-parse --verify -q "refs/tags/$TAG^{commit}" 2>/dev/null || true)"
+if [ -z "$WANT" ]; then
+  FETCH_ERROR="$(run_git_command $SUDO "$GIT" -C "$DIR" fetch origin "refs/tags/$TAG:refs/tags/$TAG" 2>&1)" || true
+  WANT="$(run_git_command $SUDO "$GIT" -C "$DIR" rev-parse --verify -q "refs/tags/$TAG^{commit}" 2>/dev/null || true)"
+fi
+[ -n "$WANT" ] || fail "tag $TAG is not in the checkout and could not be fetched: $(printf '%s' "$FETCH_ERROR" | safe_git_error)"
+DIRTY="$(run_git_command $SUDO "$GIT" -C "$DIR" status --porcelain 2>&1)" \
+  || fail "could not inspect checkout: $(printf '%s' "$DIRTY" | safe_git_error)"
+if [ -n "$DIRTY" ]; then
+  COUNT="$(printf '%s\n' "$DIRTY" | wc -l | tr -d ' ')"
+  FILES="$(printf '%s\n' "$DIRTY" | head -5 | cut -c4- | tr '\n' ' ')"
+  fail "checkout blocked by $COUNT local change(s): $FILES; save, commit or stash them in $DIR, then retry $TAG"
+fi
+ANCESTRY="$(run_git_command $SUDO "$GIT" -C "$DIR" merge-base --is-ancestor HEAD "$WANT" 2>&1)"; ANCESTRY_RC=$?
+[ "$ANCESTRY_RC" -ne 124 ] || fail "$ANCESTRY"
+[ "$ANCESTRY_RC" -eq 0 ] \
+  || fail "checkout HEAD is not an ancestor of $TAG; refusing a rollback or divergent checkout. Review origin and local commits in $DIR"
+CHECKOUT_ERROR="$(run_git_command $SUDO "$GIT" -C "$DIR" -c advice.detachedHead=false checkout -q "refs/tags/$TAG" 2>&1)" \
+  || fail "could not check out $TAG: $(printf '%s' "$CHECKOUT_ERROR" | safe_git_error); review git status in $DIR"
+HEAD_NOW="$(run_git_command $SUDO "$GIT" -C "$DIR" rev-parse HEAD 2>&1)" \
+  || fail "git inspection failed: $(printf '%s' "$HEAD_NOW" | safe_git_error)"
 [ "$HEAD_NOW" = "$WANT" ] || fail "checkout did not land on $TAG; refusing to run it"
 say "checkout pinned at $TAG"
 

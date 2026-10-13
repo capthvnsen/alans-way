@@ -23,8 +23,8 @@ const { createLog } = require('./main-log.cjs');
 const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
-const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, pluginStatusText, LOCAL_TARGET } = require('./vm-update.cjs');
-const { latestPluginTag, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning } = require('./update-all.cjs');
+const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
+const { latestPluginTag, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -1093,23 +1093,19 @@ async function restartIntoUpdate() {
 async function runUpdateStep(step, target) {
   if (step.id === 'hermes') {
     const result = await vmUpdater.hermesUpdateVm(target, { quiet: true });
-    return { ok: result.ok, error: result.error, version: result.version,
-      detail: result.ok ? (result.updated ? `Updated to ${result.version || 'the latest version'}` : 'Already up to date') : '' };
+    return { ok: result.ok, error: result.error, version: result.version, before: result.before, current: result.current, updated: result.updated,
+      detail: result.ok ? (result.updated ? `Updated to ${result.version || 'the latest version'}` : result.current ? 'Already up to date' : result.error || 'Version unchanged or unverified') : '' };
   }
   if (step.id === 'plugin') {
     const result = await vmUpdater.updatePluginsVm(target);
-    // A plugin that failed or stayed blocked is this step's failure; needs
-    // approval and skipped are warnings the detail line carries.
-    const bad = result.plugins.find((p) => p.status === 'failed' || p.status === 'blocked');
-    // The version it actually reached; a run that moved nothing stays on `from`.
-    const after = result.plugins.find((p) => p.name === 'alans-way' && p.after)?.after || step.from;
-    return { ok: result.ok && !bad, error: !result.ok ? result.error : bad ? pluginStatusText(bad) : '', version: after,
-      detail: result.pluginLines.map((line) => line.text).join(' ') };
+    return pluginStepResult(result, step);
   }
   if (step.id === 'host') {
     const result = await vmUpdater.updateVm(target, `v${step.to}`);
     noteVmResult(result); savePreferences();
-    return { ok: result.ok, error: result.error, version: result.version, detail: result.ok ? `Running ${result.version}` : '' };
+    const lines = result.pluginLines || [];
+    return { ok: result.ok, error: result.error, version: result.version, warning: lines.some((line) => line.tone === 'warn'),
+      detail: [result.ok ? `Running ${result.version}` : '', ...lines.map((line) => line.text)].filter(Boolean).join(' ') };
   }
   // The app only stages here; the restart is the user's click.
   return stagedAppVersion() ? { ok: true, detail: 'Downloaded. Restart to finish.' } : { ok: false, error: 'The app update is not downloaded yet; try again in a few minutes.' };
@@ -1793,7 +1789,7 @@ function registerIpc() {
           await waitForVersionCheck();
           mainLog().write('update all', `start ${steps.map((step) => `${step.id} ${step.from}->${step.to}`).join(', ')}`);
           const rows = await runSteps(steps, (step) => runUpdateStep(step, target), (next) => { updateRun.steps = next; broadcast(); });
-          mainLog().write('update all', rows.map((row) => `${row.id} ${row.state}${row.error ? ` ${row.error}` : ''}`).join(', '));
+          mainLog().write('update all', runLogText(rows));
           // Wait out any probe that started before the run, then take a fresh one.
           await waitForVersionCheck();
           await checkVmVersions().catch((error) => logError('vm-check', error));
