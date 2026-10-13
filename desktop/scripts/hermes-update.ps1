@@ -68,14 +68,22 @@ function Invoke-Hermes([int]$Secs, [string[]]$HermesArgs, [switch]$Unbudgeted) {
     try {
         $exe = $script:HermesBin
         $argLine = $HermesArgs -join ' '
-        if ($exe -match '\.(cmd|bat)$') { $argLine = "/d /c `"$exe`" $argLine"; $exe = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' } }
+        # cmd /c strips the outer quotes; keep an inner pair around the shim
+        # path when the notification argument also contains quoting.
+        if ($exe -match '\.(cmd|bat)$') { $argLine = "/d /c `"`"$exe`" $argLine`""; $exe = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' } }
         $p = Start-Process -FilePath $exe -ArgumentList $argLine -NoNewWindow -PassThru `
             -RedirectStandardOutput $out -RedirectStandardError $err -RedirectStandardInput $inp
+        # PowerShell 5.1 needs the handle cached before a timed wait, or
+        # redirected processes can report a null ExitCode after exiting.
+        $processHandle = $p.Handle
         if ($p.WaitForExit($Secs * 1000)) { $code = $p.ExitCode }
         else {
             # Kill the whole tree, not only the launcher: a .cmd/.bat shim
-            # leaves the real hermes process running after $p.Kill().
-            try { & taskkill /PID $p.Id /T /F 2>$null | Out-Null } catch { try { $p.Kill() } catch {} }
+            # leaves the real hermes process running after $p.Kill(). taskkill
+            # can fail without throwing, so the .NET kill runs whenever the
+            # process is still up afterward.
+            try { & taskkill /PID $p.Id /T /F 2>$null | Out-Null } catch {}
+            if (-not $p.HasExited) { try { $p.Kill() } catch {} }
             $code = 124
         }
         $text = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue) + "`n" +
@@ -147,9 +155,15 @@ if ($report) { $r = @{ code = 0; out = '' } } else {
     Say 'running hermes update'
     # The update may not eat the restart reserve: it gets at most the remaining
     # budget minus one gateway timeout per stopped gateway, so starting them back
-    # always fits. A cap at zero never spawns - Invoke-Hermes returns 124 first.
+    # always fits. The reserve itself is capped at half the run budget: past that,
+    # several stopped gateways would leave the update no time at all and skip it
+    # after they were already stopped. Restarts run unbudgeted, so a capped
+    # reserve only sizes the update's share. A cap at zero never spawns -
+    # Invoke-Hermes returns 124 first.
     $upSecs = EnvInt 'ALANS_WAY_HERMES_UPDATE_TIMEOUT' 200
-    $upCap = (BudgetLeft) - ($restart.Count * $gwTimeout) - 8
+    $reserveCap = [Math]::Max($gwTimeout, [int]((EnvInt 'ALANS_WAY_HERMES_BUDGET' 270) / 2))
+    $reserve = [Math]::Min($restart.Count * $gwTimeout, $reserveCap)
+    $upCap = (BudgetLeft) - $reserve - 8
     if ($upCap -lt $upSecs) { $upSecs = $upCap }
     $r = Invoke-Hermes $upSecs @('update', '--yes', '--keep-stash')
 }

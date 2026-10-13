@@ -152,19 +152,28 @@ function addStep(steps, step) {
 
 // Typed text stays only when the user ticked "keep typed text". Without it,
 // a page that echoes what was typed must not carry it to disk either: a path
-// segment equal to a typed value (/search/<term>) is redacted, and a title
-// that contains one is replaced by the fallback (the site's host name).
+// segment, title, step name or selector holding a typed value or one of its
+// 3+ letter words as a substring (/search/<term>, /s/<term>.html,
+// /prefix<term>suffix, a clicked suggestion) is redacted.
 const plain = value => { try { value = decodeURIComponent(value); } catch {} return value.toLowerCase().replace(/[\s+_-]+/g, ' ').trim(); };
 function finishRecording(steps, { keepTyped = false, title = '', fallbackTitle = '' } = {}) {
   if (keepTyped) return { title, steps: steps.map(step => ({ ...step })) };
   const typed = steps.filter(step => step.action === 'type' && step.value !== REDACTED).map(step => plain(step.value)).filter(value => value.length >= 2);
+  const terms = [...new Set(typed.flatMap(value => words(value)).filter(word => word.length >= 3))];
+  const leaks = text => {
+    const flat = plain(text);
+    return typed.some(value => value.length >= 3 ? flat.includes(value) : flat === value) || terms.some(term => flat.includes(term));
+  };
   const scrub = href => {
     const url = new URL(href);
-    return url.origin + url.pathname.split('/').map(segment => segment && typed.includes(plain(segment)) ? REDACTED : segment).join('/');
+    return url.origin + url.pathname.split('/').map(segment => segment && leaks(segment) ? REDACTED : segment).join('/');
   };
   return {
-    title: typed.some(value => value.length >= 3 && plain(title).includes(value)) || !title ? fallbackTitle : title,
-    steps: steps.map(step => ({ ...step, url: scrub(step.url), ...(step.action === 'type' ? { value: REDACTED } : {}) })),
+    title: !title || leaks(title) ? fallbackTitle : title,
+    steps: steps.map(step => ({ ...step, url: scrub(step.url),
+      ...(step.action === 'type' ? { value: REDACTED } : {}),
+      ...(leaks(step.name) ? { name: REDACTED } : {}),
+      ...(leaks(step.selector) ? { selector: REDACTED } : {}) })),
   };
 }
 

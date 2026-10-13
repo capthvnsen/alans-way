@@ -248,6 +248,42 @@ test('browser MCP exposes select, double click, right click and drag, and forwar
   assert.deepEqual(received, { controller: 'agent' });
 });
 
+test('a named action on a host without name-targets is refused before it is sent', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
+  const seen = [];
+  const host = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    seen.push({ line: req.method + ' ' + req.url, body: raw ? JSON.parse(raw) : undefined });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(req.url === '/v1/status' ? '{"capabilities":["tabs","snapshot"]}' : '{"dispatched":true}');
+  });
+  await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')],
+    env: { ...process.env },
+  });
+  const client = new Client({ name: 'browser-mcp-test', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {});
+    await transport.close().catch(() => {});
+    await new Promise((resolve) => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const action = (args) => client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't', epoch: 2, ...args } });
+  const press = await action({ action: 'press', name: 'Go', key: 'Enter' });
+  assert.equal(press.isError, true);
+  assert.match(press.content[0].text, /does not take name targets yet.*Act by ref/);
+  const batch = await action({ action: 'batch', steps: [{ action: 'scroll', name: 'More' }] });
+  assert.equal(batch.isError, true);
+  assert.ok(!seen.some((entry) => entry.line === 'POST /v1/tabs/t/actions'), 'the named step never reached the host');
+  const byRef = await action({ action: 'press', ref: 'e1', key: 'Enter' });
+  assert.equal(byRef.isError, undefined, 'ref actions need no capability');
+  assert.equal(seen.filter((entry) => entry.line === 'GET /v1/status').length, 1, 'the capability answer is cached');
+});
+
 async function computerHost(t, capabilities, hostLabel) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
   const seen = [];

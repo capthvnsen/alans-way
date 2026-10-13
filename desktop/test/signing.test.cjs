@@ -58,6 +58,9 @@ test('the publish config feeds GitHub releases', () => {
 
 test('the release workflow ships the blockmaps electron-updater diffs against', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'release.yml'), 'utf8');
+  const build = workflow.slice(workflow.indexOf('\n  build:'), workflow.indexOf('\n  upload:'));
+  assert.match(build, /fail-fast: false/, 'a failed Linux leg must not cancel the Mac and Windows legs');
+  assert.match(build, /continue-on-error: \$\{\{ matrix\.optional \|\| false \}\}/, 'only the optional Linux leg may fail');
   const upload = workflow.slice(workflow.indexOf('\n  upload:'), workflow.indexOf('\n  publish:'));
   const required = upload.match(/files=\(([^)]*)\)/)?.[1] ?? '';
   const optional = upload.split('\n').find((line) => line.includes('for f in')) ?? '';

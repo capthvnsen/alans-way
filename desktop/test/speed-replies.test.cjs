@@ -847,8 +847,13 @@ test('only an exact name acts; near matches come back as suggestions, and a cut-
   assert.equal(await pageText(tab, '#out'), 'C');
   const crowd = await openTab('/crowd');
   const cut = await act(crowd, { action: 'click', name: 'Item 3' });
-  assert.equal(cut.status, 200, JSON.stringify(cut.data));
-  assert.equal(cut.data.partial, true, 'a lookup that did not read the whole page says so');
+  assert.equal(cut.status, 409, `a lookup that did not read the whole page never acts: ${JSON.stringify(cut.data)}`);
+  assert.match(cut.data.error, /not confirmed as the only match/);
+  // The refusal hands back the ref it resolved to, so the caller can opt in.
+  const ref = /It resolved to (e\d+)/.exec(cut.data.error)?.[1];
+  assert.ok(ref, `the refusal names the resolved ref: ${cut.data.error}`);
+  const retry = await act(crowd, { action: 'click', ref });
+  assert.equal(retry.status, 200, JSON.stringify(retry.data));
 });
 
 test('the app refuses an unapproved commit at dispatch, however it is targeted, and lets look-alikes through', live, async () => {

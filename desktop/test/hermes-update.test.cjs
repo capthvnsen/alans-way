@@ -254,6 +254,7 @@ test('the shipped hermes-update scripts parse cleanly', () => {
   const res = spawnSync('sh', ['-n', SCRIPT], { encoding: 'utf8' });
   assert.equal(res.status, 0, res.stderr);
   assert.ok(fs.existsSync(WINDOWS_SCRIPT), 'the Windows guest twin ships alongside');
+  assert.match(fs.readFileSync(SCRIPT, 'utf8'), /timeout -k 5 "\$_secs"/, 'a timed-out hermes call is killed, not left running');
 });
 
 test('hermes update runs, then every live profile messages the user', async () => {

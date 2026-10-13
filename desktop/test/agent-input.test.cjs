@@ -197,6 +197,17 @@ test('clearing cancels a pending action and removes the separate cursor', async 
   assert.equal(f.calls.some(call => call.method.startsWith('Input.')), false);
 });
 
+test('a name lookup cut short by the control cap refuses instead of acting', async () => {
+  const f = fixture({ found: { x: 40, y: 60, ref: 'e9', resolved: 'Go', partial: true } });
+  await assert.rejects(f.perform({ action: 'click', name: 'Go' }), /not confirmed as the only match.*e9/);
+  assert.equal(f.calls.some(call => call.method.startsWith('Input.')), false, 'no input is dispatched on a guess');
+  assert.ok(f.tab.refs.has('e9'), 'the resolved ref is still issued so the agent can opt in');
+  // A ref or selector target never consults the name lookup and still acts.
+  const byRef = fixture();
+  await byRef.perform({ action: 'click', ref: 'e1' });
+  assert.equal(byRef.calls.some(call => call.type === 'mousePressed'), true);
+});
+
 test('a submit button gets a real click, not a synthetic submit', async () => {
   const f = fixture({ found: { submit: true, nav: true } });
   await f.perform({ action: 'click', ref: 'e2' });

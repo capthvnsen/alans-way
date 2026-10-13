@@ -184,6 +184,19 @@ async function requestOnce(endpoint, method = 'GET', body, epoch) {
   if (!response.ok) throw new Error(data.error || `Browser request failed (${response.status}).`);
   return data;
 }
+let hostCaps = { key: '', list: null };
+// name targets arrived after the loopback API, so ask the host once per
+// connection. A host without the capability silently ignores name on press
+// and scroll, which must be a clear error, not a dropped target.
+async function nameTargets() {
+  let key = '';
+  try { const connection = JSON.parse(fs.readFileSync(file, 'utf8')); key = `${connection.url}|${connection.token}`; } catch { /* requestOnce reports it */ }
+  if (!key || hostCaps.key !== key) {
+    const status = await requestOnce('/v1/status');
+    hostCaps = { key, list: Array.isArray(status && status.capabilities) ? status.capabilities : [] };
+  }
+  return hostCaps.list.includes('name-targets');
+}
 let hostChoice = { key: '', app: false };
 // null means use the app's API; otherwise the in-process driver. Decided per
 // connection (url + token), so an app restart or a host switch is re-checked.
@@ -315,15 +328,21 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
       }
       case 'cua_alans_way_action': {
         const { tabId, ...body } = args;
-        result = body.action === 'claim' || body.action === 'release'
-          ? await request(`${tabPath}/control`, 'POST', body.action === 'claim' ? { controller: 'agent' } : { controller: 'human', reason: body.reason, note: body.note })
-          : await request(`${tabPath}/actions`, 'POST', body).catch((error) => {
-            // A host from before name targets (one not yet updated) rejects a named step as untargeted.
-            const named = body.name !== undefined || (Array.isArray(body.steps) && body.steps.some((step) => step && step.name !== undefined));
-            if (named && /element reference or selector|fresh element reference, selector/i.test(error.message))
-              throw new Error(`${error.message} This browser host does not take name targets yet (it does not list name-targets in cua_alans_way_status). Act by ref from a snapshot until it is updated.`);
-            throw error;
-          });
+        if (body.action === 'claim' || body.action === 'release') {
+          result = await request(`${tabPath}/control`, 'POST', body.action === 'claim' ? { controller: 'agent' } : { controller: 'human', reason: body.reason, note: body.note });
+          break;
+        }
+        // A host from before name targets (one not yet updated) rejects a named step as untargeted.
+        const named = body.name !== undefined || (Array.isArray(body.steps) && body.steps.some((step) => step && step.name !== undefined));
+        // A failed status read is optimistic: the action still goes, and a
+        // rejection below still explains the missing capability.
+        if (named && !await nameTargets().catch(() => true))
+          throw new Error('This browser host does not take name targets yet (it does not list name-targets in cua_alans_way_status). Act by ref from a snapshot until it is updated.');
+        result = await request(`${tabPath}/actions`, 'POST', body).catch((error) => {
+          if (named && /element reference or selector|fresh element reference, selector/i.test(error.message))
+            throw new Error(`${error.message} This browser host does not take name targets yet (it does not list name-targets in cua_alans_way_status). Act by ref from a snapshot until it is updated.`);
+          throw error;
+        });
         break;
       }
       case 'cua_alans_way_recordings':

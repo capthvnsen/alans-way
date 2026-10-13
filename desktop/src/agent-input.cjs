@@ -728,6 +728,12 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         for (const item of found.many) issueRef(tab, item.ref);
         throw fail(`${found.count} controls match ${JSON.stringify(target.name)}: ${listed(found.many)}${found.count > found.many.length ? ', ...' : ''}. Act on one by ref, or narrow with role or row.${unread}`);
       }
+      if (found && found.partial) {
+        // The lookup stopped at its control cap, so an exact match is only
+        // unique among the controls read so far. Acting would guess.
+        if (found.ref) issueRef(tab, found.ref);
+        throw fail(`The page has more controls than a name lookup reads, so ${JSON.stringify(target.name)} is not confirmed as the only match.${found.ref ? ` It resolved to ${found.ref} (${JSON.stringify(found.resolved || target.name)}): act on that ref only if it is the control you mean.` : ''} Snapshot or scroll for the rest.`, 409);
+      }
       if (found && found.ref) issueRef(tab, found.ref);
       if (found && found.fail === 'covered') {
         const { name, close, closeName } = found.layer;

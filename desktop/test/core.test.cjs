@@ -502,7 +502,21 @@ test('a caller holding the last generation gets only what changed', async () => 
   const capped = await readEffect(() => ({ url, title, text: '', elements: rows(10, [{ ref: 'e99', role: 'link', name: 'New' }]), truncated: { elements: true }, gone: ['e12'] }), tab, { held: stale.generation });
   assert.deepEqual(capped.removed, ['e12']);
   assert.deepEqual(capped.changed.map((item) => item.ref), ['e99']);
+  assert.deepEqual(capped.truncated, { elements: true }, 'a delta reply reports the scan was cut short');
   assert.deepEqual(controlsDelta({ byRef: new Map() }, { elements: [] }), { changed: [], removed: [] });
+});
+
+test('action replies say when the effect read was truncated', async () => {
+  const tab = { refs: new Set(), generation: 1 };
+  const page = { url: 'https://a.example/', title: 'A', text: 'hello', elements: [{ ref: 'e1', role: 'button', name: 'Go' }] };
+  settleSnapshot(tab, page, 1);
+  const list = await readEffect(() => ({ ...page, elements: [{ ref: 'e1', role: 'button', name: 'Go' }, { ref: 'e2', role: 'button', name: 'Stop' }], truncated: { elements: true, text: true } }), tab);
+  assert.deepEqual(list.truncated, { elements: true, text: true }, 'the list reply reports the cut');
+  const quiet = await readEffect(() => ({ ...page, elements: [{ ref: 'e1', role: 'button', name: 'Go' }, { ref: 'e2', role: 'button', name: 'Stop' }], truncated: { text: true } }), tab);
+  assert.equal(quiet.elements, undefined);
+  assert.deepEqual(quiet.truncated, { text: true }, 'an unchanged reply reports the cut too');
+  const full = await readEffect(() => ({ ...page, elements: [{ ref: 'e1', role: 'button', name: 'Go' }, { ref: 'e2', role: 'button', name: 'Stop' }] }), tab);
+  assert.equal(full.truncated, undefined, 'a complete read reports nothing');
 });
 test('a long list in an action reply says how many controls it left out', async () => {
   const tab = { refs: new Set(), generation: 1 };

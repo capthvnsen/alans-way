@@ -16,9 +16,9 @@ require('../src/main.cjs');
 const PASSWORD = 'Tr0ub4dor-recorder-test-pw', CARD = '4111222233334444', NOTE = 'Private note 8317 for Ada', BIO = 'Bio text 5521 never kept';
 // Secret fields known only by their name (no type or autocomplete), typed with Keep typed text on.
 const NAMED_SECRETS = { security_code: 'sc-90417', verificationCode: 'vc-90418', one_time_code: 'otc-90419', social_security_number: 'ssn-90420',
-  cardnumber: 'cn-90421', ccnum: 'cc-90422', cvc2: 'cvc-90423', exp_date: 'exp-90424' };
+  cardnumber: 'cn-90421', ccnum: 'cc-90422', cvc2: 'cvc-90423', exp_date: 'exp-90424', paymentCardNo: 'pcn-90425' };
 // A search the page echoes into its path and title.
-const TERM = 'Zebra umbrella 7731', TERM_FORMS = ['umbrella 7731', 'umbrella-7731', 'umbrella%207731', 'Umbrella 7731'];
+const TERM = 'Zebra umbrella 7731', TERM_FORMS = ['zebra', 'umbrella 7731', 'umbrella-7731', 'umbrella%207731', 'Umbrella 7731'];
 const waitFor = async (read, predicate, timeout = 12000) => {
   const deadline = Date.now() + timeout;
   let value;
@@ -52,7 +52,8 @@ app.whenReady().then(async () => {
   server = http.createServer((req, res) => res.writeHead(200, { 'Cache-Control': 'no-store', 'Content-Type': 'text/html' }).end(req.url === '/account'
     ? '<title>Account</title><button id="save">Save plan</button>'
     : req.url === '/find'
-    ? `<title>Find</title><input id="q"><button id="go" onclick="location.href = '/search/' + document.getElementById('q').value.toLowerCase().replace(/ +/g, '-')">Go</button>`
+    ? `<title>Find</title><input id="q"><div id="pick" role="option">prefixzebrasuffix</div>
+       <button id="go" onclick="location.href = '/search/prefix' + document.getElementById('q').value.toLowerCase().replace(/ +/g, '-') + 'suffix'">Go</button>`
     : req.url.startsWith('/search/')
     ? `<title>Results for ${decodeURIComponent(req.url.slice(8)).replace(/-/g, ' ')}</title><p>No results</p>`
     : `<title>Sign in</title><form><label>Email <input id="email" autocomplete="email"></label><label>Password <input id="pw" type="password"></label>
@@ -127,8 +128,8 @@ app.whenReady().then(async () => {
     { url: `${base}/login`, action: 'type', role: 'input', name: 'Password', selector: '#pw', value: '[redacted]' },
     { url: `${base}/login`, action: 'type', role: 'input', name: 'Card', selector: '#card', value: '[redacted]' },
     { url: `${base}/login`, action: 'type', role: 'input', name: '', selector: '#pin', value: '[redacted]' },
-    { url: `${base}/login`, action: 'type', role: 'div', name: '', selector: '#note', value: '[redacted]' },
-    { url: `${base}/login`, action: 'type', role: 'textarea', name: 'Bio', selector: '#bio', value: '[redacted]' },
+    { url: `${base}/login`, action: 'type', role: 'div', name: '', selector: '[redacted]', value: '[redacted]' },
+    { url: `${base}/login`, action: 'type', role: 'textarea', name: '[redacted]', selector: '[redacted]', value: '[redacted]' },
     { url: `${base}/login`, action: 'click', role: 'a', name: 'Continue', selector: '#next' },
     { url: `${base}/account`, action: 'navigate', role: '', name: '', selector: '' },
     { url: `${base}/account`, action: 'click', role: 'button', name: 'Save plan', selector: '#save' },
@@ -153,13 +154,13 @@ app.whenReady().then(async () => {
   await type('#email', 'ada@example.com');
   await type('#pw', PASSWORD);
   for (const [name, value] of Object.entries(NAMED_SECRETS)) await type(`[name="${name}"]`, value);
-  await waitFor(getState, state => state.recording?.steps === 11);
+  await waitFor(getState, state => state.recording?.steps === 12);
   await evaluate('document.getElementById("recording-keep").click()');
   await evaluate('document.getElementById("recording-stop").click()');
   await waitFor(getState, state => state.recordings.length === 2);
   const kept = (await api(`/v1/recordings/${(await getState()).recordings[0].id}`, '4242')).data;
   assert.equal(kept.keepTyped, true);
-  assert.deepEqual(kept.steps.slice(1).map(step => step.value), ['ada@example.com', ...Array(9).fill('[redacted]')], 'secret-named fields stay redacted with Keep typed text');
+  assert.deepEqual(kept.steps.slice(1).map(step => step.value), ['ada@example.com', ...Array(10).fill('[redacted]')], 'secret-named fields stay redacted with Keep typed text');
 
   // A bot cannot take a tab while it records; with automatic takeover off, a
   // bot taking a tab the human never took over ends its recording, as before.
@@ -190,14 +191,17 @@ app.whenReady().then(async () => {
   await waitFor(() => blankWc.executeJavaScript('document.readyState === "complete"').catch(() => false), Boolean);
   await pause(300);
   await type('#q', TERM, blankWc);
+  await click('#pick', blankWc);
   await click('#go', blankWc);
   await waitFor(() => blankWc.executeJavaScript('document.title').catch(() => ''), title => title.includes('umbrella 7731'));
-  await waitFor(getState, state => state.recording?.steps === 4);
+  await waitFor(getState, state => state.recording?.steps === 5);
   const searched = await invoke('record-stop', { keepTyped: false });
   assert.equal(searched.title, '127.0.0.1', 'a title echoing the search falls back to the host');
   const search = (await api(`/v1/recordings/${searched.id}`)).data;
-  assert.deepEqual(search.steps.map(step => [step.action, step.url.replace(base, ''), step.value]), [
-    ['navigate', '/find', undefined], ['type', '/find', '[redacted]'], ['click', '/find', undefined], ['navigate', '/search/[redacted]', undefined]]);
+  assert.deepEqual(search.steps.map(step => [step.action, step.url.replace(base, ''), step.name, step.value]), [
+    ['navigate', '/find', '', undefined], ['type', '/find', '', '[redacted]'], ['click', '/find', '[redacted]', undefined],
+    ['click', '/find', 'Go', undefined], ['navigate', '/search/[redacted]', '', undefined]],
+  'the embedded term is scrubbed from the path and the clicked suggestion name');
   await invoke('close-tab', { id: blank.id });
 
   // The test password, card number, notes, named secrets and the search never reached disk.
