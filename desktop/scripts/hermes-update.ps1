@@ -66,9 +66,14 @@ function Invoke-Hermes([int]$Secs, [string[]]$HermesArgs, [switch]$Unbudgeted) {
     try {
         $exe = $script:HermesBin
         $argLine = $HermesArgs -join ' '
-        if ($exe -match '\.(cmd|bat)$') { $argLine = "/d /c `"$exe`" $argLine"; $exe = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' } }
+        # cmd /c strips the outer quotes; keep an inner pair around the shim
+        # path when the notification argument also contains quoting.
+        if ($exe -match '\.(cmd|bat)$') { $argLine = "/d /c `"`"$exe`" $argLine`""; $exe = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' } }
         $p = Start-Process -FilePath $exe -ArgumentList $argLine -NoNewWindow -PassThru `
             -RedirectStandardOutput $out -RedirectStandardError $err -RedirectStandardInput $inp
+        # PowerShell 5.1 needs the handle cached before a timed wait, or
+        # redirected processes can report a null ExitCode after exiting.
+        $processHandle = $p.Handle
         if ($p.WaitForExit($Secs * 1000)) { $code = $p.ExitCode }
         else {
             # Kill the whole tree, not only the launcher: a .cmd/.bat shim
