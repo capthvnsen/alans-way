@@ -65,6 +65,13 @@ run_hermes() {
   else "$HERMES_BIN_RES" "$@" </dev/null 2>&1; fi
 }
 
+# Only a complete semver-like token is version evidence, never an arbitrary
+# v-prefixed banner word. Build metadata and prereleases are valid.
+hermes_version() {
+  sed -n 's/^Hermes Agent v\([^[:space:]]*\).*/\1/p' | head -1 |
+    grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+}
+
 # The profiles hermes counts: the default home plus every profile dir with the
 # canonical name grammar, an identity marker and no .deleted tombstone - the
 # same rules hermes_cli uses to enumerate them.
@@ -94,14 +101,14 @@ hermes_bin || fail 'no hermes CLI on this machine'
 if [ -n "$REPORT" ]; then
   UPD_OUT="" UPD_RC=0
 else
-  BEFORE="$(run_hermes "$VERSION_TIMEOUT" --version | sed -n 's/^Hermes Agent v\([^[:space:]]*\).*/\1/p' | head -1)"
+  BEFORE="$(run_hermes "$VERSION_TIMEOUT" --version | hermes_version)"
   say 'running hermes update'
   UPD_OUT="$(run_hermes "$UPDATE_TIMEOUT" update --yes --keep-stash)"
   UPD_RC=$?
 fi
 # The version read follows the update so an install that moved reports the new
 # one; a failed update still reports whatever version is on the machine now.
-VERSION="$(run_hermes "$VERSION_TIMEOUT" --version | sed -n 's/^Hermes Agent v\([^[:space:]]*\).*/\1/p' | head -1)"
+VERSION="$(run_hermes "$VERSION_TIMEOUT" --version | hermes_version)"
 case "$UPD_RC" in
   0) ERR=""
      if [ -n "$VERSION" ] && [ -n "$BEFORE" ] && [ "$VERSION" != "$BEFORE" ]; then UPDATED=true
@@ -114,7 +121,11 @@ case "$UPD_RC" in
   *) ERR="$(tail_text "$UPD_OUT")"; [ -n "$ERR" ] || ERR="hermes update exited $UPD_RC";;
 esac
 [ -n "$REPORT" ] && UPDATED=false
-[ -n "$REPORT" ] || { [ "$UPD_RC" -eq 0 ] && say 'hermes update finished' || say "hermes update failed: $ERR"; }
+if [ -z "$REPORT" ]; then
+  if [ "$UPD_RC" -ne 0 ]; then say "hermes update failed: $ERR"
+  elif [ "$UPDATED" = true ] || [ "$CURRENT" = true ]; then say 'hermes update finished'
+  else say "hermes update warning: $ERR"; fi
+fi
 
 # The message each profile's bot sends home: outcome, host and version so a
 # user with several machines can tell them apart.

@@ -597,6 +597,7 @@ test('--check also reports Hermes, its update verdict, the plugin version and th
   addProfile(home, 'coder');
   addPlugin(home, 'coder', 'alans-way', '0.20.0');
   addPlugin(home, 'default', 'alans-way', '0.21.0');
+  addPlugin(home, 'default', 'alans-way-computer', '0.7.0');
   const port = await makeStatus({ version: '0.3.1', busy: false });
   const result = lastJson(await runScript(['--check'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state))));
   assert.equal(result.ok, true);
@@ -604,6 +605,11 @@ test('--check also reports Hermes, its update verdict, the plugin version and th
   assert.equal(result.hermesVersion, 'Hermes Agent v0.21.6+12.gabc (2026.9.24) · stable');
   assert.equal(result.hermesCheck, '→ Selected release available: stable v0.21.7 (71d34bad1045)', 'only the verdict line, not the advice under it');
   assert.equal(result.pluginVersion, '0.21.0', 'the default profile wins');
+  assert.deepEqual(result.plugins, [
+    { name: 'alans-way', profile: 'default', version: '0.21.0' },
+    { name: 'alans-way-computer', profile: 'default', version: '0.7.0' },
+    { name: 'alans-way', profile: 'coder', version: '0.20.0' },
+  ]);
   assert.equal(result.gatewayRunning, true);
   fs.writeFileSync(path.join(state, 'gwstate'), 'stopped\n');
   assert.equal(lastJson(await runScript(['--check'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)))).gatewayRunning, false);
@@ -2309,4 +2315,30 @@ test('hanging plugin clone fetch returns a skipped timeout and kills its child',
   const status = spawnSync('ps', ['-o', 'stat=', '-p', fs.readFileSync(childPid, 'utf8').trim()], { encoding: 'utf8' }).stdout.trim();
   assert.ok(!status || /^Z/.test(status), `git child is still running: ${status}`);
   assert.equal(git(clone, 'describe', '--tags').trim(), 'v0.6.0');
+});
+
+test('invalid Git call caps fall back to a positive cap within the remaining budget', () => {
+  const source = fs.readFileSync(SCRIPT, 'utf8');
+  const fn = (name) => source.slice(source.indexOf(name + '() {'), source.indexOf('\n}', source.indexOf(name + '() {')) + 2);
+  const runner = ['have', 'budget_left', 'run_git_command'].map(fn).join('\n');
+  for (const cap of ['0', '-1', 'garbage', '1.5']) {
+    const result = spawnSync('/bin/sh', ['-c', 'VM_BUDGET=2; START_S=$(date +%s)\n' + runner + '\nrun_git_command /bin/sh -c "sleep 3"'], {
+      encoding: 'utf8', timeout: 5000, env: { PATH: '/usr/bin:/bin', ALANS_WAY_VM_GIT_TIMEOUT: cap },
+    });
+    assert.equal(result.status, 124, cap + ': ' + result.stderr);
+    assert.match(result.stderr, /timed out/);
+  }
+});
+
+test('diagnostics scrub credentials and arbitrary queries/fragments for every URI scheme', () => {
+  const home = makeHermesHome(), state = makeHermesState(), { bin } = makeBin();
+  for (const scheme of ['git', 'file', 'custom+scheme']) {
+    addPlugin(home, 'default', 'alans-way', '0.7.0', { source: `${scheme}://synthetic-user:synthetic-password@host/repo?opaque=synthetic-query#synthetic-fragment` });
+    const res = spawnSync('sh', [path.join(__dirname, '../scripts/diagnose-update.sh')], {
+      encoding: 'utf8', timeout: 15000, env: { ...envFor('', home, bin, pluginEnv(home, state)) },
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.doesNotMatch(res.stdout, /synthetic-/);
+    assert.match(res.stdout, /host\/repo/);
+  }
 });

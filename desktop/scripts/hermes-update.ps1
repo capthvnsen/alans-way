@@ -138,6 +138,13 @@ if (-not $hhome) { $hhome = "$env:LOCALAPPDATA\hermes" }
 $quiet = $env:ALANS_WAY_HERMES_QUIET
 $report = $env:ALANS_WAY_HERMES_REPORT
 
+# Accept only a complete semver-like banner token as version evidence.
+function Get-HermesVersion([string]$Text) {
+    $m = [regex]::Match($Text, 'Hermes Agent v(\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)(?=\s|$)')
+    if ($m.Success) { return $m.Groups[1].Value }
+    return ''
+}
+
 # `hermes update` refuses while a gateway holds the install on Windows, so
 # every profile reporting a live gateway is stopped first and - success or
 # failure - started again afterward. A named profile the default-profile
@@ -160,8 +167,7 @@ foreach ($prof in (Get-Profiles $hhome)) {
 
 if ($report) { $r = @{ code = 0; out = '' } } else {
     $vBefore = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_VERSION_TIMEOUT' 20) @('--version')
-    $mBefore = [regex]::Match([string]$vBefore.out, 'Hermes Agent v([^\s]+)')
-    if ($mBefore.Success) { $script:Before = $mBefore.Groups[1].Value }
+    $script:Before = Get-HermesVersion ([string]$vBefore.out)
     Say 'running hermes update'
     # The update may not eat the restart reserve: it gets at most the remaining
     # budget minus one gateway timeout per stopped gateway, so starting them back
@@ -197,8 +203,7 @@ foreach ($name in $restart) {
 # The version read follows the update so an install that moved reports the new
 # one; a failed update still reports whatever version is on the machine now.
 $v = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_VERSION_TIMEOUT' 20) @('--version')
-$vm = [regex]::Match([string]$v.out, 'Hermes Agent v([^\s]+)')
-if ($vm.Success) { $script:Version = $vm.Groups[1].Value }
+$script:Version = Get-HermesVersion ([string]$v.out)
 if ($ok -and -not $report) {
     $script:Updated = $script:Version -and $script:Before -and ($script:Version -ne $script:Before)
     if (-not $script:Updated) {
@@ -207,7 +212,9 @@ if ($ok -and -not $report) {
         if (-not $script:Current) { $err = "version unchanged or unverified after hermes update: $(Tail-Text $r.out 180)" }
     }
 }
-if ($report) {} elseif ($ok) { Say 'hermes update finished' } else { Say "hermes update failed: $err" }
+if ($report) {} elseif (-not $ok) { Say "hermes update failed: $err" }
+elseif ($script:Updated -or $script:Current) { Say 'hermes update finished' }
+else { Say "hermes update warning: $err" }
 
 # The message each profile's bot sends home: outcome, host and version so a
 # user with several machines can tell them apart. Characters cmd would read

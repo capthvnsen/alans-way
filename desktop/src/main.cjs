@@ -1056,7 +1056,9 @@ async function runUpdateStep(step, target) {
   if (step.id === 'host') {
     const result = await vmUpdater.updateVm(target, `v${step.to}`);
     noteVmResult(result); savePreferences();
-    return { ok: result.ok, error: result.error, version: result.version, detail: result.ok ? `Running ${result.version}` : '' };
+    const lines = result.pluginLines || [];
+    return { ok: result.ok, error: result.error, version: result.version, warning: lines.some((line) => line.tone === 'warn'),
+      detail: [result.ok ? `Running ${result.version}` : '', ...lines.map((line) => line.text)].filter(Boolean).join(' ') };
   }
   // The app only stages here; the restart is the user's click.
   return stagedAppVersion() ? { ok: true, detail: 'Downloaded. Restart to finish.' } : { ok: false, error: 'The app update is not downloaded yet; try again in a few minutes.' };

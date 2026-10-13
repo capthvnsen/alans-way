@@ -59,6 +59,7 @@ function versionRecord(previous, { target, check, pluginLatest = '', now }) {
   const verdict = parseHermesCheck(check.hermesCheck);
   return { ...stamp, offline: false, hermes: parseHermesVersion(check.hermesVersion),
     hermesUpdate: verdict.available, hermesLatest: verdict.latest, plugin: String(check.pluginVersion || ''),
+    ...(Array.isArray(check.plugins) ? { plugins: check.plugins.filter((p) => ['alans-way', 'alans-way-computer'].includes(p?.name)) } : {}),
     host: String(check.hostVersion || check.version || ''), gatewayRunning: typeof check.gatewayRunning === 'boolean' ? check.gatewayRunning : null };
 }
 
@@ -71,7 +72,12 @@ function planSteps({ app, appUpdate = '', cache } = {}) {
   const c = cache || {};
   const steps = [];
   if (c.hermes && !c.offline && c.hermesUpdate !== false) steps.push({ id: 'hermes', from: c.hermes, to: c.hermesLatest || 'latest' });
-  if (c.plugin && !c.offline && c.pluginLatest && isNewer(c.pluginLatest, c.plugin)) steps.push({ id: 'plugin', from: c.plugin, to: c.pluginLatest });
+  const plugins = Array.isArray(c.plugins) ? c.plugins : c.plugin ? [{ version: c.plugin }] : [];
+  const stale = plugins.find((p) => {
+    const comparison = compareVersions(p.version || p.after, c.pluginLatest);
+    return comparison === null || comparison < 0;
+  });
+  if (!c.offline && c.pluginLatest && stale) steps.push({ id: 'plugin', from: stale.version || stale.after || 'unverified', to: c.pluginLatest });
   const appTarget = appUpdate && isNewer(appUpdate, app) ? appUpdate : app;
   if (c.where === 'server' && c.host && !c.offline && isNewer(appTarget, c.host)) steps.push({ id: 'host', from: c.host, to: appTarget });
   if (appTarget !== app) steps.push({ id: 'app', from: app, to: appTarget });
@@ -92,7 +98,8 @@ function describeVersions({ app, appUpdate = '', cache, formatTime = (ms) => new
   if (c.offline) lines.push(`Hermes: offline, ${where} did not answer${c.hermes ? ` (last seen ${c.hermes})` : ''}`);
   else if (c.hermes) lines.push(`Hermes ${c.hermes} on ${where}${c.hermesUpdate ? ` · ${c.hermesLatest || 'an update'} available` : c.hermesUpdate === false ? ' · up to date' : ''}`);
   else if (c.where) lines.push(`Hermes: not found on ${where}`);
-  if (c.plugin) lines.push(`Alan’s Way plugin ${c.plugin}${behind('plugin') ? ` · ${c.pluginLatest} on GitHub` : ''}`);
+  if (Array.isArray(c.plugins)) for (const p of c.plugins) lines.push(`${p.name} (${p.profile || 'default'}) ${p.version || p.after || 'version unverified'}${behind('plugin') ? ` · ${c.pluginLatest} on GitHub` : ''}`);
+  else if (c.plugin) lines.push(`Alan’s Way plugin ${c.plugin}${behind('plugin') ? ` · ${c.pluginLatest} on GitHub` : ''}`);
   if (c.where === 'server' && c.host) lines.push(`Browser host ${c.host} on the server${behind('host') ? ` · ${behind('host').to} goes with this app` : ''}`);
   lines.push(c.checkedAt ? `Checked ${formatTime(c.checkedAt)}` : 'Not checked yet');
   const hasUpdate = steps.some((step) => step.id !== 'hermes') || c.hermesUpdate === true;

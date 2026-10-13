@@ -375,3 +375,27 @@ test('the standalone Hermes settings detail warns for unchanged unverified resul
   assert.match(text, /warning.*unchanged or unverified/);
   assert.doesNotMatch(text, /already up to date|Hermes updated/);
 });
+
+test('malformed version movement and false current claims warn in guest, settings and bot', async () => {
+  for (const check of ['', 'Already up to date.']) {
+    const { bin, state, sendLog } = makeHermes();
+    fs.writeFileSync(path.join(bin, 'hermes'), `#!/bin/sh
+case "$1" in
+  --version) if [ -f "$FAKE_HERMES_STATE/applied" ]; then echo 'Hermes Agent vbad-new'; else echo 'Hermes Agent vbad-old'; fi;;
+  update) if [ "\${2:-}" = --check ]; then cat "$FAKE_HERMES_STATE/check-out"; else touch "$FAKE_HERMES_STATE/applied"; echo 'Update completed.'; fi;;
+  send) printf '%s\\n' "$*" >> "$FAKE_HERMES_STATE/sends.log";;
+esac
+`, { mode: 0o755 });
+    fs.writeFileSync(path.join(state, 'check-out'), check);
+    const res = await runScript(envFor(bin, state, { HERMES_HOME: mktemp('hermes-update-home-') }));
+    const result = lastJson(res);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(result.updated, false);
+    assert.equal(result.current, false);
+    assert.equal(result.version, '');
+    assert.match(result.error, /unverified/);
+    assert.match(hermesUpdateDetail(result, 'fixture'), /warning/);
+    assert.match(fs.readFileSync(sendLog, 'utf8'), /warning/);
+    assert.doesNotMatch(res.stdout + fs.readFileSync(sendLog, 'utf8'), /hermes update finished|Hermes update finished/);
+  }
+});

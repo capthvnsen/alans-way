@@ -181,11 +181,12 @@ test('checkVm asks the guest for checkout and live versions under a short cap', 
 
 test('checkVm passes through the Hermes half for the bottom bar', async () => {
   const line = JSON.stringify({ ok: true, version: '', hostVersion: '', busy: false, hermesVersion: 'Hermes Agent v0.21.6 (x)',
-    hermesCheck: '✓ Already up to date.', pluginVersion: '0.21.0', gatewayRunning: false });
+    hermesCheck: '✓ Already up to date.', pluginVersion: '0.21.0', plugins: [{ name: 'alans-way-computer', profile: 'work', version: '0.7.0' }], gatewayRunning: false });
   const { run } = fakeRun({ code: 0, out: `${line}\n`, err: '' });
   const result = await createVmUpdater({ run, readScript }).checkVm(vm());
   assert.deepEqual([result.ok, result.hermesVersion, result.hermesCheck, result.pluginVersion, result.gatewayRunning],
     [true, 'Hermes Agent v0.21.6 (x)', '✓ Already up to date.', '0.21.0', false]);
+  assert.deepEqual(result.plugins, [{ name: 'alans-way-computer', profile: 'work', version: '0.7.0' }]);
   const { run: older } = fakeRun({ code: 0, out: '{"ok":true,"version":"0.3.1","hostVersion":"0.3.1","busy":false}\n', err: '' });
   assert.equal((await createVmUpdater({ run: older, readScript }).checkVm(vm())).gatewayRunning, null, 'an older guest script reports no gateway verdict');
 });

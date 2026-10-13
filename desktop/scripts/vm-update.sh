@@ -109,6 +109,8 @@ bounded() {
 run_git_command() {
   _git_left=$(( $(budget_left) - 1 ))
   _git_secs="${ALANS_WAY_VM_GIT_TIMEOUT:-60}"
+  case "$_git_secs" in ''|*[!0-9]*) _git_secs=60;; esac
+  [ "$_git_secs" -gt 0 ] 2>/dev/null || _git_secs=60
   [ "$_git_left" -gt 0 ] || { echo 'git timed out: VM time budget exhausted' >&2; return 124; }
   [ "$_git_secs" -le "$_git_left" ] || _git_secs="$_git_left"
   if have perl; then
@@ -937,12 +939,12 @@ EOF
 
 # The Hermes half of --check, for the app's bottom bar: the raw `hermes
 # --version` line, the verdict lines of `hermes update --check` (read-only, it
-# only fetches), the alans-way plugin version (default profile first) and
+# only fetches), every managed plugin/profile version (default first) and
 # whether the default gateway runs. The app parses the raw text, so a Hermes
 # on the app's own machine and one on a server share one parser.
 hermes_fields() {
   HHOME="${HERMES_HOME:-$HOME/.hermes}"
-  _hf_ver="" _hf_check="" _hf_gw=null _hf_plugin=""
+  _hf_ver="" _hf_check="" _hf_gw=null _hf_plugin="" _hf_plugins=""
   if hermes_bin; then
     _hf_ver="$(run_hermes 20 --version | sed -n '/Hermes Agent v/{p;q;}')"
     _hf_check="$(run_hermes 45 update --check | grep -Ei 'available|up to date|no newer release' | head -3)"
@@ -952,13 +954,19 @@ hermes_fields() {
   fi
   while read -r _hf_name _hf_home; do
     [ -n "$_hf_name" ] || continue
-    _hf_plugin="$(plugin_version "$_hf_home/plugins/alans-way")"
-    [ -n "$_hf_plugin" ] && break
+    for _hf_managed in alans-way alans-way-computer; do
+      [ -d "$_hf_home/plugins/$_hf_managed" ] || continue
+      _hf_installed="$(plugin_version "$_hf_home/plugins/$_hf_managed")"
+      # Keep the scalar field for older apps, but never stop collecting evidence.
+      if [ "$_hf_managed" = alans-way ] && [ -z "$_hf_plugin" ]; then _hf_plugin="$_hf_installed"; fi
+      _hf_entry="$(printf '{"name":"%s","profile":"%s","version":"%s"}' "$_hf_managed" "$(json_string "$_hf_name")" "$(json_string "$_hf_installed")")"
+      _hf_plugins="${_hf_plugins}${_hf_plugins:+,}$_hf_entry"
+    done
   done <<EOF
 $(list_profiles)
 EOF
-  printf ',"hermesVersion":"%s","hermesCheck":"%s","pluginVersion":"%s","gatewayRunning":%s' \
-    "$(json_string "$_hf_ver")" "$(json_string "$_hf_check")" "$(json_string "$_hf_plugin")" "$_hf_gw"
+  printf ',"hermesVersion":"%s","hermesCheck":"%s","pluginVersion":"%s","plugins":[%s],"gatewayRunning":%s' \
+    "$(json_string "$_hf_ver")" "$(json_string "$_hf_check")" "$(json_string "$_hf_plugin")" "$_hf_plugins" "$_hf_gw"
 }
 
 # ---------------------------------------------------------------- main

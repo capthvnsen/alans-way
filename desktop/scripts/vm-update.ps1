@@ -461,8 +461,8 @@ if ($env:ALANS_WAY_VM_CHECK -eq '1') {
     $hostVersion = ''; $busy = $false
     if ($s) { $hostVersion = [string]$s.version; $busy = [bool]$s.busy }
     # The Hermes half mirrors the POSIX twin's hermes_fields: raw text the app
-    # parses, the alans-way plugin version and whether the default gateway runs.
-    $hermesVersion = ''; $hermesCheck = ''; $pluginVersion = ''; $gatewayRunning = $null
+    # parses, every managed plugin/profile version and the default gateway state.
+    $hermesVersion = ''; $hermesCheck = ''; $pluginVersion = ''; $plugins = @(); $gatewayRunning = $null
     $hhome = $env:HERMES_HOME
     if (-not $hhome) { $hhome = "$env:LOCALAPPDATA\hermes" }
     $script:HermesBin = Find-Hermes
@@ -475,12 +475,17 @@ if ($env:ALANS_WAY_VM_CHECK -eq '1') {
         if ($g.out -match '(?i)gateway is running') { $gatewayRunning = $true } elseif ($g.out -match '(?i)not running') { $gatewayRunning = $false }
     }
     foreach ($prof in (Get-Profiles $hhome)) {
-        $pluginVersion = Get-PluginVersion (Join-Path $prof.home 'plugins\alans-way')
-        if ($pluginVersion) { break }
+        foreach ($name in @('alans-way', 'alans-way-computer')) {
+            $dir = Join-Path $prof.home "plugins\$name"
+            if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+            $installed = Get-PluginVersion $dir
+            if ($name -eq 'alans-way' -and -not $pluginVersion) { $pluginVersion = $installed }
+            $plugins += @{ name = $name; profile = $prof.name; version = $installed }
+        }
     }
     @{ ok = $true; version = $script:Version; hostVersion = $hostVersion; busy = $busy; error = '';
-       hermesVersion = $hermesVersion.Trim(); hermesCheck = $hermesCheck; pluginVersion = $pluginVersion; gatewayRunning = $gatewayRunning } |
-        ConvertTo-Json -Compress | Write-Output
+       hermesVersion = $hermesVersion.Trim(); hermesCheck = $hermesCheck; pluginVersion = $pluginVersion; plugins = @($plugins); gatewayRunning = $gatewayRunning } |
+        ConvertTo-Json -Compress -Depth 4 | Write-Output
     exit 0
 }
 

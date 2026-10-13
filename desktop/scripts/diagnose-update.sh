@@ -13,7 +13,7 @@ def scrub(value):
     if isinstance(value, str):
         value = re.sub(r'([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@', r'\1[redacted]@', value)
         # URL query/fragment values may contain tokens; do not print them.
-        return re.sub(r'((?:https?|ssh)://[^?#\s]+)[?#][^\s]*', r'\1[redacted]', value)
+        return re.sub(r'([a-zA-Z][a-zA-Z0-9+.-]*://[^?#\s]+)[?#][^\s]*', r'\1[redacted]', value)
     return value
 
 
