@@ -113,8 +113,13 @@ app.whenReady().then(async () => {
     realSend('workspace:state', real);
     await waitFor(() => evaluate('document.getElementById("update-popup").classList.contains("hidden")'), Boolean);
     await waitFor(() => telegramView.getVisible() === true, Boolean);
-    // Only a key window can hand native focus back; another app may hold it.
-    await waitFor(() => webContents.getFocusedWebContents()?.id === telegram.id || !win.isFocused(), Boolean);
+    // Only a key window can hand native focus back: take it, so the wait
+    // below proves the popup really returned focus to Telegram instead of
+    // passing vacuously on an unfocused window.
+    win.show();
+    win.focus();
+    await waitFor(() => win.isFocused(), Boolean);
+    await waitFor(() => webContents.getFocusedWebContents()?.id === telegram.id, Boolean);
   } finally { wc.send = realSend; }
   // The blocks below start from the app page holding focus, as before.
   wc.focus();
