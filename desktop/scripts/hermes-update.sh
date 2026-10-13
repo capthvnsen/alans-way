@@ -54,7 +54,7 @@ run_hermes() {
   _left=$(( $(budget_left) - 8 ))
   [ "$_left" -gt 0 ] || return 124
   [ "$_secs" -le "$_left" ] || _secs="$_left"
-  if have timeout; then timeout "$_secs" "$HERMES_BIN_RES" "$@" </dev/null 2>&1
+  if have timeout; then timeout -k 5 "$_secs" "$HERMES_BIN_RES" "$@" </dev/null 2>&1
   else "$HERMES_BIN_RES" "$@" </dev/null 2>&1; fi
 }
 

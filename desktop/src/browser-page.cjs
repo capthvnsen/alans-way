@@ -845,15 +845,18 @@ async function readEffect(execute, tab, { parseWaitMs, navigated, target, settle
   }
   // A dialog or banner over the page rides on every reply while it is there.
   const overlays = result.overlays && result.overlays.length ? { overlays: result.overlays } : {};
+  // A scan cut by the text or element cap says so on every reply shape, so a
+  // delta or unchanged answer is never mistaken for the whole page.
+  const truncated = result.truncated && (result.truncated.text || result.truncated.elements) ? { truncated: result.truncated } : {};
   if (Number.isInteger(result.seq)) tab.refSeed = Math.max(tab.refSeed || 0, result.seq);
-  if (controlsSame) return { generation: previous.generation, effect, ...overlays };
+  if (controlsSame) return { generation: previous.generation, effect, ...overlays, ...truncated };
   tab.generation = generation;
   const settled = settleSnapshot(tab, result, generation);
   if (!nav && scan && held === scan.generation) {
     const delta = controlsDelta(scan, result);
-    if (delta.changed.length + delta.removed.length <= Math.max(8, result.elements.length * DELTA_SHARE)) return { ...delta, generation, effect, ...overlays };
+    if (delta.changed.length + delta.removed.length <= Math.max(8, result.elements.length * DELTA_SHARE)) return { ...delta, generation, effect, ...overlays, ...truncated };
   }
-  const reply = { elements: settled.elements.slice(0, EFFECT_ELEMENTS), generation: settled.generation, effect, ...overlays };
+  const reply = { elements: settled.elements.slice(0, EFFECT_ELEMENTS), generation: settled.generation, effect, ...overlays, ...truncated };
   if (settled.elements.length > EFFECT_ELEMENTS) reply.unlisted = settled.elements.length - EFFECT_ELEMENTS;
   return reply;
 }

@@ -69,6 +69,7 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - run: node --check src/win-computer.cjs
       - run: node --test test/win-computer.test.cjs
+      - run: node --test test/hermes-update-ps1.test.cjs
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -82,7 +83,7 @@ jobs:
         shell: powershell
         run: |
           $found = $false
-          foreach ($f in 'scripts/install-windows.ps1', 'scripts/connect-windows.ps1') {
+          foreach ($f in 'scripts/install-windows.ps1', 'scripts/connect-windows.ps1', 'desktop/scripts/hermes-update.ps1') {
             $tokens = $null; $fileErrs = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$tokens, [ref]$fileErrs)
             foreach ($e in $fileErrs) {

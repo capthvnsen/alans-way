@@ -30,7 +30,15 @@ test('secret fields are always redacted, whatever the page sends', () => {
     }
     assert.equal(finishSteps([input({ selector: `input[name="${label}"]`, value: 'hunter2' })], { keepTyped: true })[0].value, REDACTED, `selector ${label}`);
   }
-  for (const name of ['Shipping notes', 'Spinner', 'Pinterest handle', 'Tokenomics essay', 'Phone time zone', 'Expected delivery', 'Account name', 'Card message']) assert.equal(input({ name }).value, 'typed', `${name} is not a secret`);
+  for (const name of ['Shipping notes', 'Spinner', 'Pinterest handle', 'Tokenomics essay', 'Phone time zone', 'Expected delivery', 'Account name', 'Card message',
+    // "card no"/"cc no" spellings count only at a word edge and at the end of
+    // the name or before a digit or "number"; these are not card fields.
+    'Gift card note', 'postcard_notes', 'acc_no', 'card_notify', 'cc notes']) assert.equal(input({ name }).value, 'typed', `${name} is not a secret`);
+  for (const label of ['card_no', 'cardno', 'ccno', 'cc_no', 'card no 4', 'ccno2', 'cc no number', 'your_card_no']) {
+    for (const key of ['name', 'field']) {
+      assert.equal(finishSteps([input({ [key]: label, value: 'hunter2' })], { keepTyped: true })[0].value, REDACTED, `${key} ${label}`);
+    }
+  }
   assert.equal(input({ autocomplete: 'email' }).value, 'typed');
   assert.equal(input({ autocomplete: 'occ-note' }).value, 'typed', 'only whole cc-* tokens count');
 });
@@ -85,6 +93,35 @@ test('without keep typed text, a page echoing the typed text in its path or titl
   assert.equal(kept.steps[3].url, 'https://shop.example/search/zebra-umbrella-7731/page/2');
   const short = finishRecording([navigateStep('https://a.example/page/2'), input({ value: '2' })], { title: 'Page 2', fallbackTitle: 'a.example' });
   assert.equal(short.title, 'Page 2', 'a one-character value does not wipe titles');
+});
+
+test('without keep typed text, part of a typed term still cannot reach disk', () => {
+  const type = (value) => input({ selector: '#q', value });
+  const click = (extra) => normalizeEvent({ kind: 'click', url: 'https://shop.example/find', role: 'button', name: 'Go', selector: '#go', ...extra });
+  // A slug or filename holding any 3+ letter word of a typed value is scrubbed.
+  const done = finishRecording([type('Zebra umbrella 7731'),
+    navigateStep('https://shop.example/s/zebra-umbrella.html'),
+    navigateStep('https://shop.example/zebra-umbrella-results'),
+    navigateStep('https://shop.example/results/page-2')], { title: 'Shop', fallbackTitle: 'shop.example' });
+  assert.deepEqual(done.steps.map(step => step.url), ['https://shop.example/login',
+    'https://shop.example/s/[redacted]', 'https://shop.example/[redacted]', 'https://shop.example/results/page-2']);
+  assert.equal(done.title, 'Shop', 'a title without the term stays');
+  // A title or a click name showing only part of the typed term is caught.
+  assert.equal(finishRecording([type('Zebra umbrella 7731')], { title: 'Zebra - Shop', fallbackTitle: 'shop.example' }).title, 'shop.example');
+  assert.equal(finishRecording([type('Zebra umbrella 7731')], { title: '7731 results', fallbackTitle: 'shop.example' }).title, 'shop.example');
+  const echoed = finishRecording([type('Zebra umbrella 7731'),
+    click({ name: 'Zebra umbrella 7731', selector: 'li[data-q="zebra-umbrella-7731"]' }),
+    click({ name: 'Umbrella in stock' }),
+    click({ name: 'Go', selector: '#go' })], { fallbackTitle: 'shop.example' });
+  assert.equal(echoed.steps[1].name, REDACTED, 'a clicked suggestion echoing the term');
+  assert.equal(echoed.steps[1].selector, REDACTED, 'a selector carrying the term');
+  assert.equal(echoed.steps[2].name, REDACTED, 'even part of the term in a name is redacted');
+  assert.equal(echoed.steps[3].name, 'Go');
+  assert.equal(echoed.steps[3].selector, '#go');
+  assert.ok(!JSON.stringify(echoed).toLowerCase().includes('umbrella'));
+  // keepTyped still keeps names and selectors as recorded.
+  const kept = finishRecording([type('Zebra umbrella 7731'), click({ name: 'Zebra umbrella 7731' })], { keepTyped: true });
+  assert.equal(kept.steps[1].name, 'Zebra umbrella 7731');
 });
 
 test('steps merge keystrokes, redirects and the submit a click caused', () => {

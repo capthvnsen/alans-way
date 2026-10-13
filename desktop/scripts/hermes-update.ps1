@@ -72,8 +72,11 @@ function Invoke-Hermes([int]$Secs, [string[]]$HermesArgs, [switch]$Unbudgeted) {
         if ($p.WaitForExit($Secs * 1000)) { $code = $p.ExitCode }
         else {
             # Kill the whole tree, not only the launcher: a .cmd/.bat shim
-            # leaves the real hermes process running after $p.Kill().
-            try { & taskkill /PID $p.Id /T /F 2>$null | Out-Null } catch { try { $p.Kill() } catch {} }
+            # leaves the real hermes process running after $p.Kill(). taskkill
+            # can fail without throwing, so the .NET kill runs whenever the
+            # process is still up afterward.
+            try { & taskkill /PID $p.Id /T /F 2>$null | Out-Null } catch {}
+            if (-not $p.HasExited) { try { $p.Kill() } catch {} }
             $code = 124
         }
         $text = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue) + "`n" +
@@ -141,9 +144,15 @@ foreach ($prof in (Get-Profiles $hhome)) {
 Say 'running hermes update'
 # The update may not eat the restart reserve: it gets at most the remaining
 # budget minus one gateway timeout per stopped gateway, so starting them back
-# always fits. A cap at zero never spawns - Invoke-Hermes returns 124 first.
+# always fits. The reserve itself is capped at half the run budget: past that,
+# several stopped gateways would leave the update no time at all and skip it
+# after they were already stopped. Restarts run unbudgeted, so a capped
+# reserve only sizes the update's share. A cap at zero never spawns -
+# Invoke-Hermes returns 124 first.
 $upSecs = EnvInt 'ALANS_WAY_HERMES_UPDATE_TIMEOUT' 200
-$upCap = (BudgetLeft) - ($restart.Count * $gwTimeout) - 8
+$reserveCap = [Math]::Max($gwTimeout, [int]((EnvInt 'ALANS_WAY_HERMES_BUDGET' 270) / 2))
+$reserve = [Math]::Min($restart.Count * $gwTimeout, $reserveCap)
+$upCap = (BudgetLeft) - $reserve - 8
 if ($upCap -lt $upSecs) { $upSecs = $upCap }
 $r = Invoke-Hermes $upSecs @('update', '--yes', '--keep-stash')
 $ok = ($r.code -eq 0)
