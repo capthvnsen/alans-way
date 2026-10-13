@@ -521,7 +521,7 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
     webPreferences: { ...options?.webPreferences, preload: undefined, partition: 'persist:browser', contextIsolation: true, nodeIntegration: false, sandbox: true,
       webSecurity: true, plugins: true, backgroundThrottling: false } });
   view.setBackgroundColor('#0b0b0c');
-  const tab = { id: crypto.randomUUID(), view, requestedUrl: targetUrl, botId: String(botId).slice(0, 100), controller, extensionPage, epoch: 1, title: 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
+  const tab = { id: crypto.randomUUID(), view, requestedUrl: skipLoad ? '' : targetUrl, botId: String(botId).slice(0, 100), controller, extensionPage, epoch: 1, title: 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
   if (controller === 'agent') tab.agentSince = Date.now();
   tabs.set(tab.id, tab);
   tab.host = backgroundHost();
@@ -567,6 +567,9 @@ function closeTab(id) {
   if (!tab) return;
   if (recording?.tabId === id) { try { stopRecording(); } catch (error) { logError('recording', error); } }
   tabs.delete(id);
+  handbackNotices.get(id)?.close();
+  handbackNotices.delete(id);
+  for (const key of notifiedHandbacks) if (key.startsWith(`${id}:`)) notifiedHandbacks.delete(key);
   if (tab.view.webContents) extensionHost?.removeTab(tab.view.webContents);
   if (browserReturnTabId === id) browserReturnTabId = [...tabs.keys()].at(-1) || 'home';
   tab.host?.contentView.removeChildView(tab.view);
@@ -1225,7 +1228,7 @@ function registerIpc() {
       }
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
-        const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); await tab.view.webContents.loadURL(pageUrl(value.url)).catch(() => {}); } break;
+        const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; await tab.view.webContents.loadURL(target).catch(() => {}); } break;
       }
       case 'history': {
         if (isVpsTab(value.id)) { await remoteRequest(value.id,'control',{controller:'human'}); await remoteRequest(value.id,'human-actions',{action:value.action}); break; }
@@ -2087,6 +2090,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
     const target = pageUrl(agentPageUrl(body.url));
+    tab.requestedUrl = target;
     const commit = await waitForNavigationCommit(wc, () => wc.loadURL(target));
     if (commit.state === 'failed' || commit.state === 'destroyed') throw Object.assign(new Error(commit.error ? `Navigation failed: ${commit.error}.` : 'Navigation failed.'), { status: 400 });
     tab.refs.clear();
@@ -2286,7 +2290,13 @@ function startApi() {
         if (botId !== tab.botId && !overseer && !granted) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
         if (body.controller === 'agent') { requireAgentClaim(tab); tab.handoff = reviewedHandoff(tab.handoff); }
         if (tab.botId === 'shared' && body.controller === 'agent') tab.botId = botId;
-        return send(200, redactTabForBot(changeController(tab.id, body.controller, 'agent', body.controller === 'agent' ? null : handbackRequest(body))));
+        const request = body.controller === 'agent' ? null : handbackRequest(body);
+        // A reasoned release on a human-taken-over tab records no hold; say so
+        // or the bot cannot tell its handback was ignored.
+        const ignored = request && tab.controller === 'human' && tab.humanLock;
+        const info = redactTabForBot(changeController(tab.id, body.controller, 'agent', request));
+        if (ignored) info.note = 'The human has taken over this tab; the handback reason was ignored.';
+        return send(200, info);
       }
       if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true, overseer); closeTab(tab.id); return send(200, { closed: true }); }
       return send(405, { error: 'Method not supported.' });
