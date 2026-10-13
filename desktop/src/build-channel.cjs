@@ -7,7 +7,7 @@ const str = (value) => (typeof value === 'string' ? value : '');
 
 function normalizeBuildInfo(raw) {
   const info = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-  return { channel: CHANNELS.has(info.channel) ? info.channel : 'dev', commit: str(info.commit), dirty: info.dirty === true, builtAt: str(info.builtAt) };
+  return { channel: CHANNELS.has(info.channel) ? info.channel : 'dev', version: str(info.version), commit: str(info.commit), dirty: info.dirty === true, builtAt: str(info.builtAt) };
 }
 
 // A missing file is how an unstamped `npx electron .` run looks.
@@ -16,10 +16,10 @@ function readBuildInfo(file) {
 }
 
 function describeBuild(raw) {
-  const { channel, commit, dirty, builtAt } = normalizeBuildInfo(raw);
+  const { channel, version, commit, dirty, builtAt } = normalizeBuildInfo(raw);
   const title = [commit && `Commit ${commit}`, builtAt && `built ${builtAt.replace('T', ' ').replace(/\.\d+Z$/, 'Z')}`].filter(Boolean).join(' · ') || 'Not a stamped build';
   if (channel === 'release' || channel === 'main') return { text: 'Production', tone: 'prod', title };
-  if (channel === 'prerelease') return { text: 'Pre-release', tone: 'pre', title };
+  if (channel === 'prerelease') return { text: `Pre-release${version ? ` ${version}` : ''}`, tone: 'pre', title };
   return { text: `Dev${commit ? ` · ${commit}` : ''}${dirty ? ' + local changes' : ''}`, tone: 'dev', title };
 }
 

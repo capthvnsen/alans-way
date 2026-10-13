@@ -7,24 +7,52 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { isDeepStrictEqual } = require('node:util');
 const { checkTag } = require('./check-version.cjs');
 
 const ROOT = path.join(__dirname, '..', '..');
 
 function tryGit(git, args) {
-  try { return String(git(args)).trim(); } catch { return null; }
+  // Porcelain status uses leading spaces to distinguish unstaged changes.
+  try { return String(git(args)).trimEnd(); } catch { return null; }
 }
 
-function buildInfo({ version, env, git, tarball = false, now = new Date() }) {
+// The release gate runs before npm version, but this script runs afterward.
+// Keep checkTag's gate rules intact; accept either the base or exact RC stamp.
+function buildTag(name, version) {
+  const base = version.replace(/-rc\.(?:0|[1-9]\d*)$/, '');
+  const tag = checkTag(name, base);
+  return tag.ok && (version === base || version === tag.version) ? tag : { ok: false };
+}
+
+function onlyVersionStamp(status, git, readFile, tag) {
+  // Do not ignore other edits, staged changes, untracked files or renames.
+  const files = status.split('\n');
+  if (!files.every(line => /^ M desktop\/package(?:-lock)?\.json$/.test(line))) return false;
+  try {
+    return files.every(line => {
+      const file = line.slice(3);
+      const original = JSON.parse(tryGit(git, ['show', `HEAD:${file}`]));
+      if (!checkTag(`v${tag.version}`, original.version).ok) return false;
+      const stamped = JSON.parse(readFile(file));
+      original.version = tag.version;
+      if (file.endsWith('package-lock.json') && original.packages?.['']) original.packages[''].version = tag.version;
+      return isDeepStrictEqual(original, stamped);
+    });
+  } catch { return false; }
+}
+
+function buildInfo({ version, env, git, readFile = file => fs.readFileSync(path.join(ROOT, file), 'utf8'), tarball = false, now = new Date() }) {
   const builtAt = now.toISOString();
-  const tag = env.GITHUB_REF_TYPE === 'tag' ? checkTag(env.GITHUB_REF_NAME, version) : { ok: false };
+  const tag = env.GITHUB_REF_TYPE === 'tag' ? buildTag(env.GITHUB_REF_NAME, version) : { ok: false };
   const commit = tarball ? '' : tryGit(git, ['rev-parse', '--short', 'HEAD']) || '';
-  const dirty = !tarball && commit !== '' && tryGit(git, ['status', '--porcelain']) !== '';
+  const status = !tarball && commit ? tryGit(git, ['status', '--porcelain']) : '';
+  const dirty = status !== '' && !(tag.ok && status !== null && onlyVersionStamp(status, git, readFile, tag));
   let channel = 'dev';
-  if (tag.ok) channel = tag.version.includes('-') ? 'prerelease' : 'release';
+  if (tag.ok && !dirty) channel = tag.version.includes('-') ? 'prerelease' : 'release';
   else if (tarball) channel = 'main';
   else if (commit && !dirty && tryGit(git, ['merge-base', '--is-ancestor', 'HEAD', 'origin/main']) !== null) channel = 'main';
-  return { channel, version, commit, dirty, builtAt };
+  return { channel, version: tag.ok ? tag.version : version, commit, dirty, builtAt };
 }
 
 if (require.main === module) {
