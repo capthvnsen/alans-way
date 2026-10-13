@@ -11,6 +11,9 @@ const { spawnSync } = require('node:child_process');
 
 const SCRIPT = path.join(__dirname, '../scripts/hermes-update.ps1');
 const e2e = { skip: process.platform !== 'win32' && 'the script only ever runs on Windows guests' };
+const SYSTEM_ROOT = process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows';
+const SYSTEM_BIN = path.join(SYSTEM_ROOT, 'System32');
+const POWERSHELL = path.join(SYSTEM_BIN, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
 const tmpdirs = [];
 after(() => {
@@ -58,7 +61,7 @@ set rc=0\r
 if exist "%FAKE_HERMES_STATE%\\update-rc" set /p rc=<"%FAKE_HERMES_STATE%\\update-rc"\r
 exit /b %rc%\r
 :hang\r
-powershell -NoProfile -ExecutionPolicy Bypass -File "%FAKE_HERMES_STATE%\\hang.ps1"\r
+"${POWERSHELL}" -NoProfile -ExecutionPolicy Bypass -File "%FAKE_HERMES_STATE%\\hang.ps1"\r
 exit /b %errorlevel%\r
 :gateway\r
 if "%sub%"=="status" goto status\r
@@ -104,19 +107,23 @@ public class FakeHermes {
   }
 }
 `);
-  const build = spawnSync('powershell', ['-NoProfile', '-Command',
-    'Add-Type -Path $env:FAKE_HERMES_SOURCE -OutputAssembly $env:FAKE_HERMES_EXE -OutputType ConsoleApplication'], {
+  const build = spawnSync(POWERSHELL, ['-NoProfile', '-Command',
+    '$PSVersionTable.PSVersion.ToString(); Add-Type -Path $env:FAKE_HERMES_SOURCE -OutputAssembly $env:FAKE_HERMES_EXE -OutputType ConsoleApplication'], {
     encoding: 'utf8', timeout: 30000,
     env: { ...process.env, FAKE_HERMES_SOURCE: source, FAKE_HERMES_EXE: path.join(f.bin, 'hermes.exe') },
   });
   assert.equal(build.status, 0, build.stderr + build.stdout);
+  assert.match(build.stdout, /^5\.1\./m, 'the runtime regression must exercise Windows PowerShell 5.1');
   return f;
 }
 
-const runScript = (f, extraEnv = {}) => spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT], {
+const runScript = (f, extraEnv = {}) => spawnSync(POWERSHELL, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT], {
   encoding: 'utf8', timeout: 150000,
   env: {
-    PATH: `${f.bin};${process.env.PATH}`,
+    // Keep the fake CLI first, but provide the OS commands the script and
+    // shim use even when the caller's path omits Windows PowerShell.
+    PATH: `${f.bin};${SYSTEM_BIN};${path.dirname(POWERSHELL)};${process.env.PATH || process.env.Path || ''}`,
+    SystemRoot: SYSTEM_ROOT, ComSpec: path.join(SYSTEM_BIN, 'cmd.exe'), PATHEXT: '.COM;.EXE;.BAT;.CMD',
     USERPROFILE: mktemp('hermes-update-ps1-fakehome-'),
     LOCALAPPDATA: mktemp('hermes-update-ps1-fakehome-'), HERMES_HOME: f.home, FAKE_HERMES_STATE: f.state,
     // A tight budget with four running gateways is exactly the case where the
@@ -199,8 +206,9 @@ test('nonzero update and restart exits are preserved even without error output',
   const f = makeHermes();
   fs.writeFileSync(path.join(f.state, 'update-rc'), '7');
   fs.writeFileSync(path.join(f.state, 'gateway-start-rc'), '9');
-  const start = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `""${path.join(f.bin, 'hermes.cmd')}" gateway start"`], {
-    encoding: 'utf8', timeout: 10000, env: { ...process.env, FAKE_HERMES_STATE: f.state },
+  const start = spawnSync(path.join(SYSTEM_BIN, 'cmd.exe'), ['/d', '/c', `""${path.join(f.bin, 'hermes.cmd')}" gateway start"`], {
+    encoding: 'utf8', timeout: 10000, windowsVerbatimArguments: true,
+    env: { ...process.env, FAKE_HERMES_STATE: f.state },
   });
   assert.equal(start.status, 9, 'the fake CLI must actually fail a gateway start: ' + start.stderr + start.stdout);
   const res = runScript(f);
@@ -230,7 +238,7 @@ Start-Sleep -Seconds 120
   assert.equal(result.messaged, true);
   const pid = fs.readFileSync(path.join(f.state, 'child.pid'), 'utf8').trim();
   assert.match(pid, /^\d+$/);
-  const probe = spawnSync('powershell', ['-NoProfile', '-Command', `if (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { exit 1 }`], { encoding: 'utf8', timeout: 30000 });
+  const probe = spawnSync(POWERSHELL, ['-NoProfile', '-Command', `if (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { exit 1 }`], { encoding: 'utf8', timeout: 30000 });
   assert.equal(probe.status, 0, 'taskkill /T must stop the child, not just the shim');
   assert.match(fs.readFileSync(f.gateways, 'utf8'), /^-p writer gateway start$/m);
 });
