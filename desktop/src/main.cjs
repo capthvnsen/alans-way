@@ -674,8 +674,12 @@ function changeController(id, controller, source = 'human', handback = null) {
 // grace wait: the human may hand the tab over or start recording meanwhile.
 // A caller holding an epoch (an action or a close) needs the tab unchanged
 // since it read it; a plain claim gets a fresh epoch either way.
+function claimRules(tab) {
+  const autoTakeover = prefs.autoTakeover !== false;
+  return { autoTakeover, recording: autoTakeover && recording?.tabId === tab.id };
+}
 async function claimTab(tab, botId, { isClosed = () => false, overseer = false, epoch } = {}) {
-  const rules = () => { const autoTakeover = prefs.autoTakeover !== false; return { autoTakeover, recording: autoTakeover && recording?.tabId === tab.id }; };
+  const rules = () => claimRules(tab);
   requireAgentClaim(tab, Date.now(), rules());
   const auto = rules().autoTakeover && tab.controller === 'human';
   if (auto) {
@@ -2358,6 +2362,8 @@ function startApi() {
           let taken = 0, held;
           if (tab.controller !== 'agent' && prefs.autoTakeover !== false) {
             await checkAction(tab, body, botId);
+            // A tab that stays the human's says why before any epoch advice.
+            requireAgentClaim(tab, Date.now(), claimRules(tab));
             if (body.epoch !== tab.epoch) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
             held = { humanLock: tab.humanLock, humanSince: tab.humanSince, botId: tab.botId, handoff: tab.handoff };
             taken = body.epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch: body.epoch })).epoch;
@@ -2406,6 +2412,7 @@ function startApi() {
         res.on('close', () => { if (!res.writableFinished) closed = true; });
         if (tab.controller !== 'agent' && prefs.autoTakeover !== false) {
           requireActor(tab, botId, undefined, false, overseer);
+          requireAgentClaim(tab, Date.now(), claimRules(tab));
           if (epoch !== tab.epoch) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
           epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch })).epoch;
         }
