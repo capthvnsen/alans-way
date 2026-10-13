@@ -6,7 +6,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
@@ -25,7 +25,7 @@ const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked } = require('./vm-update.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
-const { createAgentInput, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
+const { createAgentInput, PREFLIGHT_READY, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
@@ -678,21 +678,28 @@ function claimRules(tab) {
   const autoTakeover = prefs.autoTakeover !== false;
   return { autoTakeover, recording: autoTakeover && recording?.tabId === tab.id };
 }
-async function claimTab(tab, botId, { isClosed = () => false, overseer = false, epoch } = {}) {
+// An action also holds the page's navigation generation, and dry-runs itself
+// (preflight) after the wait, so a refusal never takes the tab.
+async function claimTab(tab, botId, { isClosed = () => false, overseer = false, epoch, generation, preflight } = {}) {
   const rules = () => claimRules(tab);
   requireAgentClaim(tab, Date.now(), rules());
   const auto = rules().autoTakeover && tab.controller === 'human';
   if (auto) {
     const started = Date.now();
     for (let ms; (ms = takeoverDelay(tab.lastHumanInput, started)) > 0;) await new Promise((resolve) => setTimeout(resolve, ms));
-    if (isClosed()) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
-    if (!tabs.has(tab.id)) throw Object.assign(new Error('Tab not found.'), { status: 404 });
-    requireAgentClaim(tab, Date.now(), rules());
     // Another bot's claim, Take back or a navigation may have moved the tab
-    // while this one waited.
-    if (tab.botId !== 'shared') requireActor(tab, botId, undefined, false, overseer);
-    if (epoch !== undefined && tab.epoch !== epoch) throw Object.assign(new Error('stale_control_epoch: the tab changed while you waited (the human navigated, or another claim landed). Claim it, read it, then act.'), { status: 409 });
+    // while this one waited or dry-ran.
+    const recheck = () => {
+      if (isClosed()) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
+      if (!tabs.has(tab.id)) throw Object.assign(new Error('Tab not found.'), { status: 404 });
+      requireAgentClaim(tab, Date.now(), rules());
+      if (tab.botId !== 'shared') requireActorCore(tab, botId, undefined, false, overseer);
+      if ((epoch !== undefined && tab.epoch !== epoch) || (generation !== undefined && tab.generation !== generation))
+        throw Object.assign(new Error(STALE_WAIT), { status: 409 });
+    };
+    recheck();
     if (tab.controller === 'agent') return describeTab(tab);
+    if (preflight) { await preflight(); recheck(); if (tab.controller === 'agent') return describeTab(tab); }
   }
   // The notice is for a tab the human took or used, not one a bot released
   // that sat idle.
@@ -713,6 +720,15 @@ function takeoverError(error) {
     error.message = 'human_took_tab: the human took this tab during your call. Check its effect, then call again; the tab comes back to you once they pause.';
   return error;
 }
+const STALE_WAIT = 'stale_control_epoch: the tab changed while you waited (the human navigated, or another claim landed). Claim it, read it, then act.';
+// A dry run (tab.preflight) acts for a tab the human still holds: it needs the
+// tab's bot and an unchanged epoch, and stops at the first change to the page.
+function requireActor(tab, botId, epoch, mutate = false, overseer = false, now = Date.now()) {
+  if (!tab.preflight || !mutate) return requireActorCore(tab, botId, epoch, mutate, overseer, now);
+  requireActorCore(tab, botId, epoch, false, overseer, now);
+  if (tab.controller === 'agent' || epoch !== tab.epoch) throw Object.assign(new Error(STALE_WAIT), { status: 409 });
+}
+function dryRun(tab) { if (tab.preflight) throw PREFLIGHT_READY; }
 const STALE_HUMAN_EPOCH = 'stale_control_epoch: the human took this tab and may have changed the page. Claim it (control, controller "agent") to take it back, read it, then act.';
 const OTHER_ACTIONS = new Set(['navigate', 'back', 'forward', 'reload', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp']);
 const UNSUPPORTED_ACTION = 'Supported actions: navigate, click, double_click, right_click, drag, select, type, press, move, scroll, back, forward, reload, batch, read, eval, wait, viewport, cdp.';
@@ -723,9 +739,10 @@ async function checkAction(tab, body, botId, depth = 0) {
   if (!body || typeof body !== 'object' || typeof body.action !== 'string') bad('action is required.');
   const { action } = body;
   if (!INPUT_ACTIONS.has(action) && !OTHER_ACTIONS.has(action)) bad(UNSUPPORTED_ACTION);
+  if (body.dialog !== undefined) dialogAnswer(body.dialog);
   // Later steps may aim at refs the first one finds, so only the first is checked.
   if (action === 'batch') return depth > 0 ? bad('Batches cannot nest.') : Array.isArray(body.steps) && body.steps.length ? checkAction(tab, body.steps[0], botId, 1) : bad('batch needs a non-empty steps array (max 25).');
-  if (INPUT_ACTIONS.has(action)) return agentInput.perform(tab, body, botId, { preflight: true });
+  if (INPUT_ACTIONS.has(action)) return agentInput.perform(tab, body, botId, { argsOnly: true });
   const code = String(body.code || '');
   if (action === 'eval' && (!code || code.length > 16384)) bad('eval needs a code string (max 16KB).');
   if (action === 'wait' && !body.selector && !body.text && !body.url) bad('wait needs a selector, text, or url to wait for.');
@@ -2014,6 +2031,8 @@ async function performStep(tab, body, botId, depth, isAborted) {
     if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
     const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
     if (!steps.length) throw Object.assign(new Error('batch needs a non-empty steps array (max 25).'), { status: 400 });
+    // A dry run checks the first step: later ones may aim at what it finds.
+    if (tab.preflight) return performAction(tab, { ...steps[0], epoch: body.epoch }, botId, 1, isAborted);
     const results = [], started = Date.now();
     let lastTarget, sawInput = false;
     for (const step of steps) {
@@ -2033,6 +2052,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
   }
   if (body.action === 'read') {
     const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
+    dryRun(tab);
     requireAgentRead(tab);
     // A read step is the model's own baseline, so it must not plant the doc
     // marker: on a fresh document the missing marker is what lets the final
@@ -2047,6 +2067,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     if (!code || code.length > 16384) throw Object.assign(new Error('eval needs a code string (max 16KB).'), { status: 400 });
     const wc = tab.view.webContents;
     let evalTimer;
+    dryRun(tab);
     let value = await Promise.race([
       frameOf(wc).executeJavaScript(code, true),
       new Promise((_, reject) => { evalTimer = setTimeout(() => reject(Object.assign(new Error('eval timed out after 15s.'), { status: 408 })), 15000); }),
@@ -2093,6 +2114,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
       poll = setInterval(() => { if (met() || Date.now() > deadline) done(met()); }, 100);
       setTimeout(() => done(met()), ${ms});
     })`;
+    dryRun(tab);
     const hostStart = Date.now();
     let value = null;
     while (Date.now() - hostStart < timeout + 1000) {
@@ -2119,6 +2141,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     return finish({ waited: value.waited, dispatched: true });
   }
   if (body.action === 'viewport') {
+    dryRun(tab);
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     if (body.clear === true) {
       await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
@@ -2147,6 +2170,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
       params.url = agentPageUrl(params.url);
     }
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    dryRun(tab);
     let cdpTimer;
     let value = await Promise.race([
       wc.debugger.sendCommand(method, params),
@@ -2169,6 +2193,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
   }
   let parseWaitMs = 0, didNavigate = false;
   if (body.action === 'navigate') {
+    dryRun(tab);
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
     const target = pageUrl(agentPageUrl(body.url));
@@ -2181,6 +2206,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     parseWaitMs = NAVIGATE_PARSE_MS;
     didNavigate = commit.state === 'committed';
   } else if (['back', 'forward', 'reload'].includes(body.action)) {
+    dryRun(tab);
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
     const history = wc.navigationHistory;
@@ -2366,7 +2392,13 @@ function startApi() {
             requireAgentClaim(tab, Date.now(), claimRules(tab));
             if (body.epoch !== tab.epoch) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
             held = { humanLock: tab.humanLock, humanSince: tab.humanSince, botId: tab.botId, handoff: tab.handoff };
-            taken = body.epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch: body.epoch })).epoch;
+            const preflight = async () => {
+              tab.preflight = true;
+              try { await performAction(tab, { ...body }, botId, 0, () => closed); }
+              catch (error) { if (error !== PREFLIGHT_READY) throw error; }
+              finally { tab.preflight = false; }
+            };
+            taken = body.epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch: body.epoch, generation: tab.generation, preflight })).epoch;
           }
           // An action the page refused before any input or navigation reached it
           // (a challenge, a commit check, a missing control) hands the tab

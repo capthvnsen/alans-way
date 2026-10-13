@@ -47,7 +47,7 @@ app.whenReady().then(async () => {
     await sleep(100);
   };
 
-  server = http.createServer((req, res) => res.end(`<title>${req.url.slice(1) || 'form'}</title><input id="q" autofocus>`));
+  server = http.createServer((req, res) => res.end(`<title>${req.url.slice(1) || 'form'}</title><input id="q" autofocus><select id="pick"><option>Red</option></select><a id="go" href="/next">Next</a>`));
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   assert.equal((await getState()).autoTakeover, true, 'on by default');
@@ -109,7 +109,7 @@ app.whenReady().then(async () => {
   // Actions that fail their checks are refused before the takeover, during
   // the grace, without waiting and without a new epoch.
   started = Date.now();
-  for (const body of [{ action: 'typo' }, { action: 'type', text: 'x' }, { action: 'click', ref: 'e1' }, { action: 'batch', steps: [{ action: 'eval' }] }]) {
+  for (const body of [{ action: 'typo' }, { action: 'type', text: 'x' }, { action: 'click', ref: 'e1' }, { action: 'batch', steps: [{ action: 'eval' }] }, { action: 'read', dialog: {} }]) {
     const refused = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { ...body, epoch: humanEpoch });
     assert.ok(refused.status === 400 || refused.status === 409, JSON.stringify(refused.data));
     assert.doesNotMatch(refused.data.error, /human_has_control/);
@@ -158,26 +158,37 @@ app.whenReady().then(async () => {
   assert.equal(await controller(tab.id), 'human');
   assert.equal((await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, '4242', agentEpoch)).status, 409);
 
-  // An action the page refuses (here a missing control, as with a CAPTCHA or a
-  // commit check) hands the tab straight back: the takeover bought nothing.
-  for (const body of [{ action: 'click', selector: '#missing' }, { action: 'batch', steps: [{ action: 'click', selector: '#missing' }] }]) {
+  // An action the page refuses (a missing control or option, as with a CAPTCHA
+  // or a commit check) is caught by a dry run before the takeover: the tab and
+  // its epoch stay the human's.
+  for (const body of [{ action: 'click', selector: '#missing' }, { action: 'batch', steps: [{ action: 'click', selector: '#missing' }] },
+    { action: 'select', selector: '#pick', value: 'Blue' }, { action: 'type', selector: '#pick', text: 'x' }]) {
     const before = (await api(`/v1/tabs/${tab.id}`)).data.epoch;
     const refused = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { ...body, epoch: before });
-    assert.match(JSON.stringify(refused.data), /missing/, JSON.stringify(refused.data));
+    assert.ok(refused.status >= 400, JSON.stringify(refused.data));
+    assert.match(refused.data.error, /missing|no option|cannot accept text/, JSON.stringify(refused.data));
     assert.equal(await controller(tab.id), 'human', `a refused ${body.action} leaves the tab with the human`);
+    assert.equal((await api(`/v1/tabs/${tab.id}`)).data.epoch, before, `a refused ${body.action} keeps the epoch`);
     assert.equal(await banner(), '');
   }
+  assert.equal(await pageWc.executeJavaScript('document.getElementById("pick").value'), 'Red');
 
-  // A navigation during the grace wait voids the pending takeover's epoch.
+  // The human following a link on the page during the grace wait voids the
+  // pending action: it never types into the new page.
   await humanTypes(pageWc, 'n');
   let before = (await api(`/v1/tabs/${tab.id}`)).data.epoch;
-  let pending = api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'type', selector: '#q', text: 'late', epoch: before });
+  let pending = api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'type', selector: '#q', text: 'OLD ACTION', epoch: before });
   await sleep(500);
-  await invoke('navigate', { id: tab.id, url: `${base}/moved` });
+  const link = await pageWc.executeJavaScript('(() => { const r = document.getElementById("go").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()');
+  pageWc.sendInputEvent({ type: 'mouseDown', ...link, button: 'left', clickCount: 1 });
+  pageWc.sendInputEvent({ type: 'mouseUp', ...link, button: 'left', clickCount: 1 });
+  await waitFor(() => pageWc.executeJavaScript('location.pathname === "/next" && document.readyState === "complete"').catch(() => false), Boolean);
+  assert.equal((await api(`/v1/tabs/${tab.id}`)).data.epoch, before, 'a page navigation keeps the epoch, so only the generation catches it');
   const voided = await pending;
-  assert.equal(voided.status, 409); assert.match(voided.data.error, /^stale_control_epoch: the tab changed while you waited/);
+  assert.equal(voided.status, 409, JSON.stringify(voided.data)); assert.match(voided.data.error, /^stale_control_epoch: the tab changed while you waited/);
   assert.equal(await controller(tab.id), 'human');
-  assert.notEqual(await pageWc.executeJavaScript('document.getElementById("q").value'), 'late', 'nothing typed into the new page');
+  assert.equal((await api(`/v1/tabs/${tab.id}`)).data.epoch, before);
+  assert.notEqual(await pageWc.executeJavaScript('document.getElementById("q").value'), 'OLD ACTION', 'nothing typed into the new page');
   // A plain claim holds no epoch, so the human navigating does not void it.
   await humanTypes(pageWc, 'c');
   pending = api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' });

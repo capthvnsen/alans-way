@@ -339,7 +339,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
 // directly and the same input and change events a person would cause fire.
 // The option may arrive under any of value, label, option, text or choice;
 // it matches a value first, then an exact label, then a folded one.
-function selectScript(target, body) {
+function selectScript(target, body, dry = false) {
   const tries = [body.value, body.label, body.option, body.text, body.choice].filter(item => typeof item === 'string').map(item => item.slice(0, 1000));
   return `(() => {
     const el = ${locateElement(target)};
@@ -354,6 +354,7 @@ function selectScript(target, body) {
     if (!pick) for (const t of tries) { pick = options.find(o => !o.disabled && text(o) === t); if (pick) { by = 'label'; break; } }
     if (!pick) for (const t of tries) { const low = t.trim().toLowerCase(); pick = options.find(o => !o.disabled && text(o).toLowerCase() === low); if (pick) { by = 'label-fold'; break; } }
     if (!pick) return { fail: 'has no option matching that value or label', options: options.slice(0, 30).map(o => ({ value: o.value, label: text(o) })) };
+    if (${dry}) return { matched: { by, value: pick.value, label: text(pick) } };
     el.focus({ preventScroll: true });
     for (const o of options) o.selected = o === pick;
     el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
@@ -361,6 +362,11 @@ function selectScript(target, body) {
     return { matched: { by, value: pick.value, label: text(pick) } };
   })()`;
 }
+
+// While a bot waits to take a tab back from the human, its action first runs
+// dry (tab.preflight): every check up to the first input, which throws this
+// instead of reaching the page. A refusal then leaves the tab the human's.
+const PREFLIGHT_READY = Object.assign(new Error('preflight passed'), { preflight: true });
 
 // A click or Enter that starts a main-frame navigation should not answer
 // until the new document has parsed, or the controls read lands on the old page.
@@ -419,16 +425,16 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   }
   function isDispatching(tab) { return !!tab && (states.get(tab)?.active || 0) > 0; }
 
-  // preflight runs only the checks that need no page, so a bot taking a tab
-  // back from the human learns of a malformed action before it takes the tab.
-  async function perform(tab, body, botId, { preflight = false } = {}) {
+  // argsOnly runs only the checks that need no page, so a malformed action is
+  // refused before a takeover waits out the human's grace.
+  async function perform(tab, body, botId, { argsOnly = false } = {}) {
     const wc = tab.view.webContents;
     const own = state(tab), revision = own.revision;
     const check = () => {
       requireActor(tab, botId, body.epoch, true);
       if (own.revision !== revision || wc.isDestroyed()) throw fail('Agent input was cancelled. Request fresh tab state.', 409);
     };
-    if (!preflight) check();
+    if (!argsOnly) check();
     const action = body.action;
     if (!INPUT_ACTIONS.has(action)) throw fail('Unsupported agent input action.');
     if (action === 'type' && (typeof body.text !== 'string' || body.text.length > 20000)) throw fail('Provide text up to 20,000 characters.');
@@ -452,13 +458,14 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       else if (Number.isFinite(body.toX) && Number.isFinite(body.toY)) to = { x: body.toX, y: body.toY };
       else throw fail('drag needs a destination: toRef, toSelector, or toX and toY.');
     }
-    if (preflight) return null;
+    if (argsOnly) return null;
 
     // The API owner serializes perform() with screenshots and navigation in
     // tab.queue. Checks after awaits also stop an already queued revoked action.
     // inputsSent counts what reached the page (a hover alone does not), so a
     // takeover for an action refused before then can be undone.
-    const send = async (method, params) => { check(); if (method.startsWith('Input.') && params?.type !== 'mouseMoved') tab.inputsSent = (tab.inputsSent || 0) + 1; const result = await withTimeout(command(tab, method, params), 10000); check(); return result; };
+    const dry = () => { if (tab.preflight) throw PREFLIGHT_READY; };
+    const send = async (method, params) => { check(); dry(); if (method.startsWith('Input.') && params?.type !== 'mouseMoved') tab.inputsSent = (tab.inputsSent || 0) + 1; const result = await withTimeout(command(tab, method, params), 10000); check(); return result; };
     const visible = isVisible(tab) !== false;
     const accent = botAccent(botId);
     let mouseDown = null, keyDown = null;
@@ -482,6 +489,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     async function moveCursor(point, hl) {
       // The glide is overlay-only and exists for a person watching: a tab the
       // human is not looking at gets one real pointer event and no pacing.
+      dry();
       const path = visible ? cursorPath(tab.agentCursor, point) : [point];
       check();
       const glide = overlay(point, 'move', hl, path);
@@ -521,7 +529,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     // The page-side tracker counts the follow-up work the action starts (its
     // short timers and requests) so the effect read can wait it out. Arm just
     // before the real dispatch; a failed probe must not stall the action.
-    const armFollowUp = () => boundedJs(wc, followUpArmExpression(), 3000).catch(() => {});
+    const armFollowUp = () => { dry(); return boundedJs(wc, followUpArmExpression(), 3000).catch(() => {}); };
     const closeFollowUp = () => boundedJs(wc, followUpCloseExpression(), 3000).catch(() => {});
     const watching = watchNavigation(wc, delay);
     own.active++;
@@ -531,7 +539,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     try {
       // Focus emulation persists for the tab's agent lifetime; toggling it per
       // action was two CDP round-trips on every dispatch.
-      if (!tab.focusEmulation) { tab.focusEmulation = true; await send('Emulation.setFocusEmulationEnabled', { enabled: true }); }
+      if (!tab.focusEmulation && !tab.preflight) { tab.focusEmulation = true; await send('Emulation.setFocusEmulationEnabled', { enabled: true }); }
       let point, found = {}, likelyNavigation = false, extra = {}, end = null;
       let target = { ref: body.ref, selector: body.selector, name: body.name, role: body.role, row: body.row };
       // The source resolves last: scrolling it into view must not move a destination found earlier.
@@ -585,13 +593,19 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         if (glide) await Promise.race([glide, delay(path.length * 16 + 150)]);
         cursor(target, 'move', endHl);
       } else if (action === 'select') {
+        const pick = async (dryRun) => {
+          const picked = await boundedJs(wc, selectScript(target, body, dryRun));
+          check();
+          if (picked && picked.fail === 'stale') throw staleRef(body.ref);
+          if (!picked || picked.fail) throw fail(`Element ${picked ? picked.fail : 'is unavailable'}${picked?.options ? ': ' + JSON.stringify(picked.options) : ''}.`);
+          return picked;
+        };
+        // A dry run checks the option exists without choosing it.
+        if (tab.preflight) { await pick(true); dry(); }
         await moveCursor(point, hl);
         await armFollowUp();
+        const picked = await pick(false);
         tab.inputsSent = (tab.inputsSent || 0) + 1;
-        const picked = await boundedJs(wc, selectScript(target, body));
-        check();
-        if (picked && picked.fail === 'stale') throw staleRef(body.ref);
-        if (!picked || picked.fail) throw fail(`Element ${picked ? picked.fail : 'is unavailable'}${picked?.options ? ': ' + JSON.stringify(picked.options) : ''}.`);
         extra.matched = picked.matched;
         cursor(point, 'click', hl);
       } else if (action === 'type') {
@@ -644,4 +658,4 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   return { perform, clear, isDispatching };
 }
 
-module.exports = { createAgentInput, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };
+module.exports = { createAgentInput, PREFLIGHT_READY, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };
