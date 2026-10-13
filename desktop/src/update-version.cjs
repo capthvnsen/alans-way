@@ -10,7 +10,10 @@ function normalizeVersion(value) {
 // as behind. Pre-release identifiers compare numerically when both are
 // numbers (rc.10 > rc.2), numbers sort below words, a release beats its
 // pre-releases, and build metadata never matters. null when unparseable.
-const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$/;
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+// Probe tokens are not YAML scalars: validate the whole token without
+// stripping comments or quotes that could disguise malformed evidence.
+const validVersionToken = (value) => SEMVER.test(String(value || ''));
 function compareVersions(a, b) {
   const x = SEMVER.exec(normalizeVersion(a)), y = SEMVER.exec(normalizeVersion(b));
   if (!x || !y) return null;
@@ -27,4 +30,4 @@ function compareVersions(a, b) {
   return 0;
 }
 
-module.exports = { normalizeVersion, compareVersions };
+module.exports = { normalizeVersion, compareVersions, validVersionToken };

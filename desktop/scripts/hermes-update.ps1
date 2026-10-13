@@ -41,6 +41,7 @@ function BudgetLeft {
     return [int]((EnvInt 'ALANS_WAY_HERMES_BUDGET' 270) - ((Get-Date) - $script:StartTime).TotalSeconds)
 }
 function Tail-Text([string]$Text, [int]$Max) {
+    $Text = Safe-Reason $Text
     $t = (($Text -split "`n" | Where-Object { $_.Trim() }) -join ' ') -replace '\s+', ' '
     if ($t.Length -gt $Max) { return $t.Substring($t.Length - $Max) }
     return $t
@@ -140,8 +141,8 @@ $report = $env:ALANS_WAY_HERMES_REPORT
 
 # Accept only a complete semver-like banner token as version evidence.
 function Get-HermesVersion([string]$Text) {
-    $m = [regex]::Match($Text, 'Hermes Agent v(\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)(?=\s|$)')
-    if ($m.Success) { return $m.Groups[1].Value }
+    $m = [regex]::Match($Text, 'Hermes Agent v([^\s]+)')
+    if ($m.Success -and $m.Groups[1].Value -cmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$') { return $m.Groups[1].Value }
     return ''
 }
 
@@ -225,7 +226,7 @@ if ($ok) {
     if ($script:Updated) { $msg = "Hermes update finished$where." } elseif ($script:Current) { $msg = "Hermes is already up to date$where." } else { $msg = "Hermes update warning${where}: $err." }
     if ($script:Version) { $msg = "$msg Now on v$($script:Version)." }
 } else {
-    $short = $err; if ($short.Length -gt 200) { $short = $short.Substring(0, 200) }
+    $short = Safe-Reason $err; if ($short.Length -gt 200) { $short = $short.Substring(0, 200) }
     $msg = "Hermes update failed${where}: $short"
 }
 if ($report) { $msg = $report }

@@ -34,7 +34,7 @@ require('../src/vm-update.cjs').createVmUpdater = () => ({
     if (checkGate) await checkGate.promise;
     return { ok: true, version: '0.21.3', hostVersion: '0.21.3', busy: false, hermesVersion: `Hermes Agent v${hermesNow} (2026.9.24) · stable`,
       hermesCheck: hermesNow === '0.21.6' ? '→ Selected release available: stable v0.21.7 (71d34bad1045)' : '✓ Up to date with the latest release (stable v0.21.7 (71d34bad1045)).',
-      pluginVersion: '0.21.0', gatewayRunning: true };
+      pluginVersion: '0.21.0', plugins: [{ name: 'alans-way', profile: 'default', version: '0.21.0' }], gatewayRunning: true };
   },
   hermesUpdateVm: async (target, opts = {}) => {
     if (opts.report && failReport) throw new Error('relay down');
@@ -106,7 +106,7 @@ app.whenReady().then(async () => {
   assert.equal(bar, `Alan’s Workspace ${version} · Hermes 0.21.6 (server) · Plugin 0.21.0`);
   const tooltip = await evaluate('document.getElementById("version-label").title');
   assert.match(tooltip, /Hermes 0\.21\.6 on the server · 0\.21\.7 available/);
-  assert.match(tooltip, /Alan’s Way plugin 0\.21\.0 · 0\.21\.1 on GitHub/);
+  assert.match(tooltip, /alans-way \(default\) 0\.21\.0 · 0\.21\.1 on GitHub/);
   assert.match(tooltip, new RegExp(`Browser host 0\\.21\\.3 on the server · ${version.replace(/\./g, '\\.')} goes with this app`));
   assert.match(tooltip, /Checked /);
   assert.equal(await text('update-all'), '↑ Update');

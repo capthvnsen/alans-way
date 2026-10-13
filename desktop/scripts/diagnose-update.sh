@@ -34,7 +34,9 @@ if not hermes:
     candidate = pathlib.Path.home() / '.local/bin/hermes'
     hermes = str(candidate) if candidate.is_file() else None
 banner = command([hermes, '--version']) if hermes else ''
-version = re.search(r'Hermes Agent v([0-9A-Za-z.+-]+)', banner)
+version = re.search(r'Hermes Agent v([^\s]+)', banner)
+if version and not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?', version.group(1)):
+    version = None
 print('Hermes:', version.group(1) if version else '(version unavailable)')
 profiles = [home] + sorted((home / 'profiles').glob('*/'))
 clones = set()

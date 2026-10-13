@@ -24,10 +24,10 @@ test('versions compare by SemVer precedence, pre-releases and build metadata inc
 });
 
 test('an installed pre-release or build-tagged plugin still counts as behind its release', () => {
-  const cache = { where: 'server', hermes: '0.21.6', hermesUpdate: false, plugin: '0.21.1-rc.2', pluginLatest: '0.21.1', host: '0.21.4+20261012' };
+  const cache = { where: 'server', hermes: '0.21.6', hermesUpdate: false, plugin: '0.21.1-rc.2', plugins: [{ name: 'alans-way', profile: 'default', version: '0.21.1-rc.2' }], pluginLatest: '0.21.1', host: '0.21.4+20261012' };
   assert.deepEqual(planSteps({ app: '0.21.4', cache }).map((s) => [s.id, s.from, s.to]), [['plugin', '0.21.1-rc.2', '0.21.1']],
     'the host on 0.21.4+build is the app version, so it does not join');
-  assert.deepEqual(planSteps({ app: '0.21.5-rc.10', cache: { ...cache, plugin: '0.21.1', host: '0.21.5-rc.2' } }).map((s) => [s.id, s.to]), [['host', '0.21.5-rc.10']]);
+  assert.deepEqual(planSteps({ app: '0.21.5-rc.10', cache: { ...cache, plugin: '0.21.1', plugins: [{ name: 'alans-way', profile: 'default', version: '0.21.1' }], host: '0.21.5-rc.2' } }).map((s) => [s.id, s.to]), [['host', '0.21.5-rc.10']]);
 });
 
 test('the Hermes version comes from the --version banner, build suffixes dropped', () => {
@@ -63,13 +63,13 @@ test('latestPluginTag reads the GitHub tag list and treats a failed request as u
 });
 
 const serverCheck = { ok: true, version: '0.21.4', hostVersion: '0.21.4', hermesVersion: 'Hermes Agent v0.21.6+187.g1e0c773 (2026.9.24)',
-  hermesCheck: '→ Selected release available: stable v0.21.7 (71d34bad1045)', pluginVersion: '0.21.0', gatewayRunning: true };
+  hermesCheck: '→ Selected release available: stable v0.21.7 (71d34bad1045)', pluginVersion: '0.21.0', plugins: [{ name: 'alans-way', profile: 'default', version: '0.21.0' }], gatewayRunning: true };
 const server = { id: 'agent', label: 'VPS', sshHost: 'u@vm' };
 
 test('a check becomes the cached record; an unreachable machine keeps the last versions and goes offline', () => {
   const record = versionRecord({}, { target: server, check: serverCheck, pluginLatest: '0.21.1', now: 1000 });
   assert.deepEqual(record, { where: 'server', checkedAt: 1000, pluginLatest: '0.21.1', offline: false, hermes: '0.21.6',
-    hermesUpdate: true, hermesLatest: '0.21.7', plugin: '0.21.0', host: '0.21.4', gatewayRunning: true });
+    hermesUpdate: true, hermesLatest: '0.21.7', plugin: '0.21.0', plugins: serverCheck.plugins, host: '0.21.4', gatewayRunning: true });
   const offline = versionRecord(record, { target: server, check: { ok: false, error: 'ssh: timed out' }, pluginLatest: '', now: 2000 });
   assert.equal(offline.offline, true);
   assert.equal(offline.hermes, '0.21.6', 'the last known version stays for the tooltip');
@@ -89,7 +89,7 @@ test('the plan lists only what is behind, in run order, with from and to version
   // No verdict from Hermes still runs `hermes update` (a no-op when current).
   assert.deepEqual(planSteps({ app: '0.21.4', cache: { ...current, hermesUpdate: null } }).map((s) => [s.id, s.to]), [['hermes', 'latest']]);
   // An older tag on GitHub than installed is not an update.
-  assert.deepEqual(planSteps({ app: '0.21.4', cache: { ...current, plugin: '0.22.0', pluginLatest: '0.21.1' } }), []);
+  assert.deepEqual(planSteps({ app: '0.21.4', cache: { ...current, plugin: '0.22.0', plugins: [{ name: 'alans-way', profile: 'default', version: '0.22.0' }], pluginLatest: '0.21.1' } }), []);
   // An offline server contributes nothing; the app still updates.
   assert.deepEqual(planSteps({ app: '0.21.4', appUpdate: '0.21.5', cache: { ...cache, offline: true } }).map((s) => s.id), ['app']);
   // A local Hermes has no browser host to update.
@@ -102,7 +102,7 @@ test('the bar text is compact, says where Hermes runs, and the tooltip carries t
   assert.equal(v.text, 'Alan’s Workspace 0.21.5 · Hermes 0.21.6 (server) · Plugin 0.21.0');
   assert.equal(v.hasUpdate, true);
   assert.equal(v.tooltip, ['Alan’s Workspace 0.21.5', 'Hermes 0.21.6 on the server · 0.21.7 available',
-    'Alan’s Way plugin 0.21.0 · 0.21.1 on GitHub', 'Browser host 0.21.4 on the server · 0.21.5 goes with this app', 'Checked 14:02'].join('\n'));
+    'alans-way (default) 0.21.0 · 0.21.1 on GitHub', 'Browser host 0.21.4 on the server · 0.21.5 goes with this app', 'Checked 14:02'].join('\n'));
   const local = describeVersions({ app: '0.21.5', cache: { ...cache, where: 'local', hermesUpdate: false, pluginLatest: '0.21.0' }, formatTime: () => 't' });
   assert.equal(local.text, 'Alan’s Workspace 0.21.5 · Hermes 0.21.6 (local) · Plugin 0.21.0');
   assert.equal(local.hasUpdate, false);

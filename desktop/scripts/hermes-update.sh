@@ -38,7 +38,7 @@ json() { printf '{"ok":%s,"version":"%s","updated":%s,"before":"%s","current":%s
 fail() { json false "$VERSION" "$UPDATED" "$1" "$MESSAGED" "$MESSAGES_JSON"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 budget_left() { printf '%s' "$(( BUDGET - ($(date +%s) - START_S) ))"; }
-tail_text() { printf '%s' "$1" | tr '\n' ' ' | sed 's/  */ /g' | tail -c 300; }
+tail_text() { printf '%s' "$1" | safe_git_error | sed 's/  */ /g' | tail -c 300; }
 
 HERMES_BIN_RES=""
 hermes_bin() {
@@ -69,7 +69,7 @@ run_hermes() {
 # v-prefixed banner word. Build metadata and prereleases are valid.
 hermes_version() {
   sed -n 's/^Hermes Agent v\([^[:space:]]*\).*/\1/p' | head -1 |
-    grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+    grep -E '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
 }
 
 # The profiles hermes counts: the default home plus every profile dir with the
@@ -134,7 +134,7 @@ if [ "$UPD_RC" -eq 0 ]; then
   if [ "$UPDATED" = true ]; then MSG="Hermes update finished$HOST."; elif [ "$CURRENT" = true ]; then MSG="Hermes is already up to date$HOST."; else MSG="Hermes update warning$HOST: $ERR."; fi
   [ -n "$VERSION" ] && MSG="$MSG Now on v$VERSION."
 else
-  MSG="Hermes update failed$HOST: $(printf '%s' "$ERR" | cut -c1-200)"
+  MSG="Hermes update failed$HOST: $(printf '%s' "$ERR" | safe_git_error | cut -c1-200)"
 fi
 [ -n "$REPORT" ] && MSG="$REPORT"
 MSG="$(printf '%s' "$MSG" | safe_git_error)"

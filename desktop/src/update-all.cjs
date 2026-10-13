@@ -13,11 +13,14 @@ const NAMES = { hermes: 'Hermes', plugin: 'Alan’s Way plugin', host: 'Browser 
 // uses names without the curly apostrophe.
 const SHORT = { hermes: 'Hermes', plugin: 'plugin', host: 'browser host', app: 'app' };
 
-const { normalizeVersion, compareVersions } = require('./update-version.cjs');
+const { normalizeVersion, compareVersions, validVersionToken } = require('./update-version.cjs');
 const isNewer = (a, b) => compareVersions(a, b) === 1;
 
 // "Hermes Agent v0.21.6+763.g1fd1827 (2026.9.24) · stable" -> "0.21.6".
-const parseHermesVersion = (text) => /Hermes Agent v(\d+\.\d+\.\d+)/.exec(String(text || ''))?.[1] || '';
+function probeVersion(token) {
+  return validVersionToken(token) ? token.split('+')[0] : '';
+}
+const parseHermesVersion = (text) => probeVersion(/Hermes Agent v([^\s]+)/.exec(String(text || ''))?.[1]);
 
 // `hermes update --check` exits 0 whether or not an update exists; the verdict
 // is the text. A release channel names its target ("Selected release
@@ -26,7 +29,7 @@ const parseHermesVersion = (text) => /Hermes Agent v(\d+\.\d+\.\d+)/.exec(String
 function parseHermesCheck(text) {
   const t = String(text || '');
   if (/up to date|no newer release|no update available/i.test(t)) return { available: false, latest: '' };
-  if (/update available|release available/i.test(t)) return { available: true, latest: /release available:.*?\bv(\d+\.\d+\.\d+)/i.exec(t)?.[1] || '' };
+  if (/update available|release available/i.test(t)) return { available: true, latest: probeVersion(/release available:.*?\bv([^\s]+)/i.exec(t)?.[1]) };
   return { available: null, latest: '' };
 }
 
@@ -57,8 +60,10 @@ function versionRecord(previous, { target, check, pluginLatest = '', now }) {
   const stamp = { where, checkedAt: now, pluginLatest: pluginLatest || base.pluginLatest || '' };
   if (!check?.ok) return { ...base, ...stamp, offline: true };
   const verdict = parseHermesCheck(check.hermesCheck);
-  return { ...stamp, offline: false, hermes: parseHermesVersion(check.hermesVersion),
-    hermesUpdate: verdict.available, hermesLatest: verdict.latest, plugin: String(check.pluginVersion || ''),
+  const hermes = parseHermesVersion(check.hermesVersion);
+  return { ...stamp, offline: false, hermes,
+    ...(check.hermesVersion && !hermes ? { hermesUnverified: true } : {}),
+    hermesUpdate: hermes ? verdict.available : null, hermesLatest: verdict.latest, plugin: String(check.pluginVersion || ''),
     ...(Array.isArray(check.plugins) ? { plugins: check.plugins.filter((p) => ['alans-way', 'alans-way-computer'].includes(p?.name)) } : {}),
     host: String(check.hostVersion || check.version || ''), gatewayRunning: typeof check.gatewayRunning === 'boolean' ? check.gatewayRunning : null };
 }
@@ -71,13 +76,16 @@ function versionRecord(previous, { target, check, pluginLatest = '', now }) {
 function planSteps({ app, appUpdate = '', cache } = {}) {
   const c = cache || {};
   const steps = [];
-  if (c.hermes && !c.offline && c.hermesUpdate !== false) steps.push({ id: 'hermes', from: c.hermes, to: c.hermesLatest || 'latest' });
-  const plugins = Array.isArray(c.plugins) ? c.plugins : c.plugin ? [{ version: c.plugin }] : [];
+  if ((c.hermes || c.hermesUnverified) && !c.offline && (compareVersions(c.hermes, c.hermes) === null || c.hermesUpdate !== false)) steps.push({ id: 'hermes', from: c.hermes || 'unverified', to: c.hermesLatest || 'latest' });
+  const plugins = Array.isArray(c.plugins) ? c.plugins : [];
+  // A legacy scalar cannot certify companion plugins or named profiles.
+  const incomplete = (!Array.isArray(c.plugins) && Boolean(c.where || c.plugin)) ||
+    (!plugins.length && Boolean(c.plugin)) || plugins.some((p) => !p?.name || !p.profile);
   const stale = plugins.find((p) => {
-    const comparison = compareVersions(p.version || p.after, c.pluginLatest);
+    const comparison = compareVersions(p?.version || p?.after, c.pluginLatest);
     return comparison === null || comparison < 0;
   });
-  if (!c.offline && c.pluginLatest && stale) steps.push({ id: 'plugin', from: stale.version || stale.after || 'unverified', to: c.pluginLatest });
+  if (!c.offline && (incomplete || c.pluginLatest && stale)) steps.push({ id: 'plugin', from: stale?.version || stale?.after || c.plugin || 'unverified', to: c.pluginLatest || 'latest' });
   const appTarget = appUpdate && isNewer(appUpdate, app) ? appUpdate : app;
   if (c.where === 'server' && c.host && !c.offline && isNewer(appTarget, c.host)) steps.push({ id: 'host', from: c.host, to: appTarget });
   if (appTarget !== app) steps.push({ id: 'app', from: app, to: appTarget });
@@ -97,9 +105,9 @@ function describeVersions({ app, appUpdate = '', cache, formatTime = (ms) => new
   const lines = [`Alan’s Workspace ${app}${behind('app') ? ` · ${appUpdate} ready to install` : ''}`];
   if (c.offline) lines.push(`Hermes: offline, ${where} did not answer${c.hermes ? ` (last seen ${c.hermes})` : ''}`);
   else if (c.hermes) lines.push(`Hermes ${c.hermes} on ${where}${c.hermesUpdate ? ` · ${c.hermesLatest || 'an update'} available` : c.hermesUpdate === false ? ' · up to date' : ''}`);
-  else if (c.where) lines.push(`Hermes: not found on ${where}`);
+  else if (c.where) lines.push(`Hermes: ${c.hermesUnverified ? 'version unverified' : 'not found'} on ${where}`);
   if (Array.isArray(c.plugins)) for (const p of c.plugins) lines.push(`${p.name} (${p.profile || 'default'}) ${p.version || p.after || 'version unverified'}${behind('plugin') ? ` · ${c.pluginLatest} on GitHub` : ''}`);
-  else if (c.plugin) lines.push(`Alan’s Way plugin ${c.plugin}${behind('plugin') ? ` · ${c.pluginLatest} on GitHub` : ''}`);
+  else if (c.plugin || c.where) lines.push(`Alan’s Way plugin ${c.plugin || 'version unverified'} · profiles unverified${c.pluginLatest ? ` · ${c.pluginLatest} on GitHub` : ''}`);
   if (c.where === 'server' && c.host) lines.push(`Browser host ${c.host} on the server${behind('host') ? ` · ${behind('host').to} goes with this app` : ''}`);
   lines.push(c.checkedAt ? `Checked ${formatTime(c.checkedAt)}` : 'Not checked yet');
   const hasUpdate = steps.some((step) => step.id !== 'hermes') || c.hermesUpdate === true;

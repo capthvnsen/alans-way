@@ -228,6 +228,20 @@ test('a failed update reports the error and still restarts the gateways and mess
   assert.match(fs.readFileSync(f.sends, 'utf8'), /Hermes update failed.*merge conflict/);
 });
 
+test('long token-only SSH errors are scrubbed before Windows tails and bot messages', e2e, () => {
+  const f = makeHermes();
+  fs.writeFileSync(path.join(f.state, 'update-rc'), '3');
+  fs.writeFileSync(path.join(f.state, 'update-out'), 'fatal ssh://' + 'SYNTHETIC'.repeat(70) + '@host/repo?opaque=SYNTHETICquery#SYNTHETICfrag\n');
+  const res = runScript(f);
+  const result = lastJson(res);
+  assert.notEqual(res.status, 0);
+  assert.equal(result.ok, false);
+  assert.equal(result.gatewayRestarted, true);
+  assert.equal(result.messaged, true);
+  assert.doesNotMatch(res.stdout + fs.readFileSync(f.sends, 'utf8'), /SYNTHETIC/);
+  assert.match(result.error, /host\/repo/);
+});
+
 test('nonzero update and restart exits are preserved even without error output', e2e, () => {
   const f = makeHermes();
   fs.writeFileSync(path.join(f.state, 'update-rc'), '7');
@@ -371,4 +385,17 @@ test('the Windows read-only check returns every managed plugin/profile version',
   assert.equal(result.pluginVersion, '0.21.5');
   assert.deepEqual(result.plugins, plugins);
   assert.doesNotMatch(fs.readFileSync(f.log, 'utf8'), /update --yes|plugins update|gateway stop|gateway start/);
+});
+
+test('the shipped Windows version validator rejects whole malformed tokens', e2e, () => {
+  const source = fs.readFileSync(SCRIPT, 'utf8');
+  const start = source.indexOf('function Get-HermesVersion(');
+  const fn = source.slice(start, source.indexOf('\n}', start) + 2);
+  const dir = mktemp('hermes-version-ps1-');
+  const script = path.join(dir, 'probe.ps1');
+  const tokens = ['0.21.6garbage', '0.21.6+', '0.21.6..oops', '0.21.6+build..bad', '0.21.6+.', '01.21.6', '0.21.6-01', '0.21.6', '0.21.6-rc.1+build.2'];
+  fs.writeFileSync(script, fn + '\n@(' + tokens.map(t => `Get-HermesVersion 'Hermes Agent v${t} (fixture)'`).join('\n') + ') | ConvertTo-Json -Compress');
+  const res = spawnSync(POWERSHELL, ['-NoProfile', '-File', script], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(JSON.parse(res.stdout), [...Array(7).fill(''), '0.21.6', '0.21.6-rc.1+build.2']);
 });

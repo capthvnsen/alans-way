@@ -152,10 +152,13 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
   // One app boundary for guest JSON, raw execution failures and exceptions.
   // No settings, persistent record, report or logger receives unsanitized data.
   function sanitizeGuest(value) {
-    if (typeof value === 'string') return redactReport(value);
+    // Older guests may already have cut off a URL's scheme. Remove its
+    // remaining userinfo and query/fragment before any app consumer sees it.
+    if (typeof value === 'string') return redactReport(value)
+      .replace(/[^\s/]+@/g, '[redacted]@').replace(/[?#][^\s]*/g, '[redacted]');
     if (Array.isArray(value)) return value.map(sanitizeGuest);
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
-      .map(([key, item]) => [redactReport(key), sanitizeGuest(item)]));
+      .map(([key, item]) => [sanitizeGuest(key), sanitizeGuest(item)]));
     return value;
   }
   async function runGuest(vm, opts) {
