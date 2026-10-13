@@ -24,6 +24,9 @@ const SECRET_PHRASE = /securitycode|socialsecurity|verificationcode|onetime(code
 // spaces, _- and camelCase all mark edges: paymentCardNo is a card field,
 // postcard_notes, gift card note and acc_no are not.
 const CARD_NO = /(^|[^a-z0-9])(?:card|cc)[\s._-]*no(?:[\s._-]*number)?($|[^a-z])/;
+// A run-together lowercase word ending in "cardno"/"ccno" (paymentcardno,
+// customerccno, ccno2) is a card field too; "acc" before "no" is not.
+const CARD_NO_TAIL = /(?:card|(?<!a)cc)no(?:number)?\d*$/;
 
 // Runs in an isolated world on each document of the recorded tab, so the page
 // can neither see nor call the binding. Only trusted (real user) events count,
@@ -123,7 +126,7 @@ function isSecret(raw) {
   const labels = [raw.name, raw.field, raw.selector].map(String);
   return labels.some(label => {
     const parts = words(label);
-    return SECRET_PHRASE.test(label.toLowerCase().replace(/[^a-z0-9]/g, '')) || CARD_NO.test(parts.join(' ')) || parts.some(word => SECRET_WORDS.has(word));
+    return SECRET_PHRASE.test(label.toLowerCase().replace(/[^a-z0-9]/g, '')) || CARD_NO.test(parts.join(' ')) || parts.some(word => SECRET_WORDS.has(word) || CARD_NO_TAIL.test(word));
   });
 }
 
