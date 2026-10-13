@@ -1,8 +1,8 @@
 // Run: npx electron test/update-all-electron.cjs
 // The bottom bar's versions and the "Update everything" dialog, end to end in
 // the real window with every machine-touching step stubbed: no ssh, no hermes,
-// no GitHub. The plugin step fails on purpose to cover stop-on-failure, then
-// succeeds so a full run reaches the browser host and stages the app restart.
+// no GitHub. The plugin stays behind on purpose to cover the warning UI,
+// then succeeds so a full run stages the app restart.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -34,7 +34,7 @@ require('../src/vm-update.cjs').createVmUpdater = () => ({
     if (checkGate) await checkGate.promise;
     return { ok: true, version: '0.21.3', hostVersion: '0.21.3', busy: false, hermesVersion: `Hermes Agent v${hermesNow} (2026.9.24) · stable`,
       hermesCheck: hermesNow === '0.21.6' ? '→ Selected release available: stable v0.21.7 (71d34bad1045)' : '✓ Up to date with the latest release (stable v0.21.7 (71d34bad1045)).',
-      pluginVersion: '0.21.0', gatewayRunning: true };
+      pluginVersion: '0.21.0', plugins: [{ name: 'alans-way', profile: 'default', version: '0.21.0' }], gatewayRunning: true };
   },
   hermesUpdateVm: async (target, opts = {}) => {
     if (opts.report && failReport) throw new Error('relay down');
@@ -55,7 +55,7 @@ require('../src/vm-update.cjs').createVmUpdater = () => ({
     if (pluginOk) return { id: target.id, ok: true, state: 'ok', gatewayRestarted: true, plugins: [{ profile: 'default', name: 'alans-way', before: '0.21.0', after: '0.21.1', status: 'updated' }],
       pluginLines: [{ text: 'Plugin updated to 0.21.1.', tone: 'ok' }] };
     const plugins = [{ profile: 'default', name: 'alans-way', before: '0.21.0', after: '0.21.0', status: 'failed', error: 'registry unreachable' }];
-    return { id: target.id, ok: true, state: 'ok', plugins, gatewayRestarted: false, pluginLines: [{ text: 'Plugin update failed: registry unreachable', tone: 'warn' }] };
+    return { id: target.id, ok: true, state: 'ok', plugins, gatewayRestarted: false, pluginLines: [{ text: 'Plugin alans-way (default) on 0.21.0 (wanted 0.21.1): registry unreachable', tone: 'warn' }] };
   },
   updateVm: async (target, tag) => {
     calls.push(`host ${target.id} ${tag}`);
@@ -106,7 +106,7 @@ app.whenReady().then(async () => {
   assert.equal(bar, `Alan’s Workspace ${version} · Hermes 0.21.6 (server) · Plugin 0.21.0`);
   const tooltip = await evaluate('document.getElementById("version-label").title');
   assert.match(tooltip, /Hermes 0\.21\.6 on the server · 0\.21\.7 available/);
-  assert.match(tooltip, /Alan’s Way plugin 0\.21\.0 · 0\.21\.1 on GitHub/);
+  assert.match(tooltip, /alans-way \(default\) 0\.21\.0 · 0\.21\.1 on GitHub/);
   assert.match(tooltip, new RegExp(`Browser host 0\\.21\\.3 on the server · ${version.replace(/\./g, '\\.')} goes with this app`));
   assert.match(tooltip, /Checked /);
   assert.equal(await text('update-all'), '↑ Update');
@@ -140,21 +140,20 @@ app.whenReady().then(async () => {
   assert.deepEqual(await invoke('update-all'), { refused: 'Another update is already running. Try again when it finishes.' });
   assert.equal(work().length, before, 'Update Hermes, VM retry and a second Update everything all wait');
 
-  // The plugin step fails: the browser host never starts, the summary says
-  // what is left, versions refresh and the bot reports once.
+  // The plugin remains behind: the warning names its version and target;
+  // the browser host can update, versions refresh and the bot reports once.
   releaseHermes();
   await waitFor(() => evaluate('document.getElementById("update-all-cancel").disabled'), (d) => d === false, 8000, 'the run to end');
   const rows = await lines();
-  assert.deepEqual(rows.map((l) => l.split('|')[0]), ['done', 'failed', 'skipped']);
+  assert.deepEqual(rows.map((l) => l.split('|')[0]), ['done', 'warn', 'done']);
   assert.equal(rows[0], 'done|✓ Hermes: 0.21.6 → 0.21.7 · Updated to 0.21.7');
-  assert.equal(rows[1], 'failed|✗ Alan’s Way plugin: 0.21.0 → 0.21.1: Plugin update failed: registry unreachable');
-  assert.equal(rows[2], `skipped|– Browser host: 0.21.3 → ${version} (not started)`);
-  assert.ok(!calls.some((c) => c.startsWith('host')), 'nothing after the failure ran');
-  assert.equal(await text('update-all-copy'), 'Alan’s Way plugin did not update: Plugin update failed: registry unreachable. Updated: Hermes. '
-    + 'Not started, still on the old version: Browser host. Your bot messaged you on Telegram.');
+  assert.equal(rows[1], 'warn|⚠ Alan’s Way plugin unchanged 0.21.0 (wanted 0.21.1): Plugin alans-way (default) on 0.21.0 (wanted 0.21.1): registry unreachable');
+  assert.equal(rows[2], `done|✓ Browser host: 0.21.3 → ${version} · Running ${version}`);
+  assert.ok(calls.includes(`host agent v${version}`), 'the version warning does not block the host');
+  assert.equal(await text('update-all-copy'), 'Alan’s Way plugin unchanged 0.21.0 (wanted 0.21.1): Plugin alans-way (default) on 0.21.0 (wanted 0.21.1): registry unreachable. Updated: Hermes, Browser host. Your bot messaged you on Telegram.');
   assert.ok(calls.lastIndexOf('check agent') > calls.indexOf('plugin agent'), 'the versions refresh after the run');
-  assert.deepEqual(work().slice(before), ['plugin agent',
-    'report Update everything stopped at the plugin: Plugin update failed: registry unreachable. Now on Hermes 0.21.7. Not started: browser host.']);
+  assert.deepEqual(work().slice(before), ['plugin agent', `host agent v${version}`,
+    `report Update everything finished with warnings. plugin unchanged 0.21.0 (wanted 0.21.1): Plugin alans-way (default) on 0.21.0 (wanted 0.21.1): registry unreachable. Now on Hermes 0.21.7, browser host ${version}.`]);
   assert.equal(await hidden('update-all-go'), true, 'no app update staged, so no restart offered');
   assert.equal(await text('version-label'), `Alan’s Workspace ${version} · Hermes 0.21.7 (server) · Plugin 0.21.0`, 'the bar shows the refreshed versions');
 
@@ -227,7 +226,7 @@ app.whenReady().then(async () => {
   await waitFor(successWork, (c) => c.some((s) => s.startsWith('report ')), 5000, 'the final report');
   await waitFor(lines, (l) => l.length === 4 && l.every((r) => r.startsWith('done|')), 5000, 'all four completion rows');
   assert.deepEqual(await lines(), ['done|✓ Hermes: 0.21.6 → 0.21.7 · Updated to 0.21.7',
-    'done|✓ Alan’s Way plugin: 0.21.0 → 0.21.1 · Plugin updated to 0.21.1.',
+    'done|✓ Alan’s Way plugin: 0.21.0 → 0.21.1 · Plugin alans-way (default) updated (v0.21.0 to v0.21.1)',
     `done|✓ Browser host: 0.21.3 → ${appVersion} · Running ${appVersion}`,
     `done|✓ Alan’s Workspace: ${version} → ${appVersion} · Downloaded. Restart to finish.`]);
   assert.equal(stagedUpdater.autoInstallOnAppQuit, false, 'installation is held until the final report finishes too');
@@ -243,6 +242,6 @@ app.whenReady().then(async () => {
   assert.equal(await hidden('update-all-go'), false, 'restart is offered once the run finishes');
   assert.equal(stagedUpdater.autoInstallOnAppQuit, true, 'installation hold is released after completion');
 
-  console.log('PASS: the bottom bar shows versions with details on hover; Update everything confirms first, runs in order under one lock, stops at a failure, finishes a clean run, and reports once.');
+  console.log('PASS: the bottom bar shows versions with details on hover; Update everything confirms first, runs in order under one lock, warns when a plugin stays behind, finishes a clean run, and reports once.');
   app.quit();
 }).catch(error => { console.error(error.stack); app.exit(1); });

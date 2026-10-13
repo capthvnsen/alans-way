@@ -52,14 +52,24 @@ if "%cmd%"=="gateway" goto gateway\r
 if "%cmd%"=="send" goto send\r
 exit /b 0\r
 :version\r
-echo Hermes Agent v9.9.9 test\r
+if exist "%FAKE_HERMES_STATE%\\version" goto customversion\r
+if exist "%FAKE_HERMES_STATE%\\updated" (echo Hermes Agent v9.9.9 test) else (echo Hermes Agent v9.9.8 test)\r
+exit /b 0\r
+:customversion\r
+set /p ver=<"%FAKE_HERMES_STATE%\\version"\r
+echo Hermes Agent v%ver% test\r
 exit /b 0\r
 :update\r
+if "%sub%"=="--check" goto check\r
 if exist "%FAKE_HERMES_STATE%\\hang.exe" goto hang\r
 type "%FAKE_HERMES_STATE%\\update-out" 2>nul\r
 set rc=0\r
 if exist "%FAKE_HERMES_STATE%\\update-rc" set /p rc=<"%FAKE_HERMES_STATE%\\update-rc"\r
+if "%rc%"=="0" if not exist "%FAKE_HERMES_STATE%\\no-movement" type nul > "%FAKE_HERMES_STATE%\\updated"\r
 exit /b %rc%\r
+:check\r
+type "%FAKE_HERMES_STATE%\\check-out" 2>nul\r
+exit /b 0\r
 :hang\r
 "%FAKE_HERMES_STATE%\\hang.exe"\r
 exit /b %errorlevel%\r
@@ -95,14 +105,26 @@ public class FakeHermes {
     File.AppendAllText(Path.Combine(state, "hermes.log"), "hermes " + String.Join(" ", args) + "\\n");
     int offset = args[0] == "-p" ? 2 : 0;
     string command = args[offset];
-    if (command == "--version") Console.WriteLine("Hermes Agent v9.9.9 test");
+    if (command == "--version") {
+      string versionFile = Path.Combine(state, "version");
+      string version = File.Exists(versionFile) ? File.ReadAllText(versionFile).Trim() : File.Exists(Path.Combine(state, "updated")) ? "9.9.9" : "9.9.8";
+      Console.WriteLine("Hermes Agent v" + version + " test");
+    }
     if (command == "gateway") {
       if (args[offset + 1] == "status") Console.WriteLine("gateway is running");
       else File.AppendAllText(Path.Combine(state, "gateways.log"), String.Join(" ", args) + "\\n");
     }
     if (command == "send") File.AppendAllText(Path.Combine(state, "sends.log"), String.Join("|", args) + "\\n");
-    if (command == "update" && File.Exists(Path.Combine(state, "update-rc")))
-      return Int32.Parse(File.ReadAllText(Path.Combine(state, "update-rc")));
+    if (command == "update") {
+      if (args.Length > offset + 1 && args[offset + 1] == "--check") {
+        string check = Path.Combine(state, "check-out");
+        if (File.Exists(check)) Console.WriteLine(File.ReadAllText(check));
+        return 0;
+      }
+      int rc = File.Exists(Path.Combine(state, "update-rc")) ? Int32.Parse(File.ReadAllText(Path.Combine(state, "update-rc"))) : 0;
+      if (rc == 0 && !File.Exists(Path.Combine(state, "no-movement"))) File.WriteAllText(Path.Combine(state, "updated"), "");
+      return rc;
+    }
     return 0;
   }
 }
@@ -121,7 +143,7 @@ function compileExe(source, output) {
   assert.match(build.stdout, /^5\.1\./m, 'the runtime regression must exercise Windows PowerShell 5.1');
 }
 
-const runScript = (f, extraEnv = {}) => spawnSync(POWERSHELL, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT], {
+const runScript = (f, extraEnv = {}, script = SCRIPT) => spawnSync(POWERSHELL, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], {
   encoding: 'utf8', timeout: 150000,
   env: {
     // Keep the fake CLI first, but provide the OS commands the script and
@@ -206,6 +228,20 @@ test('a failed update reports the error and still restarts the gateways and mess
   assert.match(fs.readFileSync(f.sends, 'utf8'), /Hermes update failed.*merge conflict/);
 });
 
+test('long token-only SSH errors are scrubbed before Windows tails and bot messages', e2e, () => {
+  const f = makeHermes();
+  fs.writeFileSync(path.join(f.state, 'update-rc'), '3');
+  fs.writeFileSync(path.join(f.state, 'update-out'), 'fatal ssh://' + 'SYNTHETIC'.repeat(70) + '@host/repo?opaque=SYNTHETICquery#SYNTHETICfrag\n');
+  const res = runScript(f);
+  const result = lastJson(res);
+  assert.notEqual(res.status, 0);
+  assert.equal(result.ok, false);
+  assert.equal(result.gatewayRestarted, true);
+  assert.equal(result.messaged, true);
+  assert.doesNotMatch(res.stdout + fs.readFileSync(f.sends, 'utf8'), /SYNTHETIC/);
+  assert.match(result.error, /host\/repo/);
+});
+
 test('nonzero update and restart exits are preserved even without error output', e2e, () => {
   const f = makeHermes();
   fs.writeFileSync(path.join(f.state, 'update-rc'), '7');
@@ -287,4 +323,79 @@ test('a machine without the hermes CLI fails cleanly', e2e, () => {
   assert.notEqual(res.status, 0);
   assert.equal(result.ok, false);
   assert.match(result.error, /no hermes CLI/);
+});
+
+for (const shim of ['cmd', 'bat', 'exe']) {
+  for (const current of [false, true]) {
+    test(`${shim} no-op reports ${current ? 'independently current' : 'unverified warning'} and preserves gateways and notifications`, e2e, () => {
+      const f = shim === 'exe' ? makeExeHermes() : makeHermes(shim);
+      fs.writeFileSync(path.join(f.state, 'no-movement'), '');
+      if (current) fs.writeFileSync(path.join(f.state, 'check-out'), 'Already up to date.');
+      const res = runScript(f);
+      const result = lastJson(res);
+      assert.equal(res.status, 0, res.stderr + res.stdout);
+      assert.equal(result.ok, true);
+      assert.equal(result.updated, false);
+      assert.equal(result.current, current);
+      assert.equal(result.version, '9.9.8');
+      assert.equal(result.gatewayRestarted, true);
+      assert.equal(result.messaged, true);
+      assert.match(fs.readFileSync(f.gateways, 'utf8'), /^-p writer gateway start$/m);
+      const sends = fs.readFileSync(f.sends, 'utf8').trim().split('\n');
+      assert.equal(sends.length, 4);
+      assert.match(sends[0], current ? /already up to date/ : /warning.*unchanged or unverified/);
+      assert.doesNotMatch(sends.join('\n'), /Hermes update finished/);
+    });
+  }
+  test(`${shim} malformed version cannot claim current even when the check says current`, e2e, () => {
+    const f = shim === 'exe' ? makeExeHermes() : makeHermes(shim);
+    fs.writeFileSync(path.join(f.state, 'version'), 'bad-version');
+    fs.writeFileSync(path.join(f.state, 'check-out'), 'Already up to date.');
+    const res = runScript(f);
+    const result = lastJson(res);
+    assert.equal(res.status, 0, res.stderr + res.stdout);
+    assert.equal(result.updated, false);
+    assert.equal(result.current, false);
+    assert.equal(result.version, '');
+    assert.match(result.error, /unverified/);
+    assert.equal(result.gatewayRestarted, true);
+    assert.equal(result.messages.length, 4);
+    assert.match(fs.readFileSync(f.sends, 'utf8'), /Hermes update warning/);
+  });
+}
+
+test('the Windows read-only check returns every managed plugin/profile version', e2e, () => {
+  const f = makeHermes();
+  const plugins = [
+    { name: 'alans-way', profile: 'default', version: '0.21.5' },
+    { name: 'alans-way-computer', profile: 'default', version: '0.7.0' },
+    { name: 'alans-way', profile: 'coder', version: '0.7.0' },
+    { name: 'alans-way-computer', profile: 'coder', version: '' },
+  ];
+  for (const p of plugins) {
+    const home = p.profile === 'default' ? f.home : path.join(f.home, 'profiles', p.profile);
+    const dir = path.join(home, 'plugins', p.name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'plugin.yaml'), p.version ? `version: "v${p.version}" # fixture\n` : 'name: fixture\n');
+  }
+  const res = runScript(f, { ALANS_WAY_VM_CHECK: '1', ALANS_WAY_DESKTOP_DIR: path.join(f.state, 'missing-checkout'),
+    ALANS_WAY_VM_DATA: path.join(f.state, 'missing-data') }, path.join(__dirname, '../scripts/vm-update.ps1'));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr + res.stdout);
+  assert.equal(result.pluginVersion, '0.21.5');
+  assert.deepEqual(result.plugins, plugins);
+  assert.doesNotMatch(fs.readFileSync(f.log, 'utf8'), /update --yes|plugins update|gateway stop|gateway start/);
+});
+
+test('the shipped Windows version validator rejects whole malformed tokens', e2e, () => {
+  const source = fs.readFileSync(SCRIPT, 'utf8');
+  const start = source.indexOf('function Get-HermesVersion(');
+  const fn = source.slice(start, source.indexOf('\n}', start) + 2);
+  const dir = mktemp('hermes-version-ps1-');
+  const script = path.join(dir, 'probe.ps1');
+  const tokens = ['0.21.6garbage', '0.21.6+', '0.21.6..oops', '0.21.6+build..bad', '0.21.6+.', '01.21.6', '0.21.6-01', '0.21.6', '0.21.6-rc.1+build.2'];
+  fs.writeFileSync(script, fn + '\n@(' + tokens.map(t => `Get-HermesVersion 'Hermes Agent v${t} (fixture)'`).join('\n') + ') | ConvertTo-Json -Compress');
+  const res = spawnSync(POWERSHELL, ['-NoProfile', '-File', script], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(JSON.parse(res.stdout), [...Array(7).fill(''), '0.21.6', '0.21.6-rc.1+build.2']);
 });

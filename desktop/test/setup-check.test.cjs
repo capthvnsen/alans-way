@@ -249,7 +249,7 @@ test('redactReport removes URL credentials and GitHub tokens, keeping the host',
     assert.ok(out.includes(keep), `${keep} should survive in ${out}`);
     assert.equal(redactReport(out), out, 'a second pass changes nothing');
   }
-  for (const text of ['ssh root@77.42.86.93 failed', 'clone ssh://git@github.com/x.git', 'GET http://127.0.0.1:9465/v1/status', 'see https://github.com/capthvnsen/alans-way-agents'])
+  for (const text of ['ssh root@77.42.86.93 failed', 'GET http://127.0.0.1:9465/v1/status', 'see https://github.com/capthvnsen/alans-way-agents'])
     assert.equal(redactReport(text), text, 'addresses without a password stay readable');
 });
 

@@ -191,7 +191,9 @@ const SECRETS = [
   [/(?<!\d)\d{6,15}:[A-Za-z0-9_-]{30,}/g, '[bot token removed]'],
   [/\bsk-[A-Za-z0-9_-]{16,}/g, '[api key removed]'],
   // Credentials inside a URL (https://user:pass@host, git remotes); the host stays.
-  [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:'"]+:[^\s/@'"]+@/gi, '$1[removed]@'],
+  [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@'"]+@/gi, '$1[removed]@'],
+  // URL queries and fragments may contain credentials under arbitrary names.
+  [/(\b[a-z][a-z0-9+.-]*:\/\/[^\s?#'"]+)[?#][^\s'"]*/gi, '$1[removed]'],
   // GitHub tokens: classic and OAuth/app/refresh prefixes, then fine-grained PATs.
   [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, '[github token removed]'],
   [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, '[github token removed]'],

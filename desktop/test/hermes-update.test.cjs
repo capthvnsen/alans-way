@@ -165,10 +165,10 @@ test('Restart to finish asks before interrupting a working bot, and a run holds 
 });
 
 test('hermesUpdateDetail always reports whether the bot messaged', () => {
-  const base = { version: '0.21.7', updated: true };
+  const base = { before: '0.21.6', version: '0.21.7', updated: true };
   assert.equal(hermesUpdateDetail({ ok: true, messaged: true, messages: [{ profile: 'default', sent: true, error: '' }], ...base }, 'VPS'),
     'Hermes updated to v0.21.7 on the VPS; your bot messaged you on Telegram.');
-  assert.equal(hermesUpdateDetail({ ok: true, updated: false, messaged: true, messages: [], version: '0.21.7' }, 'VPS'),
+  assert.equal(hermesUpdateDetail({ ok: true, updated: false, current: true, messaged: true, messages: [], version: '0.21.7' }, 'VPS'),
     'Hermes is already up to date on the VPS; your bot messaged you on Telegram.');
   assert.equal(hermesUpdateDetail({ ok: true, messaged: false, messages: [{ profile: 'default', sent: false, error: 'no telegram' }], ...base }, 'VPS'),
     'Hermes updated to v0.21.7 on the VPS, but the bot could not message you: no telegram');
@@ -199,9 +199,11 @@ prof="default"
 cmd="$1"
 [ "$cmd" = "-p" ] && { prof="$2"; shift 2; cmd="$1"; }
 case "$cmd" in
-  update) cat "${state}/update-out" 2>/dev/null
+  update) if [ "\${2:-}" = --check ]; then cat "${state}/check-out" 2>/dev/null; exit 0; fi
+          if ! grep -Eiq "already up.to.date|nothing to update|no update available" "${state}/update-out" 2>/dev/null; then touch "${state}/updated"; fi
+          cat "${state}/update-out" 2>/dev/null
           rc="$(cat "${state}/update-rc" 2>/dev/null)"; exit "\${rc:-0}";;
-  --version) echo "Hermes Agent v$(cat "${state}/version" 2>/dev/null || echo 9.9.9) (test) · stable"; exit 0;;
+  --version) echo "Hermes Agent v$(cat "${state}/version" 2>/dev/null || { [ -f "${state}/updated" ] && echo 9.9.9 || echo 9.9.8; }) (test) · stable"; exit 0;;
   send) for last in "$@"; do :; done
         echo "send $prof: $last" >> "${state}/sends.log"
         grep -qxF "$prof" "${state}/send-fail" 2>/dev/null && { echo "no telegram target"; exit 1; }
@@ -278,6 +280,7 @@ test('hermes update runs, then every live profile messages the user', async () =
 test('an already-current install reports updated:false but still messages', async () => {
   const { bin, state } = makeHermes();
   fs.writeFileSync(path.join(state, 'update-out'), 'Already up to date.\n');
+  fs.writeFileSync(path.join(state, 'check-out'), 'Up to date with the latest release.\n');
   const res = await runScript(envFor(bin, state, { HERMES_HOME: makeHermesHome() }));
   const result = lastJson(res);
   assert.equal(result.ok, true);
@@ -350,4 +353,49 @@ test('a machine without the hermes CLI fails cleanly', async () => {
   assert.notEqual(res.status, 0);
   assert.equal(result.ok, false);
   assert.match(result.error, /no hermes CLI/);
+});
+
+
+test('a successful Hermes no-op cannot claim updated or independently current', async () => {
+  const { bin, state } = makeHermes();
+  fs.writeFileSync(path.join(state, 'version'), '0.21.6');
+  fs.writeFileSync(path.join(state, 'update-out'), 'Update completed.\n');
+  const res = await runScript(envFor(bin, state, { HERMES_HOME: makeHermesHome() }));
+  const result = lastJson(res);
+  assert.equal(result.updated, false);
+  assert.equal(result.current, false);
+  assert.match(result.error, /unchanged|unverified/);
+  assert.match(fs.readFileSync(path.join(state, 'sends.log'), 'utf8'), /warning/);
+  assert.doesNotMatch(fs.readFileSync(path.join(state, 'sends.log'), 'utf8'), /already up to date|update finished/);
+});
+
+
+test('the standalone Hermes settings detail warns for unchanged unverified results', () => {
+  const text = hermesUpdateDetail({ ok: true, before: '0.21.6', version: '0.21.6', updated: false, current: false, error: 'version unchanged or unverified', messaged: true }, 'VPS');
+  assert.match(text, /warning.*unchanged or unverified/);
+  assert.doesNotMatch(text, /already up to date|Hermes updated/);
+});
+
+test('malformed version movement and false current claims warn in guest, settings and bot', async () => {
+  for (const check of ['', 'Already up to date.']) {
+    const { bin, state, sendLog } = makeHermes();
+    fs.writeFileSync(path.join(bin, 'hermes'), `#!/bin/sh
+case "$1" in
+  --version) if [ -f "$FAKE_HERMES_STATE/applied" ]; then echo 'Hermes Agent vbad-new'; else echo 'Hermes Agent vbad-old'; fi;;
+  update) if [ "\${2:-}" = --check ]; then cat "$FAKE_HERMES_STATE/check-out"; else touch "$FAKE_HERMES_STATE/applied"; echo 'Update completed.'; fi;;
+  send) printf '%s\\n' "$*" >> "$FAKE_HERMES_STATE/sends.log";;
+esac
+`, { mode: 0o755 });
+    fs.writeFileSync(path.join(state, 'check-out'), check);
+    const res = await runScript(envFor(bin, state, { HERMES_HOME: mktemp('hermes-update-home-') }));
+    const result = lastJson(res);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(result.updated, false);
+    assert.equal(result.current, false);
+    assert.equal(result.version, '');
+    assert.match(result.error, /unverified/);
+    assert.match(hermesUpdateDetail(result, 'fixture'), /warning/);
+    assert.match(fs.readFileSync(sendLog, 'utf8'), /warning/);
+    assert.doesNotMatch(res.stdout + fs.readFileSync(sendLog, 'utf8'), /hermes update finished|Hermes update finished/);
+  }
 });
