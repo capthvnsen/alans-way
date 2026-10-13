@@ -21,6 +21,7 @@
 #   sh vm-update.sh v0.3.2    update to the tag, restart broker + plugins
 #   sh vm-update.sh --check   read-only: print the checkout/live versions
 #   sh vm-update.sh --doctor  read-only: one JSON health report for Check setup
+#   sh vm-update.sh --plugins update the Hermes plugins only (no checkout needed)
 #
 # Checkout discovery matches setup.sh: a root install lives at
 # /opt/hermes-alans-way/browser, a user install at
@@ -38,10 +39,11 @@
 # Everything above it is progress; "vm-update: <phase>" lines map to UI text.
 set -u
 
-TAG="" CHECK=0 DOCTOR=0
+TAG="" CHECK=0 DOCTOR=0 PLUGINS=0
 case "${1:-}" in
   --check) CHECK=1;;
   --doctor) DOCTOR=1;;
+  --plugins) PLUGINS=1;;
   -h|--help)
     # $0 is 'sh' when the app pipes this script via 'sh -s', so the usage text
     # is embedded rather than read back out of the script file.
@@ -52,6 +54,7 @@ release tag, restart the tab broker and verify it answers with that version.
   sh vm-update.sh v0.3.2    update to the tag and restart the browser host
   sh vm-update.sh --check   read-only: print the checkout/live versions
   sh vm-update.sh --doctor  read-only: a health report for the app's Check setup
+  sh vm-update.sh --plugins update the Hermes plugins only
 
 The desktop app pipes this script over SSH, so nothing is installed on the VM
 and no file is left behind. It only ever touches the checkout setup.sh
@@ -74,8 +77,10 @@ GATEWAY_TIMEOUT="${ALANS_WAY_VM_GATEWAY_TIMEOUT:-180}"
 VM_BUDGET="${ALANS_WAY_VM_BUDGET:-270}"
 VERSION="" RESTARTED=false PLUGINS_JSON="" GATEWAY_RESTARTED=false
 # The gateway restart that works on this host; GW_EXTRA carries it into the
-# result JSON only when it is not the usual hermes command.
-GW_CMD="hermes gateway restart" GW_EXTRA=""
+# result JSON only when it is not the usual hermes command. GW_NAMED_CMD keeps
+# failed standalone named-profile starts on their own track, next to whatever
+# the manager or the default profile needed.
+GW_CMD="hermes gateway restart" GW_EXTRA="" GW_NAMED_CMD=""
 START_S="$(date +%s)"
 
 say() { printf 'vm-update: %s\n' "$*"; }
@@ -281,12 +286,13 @@ list_profiles() {
   done
 }
 
-# Snapshot live standalone named gateways, then stop every profile. Modern
-# Hermes has one atomic --all operation; older versions need one call each.
+# Snapshot every profile whose gateway is running (GW_LIVE, default included),
+# then stop them all. Modern Hermes has one atomic --all operation; older
+# versions need one call each.
 gateway_stop_every_profile() {
-  GW_NAMED=""
+  GW_LIVE=""
   while read -r _gse_name _gse_home; do
-    [ "$_gse_name" != default ] || continue
+    [ -n "$_gse_name" ] || continue
     _gse_text="$(cat "$_gse_home/gateway.pid" 2>/dev/null || true)"
     case "$_gse_text" in
       *'"pid"'*) _gse_pid="$(printf '%s\n' "$_gse_text" | sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)";;
@@ -294,7 +300,7 @@ gateway_stop_every_profile() {
          case "$_gse_pid" in ''|*[!0-9]*) _gse_pid="";; esac;;
     esac
     if [ -n "$_gse_pid" ] && ps -p "$_gse_pid" >/dev/null 2>&1; then
-      GW_NAMED="${GW_NAMED}${GW_NAMED:+
+      GW_LIVE="${GW_LIVE}${GW_LIVE:+
 }$_gse_name"
     fi
   done <<EOF
@@ -318,19 +324,31 @@ EOF
   [ "$_gse_stopped" = true ]
 }
 
+# Starts only the profiles the earlier snapshot found live (GW_LIVE), so a
+# gateway that was down never grows a second instance next to a managed one.
+# Default/managed recovery is tracked in GW_DEFAULT_RESTARTED so its fallback
+# cannot mask failed named-profile starts. GW_NAMED_CMD retains those failures
+# until the final aggregate result is computed. A failed default start keeps
+# its remediation in GW_CMD.
 gateway_start_stopped_profiles() {
-  GW_CMD=""
-  run_hermes "$GATEWAY_TIMEOUT" gateway start >/dev/null 2>&1 || GW_CMD="hermes gateway start"
+  GW_NAMED_CMD=""
   while read -r _gss_name; do
     [ -n "$_gss_name" ] || continue
-    if ! run_hermes "$GATEWAY_TIMEOUT" -p "$_gss_name" gateway start >/dev/null 2>&1; then
-      _gss_cmd="hermes -p $_gss_name gateway start"
-      GW_CMD="${GW_CMD}${GW_CMD:+; }$_gss_cmd"
+    if [ "$_gss_name" = default ]; then
+      run_hermes "$GATEWAY_TIMEOUT" gateway start >/dev/null 2>&1 || {
+        GW_CMD="${GW_CMD}${GW_CMD:+; }hermes gateway start"
+        GW_DEFAULT_RESTARTED=false
+      }
+    else
+      run_hermes "$GATEWAY_TIMEOUT" -p "$_gss_name" gateway start >/dev/null 2>&1 || {
+        GW_NAMED_CMD="${GW_NAMED_CMD}${GW_NAMED_CMD:+; }hermes -p $_gss_name gateway start"
+        GATEWAY_RESTARTED=false
+      }
     fi
   done <<EOF
-$GW_NAMED
+$GW_LIVE
 EOF
-  [ -z "$GW_CMD" ] && GATEWAY_RESTARTED=true || GATEWAY_RESTARTED=false
+  return 0
 }
 
 # $1 = plugin manifest dir; prints its declared version ("" when unreadable).
@@ -462,7 +480,7 @@ update_hermes_plugins() {
   if ! hermes_bin; then say "no hermes CLI on this VM; skipping plugin updates"; return 0; fi
   HHOME="${HERMES_HOME:-$HOME/.hermes}"
   say "updating Hermes plugins"
-  CLONES="" CHANGED=false REFUSED="" GW_STOPPED=false GW_VIA="" GW_SCOPE=""
+  CLONES="" CHANGED=false REFUSED="" GW_STOPPED=false GW_VIA="" GW_SCOPE="" GW_DEFAULT_RESTARTED=false
   while read -r _pname _phome; do
     [ -n "$_pname" ] || continue
     _pdir="$_phome/plugins"
@@ -549,6 +567,11 @@ EOF
           ''|0|*[!0-9]*) ;;
           *) case "$_gw_now" in ''|0|*[!0-9]*) GW_STOPPED=true;; esac;;
         esac
+        # A supervisor program covers one gateway; standalone named-profile
+        # gateways keep refusing their plugin updates until hermes stops them
+        # too. Runs only once the program is down, so its gateway.pid no
+        # longer counts as live and a later start can never duplicate it.
+        [ "$GW_STOPPED" = true ] && gateway_stop_every_profile >/dev/null 2>&1
       elif systemd_live; then
         GW_VIA=systemd
         # `stop` on an inactive unit is a no-op success, so a unit is only
@@ -564,8 +587,9 @@ EOF
         fi
         # Stock Hermes keeps its gateway under `hermes gateway`, not
         # necessarily a hermes-gateway unit; when neither stop lands, mirror
-        # the restart path's last resort.
-        if [ "$GW_STOPPED" != true ] && gateway_stop_every_profile; then
+        # the restart path's last resort. A unit only ever covers the default
+        # gateway, so standalone named profiles are stopped either way.
+        if gateway_stop_every_profile && [ "$GW_STOPPED" != true ]; then
           GW_VIA=hermes GW_STOPPED=true
         fi
       elif gateway_stop_every_profile; then
@@ -589,36 +613,44 @@ EOF
       done <<EOF
 $REFUSED
 EOF
-      # The gateway always comes back up, whatever the retries found.
+      # The gateways that were running always come back up, whatever the
+      # retries found: the manager-owned one through its manager, the
+      # standalone profiles the snapshot found (GW_LIVE) through hermes.
       case "$GW_VIA" in
         supervisor)
           GW_CMD="supervisorctl start $GW_PROG"
-          _sp_ctl start "$GW_PROG" >/dev/null 2>&1 && GATEWAY_RESTARTED=true;;
+          _sp_ctl start "$GW_PROG" >/dev/null 2>&1 && GW_DEFAULT_RESTARTED=true;;
         systemd)
           if [ "$(id -u)" = 0 ]; then
             GW_CMD="systemctl start hermes-gateway"
-            systemctl start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+            systemctl start hermes-gateway >/dev/null 2>&1 && GW_DEFAULT_RESTARTED=true
           elif [ "$GW_SCOPE" = user ]; then
             GW_CMD="systemctl --user start hermes-gateway"
-            systemctl --user start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+            systemctl --user start hermes-gateway >/dev/null 2>&1 && GW_DEFAULT_RESTARTED=true
           else
             # Start the scope that was stopped: a stale user unit must not
             # come up in place of the system unit.
             GW_CMD="sudo systemctl start hermes-gateway"
-            sudo -n systemctl start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+            sudo -n systemctl start hermes-gateway >/dev/null 2>&1 && GW_DEFAULT_RESTARTED=true
           fi;;
         hermes)
-          gateway_start_stopped_profiles;;
+          GW_DEFAULT_RESTARTED=true GW_CMD="";;
       esac
-      if [ "$GATEWAY_RESTARTED" = true ]; then say "agent gateway restarted"
-      elif [ "$GW_VIA" = supervisor ]; then
+      gateway_start_stopped_profiles
+      if [ "$GW_DEFAULT_RESTARTED" = true ] && [ -z "$GW_NAMED_CMD" ]; then say "agent gateway restarted"
+      elif [ "$GW_DEFAULT_RESTARTED" != true ] && [ "$GW_VIA" = supervisor ]; then
         say "could not start the gateway; on the VM run: $GW_CMD (or: sudo $GW_CMD)"
-      else say "could not start the gateway; on the VM run: $GW_CMD"; fi
-      # A default-profile restart cannot recover a failed standalone
-      # named-profile start; when only those failed, leave its exact
-      # remediation and result intact.
-      if [ "$GW_VIA" = hermes ] && [ "$GATEWAY_RESTARTED" != true ]; then
-        case "$GW_CMD" in "hermes gateway start"*) ;; *) return 0;; esac
+      elif [ "$GW_DEFAULT_RESTARTED" != true ] && [ -n "$GW_CMD" ]; then
+        say "could not start the gateway; on the VM run: $GW_CMD"
+      fi
+      # Named-profile failures need their own recovery command even when the
+      # default or managed gateway recovered successfully.
+      if [ -n "$GW_NAMED_CMD" ]; then
+        say "could not start a named gateway; on the VM run: $GW_NAMED_CMD"
+        case "$GW_CMD" in
+          "hermes gateway start"*) ;;
+          *) GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_NAMED_CMD")\"" ;;
+        esac
       fi
     else
       # The gateway stayed up; every refused pair reports blocked with the
@@ -635,7 +667,7 @@ EOF
   # actually changed (hermes gateway restart: SIGUSR1 drain, the supervisor or
   # service manager owns the relaunch). Skipped when the bounce above already
   # restarted it; run even when nothing changed if that bounce left it down.
-  if [ "$GATEWAY_RESTARTED" != true ] && { [ "$CHANGED" = true ] || [ "$GW_STOPPED" = true ]; }; then
+  if [ "$GW_DEFAULT_RESTARTED" != true ] && { [ "$CHANGED" = true ] || [ "$GW_STOPPED" = true ]; }; then
     say "restarting the agent gateway"
     # A gateway under supervisord is restarted with USR1, not `restart`: the
     # supervisor's restart escalates SIGTERM to SIGKILL past stopwaitsecs, and
@@ -660,29 +692,29 @@ EOF
             *" RUNNING "*)
               _gw_new="$(printf '%s' "$_gw_line" | sed -n 's/.*pid \([0-9][0-9]*\).*/\1/p' | head -n 1)"
               if [ -n "$_gw_new" ] && [ "$_gw_new" != "$_gw_old" ]; then
-                GATEWAY_RESTARTED=true
+                GW_DEFAULT_RESTARTED=true
                 break
               fi;;
           esac
           sleep 2
         done
-        if [ "$GATEWAY_RESTARTED" != true ]; then
+        if [ "$GW_DEFAULT_RESTARTED" != true ]; then
           _gw_now="$(_sp_ctl pid "$GW_PROG" | tr -d '[:space:]')"
           case "$_gw_now" in
             ''|0|*[!0-9]*)
               # The drain finished but nothing relaunched it.
               GW_CMD="supervisorctl start $GW_PROG"
-              _sp_ctl start "$GW_PROG" >/dev/null 2>&1 && GATEWAY_RESTARTED=true;;
+              _sp_ctl start "$GW_PROG" >/dev/null 2>&1 && GW_DEFAULT_RESTARTED=true;;
             *)
               # Still running on the old pid: the drain is in flight and the
               # supervisor owns the relaunch.
-              GATEWAY_RESTARTED=true;;
+              GW_DEFAULT_RESTARTED=true;;
           esac
         fi
       else
         # A supervisor too old for the signal verb still gets a plain restart.
         GW_CMD="supervisorctl restart $GW_PROG"
-        _sp_ctl restart "$GW_PROG" >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+        _sp_ctl restart "$GW_PROG" >/dev/null 2>&1 && GW_DEFAULT_RESTARTED=true
       fi
     elif ! systemd_live && have supervisorctl; then
       # The gateway's program is unresolvable here (a stopped program whose
@@ -690,15 +722,21 @@ EOF
       # the remediation names it rather than the hermes fallback it hides.
       GW_CMD="supervisorctl signal USR1 <program>"
     fi
-    [ "$GW_CMD" = "hermes gateway restart" ] || GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_CMD")\""
-    if [ "$GATEWAY_RESTARTED" != true ] && run_hermes "$GATEWAY_TIMEOUT" gateway restart >/dev/null 2>&1; then
-      GATEWAY_RESTARTED=true
+    [ "$GW_CMD" = "hermes gateway restart" ] || GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_CMD${GW_NAMED_CMD:+; $GW_NAMED_CMD}")\""
+    if [ "$GW_DEFAULT_RESTARTED" != true ] && run_hermes "$GATEWAY_TIMEOUT" gateway restart >/dev/null 2>&1; then
+      GW_DEFAULT_RESTARTED=true
     fi
-    if [ "$GATEWAY_RESTARTED" = true ]; then
-      say "agent gateway restarted"
+    if [ "$GW_DEFAULT_RESTARTED" = true ]; then
+      [ -n "$GW_NAMED_CMD" ] || say "agent gateway restarted"
     else
       say "gateway restart did not finish; on the VM run: $GW_CMD"
     fi
+  fi
+  # All previously live gateways must recover. Default-manager success (or
+  # its fallback) never clears an unresolved named-profile failure.
+  GATEWAY_RESTARTED=false
+  if [ "$GW_DEFAULT_RESTARTED" = true ] && [ -z "$GW_NAMED_CMD" ]; then
+    GATEWAY_RESTARTED=true
   fi
 }
 
@@ -820,12 +858,39 @@ EOF
   "$NODE_BIN" -e "$DOCTOR_JS" "$WORK" "$VERSION"
 }
 
+# The Hermes half of --check, for the app's bottom bar: the raw `hermes
+# --version` line, the verdict lines of `hermes update --check` (read-only, it
+# only fetches), the alans-way plugin version (default profile first) and
+# whether the default gateway runs. The app parses the raw text, so a Hermes
+# on the app's own machine and one on a server share one parser.
+hermes_fields() {
+  HHOME="${HERMES_HOME:-$HOME/.hermes}"
+  _hf_ver="" _hf_check="" _hf_gw=null _hf_plugin=""
+  if hermes_bin; then
+    _hf_ver="$(run_hermes 20 --version | sed -n '/Hermes Agent v/{p;q;}')"
+    _hf_check="$(run_hermes 45 update --check | grep -Ei 'available|up to date|no newer release' | head -3)"
+    _hf_gw_out="$(run_hermes 20 gateway status)"
+    if printf '%s' "$_hf_gw_out" | grep -qi 'gateway is running'; then _hf_gw=true
+    elif printf '%s' "$_hf_gw_out" | grep -qi 'not running'; then _hf_gw=false; fi
+  fi
+  while read -r _hf_name _hf_home; do
+    [ -n "$_hf_name" ] || continue
+    _hf_plugin="$(plugin_version "$_hf_home/plugins/alans-way")"
+    [ -n "$_hf_plugin" ] && break
+  done <<EOF
+$(list_profiles)
+EOF
+  printf ',"hermesVersion":"%s","hermesCheck":"%s","pluginVersion":"%s","gatewayRunning":%s' \
+    "$(json_string "$_hf_ver")" "$(json_string "$_hf_check")" "$(json_string "$_hf_plugin")" "$_hf_gw"
+}
+
 # ---------------------------------------------------------------- main
-# --check and an update need the browser host checkout; --doctor still reports
-# profiles, plugins and the setup audit on a server that never got one.
+# An update needs the browser host checkout; --check, --plugins and --doctor
+# still run on a server (or the app's own machine) that never got one.
 DIR="$(find_checkout || true)"
 if [ -z "$DIR" ]; then
-  [ "$DOCTOR" = 1 ] || fail "no browser host checkout found (expected /opt/hermes-alans-way/browser or ~/.local/share/hermes-alans-way/app)"
+  [ "$DOCTOR" = 1 ] || [ "$CHECK" = 1 ] || [ "$PLUGINS" = 1 ] \
+    || fail "no browser host checkout found (expected /opt/hermes-alans-way/browser or ~/.local/share/hermes-alans-way/app)"
   VERSION=""
 else
   VERSION="$(json_field version < "$DIR/desktop/package.json")"
@@ -836,10 +901,15 @@ if [ "$CHECK" = 1 ]; then
   HOST_VERSION="$(printf '%s' "$BODY" | json_field version)"
   HOST_BUSY=false
   case "$BODY" in *'"busy":true'*) HOST_BUSY=true;; esac
-  printf '{"ok":true,"version":"%s","hostVersion":"%s","busy":%s,"error":""}\n' "$VERSION" "$HOST_VERSION" "$HOST_BUSY"
+  printf '{"ok":true,"version":"%s","hostVersion":"%s","busy":%s,"error":""%s}\n' "$VERSION" "$HOST_VERSION" "$HOST_BUSY" "$(hermes_fields)"
   exit 0
 fi
 if [ "$DOCTOR" = 1 ]; then doctor; exit 0; fi
+if [ "$PLUGINS" = 1 ]; then
+  update_hermes_plugins
+  json true "$VERSION" false "" "$PLUGINS_JSON" "$GATEWAY_RESTARTED"
+  exit 0
+fi
 
 printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
   || fail "refusing non-release tag '$TAG' (need vX.Y.Z)"

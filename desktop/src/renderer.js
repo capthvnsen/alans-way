@@ -1,5 +1,5 @@
 const api = window.workspace;
-let state, lastRecording = null, stoppedRecordingAt = 0, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '', handoffBusy = false;
+let state, lastRecording = null, resumeToasts = new Set(), stoppedRecordingAt = 0, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '', handoffBusy = false;
 const $ = (id) => document.getElementById(id);
 function element(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; }
 function toast(message) { $('toast').textContent = message; $('toast').classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.add('hidden'), 5000); }
@@ -313,6 +313,18 @@ function render(next) {
     $('needs-you-banner').style.setProperty('--h', String(tab.agentHue ?? 168));
     $('needs-you-text').textContent = `${agentName} needs you: ${needsYou.note || HANDBACK_TEXT[needsYou.reason] || 'take a look.'}`;
   }
+  // Main clears the takeover notice a few seconds after a bot took the tab.
+  const takeover = tab?.takeover && tab.controller === 'agent';
+  $('takeover-banner').classList.toggle('hidden', !takeover);
+  if (takeover) {
+    $('takeover-banner').style.setProperty('--h', String(tab.agentHue ?? 168));
+    $('takeover-text').textContent = `${agentName} took over this tab`;
+  }
+  // The app gave a CAPTCHA tab back on its own once the challenge cleared.
+  for (const item of state.tabs) {
+    const key = item.handback?.resumed === 'auto' ? `${item.id}:${item.handback.returnedAt}` : '';
+    if (key && !resumeToasts.has(key)) { resumeToasts.add(key); toast('Thanks, continuing.'); }
+  }
   // Recording runs only on a tab the human controls; a bot taking it, or the
   // tab closing, stops and saves it in main.
   const recording = state.recording;
@@ -342,6 +354,7 @@ function renderUpdate() {
   note.classList.toggle('hidden', !label); note.textContent = label; note.disabled = !!u.busy;
   note.onclick = () => { if (u.error) command('open-download-page'); else { updatePopupPinned = true; renderUpdatePopup(); } };
   renderUpdatePopup();
+  renderVersions();
   renderVmBanner();
   $('bundle-banner').classList.toggle('hidden', !state.bundleWarning);
   $('bundle-banner-text').textContent = state.bundleWarning || '';
@@ -382,6 +395,54 @@ function renderUpdatePopup() {
   now.textContent = u.busy ? 'Updating…' : 'Update now';
   if (!updatePopupFocused) { updatePopupFocused = true; now.focus(); }
 }
+// The bottom bar's versions and "Update everything". The dialog shows the
+// plan first and nothing runs until its button is clicked; then it shows each
+// step's progress, the closing summary and, when the app staged an update,
+// "Restart to finish".
+let updateAllOpen = false, updateAllView = 'plan', updateAllError = '';
+const STEP_MARK = { pending: '·', running: '…', done: '✓', failed: '✗', skipped: '–' };
+function renderVersions() {
+  const v = state.versions || {}, run = state.updateAll || {};
+  const label = $('version-label');
+  label.textContent = v.text || `v${state.version}`;
+  label.title = `${v.tooltip ? `${v.tooltip}\n` : ''}Click for the v${state.version} release notes`;
+  const button = $('update-all');
+  button.textContent = run.busy ? 'Updating…' : v.hasUpdate ? '↑ Update' : 'Update';
+  button.classList.toggle('has-update', !!v.hasUpdate);
+  button.title = v.hasUpdate ? 'Updates are available. Review them before anything runs.' : 'Check what can be updated';
+  renderUpdateAll();
+}
+function renderUpdateAll() {
+  const popup = $('update-all-popup'), v = state.versions || {}, run = state.updateAll || {};
+  const show = updateAllOpen || !!run.busy;
+  const wasHidden = popup.classList.contains('hidden');
+  popup.classList.toggle('hidden', !show);
+  scheduleLayout();
+  if (!show) return;
+  const planning = updateAllView === 'plan' && !run.busy;
+  const steps = v.steps || [], list = $('update-all-steps'), go = $('update-all-go'), cancel = $('update-all-cancel');
+  list.replaceChildren();
+  if (planning) {
+    $('update-all-copy').textContent = steps.length ? 'This updates, in this order:' : 'Everything is up to date.';
+    for (const step of steps) list.append(element('p', 'update-line', `${step.name}: ${step.from} → ${step.to}`));
+    if (steps.some((step) => step.id !== 'app')) list.append(element('p', 'update-line warn', 'Your bots restart briefly while the server updates.'));
+    if (steps.some((step) => step.id === 'app')) list.append(element('p', 'update-line', 'The app update installs when you click Restart to finish.'));
+  } else {
+    $('update-all-copy').textContent = run.busy ? 'Updating. You can keep working; this takes a few minutes.'
+      : run.summary || (updateAllError ? `Update everything stopped: ${updateAllError}` : '');
+    for (const row of run.steps || []) {
+      const tail = row.state === 'failed' ? `: ${row.error}` : row.state === 'skipped' ? ' (not started)' : row.detail ? ` · ${row.detail}` : '';
+      list.append(element('p', `update-line ${row.state}`, `${STEP_MARK[row.state] || ''} ${row.name}: ${row.from} → ${row.to}${tail}`));
+    }
+  }
+  go.classList.toggle('hidden', planning ? false : !run.restart || run.busy);
+  go.textContent = planning ? 'Update everything' : 'Restart to finish';
+  go.disabled = planning ? !steps.length : false;
+  cancel.textContent = planning ? 'Cancel' : 'Close';
+  cancel.disabled = !!run.busy;
+  if (wasHidden) (go.disabled || go.classList.contains('hidden') ? cancel : go).focus();
+}
+function closeUpdateAll() { if (state?.updateAll?.busy) return; updateAllOpen = false; renderUpdateAll(); }
 function renderVmBanner() {
   const u = state.update || {}, retry = u.vmRetry || {};
   const banner = $('vm-banner');
@@ -591,7 +652,7 @@ function rect(id) {
 }
 function scheduleLayout() {
   cancelAnimationFrame(resizeFrame);
-  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: modalOpen || !$('update-popup').classList.contains('hidden') }));
+  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: modalOpen || !$('update-popup').classList.contains('hidden') || !$('update-all-popup').classList.contains('hidden') }));
 }
 // The mini VM window is anchored bottom-right until dragged; its saved offset
 // is relative to the workspace pane and clamped so it can never get lost.
@@ -892,9 +953,13 @@ function showSettings() {
   const linkToggle = element('button', 'secondary-button', state.autoOpenLinks ? 'On' : 'Off');
   linkToggle.onclick = async () => { const next = !state.autoOpenLinks; await command('settings', { autoOpenLinks: next }); state.autoOpenLinks = next; linkToggle.textContent = next ? 'On' : 'Off'; };
   linkRow.append(linkToggle); body.append(linkRow);
+  const takeoverRow = element('div', 'setting-row'); takeoverRow.append(element('span', '', 'Let bots take over tabs automatically'));
+  const takeoverToggle = element('button', 'secondary-button', state.autoTakeover ? 'On' : 'Off');
+  takeoverToggle.onclick = async () => { const next = !state.autoTakeover; await command('settings', { autoTakeover: next }); state.autoTakeover = next; takeoverToggle.textContent = next ? 'On' : 'Off'; };
+  takeoverRow.append(takeoverToggle); body.append(takeoverRow);
   body.append(element('p', 'settings-note', `A link sent by you or a bot opens a local tab assigned to that bot, so both of you can see it. If this computer is unreachable, the bot opens its own copy on the ${remoteName()} desktop instead.`));
   body.append(element('p', 'settings-note', 'The setup installs the Alan’s Way Plugin on your gateway host and wires this computer’s browser connector for the selected bot. Run once per bot.'));
-  body.append(element('p', 'settings-note', `Taking over a local tab blocks new agent actions on that tab. ${remoteName()} control currently uses your existing shared desktop; it does not pause your Hermes bots.`));
+  body.append(element('p', 'settings-note', `When bots take over automatically, a bot takes back a local tab you took over the next time it acts, once you pause for 3 seconds; Take back returns it to you and keeps bots off it for a minute. A tab a bot handed you, or one you are recording, stays yours. Turned off, taking over a local tab blocks new agent actions on that tab. ${remoteName()} control currently uses your existing shared desktop; it does not pause your Hermes bots.`));
   body.append(element('hr', 'section-divider'));
   const sync = element('button', 'secondary-button', 'Sync Telegram bots'); sync.onclick = () => { command('sync-telegram'); toast('Reading Telegram’s bot chat list…'); };
   body.append(sync, element('p', 'settings-note', 'Bot discovery reads Telegram Web A’s local cache. Newly opened bot chats appear after Telegram saves them. Your Telegram session and browser logins stay on this computer.'));
@@ -978,6 +1043,7 @@ $('record-button').onclick = () => {
 };
 $('recording-stop').onclick = () => stopRecording(true);
 $('recording-discard').onclick = () => stopRecording(false);
+$('takeover-take-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: 'human', takeBack: true }); };
 $('needs-you-give-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: 'agent' }); };
 $('handoff-button').onclick = async () => {
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
@@ -998,6 +1064,28 @@ $('modal').onclick = (event) => { if (event.target === $('modal')) closeModal();
 $('update-now').onclick = () => command('update-now');
 $('update-later').onclick = () => { updatePopupPinned = false; command('update-later'); };
 $('vm-banner-retry').onclick = () => command('vm-update-retry');
+// Opening re-checks the machine, so the plan does not lean on a cache that can
+// be half an hour old; it re-renders when the answer lands.
+$('update-all').onclick = () => { updateAllOpen = true; updateAllView = state?.updateAll?.busy ? 'run' : 'plan'; renderUpdateAll(); if (updateAllView === 'plan') command('versions-refresh'); };
+$('update-all-cancel').onclick = closeUpdateAll;
+$('update-all-go').onclick = () => {
+  // The run view starts empty, not on a previous run's rows, until main's
+  // first broadcast lands.
+  if (updateAllView === 'plan') {
+    updateAllView = 'run'; updateAllError = ''; state.updateAll = { busy: true, steps: [] }; renderUpdateAll();
+    // api.command, not command(): a failure lands in the dialog itself, never
+    // a toast behind an empty run view. Main refuses while another update
+    // holds the lock or when nothing is behind; that goes back to the plan.
+    api.command('update-all').then((reply) => {
+      if (reply?.refused) { updateAllView = 'plan'; toast(reply.refused); }
+    }).catch((error) => { updateAllError = error?.message || String(error); })
+      .then(() => api.getState()).then(render)
+      .catch((error) => { state.updateAll = { busy: false, steps: [] }; updateAllError ||= error?.message || String(error); renderUpdateAll(); });
+  }
+  else command('update-all-restart');
+};
+$('update-all-popup').onclick = (event) => { if (event.target === $('update-all-popup')) closeUpdateAll(); };
+$('update-all-popup').addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); closeUpdateAll(); } });
 $('update-popup').onclick = (event) => { if (event.target === $('update-popup') && !state?.update?.busy) $('update-later').click(); };
 $('update-popup').addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {

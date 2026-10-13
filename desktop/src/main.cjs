@@ -6,7 +6,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
@@ -23,12 +23,13 @@ const { createLog } = require('./main-log.cjs');
 const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
-const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked } = require('./vm-update.cjs');
+const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, pluginStatusText, LOCAL_TARGET } = require('./vm-update.cjs');
+const { latestPluginTag, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
-const { createAgentInput, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
+const { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
-const { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
+const { snapshotExpression, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
 const { createVpsBrowser, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
@@ -89,6 +90,10 @@ const vmUpdater = createVmUpdater({ log: (label, error) => logError(label, error
 const vmProgress = {};
 let vmRetrying = false;
 let hermesUpdating = false;
+// "Update everything" from the bottom bar: its lock flag and the last run's
+// step rows, closing summary and whether a staged app update awaits a restart.
+let updatingAll = false;
+let updateRun = { steps: [], summary: '', restart: false };
 let lastSetupCheck = null;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
@@ -107,6 +112,8 @@ const OPEN_PARSE_MS = 8000;
 // A snapshot waits this long for a still-parsing document; the wait ends at DOMContentLoaded.
 const SNAPSHOT_PARSE_MS = 1500;
 const WAIT_SLICE_MS = 1000;
+const HUMAN_INPUT = new Set(['mouseDown', 'rawKeyDown', 'keyDown', 'char', 'mouseWheel', 'gestureScrollBegin', 'gestureScrollUpdate', 'touchStart']);
+const TAKEOVER_NOTICE_MS = 8000, TAKE_BACK_MS = 60000;
 let isQuitting = false;
 let bundleWarningDismissed = false;
 const runningBundle = () => process.platform === 'darwin' && app.isPackaged ? macUpdate.bundleLocation(path.resolve(process.execPath, '../../..'), app.getName()) : null;
@@ -138,10 +145,10 @@ const downloadStore = createDownloadStore({ getPreferences: () => prefs, savePre
   confirmOpen: async (name) => (await dialog.showMessageBox(win, { type: 'warning', buttons: ['Cancel', 'Open anyway'], defaultId: 0, cancelId: 0,
     message: `Open ${name}?`, detail: 'This file can run programs on your computer. Only open it if you trust where it came from.' })).response === 1 });
 const recordings = recorder.createRecordingStore(path.join(app.getPath('userData'), 'recordings'));
-let pointerTimer, activityTimer, idleTimer;
+let pointerTimer, activityTimer, idleTimer, captchaTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, vmUpdates: {},
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, vmUpdates: {}, versionCache: {},
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -189,7 +196,7 @@ function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
   const info = { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
-    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab) };
+    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab), takeover: tab.takeover || null };
   return forBot ? redactTabForBot(info) : info;
 }
 function pageState(tab) {
@@ -286,11 +293,13 @@ function getState() {
       snoozedUntil: prefs.updateSnoozedUntil || 0,
       vms: vmTargets(prefs).map((target) => ({ id: target.id, label: target.label, ...(vmProgress[target.id] || {}) })),
       vmRetry: vmRetryState(app.getVersion(), prefs.vmUpdates, vmTargets(prefs)), vmRetrying },
+    versions: describeVersions({ app: app.getVersion(), appUpdate: stagedAppVersion(), cache: prefs.versionCache }),
+    updateAll: { busy: updatingAll, ...updateRun },
     bundleWarning: bundleWarningDismissed ? '' : setupCheck.bundleWarning(runningBundle(), app.getName()) || '',
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? setupCheck.inRouterApplications(process.execPath) : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
-    autoOpenLinks: prefs.autoOpenLinks !== false,
+    autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false,
     activeTabId, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
@@ -422,6 +431,12 @@ function configureContents(contents, isTelegram = false) {
     }
   });
   contents.on('will-redirect', (event, url) => { if (!isTelegram) blockAgentNavigation(event, url); });
+  // The human's last press, key or scroll on a page holds off a bot takeover.
+  contents.on('input-event', (_event, input) => {
+    if (!HUMAN_INPUT.has(input.type)) return;
+    const targetTab = [...tabs.values()].find(tab => tab.view.webContents === contents);
+    if (targetTab && !agentInput.isDispatching(targetTab)) targetTab.lastHumanInput = Date.now();
+  });
   contents.on('before-input-event', (event, input) => {
     const targetTab = [...tabs.values()].find(tab => tab.view.webContents === contents);
     if (targetTab && agentInput.isDispatching(targetTab)) return;
@@ -521,7 +536,7 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
     webPreferences: { ...options?.webPreferences, preload: undefined, partition: 'persist:browser', contextIsolation: true, nodeIntegration: false, sandbox: true,
       webSecurity: true, plugins: true, backgroundThrottling: false } });
   view.setBackgroundColor('#0b0b0c');
-  const tab = { id: crypto.randomUUID(), view, requestedUrl: targetUrl, botId: String(botId).slice(0, 100), controller, extensionPage, epoch: 1, title: 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
+  const tab = { id: crypto.randomUUID(), view, requestedUrl: skipLoad ? '' : targetUrl, botId: String(botId).slice(0, 100), controller, extensionPage, epoch: 1, title: 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
   if (controller === 'agent') tab.agentSince = Date.now();
   tabs.set(tab.id, tab);
   tab.host = backgroundHost();
@@ -567,6 +582,9 @@ function closeTab(id) {
   if (!tab) return;
   if (recording?.tabId === id) { try { stopRecording(); } catch (error) { logError('recording', error); } }
   tabs.delete(id);
+  handbackNotices.get(id)?.close();
+  handbackNotices.delete(id);
+  for (const key of notifiedHandbacks) if (key.startsWith(`${id}:`)) notifiedHandbacks.delete(key);
   if (tab.view.webContents) extensionHost?.removeTab(tab.view.webContents);
   if (browserReturnTabId === id) browserReturnTabId = [...tabs.keys()].at(-1) || 'home';
   tab.host?.contentView.removeChildView(tab.view);
@@ -637,7 +655,11 @@ function changeController(id, controller, source = 'human', handback = null) {
   // Only the human's own browsing is recorded: a bot taking the tab ends it.
   if (recording?.tabId === id && (controller === 'agent' || tab.extensionPage)) { try { stopRecording(); } catch (error) { logError('recording', error); } }
   const wasAgent = tab.controller === 'agent';
+  tab.takeover = null;
   tab.handback = nextHandback(tab, controller, source, handback);
+  // Browsing a CAPTCHA tab themselves (address bar, back, reload) makes the
+  // human the one to give it back: the automatic return stops watching it.
+  if (wasAgent === false && source === 'human' && controller === 'human' && tab.handback?.reason === 'captcha') tab.handback = { ...tab.handback, watch: false };
   tab.controller = controller === 'agent' ? 'agent' : 'human';
   syncFollowUpSeed(tab);
   syncDialogGuard(tab);
@@ -645,7 +667,8 @@ function changeController(id, controller, source = 'human', handback = null) {
   // it back in the UI. A bot's own release or the idle-expiry clock stays
   // retakeable, and a tab already locked stays locked.
   if (tab.controller === 'agent') { tab.humanLock = false; tab.agentSince = Date.now(); }
-  else if (wasAgent) tab.humanLock = source === 'human';
+  else if (wasAgent) { tab.humanLock = source === 'human'; tab.humanSince = Date.now(); }
+  if (tab.controller === 'agent' && tab.challengeLog) tab.challengeLog.on = '';
   if (tab.controller === 'agent' && tab.botId === 'shared' && prefs.selectedBotId) tab.botId = prefs.selectedBotId;
   // Bots can't plant persistent page scripts (the cdp action denies the
   // method) but strip any surviving registrations when the human takes over.
@@ -659,6 +682,134 @@ function changeController(id, controller, source = 'human', handback = null) {
   notifyHandback(describeTab(tab));
   broadcast();
   return describeTab(tab);
+}
+// A bot's claim, or an action on a tab the human holds, takes the tab back when
+// Settings allow it (on by default). The claim rules run before and after the
+// grace wait: the human may hand the tab over or start recording meanwhile.
+// A caller holding an epoch (an action or a close) needs the tab unchanged
+// since it read it; a plain claim gets a fresh epoch either way.
+function claimRules(tab) {
+  const autoTakeover = prefs.autoTakeover !== false;
+  return { autoTakeover, recording: autoTakeover && recording?.tabId === tab.id };
+}
+// An action also holds the page's navigation generation, and dry-runs itself
+// (preflight) after the wait, so a refusal never takes the tab.
+async function claimTab(tab, botId, { isClosed = () => false, overseer = false, epoch, generation, preflight, beforeClaim } = {}) {
+  const rules = () => claimRules(tab);
+  requireAgentClaim(tab, Date.now(), rules());
+  const auto = rules().autoTakeover && tab.controller === 'human';
+  if (auto) {
+    const started = Date.now();
+    for (let ms; (ms = takeoverDelay(tab.lastHumanInput, started)) > 0;) await new Promise((resolve) => setTimeout(resolve, ms));
+    // Another bot's claim, Take back or a navigation may have moved the tab
+    // while this one waited or dry-ran.
+    const recheck = () => {
+      if (isClosed()) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
+      if (!tabs.has(tab.id)) throw Object.assign(new Error('Tab not found.'), { status: 404 });
+      requireAgentClaim(tab, Date.now(), rules());
+      if (tab.botId !== 'shared') requireActorCore(tab, botId, undefined, false, overseer);
+      if ((epoch !== undefined && tab.epoch !== epoch) || (generation !== undefined && tab.generation !== generation))
+        throw Object.assign(new Error(STALE_WAIT), { status: 409 });
+    };
+    recheck();
+    if (tab.controller === 'agent') return describeTab(tab);
+    // Input during the dry run restarts the grace (still 10 seconds at most).
+    while (preflight) {
+      await preflight(); recheck();
+      if (tab.controller === 'agent') return describeTab(tab);
+      const ms = takeoverDelay(tab.lastHumanInput, started);
+      if (ms <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, ms)); recheck();
+    }
+  }
+  // Revalidate the dry approval while the human still holds the epoch.
+  beforeClaim?.();
+  // The notice is for a tab the human took or used, not one a bot released
+  // that sat idle.
+  const took = auto && tab.controller === 'human' && (tab.humanLock || (tab.lastHumanInput || 0) >= (tab.humanSince || 0));
+  tab.handoff = reviewedHandoff(tab.handoff);
+  if (tab.botId === 'shared') tab.botId = botId;
+  const info = changeController(tab.id, 'agent', 'agent');
+  if (!took) return info;
+  const notice = tab.takeover = { botId: tab.botId, at: Date.now() };
+  setTimeout(() => { if (tab.takeover === notice) { tab.takeover = null; broadcast(); } }, TAKEOVER_NOTICE_MS);
+  broadcast();
+  return describeTab(tab);
+}
+// With automatic takeover on, the human grabbing a tab mid-call is not a stop
+// sign: the bot's next call takes the tab back once they pause.
+function takeoverError(error) {
+  if (prefs.autoTakeover !== false && /^human_has_control/.test(error?.message || ''))
+    error.message = 'human_took_tab: the human took this tab during your call. Check its effect, then call again; the tab comes back to you once they pause.';
+  return error;
+}
+const STALE_WAIT = 'stale_control_epoch: the tab changed while you waited (the human navigated, or another claim landed). Claim it, read it, then act.';
+// A dry run (tab.preflight) acts for a tab the human still holds: it needs the
+// tab's bot and an unchanged epoch, and stops at the first change to the page.
+function requireActor(tab, botId, epoch, mutate = false, overseer = false, now = Date.now()) {
+  if (!tab.preflight || !mutate || tab.controller === 'agent') return requireActorCore(tab, botId, epoch, mutate, overseer, now);
+  requireActorCore(tab, botId, epoch, false, overseer, now);
+  if (epoch !== tab.epoch) throw Object.assign(new Error(STALE_WAIT), { status: 409 });
+}
+function dryRun(tab) { if (tab.preflight) throw PREFLIGHT_READY; }
+const STALE_HUMAN_EPOCH = 'stale_control_epoch: the human took this tab and may have changed the page. Claim it (control, controller "agent") to take it back, read it, then act.';
+const OTHER_ACTIONS = new Set(['navigate', 'back', 'forward', 'reload', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp']);
+const UNSUPPORTED_ACTION = 'Supported actions: navigate, click, double_click, right_click, drag, select, type, press, move, scroll, back, forward, reload, batch, read, eval, wait, viewport, cdp.';
+// The checks an action passes before it touches the page, run before a bot
+// takes a tab back so a malformed action never costs the human their tab.
+async function checkAction(tab, body, botId, depth = 0) {
+  const bad = (message) => { throw Object.assign(new Error(message), { status: 400 }); };
+  if (!body || typeof body !== 'object' || typeof body.action !== 'string') bad('action is required.');
+  const { action } = body;
+  if (!INPUT_ACTIONS.has(action) && !OTHER_ACTIONS.has(action)) bad(UNSUPPORTED_ACTION);
+  if (body.dialog !== undefined) dialogAnswer(body.dialog);
+  // Later steps may aim at refs the first one finds, so only the first is checked.
+  if (action === 'batch') return depth > 0 ? bad('Batches cannot nest.') : Array.isArray(body.steps) && body.steps.length ? checkAction(tab, body.steps[0], botId, 1) : bad('batch needs a non-empty steps array (max 25).');
+  if (INPUT_ACTIONS.has(action)) return agentInput.perform(tab, body, botId, { argsOnly: true });
+  const code = String(body.code || '');
+  if (action === 'eval' && (!code || code.length > 16384)) bad('eval needs a code string (max 16KB).');
+  if (action === 'wait' && !body.selector && !body.text && !body.url) bad('wait needs a selector, text, or url to wait for.');
+  const width = Math.round(Number(body.width)), height = Math.round(Number(body.height));
+  if (action === 'viewport' && body.clear !== true && !(width >= 100 && width <= 7680 && height >= 100 && height <= 4320))
+    bad('viewport needs width 100-7680 and height 100-4320, or clear:true.');
+  if (action === 'navigate') agentPageUrl(body.url);
+  if (action === 'cdp') {
+    const methodError = cdpMethodError(String(body.method || ''));
+    if (methodError) bad(methodError);
+    if (body.method === 'Page.navigate') { if (typeof body.params?.url !== 'string' || !body.params.url) bad('Page.navigate needs a url string.'); agentPageUrl(body.params.url); }
+  }
+}
+// A read that finds a challenge reports it (with the back-off advice), and a
+// blocking one on a bot's tab goes to the human at once: the N2 release with
+// reason captcha, made by the app so the bot never has to remember.
+function handleChallenge(tab, raw) {
+  const url = tab.view.webContents.getURL();
+  const challenge = challengeReply(tab, url, raw);
+  if (challenge?.blocking && tab.controller === 'agent') {
+    try { changeController(tab.id, 'human', 'agent', captchaHandback(url, challenge)); } catch (error) { logError('captcha release', error); }
+  }
+  return challenge ? { challenge } : {};
+}
+// While a tab waits on a human for a CAPTCHA, a cheap page probe each second
+// hands it back once the challenge it saw has cleared (see captchaWatchStep).
+// The human can still give it back themselves.
+function watchCaptchas() {
+  for (const tab of tabs.values()) {
+    const h = liveHandback(tab), wc = tab.view.webContents;
+    if (h?.state !== 'awaiting_human' || h.reason !== 'captcha' || h.watch === false || wc.isDestroyed()) { tab.captchaWatch = undefined; continue; }
+    if (tab.captchaProbing) continue;
+    tab.captchaProbing = true;
+    readJs(wc, challengeProbeExpression(), 2000).catch(() => null).then((probe) => {
+      tab.captchaProbing = false;
+      if (!tabs.has(tab.id) || liveHandback(tab) !== h) return;
+      tab.captchaWatch = captchaWatchStep(tab.captchaWatch || { seen: h.auto === true, clear: 0, typing: '' }, probe);
+      if (!tab.captchaWatch.resume) return;
+      tab.captchaWatch = undefined;
+      try { changeController(tab.id, 'agent', 'human'); } catch (error) { return logError('captcha resume', error); }
+      tab.handback = { ...tab.handback, resumed: 'auto' };
+      broadcast();
+    });
+  }
 }
 const HANDBACK_TEXT = { captcha: 'Solve the CAPTCHA, then give the tab back.', login: 'Sign in, then give the tab back.', two_factor: 'Enter the verification code, then give the tab back.', payment_details: 'Enter the card details, then give the tab back.', review: 'Review the page, then give the tab back.', other: 'Take a look, then give the tab back.' };
 // One notification per handback. Notifications are kept per tab so a click
@@ -830,19 +981,91 @@ function noteVmResult(result) {
     : { version: result.version || previous.version || '', failed: result.error || 'The VM update failed.' } };
 }
 // After relaunch (and at every start) each saved VM reports its checkout
-// version; a VM behind the app surfaces through update.vmRetry.
-async function checkVmVersions() {
+// version; a VM behind the app surfaces through update.vmRetry. The same
+// probe feeds the bottom bar: the machine's Hermes, plugin and gateway, plus
+// the newest plugin tag on GitHub. No saved server means the Hermes on this
+// computer. Callers skip it while an update holds the machine: `hermes update
+// --check` fetches into the same checkout `hermes update` is moving.
+// One probe at a time: a caller arriving mid-probe shares the running one.
+let versionsProbe = null;
+function checkVmVersions() {
+  versionsProbe ||= probeVersions().finally(() => { versionsProbe = null; });
+  return versionsProbe;
+}
+async function probeVersions() {
   // Records outlive their VM when a target is removed or an older build wrote
   // a bad id; drop them so only live VMs can ever steer the retry banner.
   const targets = vmTargets(prefs);
   prefs.vmUpdates = pruneVmUpdates(prefs.vmUpdates, targets);
-  for (const target of targets) {
-    const result = await vmUpdater.checkVm(target);
-    if (!result.ok) continue;
+  const target = targets[0] || LOCAL_TARGET;
+  const [result, pluginLatest] = await Promise.all([vmUpdater.checkVm(target), latestPluginTag().catch(() => '')]);
+  // The server address changed while this probe ran: its answer describes
+  // the old machine, so drop it and probe the new one.
+  if ((vmTargets(prefs)[0]?.sshHost || '') !== (target.sshHost || '')) { setTimeout(checkVersionsWhenIdle, 0); return; }
+  if (result.ok && !target.local) {
     const entry = vmCheckEntry(prefs.vmUpdates?.[target.id], result);
     if (entry) prefs.vmUpdates = { ...(prefs.vmUpdates || {}), [target.id]: entry };
   }
+  prefs.versionCache = versionRecord(prefs.versionCache, { target, check: result, pluginLatest, now: Date.now() });
   savePreferencesSoon(); broadcast();
+}
+// The app version "Update everything" may plan for: only a build the updater
+// has staged, so the browser host never moves to a version the app cannot
+// install (update-now has the same guard).
+const stagedAppVersion = () => (updateDriver === 'electron-updater' ? update.ready : updateDriver === 'self' && Boolean(update.tag)) ? update.available : '';
+// Every update path takes its lock, then waits out a probe already in flight.
+const waitForVersionCheck = () => versionsProbe?.catch(() => {});
+// While "Update everything" runs, quitting must not install the staged app
+// build: the app would come back ahead of a half-updated server.
+function holdAppInstall(hold) {
+  if (updateDriver === 'electron-updater') require('electron-updater').autoUpdater.autoInstallOnAppQuit = !hold;
+}
+const VERSIONS_EVERY_MS = 30 * 60 * 1000;
+const checkVersionsWhenIdle = () => {
+  if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) return;
+  checkVmVersions().catch((error) => logError('vm-check', error));
+};
+// Hands over to the new app build: electron-updater installs on quit, an
+// unsigned Mac swaps its own bundle and relaunches.
+async function restartIntoUpdate() {
+  if (updateDriver === 'electron-updater') {
+    // quitAndInstall closes windows without a before-quit, so the close
+    // handler would hide the window instead and the app would never exit.
+    isQuitting = true;
+    mainLog().write('updater', 'quitAndInstall called');
+    armQuitWatchdog({ exit: (code) => app.exit(code), log: (text) => mainLog().write('updater', text) });
+    require('electron-updater').autoUpdater.quitAndInstall();
+    return;
+  }
+  await macUpdate.installMacUpdate({ tag: update.tag, bundlePath: path.resolve(process.execPath, '../../..') });
+  savePreferences(); app.relaunch(); app.exit(0);
+}
+// One "Update everything" step against the agent machine (or this app). Each
+// reuses the flow its own button runs: hermes-update (quiet: the bot reports
+// once at the end), vm-update --plugins, the tag update, and the app updater.
+async function runUpdateStep(step, target) {
+  if (step.id === 'hermes') {
+    const result = await vmUpdater.hermesUpdateVm(target, { quiet: true });
+    return { ok: result.ok, error: result.error, version: result.version,
+      detail: result.ok ? (result.updated ? `Updated to ${result.version || 'the latest version'}` : 'Already up to date') : '' };
+  }
+  if (step.id === 'plugin') {
+    const result = await vmUpdater.updatePluginsVm(target);
+    // A plugin that failed or stayed blocked is this step's failure; needs
+    // approval and skipped are warnings the detail line carries.
+    const bad = result.plugins.find((p) => p.status === 'failed' || p.status === 'blocked');
+    // The version it actually reached; a run that moved nothing stays on `from`.
+    const after = result.plugins.find((p) => p.name === 'alans-way' && p.after)?.after || step.from;
+    return { ok: result.ok && !bad, error: !result.ok ? result.error : bad ? pluginStatusText(bad) : '', version: after,
+      detail: result.pluginLines.map((line) => line.text).join(' ') };
+  }
+  if (step.id === 'host') {
+    const result = await vmUpdater.updateVm(target, `v${step.to}`);
+    noteVmResult(result); savePreferences();
+    return { ok: result.ok, error: result.error, version: result.version, detail: result.ok ? `Running ${result.version}` : '' };
+  }
+  // The app only stages here; the restart is the user's click.
+  return stagedAppVersion() ? { ok: true, detail: 'Downloaded. Restart to finish.' } : { ok: false, error: 'The app update is not downloaded yet; try again in a few minutes.' };
 }
 // Offline or rate-limited checks stay quiet for the user; only the first failure is logged, and the next check retries.
 let updateDriver = 'none';
@@ -851,7 +1074,7 @@ function startUpdates() {
   if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
   if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
   if (prefs.updateSnoozedUntil) { prefs.updateSnoozedUntil = 0; savePreferencesSoon(); }
-  checkVmVersions().catch((error) => logError('vm-check', error));
+  checkVersionsWhenIdle(); setInterval(checkVersionsWhenIdle, VERSIONS_EVERY_MS);
   if (!app.isPackaged) return;
   // Only a Developer ID signed Mac app can use electron-updater (Squirrel
   // verifies the update signature); unsigned installs keep swapping the dmg.
@@ -1225,7 +1448,7 @@ function registerIpc() {
       }
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
-        const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); await tab.view.webContents.loadURL(pageUrl(value.url)).catch(() => {}); } break;
+        const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; await tab.view.webContents.loadURL(target).catch(() => {}); } break;
       }
       case 'history': {
         if (isVpsTab(value.id)) { await remoteRequest(value.id,'control',{controller:'human'}); await remoteRequest(value.id,'human-actions',{action:value.action}); break; }
@@ -1238,7 +1461,12 @@ function registerIpc() {
       case 'control': {
         if(isVpsTab(value.id)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller});}
         const tab = tabs.get(value.id);
-        if (tab && value.controller === 'agent') tab.handoff = reviewedHandoff(tab.handoff);
+        // Give to agent also ends a Take back cooldown.
+        if (tab && value.controller === 'agent') { tab.handoff = reviewedHandoff(tab.handoff); tab.tookBackUntil = 0; }
+        if (tab && value.controller !== 'agent') tab.lastHumanInput = Date.now();
+        // Take back on the takeover notice keeps bots off the tab for a minute,
+        // and its epoch bump voids any takeover still waiting out the grace.
+        if (tab && value.takeBack === true) tab.tookBackUntil = Date.now() + TAKE_BACK_MS;
         return changeController(value.id, value.controller);
       }
       case 'share-page': {
@@ -1350,6 +1578,7 @@ function registerIpc() {
           // When the VM's SSH address moves to a different host, the noVNC
           // viewer follows unless remoteUrl was deliberately pointed elsewhere.
           const followed = followVmRemoteUrl(prefs.vpsBrowser.sshHost, sshHost, prefs.remoteUrl);
+          if (sshHost !== prefs.vpsBrowser?.sshHost) { prefs.versionCache = {}; setTimeout(checkVersionsWhenIdle, 0); }
           prefs.vpsBrowser={sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}; if(!sshHost)prefs.vmUpdates={}; vpsBrowserStatus='connecting'; refreshVpsTabs();
           if (followed) { prefs.remoteUrl = followed; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         }
@@ -1361,6 +1590,7 @@ function registerIpc() {
         if (typeof value.showBrowser === 'boolean') prefs.showBrowser = value.showBrowser;
         if (typeof value.macSshHost === 'string') prefs.macSshHost = value.macSshHost.trim();
         if (typeof value.autoOpenLinks === 'boolean') prefs.autoOpenLinks = value.autoOpenLinks;
+        if (typeof value.autoTakeover === 'boolean') prefs.autoTakeover = value.autoTakeover;
         if (typeof value.primaryBotId === 'string') prefs.primaryBotId = prefs.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : prefs.primaryBotId;
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) prefs.locationDefault = value.locationDefault;
         if (Number.isFinite(value.chatWidth)) prefs.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
@@ -1432,7 +1662,7 @@ function registerIpc() {
       case 'mac-permissions': return process.platform === 'darwin' ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null;
       case 'open-mac-privacy': if (process.platform === 'darwin') shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${value.pane === 'screen' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility'}`); break;
       case 'update-now': {
-        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating })) break;
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
         const autoUpdate = updateDriver === 'electron-updater';
         const tag = autoUpdate ? `v${update.available}` : update.tag;
         if (autoUpdate ? !update.ready : !tag) break;
@@ -1443,6 +1673,7 @@ function registerIpc() {
         // Every saved VM first, then this app. A VM failure or timeout is
         // recorded for the retry banner and never blocks the app update.
         try {
+          await waitForVersionCheck();
           mainLog().write('vm update', `start ${tag} for ${targets.map((t) => t.id).join(',') || 'no targets'}`);
           for (const result of await vmUpdater.updateAll(tag, targets, noteVmProgress)) {
             mainLog().write('vm update', `${result.id} ${result.ok ? `ok ${result.version || ''}` : `failed ${result.error || ''}`}`.trim());
@@ -1450,26 +1681,18 @@ function registerIpc() {
             noteVmResult(result); broadcast();
           }
           savePreferences();
-          if (autoUpdate) {
-            // quitAndInstall closes windows without a before-quit, so the close
-            // handler would hide the window instead and the app would never exit.
-            isQuitting = true;
-            mainLog().write('updater', 'quitAndInstall called');
-            armQuitWatchdog({ exit: (code) => app.exit(code), log: (text) => mainLog().write('updater', text) });
-            require('electron-updater').autoUpdater.quitAndInstall();
-            break;
-          }
-          await macUpdate.installMacUpdate({ tag: update.tag, bundlePath: path.resolve(process.execPath, '../../..') });
+          await restartIntoUpdate();
         }
         catch (error) { update.busy = false; update.error = error.message; broadcast(); throw error; }
-        savePreferences(); app.relaunch(); app.exit(0); break;
+        break;
       }
       case 'update-later': prefs.updateSnoozedUntil = snoozeUntil(Date.now()); savePreferences(); broadcast(); break;
       case 'vm-update-retry': {
-        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating })) break;
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
         vmRetrying = true; broadcast();
         const tag = `v${app.getVersion()}`;
         try {
+          await waitForVersionCheck();
           for (const target of vmTargets(prefs)) {
             const entry = prefs.vmUpdates?.[target.id] || {};
             if (!value.force && !entry.failed && !(entry.version && macUpdate.isNewer(app.getVersion(), entry.version))) continue;
@@ -1486,14 +1709,62 @@ function registerIpc() {
       // each profile's bot messages the user from its own chat. Never runs
       // alongside the app's own VM update, which touches the same machine.
       case 'hermes-update': {
-        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating })) break;
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
         const target = vmTargets(prefs)[0];
         if (!target) throw new Error('Save the agent machine SSH address first.');
         hermesUpdating = true;
         try {
+          await waitForVersionCheck();
           const result = await vmUpdater.hermesUpdateVm(target);
           return { ok: result.ok, detail: hermesUpdateDetail(result, target.label) };
         } finally { hermesUpdating = false; }
+      }
+      case 'versions-refresh': checkVersionsWhenIdle(); break;
+      // The bottom bar's "Update everything", sent only after the user
+      // confirmed the plan in the popover. Server first (Hermes, then the
+      // plugin that must match it), then the browser host, then this app,
+      // which only stages: the restart waits for "Restart to finish". Then
+      // the versions refresh and the bot reports once in Telegram.
+      case 'update-all': {
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) return { refused: 'Another update is already running. Try again when it finishes.' };
+        const { steps } = describeVersions({ app: app.getVersion(), appUpdate: stagedAppVersion(), cache: prefs.versionCache });
+        if (!steps.length) return { refused: 'Everything is already up to date.' };
+        const target = vmTargets(prefs)[0] || LOCAL_TARGET;
+        updatingAll = true; updateRun = { steps: [], summary: '', restart: false }; holdAppInstall(true); broadcast();
+        try {
+          // A probe already in flight finishes first: its `hermes update
+          // --check` fetches into the checkout `hermes update` moves.
+          await waitForVersionCheck();
+          mainLog().write('update all', `start ${steps.map((step) => `${step.id} ${step.from}->${step.to}`).join(', ')}`);
+          const rows = await runSteps(steps, (step) => runUpdateStep(step, target), (next) => { updateRun.steps = next; broadcast(); });
+          mainLog().write('update all', rows.map((row) => `${row.id} ${row.state}${row.error ? ` ${row.error}` : ''}`).join(', '));
+          // Wait out any probe that started before the run, then take a fresh one.
+          await waitForVersionCheck();
+          await checkVmVersions().catch((error) => logError('vm-check', error));
+          const where = target.local ? 'this computer' : 'server';
+          updateRun = { steps: rows, restart: rows.some((row) => row.id === 'app' && row.state === 'done'),
+            summary: summarizeRun(rows, { gatewayRunning: prefs.versionCache?.gatewayRunning ?? null, where }) };
+          broadcast();
+          if (prefs.versionCache?.hermes) {
+            const sent = await vmUpdater.hermesUpdateVm(target, { report: reportText(rows) });
+            updateRun = { ...updateRun, summary: `${updateRun.summary} ${sent.messaged ? 'Your bot messaged you on Telegram.' : 'The bot could not message you on Telegram.'}` };
+          }
+        } catch (error) {
+          // The dialog shows why the run stopped instead of an empty summary.
+          updateRun = { ...updateRun, summary: `Update everything stopped: ${setupCheck.redactReport(error.message)}` };
+          throw error;
+        } finally { updatingAll = false; holdAppInstall(false); broadcast(); }
+        break;
+      }
+      case 'update-all-restart': {
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll }) || !updateRun.restart) break;
+        // Restarting cuts off any bot mid-task in a tab here; ask first.
+        const warning = restartWarning(Object.keys(computeBotWork()).map((id) => nameForBot(id) || 'An agent'));
+        if (warning && (await dialog.showMessageBox(win, { type: 'warning', buttons: ['Wait', 'Restart anyway'], defaultId: 0, cancelId: 0, ...warning })).response !== 1) break;
+        update.busy = true; broadcast();
+        try { await restartIntoUpdate(); }
+        catch (error) { update.busy = false; update.error = error.message; broadcast(); throw error; }
+        break;
       }
       case 'open-download-page': shell.openExternal(`https://openalan.com/download/${HOST_LABEL === 'windows' ? 'windows' : 'mac'}`); break;
       case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/v${app.getVersion()}`); break;
@@ -1768,14 +2039,18 @@ async function snapshot(tab, opts = {}) {
     let timer;
     // A wedged renderer leaves executeJavaScript pending forever; bound it so
     // a snapshot can never outlive the connector's own timeout.
-    const result = await Promise.race([
+    const read = () => Promise.race([
       readJs(tab.view.webContents, snapshotExpression({ parseWaitMs: SNAPSHOT_PARSE_MS, ...opts, seed: tab.refSeed }), 20000),
       new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000); }),
     ]).finally(() => clearTimeout(timer));
+    let result = await read();
+    // A Cloudflare check that clears by itself is waited out here too.
+    if (result?.challenge?.kind === 'cloudflare' && await passCloudflare((code) => readJs(tab.view.webContents, code, 3000))) result = await read();
     if (!result || !Array.isArray(result.elements)) throw Object.assign(new Error('Snapshot returned no page data.'), { status: 503 });
     // A takeover while the page was being read seals the response.
     requireAgentRead(tab);
-    return { ...settleSnapshot(tab, result, generation, opts.since), tab: describeTab(tab, true) };
+    const settled = settleSnapshot(tab, result, generation, opts.since);
+    return { ...settled, ...handleChallenge(tab, settled.challenge), tab: describeTab(tab, true) };
   });
   tab.queue = work.catch(() => {});
   return work;
@@ -1898,7 +2173,7 @@ async function actionEffect(tab, opts) {
     requireAgentRead(tab);
     const effect = await readEffect((code) => readJs(tab.view.webContents, code, 12000), tab, opts);
     requireAgentRead(tab);
-    if (effect) return { ...effect, ...takeDialogs(tab), ...takeOpened(tab), ...(await takeDownloads(tab)) };
+    if (effect) return { ...effect, ...handleChallenge(tab, effect.challenge), ...takeDialogs(tab), ...takeOpened(tab), ...(await takeDownloads(tab)) };
     return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.', ...takeDialogs(tab), ...takeOpened(tab), ...(await takeDownloads(tab)) };
   } catch (error) {
     if (error && error.status === 409) throw error;
@@ -1923,19 +2198,22 @@ async function performStep(tab, body, botId, depth, isAborted) {
   requireActor(tab, botId, body.epoch, true, overseer);
   const wc = tab.view.webContents;
   if (depth === 0) await syncDialogGuard(tab);
+  if (depth === 0) agentInput.approve(tab, body);
   const reply = (payload) => depth > 0 ? payload : actionReply(tab, payload);
   const finish = async (payload, opts) => depth > 0 ? payload : actionReply(tab, { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) });
   if (body.action === 'batch') {
     if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
     const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
     if (!steps.length) throw Object.assign(new Error('batch needs a non-empty steps array (max 25).'), { status: 400 });
+    // Takeover validates just the first step, with the batch's approval mark.
+    if (tab.preflight) return performAction(tab, { ...steps[0], epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, 1, isAborted);
     const results = [], started = Date.now();
     let lastTarget, sawInput = false;
     for (const step of steps) {
       if (!step || typeof step !== 'object') { results.push({ ok: false, error: 'Invalid step.' }); break; }
       if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ ok: false, error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
       if (isAborted()) { results.push({ ok: false, error: 'The request was closed; remaining steps were not run.' }); break; }
-      try { results.push({ ok: true, ...(await performAction(tab, { ...step, epoch: body.epoch }, botId, 1, isAborted)) }); }
+      try { results.push({ ok: true, ...(await performAction(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, 1, isAborted)) }); }
       catch (error) { results.push({ ok: false, error: errorMessage(error) }); break; }
       // A step aimed by name reports the ref it resolved to.
       const ref = results.at(-1).ref || step.ref;
@@ -1946,8 +2224,11 @@ async function performStep(tab, body, botId, depth, isAborted) {
     requireActor(tab, botId, body.epoch, true, overseer);
     return actionReply(tab, { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput, held: body.generation })), dispatched: true });
   }
+  // Page script and DevTools calls are checked in their branches, after the challenge preflight.
+  if (body.action !== 'cdp' && body.action !== 'eval') await agentInput.guard(tab, body);
   if (body.action === 'read') {
     const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
+    dryRun(tab);
     requireAgentRead(tab);
     // A read step is the model's own baseline, so it must not plant the doc
     // marker: on a fresh document the missing marker is what lets the final
@@ -1961,7 +2242,11 @@ async function performStep(tab, body, botId, depth, isAborted) {
     const code = String(body.code || '');
     if (!code || code.length > 16384) throw Object.assign(new Error('eval needs a code string (max 16KB).'), { status: 400 });
     const wc = tab.view.webContents;
+    // Page script can reach a widget anywhere on the page.
+    await refuseChallenge(wc);
+    await agentInput.guard(tab, body);
     let evalTimer;
+    dryRun(tab);
     let value = await Promise.race([
       frameOf(wc).executeJavaScript(code, true),
       new Promise((_, reject) => { evalTimer = setTimeout(() => reject(Object.assign(new Error('eval timed out after 15s.'), { status: 408 })), 15000); }),
@@ -2008,6 +2293,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
       poll = setInterval(() => { if (met() || Date.now() > deadline) done(met()); }, 100);
       setTimeout(() => done(met()), ${ms});
     })`;
+    dryRun(tab);
     const hostStart = Date.now();
     let value = null;
     while (Date.now() - hostStart < timeout + 1000) {
@@ -2034,6 +2320,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     return finish({ waited: value.waited, dispatched: true });
   }
   if (body.action === 'viewport') {
+    dryRun(tab);
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     if (body.clear === true) {
       await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
@@ -2061,7 +2348,13 @@ async function performStep(tab, body, botId, depth, isAborted) {
       if (typeof params.url !== 'string' || !params.url) throw Object.assign(new Error('Page.navigate needs a url string.'), { status: 400 });
       params.url = agentPageUrl(params.url);
     }
+    // While a challenge is on the page, only read-only methods run: raw input,
+    // script and DOM writes could all reach the widget.
+    if (!cdpChallengeSafe(method, params)) await refuseChallenge(wc);
+    // A challenge answers first: input or script aimed at a CAPTCHA goes to the person, not to approval.
+    await agentInput.guard(tab, { ...body, params });
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    dryRun(tab);
     let cdpTimer;
     let value = await Promise.race([
       wc.debugger.sendCommand(method, params),
@@ -2084,9 +2377,11 @@ async function performStep(tab, body, botId, depth, isAborted) {
   }
   let parseWaitMs = 0, didNavigate = false;
   if (body.action === 'navigate') {
+    dryRun(tab);
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
     const target = pageUrl(agentPageUrl(body.url));
+    tab.requestedUrl = target;
     const commit = await waitForNavigationCommit(wc, () => wc.loadURL(target));
     if (commit.state === 'failed' || commit.state === 'destroyed') throw Object.assign(new Error(commit.error ? `Navigation failed: ${commit.error}.` : 'Navigation failed.'), { status: 400 });
     tab.refs.clear();
@@ -2096,6 +2391,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     parseWaitMs = NAVIGATE_PARSE_MS;
     didNavigate = commit.state === 'committed';
   } else if (['back', 'forward', 'reload'].includes(body.action)) {
+    dryRun(tab);
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
     const history = wc.navigationHistory;
@@ -2112,7 +2408,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
         throw Object.assign(error, { status: 400 });
       }
     }
-  } else throw Object.assign(new Error('Supported actions: navigate, click, double_click, right_click, drag, select, type, press, move, scroll, back, forward, reload, batch, read, eval, wait, viewport, cdp.'), { status: 400 });
+  } else throw Object.assign(new Error(UNSUPPORTED_ACTION), { status: 400 });
   // Seal navigation-family results too: a takeover while the page settled
   // makes this response the human's page state.
   requireActor(tab, botId, body.epoch, true, overseer);
@@ -2138,7 +2434,7 @@ function startApi() {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
       const overseer = isOverseer(botId);
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets'], tabCount: tabs.size+vpsTabs.size });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets', 'commit-check'], tabCount: tabs.size+vpsTabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await Promise.race([
           telegramView.webContents.executeJavaScript(`(() => ({
@@ -2268,9 +2564,52 @@ function startApi() {
         // queued action run later against whatever the page became.
         let closed = false;
         res.on('close', () => { if (!res.writableFinished) closed = true; });
-        const action = tab.queue.then(() => {
+        const action = tab.queue.then(async () => {
           if (closed) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
-          return performAction(tab, body, botId, 0, () => closed);
+          // A malformed action must not cost the human their tab.
+          if (!body || typeof body !== 'object' || typeof body.action !== 'string') throw Object.assign(new Error('action is required.'), { status: 400 });
+          // An epoch read while the human held the tab carries over to the
+          // takeover; an older one is refused and the tab stays theirs.
+          let taken = 0, held;
+          if (tab.controller !== 'agent' && prefs.autoTakeover !== false) {
+            await checkAction(tab, body, botId);
+            // A tab that stays the human's says why before any epoch advice.
+            requireAgentClaim(tab, Date.now(), claimRules(tab));
+            // The generation the bot holds says whether the human moved the page since.
+            const generation = Number.isInteger(body.generation) ? body.generation : tab.generation;
+            if (body.epoch !== tab.epoch || generation !== tab.generation) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
+            held = { humanLock: tab.humanLock, humanSince: tab.humanSince, botId: tab.botId, handoff: tab.handoff };
+            const preflight = async () => {
+              tab.preflight = true;
+              try { await performAction(tab, { ...body }, botId, 0, () => closed); }
+              catch (error) { if (error !== PREFLIGHT_READY) throw error; }
+              finally { tab.preflight = false; }
+            };
+            const approvalEpoch = body.epoch;
+            taken = body.epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch: body.epoch, generation, preflight,
+              beforeClaim: () => agentInput.carryApproval?.(tab, body, approvalEpoch) })).epoch;
+          }
+          // An action the page refused before any input or navigation reached it
+          // (a challenge, a commit check, a missing control) hands the tab
+          // straight back: the takeover bought the bot nothing.
+          const inputs = tab.inputsSent || 0, wc = tab.view.webContents;
+          let moved = false;
+          const onMove = () => { moved = true; };
+          const unrun = () => taken && tab.epoch === taken && tab.controller === 'agent' && (tab.inputsSent || 0) === inputs && !moved;
+          const giveBack = () => {
+            try { changeController(tab.id, 'human', 'human'); Object.assign(tab, held); broadcast(); } catch (error) { logError('takeover undo', error); }
+          };
+          wc.on('did-start-navigation', onMove);
+          try {
+            const result = await performAction(tab, body, botId, 0, () => closed);
+            // Batch steps report errors without a status: only an input first
+            // step that failed before reaching the page counts as refused.
+            if (INPUT_ACTIONS.has(body.steps?.[0]?.action) && result?.results?.[0]?.ok === false && unrun()) giveBack();
+            return result;
+          } catch (error) {
+            if (([400, 403, 409].includes(error?.status) || error?.code === 'stale_ref') && unrun()) giveBack();
+            throw takeoverError(error);
+          } finally { if (!wc.isDestroyed()) wc.off('did-start-navigation', onMove); }
         })
           .finally(() => { tab.pendingActions--; tab.lastAgentActivity = Date.now(); });
         tab.queue = action.catch(() => {});
@@ -2284,11 +2623,27 @@ function startApi() {
         const granted = (tab.allowedBots || []).includes(botId)
           || (tab.botId === 'shared' && prefs.bots.some((bot) => bot.id === botId));
         if (botId !== tab.botId && !overseer && !granted) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
-        if (body.controller === 'agent') { requireAgentClaim(tab); tab.handoff = reviewedHandoff(tab.handoff); }
-        if (tab.botId === 'shared' && body.controller === 'agent') tab.botId = botId;
-        return send(200, redactTabForBot(changeController(tab.id, body.controller, 'agent', body.controller === 'agent' ? null : handbackRequest(body))));
+        let closed = false;
+        res.on('close', () => { if (!res.writableFinished) closed = true; });
+        if (body.controller === 'agent') return send(200, redactTabForBot(await claimTab(tab, botId, { isClosed: () => closed, overseer })));
+        const request = handbackRequest(body);
+        const ignored = request && tab.controller === 'human' && tab.humanLock;
+        const info = redactTabForBot(changeController(tab.id, body.controller, 'agent', request));
+        if (ignored) info.note = 'The human has taken over this tab; the handback reason was ignored.';
+        return send(200, info);
       }
-      if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true, overseer); closeTab(tab.id); return send(200, { closed: true }); }
+      if (req.method === 'DELETE' && !match[2]) {
+        let epoch = Number(req.headers['x-control-epoch']), closed = false;
+        res.on('close', () => { if (!res.writableFinished) closed = true; });
+        if (tab.controller !== 'agent' && prefs.autoTakeover !== false) {
+          requireActor(tab, botId, undefined, false, overseer);
+          requireAgentClaim(tab, Date.now(), claimRules(tab));
+          if (epoch !== tab.epoch) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
+          epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch, generation: tab.generation })).epoch;
+        }
+        if (closed) throw Object.assign(new Error('The request was closed before the tab closed.'), { status: 499 });
+        requireActor(tab, botId, epoch, true, overseer); closeTab(tab.id); return send(200, { closed: true });
+      }
       return send(405, { error: 'Method not supported.' });
     } catch (error) { send((error && error.status) || (error && error.code === 'stale_ref' ? 409 : 400), { error: errorMessage(error), ...(error && error.code ? { code: error.code } : {}) }); }
   });
@@ -2478,6 +2833,8 @@ function createWindow() {
       if (now - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) > idleMs) changeController(tab.id, 'human', 'idle');
     }
   }, 30000).unref();
+  captchaTimer = setInterval(watchCaptchas, 1000);
+  captchaTimer.unref();
   const vpsTick = async () => { await refreshVpsTabs(); vpsTimer = setTimeout(vpsTick, backoffDelay(vpsFailures)); vpsTimer.unref(); };
   vpsTick();
   vpsMirrorTimer = setInterval(pushVpsMirror, 10000); vpsMirrorTimer.unref();
@@ -2551,6 +2908,6 @@ else {
     showWindow();
   });
   app.on('activate', showWindow);
-  app.on('before-quit', () => { isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close(); });
+  app.on('before-quit', () => { isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

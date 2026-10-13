@@ -51,7 +51,17 @@ jobs:
         timeout-minutes: 3
       - run: npm run test:newtab
         timeout-minutes: 3
+      - run: npm run test:restore-tabs
+        timeout-minutes: 3
+      - run: npm run test:needs-human
+        timeout-minutes: 3
       - run: npm run test:recorder
+        timeout-minutes: 3
+      - run: npm run test:auto-takeover
+        timeout-minutes: 3
+      - run: npm run test:captcha
+        timeout-minutes: 3
+      - run: npm run test:update-all
         timeout-minutes: 3
 
   desktop-windows:

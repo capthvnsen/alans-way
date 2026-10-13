@@ -7,6 +7,10 @@ const path = require('node:path');
 const http = require('node:http');
 const { app, BrowserWindow, dialog, webContents, screen, nativeImage, session } = require('electron');
 const { spawn } = require('node:child_process');
+const crypto = require('node:crypto');
+// Test harness scripts that use timers or event handlers carry an approval, as
+// a router-approved call would (see the app's commit check).
+const harnessApproval = (tabId, epoch) => ({ nonce: crypto.randomUUID(), kind: 'submit', summary: 'test harness script', issuedAt: Date.now(), tabId, epoch });
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-integration-'));
 process.env.HERMES_WORKSPACE_DATA = profile;
 process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
@@ -113,8 +117,13 @@ app.whenReady().then(async () => {
     realSend('workspace:state', real);
     await waitFor(() => evaluate('document.getElementById("update-popup").classList.contains("hidden")'), Boolean);
     await waitFor(() => telegramView.getVisible() === true, Boolean);
-    // Only a key window can hand native focus back; another app may hold it.
-    await waitFor(() => webContents.getFocusedWebContents()?.id === telegram.id || !win.isFocused(), Boolean);
+    // Only a key window can hand native focus back: take it, so the wait
+    // below proves the popup really returned focus to Telegram instead of
+    // passing vacuously on an unfocused window.
+    win.show();
+    win.focus();
+    await waitFor(() => win.isFocused(), Boolean);
+    await waitFor(() => webContents.getFocusedWebContents()?.id === telegram.id, Boolean);
   } finally { wc.send = realSend; }
   // The blocks below start from the app page holding focus, as before.
   wc.focus();
@@ -126,7 +135,7 @@ app.whenReady().then(async () => {
     if (req.url === '/favicon-local') return res.end('<title>favicon-local</title><link rel="icon" href="/icon.png">');
     if (req.url === '/favicon-cross') return res.end(`<title>favicon-cross</title><link rel="icon" href="http://localhost:${server.address().port}/icon.png">`);
     if (req.url === '/streaming') { res.write('<title>streaming</title><h1>First half</h1>'); setTimeout(() => res.end('<p>Second half</p>'), 600); return; }
-    if (req.url === '/form') return res.end('<!doctype html><title>form</title><form id="f"><input name="a" aria-label="Field A"><input name="b" aria-label="Field B"><input name="c" aria-label="Field C"><button type="submit">Send form</button></form><p id="out">idle</p><script>f.onsubmit=e=>{e.preventDefault();out.textContent=[f.a.value,f.b.value,f.c.value].join("|")}</script>');
+    if (req.url === '/form') return res.end('<!doctype html><title>form</title><form id="f"><input name="a" aria-label="Field A"><input name="b" aria-label="Field B"><input name="c" aria-label="Field C"><button type="submit">Save form</button></form><p id="out">idle</p><script>f.onsubmit=e=>{e.preventDefault();out.textContent=[f.a.value,f.b.value,f.c.value].join("|")}</script>');
     if (req.url === '/dialogs') return res.end('<!doctype html><title>dialogs</title><button id="b" onclick="alert(\'hello\');const ok=confirm(\'Sure?\');document.title=\'ok=\'+ok">Go</button>');
     if (req.url === '/file.csv') { res.setHeader('Content-Type', 'text/csv'); res.setHeader('Content-Disposition', 'attachment; filename="r.csv"'); return res.end('a,b\n1,2\n'); }
     if (req.url === '/download') return res.end('<!doctype html><title>download</title><a href="/file.csv" download="r.csv">Get report</a>');
@@ -258,7 +267,7 @@ app.whenReady().then(async () => {
     for (const read of ['snapshot', 'screenshot']) {
       const blocked = await apiRaw(`/v1/tabs/${human.id}/${read}`, 'GET', undefined, actor);
       assert.equal(blocked.status, 409, `${actor} ${read} on a human tab`);
-      assert.equal(blocked.data.error, 'Tab is under human control.');
+      assert.equal(blocked.data.error, 'Tab is under human control. Claim it to take it back, then read.');
     }
   }
   // A stranger cannot release; the overseer can, then reads after taking over.
@@ -284,9 +293,10 @@ app.whenReady().then(async () => {
   assert.equal(seizedByGrantee.controller, 'agent', 'A granted bot takes over a human-controlled tab.');
   assert.equal((await api(`/v1/tabs/${colored[0].id}`, 'GET', undefined, '456')).botId, 'capture-regression', 'Grantee control does not transfer ownership.');
   console.log('PASS: shared-tab claim by a known bot and granted-bot takeover of a human tab.');
-  // An explicit takeover through the UI seals the tab: no bot can flip it
-  // back — not the owner, a grantee or the overseer — and a bot POST of
-  // 'human' cannot wash the lock. Only Give to agent hands it back.
+  // With automatic takeover off, an explicit takeover through the UI seals the
+  // tab: no bot can flip it back — not the owner, a grantee or the overseer —
+  // and a bot POST of 'human' cannot wash the lock. Only Give to agent hands it back.
+  await invoke('settings', { autoTakeover: false });
   await invoke('control', { id: colored[0].id, controller: 'human' });
   for (const actor of ['capture-regression', '456', 'overseer-bot']) {
     const attempt = await apiRaw(`/v1/tabs/${colored[0].id}/control`, 'POST', { controller: 'agent' }, actor);
@@ -304,6 +314,7 @@ app.whenReady().then(async () => {
   assert.equal(humanMeta.title, '');
   await invoke('control', { id: colored[0].id, controller: 'agent' });
   assert.equal((await api(`/v1/tabs/${colored[0].id}`, 'GET', undefined, '456')).controller, 'agent', 'Give to agent hands the sealed tab back');
+  await invoke('settings', { autoTakeover: true });
   console.log('PASS: explicit takeover seals control and page metadata until the human hands the tab back.');
   // The Move button appears only for agent-owned tabs while the VM browser is
   // connected, and on the retired local copy it offers the way back. Both
@@ -386,7 +397,7 @@ app.whenReady().then(async () => {
   // element appears, and times out as a 408 step error inside a batch.
   const instant = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', selector: 'button', epoch: seizedTab.epoch }, 'overseer-bot');
   assert.ok(instant.waited < 1000, 'wait returns immediately when the selector already exists.');
-  await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: "setTimeout(() => { const el = document.createElement('div'); el.id = 'late-el'; document.body.appendChild(el); }, 400)", epoch: seizedTab.epoch }, 'overseer-bot');
+  await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: "setTimeout(() => { const el = document.createElement('div'); el.id = 'late-el'; document.body.appendChild(el); }, 400)", epoch: seizedTab.epoch, approval: harnessApproval(colored[1].id, seizedTab.epoch) }, 'overseer-bot');
   const delayed = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', selector: '#late-el', timeout: 5000, epoch: seizedTab.epoch }, 'overseer-bot');
   assert.ok(delayed.waited >= 300 && delayed.waited < 5000, `wait blocked until the element appeared (${delayed.waited}ms).`);
   const timedOut = await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', selector: '#never-exists', timeout: 400, epoch: seizedTab.epoch }, 'overseer-bot');
@@ -407,7 +418,7 @@ app.whenReady().then(async () => {
   console.log('PASS: selector-targeted typing inside a self-contained batch.');
   // Snapshot refs stay valid across an entire batch until navigation.
   const formTab = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/form` });
-  const formNames = ['Field A', 'Field B', 'Field C', 'Send form'];
+  const formNames = ['Field A', 'Field B', 'Field C', 'Save form'];
   const formSnap = await waitFor(() => api(`/v1/tabs/${formTab.id}/snapshot`), snap => snap.title === 'form' && formNames.every(name => (snap.elements || []).some(el => el.name === name)));
   await waitFor(async () => {
     try { return (await api(`/v1/tabs/${formTab.id}/actions`, 'POST', { action: 'eval', code: 'typeof f.onsubmit', epoch: formTab.epoch })).value; }
@@ -495,9 +506,9 @@ app.whenReady().then(async () => {
   // wait honors a visibility requirement and a url condition; clicks hit a
   // covered element through an alternate point and name the blocker when it
   // cannot be clicked at all.
-  await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: `document.body.insertAdjacentHTML('beforeend','<div id=hid style="display:none;width:10px;height:10px"></div><button id=cov onclick="window.__n=(window.__n||0)+1" style="position:fixed;left:80px;top:80px;width:140px;height:60px;z-index:1">x</button><div id=blk style="position:fixed;left:120px;top:90px;width:60px;height:40px;z-index:9;background:#000"></div>')`, epoch: seizedTab.epoch }, 'overseer-bot');
+  await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: `document.body.insertAdjacentHTML('beforeend','<div id=hid style="display:none;width:10px;height:10px"></div><button id=cov onclick="window.__n=(window.__n||0)+1" style="position:fixed;left:80px;top:80px;width:140px;height:60px;z-index:1">x</button><div id=blk style="position:fixed;left:120px;top:90px;width:60px;height:40px;z-index:9;background:#000"></div>')`, epoch: seizedTab.epoch, approval: harnessApproval(colored[1].id, seizedTab.epoch) }, 'overseer-bot');
   assert.equal((await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', selector: '#hid', visible: true, timeout: 400, epoch: seizedTab.epoch }, 'overseer-bot')).status, 408, 'visible wait rejects a display:none element.');
-  const visibleWait = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'batch', epoch: seizedTab.epoch, steps: [
+  const visibleWait = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'batch', epoch: seizedTab.epoch, approval: harnessApproval(colored[1].id, seizedTab.epoch), steps: [
     { action: 'eval', code: "setTimeout(() => document.getElementById('hid').style.display='block', 300), 1" },
     { action: 'wait', selector: '#hid', visible: true, timeout: 5000 },
   ] }, 'overseer-bot');
@@ -556,7 +567,7 @@ app.whenReady().then(async () => {
   // A takeover mid-eval seals the result; Give to agent reopens the tab.
   await invoke('control', { id: colored[1].id, controller: 'agent' });
   const midEpoch = (await api(`/v1/tabs/${colored[1].id}`, 'GET', undefined, 'overseer-bot')).epoch;
-  const slowEval = apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: 'new Promise(r => setTimeout(() => r(document.title), 800))', epoch: midEpoch }, 'overseer-bot');
+  const slowEval = apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: 'new Promise(r => setTimeout(() => r(document.title), 800))', epoch: midEpoch, approval: harnessApproval(colored[1].id, midEpoch) }, 'overseer-bot');
   await new Promise(r => setTimeout(r, 150));
   await invoke('control', { id: colored[1].id, controller: 'human' });
   assert.equal((await slowEval).status, 409, 'a mid-flight eval is sealed by takeover');

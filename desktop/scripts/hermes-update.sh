@@ -13,6 +13,10 @@
 # would count. The message goes out even when the update fails - a failed
 # update is exactly the report nobody should have to go looking for.
 #
+# The app's "Update everything" flow sends one message after all its steps:
+# it runs this with ALANS_WAY_HERMES_QUIET=1 (update, no message), then again
+# with ALANS_WAY_HERMES_REPORT=<text> (no update, only that message).
+#
 # The last stdout line is one JSON result:
 # {"ok":bool,"version":"x.y.z","updated":bool,"error":"...","messaged":bool,
 #  "messages":[{"profile":"default","sent":bool,"error":"..."}]}
@@ -47,14 +51,16 @@ hermes_bin() {
 }
 
 # One bounded hermes call: stdin is /dev/null so a prompt can only ever read
-# EOF ("no"), and `timeout` (when the guest has it) caps the call inside the
-# run's remaining budget so the JSON result line is always reached.
+# EOF ("no"), and `timeout` (or a perl alarm: a Mac has perl but no GNU
+# timeout) caps the call inside the run's remaining budget so the JSON result
+# line is always reached. The alarm exits 142, not timeout's 124.
 run_hermes() {
   _secs="$1"; shift
   _left=$(( $(budget_left) - 8 ))
   [ "$_left" -gt 0 ] || return 124
   [ "$_secs" -le "$_left" ] || _secs="$_left"
   if have timeout; then timeout -k 5 "$_secs" "$HERMES_BIN_RES" "$@" </dev/null 2>&1
+  elif have perl; then perl -e 'alarm shift; exec @ARGV' "$_secs" "$HERMES_BIN_RES" "$@" </dev/null 2>&1
   else "$HERMES_BIN_RES" "$@" </dev/null 2>&1; fi
 }
 
@@ -82,20 +88,26 @@ msg_entry() {
   printf '{"profile":"%s","sent":%s,"error":"%s"}' "$(json_string "$1")" "$2" "$(json_string "$3")"
 }
 
+QUIET="${ALANS_WAY_HERMES_QUIET:-}" REPORT="${ALANS_WAY_HERMES_REPORT:-}"
 hermes_bin || fail 'no hermes CLI on this machine'
-say 'running hermes update'
-UPD_OUT="$(run_hermes "$UPDATE_TIMEOUT" update --yes --keep-stash)"
-UPD_RC=$?
+if [ -n "$REPORT" ]; then
+  UPD_OUT="" UPD_RC=0
+else
+  say 'running hermes update'
+  UPD_OUT="$(run_hermes "$UPDATE_TIMEOUT" update --yes --keep-stash)"
+  UPD_RC=$?
+fi
 # The version read follows the update so an install that moved reports the new
 # one; a failed update still reports whatever version is on the machine now.
 VERSION="$(run_hermes "$VERSION_TIMEOUT" --version | sed -n 's/^Hermes Agent v\([0-9][0-9.]*\).*/\1/p' | head -1)"
 case "$UPD_RC" in
   0) UPDATED=true ERR=""
      printf '%s' "$UPD_OUT" | grep -Eiq 'already up.to.date|nothing to update|no update available' && UPDATED=false;;
-  124) ERR='the hermes update timed out';;
+  124|142) ERR='the hermes update timed out';;
   *) ERR="$(tail_text "$UPD_OUT")"; [ -n "$ERR" ] || ERR="hermes update exited $UPD_RC";;
 esac
-[ "$UPD_RC" -eq 0 ] && say 'hermes update finished' || say "hermes update failed: $ERR"
+[ -n "$REPORT" ] && UPDATED=false
+[ -n "$REPORT" ] || { [ "$UPD_RC" -eq 0 ] && say 'hermes update finished' || say "hermes update failed: $ERR"; }
 
 # The message each profile's bot sends home: outcome, host and version so a
 # user with several machines can tell them apart.
@@ -106,9 +118,12 @@ if [ "$UPD_RC" -eq 0 ]; then
 else
   MSG="Hermes update failed$HOST: $(printf '%s' "$ERR" | cut -c1-200)"
 fi
+[ -n "$REPORT" ] && MSG="$REPORT"
 
 HHOME="${HERMES_HOME:-$HOME/.hermes}"
-if [ "$(budget_left)" -gt 15 ]; then
+if [ -n "$QUIET" ]; then
+  say 'the message waits for the end of the update'
+elif [ "$(budget_left)" -gt 15 ]; then
   say 'telling your bot to message you'
   while read -r _pname _phome; do
     [ -n "$_pname" ] || continue
@@ -131,7 +146,7 @@ EOF
 else
   say 'no time left to message you'
 fi
-[ "$MESSAGED" != true ] && [ "$UPD_RC" -eq 0 ] && say 'no profile could message you; the result is only in this report'
+[ "$MESSAGED" != true ] && [ "$UPD_RC" -eq 0 ] && [ -z "$QUIET" ] && say 'no profile could message you; the result is only in this report'
 
 if [ "$UPD_RC" -eq 0 ]; then
   json true "$VERSION" "$UPDATED" "" "$MESSAGED" "$MESSAGES_JSON"
