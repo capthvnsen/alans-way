@@ -207,7 +207,9 @@ if (typeof electron === 'string') {
     }
     await human.loadURL(base);
     for (const [id, button, modifiers] of [['middle', 'middle', []], ['meta', 'left', [process.platform === 'darwin' ? 'meta' : 'control']]]) {
-      await command('activate', { id: humanId }); human.focus();
+      await command('activate', { id: humanId }); app.focus({ steal: true }); win.focus(); human.focus();
+      await waitFor(() => human.executeJavaScript('document.hasFocus()'));
+      await human.capturePage();
       const point = await human.executeJavaScript(`(()=>{const r=document.querySelector('#${id}').getBoundingClientRect();return {x:Math.round(r.x+20), y:Math.round(r.y+10)}})()`);
       human.sendInputEvent({ type: 'mouseMove', ...point });
       human.sendInputEvent({ type: 'mouseDown', ...point, button, clickCount: 1, modifiers });
