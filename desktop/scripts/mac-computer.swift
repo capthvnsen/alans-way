@@ -115,7 +115,7 @@ func actionNames(_ element: AXUIElement) -> [String] {
     return names as? [String] ?? []
 }
 
-let walkAttributes = ["AXRole", "AXSubrole", "AXTitle", "AXDescription", "AXValue", "AXEnabled", "AXFrame", "AXChildren", "AXPlaceholderValue"]
+let walkAttributes = ["AXRole", "AXSubrole", "AXTitle", "AXDescription", "AXValue", "AXEnabled", "AXFrame", "AXChildren", "AXPlaceholderValue", "AXExpanded", "AXDisclosing"]
 
 func readAttributes(_ element: AXUIElement) -> [String: CFTypeRef]? {
     var values: CFArray?
@@ -144,6 +144,7 @@ final class Node {
     var placeholder = ""
     var value: CFTypeRef?
     var enabled = true
+    var expanded: NSNumber?
     var frame: CGRect?
     var kids: [Node] = []
     var ref = ""
@@ -225,6 +226,7 @@ func fill(_ node: Node, _ attributes: [String: CFTypeRef]) {
     node.placeholder = plainText(attributes["AXPlaceholderValue"])
     node.value = attributes["AXValue"]
     node.enabled = (attributes["AXEnabled"] as? NSNumber)?.boolValue ?? true
+    node.expanded = (attributes["AXExpanded"] as? NSNumber) ?? (attributes["AXDisclosing"] as? NSNumber)
     node.frame = rect(attributes["AXFrame"])
 }
 
@@ -318,7 +320,10 @@ let toggles: Set<String> = ["AXCheckBox", "AXRadioButton", "AXDisclosureTriangle
 
 func signature(_ node: Node) -> String {
     let state = toggles.contains(node.role) ? (node.value as? NSNumber).map { "|\($0.intValue)" } ?? "" : ""
-    return "\(node.role)|\(node.name)|\(node.context)\(state)"
+    // Expand/collapse joins the label check too: a press must not undo a tree
+    // item the user opened or shut since the snapshot.
+    let expanded = node.expanded.map { "|\($0.boolValue ? 1 : 0)" } ?? ""
+    return "\(node.role)|\(node.name)|\(node.context)\(state)\(expanded)"
 }
 
 // A ref from an older tree still means what the caller saw only when it is the
@@ -353,8 +358,15 @@ func assignRefs(_ items: [(key: AXKey, label: String)], _ book: RefBook) -> [Str
 }
 
 func remember(_ book: RefBook, _ walk: Walk) {
-    if book.history.last?.generation == walk.generation { return }
-    book.history.append((walk.generation, walk.nodes.mapValues { Seen(key: AXKey(element: $0.element), signature: signature($0)) }))
+    let seen = walk.nodes.mapValues { Seen(key: AXKey(element: $0.element), signature: signature($0)) }
+    // A repeated generation replaces the record: controls rebuilt behind an
+    // identical fingerprint take their new identities into history, rather than
+    // letting the first walk's stand.
+    if book.history.last?.generation == walk.generation {
+        book.history[book.history.count - 1].seen = seen
+        return
+    }
+    book.history.append((walk.generation, seen))
     if book.history.count > 8 { book.history.removeFirst() }
 }
 
@@ -530,11 +542,13 @@ func ensureCache(_ pid: pid_t, _ expected: Int?, refs: [String], menubar: Bool, 
         if caches[pid] == nil { _ = try refresh(pid, menubar: menubar) }
         return
     }
-    let walk = try walker(pid, menubar)
-    if walk.generation == expected { return }
+    // The caller's record is read before the walk — a repeated generation
+    // replaces it — and matching fingerprints still have to prove each ref is
+    // the same control the caller saw.
     guard let seen = (refBooks[pid].flatMap { seenAt($0, expected) }) else {
         throw Fail("stale_ref", "stale_ref: The app changed since your snapshot. Take a fresh snapshot.")
     }
+    let walk = try walker(pid, menubar)
     for ref in refs {
         guard let then = seen[ref], let node = walk.nodes[ref], stillSame(then, node) else {
             throw Fail("stale_ref", "stale_ref: \(ref) is gone or changed since your snapshot. Take a fresh snapshot.")
@@ -1251,6 +1265,13 @@ func selftest() throws -> JSON {
     let buttonSeen = Seen(key: AXKey(element: button.element), signature: signature(button))
     button.value = NSNumber(value: 1)
     try expect(stillSame(buttonSeen, button), "button value ignored")
+    let rowItem = Node(AXUIElementCreateApplication(8), depth: 0, limit: 0)
+    rowItem.role = "AXOutlineRow"
+    rowItem.name = "Item"
+    rowItem.expanded = NSNumber(value: 0)
+    let rowCollapsed = Seen(key: AXKey(element: rowItem.element), signature: signature(rowItem))
+    rowItem.expanded = NSNumber(value: 1)
+    try expect(!stillSame(rowCollapsed, rowItem), "expand state checked")
 
     let pinnedBook = RefBook()
     remember(pinnedBook, Walk(elements: [], nodes: [:], truncated: false, generation: 100))
@@ -1316,6 +1337,25 @@ func selftest() throws -> JSON {
     let callerGeneration = tick(0).generation
     for time in 1...7 { _ = tick(time) }
     try expect(!stale(callerGeneration) { tick(8) }, "caller's tree pinned before the walk")
+
+    // A control rebuilt behind an identical tree keeps the same fingerprint but
+    // a new element: a repeated generation must still compare the ref's identity.
+    let rebuiltBook = RefBook()
+    refBooks[fakePid] = rebuiltBook
+    let oldGo = Node(AXUIElementCreateApplication(40), depth: 0, limit: 0)
+    oldGo.role = "AXButton"
+    oldGo.title = "Go"
+    describe(oldGo)
+    let sameGeneration = record([oldGo], rebuiltBook).generation
+    let newGo = Node(AXUIElementCreateApplication(41), depth: 0, limit: 0)
+    newGo.role = "AXButton"
+    newGo.title = "Go"
+    describe(newGo)
+    // The probe book leaves the caller's record untouched: the rebuilt walk's
+    // fingerprint matches, so generation alone cannot tell the controls apart.
+    try expect(record([newGo], RefBook()).generation == sameGeneration, "rebuilt control shares the generation")
+    try expect(stale(sameGeneration) { record([newGo], rebuiltBook) }, "rebuilt control refused behind an unchanged generation")
+    try expect(!stale(sameGeneration) { record([newGo], rebuiltBook) }, "unchanged control accepted behind a repeated generation")
     return ["checks": checks]
 }
 

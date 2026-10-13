@@ -1256,6 +1256,7 @@ test('an inactive hermes-gateway unit is never claimed when the live gateway run
   addHermes(bin, state);
   const home = makeHermesHome();
   addPlugin(home, 'default', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(home, 'gateway.pid'), JSON.stringify({ pid: process.pid }));
   const port = await makeStatus({ version: '0.3.2', busy: false });
   const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
     FAKE_SVC_LOG: marker, ...pluginEnv(home, state),
@@ -1304,6 +1305,7 @@ test('a refused update with no service manager goes through hermes gateway stop 
   const { log } = addHermes(bin, state);
   const home = makeHermesHome();
   addPlugin(home, 'default', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(home, 'gateway.pid'), JSON.stringify({ pid: process.pid }));
   const port = await makeStatus({ version: '0.3.2', busy: false });
   const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
     ...pluginEnv(home, state),
@@ -1333,6 +1335,7 @@ test('gateway stop --all preserves and restarts only live standalone named profi
   addProfile(home, 'work');
   addPlugin(home, 'work', 'alans-way', '0.6.1');
   addProfile(home, 'idle');
+  fs.writeFileSync(path.join(home, 'gateway.pid'), JSON.stringify({ pid: process.pid }));
   fs.writeFileSync(path.join(home, 'profiles', 'work', 'gateway.pid'), JSON.stringify({ pid: process.pid }));
   const deadPid = 999999;
   assert.notEqual(spawnSync('ps', ['-p', String(deadPid)]).status, 0, 'the idle fixture pid must not be live');
@@ -1364,6 +1367,7 @@ test('Hermes without stop --all stops and restores every running profile explici
   const home = makeHermesHome();
   addProfile(home, 'work');
   addPlugin(home, 'work', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(home, 'gateway.pid'), `${process.pid}\n`);
   fs.writeFileSync(path.join(home, 'profiles', 'work', 'gateway.pid'), `${process.pid}\n`);
   const port = await makeStatus({ version: '0.3.2', busy: false });
   const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
@@ -1400,6 +1404,8 @@ test('a failed named-profile gateway start is reported without claiming a restar
   assert.equal(res.status, 0, res.stderr);
   assert.equal(result.plugins[0].status, 'updated');
   assert.equal(result.gatewayRestarted, false);
+  assert.equal(result.gatewayRestartCmd, 'hermes -p work gateway start',
+    'the result names the exact named-profile command the dialog shows');
   assert.match(res.stdout, /could not start the gateway; on the VM run: hermes -p work gateway start/);
   assert.doesNotMatch(log(), /gateway restart/, 'a default restart cannot recover the named standalone gateway');
 });
@@ -1415,6 +1421,7 @@ test('a failed default gateway start still falls back to gateway restart', async
   const { log } = addHermes(bin, state);
   const home = makeHermesHome();
   addPlugin(home, 'default', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(home, 'gateway.pid'), JSON.stringify({ pid: process.pid }));
   const port = await makeStatus({ version: '0.3.2', busy: false });
   const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
   const result = lastJson(res);
@@ -1422,6 +1429,120 @@ test('a failed default gateway start still falls back to gateway restart', async
   assert.equal(result.plugins[0].status, 'updated');
   assert.equal(result.gatewayRestarted, true);
   assert.match(log(), /gateway restart/, 'the restart fallback still covers the default profile');
+});
+
+test('a gateway that was not running is never started after the refused retries', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  // Only the named profile's gateway is running; the default's is down, so a
+  // blind `hermes gateway start` would grow a second bot.
+  fs.writeFileSync(path.join(state, 'gwstate.work'), 'running\n');
+  fs.writeFileSync(path.join(state, 'stop-all'), '');
+  const { log } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addProfile(home, 'work');
+  addPlugin(home, 'work', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(home, 'profiles', 'work', 'gateway.pid'), JSON.stringify({ pid: process.pid }));
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.plugins[0].status, 'updated');
+  assert.equal(result.gatewayRestarted, true);
+  const calls = log().trim().split('\n');
+  const retry = calls.lastIndexOf('hermes -p work plugins update alans-way');
+  assert.ok(calls.indexOf('hermes -p work gateway start') > retry, calls.join('\n'),
+    'the named gateway that ran comes back up');
+  assert.ok(!calls.includes('hermes -p default gateway start'), calls.join('\n'),
+    'the default gateway was down and is never started');
+});
+
+test('a refused update under supervisord stops and restarts standalone named-profile gateways too', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  fs.writeFileSync(path.join(state, 'gwstate.work'), 'running\n');
+  const { log } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  addProfile(home, 'work');
+  addPlugin(home, 'work', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(home, 'profiles', 'work', 'gateway.pid'), JSON.stringify({ pid: process.pid }));
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  const pid2 = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  fs.writeFileSync(path.join(sstate, 'status'), `gw-one                          RUNNING   pid ${pid}, uptime 0:02:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
+  fs.writeFileSync(path.join(sstate, 'next-pid.gw-one'), `${pid2}\n`);
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SUPERVISOR_STATE: sstate, FAKE_SVC_LOG: marker,
+    ALANS_WAY_VM_SUPERVISOR_CONFS: `${mktemp('vm-update-confd-')}/*.conf`,
+    ...pluginEnv(home, state),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(result.plugins.map((p) => [p.profile, p.name, p.status]), [
+    ['default', 'alans-way', 'updated'],
+    ['work', 'alans-way', 'updated'],
+  ], 'the standalone named gateway stops so its refused update can run');
+  assert.equal(result.gatewayRestarted, true);
+  const markerText = fs.readFileSync(marker, 'utf8');
+  const i = (s) => markerText.indexOf(s), l = (s) => markerText.lastIndexOf(s);
+  assert.ok(i('hermes -p work gateway stop') > i('supervisorctl stop gw-one'),
+    'the named gateway is stopped after the program drains');
+  assert.ok(l('hermes -p work plugins update alans-way') > i('hermes -p work gateway stop'),
+    'the named retry ran while its gateway was down');
+  assert.ok(i('hermes -p work gateway start') > l('hermes -p work plugins update alans-way'),
+    'the named gateway comes back up after the retries');
+  assert.ok(!log().includes('hermes -p default gateway start'),
+    'the unmanaged default gateway was down and is never started');
+});
+
+test('a refused update on a systemd guest stops and restarts standalone named-profile gateways too', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  // No systemd-state file: the fake systemctl answers "running" and the
+  // hermes-gateway unit is active.
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  fs.writeFileSync(path.join(state, 'gwstate'), 'running\n');
+  fs.writeFileSync(path.join(state, 'gwstate.work'), 'running\n');
+  const { log } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  addProfile(home, 'work');
+  addPlugin(home, 'work', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(home, 'profiles', 'work', 'gateway.pid'), JSON.stringify({ pid: process.pid }));
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SVC_LOG: marker, ...pluginEnv(home, state),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(result.plugins.map((p) => [p.profile, p.name, p.status]), [
+    ['default', 'alans-way', 'updated'],
+    ['work', 'alans-way', 'updated'],
+  ], 'the standalone named gateway stops so its refused update can run');
+  assert.equal(result.gatewayRestarted, true);
+  const markerText = fs.readFileSync(marker, 'utf8');
+  const i = (s) => markerText.indexOf(s), l = (s) => markerText.lastIndexOf(s);
+  assert.ok(i('hermes -p work gateway stop') > i('systemctl --user stop hermes-gateway'),
+    'the named gateway is stopped after the unit');
+  assert.ok(l('hermes -p work plugins update alans-way') > i('hermes -p work gateway stop'),
+    'the named retry ran while its gateway was down');
+  assert.ok(i('hermes -p work gateway start') > l('hermes -p work plugins update alans-way'),
+    'the named gateway comes back up after the retries');
+  assert.ok(i('systemctl --user start hermes-gateway') > l('hermes -p work plugins update alans-way'),
+    'the unit comes back up after the retries');
+  assert.ok(!log().includes('hermes -p default gateway start'),
+    'the managed default gateway comes up through its unit, not a hermes start');
 });
 
 test('a gateway still draining when the wait ends is left running and the pair reports blocked', async () => {
@@ -1502,6 +1623,7 @@ test('a systemd guest without a hermes-gateway unit falls back to hermes gateway
   addHermes(bin, state);
   const home = makeHermesHome();
   addPlugin(home, 'default', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(home, 'gateway.pid'), JSON.stringify({ pid: process.pid }));
   const port = await makeStatus({ version: '0.3.2', busy: false });
   const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
     FAKE_SVC_LOG: marker, ...pluginEnv(home, state),

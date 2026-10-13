@@ -281,12 +281,13 @@ list_profiles() {
   done
 }
 
-# Snapshot live standalone named gateways, then stop every profile. Modern
-# Hermes has one atomic --all operation; older versions need one call each.
+# Snapshot every profile whose gateway is running (GW_LIVE, default included),
+# then stop them all. Modern Hermes has one atomic --all operation; older
+# versions need one call each.
 gateway_stop_every_profile() {
-  GW_NAMED=""
+  GW_LIVE=""
   while read -r _gse_name _gse_home; do
-    [ "$_gse_name" != default ] || continue
+    [ -n "$_gse_name" ] || continue
     _gse_text="$(cat "$_gse_home/gateway.pid" 2>/dev/null || true)"
     case "$_gse_text" in
       *'"pid"'*) _gse_pid="$(printf '%s\n' "$_gse_text" | sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)";;
@@ -294,7 +295,7 @@ gateway_stop_every_profile() {
          case "$_gse_pid" in ''|*[!0-9]*) _gse_pid="";; esac;;
     esac
     if [ -n "$_gse_pid" ] && ps -p "$_gse_pid" >/dev/null 2>&1; then
-      GW_NAMED="${GW_NAMED}${GW_NAMED:+
+      GW_LIVE="${GW_LIVE}${GW_LIVE:+
 }$_gse_name"
     fi
   done <<EOF
@@ -318,19 +319,30 @@ EOF
   [ "$_gse_stopped" = true ]
 }
 
+# Starts only the profiles the earlier snapshot found live (GW_LIVE), so a
+# gateway that was down never grows a second instance next to a managed one.
+# Failed starts keep their exact remediation command in GW_CMD and pull
+# GATEWAY_RESTARTED back to false.
 gateway_start_stopped_profiles() {
-  GW_CMD=""
-  run_hermes "$GATEWAY_TIMEOUT" gateway start >/dev/null 2>&1 || GW_CMD="hermes gateway start"
+  _gss_failed=false
   while read -r _gss_name; do
     [ -n "$_gss_name" ] || continue
-    if ! run_hermes "$GATEWAY_TIMEOUT" -p "$_gss_name" gateway start >/dev/null 2>&1; then
-      _gss_cmd="hermes -p $_gss_name gateway start"
-      GW_CMD="${GW_CMD}${GW_CMD:+; }$_gss_cmd"
+    if [ "$_gss_name" = default ]; then
+      run_hermes "$GATEWAY_TIMEOUT" gateway start >/dev/null 2>&1 || {
+        GW_CMD="${GW_CMD}${GW_CMD:+; }hermes gateway start"
+        _gss_failed=true
+      }
+    else
+      run_hermes "$GATEWAY_TIMEOUT" -p "$_gss_name" gateway start >/dev/null 2>&1 || {
+        GW_CMD="${GW_CMD}${GW_CMD:+; }hermes -p $_gss_name gateway start"
+        _gss_failed=true
+      }
     fi
   done <<EOF
-$GW_NAMED
+$GW_LIVE
 EOF
-  [ -z "$GW_CMD" ] && GATEWAY_RESTARTED=true || GATEWAY_RESTARTED=false
+  [ "$_gss_failed" = true ] && GATEWAY_RESTARTED=false
+  return 0
 }
 
 # $1 = plugin manifest dir; prints its declared version ("" when unreadable).
@@ -549,6 +561,11 @@ EOF
           ''|0|*[!0-9]*) ;;
           *) case "$_gw_now" in ''|0|*[!0-9]*) GW_STOPPED=true;; esac;;
         esac
+        # A supervisor program covers one gateway; standalone named-profile
+        # gateways keep refusing their plugin updates until hermes stops them
+        # too. Runs only once the program is down, so its gateway.pid no
+        # longer counts as live and a later start can never duplicate it.
+        [ "$GW_STOPPED" = true ] && gateway_stop_every_profile >/dev/null 2>&1
       elif systemd_live; then
         GW_VIA=systemd
         # `stop` on an inactive unit is a no-op success, so a unit is only
@@ -564,8 +581,9 @@ EOF
         fi
         # Stock Hermes keeps its gateway under `hermes gateway`, not
         # necessarily a hermes-gateway unit; when neither stop lands, mirror
-        # the restart path's last resort.
-        if [ "$GW_STOPPED" != true ] && gateway_stop_every_profile; then
+        # the restart path's last resort. A unit only ever covers the default
+        # gateway, so standalone named profiles are stopped either way.
+        if gateway_stop_every_profile && [ "$GW_STOPPED" != true ]; then
           GW_VIA=hermes GW_STOPPED=true
         fi
       elif gateway_stop_every_profile; then
@@ -589,7 +607,9 @@ EOF
       done <<EOF
 $REFUSED
 EOF
-      # The gateway always comes back up, whatever the retries found.
+      # The gateways that were running always come back up, whatever the
+      # retries found: the manager-owned one through its manager, the
+      # standalone profiles the snapshot found (GW_LIVE) through hermes.
       case "$GW_VIA" in
         supervisor)
           GW_CMD="supervisorctl start $GW_PROG"
@@ -608,17 +628,22 @@ EOF
             sudo -n systemctl start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
           fi;;
         hermes)
-          gateway_start_stopped_profiles;;
+          GATEWAY_RESTARTED=true GW_CMD="";;
       esac
+      gateway_start_stopped_profiles
       if [ "$GATEWAY_RESTARTED" = true ]; then say "agent gateway restarted"
       elif [ "$GW_VIA" = supervisor ]; then
         say "could not start the gateway; on the VM run: $GW_CMD (or: sudo $GW_CMD)"
       else say "could not start the gateway; on the VM run: $GW_CMD"; fi
       # A default-profile restart cannot recover a failed standalone
       # named-profile start; when only those failed, leave its exact
-      # remediation and result intact.
+      # remediation in the result so the dialog can show it.
       if [ "$GW_VIA" = hermes ] && [ "$GATEWAY_RESTARTED" != true ]; then
-        case "$GW_CMD" in "hermes gateway start"*) ;; *) return 0;; esac
+        case "$GW_CMD" in
+          "hermes gateway start"*) ;;
+          *) GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_CMD")\""
+             return 0;;
+        esac
       fi
     else
       # The gateway stayed up; every refused pair reports blocked with the
