@@ -14,6 +14,7 @@ process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10
 // Notifications are recorded instead of shown, so the run never touches the OS notification center.
 const shown = [];
 Notification.prototype.show = function show() { shown.push(this); };
+Notification.prototype.close = function close() { this.closed = true; };
 require('../src/main.cjs');
 const waitFor = async (read, predicate, timeout = 12000) => {
   const deadline = Date.now() + timeout;
@@ -102,6 +103,23 @@ app.whenReady().then(async () => {
   await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'human' });
   assert.equal((await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' })).status, 200);
   assert.equal(shown.length, 1);
+
+  // A reasoned release on a tab the human took over says the hold was ignored.
+  await invoke('control', { id: tab.id, controller: 'human' });
+  const ignored = await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'human', reason: 'captcha', note });
+  assert.equal(ignored.status, 200, JSON.stringify(ignored.data));
+  assert.equal(ignored.data.handback, null, 'no hold is recorded on a taken-over tab');
+  assert.match(ignored.data.note || '', /ignored/i, 'the reply notes the hold was ignored');
+  assert.equal(shown.length, 1, 'a release on a taken-over tab does not notify');
+
+  // Closing a tab clears its handback notice.
+  const second = await invoke('create-tab', { url: `http://127.0.0.1:${server.address().port}/` });
+  await invoke('control', { id: second.id, controller: 'agent' });
+  const secondRelease = await api(`/v1/tabs/${second.id}/control`, 'POST', { controller: 'human', reason: 'login' });
+  assert.equal(secondRelease.data.handback.state, 'awaiting_human');
+  assert.equal(shown.length, 2);
+  await invoke('close-tab', { id: second.id });
+  assert.equal(shown[1].closed, true, 'closing the tab dismisses its notification');
 
   console.log('PASS: a release with a reason badges the tab, shows an escaped banner, notifies once, and holds the tab until the human gives it back.');
   server.close(); app.quit();
