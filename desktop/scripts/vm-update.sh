@@ -323,10 +323,10 @@ EOF
 
 # Starts only the profiles the earlier snapshot found live (GW_LIVE), so a
 # gateway that was down never grows a second instance next to a managed one.
-# A failed named-profile start is tracked on its own in GW_NAMED_CMD: under a
-# service manager it never touches the managed restart's result; under hermes
-# the gateways are all script-owned, so it still pulls GATEWAY_RESTARTED down.
-# A failed default start keeps its remediation in GW_CMD either way.
+# Default/managed recovery is tracked in GW_DEFAULT_RESTARTED so its fallback
+# cannot mask failed named-profile starts. GW_NAMED_CMD retains those failures
+# until the final aggregate result is computed. A failed default start keeps
+# its remediation in GW_CMD.
 gateway_start_stopped_profiles() {
   GW_NAMED_CMD=""
   while read -r _gss_name; do
@@ -334,12 +334,12 @@ gateway_start_stopped_profiles() {
     if [ "$_gss_name" = default ]; then
       run_hermes "$GATEWAY_TIMEOUT" gateway start >/dev/null 2>&1 || {
         GW_CMD="${GW_CMD}${GW_CMD:+; }hermes gateway start"
-        GATEWAY_RESTARTED=false
+        GW_DEFAULT_RESTARTED=false
       }
     else
       run_hermes "$GATEWAY_TIMEOUT" -p "$_gss_name" gateway start >/dev/null 2>&1 || {
         GW_NAMED_CMD="${GW_NAMED_CMD}${GW_NAMED_CMD:+; }hermes -p $_gss_name gateway start"
-        [ "$GW_VIA" = hermes ] && GATEWAY_RESTARTED=false
+        GATEWAY_RESTARTED=false
       }
     fi
   done <<EOF
@@ -477,7 +477,7 @@ update_hermes_plugins() {
   if ! hermes_bin; then say "no hermes CLI on this VM; skipping plugin updates"; return 0; fi
   HHOME="${HERMES_HOME:-$HOME/.hermes}"
   say "updating Hermes plugins"
-  CLONES="" CHANGED=false REFUSED="" GW_STOPPED=false GW_VIA="" GW_SCOPE=""
+  CLONES="" CHANGED=false REFUSED="" GW_STOPPED=false GW_VIA="" GW_SCOPE="" GW_DEFAULT_RESTARTED=false
   while read -r _pname _phome; do
     [ -n "$_pname" ] || continue
     _pdir="$_phome/plugins"
@@ -616,48 +616,37 @@ EOF
       case "$GW_VIA" in
         supervisor)
           GW_CMD="supervisorctl start $GW_PROG"
-          _sp_ctl start "$GW_PROG" >/dev/null 2>&1 && GATEWAY_RESTARTED=true;;
+          _sp_ctl start "$GW_PROG" >/dev/null 2>&1 && GW_DEFAULT_RESTARTED=true;;
         systemd)
           if [ "$(id -u)" = 0 ]; then
             GW_CMD="systemctl start hermes-gateway"
-            systemctl start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+            systemctl start hermes-gateway >/dev/null 2>&1 && GW_DEFAULT_RESTARTED=true
           elif [ "$GW_SCOPE" = user ]; then
             GW_CMD="systemctl --user start hermes-gateway"
-            systemctl --user start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+            systemctl --user start hermes-gateway >/dev/null 2>&1 && GW_DEFAULT_RESTARTED=true
           else
             # Start the scope that was stopped: a stale user unit must not
             # come up in place of the system unit.
             GW_CMD="sudo systemctl start hermes-gateway"
-            sudo -n systemctl start hermes-gateway >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+            sudo -n systemctl start hermes-gateway >/dev/null 2>&1 && GW_DEFAULT_RESTARTED=true
           fi;;
         hermes)
-          GATEWAY_RESTARTED=true GW_CMD="";;
+          GW_DEFAULT_RESTARTED=true GW_CMD="";;
       esac
       gateway_start_stopped_profiles
-      if [ "$GATEWAY_RESTARTED" = true ]; then say "agent gateway restarted"
-      elif [ "$GW_VIA" = supervisor ]; then
+      if [ "$GW_DEFAULT_RESTARTED" = true ] && [ -z "$GW_NAMED_CMD" ]; then say "agent gateway restarted"
+      elif [ "$GW_DEFAULT_RESTARTED" != true ] && [ "$GW_VIA" = supervisor ]; then
         say "could not start the gateway; on the VM run: $GW_CMD (or: sudo $GW_CMD)"
-      elif [ -n "$GW_CMD" ]; then
+      elif [ "$GW_DEFAULT_RESTARTED" != true ] && [ -n "$GW_CMD" ]; then
         say "could not start the gateway; on the VM run: $GW_CMD"
       fi
-      # A standalone named-profile start that failed is reported on its own:
-      # under a service manager the managed restart stands and the named
-      # gateway's exact command still reaches the dialog; under hermes it
-      # already pulled GATEWAY_RESTARTED down in the start loop.
+      # Named-profile failures need their own recovery command even when the
+      # default or managed gateway recovered successfully.
       if [ -n "$GW_NAMED_CMD" ]; then
         say "could not start a named gateway; on the VM run: $GW_NAMED_CMD"
         case "$GW_CMD" in
           "hermes gateway start"*) ;;
           *) GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_NAMED_CMD")\"" ;;
-        esac
-      fi
-      # Under hermes a failed default start still falls through to the restart
-      # fallback below; when only standalone named profiles failed, the result
-      # already carries their remediation and the fallback cannot recover them.
-      if [ "$GW_VIA" = hermes ] && [ "$GATEWAY_RESTARTED" != true ]; then
-        case "$GW_CMD" in
-          "hermes gateway start"*) ;;
-          *) return 0;;
         esac
       fi
     else
@@ -675,7 +664,7 @@ EOF
   # actually changed (hermes gateway restart: SIGUSR1 drain, the supervisor or
   # service manager owns the relaunch). Skipped when the bounce above already
   # restarted it; run even when nothing changed if that bounce left it down.
-  if [ "$GATEWAY_RESTARTED" != true ] && { [ "$CHANGED" = true ] || [ "$GW_STOPPED" = true ]; }; then
+  if [ "$GW_DEFAULT_RESTARTED" != true ] && { [ "$CHANGED" = true ] || [ "$GW_STOPPED" = true ]; }; then
     say "restarting the agent gateway"
     # A gateway under supervisord is restarted with USR1, not `restart`: the
     # supervisor's restart escalates SIGTERM to SIGKILL past stopwaitsecs, and
@@ -700,29 +689,29 @@ EOF
             *" RUNNING "*)
               _gw_new="$(printf '%s' "$_gw_line" | sed -n 's/.*pid \([0-9][0-9]*\).*/\1/p' | head -n 1)"
               if [ -n "$_gw_new" ] && [ "$_gw_new" != "$_gw_old" ]; then
-                GATEWAY_RESTARTED=true
+                GW_DEFAULT_RESTARTED=true
                 break
               fi;;
           esac
           sleep 2
         done
-        if [ "$GATEWAY_RESTARTED" != true ]; then
+        if [ "$GW_DEFAULT_RESTARTED" != true ]; then
           _gw_now="$(_sp_ctl pid "$GW_PROG" | tr -d '[:space:]')"
           case "$_gw_now" in
             ''|0|*[!0-9]*)
               # The drain finished but nothing relaunched it.
               GW_CMD="supervisorctl start $GW_PROG"
-              _sp_ctl start "$GW_PROG" >/dev/null 2>&1 && GATEWAY_RESTARTED=true;;
+              _sp_ctl start "$GW_PROG" >/dev/null 2>&1 && GW_DEFAULT_RESTARTED=true;;
             *)
               # Still running on the old pid: the drain is in flight and the
               # supervisor owns the relaunch.
-              GATEWAY_RESTARTED=true;;
+              GW_DEFAULT_RESTARTED=true;;
           esac
         fi
       else
         # A supervisor too old for the signal verb still gets a plain restart.
         GW_CMD="supervisorctl restart $GW_PROG"
-        _sp_ctl restart "$GW_PROG" >/dev/null 2>&1 && GATEWAY_RESTARTED=true
+        _sp_ctl restart "$GW_PROG" >/dev/null 2>&1 && GW_DEFAULT_RESTARTED=true
       fi
     elif ! systemd_live && have supervisorctl; then
       # The gateway's program is unresolvable here (a stopped program whose
@@ -731,14 +720,20 @@ EOF
       GW_CMD="supervisorctl signal USR1 <program>"
     fi
     [ "$GW_CMD" = "hermes gateway restart" ] || GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_CMD${GW_NAMED_CMD:+; $GW_NAMED_CMD}")\""
-    if [ "$GATEWAY_RESTARTED" != true ] && run_hermes "$GATEWAY_TIMEOUT" gateway restart >/dev/null 2>&1; then
-      GATEWAY_RESTARTED=true
+    if [ "$GW_DEFAULT_RESTARTED" != true ] && run_hermes "$GATEWAY_TIMEOUT" gateway restart >/dev/null 2>&1; then
+      GW_DEFAULT_RESTARTED=true
     fi
-    if [ "$GATEWAY_RESTARTED" = true ]; then
-      say "agent gateway restarted"
+    if [ "$GW_DEFAULT_RESTARTED" = true ]; then
+      [ -n "$GW_NAMED_CMD" ] || say "agent gateway restarted"
     else
       say "gateway restart did not finish; on the VM run: $GW_CMD"
     fi
+  fi
+  # All previously live gateways must recover. Default-manager success (or
+  # its fallback) never clears an unresolved named-profile failure.
+  GATEWAY_RESTARTED=false
+  if [ "$GW_DEFAULT_RESTARTED" = true ] && [ -z "$GW_NAMED_CMD" ]; then
+    GATEWAY_RESTARTED=true
   fi
 }
 

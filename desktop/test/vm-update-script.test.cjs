@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawnSync, execFileSync, spawn } = require('node:child_process');
+const { vmPluginLines } = require('../src/vm-update.cjs');
 
 const SCRIPT = path.join(__dirname, '../scripts/vm-update.sh');
 const POST_HOOK = path.join(__dirname, '../scripts/vm-post-update.sh');
@@ -1410,7 +1411,7 @@ test('a failed named-profile gateway start is reported without claiming a restar
   assert.doesNotMatch(log(), /gateway restart/, 'a default restart cannot recover the named standalone gateway');
 });
 
-test('a failed named-profile gateway start under supervisord reports next to the managed restart', async () => {
+test('a failed named-profile gateway start under supervisord shows recovery despite the managed restart', async () => {
   const checkout = makeCheckout(remote);
   const { bin, marker } = makeBin();
   fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
@@ -1443,7 +1444,11 @@ test('a failed named-profile gateway start under supervisord reports next to the
     ['default', 'alans-way', 'updated'],
     ['work', 'alans-way', 'updated'],
   ], 'both refused updates ran while the gateways were down');
-  assert.equal(result.gatewayRestarted, true, 'the managed restart stands on its own');
+  assert.deepEqual(vmPluginLines(result).at(-1), {
+    text: 'Your agent needs a restart to load the new plugin. On your VM run: hermes -p work gateway start',
+    tone: 'warn',
+  }, 'the dialog displays recovery for the named gateway that stayed down');
+  assert.equal(result.gatewayRestarted, false, 'every previously live gateway must recover');
   assert.equal(result.gatewayRestartCmd, 'hermes -p work gateway start',
     'the failed named-profile start keeps its exact remediation');
   assert.match(res.stdout, /could not start a named gateway; on the VM run: hermes -p work gateway start/);
@@ -1456,7 +1461,7 @@ test('a failed named-profile gateway start under supervisord reports next to the
   assert.doesNotMatch(log(), /gateway restart/, 'a default restart cannot recover the named standalone gateway');
 });
 
-test('a failed named-profile gateway start under systemd reports next to the unit restart', async () => {
+test('a failed named-profile gateway start under systemd shows recovery despite the unit restart', async () => {
   const checkout = makeCheckout(remote);
   const { bin, marker } = makeBin();
   // No systemd-state file: the fake systemctl answers "running" and the
@@ -1482,7 +1487,11 @@ test('a failed named-profile gateway start under systemd reports next to the uni
     ['default', 'alans-way', 'updated'],
     ['work', 'alans-way', 'updated'],
   ], 'both refused updates ran while the gateways were down');
-  assert.equal(result.gatewayRestarted, true, 'the managed restart stands on its own');
+  assert.deepEqual(vmPluginLines(result).at(-1), {
+    text: 'Your agent needs a restart to load the new plugin. On your VM run: hermes -p work gateway start',
+    tone: 'warn',
+  }, 'the dialog displays recovery for the named gateway that stayed down');
+  assert.equal(result.gatewayRestarted, false, 'every previously live gateway must recover');
   assert.equal(result.gatewayRestartCmd, 'hermes -p work gateway start',
     'the failed named-profile start keeps its exact remediation');
   assert.match(res.stdout, /could not start a named gateway; on the VM run: hermes -p work gateway start/);
@@ -1512,6 +1521,46 @@ test('a failed default gateway start still falls back to gateway restart', async
   assert.equal(result.gatewayRestarted, true);
   assert.match(log(), /gateway restart/, 'the restart fallback still covers the default profile');
 });
+
+for (const namedFails of [true, false]) {
+  test(`a successful default restart fallback ${namedFails ? 'preserves named failure and recovery instructions' : 'reports success when the named gateway recovered'}`, async () => {
+    const checkout = makeCheckout(remote);
+    const { bin } = makeBin();
+    fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+    const state = makeHermesState();
+    fs.writeFileSync(path.join(state, 'gwguard'), '');
+    fs.writeFileSync(path.join(state, 'gwstate'), 'running\n');
+    fs.writeFileSync(path.join(state, 'gwstate.work'), 'running\n');
+    fs.writeFileSync(path.join(state, 'startfail.default'), '');
+    if (namedFails) fs.writeFileSync(path.join(state, 'startfail.work'), '');
+    const { log } = addHermes(bin, state);
+    const home = makeHermesHome();
+    addPlugin(home, 'default', 'alans-way', '0.6.1');
+    addProfile(home, 'work');
+    addPlugin(home, 'work', 'alans-way', '0.6.1');
+    addProfile(home, 'idle');
+    fs.writeFileSync(path.join(home, 'gateway.pid'), JSON.stringify({ pid: process.pid }));
+    fs.writeFileSync(path.join(home, 'profiles', 'work', 'gateway.pid'), JSON.stringify({ pid: process.pid }));
+    const port = await makeStatus({ version: '0.3.2', busy: false });
+    const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)));
+    const result = lastJson(res);
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(result.plugins.every((p) => p.status === 'updated'));
+    assert.match(log(), /hermes -p default gateway restart/, 'the default fallback succeeds');
+    assert.equal(result.gatewayRestarted, !namedFails, 'success depends on both previously live gateways');
+    assert.equal(fs.readFileSync(path.join(state, 'gwstate.work'), 'utf8').trim(), namedFails ? 'stopped' : 'running');
+    if (namedFails) {
+      assert.equal(result.gatewayRestartCmd, 'hermes gateway start; hermes -p work gateway start');
+      assert.deepEqual(vmPluginLines(result).at(-1), {
+        text: 'Your agent needs a restart to load the new plugin. On your VM run: hermes gateway start; hermes -p work gateway start',
+        tone: 'warn',
+      });
+    } else {
+      assert.ok(vmPluginLines(result).every((line) => line.tone === 'ok'));
+    }
+    assert.doesNotMatch(log(), /hermes -p idle gateway start/, 'the idle profile is never started');
+  });
+}
 
 test('a gateway that was not running is never started after the refused retries', async () => {
   const checkout = makeCheckout(remote);
