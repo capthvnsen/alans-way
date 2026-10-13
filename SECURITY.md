@@ -12,7 +12,7 @@ The app gives your Hermes bots real browser control. Its API listens on `127.0.0
 
 The app's own window cannot navigate away from its page or open other windows, and its IPC bridge answers only that exact page. Closing the window on Windows and Linux hides it to the system tray, so the connector keeps running until you choose Quit.
 
-Human control wins: a tab under human control is sealed to bots (snapshots and screenshots return 409), and every takeover invalidates queued agent actions. Per-tab ownership between bots is cooperative policy, not a cryptographic boundary. Agents never use OS input, the clipboard or your keyboard focus. See the [integration boundary](desktop/docs/integration.md) for the full contract.
+A tab under human control is sealed to bot reads (snapshots and screenshots return 409), and every takeover invalidates queued agent actions. By default (Settings → "Let bots take over tabs automatically") the tab's own bot, a granted bot or the overseer takes it back by acting or claiming, once the human has paused for 3 seconds, and the app shows a Take back button; a tab a bot handed to the human or one being recorded stays theirs. Turn the setting off to keep human-controlled tabs sealed until the human gives them back. Per-tab ownership between bots is cooperative policy, not a cryptographic boundary. Agents never use OS input, the clipboard or your keyboard focus. See the [integration boundary](desktop/docs/integration.md) for the full contract.
 
 ### Companion CLI
 

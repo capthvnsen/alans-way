@@ -654,7 +654,7 @@ function changeController(id, controller, source = 'human', handback = null) {
   // it back in the UI. A bot's own release or the idle-expiry clock stays
   // retakeable, and a tab already locked stays locked.
   if (tab.controller === 'agent') { tab.humanLock = false; tab.agentSince = Date.now(); }
-  else if (wasAgent) tab.humanLock = source === 'human';
+  else if (wasAgent) { tab.humanLock = source === 'human'; tab.humanSince = Date.now(); }
   if (tab.controller === 'agent' && tab.botId === 'shared' && prefs.selectedBotId) tab.botId = prefs.selectedBotId;
   // Bots can't plant persistent page scripts (the cdp action denies the
   // method) but strip any surviving registrations when the human takes over.
@@ -673,10 +673,9 @@ function changeController(id, controller, source = 'human', handback = null) {
 // Settings allow it (on by default). The claim rules run before and after the
 // grace wait: the human may hand the tab over or start recording meanwhile.
 async function claimTab(tab, botId, isClosed = () => false) {
-  const autoTakeover = prefs.autoTakeover !== false;
-  const rules = () => ({ autoTakeover, recording: autoTakeover && recording?.tabId === tab.id });
+  const rules = () => { const autoTakeover = prefs.autoTakeover !== false; return { autoTakeover, recording: autoTakeover && recording?.tabId === tab.id }; };
   requireAgentClaim(tab, Date.now(), rules());
-  const auto = autoTakeover && tab.controller === 'human';
+  const auto = rules().autoTakeover && tab.controller === 'human';
   if (auto) {
     const started = Date.now();
     for (let ms; (ms = takeoverDelay(tab.lastHumanInput, started)) > 0;) await new Promise((resolve) => setTimeout(resolve, ms));
@@ -684,7 +683,9 @@ async function claimTab(tab, botId, isClosed = () => false) {
     if (!tabs.has(tab.id)) throw Object.assign(new Error('Tab not found.'), { status: 404 });
     requireAgentClaim(tab, Date.now(), rules());
   }
-  const took = auto && tab.controller === 'human';
+  // The notice is for a tab the human took or used, not one a bot released
+  // that sat idle.
+  const took = auto && tab.controller === 'human' && (tab.humanLock || (tab.lastHumanInput || 0) >= (tab.humanSince || 0));
   tab.handoff = reviewedHandoff(tab.handoff);
   if (tab.botId === 'shared') tab.botId = botId;
   const info = changeController(tab.id, 'agent', 'agent');
@@ -693,6 +694,13 @@ async function claimTab(tab, botId, isClosed = () => false) {
   setTimeout(() => { if (tab.takeover === notice) { tab.takeover = null; broadcast(); } }, TAKEOVER_NOTICE_MS);
   broadcast();
   return describeTab(tab);
+}
+// With automatic takeover on, the human grabbing a tab mid-call is not a stop
+// sign: the bot's next call takes the tab back once they pause.
+function takeoverError(error) {
+  if (prefs.autoTakeover !== false && /^human_has_control/.test(error?.message || ''))
+    error.message = 'human_took_tab: the human took this tab during your call. Check its effect, then call again; the tab comes back to you once they pause.';
+  return error;
 }
 const HANDBACK_TEXT = { captcha: 'Solve the CAPTCHA, then give the tab back.', login: 'Sign in, then give the tab back.', two_factor: 'Enter the verification code, then give the tab back.', payment_details: 'Enter the card details, then give the tab back.', review: 'Review the page, then give the tab back.', other: 'Take a look, then give the tab back.' };
 // One notification per handback. Notifications are kept per tab so a click
@@ -2306,14 +2314,17 @@ function startApi() {
         res.on('close', () => { if (!res.writableFinished) closed = true; });
         const action = tab.queue.then(async () => {
           if (closed) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
+          // A malformed action must not cost the human their tab.
+          if (!body || typeof body !== 'object' || typeof body.action !== 'string') throw Object.assign(new Error('action is required.'), { status: 400 });
           // An epoch read while the human held the tab is still current after
           // the takeover; an older one stays stale, as the page may have moved.
           if (tab.controller !== 'agent' && prefs.autoTakeover !== false) {
             const before = tab.epoch;
             await claimTab(tab, botId, () => closed);
-            if (body.epoch === before) body.epoch = tab.epoch;
+            if (body.epoch !== before) throw Object.assign(new Error('stale_control_epoch: you took this tab back from the human, who may have changed the page. Read the tab state for its fresh epoch and retry.'), { status: 409 });
+            body.epoch = tab.epoch;
           }
-          return performAction(tab, body, botId, 0, () => closed);
+          return performAction(tab, body, botId, 0, () => closed).catch((error) => { throw takeoverError(error); });
         })
           .finally(() => { tab.pendingActions--; tab.lastAgentActivity = Date.now(); });
         tab.queue = action.catch(() => {});
@@ -2327,10 +2338,21 @@ function startApi() {
         const granted = (tab.allowedBots || []).includes(botId)
           || (tab.botId === 'shared' && prefs.bots.some((bot) => bot.id === botId));
         if (botId !== tab.botId && !overseer && !granted) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
-        if (body.controller === 'agent') return send(200, redactTabForBot(await claimTab(tab, botId)));
+        let closed = false;
+        res.on('close', () => { if (!res.writableFinished) closed = true; });
+        if (body.controller === 'agent') return send(200, redactTabForBot(await claimTab(tab, botId, () => closed)));
         return send(200, redactTabForBot(changeController(tab.id, body.controller, 'agent', handbackRequest(body))));
       }
-      if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true, overseer); closeTab(tab.id); return send(200, { closed: true }); }
+      if (req.method === 'DELETE' && !match[2]) {
+        let epoch = Number(req.headers['x-control-epoch']);
+        if (tab.controller !== 'agent' && prefs.autoTakeover !== false) {
+          requireActor(tab, botId, undefined, false, overseer);
+          const before = tab.epoch;
+          await claimTab(tab, botId);
+          if (epoch === before) epoch = tab.epoch;
+        }
+        requireActor(tab, botId, epoch, true, overseer); closeTab(tab.id); return send(200, { closed: true });
+      }
       return send(405, { error: 'Method not supported.' });
     } catch (error) { send((error && error.status) || (error && error.code === 'stale_ref' ? 409 : 400), { error: errorMessage(error), ...(error && error.code ? { code: error.code } : {}) }); }
   });
