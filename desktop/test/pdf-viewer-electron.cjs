@@ -312,7 +312,8 @@ if (typeof electron === 'string') {
       const before = (await state()).tabs.length;
       session.fromPartition('persist:telegram').emit('will-download', {}, item);
       listeners.done.forEach(f => f({}, 'completed'));
-      await new Promise(r => setTimeout(r, 300));
+      if (valid && !baseline) await waitFor(state, s => s.tabs.some(t => t.url === pathToFileURL(saved).href));
+      else await new Promise(r => setTimeout(r, 300));
       check(valid ? 'Telegram PDF opens' : 'spoofed Telegram PDF refused', (await state()).tabs.length > before, valid);
     }
     // The previously existing Telegram path supplies a file tab even on main.
