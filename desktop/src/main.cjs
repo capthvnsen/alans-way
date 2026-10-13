@@ -680,7 +680,7 @@ function claimRules(tab) {
 }
 // An action also holds the page's navigation generation, and dry-runs itself
 // (preflight) after the wait, so a refusal never takes the tab.
-async function claimTab(tab, botId, { isClosed = () => false, overseer = false, epoch, generation, preflight } = {}) {
+async function claimTab(tab, botId, { isClosed = () => false, overseer = false, epoch, generation, preflight, beforeClaim } = {}) {
   const rules = () => claimRules(tab);
   requireAgentClaim(tab, Date.now(), rules());
   const auto = rules().autoTakeover && tab.controller === 'human';
@@ -708,6 +708,8 @@ async function claimTab(tab, botId, { isClosed = () => false, overseer = false, 
       await new Promise((resolve) => setTimeout(resolve, ms)); recheck();
     }
   }
+  // Revalidate the dry approval while the human still holds the epoch.
+  beforeClaim?.();
   // The notice is for a tab the human took or used, not one a bot released
   // that sat idle.
   const took = auto && tab.controller === 'human' && (tab.humanLock || (tab.lastHumanInput || 0) >= (tab.humanSince || 0));
@@ -2407,7 +2409,9 @@ function startApi() {
               catch (error) { if (error !== PREFLIGHT_READY) throw error; }
               finally { tab.preflight = false; }
             };
-            taken = body.epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch: body.epoch, generation, preflight })).epoch;
+            const approvalEpoch = body.epoch;
+            taken = body.epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch: body.epoch, generation, preflight,
+              beforeClaim: () => agentInput.carryApproval?.(tab, body, approvalEpoch) })).epoch;
           }
           // An action the page refused before any input or navigation reached it
           // (a challenge, a commit check, a missing control) hands the tab

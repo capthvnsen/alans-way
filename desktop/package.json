@@ -26,7 +26,7 @@
     "test:cloud-telegram": "electron test/cloud-telegram-electron.cjs",
     "test:needs-human": "electron test/needs-human-electron.cjs",
     "test:recorder": "electron test/recorder-electron.cjs",
-    "test:auto-takeover": "electron test/auto-takeover-electron.cjs",
+    "test:auto-takeover": "electron test/auto-takeover-electron.cjs && electron test/auto-takeover-commit-electron.cjs",
     "eval": "node eval/run.cjs",
     "build:preload": "node scripts/build-preload.cjs",
     "prestart": "npm run build:preload && node scripts/build-info.cjs",
