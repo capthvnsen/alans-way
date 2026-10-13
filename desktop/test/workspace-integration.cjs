@@ -7,6 +7,10 @@ const path = require('node:path');
 const http = require('node:http');
 const { app, BrowserWindow, dialog, webContents, screen, nativeImage, session } = require('electron');
 const { spawn } = require('node:child_process');
+const crypto = require('node:crypto');
+// Test harness scripts that use timers or event handlers carry an approval, as
+// a router-approved call would (see the app's commit check).
+const harnessApproval = (tabId, epoch) => ({ nonce: crypto.randomUUID(), kind: 'submit', summary: 'test harness script', issuedAt: Date.now(), tabId, epoch });
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-integration-'));
 process.env.HERMES_WORKSPACE_DATA = profile;
 process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
@@ -386,7 +390,7 @@ app.whenReady().then(async () => {
   // element appears, and times out as a 408 step error inside a batch.
   const instant = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', selector: 'button', epoch: seizedTab.epoch }, 'overseer-bot');
   assert.ok(instant.waited < 1000, 'wait returns immediately when the selector already exists.');
-  await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: "setTimeout(() => { const el = document.createElement('div'); el.id = 'late-el'; document.body.appendChild(el); }, 400)", epoch: seizedTab.epoch }, 'overseer-bot');
+  await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: "setTimeout(() => { const el = document.createElement('div'); el.id = 'late-el'; document.body.appendChild(el); }, 400)", epoch: seizedTab.epoch, approval: harnessApproval(colored[1].id, seizedTab.epoch) }, 'overseer-bot');
   const delayed = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', selector: '#late-el', timeout: 5000, epoch: seizedTab.epoch }, 'overseer-bot');
   assert.ok(delayed.waited >= 300 && delayed.waited < 5000, `wait blocked until the element appeared (${delayed.waited}ms).`);
   const timedOut = await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', selector: '#never-exists', timeout: 400, epoch: seizedTab.epoch }, 'overseer-bot');
@@ -495,9 +499,9 @@ app.whenReady().then(async () => {
   // wait honors a visibility requirement and a url condition; clicks hit a
   // covered element through an alternate point and name the blocker when it
   // cannot be clicked at all.
-  await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: `document.body.insertAdjacentHTML('beforeend','<div id=hid style="display:none;width:10px;height:10px"></div><button id=cov onclick="window.__n=(window.__n||0)+1" style="position:fixed;left:80px;top:80px;width:140px;height:60px;z-index:1">x</button><div id=blk style="position:fixed;left:120px;top:90px;width:60px;height:40px;z-index:9;background:#000"></div>')`, epoch: seizedTab.epoch }, 'overseer-bot');
+  await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: `document.body.insertAdjacentHTML('beforeend','<div id=hid style="display:none;width:10px;height:10px"></div><button id=cov onclick="window.__n=(window.__n||0)+1" style="position:fixed;left:80px;top:80px;width:140px;height:60px;z-index:1">x</button><div id=blk style="position:fixed;left:120px;top:90px;width:60px;height:40px;z-index:9;background:#000"></div>')`, epoch: seizedTab.epoch, approval: harnessApproval(colored[1].id, seizedTab.epoch) }, 'overseer-bot');
   assert.equal((await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', selector: '#hid', visible: true, timeout: 400, epoch: seizedTab.epoch }, 'overseer-bot')).status, 408, 'visible wait rejects a display:none element.');
-  const visibleWait = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'batch', epoch: seizedTab.epoch, steps: [
+  const visibleWait = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'batch', epoch: seizedTab.epoch, approval: harnessApproval(colored[1].id, seizedTab.epoch), steps: [
     { action: 'eval', code: "setTimeout(() => document.getElementById('hid').style.display='block', 300), 1" },
     { action: 'wait', selector: '#hid', visible: true, timeout: 5000 },
   ] }, 'overseer-bot');
@@ -556,7 +560,7 @@ app.whenReady().then(async () => {
   // A takeover mid-eval seals the result; Give to agent reopens the tab.
   await invoke('control', { id: colored[1].id, controller: 'agent' });
   const midEpoch = (await api(`/v1/tabs/${colored[1].id}`, 'GET', undefined, 'overseer-bot')).epoch;
-  const slowEval = apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: 'new Promise(r => setTimeout(() => r(document.title), 800))', epoch: midEpoch }, 'overseer-bot');
+  const slowEval = apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: 'new Promise(r => setTimeout(() => r(document.title), 800))', epoch: midEpoch, approval: harnessApproval(colored[1].id, midEpoch) }, 'overseer-bot');
   await new Promise(r => setTimeout(r, 150));
   await invoke('control', { id: colored[1].id, controller: 'human' });
   assert.equal((await slowEval).status, 409, 'a mid-flight eval is sealed by takeover');

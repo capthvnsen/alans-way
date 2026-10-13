@@ -9,6 +9,10 @@ const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
+const crypto = require('node:crypto');
+// Test harness scripts that use timers or requests carry an approval, as a
+// router-approved call would (see the app's commit check).
+const harnessApproval = (tab, epoch = tab.epoch) => ({ nonce: crypto.randomUUID(), kind: 'submit', summary: 'test harness script', issuedAt: Date.now(), tabId: tab.id, epoch });
 
 function findChrome() {
   const home = os.homedir();
@@ -215,13 +219,13 @@ test('real Chromium: an agent page cannot reach loopback or metadata by redirect
 
   const ok = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/ok` })).data;
   // open answers once the page is readable, so wait for its load event before counting images.
-  const loadedImages = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: "new Promise((r) => document.readyState === 'complete' ? r() : addEventListener('load', r)).then(() => [...document.images].filter((i) => i.complete && i.naturalWidth).length)", epoch: ok.epoch });
+  const loadedImages = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: "new Promise((r) => document.readyState === 'complete' ? r() : addEventListener('load', r)).then(() => [...document.images].filter((i) => i.complete && i.naturalWidth).length)", epoch: ok.epoch, approval: harnessApproval(ok) });
   assert.equal(loadedImages.data.value, 3, 'ordinary subresources still load through the filter');
   const viaEval = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: `location.href='http://u@127.0.0.1:${pb}/secret?eval';1`, epoch: ok.epoch });
   assert.equal(viaEval.status, 200);
   // The probe's own request passes through the same Fetch check that stopped
   // the navigation, so its rejection is the awaited proof the guard ran.
-  const probe = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: `fetch('http://127.0.0.1:${pb}/secret?eval-probe',{mode:'no-cors'}).then(function(){return 'reached'},function(){return 'denied'})`, epoch: ok.epoch });
+  const probe = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: `fetch('http://127.0.0.1:${pb}/secret?eval-probe',{mode:'no-cors'}).then(function(){return 'reached'},function(){return 'denied'})`, epoch: ok.epoch, approval: harnessApproval(ok) });
   assert.equal(probe.data && probe.data.value, 'denied', `the request guard did not stop the probe: ${JSON.stringify(probe.data)}`);
   assert.deepEqual(hits.filter((h) => !h.startsWith('UPGRADE ')), [], 'script navigation is stopped too');
 });

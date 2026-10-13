@@ -45,13 +45,29 @@ const CONFUSABLE = {
   '\u0391': 'A', '\u0392': 'B', '\u0395': 'E', '\u0396': 'Z', '\u0397': 'H', '\u0399': 'I', '\u039A': 'K', '\u039C': 'M', '\u039D': 'N', '\u039F': 'O', '\u03A1': 'P', '\u03A4': 'T', '\u03A5': 'Y', '\u03A7': 'X',
   '\u03B1': 'a', '\u03B5': 'e', '\u03B9': 'i', '\u03BA': 'k', '\u03BD': 'v', '\u03BF': 'o', '\u03C1': 'p', '\u03C4': 't', '\u03C5': 'u', '\u03C7': 'x', '\u03B3': 'y', '\u0131': 'i', '\u0261': 'g',
 };
+// Cherokee capitals that read as Latin letters (Ꮲ for P), with their small
+// forms, and a few Armenian ones.
+for (const [cp, latin] of [[0x13A0, 'D'], [0x13A1, 'R'], [0x13A2, 'T'], [0x13A5, 'i'], [0x13A9, 'Y'], [0x13AA, 'A'], [0x13AB, 'J'], [0x13AC, 'E'], [0x13B3, 'W'], [0x13B7, 'M'], [0x13BB, 'H'], [0x13BD, 'Y'], [0x13C0, 'G'], [0x13C2, 'h'], [0x13C3, 'Z'], [0x13CF, 'b'], [0x13D2, 'R'], [0x13D4, 'W'], [0x13D5, 'S'], [0x13D9, 'V'], [0x13DA, 'S'], [0x13DE, 'L'], [0x13DF, 'C'], [0x13E2, 'P'], [0x13E6, 'K'], [0x13F3, 'G'], [0x13F4, 'B']]) {
+  CONFUSABLE[String.fromCodePoint(cp)] = latin;
+  CONFUSABLE[String.fromCodePoint(cp < 0x13F0 ? cp - 0x13A0 + 0xAB70 : cp + 8)] = latin.toLowerCase();
+}
+Object.assign(CONFUSABLE, { '\u0585': 'o', '\u057D': 'u', '\u0570': 'h', '\u0578': 'n', '\u0581': 'g' });
 const CONFUSABLES = new RegExp(`[${Object.keys(CONFUSABLE).join('')}]`, 'g');
-// The plain reading (width, invisible marks, spacing and case undone) keeps
-// a name written in Cyrillic or Greek, so words from those scripts in the list
-// still match; the folded reading also maps look-alikes to Latin. A name is a
-// commit if either reading is.
+// A name is read several ways and is a commit if any reading is:
+// - plain: width, invisible marks, spacing and case undone; it keeps a name
+//   written in Cyrillic or Greek whole, for words from those scripts in the list;
+// - folded: look-alike letters mapped to Latin as well;
+// - skeleton: decomposed (NFKD) with combining marks and format characters
+//   (word joiners, soft hyphens) taken out, look-alikes folded and hyphens
+//   inside a word dropped, so "P̲lace order" and "Pur-chase" read plainly;
+//   format characters are also read as a space, since "Place<word joiner>order"
+//   shows as two words.
+const fold = (text) => text.replace(CONFUSABLES, (ch) => CONFUSABLE[ch]);
 const plainName = (name) => String(name ?? '').normalize('NFKC').replace(INVISIBLE, '').replace(/\s+/g, ' ').trim().toLowerCase();
-const normalizeName = (name) => plainName(String(name ?? '').normalize('NFKC').replace(CONFUSABLES, (ch) => CONFUSABLE[ch]));
-const looksLikeCommit = (name) => isCommitName(plainName(name)) || isCommitName(normalizeName(name));
+const normalizeName = (name) => plainName(fold(String(name ?? '').normalize('NFKC')));
+const skeleton = (name, gap) => plainName(fold(String(name ?? '').normalize('NFKD').replace(/\p{M}/gu, '').replace(/\p{Cf}/gu, gap))
+  .replace(/(?<=\p{L})[\u002D\u2010\u2011\u2212\uFE63\uFF0D](?=\p{L})/gu, ''));
+const readings = (name) => [plainName(name), normalizeName(name), skeleton(name, ''), skeleton(name, ' ')];
+const looksLikeCommit = (name) => readings(name).some(isCommitName);
 
-module.exports = { COMMIT_PATTERNS, isCommitName, plainName, normalizeName, looksLikeCommit, isActionUrl, READ_ONLY_CDP };
+module.exports = { COMMIT_PATTERNS, isCommitName, plainName, normalizeName, readings, looksLikeCommit, isActionUrl, READ_ONLY_CDP };

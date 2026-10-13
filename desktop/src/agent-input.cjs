@@ -29,6 +29,12 @@ const APPROVAL_MS = 120000, APPROVAL_SKEW_MS = 5000;
 const APPROVED = Symbol('approved');
 const commitRequired = (why) => fail(`commit_required: ${why}. It did not run. Repeat the call with commit: {kind, summary, amount?, currency?, counterparty?} so the user can approve it.`, 403);
 const LOOKS = 'looks like it buys, books, sends, posts, submits or deletes';
+// Page script that sets up later work (a timer, an observer, an event
+// handler) or sends something itself (a request, a form submit) could commit
+// after this check, once the page shows "Place order"; it needs approval on
+// any page. A source-text check, so it stops the plain forms, not a script
+// built to hide them (see the PR's residual risk).
+const DEFERRED = /\b(?:setTimeout|setInterval|requestAnimationFrame|requestIdleCallback|queueMicrotask|MutationObserver|IntersectionObserver|ResizeObserver|PerformanceObserver|addEventListener|requestSubmit|fetch|XMLHttpRequest|sendBeacon|WebSocket|EventSource|Worker|SharedWorker)\b|\b(?:eval|Function|import)\s*\(|\.submit\s*\(|\bon(?:click|dblclick|mouse\w*|pointer\w*|key\w*|touch\w*|load|error|focus\w*|blur|change|input|submit|scroll|animation\w*|transition\w*|message|hashchange|popstate)\s*=(?!=)|"on[a-z]+"/;
 
 // A wedged renderer leaves executeJavaScript pending forever and would
 // wedge tab.queue behind it. Bound every probe like snapshot's 10s race.
@@ -542,6 +548,9 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     const url = body.action === 'navigate' ? body.url : method === 'Page.navigate' && body.params ? body.params.url : undefined;
     if (!script && !reload && typeof url !== 'string') return;
     const what = body.action === 'eval' ? 'a page script' : `the DevTools call ${method.slice(0, 60)}`;
+    const source = body.action === 'eval' ? String(body.code || '') : /^(?:Runtime|DOM)\./.test(method) ? JSON.stringify(body.params || {}) : '';
+    const later = source && (DEFERRED.exec(source) || /javascript:/i.exec(source));
+    if (later) throw commitRequired(`${what} that uses ${later[0].slice(0, 40)} can act after this check (a timer, observer or event handler) or submit on its own (a request or form submit). Use the wait or read action instead`);
     const page = await pageNames(tab);
     if (!page) { if (script) throw commitRequired(`the page did not answer the commit check, so ${what} could set off a commit control`); return; }
     const live = page.names.find(looksLikeCommit);

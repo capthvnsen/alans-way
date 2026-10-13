@@ -14,6 +14,9 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
+// Test harness scripts that use timers or requests carry an approval, as a
+// router-approved call would (see the app's commit check).
+const harnessApproval = (tab, epoch = tab.epoch) => ({ nonce: crypto.randomUUID(), kind: 'submit', summary: 'test harness script', issuedAt: Date.now(), tabId: tab.id, epoch });
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
 const { followUpArmExpression, followUpCloseExpression, snapshotExpression, FOLLOW_UP_KEY } = require('../src/browser-page.cjs');
@@ -551,7 +554,7 @@ test('wrapped setTimeout, clearTimeout, fetch and XHR behave normally', { skip: 
   const click = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#qb', epoch: tab.epoch });
   assert.equal(click.status, 200, JSON.stringify(click.data));
   const probe = await api(`/v1/tabs/${tab.id}/actions`, 'POST', {
-    action: 'eval', epoch: tab.epoch,
+    action: 'eval', epoch: tab.epoch, approval: harnessApproval(tab),
     code: `(async () => {
       const fired = [];
       const id = setTimeout(function () { fired.push('fired'); }, 0);
@@ -588,7 +591,7 @@ test('the wrappers are indistinguishable from the natives they replaced', { skip
     stringKeys: Object.getOwnPropertyNames(window).filter(function (k) { return /hermes|followup|hw\\./i.test(k); }),
     symbolKeys: Object.getOwnPropertySymbols(window).map(String).filter(function (s) { return /hermes|workspace/i.test(s); }),
   })`;
-  const evalOn = (epoch) => api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: probeCode, epoch });
+  const evalOn = (epoch) => api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: probeCode, epoch, approval: harnessApproval(tab, epoch) });
   // Before the first arm the tracker is already planted by the document-start
   // seed, already disguised, and inert.
   const early = await evalOn(tab.epoch);

@@ -448,3 +448,15 @@ test('a key aimed at a CAPTCHA answers challenge_present before the commit check
   assert.deepEqual(dispatched(f), []);
 });
 
+test('a page script that sets up later work or submits on its own needs approval on any page', async () => {
+  const quiet = fixture();
+  for (const code of ['setInterval(() => document.querySelector("#place")?.click(), 500)', 'setTimeout(go, 9)', 'new MutationObserver(go).observe(document, { subtree: true })', 'fetch("/orders", { method: "POST" })',
+    'new XMLHttpRequest()', 'document.forms[0].requestSubmit()', 'document.forms[0].submit()', 'document.body.addEventListener("click", go)', 'button.onclick = go', 'a.href = "JavaScript:go()"', 'new Function("go()")()', 'navigator.sendBeacon("/x")'])
+    await assert.rejects(quiet.agent.guard(quiet.tab, { action: 'eval', code }), /commit_required: a page script that uses .* can act after this check/, code);
+  for (const [method, params] of [['Runtime.evaluate', { expression: 'setTimeout(go, 9)' }], ['Runtime.callFunctionOn', { functionDeclaration: 'function () { this.requestSubmit(); }' }], ['DOM.setAttributeValue', { nodeId: 3, name: 'onclick', value: 'go()' }], ['DOM.setOuterHTML', { nodeId: 3, outerHTML: '<img src=x onerror=go()>' }]])
+    await assert.rejects(quiet.agent.guard(quiet.tab, { action: 'cdp', method, params }), /commit_required: the DevTools call .* that uses/, method);
+  for (const code of ['document.title', '[...document.querySelectorAll("li")].map(li => li.textContent)', '(() => { function f(x) { return x; } return typeof f === "function"; })()', 'document.querySelector("button[type=submit]").textContent', 'typeof f.onsubmit'])
+    await quiet.agent.guard(quiet.tab, { action: 'eval', code });
+  await quiet.agent.guard(quiet.tab, { action: 'eval', code: 'setTimeout(go, 9)', [APPROVED]: true });
+});
+

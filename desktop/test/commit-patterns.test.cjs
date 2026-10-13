@@ -35,6 +35,17 @@ test('names are folded before matching: NFKC, zero-width and bidi marks, Cyrilli
   assert.equal(plainName('\u041A\u0443\u043F\u0438\u0442\u044C'), '\u043A\u0443\u043F\u0438\u0442\u044C', 'the plain reading keeps a Cyrillic word whole, for Cyrillic entries in the list');
 });
 
+test('combining marks, word joiners, soft hyphens, hyphens inside words and Cherokee or Armenian look-alikes are read through', () => {
+  for (const sly of [
+    'P\u0332lace order', 'B\u0336u\u0336y\u0336 now', 'Place\u2060order', 'Place\u200Border', 'Pur-chase', 'Pur\u00ADchase', 'Sub\u2011mit', 'De\u2010lete',
+    '\u13E2lace order', '\uABB2ay', '\u13DAend', '\u13F4uy now', 'C\u0585nfirm', 'B\u057Dy',
+  ]) assert.equal(looksLikeCommit(sly), true, JSON.stringify(sly));
+  for (const fine of ['Pur-chase history', 'Confirm e-mail', 'Add-to-cart', 'Send\u2060code', 'Sub-total', 'Pre-order'])
+    assert.equal(looksLikeCommit(fine), false, JSON.stringify(fine));
+  assert.equal(looksLikeCommit('Pay with Google\u0332 Pay'), true, 'a marked-up exception is judged by its plain reading too, and refused');
+  assert.equal(looksLikeCommit('R\u00E9server'), true, 'an accented word in the list still matches in its plain reading');
+});
+
 test('a same-origin address that reads like an action is one; another origin or an ordinary place page is not', () => {
   const origin = 'https://shop.example';
   for (const url of ['https://shop.example/checkout/complete', 'shop.example/orders/7/delete', 'https://shop.example/cart?step=confirm', 'https://shop.example/placeOrder'])
