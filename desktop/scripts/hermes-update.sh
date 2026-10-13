@@ -28,12 +28,13 @@ SEND_TIMEOUT="${ALANS_WAY_HERMES_SEND_TIMEOUT:-30}"
 VERSION_TIMEOUT="${ALANS_WAY_HERMES_VERSION_TIMEOUT:-20}"
 # A run budget under the app's remote cap so the result line is always reached.
 BUDGET="${ALANS_WAY_HERMES_BUDGET:-270}"
-HERMES_BIN="" VERSION="" UPDATED=false MESSAGED=false MESSAGES_JSON=""
+HERMES_BIN="" VERSION="" BEFORE="" CURRENT=false UPDATED=false MESSAGED=false MESSAGES_JSON=""
 START_S="$(date +%s)"
 
-say() { printf 'hermes-update: %s\n' "$*"; }
-json_string() { printf '%s' "$1" | tr '\n\t' '  ' | tr -d '\000-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-300; }
-json() { printf '{"ok":%s,"version":"%s","updated":%s,"error":"%s","messaged":%s,"messages":[%s]}\n' "$1" "$2" "$3" "$(json_string "$4")" "$5" "$6"; }
+safe_git_error() { sed -E 's#([[:alpha:]][[:alnum:]+.-]*://)[^/@[:space:]]+@#\1[redacted]@#g; s#([[:alpha:]][[:alnum:]+.-]*://[^?#[:space:]]+)[?#][^[:space:]]*#\1[redacted]#g' | tr '\n' ' '; }
+say() { printf 'hermes-update: %s\n' "$(printf '%s' "$*" | safe_git_error)"; }
+json_string() { printf '%s' "$1" | safe_git_error | tr '\n\t' '  ' | tr -d '\000-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-300; }
+json() { printf '{"ok":%s,"version":"%s","updated":%s,"before":"%s","current":%s,"error":"%s","messaged":%s,"messages":[%s]}\n' "$1" "$2" "$3" "$BEFORE" "$CURRENT" "$(json_string "$4")" "$5" "$6"; }
 fail() { json false "$VERSION" "$UPDATED" "$1" "$MESSAGED" "$MESSAGES_JSON"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 budget_left() { printf '%s' "$(( BUDGET - ($(date +%s) - START_S) ))"; }
@@ -93,16 +94,22 @@ hermes_bin || fail 'no hermes CLI on this machine'
 if [ -n "$REPORT" ]; then
   UPD_OUT="" UPD_RC=0
 else
+  BEFORE="$(run_hermes "$VERSION_TIMEOUT" --version | sed -n 's/^Hermes Agent v\([^[:space:]]*\).*/\1/p' | head -1)"
   say 'running hermes update'
   UPD_OUT="$(run_hermes "$UPDATE_TIMEOUT" update --yes --keep-stash)"
   UPD_RC=$?
 fi
 # The version read follows the update so an install that moved reports the new
 # one; a failed update still reports whatever version is on the machine now.
-VERSION="$(run_hermes "$VERSION_TIMEOUT" --version | sed -n 's/^Hermes Agent v\([0-9][0-9.]*\).*/\1/p' | head -1)"
+VERSION="$(run_hermes "$VERSION_TIMEOUT" --version | sed -n 's/^Hermes Agent v\([^[:space:]]*\).*/\1/p' | head -1)"
 case "$UPD_RC" in
-  0) UPDATED=true ERR=""
-     printf '%s' "$UPD_OUT" | grep -Eiq 'already up.to.date|nothing to update|no update available' && UPDATED=false;;
+  0) ERR=""
+     if [ -n "$VERSION" ] && [ -n "$BEFORE" ] && [ "$VERSION" != "$BEFORE" ]; then UPDATED=true
+     elif [ -z "$REPORT" ]; then
+       CHECK_OUT="$(run_hermes "$VERSION_TIMEOUT" update --check)"; CHECK_RC=$?
+       if [ "$CHECK_RC" -eq 0 ] && [ -n "$VERSION" ] && printf '%s' "$CHECK_OUT" | grep -Eiq 'up to date|no newer release|no update available'; then CURRENT=true
+       else ERR="version unchanged or unverified after hermes update: $(tail_text "$UPD_OUT")"; fi
+     fi;;
   124|142) ERR='the hermes update timed out';;
   *) ERR="$(tail_text "$UPD_OUT")"; [ -n "$ERR" ] || ERR="hermes update exited $UPD_RC";;
 esac
@@ -113,12 +120,13 @@ esac
 # user with several machines can tell them apart.
 HOST="$(hostname 2>/dev/null || true)"; HOST="${HOST:+ on $HOST}"
 if [ "$UPD_RC" -eq 0 ]; then
-  if [ "$UPDATED" = true ]; then MSG="Hermes update finished$HOST."; else MSG="Hermes is already up to date$HOST."; fi
+  if [ "$UPDATED" = true ]; then MSG="Hermes update finished$HOST."; elif [ "$CURRENT" = true ]; then MSG="Hermes is already up to date$HOST."; else MSG="Hermes update warning$HOST: $ERR."; fi
   [ -n "$VERSION" ] && MSG="$MSG Now on v$VERSION."
 else
   MSG="Hermes update failed$HOST: $(printf '%s' "$ERR" | cut -c1-200)"
 fi
 [ -n "$REPORT" ] && MSG="$REPORT"
+MSG="$(printf '%s' "$MSG" | safe_git_error)"
 
 HHOME="${HERMES_HOME:-$HOME/.hermes}"
 if [ -n "$QUIET" ]; then
@@ -149,7 +157,7 @@ fi
 [ "$MESSAGED" != true ] && [ "$UPD_RC" -eq 0 ] && [ -z "$QUIET" ] && say 'no profile could message you; the result is only in this report'
 
 if [ "$UPD_RC" -eq 0 ]; then
-  json true "$VERSION" "$UPDATED" "" "$MESSAGED" "$MESSAGES_JSON"
+  json true "$VERSION" "$UPDATED" "$ERR" "$MESSAGED" "$MESSAGES_JSON"
   exit 0
 fi
 fail "$ERR"

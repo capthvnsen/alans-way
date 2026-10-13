@@ -29,8 +29,13 @@ $script:Changed = $false
 $script:Refused = @()
 $script:GatewayNamed = @()
 
+function Safe-Reason([string]$Text) {
+    $Text = $Text -replace '([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@', '$1[redacted]@'
+    return ($Text -replace '([a-zA-Z][a-zA-Z0-9+.-]*://[^?#\s]+)[?#][^\s]*', '$1[redacted]')
+}
+
 function Write-Result([bool]$Ok, [string]$Err) {
-    @{ ok = $Ok; version = $script:Version; restarted = $script:Restarted; error = $Err;
+    @{ ok = $Ok; version = $script:Version; restarted = $script:Restarted; error = (Safe-Reason $Err);
        plugins = @($script:Plugins); gatewayRestarted = $script:GatewayRestarted } |
         ConvertTo-Json -Compress -Depth 4 | Write-Output
 }
@@ -154,8 +159,12 @@ function Get-PluginVersion([string]$Dir) {
     $f = Join-Path $Dir 'plugin.yaml'
     if (-not (Test-Path $f)) { return '' }
     $m = Get-Content $f -ErrorAction SilentlyContinue |
-        Select-String -Pattern '^version:\s*"?([^"]+?)"?\s*$' | Select-Object -First 1
-    if ($m) { return $m.Matches[0].Groups[1].Value }
+        Select-String -Pattern '^version:\s*(.*)$' | Select-Object -First 1
+    if ($m) {
+        $v = ($m.Matches[0].Groups[1].Value -replace '\s+#.*$', '').Trim()
+        $v = $v -replace '^[''"]|[''"]$', ''
+        return ($v -replace '^v', '')
+    }
     return ''
 }
 
@@ -171,55 +180,87 @@ function Get-PluginMeta([string]$Pdir, [string]$Name) {
 # the tag resolves as refs/tags/<tag>^{commit} so a branch can never stand in
 # for it. Returns "moved|<ref>", "ahead|<ref>", "skipped|<reason>" or "none|".
 # Native stderr must be captured even under Windows PowerShell's Stop policy.
+# Quote argv for the Windows native command line, including paths with spaces.
+function Git-Argument([string]$Value) {
+    return '"' + (($Value -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"'
+}
 function Invoke-Git([string[]]$GitArgs) {
-    $oldPolicy = $ErrorActionPreference
+    $secs = [Math]::Min((EnvInt 'ALANS_WAY_VM_GIT_TIMEOUT' 60), (BudgetLeft) - 1)
+    if ($secs -le 0) { return @{ code = 124; out = 'git timed out: VM time budget exhausted' } }
+    $out = [IO.Path]::GetTempFileName(); $err = [IO.Path]::GetTempFileName()
+    $inp = [IO.Path]::GetTempFileName()
     try {
-        $ErrorActionPreference = 'Continue'
-        $out = (git @GitArgs 2>&1 | Out-String).Trim()
-        $code = $LASTEXITCODE
-        $out = $out -replace '([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@', '$1[redacted]@'
-        $out = $out -replace '(https?://[^?\s]+)\?[^\s]*', '$1?[redacted]'
-        return @{ code = $code; out = ($out -replace '\r?\n', ' ') }
-    } finally { $ErrorActionPreference = $oldPolicy }
+        $exe = (Get-Command git -ErrorAction Stop).Source
+        $argLine = ($GitArgs | ForEach-Object { Git-Argument $_ }) -join ' '
+        $p = Start-Process -FilePath $exe -ArgumentList $argLine -NoNewWindow -PassThru `
+            -WorkingDirectory (Get-Location).Path `
+            -RedirectStandardOutput $out -RedirectStandardError $err -RedirectStandardInput $inp
+        if (-not $p.WaitForExit($secs * 1000)) {
+            # /T includes Git's ssh, credential helpers and hooks.
+            & taskkill.exe /PID $p.Id /T /F 2>$null | Out-Null
+            if (-not $p.HasExited) { $p.Kill() }
+            return @{ code = 124; out = "git timed out after ${secs}s" }
+        }
+        $p.WaitForExit()
+        $text = ([string](Get-Content $out -Raw -ErrorAction SilentlyContinue) + "`n" + [string](Get-Content $err -Raw -ErrorAction SilentlyContinue)).Trim()
+        return @{ code = $p.ExitCode; out = (Safe-Reason $text) }
+    } catch {
+        return @{ code = 1; out = (Safe-Reason $_.Exception.Message) }
+    } finally { Remove-Item $out, $err, $inp -Force -ErrorAction SilentlyContinue }
 }
 
 function Update-Clone([string]$Dir) {
     if (-not (Test-Path "$Dir\.git")) { return 'none|' }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return 'skipped|git is not available' }
     $url = ''
-    try { $url = [string](git -C $Dir remote get-url origin 2>$null) } catch {}
+    $r = Invoke-Git @('-C', $Dir, 'remote', 'get-url', 'origin')
+    if ($r.code -eq 124) { return "skipped|$($r.out)" }
+    $url = if ($r.code -eq 0) { $r.out } else { '' }
     if ($url -notmatch 'alans-way-agents') { return 'none|' }
     $r = Invoke-Git @('-C', $Dir, 'fetch', '--tags', 'origin')
+    if ($r.code -eq 124) { return "skipped|$($r.out)" }
     if ($r.code -ne 0) { $r = Invoke-Git @('-C', $Dir, 'fetch', '--unshallow', '--tags', 'origin') }
     if ($r.code -ne 0) { return "skipped|clone fetch failed: $($r.out)" }
-    if ([string](git -C $Dir rev-parse --is-shallow-repository 2>$null) -eq 'true') {
+    $r = Invoke-Git @('-C', $Dir, 'rev-parse', '--is-shallow-repository')
+    if ($r.code -ne 0) { return "skipped|git inspection failed: $($r.out)" }
+    if ($r.out -eq 'true') {
         $r = Invoke-Git @('-C', $Dir, 'fetch', '--unshallow', '--tags', 'origin')
         if ($r.code -ne 0) { return "skipped|shallow history could not be fetched: $($r.out)" }
     }
-    $tag = git -C $Dir tag -l 'v*' 2>$null |
+    $r = Invoke-Git @('-C', $Dir, 'tag', '-l', 'v*')
+    if ($r.code -ne 0) { return "skipped|git inspection failed: $($r.out)" }
+    $tag = $r.out -split '\r?\n' |
         Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
         Sort-Object { [version]($_ -replace '^v', '') } | Select-Object -Last 1
     if (-not $tag) { return 'none|' }
-    $want = [string](git -C $Dir rev-parse --verify -q "refs/tags/${tag}^{commit}" 2>$null)
-    $head = [string](git -C $Dir rev-parse HEAD 2>$null)
+    $r = Invoke-Git @('-C', $Dir, 'rev-parse', '--verify', '-q', "refs/tags/${tag}^{commit}")
+    if ($r.code -ne 0) { return "skipped|git inspection failed: $($r.out)" }
+    $want = $r.out
+    $r = Invoke-Git @('-C', $Dir, 'rev-parse', 'HEAD')
+    if ($r.code -ne 0) { return "skipped|git inspection failed: $($r.out)" }
+    $head = $r.out
     if (-not $want -or -not $head) { return 'none|' }
-    git -C $Dir merge-base --is-ancestor $want $head 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        $desc = [string](git -C $Dir describe --tags --always 2>$null)
+    $r = Invoke-Git @('-C', $Dir, 'merge-base', '--is-ancestor', $want, $head)
+    if ($r.code -eq 0) {
+        $desc = (Invoke-Git @('-C', $Dir, 'describe', '--tags', '--always')).out
         if (-not $desc) { $desc = $head.Substring(0, 12) }
         return "ahead|$desc"
     }
-    if (git -C $Dir status --porcelain 2>$null | Select-Object -First 1) { return 'skipped|local changes' }
-    git -C $Dir merge-base --is-ancestor $head $want 2>$null
-    if ($LASTEXITCODE -ne 0) { return "skipped|not an ancestor of $tag" }
+    if ($r.code -gt 1) { return "skipped|git ancestry check failed: $($r.out)" }
+    $r = Invoke-Git @('-C', $Dir, 'status', '--porcelain')
+    if ($r.code -ne 0) { return "skipped|git inspection failed: $($r.out)" }
+    if ($r.out) { return 'skipped|local changes' }
+    $r = Invoke-Git @('-C', $Dir, 'merge-base', '--is-ancestor', $head, $want)
+    if ($r.code -gt 1) { return "skipped|git ancestry check failed: $($r.out)" }
+    if ($r.code -ne 0) { return "skipped|not an ancestor of $tag" }
     $r = Invoke-Git @('-C', $Dir, '-c', 'advice.detachedHead=false', 'checkout', '-q', "refs/tags/$tag")
-    if ($r.code -eq 0 -and [string](git -C $Dir rev-parse HEAD 2>$null) -eq $want) { return "moved|$tag" }
+    if ($r.code -eq 0 -and (Invoke-Git @('-C', $Dir, 'rev-parse', 'HEAD')).out -eq $want) { return "moved|$tag" }
     return "skipped|could not check out $tag`: $($r.out)"
 }
 
 function New-PluginEntry($profile, $name, $before, $after, $status, $err, $repoRef) {
     $e = [ordered]@{ profile = $profile; name = $name; before = $before; after = $after; status = $status }
-    if ($err) { $e['error'] = $err }
+    if ($err) { $e['error'] = Safe-Reason $err }
     if ($repoRef) { $e['repoRef'] = $repoRef }
     return $e
 }
@@ -468,31 +509,44 @@ while ($true) {
 Push-Location $Checkout
 try {
     $fetch = Invoke-Git @('fetch', '--tags', 'origin')
+    if ($fetch.code -eq 124) { Fail $fetch.out }
     if ($fetch.code -ne 0) { $fetch = Invoke-Git @('fetch', '--unshallow', '--tags', 'origin') }
+    if ($fetch.code -eq 124) { Fail $fetch.out }
     if ($fetch.code -ne 0) { $fetch = Invoke-Git @('fetch', '--depth=1000000', '--tags', 'origin') }
+    if ($fetch.code -eq 124) { Fail $fetch.out }
     if ($fetch.code -ne 0) { Write-Output 'vm-update: git fetch reported a problem; trying the objects already in the checkout' }
-    if ([string](git rev-parse --is-shallow-repository 2>$null) -eq 'true') {
+    $r = Invoke-Git @('rev-parse', '--is-shallow-repository')
+    if ($r.code -ne 0) { Fail "git inspection failed: $($r.out)" }
+    if ($r.out -eq 'true') {
         $fetch = Invoke-Git @('fetch', '--unshallow', '--tags', 'origin')
         if ($fetch.code -ne 0) { Fail "shallow history could not be fetched: $($fetch.out)" }
     }
-    $want = (git rev-parse --verify -q "refs/tags/${Tag}^{commit}" 2>$null)
+    $r = Invoke-Git @('rev-parse', '--verify', '-q', "refs/tags/${Tag}^{commit}")
+    if ($r.code -eq 124) { Fail $r.out }
+    $want = if ($r.code -eq 0) { $r.out } else { '' }
     if (-not $want) {
         $fetch = Invoke-Git @('fetch', 'origin', "refs/tags/$Tag`:refs/tags/$Tag")
-        $want = (git rev-parse --verify -q "refs/tags/${Tag}^{commit}" 2>$null)
+        if ($fetch.code -eq 124) { Fail $fetch.out }
+        $r = Invoke-Git @('rev-parse', '--verify', '-q', "refs/tags/${Tag}^{commit}")
+        if ($r.code -eq 124) { Fail $r.out }
+        $want = if ($r.code -eq 0) { $r.out } else { '' }
     }
     if (-not $want) { Fail "tag $Tag is not in the checkout and could not be fetched: $($fetch.out)" }
     $r = Invoke-Git @('status', '--porcelain')
     if ($r.code -ne 0) { Fail "could not inspect checkout: $($r.out)" }
-    $dirty = @(git status --porcelain 2>$null)
+    $dirty = @($r.out -split '\r?\n' | Where-Object { $_ })
     if ($dirty.Count -gt 0) {
         $files = ($dirty | Select-Object -First 5 | ForEach-Object { $_.Substring(3) }) -join ', '
         Fail "checkout blocked by $($dirty.Count) local change(s): $files; save, commit or stash them in $Checkout, then retry $Tag"
     }
     $r = Invoke-Git @('merge-base', '--is-ancestor', 'HEAD', $want)
+    if ($r.code -eq 124) { Fail $r.out }
     if ($r.code -ne 0) { Fail "checkout HEAD is not an ancestor of $Tag; refusing a rollback or divergent checkout. Review origin and local commits in $Checkout" }
     $r = Invoke-Git @('-c', 'advice.detachedHead=false', 'checkout', '-q', "refs/tags/$Tag")
     if ($r.code -ne 0) { Fail "could not check out $Tag`: $($r.out); review git status in $Checkout" }
-    $head = (git rev-parse HEAD 2>$null)
+    $r = Invoke-Git @('rev-parse', 'HEAD')
+    if ($r.code -ne 0) { Fail "git inspection failed: $($r.out)" }
+    $head = $r.out
     if ($head -ne $want) { Fail "checkout did not land on $Tag; refusing to run it" }
     Write-Output "vm-update: checkout pinned at $Tag"
 
@@ -535,5 +589,5 @@ if (-not $healthy) {
 }
 
 # The app tools are already updated; a plugin error must stay a warning, never lose the result line.
-try { Update-HermesPlugins } catch { Write-Output "vm-update: plugin update stopped: $($_.Exception.Message)" }
+try { Update-HermesPlugins } catch { Write-Output "vm-update: plugin update stopped: $(Safe-Reason $_.Exception.Message)" }
 Write-Result $true ''

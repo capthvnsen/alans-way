@@ -229,3 +229,56 @@ test('the plugin step checks every profile and includes statuses, errors and res
   assert.equal(restart[0].state, 'warn');
   assert.match(runLogText(restart), /needs a restart/);
 });
+
+
+test('latest Hermes needs real movement or an independent current check', async () => {
+  const step = { id: 'hermes', name: 'Hermes', from: '0.21.6', to: 'latest' };
+  for (const result of [{ ok: true, version: '0.21.6', updated: true }, { ok: true, version: 'unknown', updated: true }]) {
+    const rows = await runSteps([step], () => result);
+    assert.equal(rows[0].state, 'warn');
+    assert.match(runLogText(rows), /unchanged|unverified/);
+    assert.doesNotMatch(reportText(rows), /Now on Hermes/);
+  }
+  for (const result of [{ ok: true, version: '0.21.7' }, { ok: true, version: '0.21.6', current: true }]) {
+    assert.equal((await runSteps([step], () => result))[0].state, 'done');
+  }
+});
+
+test('every managed companion and profile needs target evidence on all surfaces', async () => {
+  const step = { id: 'plugin', name: 'plugin', from: '0.7.0', to: '0.21.5' };
+  for (const after of ['0.7.0', '', 'unknown']) {
+    const rows = await runSteps([step], () => pluginStepResult({ ok: true, gatewayRestarted: true, plugins: [
+      { name: 'alans-way', profile: 'default', after: '0.21.5', status: 'updated' },
+      { name: 'alans-way-computer', profile: 'work', after, status: 'current', error: 'already at catalog pin abc123' },
+    ] }, step));
+    assert.equal(rows[0].state, 'warn');
+    for (const text of [rows[0].warningText, summarizeRun(rows), runLogText(rows), reportText(rows)]) {
+      assert.match(text, /alans-way-computer \(work\).*catalog pin/);
+    }
+  }
+});
+
+test('YAML scalar forms give the same comparison and shared warning text', async () => {
+  const { warningText } = require('../src/update-all.cjs');
+  for (const version of ["'0.21.5'", '"v0.21.5" # release', 'v0.21.5 # release']) {
+    const rows = await runSteps([{ id: 'host', name: 'host', from: '0.7.0', to: '0.21.5' }], () => ({ ok: true, version }));
+    assert.equal(rows[0].state, 'done');
+    assert.equal(rows[0].version, '0.21.5');
+  }
+  const rows = await runSteps([{ id: 'host', name: 'host', from: '0.7.0', to: '0.21.5' }], () => ({ ok: true, version: 'v0.7.0' }));
+  assert.equal(rows[0].warningText, warningText(rows[0]));
+});
+
+test('every update reason strips URL userinfo, queries and fragments at the app boundary', async () => {
+  const step = { id: 'plugin', name: 'plugin', from: '0.7.0', to: '0.21.5' };
+  for (const userinfo of ['synthetic-access-token', 'synthetic-user', 'synthetic-user:synthetic-password']) {
+    const reason = `already at catalog pin https://${userinfo}@example.com/repo?session=synthetic-query#synthetic-fragment`;
+    const rows = await runSteps([step], () => pluginStepResult({ ok: true, plugins: [
+      { name: 'alans-way-computer', profile: 'work', after: '0.7.0', status: 'current', error: reason },
+    ] }, step));
+    for (const text of [rows[0].warningText, summarizeRun(rows), runLogText(rows), reportText(rows)]) {
+      assert.doesNotMatch(text, /synthetic-/);
+      assert.match(text, /example\.com/);
+    }
+  }
+});

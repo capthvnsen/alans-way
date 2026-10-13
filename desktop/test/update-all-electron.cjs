@@ -55,7 +55,7 @@ require('../src/vm-update.cjs').createVmUpdater = () => ({
     if (pluginOk) return { id: target.id, ok: true, state: 'ok', gatewayRestarted: true, plugins: [{ profile: 'default', name: 'alans-way', before: '0.21.0', after: '0.21.1', status: 'updated' }],
       pluginLines: [{ text: 'Plugin updated to 0.21.1.', tone: 'ok' }] };
     const plugins = [{ profile: 'default', name: 'alans-way', before: '0.21.0', after: '0.21.0', status: 'failed', error: 'registry unreachable' }];
-    return { id: target.id, ok: true, state: 'ok', plugins, gatewayRestarted: false, pluginLines: [{ text: 'Plugin update failed: registry unreachable', tone: 'warn' }] };
+    return { id: target.id, ok: true, state: 'ok', plugins, gatewayRestarted: false, pluginLines: [{ text: 'Plugin alans-way (default) on 0.21.0 (wanted 0.21.1): registry unreachable', tone: 'warn' }] };
   },
   updateVm: async (target, tag) => {
     calls.push(`host ${target.id} ${tag}`);
@@ -147,13 +147,13 @@ app.whenReady().then(async () => {
   const rows = await lines();
   assert.deepEqual(rows.map((l) => l.split('|')[0]), ['done', 'warn', 'done']);
   assert.equal(rows[0], 'done|✓ Hermes: 0.21.6 → 0.21.7 · Updated to 0.21.7');
-  assert.equal(rows[1], 'warn|⚠ Alan’s Way plugin: unchanged 0.21.0 (wanted 0.21.1): Plugin update failed: registry unreachable');
+  assert.equal(rows[1], 'warn|⚠ Alan’s Way plugin unchanged 0.21.0 (wanted 0.21.1): Plugin alans-way (default) on 0.21.0 (wanted 0.21.1): registry unreachable');
   assert.equal(rows[2], `done|✓ Browser host: 0.21.3 → ${version} · Running ${version}`);
   assert.ok(calls.includes(`host agent v${version}`), 'the version warning does not block the host');
-  assert.equal(await text('update-all-copy'), 'Alan’s Way plugin unchanged 0.21.0 (wanted 0.21.1): Plugin update failed: registry unreachable. Updated: Hermes, Browser host. Your bot messaged you on Telegram.');
+  assert.equal(await text('update-all-copy'), 'Alan’s Way plugin unchanged 0.21.0 (wanted 0.21.1): Plugin alans-way (default) on 0.21.0 (wanted 0.21.1): registry unreachable. Updated: Hermes, Browser host. Your bot messaged you on Telegram.');
   assert.ok(calls.lastIndexOf('check agent') > calls.indexOf('plugin agent'), 'the versions refresh after the run');
   assert.deepEqual(work().slice(before), ['plugin agent', `host agent v${version}`,
-    `report Update everything finished with warnings. plugin unchanged 0.21.0 (wanted 0.21.1): Plugin update failed: registry unreachable. Now on Hermes 0.21.7, browser host ${version}.`]);
+    `report Update everything finished with warnings. plugin unchanged 0.21.0 (wanted 0.21.1): Plugin alans-way (default) on 0.21.0 (wanted 0.21.1): registry unreachable. Now on Hermes 0.21.7, browser host ${version}.`]);
   assert.equal(await hidden('update-all-go'), true, 'no app update staged, so no restart offered');
   assert.equal(await text('version-label'), `Alan’s Workspace ${version} · Hermes 0.21.7 (server) · Plugin 0.21.0`, 'the bar shows the refreshed versions');
 
@@ -226,7 +226,7 @@ app.whenReady().then(async () => {
   await waitFor(successWork, (c) => c.some((s) => s.startsWith('report ')), 5000, 'the final report');
   await waitFor(lines, (l) => l.length === 4 && l.every((r) => r.startsWith('done|')), 5000, 'all four completion rows');
   assert.deepEqual(await lines(), ['done|✓ Hermes: 0.21.6 → 0.21.7 · Updated to 0.21.7',
-    'done|✓ Alan’s Way plugin: 0.21.0 → 0.21.1 · Plugin updated (v0.21.0 to v0.21.1)',
+    'done|✓ Alan’s Way plugin: 0.21.0 → 0.21.1 · Plugin alans-way (default) updated (v0.21.0 to v0.21.1)',
     `done|✓ Browser host: 0.21.3 → ${appVersion} · Running ${appVersion}`,
     `done|✓ Alan’s Workspace: ${version} → ${appVersion} · Downloaded. Restart to finish.`]);
   assert.equal(stagedUpdater.autoInstallOnAppQuit, false, 'installation is held until the final report finishes too');

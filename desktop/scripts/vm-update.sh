@@ -84,9 +84,9 @@ GW_CMD="hermes gateway restart" GW_EXTRA="" GW_NAMED_CMD=""
 START_S="$(date +%s)"
 
 # Git errors can include an authenticated remote URL. Keep the cause, not credentials.
-safe_git_error() { sed -E 's#([[:alpha:]][[:alnum:]+.-]*://)[^/@[:space:]]+@#\1[redacted]@#g; s#(https?://[^?[:space:]]+)\?[^[:space:]]*#\1?[redacted]#g' | tr '\n' ' '; }
-say() { printf 'vm-update: %s\n' "$*"; }
-json_string() { printf '%s' "$1" | tr '\n\t' '  ' | tr -d '\000-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-300; }
+safe_git_error() { sed -E 's#([[:alpha:]][[:alnum:]+.-]*://)[^/@[:space:]]+@#\1[redacted]@#g; s#([[:alpha:]][[:alnum:]+.-]*://[^?#[:space:]]+)[?#][^[:space:]]*#\1[redacted]#g' | tr '\n' ' '; }
+say() { printf 'vm-update: %s\n' "$(printf '%s' "$*" | safe_git_error)"; }
+json_string() { printf '%s' "$1" | safe_git_error | tr '\n\t' '  ' | tr -d '\000-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-300; }
 json() { printf '{"ok":%s,"version":"%s","restarted":%s,"error":"%s","plugins":[%s],"gatewayRestarted":%s%s}\n' "$1" "$2" "$3" "$(json_string "$4")" "$5" "$6" "$GW_EXTRA"; }
 fail() { json false "$VERSION" "$RESTARTED" "$1" "$PLUGINS_JSON" "$GATEWAY_RESTARTED"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -101,6 +101,47 @@ bounded() {
   elif have perl; then perl -e 'alarm shift; exec @ARGV' "$_s" "$@"
   else "$@"; fi
 }
+
+# Git gets the smaller of its call cap and the remaining VM budget, with one
+# second reserved for the result. A dedicated process group includes helpers
+# (ssh, credential helpers, hooks). Kill the whole group on deadline; never
+# fall back to an unbounded command when no process supervisor is available.
+run_git_command() {
+  _git_left=$(( $(budget_left) - 1 ))
+  _git_secs="${ALANS_WAY_VM_GIT_TIMEOUT:-60}"
+  [ "$_git_left" -gt 0 ] || { echo 'git timed out: VM time budget exhausted' >&2; return 124; }
+  [ "$_git_secs" -le "$_git_left" ] || _git_secs="$_git_left"
+  if have perl; then
+    perl -MPOSIX=setpgid -e '
+      my $secs = shift; my $pid = fork(); defined($pid) or die "git supervisor fork failed";
+      if (!$pid) { setpgid(0, 0) == 0 or die "git process group failed"; exec @ARGV; exit 127; }
+      setpgid($pid, $pid);
+      $SIG{ALRM} = sub { kill "KILL", -$pid; waitpid($pid, 0); print STDERR "git timed out after ${secs}s\n"; exit 124; };
+      alarm $secs; waitpid($pid, 0); my $status = $?; alarm 0;
+      # Also clean up helpers left by a command that has already exited.
+      kill "KILL", -$pid;
+      exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
+    ' "$_git_secs" "$@" </dev/null
+  elif have python3; then
+    python3 -c '
+import os,signal,subprocess,sys
+p=subprocess.Popen(sys.argv[2:], start_new_session=True)
+try:
+ code=p.wait(timeout=int(sys.argv[1]))
+except subprocess.TimeoutExpired:
+ code=124; print("git timed out after "+sys.argv[1]+"s",file=sys.stderr)
+finally:
+ try: os.killpg(p.pid,signal.SIGKILL)
+ except ProcessLookupError: pass
+ p.wait()
+sys.exit(code if code>=0 else 128-code)
+' "$_git_secs" "$@" </dev/null
+  else
+    echo 'git cannot run within the time budget: perl or python3 is required' >&2
+    return 124
+  fi
+}
+run_git() { run_git_command "$GIT" "$@"; }
 
 # True only when systemd is the running service manager. A systemctl binary
 # alone is not enough: minimal VM images ship one that answers "offline".
@@ -355,7 +396,8 @@ EOF
 
 # $1 = plugin manifest dir; prints its declared version ("" when unreadable).
 plugin_version() {
-  sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"]\{1,\}\)"\{0,1\}[[:space:]]*$/\1/p' "$1/plugin.yaml" 2>/dev/null | head -1
+  sed -n 's/^version:[[:space:]]*//p' "$1/plugin.yaml" 2>/dev/null | head -1 | \
+    sed -E "s/[[:space:]]+#.*$//; s/^[[:space:]]*['\"]?v?//; s/['\"]?[[:space:]]*$//"
 }
 # $1 = install-metadata entry; prints its recorded revision ("" when absent).
 plugin_rev() {
@@ -385,31 +427,47 @@ except (OSError,ValueError): pass' "$1/.install-metadata.json" "$2"
 clone_refresh() {
   _cr="$1"
   [ -d "$_cr/.git" ] || { echo "none"; return 0; }
-  _cr_url="$("$GIT" -C "$_cr" remote get-url origin 2>/dev/null || true)"
+  _cr_url="$(run_git -C "$_cr" remote get-url origin 2>&1)"; _cr_rc=$?
+  [ "$_cr_rc" -ne 124 ] || { echo "skipped $_cr_url"; return 0; }
+  [ "$_cr_rc" -eq 0 ] || { echo "none"; return 0; }
   case "$_cr_url" in *alans-way-agents*) ;; *) echo "none"; return 0;; esac
-  _cr_fetch="$("$GIT" -C "$_cr" fetch --tags origin 2>&1)" \
-    || _cr_fetch="$("$GIT" -C "$_cr" fetch --unshallow --tags origin 2>&1)" \
-    || { echo "skipped clone fetch failed: $(printf '%s' "$_cr_fetch" | safe_git_error)"; return 0; }
-  if [ "$("$GIT" -C "$_cr" rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
-    _cr_fetch="$("$GIT" -C "$_cr" fetch --unshallow --tags origin 2>&1)" \
+  _cr_fetch="$(run_git -C "$_cr" fetch --tags origin 2>&1)"; _cr_rc=$?
+  [ "$_cr_rc" -ne 124 ] || { echo "skipped $_cr_fetch"; return 0; }
+  if [ "$_cr_rc" -ne 0 ]; then
+    _cr_fetch="$(run_git -C "$_cr" fetch --unshallow --tags origin 2>&1)" \
+      || { echo "skipped clone fetch failed: $(printf '%s' "$_cr_fetch" | safe_git_error)"; return 0; }
+  fi
+  _cr_shallow="$(run_git -C "$_cr" rev-parse --is-shallow-repository 2>&1)" \
+    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_shallow" | safe_git_error)"; return 0; }
+  if [ "$_cr_shallow" = true ]; then
+    _cr_fetch="$(run_git -C "$_cr" fetch --unshallow --tags origin 2>&1)" \
       || { echo "skipped shallow history could not be fetched: $(printf '%s' "$_cr_fetch" | safe_git_error)"; return 0; }
   fi
-  _cr_tag="$("$GIT" -C "$_cr" tag -l 'v*' 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1.2n -k2n -k3n | tail -1)"
+  _cr_tags="$(run_git -C "$_cr" tag -l 'v*' 2>&1)" \
+    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_tags" | safe_git_error)"; return 0; }
+  _cr_tag="$(printf '%s\n' "$_cr_tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1.2n -k2n -k3n | tail -1)"
   [ -n "$_cr_tag" ] || { echo "none"; return 0; }
-  _cr_want="$("$GIT" -C "$_cr" rev-parse --verify -q "refs/tags/$_cr_tag^{commit}" 2>/dev/null || true)"
-  _cr_head="$("$GIT" -C "$_cr" rev-parse HEAD 2>/dev/null || true)"
+  _cr_want="$(run_git -C "$_cr" rev-parse --verify -q "refs/tags/$_cr_tag^{commit}" 2>&1)" \
+    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_want" | safe_git_error)"; return 0; }
+  _cr_head="$(run_git -C "$_cr" rev-parse HEAD 2>&1)" \
+    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_head" | safe_git_error)"; return 0; }
   [ -n "$_cr_want" ] && [ -n "$_cr_head" ] || { echo "none"; return 0; }
-  if "$GIT" -C "$_cr" merge-base --is-ancestor "$_cr_want" "$_cr_head" 2>/dev/null; then
-    echo "ahead $("$GIT" -C "$_cr" describe --tags --always 2>/dev/null || printf '%s' "$_cr_head" | cut -c1-12)"
+  _cr_ancestry="$(run_git -C "$_cr" merge-base --is-ancestor "$_cr_want" "$_cr_head" 2>&1)"; _cr_rc=$?
+  [ "$_cr_rc" -le 1 ] || { echo "skipped git ancestry check failed: $(printf '%s' "$_cr_ancestry" | safe_git_error)"; return 0; }
+  if [ "$_cr_rc" -eq 0 ]; then
+    echo "ahead $(run_git -C "$_cr" describe --tags --always 2>/dev/null || printf '%s' "$_cr_head" | cut -c1-12)"
     return 0
   fi
-  if [ -n "$("$GIT" -C "$_cr" status --porcelain 2>/dev/null | head -1)" ]; then
+  _cr_dirty="$(run_git -C "$_cr" status --porcelain 2>&1)" \
+    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_dirty" | safe_git_error)"; return 0; }
+  if [ -n "$_cr_dirty" ]; then
     echo "skipped local changes"; return 0
   fi
-  "$GIT" -C "$_cr" merge-base --is-ancestor "$_cr_head" "$_cr_want" 2>/dev/null \
-    || { echo "skipped not an ancestor of $_cr_tag"; return 0; }
-  if _cr_err="$("$GIT" -C "$_cr" -c advice.detachedHead=false checkout -q "refs/tags/$_cr_tag" 2>&1)" \
-      && [ "$("$GIT" -C "$_cr" rev-parse HEAD 2>/dev/null)" = "$_cr_want" ]; then
+  _cr_ancestry="$(run_git -C "$_cr" merge-base --is-ancestor "$_cr_head" "$_cr_want" 2>&1)"; _cr_rc=$?
+  [ "$_cr_rc" -le 1 ] || { echo "skipped git ancestry check failed: $(printf '%s' "$_cr_ancestry" | safe_git_error)"; return 0; }
+  [ "$_cr_rc" -eq 0 ] || { echo "skipped not an ancestor of $_cr_tag"; return 0; }
+  if _cr_err="$(run_git -C "$_cr" -c advice.detachedHead=false checkout -q "refs/tags/$_cr_tag" 2>&1)" \
+      && [ "$(run_git -C "$_cr" rev-parse HEAD 2>/dev/null)" = "$_cr_want" ]; then
     echo "moved $_cr_tag"; return 0
   fi
   echo "skipped could not check out $_cr_tag: $(printf '%s' "$_cr_err" | safe_git_error)"
@@ -958,35 +1016,46 @@ if ! [ -w "$DIR" ]; then
   fi
 fi
 
-FETCH_ERROR=""
-FETCH_ERROR="$($SUDO "$GIT" -C "$DIR" fetch --tags origin 2>&1)" \
-  || FETCH_ERROR="$($SUDO "$GIT" -C "$DIR" fetch --unshallow --tags origin 2>&1)" \
-  || FETCH_ERROR="$($SUDO "$GIT" -C "$DIR" fetch --depth=1000000 --tags origin 2>&1)" \
-  || say "git fetch reported a problem; trying the objects already in the checkout"
+FETCH_ERROR="$(run_git_command $SUDO "$GIT" -C "$DIR" fetch --tags origin 2>&1)"; FETCH_RC=$?
+[ "$FETCH_RC" -ne 124 ] || fail "$FETCH_ERROR"
+if [ "$FETCH_RC" -ne 0 ]; then
+  FETCH_ERROR="$(run_git_command $SUDO "$GIT" -C "$DIR" fetch --unshallow --tags origin 2>&1)"; FETCH_RC=$?
+  [ "$FETCH_RC" -ne 124 ] || fail "$FETCH_ERROR"
+fi
+if [ "$FETCH_RC" -ne 0 ]; then
+  FETCH_ERROR="$(run_git_command $SUDO "$GIT" -C "$DIR" fetch --depth=1000000 --tags origin 2>&1)"; FETCH_RC=$?
+  [ "$FETCH_RC" -ne 124 ] || fail "$FETCH_ERROR"
+fi
+[ "$FETCH_RC" -eq 0 ] || say "git fetch reported a problem; trying the objects already in the checkout"
 # A successful tag fetch can still leave shallow ancestry truncated.
-if [ "$($SUDO "$GIT" -C "$DIR" rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
-  FETCH_ERROR="$($SUDO "$GIT" -C "$DIR" fetch --unshallow --tags origin 2>&1)" \
+SHALLOW="$(run_git_command $SUDO "$GIT" -C "$DIR" rev-parse --is-shallow-repository 2>&1)" \
+  || fail "git inspection failed: $(printf '%s' "$SHALLOW" | safe_git_error)"
+if [ "$SHALLOW" = true ]; then
+  FETCH_ERROR="$(run_git_command $SUDO "$GIT" -C "$DIR" fetch --unshallow --tags origin 2>&1)" \
     || fail "shallow history could not be fetched: $(printf '%s' "$FETCH_ERROR" | safe_git_error)"
 fi
 # Only a real tag may satisfy the pin; retry its explicit ref when absent.
-WANT="$($SUDO "$GIT" -C "$DIR" rev-parse --verify -q "refs/tags/$TAG^{commit}" 2>/dev/null || true)"
+WANT="$(run_git_command $SUDO "$GIT" -C "$DIR" rev-parse --verify -q "refs/tags/$TAG^{commit}" 2>/dev/null || true)"
 if [ -z "$WANT" ]; then
-  FETCH_ERROR="$($SUDO "$GIT" -C "$DIR" fetch origin "refs/tags/$TAG:refs/tags/$TAG" 2>&1)" || true
-  WANT="$($SUDO "$GIT" -C "$DIR" rev-parse --verify -q "refs/tags/$TAG^{commit}" 2>/dev/null || true)"
+  FETCH_ERROR="$(run_git_command $SUDO "$GIT" -C "$DIR" fetch origin "refs/tags/$TAG:refs/tags/$TAG" 2>&1)" || true
+  WANT="$(run_git_command $SUDO "$GIT" -C "$DIR" rev-parse --verify -q "refs/tags/$TAG^{commit}" 2>/dev/null || true)"
 fi
 [ -n "$WANT" ] || fail "tag $TAG is not in the checkout and could not be fetched: $(printf '%s' "$FETCH_ERROR" | safe_git_error)"
-DIRTY="$($SUDO "$GIT" -C "$DIR" status --porcelain 2>&1)" \
+DIRTY="$(run_git_command $SUDO "$GIT" -C "$DIR" status --porcelain 2>&1)" \
   || fail "could not inspect checkout: $(printf '%s' "$DIRTY" | safe_git_error)"
 if [ -n "$DIRTY" ]; then
   COUNT="$(printf '%s\n' "$DIRTY" | wc -l | tr -d ' ')"
   FILES="$(printf '%s\n' "$DIRTY" | head -5 | cut -c4- | tr '\n' ' ')"
   fail "checkout blocked by $COUNT local change(s): $FILES; save, commit or stash them in $DIR, then retry $TAG"
 fi
-$SUDO "$GIT" -C "$DIR" merge-base --is-ancestor HEAD "$WANT" 2>/dev/null \
+ANCESTRY="$(run_git_command $SUDO "$GIT" -C "$DIR" merge-base --is-ancestor HEAD "$WANT" 2>&1)"; ANCESTRY_RC=$?
+[ "$ANCESTRY_RC" -ne 124 ] || fail "$ANCESTRY"
+[ "$ANCESTRY_RC" -eq 0 ] \
   || fail "checkout HEAD is not an ancestor of $TAG; refusing a rollback or divergent checkout. Review origin and local commits in $DIR"
-CHECKOUT_ERROR="$($SUDO "$GIT" -C "$DIR" -c advice.detachedHead=false checkout -q "refs/tags/$TAG" 2>&1)" \
+CHECKOUT_ERROR="$(run_git_command $SUDO "$GIT" -C "$DIR" -c advice.detachedHead=false checkout -q "refs/tags/$TAG" 2>&1)" \
   || fail "could not check out $TAG: $(printf '%s' "$CHECKOUT_ERROR" | safe_git_error); review git status in $DIR"
-HEAD_NOW="$($SUDO "$GIT" -C "$DIR" rev-parse HEAD 2>/dev/null || true)"
+HEAD_NOW="$(run_git_command $SUDO "$GIT" -C "$DIR" rev-parse HEAD 2>&1)" \
+  || fail "git inspection failed: $(printf '%s' "$HEAD_NOW" | safe_git_error)"
 [ "$HEAD_NOW" = "$WANT" ] || fail "checkout did not land on $TAG; refusing to run it"
 say "checkout pinned at $TAG"
 

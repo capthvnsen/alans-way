@@ -10,6 +10,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { isSshTarget } = require('./core.cjs');
 const { isNewer } = require('./mac-update.cjs');
+const { compareVersions, normalizeVersion } = require('./update-version.cjs');
+const { redactReport } = require('./setup-check.cjs');
 
 const TAG_RE = /^v\d+\.\d+\.\d+$/;
 const SSH_OPTIONS = ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes'];
@@ -181,10 +183,10 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
       const result = await runGuest(vm, { hermesUpdate: true, vars, timeoutMs: HERMES_UPDATE_TIMEOUT_MS });
       const messages = (Array.isArray(result.messages) ? result.messages : [])
         .map((m) => ({ profile: String(m?.profile || ''), sent: m?.sent === true, error: String(m?.error || '') }));
-      const base = { version: String(result.version || ''), updated: result.updated === true,
+      const base = { version: String(result.version || ''), before: String(result.before || ''), current: result.current === true, updated: result.updated === true,
         messaged: result.messaged === true || messages.some((m) => m.sent), messages,
         gatewayRestarted: result.gatewayRestarted === true };
-      if (result.ok === true) return { ok: true, state: 'ok', error: '', ...base };
+      if (result.ok === true) return { ok: true, state: 'ok', error: redactReport(result.error || ''), ...base };
       return { ok: false, state: 'failed', error: String(result.error || 'The Hermes update failed without a reason.'), ...base };
     } catch (error) {
       log('hermes-update', error);
@@ -301,10 +303,10 @@ function vmPhaseText(line) {
 
 // One UI line for a plugin result. `qualified` adds the plugin name (and the
 // profile for named profiles) when a VM reports more than one entry.
-function pluginStatusText(p, { qualified = false } = {}) {
+function pluginStatusText(p, { qualified = false, subject: namedSubject = '' } = {}) {
   const name = String(p?.name || '');
   const profile = String(p?.profile || '');
-  const subject = qualified ? `Plugin ${profile && profile !== 'default' ? `${name} (${profile})` : name}` : 'Plugin';
+  const subject = namedSubject || (qualified ? `Plugin ${profile && profile !== 'default' ? `${name} (${profile})` : name}` : 'Plugin');
   const cmd = `hermes${profile && profile !== 'default' ? ` -p ${profile}` : ''} plugins update ${name}`;
   const ver = (v) => `v${String(v || '').replace(/^v/, '')}`;
   switch (p?.status) {
@@ -326,7 +328,9 @@ function hermesUpdateDetail(result, label) {
   const where = label ? ` on the ${label}` : '';
   const messaged = result?.messaged === true;
   if (result?.ok) {
-    const what = result.updated === false ? 'Hermes is already up to date' : `Hermes updated${result.version ? ` to v${result.version}` : ''}`;
+    const moved = compareVersions(result.version, result.before) > 0 || (result.updated === true && result.before && normalizeVersion(result.version) !== normalizeVersion(result.before));
+    const what = moved ? `Hermes updated${result.version ? ` to v${result.version}` : ''}` : result.current === true ? 'Hermes is already up to date'
+      : `Hermes update warning: ${redactReport(result.error || 'version unchanged or unverified')}`;
     if (messaged) return `${what}${where}; your bot messaged you on Telegram.`;
     const first = (result.messages || []).find((m) => !m.sent && m.error)?.error || '';
     return `${what}${where}, but the bot could not message you${first ? `: ${first}` : ' (no Hermes profile answered)'}`;
@@ -338,13 +342,20 @@ function hermesUpdateDetail(result, label) {
 // The plugin lines shown under a VM's update result, plus a warning when new
 // plugin code never got loaded because the gateway restart did not finish.
 // Plugin problems are warnings; they never change the VM's ok/failed state.
-function vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd } = {}) {
+function vmPluginLines({ plugins, gatewayRestarted, gatewayRestartCmd } = {}, { target = '' } = {}) {
   const list = Array.isArray(plugins) ? plugins : [];
   const qualified = list.length > 1;
-  const lines = list.map((p) => ({
-    text: pluginStatusText(p, { qualified }),
-    tone: p.status === 'updated' ? 'ok' : p.status === 'current' ? 'info' : 'warn',
-  }));
+  const lines = list.map((p) => {
+    const comparison = target ? compareVersions(p.after, target) : null;
+    const missed = target && (comparison === null || comparison < 0);
+    const pinned = /already at catalog pin/i.test(p.error || '');
+    const subject = `Plugin ${p.name || 'unknown'} (${p.profile || 'default'})`;
+    const evidence = missed ? `${subject} ${comparison === null ? 'version unverified' : `on ${normalizeVersion(p.after)}`} (wanted ${target}): ${p.error || p.status || 'no version evidence'}`
+      : target ? pluginStatusText(p, { subject })
+      : pluginStatusText(p, { qualified });
+    return { text: redactReport(evidence),
+      tone: missed || pinned ? 'warn' : p.status === 'updated' ? 'ok' : p.status === 'current' ? 'info' : 'warn' };
+  });
   if (gatewayRestarted === false && list.some((p) => p.status === 'updated' || (p.status === 'current' && /^version unchanged or unverified:/.test(p.error || '')))) {
     // The guest names the restart that works there: a supervisorctl command
     // when the gateway runs under a service manager like supervisord.

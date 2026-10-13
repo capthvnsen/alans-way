@@ -432,7 +432,7 @@ function renderUpdateAll() {
       : run.summary || (updateAllError ? `Update everything stopped: ${updateAllError}` : '');
     for (const row of run.steps || []) {
       if (row.state === 'warn') {
-        list.append(element('p', 'update-line warn', `⚠ ${row.name}: ${row.version ? `${row.version === row.from ? 'unchanged' : 'on'} ${row.version}` : 'version unverified'} (wanted ${row.to}): ${row.error}`));
+        list.append(element('p', 'update-line warn', `⚠ ${row.warningText}`));
         continue;
       }
       const tail = row.state === 'failed' ? `: ${row.error}` : row.state === 'skipped' ? ' (not started)' : row.detail ? ` · ${row.detail}` : '';

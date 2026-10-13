@@ -402,7 +402,7 @@ test('the Windows twin pins full tag refs and retries the fetch like the POSIX s
   assert.match(ps1, /'gateway', 'restart'/, 'one drain-restart through hermes gateway restart');
   assert.match(ps1, /RedirectStandardInput/, 'hermes runs with stdin closed so no consent prompt can be answered');
   assert.match(ps1, /needs_approval/, 'consent gates surface as needs_approval');
-  assert.match(ps1, /rev-parse --is-shallow-repository/, 'unshallows even after a successful tag fetch');
+  assert.match(ps1, /'rev-parse', '--is-shallow-repository'/, 'unshallows even after a successful tag fetch');
   assert.match(ps1, /merge-base.*--is-ancestor.*HEAD/, 'refuses backward or divergent host checkout');
   assert.match(ps1, /local change\(s\)/, 'reports dirty checkout count');
   assert.match(ps1, /version unchanged or unverified/, 'does not claim same-version plugin updates');
@@ -2241,5 +2241,72 @@ test('a plugin clone fetch failure reports the git reason and never silently use
   assert.equal(result.plugins[0].status, 'skipped');
   assert.match(result.plugins[0].error, /fetch failed.*unavailable/);
   assert.doesNotMatch(result.plugins[0].error, /fixture-password/);
+  assert.equal(git(clone, 'describe', '--tags').trim(), 'v0.6.0');
+});
+
+
+test('valid YAML scalars normalize in the actual plugin manifest reader', async () => {
+  for (const value of ["'v0.7.0' # release", '"0.7.0" # release', 'v0.7.0 # release']) {
+    const home = makeHermesHome(), state = makeHermesState(), { bin } = makeBin();
+    addHermes(bin, state);
+    addPlugin(home, 'default', 'alans-way', '0.7.0');
+    fs.writeFileSync(path.join(home, 'plugins', 'alans-way', 'plugin.yaml'), `version: ${value}\n`);
+    const result = lastJson(await runScript(['--plugins'], envFor('', makeDataDir(9), bin, { ...pluginEnv(home, state), ALANS_WAY_VM_BUDGET: '0' })));
+    assert.equal(result.plugins[0].before, '0.7.0');
+  }
+});
+
+test('hanging host git fetch and its child are killed within the VM budget with JSON', async () => {
+  const checkout = makeCheckout(remote), data = makeDataDir(9), { bin } = makeBin();
+  const fakeGit = path.join(bin, 'git-hang'), childPid = path.join(bin, 'child.pid');
+  fs.writeFileSync(fakeGit, `#!/bin/sh\ncase "$*" in *fetch*) sleep 30 &\necho $! > "${childPid}"\nwait;; *) exec "${REAL_GIT}" "$@";; esac\n`, { mode: 0o755 });
+  const started = Date.now();
+  const result = lastJson(await runScript(['v0.3.2'], envFor(checkout, data, bin, { ALANS_WAY_VM_GIT: fakeGit, ALANS_WAY_VM_BUDGET: '4', ALANS_WAY_VM_GIT_TIMEOUT: '1' })));
+  assert.equal(result.ok, false);
+  assert.match(result.error, /git.*timed out|time budget/);
+  assert.ok(Date.now() - started < 4000, 'the guest returns JSON within its budget');
+  const pid = Number(fs.readFileSync(childPid, 'utf8').trim());
+  // A killed child may briefly remain a zombie until its reaper runs.
+  const status = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
+  assert.ok(!status || /^Z/.test(status), `git child is still running: ${status}`);
+});
+
+test('retained CLI reasons redact URL credentials before guest JSON', async () => {
+  const home = makeHermesHome(), state = makeHermesState(), { bin } = makeBin();
+  addPlugin(home, 'default', 'alans-way', '0.7.0');
+  const hermes = path.join(bin, 'hermes');
+  fs.writeFileSync(hermes, '#!/bin/sh\necho "already at catalog pin https://synthetic-user@example.com/repo?session=synthetic-query#synthetic-fragment"\n', { mode: 0o755 });
+  const res = await runScript(['--plugins'], envFor('', makeDataDir(9), bin, pluginEnv(home, state)));
+  assert.doesNotMatch(res.stdout, /synthetic-/);
+  assert.match(lastJson(res).plugins[0].error, /example\.com/);
+});
+
+
+test('Windows git supervision and YAML/reason normalization preserve the guest contract', () => {
+  const ps1 = fs.readFileSync(WINDOWS_SCRIPT, 'utf8');
+  assert.match(ps1, /BudgetLeft\) - 1/);
+  assert.match(ps1, /WaitForExit\(\$secs \* 1000\)/);
+  assert.match(ps1, /taskkill\.exe \/PID \$p.Id \/T \/F/);
+  assert.doesNotMatch(ps1, /^\s*(?:\$\w+\s*=\s*\(?)?git (?:-C|rev-parse|status|fetch|merge-base|checkout)/m);
+  assert.match(ps1, /error = \(Safe-Reason \$Err\)/);
+  assert.match(ps1, /\$e\['error'\] = Safe-Reason \$err/);
+  assert.match(ps1, /-replace '\^v', ''/);
+});
+
+
+test('hanging plugin clone fetch returns a skipped timeout and kills its child', async () => {
+  const home = makeHermesHome(), state = makeHermesState(), { bin } = makeBin();
+  addHermes(bin, state);
+  const clone = makePluginClone();
+  addPlugin(home, 'default', 'alans-way', '0.6.0', { source: `file://${clone}#alans-way`, revision: '0.6.0' });
+  const fakeGit = path.join(bin, 'git-hang'), childPid = path.join(bin, 'child.pid');
+  fs.writeFileSync(fakeGit, `#!/bin/sh\ncase "$*" in *fetch*) sleep 30 &\necho $! > "${childPid}"\nwait;; *) exec "${REAL_GIT}" "$@";; esac\n`, { mode: 0o755 });
+  const started = Date.now();
+  const result = lastJson(await runScript(['--plugins'], envFor('', makeDataDir(9), bin, { ...pluginEnv(home, state), ALANS_WAY_VM_GIT: fakeGit, ALANS_WAY_VM_BUDGET: '20', ALANS_WAY_VM_GIT_TIMEOUT: '1' })));
+  assert.equal(result.plugins[0].status, 'skipped');
+  assert.match(result.plugins[0].error, /git timed out/);
+  assert.ok(Date.now() - started < 4000);
+  const status = spawnSync('ps', ['-o', 'stat=', '-p', fs.readFileSync(childPid, 'utf8').trim()], { encoding: 'utf8' }).stdout.trim();
+  assert.ok(!status || /^Z/.test(status), `git child is still running: ${status}`);
   assert.equal(git(clone, 'describe', '--tags').trim(), 'v0.6.0');
 });

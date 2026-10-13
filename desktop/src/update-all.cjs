@@ -13,27 +13,7 @@ const NAMES = { hermes: 'Hermes', plugin: 'Alan’s Way plugin', host: 'Browser 
 // uses names without the curly apostrophe.
 const SHORT = { hermes: 'Hermes', plugin: 'plugin', host: 'browser host', app: 'app' };
 
-// SemVer 2.0 precedence (semver.org §11). mac-update's isNewer only takes
-// plain X.Y.Z, so an installed 1.2.0-rc.1 or a 1.2.0+build would never count
-// as behind. Pre-release identifiers compare numerically when both are
-// numbers (rc.10 > rc.2), numbers sort below words, a release beats its
-// pre-releases, and build metadata never matters. null when unparseable.
-const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$/;
-function compareVersions(a, b) {
-  const x = SEMVER.exec(String(a || '').trim()), y = SEMVER.exec(String(b || '').trim());
-  if (!x || !y) return null;
-  for (let i = 1; i <= 3; i++) if (Number(x[i]) !== Number(y[i])) return Number(x[i]) > Number(y[i]) ? 1 : -1;
-  if (!x[4] || !y[4]) return x[4] ? -1 : y[4] ? 1 : 0;
-  const p = x[4].split('.'), q = y[4].split('.');
-  for (let i = 0; i < Math.max(p.length, q.length); i++) {
-    if (p[i] === undefined || q[i] === undefined) return p[i] === undefined ? -1 : 1;
-    const pn = /^\d+$/.test(p[i]), qn = /^\d+$/.test(q[i]);
-    if (pn && qn) { if (Number(p[i]) !== Number(q[i])) return Number(p[i]) > Number(q[i]) ? 1 : -1; }
-    else if (pn !== qn) return pn ? -1 : 1;
-    else if (p[i] !== q[i]) return p[i] > q[i] ? 1 : -1;
-  }
-  return 0;
-}
+const { normalizeVersion, compareVersions } = require('./update-version.cjs');
 const isNewer = (a, b) => compareVersions(a, b) === 1;
 
 // "Hermes Agent v0.21.6+763.g1fd1827 (2026.9.24) · stable" -> "0.21.6".
@@ -123,13 +103,21 @@ function describeVersions({ app, appUpdate = '', cache, formatTime = (ms) => new
 // A successful guest process is not proof that any plugin reached its target.
 function pluginStepResult(result, step) {
   const plugins = Array.isArray(result?.plugins) ? result.plugins : [];
-  const installed = plugins.filter((p) => p.name === 'alans-way');
+  const installed = plugins.filter((p) => ['alans-way', 'alans-way-computer'].includes(p.name));
   const missed = installed.find((p) => compareVersions(p.after, step.to) === null || compareVersions(p.after, step.to) < 0);
   const version = (missed || installed[0])?.after || '';
-  const lines = vmPluginLines(result);
-  return { ok: result?.ok === true, error: result?.error || '', version,
-    warning: !installed.length || lines.some((line) => line.tone === 'warn'),
-    detail: lines.length ? lines.map((line) => line.text).join(' ') : 'No alans-way plugin was visited; check its profile, install path and Hermes CLI.' };
+  const lines = vmPluginLines({ ...result, plugins: installed }, { target: step.to });
+  const detail = lines.length ? lines.map((line) => line.text).join(' ') : 'No alans-way plugin was visited; check its profile, install path and Hermes CLI.';
+  return { ok: result?.ok === true, error: result?.error ? `${result.error} ${detail}` : '', version,
+    warning: !installed.length || Boolean(missed) || lines.some((line) => line.tone === 'warn'),
+    detail };
+}
+
+function comparisonLatest(row, result) {
+  const before = normalizeVersion(result?.before || row.from);
+  const movement = compareVersions(row.version, before);
+  return movement !== null && (movement > 0 || result?.current === true ||
+    (result?.updated === true && result?.before && movement === 0 && row.version !== before));
 }
 
 // A failure stops the remaining steps. A version shortfall is a warning:
@@ -144,15 +132,16 @@ async function runSteps(steps, runStep, onChange = () => {}) {
     row.state = 'running'; emit();
     let result;
     try { result = await runStep(row); } catch (error) { result = { ok: false, error: error?.message || String(error) }; }
-    row.version = redactReport(String(result?.version || ''));
+    row.version = redactReport(normalizeVersion(result?.version));
     row.detail = redactReport(String(result?.detail || ''));
     const comparison = compareVersions(row.version, row.to);
     const reached = row.id === 'app' || (row.to === 'latest'
-      ? Boolean(row.version) && (result?.updated === true || compareVersions(row.version, row.from) > 0)
+      ? comparisonLatest(row, result)
       : comparison !== null && comparison >= 0);
     row.state = result?.ok !== true ? 'failed' : !reached || result?.warning ? 'warn' : 'done';
     row.error = row.state === 'failed' ? redactReport(String(result?.error || 'it failed without a reason'))
-      : row.state === 'warn' ? redactReport(String(result?.error || row.detail || (row.version ? 'The installed version did not reach the target.' : 'The installed version could not be verified.'))) : '';
+      : row.state === 'warn' ? redactReport(String(result?.error || row.detail || (compareVersions(row.version, row.version) !== null ? 'The installed version did not reach the target.' : 'The installed version could not be verified.'))) : '';
+    row.warningText = row.state === 'warn' ? warningText(row) : '';
     if (row.version && row.state === 'done') row.to = row.version;
     stopped = row.state === 'failed';
     emit();
@@ -162,7 +151,7 @@ async function runSteps(steps, runStep, onChange = () => {}) {
 }
 
 function warningText(row, subject = row.name) {
-  const version = row.version ? `${compareVersions(row.version, row.from) === 0 ? 'unchanged' : 'on'} ${row.version}` : 'version unverified';
+  const version = compareVersions(row.version, row.version) !== null ? `${compareVersions(row.version, row.from) === 0 ? 'unchanged' : 'on'} ${row.version}` : 'version unverified';
   return `${subject} ${version} (wanted ${row.to}): ${row.error}`;
 }
 

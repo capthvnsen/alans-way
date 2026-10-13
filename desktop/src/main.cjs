@@ -1046,8 +1046,8 @@ async function restartIntoUpdate() {
 async function runUpdateStep(step, target) {
   if (step.id === 'hermes') {
     const result = await vmUpdater.hermesUpdateVm(target, { quiet: true });
-    return { ok: result.ok, error: result.error, version: result.version, updated: result.updated,
-      detail: result.ok ? (result.updated ? `Updated to ${result.version || 'the latest version'}` : 'Already up to date') : '' };
+    return { ok: result.ok, error: result.error, version: result.version, before: result.before, current: result.current, updated: result.updated,
+      detail: result.ok ? (result.updated ? `Updated to ${result.version || 'the latest version'}` : result.current ? 'Already up to date' : result.error || 'Version unchanged or unverified') : '' };
   }
   if (step.id === 'plugin') {
     const result = await vmUpdater.updatePluginsVm(target);

@@ -14,19 +14,26 @@
 $ErrorActionPreference = 'Stop'
 $script:Version = ''
 $script:Updated = $false
+$script:Before = ''
+$script:Current = $false
 $script:Messaged = $false
 $script:GatewayRestarted = $false
 $script:Messages = @()
 $script:StartTime = Get-Date
 $script:HermesBin = ''
 
+function Safe-Reason([string]$Text) {
+    $Text = $Text -replace '([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@', '$1[redacted]@'
+    return ($Text -replace '([a-zA-Z][a-zA-Z0-9+.-]*://[^?#\s]+)[?#][^\s]*', '$1[redacted]')
+}
+
 function Write-Result([bool]$Ok, [string]$Err) {
-    @{ ok = $Ok; version = $script:Version; updated = $script:Updated; error = $Err;
+    @{ ok = $Ok; version = $script:Version; updated = $script:Updated; before = $script:Before; current = $script:Current; error = (Safe-Reason $Err);
        messaged = $script:Messaged; gatewayRestarted = $script:GatewayRestarted;
        messages = @($script:Messages) } |
         ConvertTo-Json -Compress -Depth 4 | Write-Output
 }
-function Say([string]$Text) { Write-Output "hermes-update: $Text" }
+function Say([string]$Text) { Write-Output "hermes-update: $(Safe-Reason $Text)" }
 function EnvInt([string]$Name, [int]$Default) {
     $v = [Environment]::GetEnvironmentVariable($Name); if ($v) { return [int]$v } return $Default
 }
@@ -152,6 +159,9 @@ foreach ($prof in (Get-Profiles $hhome)) {
 }
 
 if ($report) { $r = @{ code = 0; out = '' } } else {
+    $vBefore = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_VERSION_TIMEOUT' 20) @('--version')
+    $mBefore = [regex]::Match([string]$vBefore.out, 'Hermes Agent v([^\s]+)')
+    if ($mBefore.Success) { $script:Before = $mBefore.Groups[1].Value }
     Say 'running hermes update'
     # The update may not eat the restart reserve: it gets at most the remaining
     # budget minus one gateway timeout per stopped gateway, so starting them back
@@ -174,7 +184,6 @@ elseif (-not $ok) {
     $err = Tail-Text $r.out 300
     if (-not $err) { $err = "hermes update exited $($r.code)" }
 }
-$script:Updated = $ok -and -not $report -and ($r.out -notmatch '(?i)already up.to.date|nothing to update|no update available')
 
 # Start back exactly the gateways this run stopped - a failed update must not
 # leave the fleet's bots offline. Unbudgeted: the attempt happens even if the
@@ -188,8 +197,16 @@ foreach ($name in $restart) {
 # The version read follows the update so an install that moved reports the new
 # one; a failed update still reports whatever version is on the machine now.
 $v = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_VERSION_TIMEOUT' 20) @('--version')
-$vm = [regex]::Match([string]$v.out, 'Hermes Agent v([0-9][0-9.]*)')
+$vm = [regex]::Match([string]$v.out, 'Hermes Agent v([^\s]+)')
 if ($vm.Success) { $script:Version = $vm.Groups[1].Value }
+if ($ok -and -not $report) {
+    $script:Updated = $script:Version -and $script:Before -and ($script:Version -ne $script:Before)
+    if (-not $script:Updated) {
+        $check = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_VERSION_TIMEOUT' 20) @('update', '--check')
+        $script:Current = $check.code -eq 0 -and $script:Version -and ($check.out -match '(?i)up to date|no newer release|no update available')
+        if (-not $script:Current) { $err = "version unchanged or unverified after hermes update: $(Tail-Text $r.out 180)" }
+    }
+}
 if ($report) {} elseif ($ok) { Say 'hermes update finished' } else { Say "hermes update failed: $err" }
 
 # The message each profile's bot sends home: outcome, host and version so a
@@ -198,13 +215,14 @@ if ($report) {} elseif ($ok) { Say 'hermes update finished' } else { Say "hermes
 $where = ''
 if ($env:COMPUTERNAME) { $where = " on $env:COMPUTERNAME" }
 if ($ok) {
-    if ($script:Updated) { $msg = "Hermes update finished$where." } else { $msg = "Hermes is already up to date$where." }
+    if ($script:Updated) { $msg = "Hermes update finished$where." } elseif ($script:Current) { $msg = "Hermes is already up to date$where." } else { $msg = "Hermes update warning${where}: $err." }
     if ($script:Version) { $msg = "$msg Now on v$($script:Version)." }
 } else {
     $short = $err; if ($short.Length -gt 200) { $short = $short.Substring(0, 200) }
     $msg = "Hermes update failed${where}: $short"
 }
 if ($report) { $msg = $report }
+$msg = Safe-Reason $msg
 $msg = ($msg -replace '[&|<>^%"]', ' ')
 
 if ($quiet) {
@@ -220,7 +238,7 @@ if ($quiet) {
         $e = @{ profile = $prof.name; sent = ($s.code -eq 0); error = '' }
         if ($s.code -eq 0) { $script:Messaged = $true }
         else {
-            $e['error'] = Tail-Text $s.out 200
+            $e['error'] = Safe-Reason (Tail-Text $s.out 200)
             if (-not $e['error']) { $e['error'] = "send exited $($s.code)" }
         }
         if ($s.code -eq 0) { Say "message $($prof.name): sent" } else { Say "message $($prof.name): failed" }
