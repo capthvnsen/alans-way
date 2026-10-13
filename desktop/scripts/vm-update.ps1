@@ -1,6 +1,7 @@
 # vm-update.ps1 - Windows guest twin of vm-update.sh. The desktop app pipes
 # this file over ssh stdin (via cmd so any sshd shell works) with the release
-# tag in ALANS_WAY_VM_TAG, or ALANS_WAY_VM_CHECK=1 for a read-only check.
+# tag in ALANS_WAY_VM_TAG, ALANS_WAY_VM_CHECK=1 for a read-only check, or
+# ALANS_WAY_VM_PLUGINS=1 to update only the Hermes plugins.
 #
 # It only ever touches the checkout setup.sh created, that checkout's
 # node_modules, the setup.sh Scheduled Task AlansWay_Browser, and the Hermes
@@ -352,10 +353,14 @@ if (-not $Checkout) {
         if ((Test-Path "$d\desktop\package.json") -and (Test-Path "$d\.git")) { $Checkout = $d; break }
     }
 }
+# An update needs the checkout; the check and the plugins-only run do not.
 if (-not $Checkout -or -not (Test-Path "$Checkout\desktop\package.json") -or -not (Test-Path "$Checkout\.git")) {
-    Fail 'no browser host checkout found (expected %USERPROFILE%\.local\share\hermes-alans-way\app)'
+    if ($env:ALANS_WAY_VM_CHECK -ne '1' -and $env:ALANS_WAY_VM_PLUGINS -ne '1') {
+        Fail 'no browser host checkout found (expected %USERPROFILE%\.local\share\hermes-alans-way\app)'
+    }
+} else {
+    $script:Version = [string](Get-Content "$Checkout\desktop\package.json" -Raw | ConvertFrom-Json).version
 }
-$script:Version = [string](Get-Content "$Checkout\desktop\package.json" -Raw | ConvertFrom-Json).version
 
 # The broker's loopback status url and bearer token come from its data dir.
 # connection.json is authoritative: the broker writes its own url and token
@@ -393,8 +398,34 @@ if ($env:ALANS_WAY_VM_CHECK -eq '1') {
     $s = Get-Status
     $hostVersion = ''; $busy = $false
     if ($s) { $hostVersion = [string]$s.version; $busy = [bool]$s.busy }
-    @{ ok = $true; version = $script:Version; hostVersion = $hostVersion; busy = $busy; error = '' } |
+    # The Hermes half mirrors the POSIX twin's hermes_fields: raw text the app
+    # parses, the alans-way plugin version and whether the default gateway runs.
+    $hermesVersion = ''; $hermesCheck = ''; $pluginVersion = ''; $gatewayRunning = $null
+    $hhome = $env:HERMES_HOME
+    if (-not $hhome) { $hhome = "$env:LOCALAPPDATA\hermes" }
+    $script:HermesBin = Find-Hermes
+    if ($script:HermesBin) {
+        $v = Invoke-Hermes 20 @('--version')
+        $hermesVersion = [string](([string]$v.out -split "`n" | Where-Object { $_ -match 'Hermes Agent v' } | Select-Object -First 1))
+        $c = Invoke-Hermes 45 @('update', '--check')
+        $hermesCheck = (([string]$c.out -split "`n" | Where-Object { $_ -match '(?i)available|up to date|no newer release' } | Select-Object -First 3) -join ' ').Trim()
+        $g = Invoke-Hermes 20 @('gateway', 'status')
+        if ($g.out -match '(?i)gateway is running') { $gatewayRunning = $true } elseif ($g.out -match '(?i)not running') { $gatewayRunning = $false }
+    }
+    foreach ($prof in (Get-Profiles $hhome)) {
+        $pluginVersion = Get-PluginVersion (Join-Path $prof.home 'plugins\alans-way')
+        if ($pluginVersion) { break }
+    }
+    @{ ok = $true; version = $script:Version; hostVersion = $hostVersion; busy = $busy; error = '';
+       hermesVersion = $hermesVersion.Trim(); hermesCheck = $hermesCheck; pluginVersion = $pluginVersion; gatewayRunning = $gatewayRunning } |
         ConvertTo-Json -Compress | Write-Output
+    exit 0
+}
+
+if ($env:ALANS_WAY_VM_PLUGINS -eq '1') {
+    # Here the plugin phase is the whole run, so a throw is the run's failure.
+    try { Update-HermesPlugins } catch { Fail "plugin update stopped: $($_.Exception.Message)" }
+    Write-Result $true ''
     exit 0
 }
 

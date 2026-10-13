@@ -50,7 +50,7 @@
         <div id="preview-screen" class="preview-screen"></div>
       </div>
       <button id="preview-chip" class="preview-chip hidden" title="Show VM preview">▣ VPS</button>
-      <footer class="workspace-footer"><button id="version-label" class="version-label"></button><span id="build-badge" class="build-badge hidden"></span><button id="update-note" class="update-note hidden"></button><span id="workspace-status">Ready</span><span id="connection-status">Browser connector starting…</span></footer>
+      <footer class="workspace-footer"><button id="version-label" class="version-label"></button><button id="update-all" class="update-all-button">Update</button><span id="build-badge" class="build-badge hidden"></span><button id="update-note" class="update-note hidden"></button><span id="workspace-status">Ready</span><span id="connection-status">Browser connector starting…</span></footer>
     </section>
   </div>
   <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-card"><div class="modal-heading"><h2 id="modal-title">Workspace settings</h2><button id="modal-close" class="icon-button" title="Close">×</button></div><div id="modal-body"></div></div></div>
@@ -60,6 +60,14 @@
       <p id="update-popup-copy" class="settings-note"></p>
       <div id="update-progress" class="update-progress" aria-live="polite"></div>
       <div class="update-actions"><button id="update-later" class="secondary-button">Later</button><button id="update-now" class="primary-button">Update now</button></div>
+    </div>
+  </div>
+  <div id="update-all-popup" class="modal update-popup hidden" role="dialog" aria-modal="true" aria-labelledby="update-all-title">
+    <div class="modal-card update-card">
+      <h2 id="update-all-title">Update everything</h2>
+      <p id="update-all-copy" class="settings-note"></p>
+      <div id="update-all-steps" class="update-progress" aria-live="polite"></div>
+      <div class="update-actions"><button id="update-all-cancel" class="secondary-button">Cancel</button><button id="update-all-go" class="primary-button">Update everything</button></div>
     </div>
   </div>
   <div id="toast" class="toast hidden" role="status"></div>

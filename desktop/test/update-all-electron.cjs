@@ -1,0 +1,248 @@
+// Run: npx electron test/update-all-electron.cjs
+// The bottom bar's versions and the "Update everything" dialog, end to end in
+// the real window with every machine-touching step stubbed: no ssh, no hermes,
+// no GitHub. The plugin step fails on purpose to cover stop-on-failure, then
+// succeeds so a full run reaches the browser host and stages the app restart.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { app, BrowserWindow, webContents, session } = require('electron');
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-update-all-'));
+process.env.HERMES_WORKSPACE_DATA = profile;
+// A saved server address makes the probe target the server; .invalid never
+// resolves, so the browser host connection fails fast and quietly.
+fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false,
+  bots: [{ id: '4242', isBot: true, name: 'Scout' }], selectedBotId: '4242', vpsBrowser: { sshHost: 'tester@vm.invalid', scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs' } }));
+process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
+
+// main.cjs destructures these at load, so patching the exports first swaps
+// the real ssh-driven updater and the GitHub read for recorders.
+const calls = [];
+let hermesNow = '0.21.6', releaseHermes, checkGate = null, failReport = false, pluginOk = false;
+const hermesGate = new Promise((resolve) => { releaseHermes = resolve; });
+const gate = () => {
+  let release;
+  const promise = new Promise((resolve) => { release = resolve; });
+  return { promise, release };
+};
+let successGates = null;
+require('../src/update-all.cjs').latestPluginTag = async () => '0.21.1';
+require('../src/vm-update.cjs').createVmUpdater = () => ({
+  checkVm: async (target) => {
+    calls.push(`check ${target.id}`);
+    if (checkGate) await checkGate.promise;
+    return { ok: true, version: '0.21.3', hostVersion: '0.21.3', busy: false, hermesVersion: `Hermes Agent v${hermesNow} (2026.9.24) · stable`,
+      hermesCheck: hermesNow === '0.21.6' ? '→ Selected release available: stable v0.21.7 (71d34bad1045)' : '✓ Up to date with the latest release (stable v0.21.7 (71d34bad1045)).',
+      pluginVersion: '0.21.0', gatewayRunning: true };
+  },
+  hermesUpdateVm: async (target, opts = {}) => {
+    if (opts.report && failReport) throw new Error('relay down');
+    if (opts.report) {
+      calls.push(`report ${opts.report}`);
+      if (successGates) await successGates.report.promise;
+      return { ok: true, messaged: true, messages: [{ profile: 'default', sent: true }] };
+    }
+    calls.push(`hermes ${target.id} quiet=${opts.quiet === true}`);
+    if (opts.quiet) await hermesGate;
+    if (opts.quiet && successGates) await successGates.hermes.promise;
+    hermesNow = '0.21.7';
+    return { ok: true, version: '0.21.7', updated: true, messaged: false, messages: [] };
+  },
+  updatePluginsVm: async (target) => {
+    calls.push(`plugin ${target.id}`);
+    if (successGates) await successGates.plugin.promise;
+    if (pluginOk) return { id: target.id, ok: true, state: 'ok', gatewayRestarted: true, plugins: [{ profile: 'default', name: 'alans-way', before: '0.21.0', after: '0.21.1', status: 'updated' }],
+      pluginLines: [{ text: 'Plugin updated to 0.21.1.', tone: 'ok' }] };
+    const plugins = [{ profile: 'default', name: 'alans-way', before: '0.21.0', after: '0.21.0', status: 'failed', error: 'registry unreachable' }];
+    return { id: target.id, ok: true, state: 'ok', plugins, gatewayRestarted: false, pluginLines: [{ text: 'Plugin update failed: registry unreachable', tone: 'warn' }] };
+  },
+  updateVm: async (target, tag) => {
+    calls.push(`host ${target.id} ${tag}`);
+    if (successGates) await successGates.host.promise;
+    return { id: target.id, ok: true, state: 'ok', version: tag.slice(1), plugins: [], pluginLines: [] };
+  },
+  doctorVm: async () => ({ ok: false, error: 'stubbed' }),
+  updateAll: async () => [],
+});
+// Exercise the packaged-app staging path without downloading or installing.
+Object.defineProperty(app, 'isPackaged', { value: true });
+app.getVersion = () => require('../package.json').version;
+require('../src/mac-update.cjs').bundleLocation = () => null;
+require('../src/mac-update.cjs').isDeveloperIdSigned = () => true;
+require('../src/mac-update.cjs').updaterDriver = () => 'electron-updater';
+const stagedUpdater = new (require('node:events').EventEmitter)();
+stagedUpdater.checkForUpdates = async () => ({});
+stagedUpdater.setFeedURL = () => {};
+stagedUpdater.quitAndInstall = () => { calls.push('install app'); throw new Error('Test must never install'); };
+require('electron-updater');
+require.cache[require.resolve('electron-updater')].exports = { autoUpdater: stagedUpdater };
+require('../src/main.cjs');
+
+const waitFor = async (read, predicate, timeout = 12000, what = 'state') => {
+  const deadline = Date.now() + timeout;
+  let value;
+  while (Date.now() < deadline) { value = await read(); if (predicate(value)) return value; await new Promise(r => setTimeout(r, 50)); }
+  throw new Error(`Timed out waiting for ${what}; last value: ${JSON.stringify(value)}`);
+};
+app.whenReady().then(async () => {
+  const win = await waitFor(() => BrowserWindow.getAllWindows()[0], Boolean);
+  const wc = win.webContents;
+  const telegram = webContents.getAllWebContents().find(item => item.session === session.fromPartition('persist:telegram'));
+  if (telegram) { telegram.stop(); await telegram.loadURL('about:blank'); }
+  const evaluate = code => wc.executeJavaScript(code);
+  await waitFor(() => evaluate('typeof window.workspace === "object"').catch(() => false), Boolean);
+  const invoke = (name, value) => evaluate(`window.workspace.command(${JSON.stringify(name)}, ${JSON.stringify(value || {})})`);
+  const text = (id) => evaluate(`document.getElementById(${JSON.stringify(id)}).textContent`);
+  const hidden = (id) => evaluate(`document.getElementById(${JSON.stringify(id)}).classList.contains('hidden')`);
+  const click = (id) => evaluate(`document.getElementById(${JSON.stringify(id)}).click()`);
+  const lines = () => evaluate('[...document.querySelectorAll("#update-all-steps .update-line")].map((p) => p.className.replace("update-line", "").trim() + "|" + p.textContent)');
+  const version = app.getVersion();
+  // Probes (start, dialog open, after the run) are reads; `work` is what changed things.
+  const work = () => calls.filter((c) => !c.startsWith('check'));
+
+  // The bar: compact versions, the update arrow, and the details on hover.
+  const bar = await waitFor(() => text('version-label'), (t) => t.includes('Hermes'), 12000, 'the versions in the bar');
+  assert.equal(bar, `Alan’s Workspace ${version} · Hermes 0.21.6 (server) · Plugin 0.21.0`);
+  const tooltip = await evaluate('document.getElementById("version-label").title');
+  assert.match(tooltip, /Hermes 0\.21\.6 on the server · 0\.21\.7 available/);
+  assert.match(tooltip, /Alan’s Way plugin 0\.21\.0 · 0\.21\.1 on GitHub/);
+  assert.match(tooltip, new RegExp(`Browser host 0\\.21\\.3 on the server · ${version.replace(/\./g, '\\.')} goes with this app`));
+  assert.match(tooltip, /Checked /);
+  assert.equal(await text('update-all'), '↑ Update');
+  assert.deepEqual(calls, ['check agent'], 'the startup probe ran once and nothing else');
+
+  // The confirmation lists exactly what changes and warns about the restart;
+  // Cancel leaves everything untouched.
+  await click('update-all');
+  assert.equal(await hidden('update-all-popup'), false);
+  assert.deepEqual(await lines(), ['|Hermes: 0.21.6 → 0.21.7', '|Alan’s Way plugin: 0.21.0 → 0.21.1', `|Browser host: 0.21.3 → ${version}`,
+    'warn|Your bots restart briefly while the server updates.']);
+  assert.equal(await text('update-all-go'), 'Update everything');
+  await click('update-all-cancel');
+  assert.equal(await hidden('update-all-popup'), true);
+  assert.deepEqual(work(), [], 'Cancel runs nothing');
+  assert.ok(calls.filter((c) => c === 'check agent').length >= 2, 'opening the dialog re-checks the machine');
+
+  // Confirm: Hermes runs first and quietly (the bot reports at the end).
+  await click('update-all');
+  await click('update-all-go');
+  await waitFor(() => calls, (c) => c.includes('hermes agent quiet=true'), 5000, 'the Hermes step');
+  await waitFor(lines, (l) => l[0]?.startsWith('running|'), 5000, 'the running row');
+  assert.deepEqual((await lines()).map((l) => l.split('|')[0]), ['running', 'pending', 'pending']);
+  assert.equal(await evaluate('document.getElementById("update-all-cancel").disabled'), true, 'no closing mid-run');
+  assert.equal(await text('update-all'), 'Updating…');
+
+  // One lock: every other update entry point refuses while this runs.
+  const before = work().length;
+  await invoke('hermes-update');
+  await invoke('vm-update-retry', { force: true });
+  assert.deepEqual(await invoke('update-all'), { refused: 'Another update is already running. Try again when it finishes.' });
+  assert.equal(work().length, before, 'Update Hermes, VM retry and a second Update everything all wait');
+
+  // The plugin step fails: the browser host never starts, the summary says
+  // what is left, versions refresh and the bot reports once.
+  releaseHermes();
+  await waitFor(() => evaluate('document.getElementById("update-all-cancel").disabled'), (d) => d === false, 8000, 'the run to end');
+  const rows = await lines();
+  assert.deepEqual(rows.map((l) => l.split('|')[0]), ['done', 'failed', 'skipped']);
+  assert.equal(rows[0], 'done|✓ Hermes: 0.21.6 → 0.21.7 · Updated to 0.21.7');
+  assert.equal(rows[1], 'failed|✗ Alan’s Way plugin: 0.21.0 → 0.21.1: Plugin update failed: registry unreachable');
+  assert.equal(rows[2], `skipped|– Browser host: 0.21.3 → ${version} (not started)`);
+  assert.ok(!calls.some((c) => c.startsWith('host')), 'nothing after the failure ran');
+  assert.equal(await text('update-all-copy'), 'Alan’s Way plugin did not update: Plugin update failed: registry unreachable. Updated: Hermes. '
+    + 'Not started, still on the old version: Browser host. Your bot messaged you on Telegram.');
+  assert.ok(calls.lastIndexOf('check agent') > calls.indexOf('plugin agent'), 'the versions refresh after the run');
+  assert.deepEqual(work().slice(before), ['plugin agent',
+    'report Update everything stopped at the plugin: Plugin update failed: registry unreachable. Now on Hermes 0.21.7. Not started: browser host.']);
+  assert.equal(await hidden('update-all-go'), true, 'no app update staged, so no restart offered');
+  assert.equal(await text('version-label'), `Alan’s Workspace ${version} · Hermes 0.21.7 (server) · Plugin 0.21.0`, 'the bar shows the refreshed versions');
+
+  // Closing works once the run is over; reopening shows a fresh plan.
+  await evaluate('document.getElementById("update-all-popup").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))');
+  assert.equal(await hidden('update-all-popup'), true);
+  await click('update-all');
+  assert.deepEqual((await lines()).slice(0, 2), ['|Alan’s Way plugin: 0.21.0 → 0.21.1', `|Browser host: 0.21.3 → ${version}`], 'Hermes is current now');
+
+  await click('update-all-cancel');
+
+  // Other update buttons wait out a version check already in flight: its
+  // `hermes update --check` fetches into the checkout an update moves.
+  await waitFor(() => evaluate('document.getElementById("update-all-popup").classList.contains("hidden")'), Boolean);
+  let release; checkGate = { promise: new Promise((r) => { release = r; }) };
+  invoke('versions-refresh');
+  await waitFor(() => calls.at(-1), (c) => c === 'check agent', 3000, 'the probe to start');
+  const updating = invoke('hermes-update');
+  await new Promise((r) => setTimeout(r, 400));
+  assert.ok(!calls.includes('hermes agent quiet=false'), 'Update Hermes waits for the probe');
+  checkGate = null; release();
+  await updating;
+  assert.ok(calls.indexOf('hermes agent quiet=false') > calls.lastIndexOf('check agent'), 'and runs once it finished');
+
+  // An error that escapes the steps lands in the dialog, never a blank run.
+  failReport = true;
+  await click('update-all');
+  await waitFor(lines, (l) => l.length > 0, 3000, 'the plan');
+  await click('update-all-go');
+  await waitFor(() => text('update-all-copy'), (t) => t.startsWith('Update everything stopped:'), 8000, 'the error in the dialog');
+  assert.match(await text('update-all-copy'), /relay down/);
+  assert.equal(await evaluate('document.getElementById("update-all-cancel").disabled'), false, 'and it can be closed');
+  await click('update-all-cancel');
+
+  // A fully successful run: Hermes, plugin, host and the staged app all finish.
+  // Hold each server step and the report so restart timing is observable.
+  failReport = false; pluginOk = true; hermesNow = '0.21.6';
+  successGates = { hermes: gate(), plugin: gate(), host: gate(), report: gate() };
+  const appVersion = version.replace(/\d+$/, (patch) => String(Number(patch) + 1));
+  stagedUpdater.emit('update-downloaded', { version: appVersion });
+  await waitFor(() => hidden('update-all-popup'), Boolean);
+  const start = calls.length;
+  await click('update-all');
+  await waitFor(lines, (l) => l[0]?.includes('Hermes:'), 3000, 'the four-step plan');
+  assert.deepEqual(await lines(), ['|Hermes: 0.21.6 → 0.21.7', '|Alan’s Way plugin: 0.21.0 → 0.21.1',
+    `|Browser host: 0.21.3 → ${appVersion}`, `|Alan’s Workspace: ${version} → ${appVersion}`,
+    'warn|Your bots restart briefly while the server updates.', '|The app update installs when you click Restart to finish.']);
+  assert.equal(await text('update-all-go'), 'Update everything', 'confirmation comes before restart');
+  assert.equal(stagedUpdater.autoInstallOnAppQuit, true, 'installation is available before the run');
+  await click('update-all-go');
+  const successWork = () => calls.slice(start).filter((c) => !c.startsWith('check'));
+  const assertHeld = async (states) => {
+    await waitFor(lines, (l) => l.some((row, i) => states[i] === 'running' && row.startsWith('running|')), 5000, 'the paused step');
+    assert.deepEqual((await lines()).map((l) => l.split('|')[0]), states);
+    assert.equal(stagedUpdater.autoInstallOnAppQuit, false, 'app installation waits for the entire run');
+    assert.equal(await hidden('update-all-go'), true, 'restart is unavailable while the run is busy');
+    assert.equal(await evaluate('document.getElementById("update-all-cancel").disabled'), true);
+    await invoke('update-all-restart');
+    assert.ok(!successWork().includes('install app'), 'an early restart command cannot install');
+  };
+  await assertHeld(['running', 'pending', 'pending', 'pending']);
+  assert.deepEqual(successWork(), ['hermes agent quiet=true']);
+  successGates.hermes.release();
+  await assertHeld(['done', 'running', 'pending', 'pending']);
+  assert.deepEqual(successWork(), ['hermes agent quiet=true', 'plugin agent']);
+  successGates.plugin.release();
+  await assertHeld(['done', 'done', 'running', 'pending']);
+  assert.deepEqual(successWork(), ['hermes agent quiet=true', 'plugin agent', `host agent v${appVersion}`]);
+  successGates.host.release();
+  await waitFor(successWork, (c) => c.some((s) => s.startsWith('report ')), 5000, 'the final report');
+  await waitFor(lines, (l) => l.length === 4 && l.every((r) => r.startsWith('done|')), 5000, 'all four completion rows');
+  assert.deepEqual(await lines(), ['done|✓ Hermes: 0.21.6 → 0.21.7 · Updated to 0.21.7',
+    'done|✓ Alan’s Way plugin: 0.21.0 → 0.21.1 · Plugin updated to 0.21.1.',
+    `done|✓ Browser host: 0.21.3 → ${appVersion} · Running ${appVersion}`,
+    `done|✓ Alan’s Workspace: ${version} → ${appVersion} · Downloaded. Restart to finish.`]);
+  assert.equal(stagedUpdater.autoInstallOnAppQuit, false, 'installation is held until the final report finishes too');
+  assert.equal(await hidden('update-all-go'), true, 'restart waits for the final report');
+  successGates.report.release();
+  await waitFor(() => evaluate('document.getElementById("update-all-cancel").disabled'), (d) => d === false, 8000, 'the run to end');
+  assert.deepEqual((await lines()).map((l) => l.split('|')[0]), ['done', 'done', 'done', 'done']);
+  assert.deepEqual(successWork(), ['hermes agent quiet=true', 'plugin agent', `host agent v${appVersion}`,
+    `report Update everything finished. Now on Hermes 0.21.7, plugin 0.21.1, browser host ${appVersion}. The app installs ${appVersion} when you restart it.`]);
+  assert.equal(successWork().filter((c) => c.startsWith('report ')).length, 1, 'exactly one final report');
+  assert.match(await text('update-all-copy'), /^Everything is updated\./);
+  assert.equal(await text('update-all-go'), 'Restart to finish');
+  assert.equal(await hidden('update-all-go'), false, 'restart is offered once the run finishes');
+  assert.equal(stagedUpdater.autoInstallOnAppQuit, true, 'installation hold is released after completion');
+
+  console.log('PASS: the bottom bar shows versions with details on hover; Update everything confirms first, runs in order under one lock, stops at a failure, finishes a clean run, and reports once.');
+  app.quit();
+}).catch(error => { console.error(error.stack); app.exit(1); });

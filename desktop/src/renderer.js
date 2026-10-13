@@ -354,6 +354,7 @@ function renderUpdate() {
   note.classList.toggle('hidden', !label); note.textContent = label; note.disabled = !!u.busy;
   note.onclick = () => { if (u.error) command('open-download-page'); else { updatePopupPinned = true; renderUpdatePopup(); } };
   renderUpdatePopup();
+  renderVersions();
   renderVmBanner();
   $('bundle-banner').classList.toggle('hidden', !state.bundleWarning);
   $('bundle-banner-text').textContent = state.bundleWarning || '';
@@ -394,6 +395,54 @@ function renderUpdatePopup() {
   now.textContent = u.busy ? 'Updating…' : 'Update now';
   if (!updatePopupFocused) { updatePopupFocused = true; now.focus(); }
 }
+// The bottom bar's versions and "Update everything". The dialog shows the
+// plan first and nothing runs until its button is clicked; then it shows each
+// step's progress, the closing summary and, when the app staged an update,
+// "Restart to finish".
+let updateAllOpen = false, updateAllView = 'plan', updateAllError = '';
+const STEP_MARK = { pending: '·', running: '…', done: '✓', failed: '✗', skipped: '–' };
+function renderVersions() {
+  const v = state.versions || {}, run = state.updateAll || {};
+  const label = $('version-label');
+  label.textContent = v.text || `v${state.version}`;
+  label.title = `${v.tooltip ? `${v.tooltip}\n` : ''}Click for the v${state.version} release notes`;
+  const button = $('update-all');
+  button.textContent = run.busy ? 'Updating…' : v.hasUpdate ? '↑ Update' : 'Update';
+  button.classList.toggle('has-update', !!v.hasUpdate);
+  button.title = v.hasUpdate ? 'Updates are available. Review them before anything runs.' : 'Check what can be updated';
+  renderUpdateAll();
+}
+function renderUpdateAll() {
+  const popup = $('update-all-popup'), v = state.versions || {}, run = state.updateAll || {};
+  const show = updateAllOpen || !!run.busy;
+  const wasHidden = popup.classList.contains('hidden');
+  popup.classList.toggle('hidden', !show);
+  scheduleLayout();
+  if (!show) return;
+  const planning = updateAllView === 'plan' && !run.busy;
+  const steps = v.steps || [], list = $('update-all-steps'), go = $('update-all-go'), cancel = $('update-all-cancel');
+  list.replaceChildren();
+  if (planning) {
+    $('update-all-copy').textContent = steps.length ? 'This updates, in this order:' : 'Everything is up to date.';
+    for (const step of steps) list.append(element('p', 'update-line', `${step.name}: ${step.from} → ${step.to}`));
+    if (steps.some((step) => step.id !== 'app')) list.append(element('p', 'update-line warn', 'Your bots restart briefly while the server updates.'));
+    if (steps.some((step) => step.id === 'app')) list.append(element('p', 'update-line', 'The app update installs when you click Restart to finish.'));
+  } else {
+    $('update-all-copy').textContent = run.busy ? 'Updating. You can keep working; this takes a few minutes.'
+      : run.summary || (updateAllError ? `Update everything stopped: ${updateAllError}` : '');
+    for (const row of run.steps || []) {
+      const tail = row.state === 'failed' ? `: ${row.error}` : row.state === 'skipped' ? ' (not started)' : row.detail ? ` · ${row.detail}` : '';
+      list.append(element('p', `update-line ${row.state}`, `${STEP_MARK[row.state] || ''} ${row.name}: ${row.from} → ${row.to}${tail}`));
+    }
+  }
+  go.classList.toggle('hidden', planning ? false : !run.restart || run.busy);
+  go.textContent = planning ? 'Update everything' : 'Restart to finish';
+  go.disabled = planning ? !steps.length : false;
+  cancel.textContent = planning ? 'Cancel' : 'Close';
+  cancel.disabled = !!run.busy;
+  if (wasHidden) (go.disabled || go.classList.contains('hidden') ? cancel : go).focus();
+}
+function closeUpdateAll() { if (state?.updateAll?.busy) return; updateAllOpen = false; renderUpdateAll(); }
 function renderVmBanner() {
   const u = state.update || {}, retry = u.vmRetry || {};
   const banner = $('vm-banner');
@@ -603,7 +652,7 @@ function rect(id) {
 }
 function scheduleLayout() {
   cancelAnimationFrame(resizeFrame);
-  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: modalOpen || !$('update-popup').classList.contains('hidden') }));
+  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: modalOpen || !$('update-popup').classList.contains('hidden') || !$('update-all-popup').classList.contains('hidden') }));
 }
 // The mini VM window is anchored bottom-right until dragged; its saved offset
 // is relative to the workspace pane and clamped so it can never get lost.
@@ -1015,6 +1064,28 @@ $('modal').onclick = (event) => { if (event.target === $('modal')) closeModal();
 $('update-now').onclick = () => command('update-now');
 $('update-later').onclick = () => { updatePopupPinned = false; command('update-later'); };
 $('vm-banner-retry').onclick = () => command('vm-update-retry');
+// Opening re-checks the machine, so the plan does not lean on a cache that can
+// be half an hour old; it re-renders when the answer lands.
+$('update-all').onclick = () => { updateAllOpen = true; updateAllView = state?.updateAll?.busy ? 'run' : 'plan'; renderUpdateAll(); if (updateAllView === 'plan') command('versions-refresh'); };
+$('update-all-cancel').onclick = closeUpdateAll;
+$('update-all-go').onclick = () => {
+  // The run view starts empty, not on a previous run's rows, until main's
+  // first broadcast lands.
+  if (updateAllView === 'plan') {
+    updateAllView = 'run'; updateAllError = ''; state.updateAll = { busy: true, steps: [] }; renderUpdateAll();
+    // api.command, not command(): a failure lands in the dialog itself, never
+    // a toast behind an empty run view. Main refuses while another update
+    // holds the lock or when nothing is behind; that goes back to the plan.
+    api.command('update-all').then((reply) => {
+      if (reply?.refused) { updateAllView = 'plan'; toast(reply.refused); }
+    }).catch((error) => { updateAllError = error?.message || String(error); })
+      .then(() => api.getState()).then(render)
+      .catch((error) => { state.updateAll = { busy: false, steps: [] }; updateAllError ||= error?.message || String(error); renderUpdateAll(); });
+  }
+  else command('update-all-restart');
+};
+$('update-all-popup').onclick = (event) => { if (event.target === $('update-all-popup')) closeUpdateAll(); };
+$('update-all-popup').addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); closeUpdateAll(); } });
 $('update-popup').onclick = (event) => { if (event.target === $('update-popup') && !state?.update?.busy) $('update-later').click(); };
 $('update-popup').addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {

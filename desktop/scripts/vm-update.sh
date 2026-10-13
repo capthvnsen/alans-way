@@ -21,6 +21,7 @@
 #   sh vm-update.sh v0.3.2    update to the tag, restart broker + plugins
 #   sh vm-update.sh --check   read-only: print the checkout/live versions
 #   sh vm-update.sh --doctor  read-only: one JSON health report for Check setup
+#   sh vm-update.sh --plugins update the Hermes plugins only (no checkout needed)
 #
 # Checkout discovery matches setup.sh: a root install lives at
 # /opt/hermes-alans-way/browser, a user install at
@@ -38,10 +39,11 @@
 # Everything above it is progress; "vm-update: <phase>" lines map to UI text.
 set -u
 
-TAG="" CHECK=0 DOCTOR=0
+TAG="" CHECK=0 DOCTOR=0 PLUGINS=0
 case "${1:-}" in
   --check) CHECK=1;;
   --doctor) DOCTOR=1;;
+  --plugins) PLUGINS=1;;
   -h|--help)
     # $0 is 'sh' when the app pipes this script via 'sh -s', so the usage text
     # is embedded rather than read back out of the script file.
@@ -52,6 +54,7 @@ release tag, restart the tab broker and verify it answers with that version.
   sh vm-update.sh v0.3.2    update to the tag and restart the browser host
   sh vm-update.sh --check   read-only: print the checkout/live versions
   sh vm-update.sh --doctor  read-only: a health report for the app's Check setup
+  sh vm-update.sh --plugins update the Hermes plugins only
 
 The desktop app pipes this script over SSH, so nothing is installed on the VM
 and no file is left behind. It only ever touches the checkout setup.sh
@@ -855,12 +858,39 @@ EOF
   "$NODE_BIN" -e "$DOCTOR_JS" "$WORK" "$VERSION"
 }
 
+# The Hermes half of --check, for the app's bottom bar: the raw `hermes
+# --version` line, the verdict lines of `hermes update --check` (read-only, it
+# only fetches), the alans-way plugin version (default profile first) and
+# whether the default gateway runs. The app parses the raw text, so a Hermes
+# on the app's own machine and one on a server share one parser.
+hermes_fields() {
+  HHOME="${HERMES_HOME:-$HOME/.hermes}"
+  _hf_ver="" _hf_check="" _hf_gw=null _hf_plugin=""
+  if hermes_bin; then
+    _hf_ver="$(run_hermes 20 --version | sed -n '/Hermes Agent v/{p;q;}')"
+    _hf_check="$(run_hermes 45 update --check | grep -Ei 'available|up to date|no newer release' | head -3)"
+    _hf_gw_out="$(run_hermes 20 gateway status)"
+    if printf '%s' "$_hf_gw_out" | grep -qi 'gateway is running'; then _hf_gw=true
+    elif printf '%s' "$_hf_gw_out" | grep -qi 'not running'; then _hf_gw=false; fi
+  fi
+  while read -r _hf_name _hf_home; do
+    [ -n "$_hf_name" ] || continue
+    _hf_plugin="$(plugin_version "$_hf_home/plugins/alans-way")"
+    [ -n "$_hf_plugin" ] && break
+  done <<EOF
+$(list_profiles)
+EOF
+  printf ',"hermesVersion":"%s","hermesCheck":"%s","pluginVersion":"%s","gatewayRunning":%s' \
+    "$(json_string "$_hf_ver")" "$(json_string "$_hf_check")" "$(json_string "$_hf_plugin")" "$_hf_gw"
+}
+
 # ---------------------------------------------------------------- main
-# --check and an update need the browser host checkout; --doctor still reports
-# profiles, plugins and the setup audit on a server that never got one.
+# An update needs the browser host checkout; --check, --plugins and --doctor
+# still run on a server (or the app's own machine) that never got one.
 DIR="$(find_checkout || true)"
 if [ -z "$DIR" ]; then
-  [ "$DOCTOR" = 1 ] || fail "no browser host checkout found (expected /opt/hermes-alans-way/browser or ~/.local/share/hermes-alans-way/app)"
+  [ "$DOCTOR" = 1 ] || [ "$CHECK" = 1 ] || [ "$PLUGINS" = 1 ] \
+    || fail "no browser host checkout found (expected /opt/hermes-alans-way/browser or ~/.local/share/hermes-alans-way/app)"
   VERSION=""
 else
   VERSION="$(json_field version < "$DIR/desktop/package.json")"
@@ -871,10 +901,15 @@ if [ "$CHECK" = 1 ]; then
   HOST_VERSION="$(printf '%s' "$BODY" | json_field version)"
   HOST_BUSY=false
   case "$BODY" in *'"busy":true'*) HOST_BUSY=true;; esac
-  printf '{"ok":true,"version":"%s","hostVersion":"%s","busy":%s,"error":""}\n' "$VERSION" "$HOST_VERSION" "$HOST_BUSY"
+  printf '{"ok":true,"version":"%s","hostVersion":"%s","busy":%s,"error":""%s}\n' "$VERSION" "$HOST_VERSION" "$HOST_BUSY" "$(hermes_fields)"
   exit 0
 fi
 if [ "$DOCTOR" = 1 ]; then doctor; exit 0; fi
+if [ "$PLUGINS" = 1 ]; then
+  update_hermes_plugins
+  json true "$VERSION" false "" "$PLUGINS_JSON" "$GATEWAY_RESTARTED"
+  exit 0
+fi
 
 printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
   || fail "refusing non-release tag '$TAG' (need vX.Y.Z)"

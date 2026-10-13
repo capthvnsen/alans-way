@@ -467,6 +467,14 @@ gw_live() {
   fi
   [ "$(cat "$GWFILE" 2>/dev/null || true)" = "running" ]
 }
+if [ "$1" = --version ]; then echo "Hermes Agent v0.21.6+12.gabc (2026.9.24) · stable"; echo 'Up to date'; exit 0; fi
+if [ "$1" = update ] && [ "\${2:-}" = --check ]; then
+  echo '→ Update channel: stable'; cat "$STATE/check-out" 2>/dev/null || echo '✓ Already up to date.'; exit 0
+fi
+if [ "$1" = gateway ] && [ "$2" = status ]; then
+  if [ "$(cat "$GWFILE" 2>/dev/null)" = running ]; then echo '✓ Gateway is running (PID: 42)'; else echo '✗ Gateway is not running'; fi
+  exit 0
+fi
 if [ "$1" = gateway ] && [ "$2" = restart ]; then
   if [ -f "$STATE/gwfail" ]; then echo 'gateway restart refused'; exit 1; fi
   printf 'restart\\n' >> "$STATE/restarts.log"; exit 0
@@ -570,6 +578,54 @@ function makePluginClone() {
   return clone;
 }
 const pluginEnv = (home, state) => ({ HERMES_HOME: home, FAKE_HERMES_STATE: state });
+
+test('--check also reports Hermes, its update verdict, the plugin version and the gateway', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin } = makeBin();
+  const state = makeHermesState();
+  addHermes(bin, state);
+  fs.writeFileSync(path.join(state, 'check-out'), '→ Selected release available: stable v0.21.7 (71d34bad1045)\n  Run `hermes update` to install it.\n');
+  fs.writeFileSync(path.join(state, 'gwstate'), 'running\n');
+  const home = makeHermesHome();
+  addProfile(home, 'coder');
+  addPlugin(home, 'coder', 'alans-way', '0.20.0');
+  addPlugin(home, 'default', 'alans-way', '0.21.0');
+  const port = await makeStatus({ version: '0.3.1', busy: false });
+  const result = lastJson(await runScript(['--check'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state))));
+  assert.equal(result.ok, true);
+  assert.equal(result.hostVersion, '0.3.1', 'the browser host fields are unchanged');
+  assert.equal(result.hermesVersion, 'Hermes Agent v0.21.6+12.gabc (2026.9.24) · stable');
+  assert.equal(result.hermesCheck, '→ Selected release available: stable v0.21.7 (71d34bad1045)', 'only the verdict line, not the advice under it');
+  assert.equal(result.pluginVersion, '0.21.0', 'the default profile wins');
+  assert.equal(result.gatewayRunning, true);
+  fs.writeFileSync(path.join(state, 'gwstate'), 'stopped\n');
+  assert.equal(lastJson(await runScript(['--check'], envFor(checkout, makeDataDir(port), bin, pluginEnv(home, state)))).gatewayRunning, false);
+});
+
+test('--check without hermes reports empty Hermes fields and no gateway verdict', async () => {
+  const port = await makeStatus({ version: '0.3.1', busy: false });
+  const result = lastJson(await runScript(['--check'], envFor(makeCheckout(remote), makeDataDir(port), makeBin().bin, pluginEnv(makeHermesHome(), makeHermesState()))));
+  assert.deepEqual([result.ok, result.hermesVersion, result.hermesCheck, result.pluginVersion, result.gatewayRunning], [true, '', '', '', null]);
+});
+
+test('--check and --plugins run where no browser host checkout exists (a local Hermes)', async () => {
+  const { bin } = makeBin();
+  const state = makeHermesState();
+  const { restarts } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  const missing = path.join(os.tmpdir(), 'definitely-missing-checkout');
+  const check = lastJson(await runScript(['--check'], envFor(missing, mktemp('vm-update-nodata-'), bin, pluginEnv(home, state))));
+  assert.deepEqual([check.ok, check.version, check.pluginVersion], [true, '', '0.6.1']);
+  const res = await runScript(['--plugins'], envFor(missing, mktemp('vm-update-nodata-'), bin, pluginEnv(home, state)));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.plugins.map((p) => [p.name, p.before, p.after, p.status]), [['alans-way', '0.6.1', '0.6.2', 'updated']]);
+  assert.equal(result.gatewayRestarted, true);
+  assert.equal(restarts(), 1);
+  assert.doesNotMatch(res.stdout, /checkout pinned|browser host restarted/, 'the browser host is never touched');
+});
 
 test('a VM without hermes still updates and reports an empty plugin list', async () => {
   const checkout = makeCheckout(remote);
