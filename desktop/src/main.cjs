@@ -6,7 +6,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
@@ -25,7 +25,7 @@ const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked } = require('./vm-update.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
-const { createAgentInput, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
+const { createAgentInput, PREFLIGHT_READY, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
@@ -107,6 +107,8 @@ const OPEN_PARSE_MS = 8000;
 // A snapshot waits this long for a still-parsing document; the wait ends at DOMContentLoaded.
 const SNAPSHOT_PARSE_MS = 1500;
 const WAIT_SLICE_MS = 1000;
+const HUMAN_INPUT = new Set(['mouseDown', 'rawKeyDown', 'keyDown', 'char', 'mouseWheel', 'gestureScrollBegin', 'gestureScrollUpdate', 'touchStart']);
+const TAKEOVER_NOTICE_MS = 8000, TAKE_BACK_MS = 60000;
 let isQuitting = false;
 let bundleWarningDismissed = false;
 const runningBundle = () => process.platform === 'darwin' && app.isPackaged ? macUpdate.bundleLocation(path.resolve(process.execPath, '../../..'), app.getName()) : null;
@@ -189,7 +191,7 @@ function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
   const info = { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
-    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab) };
+    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab), takeover: tab.takeover || null };
   return forBot ? redactTabForBot(info) : info;
 }
 function pageState(tab) {
@@ -290,7 +292,7 @@ function getState() {
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? setupCheck.inRouterApplications(process.execPath) : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
-    autoOpenLinks: prefs.autoOpenLinks !== false,
+    autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false,
     activeTabId, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
@@ -422,6 +424,12 @@ function configureContents(contents, isTelegram = false) {
     }
   });
   contents.on('will-redirect', (event, url) => { if (!isTelegram) blockAgentNavigation(event, url); });
+  // The human's last press, key or scroll on a page holds off a bot takeover.
+  contents.on('input-event', (_event, input) => {
+    if (!HUMAN_INPUT.has(input.type)) return;
+    const targetTab = [...tabs.values()].find(tab => tab.view.webContents === contents);
+    if (targetTab && !agentInput.isDispatching(targetTab)) targetTab.lastHumanInput = Date.now();
+  });
   contents.on('before-input-event', (event, input) => {
     const targetTab = [...tabs.values()].find(tab => tab.view.webContents === contents);
     if (targetTab && agentInput.isDispatching(targetTab)) return;
@@ -640,6 +648,7 @@ function changeController(id, controller, source = 'human', handback = null) {
   // Only the human's own browsing is recorded: a bot taking the tab ends it.
   if (recording?.tabId === id && (controller === 'agent' || tab.extensionPage)) { try { stopRecording(); } catch (error) { logError('recording', error); } }
   const wasAgent = tab.controller === 'agent';
+  tab.takeover = null;
   tab.handback = nextHandback(tab, controller, source, handback);
   tab.controller = controller === 'agent' ? 'agent' : 'human';
   syncFollowUpSeed(tab);
@@ -648,7 +657,7 @@ function changeController(id, controller, source = 'human', handback = null) {
   // it back in the UI. A bot's own release or the idle-expiry clock stays
   // retakeable, and a tab already locked stays locked.
   if (tab.controller === 'agent') { tab.humanLock = false; tab.agentSince = Date.now(); }
-  else if (wasAgent) tab.humanLock = source === 'human';
+  else if (wasAgent) { tab.humanLock = source === 'human'; tab.humanSince = Date.now(); }
   if (tab.controller === 'agent' && tab.botId === 'shared' && prefs.selectedBotId) tab.botId = prefs.selectedBotId;
   // Bots can't plant persistent page scripts (the cdp action denies the
   // method) but strip any surviving registrations when the human takes over.
@@ -662,6 +671,102 @@ function changeController(id, controller, source = 'human', handback = null) {
   notifyHandback(describeTab(tab));
   broadcast();
   return describeTab(tab);
+}
+// A bot's claim, or an action on a tab the human holds, takes the tab back when
+// Settings allow it (on by default). The claim rules run before and after the
+// grace wait: the human may hand the tab over or start recording meanwhile.
+// A caller holding an epoch (an action or a close) needs the tab unchanged
+// since it read it; a plain claim gets a fresh epoch either way.
+function claimRules(tab) {
+  const autoTakeover = prefs.autoTakeover !== false;
+  return { autoTakeover, recording: autoTakeover && recording?.tabId === tab.id };
+}
+// An action also holds the page's navigation generation, and dry-runs itself
+// (preflight) after the wait, so a refusal never takes the tab.
+async function claimTab(tab, botId, { isClosed = () => false, overseer = false, epoch, generation, preflight, beforeClaim } = {}) {
+  const rules = () => claimRules(tab);
+  requireAgentClaim(tab, Date.now(), rules());
+  const auto = rules().autoTakeover && tab.controller === 'human';
+  if (auto) {
+    const started = Date.now();
+    for (let ms; (ms = takeoverDelay(tab.lastHumanInput, started)) > 0;) await new Promise((resolve) => setTimeout(resolve, ms));
+    // Another bot's claim, Take back or a navigation may have moved the tab
+    // while this one waited or dry-ran.
+    const recheck = () => {
+      if (isClosed()) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
+      if (!tabs.has(tab.id)) throw Object.assign(new Error('Tab not found.'), { status: 404 });
+      requireAgentClaim(tab, Date.now(), rules());
+      if (tab.botId !== 'shared') requireActorCore(tab, botId, undefined, false, overseer);
+      if ((epoch !== undefined && tab.epoch !== epoch) || (generation !== undefined && tab.generation !== generation))
+        throw Object.assign(new Error(STALE_WAIT), { status: 409 });
+    };
+    recheck();
+    if (tab.controller === 'agent') return describeTab(tab);
+    // Input during the dry run restarts the grace (still 10 seconds at most).
+    while (preflight) {
+      await preflight(); recheck();
+      if (tab.controller === 'agent') return describeTab(tab);
+      const ms = takeoverDelay(tab.lastHumanInput, started);
+      if (ms <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, ms)); recheck();
+    }
+  }
+  // Revalidate the dry approval while the human still holds the epoch.
+  beforeClaim?.();
+  // The notice is for a tab the human took or used, not one a bot released
+  // that sat idle.
+  const took = auto && tab.controller === 'human' && (tab.humanLock || (tab.lastHumanInput || 0) >= (tab.humanSince || 0));
+  tab.handoff = reviewedHandoff(tab.handoff);
+  if (tab.botId === 'shared') tab.botId = botId;
+  const info = changeController(tab.id, 'agent', 'agent');
+  if (!took) return info;
+  const notice = tab.takeover = { botId: tab.botId, at: Date.now() };
+  setTimeout(() => { if (tab.takeover === notice) { tab.takeover = null; broadcast(); } }, TAKEOVER_NOTICE_MS);
+  broadcast();
+  return describeTab(tab);
+}
+// With automatic takeover on, the human grabbing a tab mid-call is not a stop
+// sign: the bot's next call takes the tab back once they pause.
+function takeoverError(error) {
+  if (prefs.autoTakeover !== false && /^human_has_control/.test(error?.message || ''))
+    error.message = 'human_took_tab: the human took this tab during your call. Check its effect, then call again; the tab comes back to you once they pause.';
+  return error;
+}
+const STALE_WAIT = 'stale_control_epoch: the tab changed while you waited (the human navigated, or another claim landed). Claim it, read it, then act.';
+// A dry run (tab.preflight) acts for a tab the human still holds: it needs the
+// tab's bot and an unchanged epoch, and stops at the first change to the page.
+function requireActor(tab, botId, epoch, mutate = false, overseer = false, now = Date.now()) {
+  if (!tab.preflight || !mutate || tab.controller === 'agent') return requireActorCore(tab, botId, epoch, mutate, overseer, now);
+  requireActorCore(tab, botId, epoch, false, overseer, now);
+  if (epoch !== tab.epoch) throw Object.assign(new Error(STALE_WAIT), { status: 409 });
+}
+function dryRun(tab) { if (tab.preflight) throw PREFLIGHT_READY; }
+const STALE_HUMAN_EPOCH = 'stale_control_epoch: the human took this tab and may have changed the page. Claim it (control, controller "agent") to take it back, read it, then act.';
+const OTHER_ACTIONS = new Set(['navigate', 'back', 'forward', 'reload', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp']);
+const UNSUPPORTED_ACTION = 'Supported actions: navigate, click, double_click, right_click, drag, select, type, press, move, scroll, back, forward, reload, batch, read, eval, wait, viewport, cdp.';
+// The checks an action passes before it touches the page, run before a bot
+// takes a tab back so a malformed action never costs the human their tab.
+async function checkAction(tab, body, botId, depth = 0) {
+  const bad = (message) => { throw Object.assign(new Error(message), { status: 400 }); };
+  if (!body || typeof body !== 'object' || typeof body.action !== 'string') bad('action is required.');
+  const { action } = body;
+  if (!INPUT_ACTIONS.has(action) && !OTHER_ACTIONS.has(action)) bad(UNSUPPORTED_ACTION);
+  if (body.dialog !== undefined) dialogAnswer(body.dialog);
+  // Later steps may aim at refs the first one finds, so only the first is checked.
+  if (action === 'batch') return depth > 0 ? bad('Batches cannot nest.') : Array.isArray(body.steps) && body.steps.length ? checkAction(tab, body.steps[0], botId, 1) : bad('batch needs a non-empty steps array (max 25).');
+  if (INPUT_ACTIONS.has(action)) return agentInput.perform(tab, body, botId, { argsOnly: true });
+  const code = String(body.code || '');
+  if (action === 'eval' && (!code || code.length > 16384)) bad('eval needs a code string (max 16KB).');
+  if (action === 'wait' && !body.selector && !body.text && !body.url) bad('wait needs a selector, text, or url to wait for.');
+  const width = Math.round(Number(body.width)), height = Math.round(Number(body.height));
+  if (action === 'viewport' && body.clear !== true && !(width >= 100 && width <= 7680 && height >= 100 && height <= 4320))
+    bad('viewport needs width 100-7680 and height 100-4320, or clear:true.');
+  if (action === 'navigate') agentPageUrl(body.url);
+  if (action === 'cdp') {
+    const methodError = cdpMethodError(String(body.method || ''));
+    if (methodError) bad(methodError);
+    if (body.method === 'Page.navigate') { if (typeof body.params?.url !== 'string' || !body.params.url) bad('Page.navigate needs a url string.'); agentPageUrl(body.params.url); }
+  }
 }
 const HANDBACK_TEXT = { captcha: 'Solve the CAPTCHA, then give the tab back.', login: 'Sign in, then give the tab back.', two_factor: 'Enter the verification code, then give the tab back.', payment_details: 'Enter the card details, then give the tab back.', review: 'Review the page, then give the tab back.', other: 'Take a look, then give the tab back.' };
 // One notification per handback. Notifications are kept per tab so a click
@@ -1241,7 +1346,12 @@ function registerIpc() {
       case 'control': {
         if(isVpsTab(value.id)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller});}
         const tab = tabs.get(value.id);
-        if (tab && value.controller === 'agent') tab.handoff = reviewedHandoff(tab.handoff);
+        // Give to agent also ends a Take back cooldown.
+        if (tab && value.controller === 'agent') { tab.handoff = reviewedHandoff(tab.handoff); tab.tookBackUntil = 0; }
+        if (tab && value.controller !== 'agent') tab.lastHumanInput = Date.now();
+        // Take back on the takeover notice keeps bots off the tab for a minute,
+        // and its epoch bump voids any takeover still waiting out the grace.
+        if (tab && value.takeBack === true) tab.tookBackUntil = Date.now() + TAKE_BACK_MS;
         return changeController(value.id, value.controller);
       }
       case 'share-page': {
@@ -1364,6 +1474,7 @@ function registerIpc() {
         if (typeof value.showBrowser === 'boolean') prefs.showBrowser = value.showBrowser;
         if (typeof value.macSshHost === 'string') prefs.macSshHost = value.macSshHost.trim();
         if (typeof value.autoOpenLinks === 'boolean') prefs.autoOpenLinks = value.autoOpenLinks;
+        if (typeof value.autoTakeover === 'boolean') prefs.autoTakeover = value.autoTakeover;
         if (typeof value.primaryBotId === 'string') prefs.primaryBotId = prefs.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : prefs.primaryBotId;
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) prefs.locationDefault = value.locationDefault;
         if (Number.isFinite(value.chatWidth)) prefs.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
@@ -1932,6 +2043,8 @@ async function performStep(tab, body, botId, depth, isAborted) {
     if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
     const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
     if (!steps.length) throw Object.assign(new Error('batch needs a non-empty steps array (max 25).'), { status: 400 });
+    // A dry run checks the first step: later ones may aim at what it finds.
+    if (tab.preflight) return performAction(tab, { ...steps[0], epoch: body.epoch }, botId, 1, isAborted);
     const results = [], started = Date.now();
     let lastTarget, sawInput = false;
     for (const step of steps) {
@@ -1951,6 +2064,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
   }
   if (body.action === 'read') {
     const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
+    dryRun(tab);
     requireAgentRead(tab);
     // A read step is the model's own baseline, so it must not plant the doc
     // marker: on a fresh document the missing marker is what lets the final
@@ -1965,6 +2079,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     if (!code || code.length > 16384) throw Object.assign(new Error('eval needs a code string (max 16KB).'), { status: 400 });
     const wc = tab.view.webContents;
     let evalTimer;
+    dryRun(tab);
     let value = await Promise.race([
       frameOf(wc).executeJavaScript(code, true),
       new Promise((_, reject) => { evalTimer = setTimeout(() => reject(Object.assign(new Error('eval timed out after 15s.'), { status: 408 })), 15000); }),
@@ -2011,6 +2126,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
       poll = setInterval(() => { if (met() || Date.now() > deadline) done(met()); }, 100);
       setTimeout(() => done(met()), ${ms});
     })`;
+    dryRun(tab);
     const hostStart = Date.now();
     let value = null;
     while (Date.now() - hostStart < timeout + 1000) {
@@ -2037,6 +2153,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     return finish({ waited: value.waited, dispatched: true });
   }
   if (body.action === 'viewport') {
+    dryRun(tab);
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     if (body.clear === true) {
       await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
@@ -2065,6 +2182,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
       params.url = agentPageUrl(params.url);
     }
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    dryRun(tab);
     let cdpTimer;
     let value = await Promise.race([
       wc.debugger.sendCommand(method, params),
@@ -2087,6 +2205,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
   }
   let parseWaitMs = 0, didNavigate = false;
   if (body.action === 'navigate') {
+    dryRun(tab);
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
     const target = pageUrl(agentPageUrl(body.url));
@@ -2100,6 +2219,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     parseWaitMs = NAVIGATE_PARSE_MS;
     didNavigate = commit.state === 'committed';
   } else if (['back', 'forward', 'reload'].includes(body.action)) {
+    dryRun(tab);
     await agentInput.clear(tab);
     requireActor(tab, botId, body.epoch, true, overseer);
     const history = wc.navigationHistory;
@@ -2116,7 +2236,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
         throw Object.assign(error, { status: 400 });
       }
     }
-  } else throw Object.assign(new Error('Supported actions: navigate, click, double_click, right_click, drag, select, type, press, move, scroll, back, forward, reload, batch, read, eval, wait, viewport, cdp.'), { status: 400 });
+  } else throw Object.assign(new Error(UNSUPPORTED_ACTION), { status: 400 });
   // Seal navigation-family results too: a takeover while the page settled
   // makes this response the human's page state.
   requireActor(tab, botId, body.epoch, true, overseer);
@@ -2272,9 +2392,52 @@ function startApi() {
         // queued action run later against whatever the page became.
         let closed = false;
         res.on('close', () => { if (!res.writableFinished) closed = true; });
-        const action = tab.queue.then(() => {
+        const action = tab.queue.then(async () => {
           if (closed) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
-          return performAction(tab, body, botId, 0, () => closed);
+          // A malformed action must not cost the human their tab.
+          if (!body || typeof body !== 'object' || typeof body.action !== 'string') throw Object.assign(new Error('action is required.'), { status: 400 });
+          // An epoch read while the human held the tab carries over to the
+          // takeover; an older one is refused and the tab stays theirs.
+          let taken = 0, held;
+          if (tab.controller !== 'agent' && prefs.autoTakeover !== false) {
+            await checkAction(tab, body, botId);
+            // A tab that stays the human's says why before any epoch advice.
+            requireAgentClaim(tab, Date.now(), claimRules(tab));
+            // The generation the bot holds says whether the human moved the page since.
+            const generation = Number.isInteger(body.generation) ? body.generation : tab.generation;
+            if (body.epoch !== tab.epoch || generation !== tab.generation) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
+            held = { humanLock: tab.humanLock, humanSince: tab.humanSince, botId: tab.botId, handoff: tab.handoff };
+            const preflight = async () => {
+              tab.preflight = true;
+              try { await performAction(tab, { ...body }, botId, 0, () => closed); }
+              catch (error) { if (error !== PREFLIGHT_READY) throw error; }
+              finally { tab.preflight = false; }
+            };
+            const approvalEpoch = body.epoch;
+            taken = body.epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch: body.epoch, generation, preflight,
+              beforeClaim: () => agentInput.carryApproval?.(tab, body, approvalEpoch) })).epoch;
+          }
+          // An action the page refused before any input or navigation reached it
+          // (a challenge, a commit check, a missing control) hands the tab
+          // straight back: the takeover bought the bot nothing.
+          const inputs = tab.inputsSent || 0, wc = tab.view.webContents;
+          let moved = false;
+          const onMove = () => { moved = true; };
+          const unrun = () => taken && tab.epoch === taken && tab.controller === 'agent' && (tab.inputsSent || 0) === inputs && !moved;
+          const giveBack = () => {
+            try { changeController(tab.id, 'human', 'human'); Object.assign(tab, held); broadcast(); } catch (error) { logError('takeover undo', error); }
+          };
+          wc.on('did-start-navigation', onMove);
+          try {
+            const result = await performAction(tab, body, botId, 0, () => closed);
+            // Batch steps report errors without a status: only an input first
+            // step that failed before reaching the page counts as refused.
+            if (INPUT_ACTIONS.has(body.steps?.[0]?.action) && result?.results?.[0]?.ok === false && unrun()) giveBack();
+            return result;
+          } catch (error) {
+            if (([400, 403, 409].includes(error?.status) || error?.code === 'stale_ref') && unrun()) giveBack();
+            throw takeoverError(error);
+          } finally { if (!wc.isDestroyed()) wc.off('did-start-navigation', onMove); }
         })
           .finally(() => { tab.pendingActions--; tab.lastAgentActivity = Date.now(); });
         tab.queue = action.catch(() => {});
@@ -2288,17 +2451,27 @@ function startApi() {
         const granted = (tab.allowedBots || []).includes(botId)
           || (tab.botId === 'shared' && prefs.bots.some((bot) => bot.id === botId));
         if (botId !== tab.botId && !overseer && !granted) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
-        if (body.controller === 'agent') { requireAgentClaim(tab); tab.handoff = reviewedHandoff(tab.handoff); }
-        if (tab.botId === 'shared' && body.controller === 'agent') tab.botId = botId;
-        const request = body.controller === 'agent' ? null : handbackRequest(body);
-        // A reasoned release on a human-taken-over tab records no hold; say so
-        // or the bot cannot tell its handback was ignored.
+        let closed = false;
+        res.on('close', () => { if (!res.writableFinished) closed = true; });
+        if (body.controller === 'agent') return send(200, redactTabForBot(await claimTab(tab, botId, { isClosed: () => closed, overseer })));
+        const request = handbackRequest(body);
         const ignored = request && tab.controller === 'human' && tab.humanLock;
         const info = redactTabForBot(changeController(tab.id, body.controller, 'agent', request));
         if (ignored) info.note = 'The human has taken over this tab; the handback reason was ignored.';
         return send(200, info);
       }
-      if (req.method === 'DELETE' && !match[2]) { requireActor(tab, botId, Number(req.headers['x-control-epoch']), true, overseer); closeTab(tab.id); return send(200, { closed: true }); }
+      if (req.method === 'DELETE' && !match[2]) {
+        let epoch = Number(req.headers['x-control-epoch']), closed = false;
+        res.on('close', () => { if (!res.writableFinished) closed = true; });
+        if (tab.controller !== 'agent' && prefs.autoTakeover !== false) {
+          requireActor(tab, botId, undefined, false, overseer);
+          requireAgentClaim(tab, Date.now(), claimRules(tab));
+          if (epoch !== tab.epoch) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
+          epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer, epoch, generation: tab.generation })).epoch;
+        }
+        if (closed) throw Object.assign(new Error('The request was closed before the tab closed.'), { status: 499 });
+        requireActor(tab, botId, epoch, true, overseer); closeTab(tab.id); return send(200, { closed: true });
+      }
       return send(405, { error: 'Method not supported.' });
     } catch (error) { send((error && error.status) || (error && error.code === 'stale_ref' ? 409 : 400), { error: errorMessage(error), ...(error && error.code ? { code: error.code } : {}) }); }
   });
