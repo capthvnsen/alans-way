@@ -421,10 +421,12 @@ test('real Chromium: a CAPTCHA on a VM tab is refused to the bot, handed to the 
   // Page script could click the widget itself, so it is refused while one is on the page.
   const script = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: `document.querySelector('iframe').getBoundingClientRect().top`, epoch: tab.epoch });
   assert.equal(script.status, 409); assert.equal(script.data.code, 'challenge_present');
-  for (const [method, params] of [['Runtime.evaluate', { expression: '1' }], ['Runtime.callFunctionOn', { functionDeclaration: 'function () {}' }], ['DOM.getDocument', {}]]) {
+  // Raw CDP is held to read-only methods while the widget is there.
+  for (const [method, params] of [['Runtime.evaluate', { expression: '1' }], ['Runtime.callFunctionOn', { functionDeclaration: 'function () {}' }], ['Page.setDocumentContent', { frameId: 'x', html: '<script>parent.document.title = "written"</script>' }], ['DOM.setOuterHTML', { nodeId: 1, outerHTML: '<p></p>' }]]) {
     const refused = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'cdp', method, params, epoch: tab.epoch });
-    assert.equal(refused.status, 409, method); assert.match(refused.data.error, /^challenge_present/, method);
+    assert.equal(refused.status, 409, method); assert.equal(refused.data.code, 'challenge_present', method);
   }
+  assert.equal((await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'cdp', method: 'DOM.getDocument', params: {}, epoch: tab.epoch })).status, 200, 'reads still work');
   const viewerCdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
   const box = await (await viewerCdp.page(tab.targetId)).executeJavaScript(`(() => { const r = document.querySelector('iframe').getBoundingClientRect(); return { x: r.left + 20, y: r.top + 20 }; })()`);
   const raw = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'cdp', method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', ...box, button: 'left', clickCount: 1 }, epoch: tab.epoch });

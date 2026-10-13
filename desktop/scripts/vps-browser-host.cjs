@@ -7,9 +7,9 @@ const fs = require('node:fs'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { CDP, AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
-const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, liveHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, viewerUrl } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, liveHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe, viewerUrl } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
-const { createAgentInput, refuseChallenge, rawInputTarget, tintScript, botAccent } = agentInputModule;
+const { createAgentInput, refuseChallenge, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
 const INPUT_ACTIONS = agentInputModule.INPUT_ACTIONS || new Set(['click', 'type', 'press', 'move', 'scroll']);
 const { snapshotExpression, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('../src/browser-page.cjs');
@@ -625,10 +625,9 @@ async function serve() {
         if (typeof params.url !== 'string' || !params.url) throw fail('Page.navigate needs a url string.');
         params.url = agentPageUrl(params.url);
       }
-      // Raw input is input too: it may not land on a challenge either, and page
-      // script (Runtime.*, DOM.*) may not run while one is on the page.
-      if (method.startsWith('Input.')) { const aim = rawInputTarget(method, params); await refuseChallenge(wc, aim.points, aim.keyboard); }
-      else if (/^(Runtime|DOM)\./.test(method)) await refuseChallenge(wc);
+      // While a challenge is on the page, only read-only methods run: raw input,
+      // script and DOM writes could all reach the widget.
+      if (!cdpChallengeSafe(method)) await refuseChallenge(wc);
       let value = await Promise.race([
         wc.command(method, params),
         new Promise((_, reject) => setTimeout(() => reject(fail('cdp timed out after 20s.', 408)), 20000)),

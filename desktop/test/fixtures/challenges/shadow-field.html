@@ -1,0 +1,7 @@
+<!doctype html><title>Search</title>
+<search-box></search-box>
+<script>
+customElements.define('search-box', class extends HTMLElement {
+  constructor() { super(); this.attachShadow({ mode: 'open' }).innerHTML = '<input id="q" aria-label="Search">'; }
+});
+</script>

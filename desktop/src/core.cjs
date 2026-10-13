@@ -113,6 +113,18 @@ const CDP_BLOCKED = new Set([
   'Network.clearBrowserCookies', 'Network.clearBrowserCache', 'Network.loadNetworkResource',
   'Network.setRequestInterception', 'Network.continueInterceptedRequest',
 ]);
+// While a challenge is on the page only these run: reads and domain toggles,
+// plus leaving the page. Everything else can script, write the DOM or send
+// input, and a new method stays refused until it is listed here.
+const CDP_CHALLENGE_SAFE = new Set([
+  'Page.enable', 'Page.disable', 'Page.navigate', 'Page.stopLoading', 'Page.captureScreenshot', 'Page.getLayoutMetrics', 'Page.getFrameTree', 'Page.getNavigationHistory',
+  'DOM.enable', 'DOM.disable', 'DOM.getDocument', 'DOM.getFlattenedDocument', 'DOM.querySelector', 'DOM.querySelectorAll', 'DOM.describeNode', 'DOM.getBoxModel', 'DOM.getContentQuads', 'DOM.getOuterHTML', 'DOM.getAttributes', 'DOM.getNodeForLocation',
+  'DOMSnapshot.enable', 'DOMSnapshot.disable', 'DOMSnapshot.captureSnapshot',
+  'Accessibility.enable', 'Accessibility.disable', 'Accessibility.getFullAXTree', 'Accessibility.getPartialAXTree', 'Accessibility.queryAXTree', 'Accessibility.getRootAXNode', 'Accessibility.getChildAXNodes',
+  'CSS.enable', 'CSS.disable', 'CSS.getComputedStyleForNode', 'CSS.getMatchedStylesForNode', 'CSS.getInlineStylesForNode',
+  'Network.enable', 'Network.disable', 'Log.enable', 'Log.disable',
+]);
+const cdpChallengeSafe = (method) => CDP_CHALLENGE_SAFE.has(method);
 function cdpMethodError(method) {
   if (CDP_BLOCKED.has(method)) return `cdp method ${method} is not available to agents.`;
   if (!CDP_METHOD_RE.test(method)) return 'Unsupported CDP method. Allowed domains: Page, Runtime, Input, Emulation, Network, DOM, DOMSnapshot, Accessibility, CSS, Log.';
@@ -374,4 +386,4 @@ function hostShouldReload(mtime, started, inFlight) {
   return inFlight === 0 && Number(mtime) > Number(started);
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, viewerUrl };
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, viewerUrl, cdpChallengeSafe };

@@ -47,12 +47,7 @@ function readJs(wc, code, ms = 5000, retryAfter = 2500) {
 
 // Bots never solve a challenge: input that would land on a CAPTCHA widget or
 // on a bot-check page is refused, and the reply says to hand the tab over.
-// Raw CDP input: the points it lands on (touches carry a list), or the focused
-// element for keys and text.
-function rawInputTarget(method, params) {
-  const keyboard = /^Input\.(dispatchKeyEvent|insertText|imeSetComposition)$/.test(method);
-  return { points: keyboard ? [] : [params, ...(Array.isArray(params.touchPoints) ? params.touchPoints : [])], keyboard };
-}
+const checkFailed = () => fail('challenge_check_failed: the page could not be checked for a CAPTCHA before this input. Read the tab and retry.', 503);
 function challengePresent(c) {
   return Object.assign(new Error(`challenge_present: this page shows a ${c.kind} challenge and bots never solve one. Release the tab with reason "captcha" (control: controller "human", reason "captcha") so the person can; it comes back to you once the challenge clears.`), { status: 409, code: 'challenge_present' });
 }
@@ -60,9 +55,7 @@ function challengePresent(c) {
 // Runtime.*, DOM.*) can reach a widget anywhere. A probe that fails or times
 // out refuses too, since the page could not be checked.
 async function refuseChallenge(wc, points = null, keyboard = false) {
-  const c = await boundedJs(wc, points ? challengeHitExpression(points, keyboard) : challengeExpression(), 3000).catch(() => {
-    throw fail('challenge_check_failed: the page could not be checked for a CAPTCHA before this input. Read the tab and retry.', 503);
-  });
+  const c = await boundedJs(wc, points ? challengeHitExpression(points, keyboard) : challengeExpression(), 3000).catch(() => { throw checkFailed(); });
   if (typeof c?.kind === 'string') throw challengePresent(c);
 }
 
@@ -566,11 +559,6 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         if (ref) { target = { ref }; extra.ref = ref; extra.resolved = resolved; if (partial) extra.partial = true; }
       } else if (POINTER_ACTIONS.has(action)) point = await viewportPoint(body.x, body.y);
       const hl = found.hl || null;
-      // A bare key press goes to whatever has focus; the located actions
-      // checked their own points.
-      // Only after a read saw a challenge: focus cannot reach a widget unannounced
-      // (clicking it is refused), and a bare Enter must not pay a round trip.
-      if (action === 'press' && !point && tab.challengeLog?.on) { await refuseChallenge(wc, [], true); check(); }
       if (CLICKS[action] || action === 'move') {
         await moveCursor(point, hl);
         if (CLICKS[action]) {
@@ -633,7 +621,12 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         else await keys(keyboardEvent({ key: 'Backspace' }));
         cursor(point, 'type', hl);
       } else if (action === 'press') {
-        await armFollowUp();
+        // A key goes to whatever has focus, wherever that is (a frame, a shadow
+        // root, a widget the page focused itself), so every press checks it.
+        // The check rides on the follow-up arm: no extra round trip.
+        const armed = await boundedJs(wc, `(() => { const challenge = (${CHALLENGE_HIT_SOURCE})([], true); return { challenge, armed: !challenge && ${followUpArmExpression()} }; })()`, 3000).catch(() => { throw checkFailed(); });
+        check();
+        if (typeof armed?.challenge?.kind === 'string') throw challengePresent(armed.challenge);
         await keys(keyEvent);
         likelyNavigation = keyEvent.key === 'Enter';
         if (point || tab.agentCursor) cursor(point || { x: tab.agentCursor.x, y: tab.agentCursor.y }, 'press', hl);
@@ -669,4 +662,4 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   return { perform, clear, isDispatching };
 }
 
-module.exports = { createAgentInput, refuseChallenge, rawInputTarget, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };
+module.exports = { createAgentInput, refuseChallenge, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };

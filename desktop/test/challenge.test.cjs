@@ -11,8 +11,8 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
 const { challengeExpression, challengeHitExpression, challengeProbeExpression, readEffect } = require('../src/browser-page.cjs');
-const { rawInputTarget, refuseChallenge } = require('../src/agent-input.cjs');
-const { challengeReply, captchaHandback, captchaWatchStep, viewerUrl } = require('../src/core.cjs');
+const { refuseChallenge } = require('../src/agent-input.cjs');
+const { challengeReply, captchaHandback, captchaWatchStep, viewerUrl, cdpChallengeSafe } = require('../src/core.cjs');
 
 test('a second challenge from the same site within ten minutes tells the bot to back off', () => {
   const tab = {}, t0 = 1_000_000;
@@ -98,11 +98,11 @@ test('the challenge preflight refuses when the page shows one, and when the page
   await assert.rejects(refuseChallenge(page(() => new Promise(() => {})), [], true), (e) => e.status === 503, 'a probe that times out fails closed');
 });
 
-test('raw CDP input is aimed at every point it lands on, or at the focus for keys', () => {
-  assert.deepEqual(rawInputTarget('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 1, y: 2 }, { x: 3, y: 4 }] }).points.slice(1), [{ x: 1, y: 2 }, { x: 3, y: 4 }]);
-  assert.equal(rawInputTarget('Input.dispatchMouseEvent', { x: 5, y: 6 }).keyboard, false);
-  assert.deepEqual(rawInputTarget('Input.insertText', { text: 'hi' }), { points: [], keyboard: true });
-  assert.equal(rawInputTarget('Input.dispatchKeyEvent', { type: 'keyDown' }).keyboard, true);
+test('while a challenge is on the page, raw CDP is held to read-only methods', () => {
+  for (const method of ['Page.setDocumentContent', 'Page.addScriptToEvaluateOnNewDocument', 'Page.reload', 'Runtime.evaluate', 'Runtime.callFunctionOn', 'DOM.setOuterHTML', 'DOM.setAttributeValue', 'DOM.removeNode', 'DOM.insertBefore', 'DOM.focus', 'DOM.resolveNode', 'Input.dispatchMouseEvent', 'Input.dispatchTouchEvent', 'Input.dispatchKeyEvent', 'Input.insertText', 'Emulation.setDeviceMetricsOverride', 'Page.someFutureMethod'])
+    assert.equal(cdpChallengeSafe(method), false, method);
+  for (const method of ['DOM.getDocument', 'DOM.querySelector', 'DOM.getBoxModel', 'Page.captureScreenshot', 'Page.navigate', 'Accessibility.getFullAXTree', 'DOMSnapshot.captureSnapshot'])
+    assert.equal(cdpChallengeSafe(method), true, method);
 });
 
 test('a Cloudflare interstitial that clears by itself is waited out, so the reply shows the real page', async () => {
@@ -202,6 +202,8 @@ test('real Chromium: each kind of challenge is detected from its fixture, and lo
     quiz: null,
     'recaptcha-two': { kind: 'recaptcha', blocking: false },
     framed: { kind: 'recaptcha', blocking: false },
+    mixed: { kind: 'hcaptcha', blocking: false },
+    'recaptcha-adjacent': { kind: 'recaptcha', blocking: false },
     arkose: { kind: 'arkose', blocking: true },
     plain: null,
   };
@@ -230,6 +232,15 @@ test('real Chromium: input is refused on the widget or a bot-check page, and all
   assert.equal(await framed.executeJavaScript(challengeHitExpression([{ x: 5, y: 5 }])), null, 'the page around the frame is fine');
   await framed.executeJavaScript(`document.getElementById('pay').contentDocument.querySelector('iframe').focus()`);
   assert.deepEqual(await framed.executeJavaScript(challengeHitExpression([], true)), { kind: 'recaptcha', blocking: false }, 'keys into the framed widget are not');
+  // Every provider's widget counts, not just the first one found.
+  const mixed = await open(`http://127.0.0.1:${port}/mixed`);
+  const at = async (pg, selector) => pg.executeJavaScript(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  assert.deepEqual(await mixed.executeJavaScript(challengeHitExpression([await at(mixed, '#b iframe')])), { kind: 'recaptcha', blocking: false }, 'the reCAPTCHA beside an hCaptcha');
+  assert.deepEqual(await mixed.executeJavaScript(challengeHitExpression([await at(mixed, '#a iframe')])), { kind: 'hcaptcha', blocking: false });
+  // Two widgets in one box each keep their own token: the solved one is clear, the other is not.
+  const adjacent = await open(`http://127.0.0.1:${port}/recaptcha-adjacent`);
+  assert.equal(await adjacent.executeJavaScript(challengeHitExpression([await at(adjacent, '#first')])), null);
+  assert.deepEqual(await adjacent.executeJavaScript(challengeHitExpression([await at(adjacent, '#second')])), { kind: 'recaptcha', blocking: false });
   const gate = await open(`http://127.0.0.1:${port}/cloudflare`);
   assert.deepEqual(await gate.executeJavaScript(challengeHitExpression([{ x: 5, y: 5 }])), { kind: 'cloudflare', blocking: true }, 'the whole page is the check');
 });
@@ -244,4 +255,11 @@ test('real Chromium: the watch probe sees a widget leave and a person typing', {
   assert.equal(JSON.stringify(typed).includes('me@x'), false, 'the probe never carries what was typed');
   await page.executeJavaScript(`document.querySelector('textarea[name=g-recaptcha-response]').value = 'token'`);
   assert.equal((await page.executeJavaScript(challengeProbeExpression())).challenge, null, 'a solved widget no longer counts');
+  // Focus inside an open shadow root or a same-origin frame is still seen.
+  const shadow = await open(`http://127.0.0.1:${port}/shadow-field`);
+  await shadow.executeJavaScript(`(() => { const q = document.querySelector('search-box').shadowRoot.getElementById('q'); q.focus(); q.value = 'plumbers'; })()`);
+  assert.match((await shadow.executeJavaScript(challengeProbeExpression())).typing, /^8:/, 'a field in a shadow root');
+  const framed = await open(`http://127.0.0.1:${port}/framed`);
+  await framed.executeJavaScript(`(() => { const f = document.getElementById('pay'); f.focus(); const e = f.contentDocument.querySelector('input[name=email]'); e.focus(); e.value = 'me@x.example'; })()`);
+  assert.match((await framed.executeJavaScript(challengeProbeExpression())).typing, /^12:/, 'a field in a same-origin frame');
 });

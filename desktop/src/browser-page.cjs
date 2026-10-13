@@ -312,73 +312,107 @@ function refsSource(seed = 0) {
 // A challenge only a person can clear: a CAPTCHA widget or a bot-check page.
 // A few URL, title and selector checks, no layout beyond the frames' boxes.
 // Whole-page checks are read on the top document; widgets also in same-origin
-// frames (a cross-origin frame's document is not readable). A widget whose own
-// response token is filled is solved and no longer counts; an invisible
-// reCAPTCHA (the corner badge) is not one until it pops its image challenge.
-// page marks a whole-page check, where every input lands on the challenge;
-// blocking means the bot cannot go on without a person. els are the widget's
-// elements, for the input hit test.
+// frames (a cross-origin frame's document is not readable). Every widget on
+// the page is collected, of every provider. A widget whose own response token
+// is filled is solved and no longer counts; an invisible reCAPTCHA (the corner
+// badge) is not one until it pops its image challenge. page marks a whole-page
+// check, where every input lands on the challenge; blocking means the bot
+// cannot go on without a person. parts are the widgets, for the input hit test.
 const CHALLENGE_SOURCE = `() => {
   const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 2 && r.height > 2 && (!el.checkVisibility || el.checkVisibility({ checkVisibilityCSS: true, opacityProperty: true })); };
-  const found = (kind, blocking, els, page) => ({ kind, blocking, page: page === true, els: els || [] });
+  const whole = (kind) => ({ kind, blocking: true, page: true, parts: [] });
   const path = location.pathname, title = document.title.trim();
-  if (path.indexOf('/sorry/') === 0 && (/(^|\\.)google\\.[a-z.]+$/.test(location.hostname) || document.querySelector('#captcha-form'))) return found('google_sorry', true, null, true);
+  if (path.indexOf('/sorry/') === 0 && (/(^|\\.)google\\.[a-z.]+$/.test(location.hostname) || document.querySelector('#captcha-form'))) return whole('google_sorry');
   // Its ids and titles are ordinary words on other pages too, so they need Cloudflare's own markers.
   if ((window._cf_chl_opt || document.querySelector('script[src*="/cdn-cgi/challenge-platform/"]'))
-    && (document.querySelector('#challenge-form,#challenge-stage,#challenge-running,#cf-challenge-running,#cf-please-wait') || /^(just a moment|one more step|verify you are human)/i.test(title))) return found('cloudflare', true, null, true);
+    && (document.querySelector('#challenge-form,#challenge-stage,#challenge-running,#cf-challenge-running,#cf-please-wait') || /^(just a moment|one more step|verify you are human)/i.test(title))) return whole('cloudflare');
   const docs = [document];
   for (let i = 0; i < docs.length && docs.length < 20; i++) for (const f of docs[i].querySelectorAll('iframe,frame')) { let d = null; try { d = shown(f) && f.contentDocument; } catch {} if (d) docs.push(d); }
   const all = (sel) => docs.flatMap((d) => [...d.querySelectorAll(sel)]);
   const frames = all('iframe').filter(shown);
   const src = (el) => String(el.src || '');
-  // A widget is solved by the nearest response field around it; a popup
-  // challenge (appended to the body) stays until every field is filled.
+  // One element per widget, outermost first, in page order.
+  const outer = (els) => els.filter((el, i) => els.indexOf(el) === i && !els.some((o) => o !== el && o.contains(el))).sort((x, y) => x.compareDocumentPosition(y) & 2 ? 1 : -1);
+  // A widget's token is the response field beside it: under the nearest
+  // ancestor holding any, the fields pair with the widgets there in page
+  // order. Counts that do not match leave the widget unsolved.
   const field = (name) => 'textarea[name^="' + name + '"],input[name^="' + name + '"]';
-  const open = (els, name) => els.filter((el) => { for (let p = el.parentElement; p; p = p.parentElement) { const f = p.querySelector(field(name)); if (f) return !f.value; } return true; });
+  const open = (list, name) => { const els = outer(list); return els.filter((el) => {
+    for (let p = el; p; p = p.parentElement) { const f = [...p.querySelectorAll(field(name))]; if (!f.length) continue; const w = els.filter((x) => p.contains(x)); return w.length !== f.length || !f[w.indexOf(el)].value; }
+    return true;
+  }); };
+  // A popup challenge (appended to the body) stays until every field is filled.
   const pending = (name) => { const f = all(field(name)); return !f.length || f.some((el) => !el.value); };
-  const arkose = [...frames.filter((el) => /arkoselabs\\.com|funcaptcha\\.com/.test(src(el))), ...all('#FunCaptcha,#arkose-iframe,[data-e2e="enforcement-frame"]').filter(shown)];
-  if (arkose.length) return found('arkose', true, arkose);
+  const parts = [];
+  const add = (kind, blocking, els) => { if (els.length) parts.push({ kind, blocking, els }); };
+  add('arkose', true, [...frames.filter((el) => /arkoselabs\\.com|funcaptcha\\.com/.test(src(el))), ...all('#FunCaptcha,#arkose-iframe,[data-e2e="enforcement-frame"]').filter(shown)]);
   const hc = frames.filter((el) => /hcaptcha\\.com/.test(src(el)) && !/frame=checkbox-invisible/.test(src(el)));
   const hcPop = pending('h-captcha-response') ? hc.filter((el) => /frame=challenge/.test(src(el))) : [];
-  const hcOpen = [...open(hc.filter((el) => !/frame=challenge/.test(src(el))), 'h-captcha-response'), ...hcPop];
-  if (hcOpen.length) return found('hcaptcha', hcPop.length > 0, hcOpen);
+  add('hcaptcha', hcPop.length > 0, [...open(hc.filter((el) => !/frame=challenge/.test(src(el))), 'h-captcha-response'), ...hcPop]);
   const rc = frames.filter((el) => /\\/recaptcha\\/(api2|enterprise)\\/(anchor|bframe)/.test(src(el)) && !/[?&]size=invisible/.test(src(el)));
   const rcPop = pending('g-recaptcha-response') ? rc.filter((el) => /\\/bframe/.test(src(el))) : [];
-  const rcOpen = [...open(rc.filter((el) => !/\\/bframe/.test(src(el))), 'g-recaptcha-response'), ...rcPop];
-  if (rcOpen.length) return found('recaptcha', rcPop.length > 0, rcOpen);
+  add('recaptcha', rcPop.length > 0, [...open(rc.filter((el) => !/\\/bframe/.test(src(el))), 'g-recaptcha-response'), ...rcPop]);
   // Turnstile draws its frame in a closed shadow root; its response field sits beside it.
-  const ts = [...frames.filter((el) => /challenges\\.cloudflare\\.com/.test(src(el))), ...[...all('.cf-turnstile'), ...all('input[name="cf-turnstile-response"]').map((el) => el.parentElement)].filter((el) => el && shown(el))];
-  const tsOpen = open(ts, 'cf-turnstile-response');
-  if (tsOpen.length) return found('turnstile', false, tsOpen);
-  return null;
+  add('turnstile', false, open([...frames.filter((el) => /challenges\\.cloudflare\\.com/.test(src(el))), ...[...all('.cf-turnstile'), ...all('input[name="cf-turnstile-response"]').map((el) => el.parentElement)].filter((el) => el && shown(el))], 'cf-turnstile-response'));
+  if (!parts.length) return null;
+  const lead = parts.find((p) => p.blocking) || parts[0];
+  return { kind: lead.kind, blocking: lead.blocking, page: false, parts };
+}`;
+// The element keys go to: down through open shadow roots and same-origin
+// frames. Focus inside a cross-origin frame stops at the frame.
+const FOCUS_SOURCE = `() => {
+  let a = document.activeElement;
+  for (let i = 0; a && i < 50; i++) {
+    let next = null;
+    try { next = a.shadowRoot ? a.shadowRoot.activeElement : /^I?FRAME$/.test(a.tagName) && a.contentDocument ? a.contentDocument.activeElement : null; } catch {}
+    if (!next || next === a || next === next.ownerDocument.body) break;
+    a = next;
+  }
+  return a;
 }`;
 function challengeExpression() {
   return `(() => { const c = (${CHALLENGE_SOURCE})(); return c && { kind: c.kind, blocking: c.blocking }; })()`;
 }
 // Whether input at these viewport points (or, for keys, into the focused
-// element) would land on a challenge: the challenge when it would, else null.
-// The input locate scripts run it in the same round trip.
+// element) would land on a challenge: the widget's challenge when it would,
+// else null. The input locate scripts run it in the same round trip.
 const CHALLENGE_HIT_SOURCE = `(points, keyboard) => {
   const c = (${CHALLENGE_SOURCE})();
   if (!c) return null;
-  const own = (el) => !!el && c.els.some((w) => w === el || w.contains(el));
-  // Into same-origin frames where a widget may sit, stopping at the widget.
-  const doc = (el) => { try { return /^I?FRAME$/.test(el && el.tagName) && el.contentDocument; } catch { return null; } };
-  const at = (x, y) => { let el = document.elementFromPoint(x, y), d; while (!own(el) && (d = doc(el))) { const r = el.getBoundingClientRect(); x -= r.left + el.clientLeft; y -= r.top + el.clientTop; const inner = d.elementFromPoint(x, y); if (!inner) break; el = inner; } return el; };
+  if (c.page) return { kind: c.kind, blocking: c.blocking };
+  // Up through shadow hosts and frame elements, so a node deep in a widget's
+  // own same-origin document or shadow tree still belongs to it.
+  const up = (n) => { if (n.nodeType === 11) return n.host; if (n.nodeType === 9) { try { return n.defaultView && n.defaultView.frameElement; } catch { return null; } } return n.parentNode; };
+  const partOf = (el) => { for (let n = el; n; n = up(n)) { const p = c.parts.find((x) => x.els.includes(n)); if (p) return p; } return null; };
+  const at = (x, y) => {
+    let root = document, el = null;
+    for (let i = 0; i < 50; i++) {
+      const next = root.elementFromPoint(x, y);
+      if (!next || next === el) break;
+      el = next;
+      if (el.shadowRoot) { root = el.shadowRoot; continue; }
+      let d = null;
+      try { d = /^I?FRAME$/.test(el.tagName) && el.contentDocument; } catch {}
+      if (!d) break;
+      const r = el.getBoundingClientRect(); x -= r.left + el.clientLeft; y -= r.top + el.clientTop; root = d;
+    }
+    return el;
+  };
   const hits = points.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y)).map((p) => at(p.x, p.y));
-  if (keyboard) { let a = document.activeElement, d; while (!own(a) && (d = doc(a)) && d.activeElement && d.activeElement !== d.body) a = d.activeElement; hits.push(a); }
-  return c.page || hits.some(own) ? { kind: c.kind, blocking: c.blocking } : null;
+  if (keyboard) hits.push((${FOCUS_SOURCE})());
+  const hit = hits.map(partOf).find(Boolean);
+  return hit ? { kind: hit.kind, blocking: hit.blocking } : null;
 }`;
 function challengeHitExpression(points = [], keyboard = false) {
   return `(${CHALLENGE_HIT_SOURCE})(${JSON.stringify(points)}, ${keyboard === true})`;
 }
 // The watch on a tab handed over for a CAPTCHA reads the challenge, whether
-// the page is loading, and a fingerprint of the focused field so a person
-// still typing keeps the tab.
+// the page is loading, and a fingerprint of the focused field (in a frame or
+// shadow root too) so a person still typing keeps the tab.
 function challengeProbeExpression() {
   return `(() => {
     const c = (${CHALLENGE_SOURCE})();
-    const a = document.activeElement, editable = !!a && (a.isContentEditable || /^(INPUT|TEXTAREA)$/.test(a.tagName));
+    const a = (${FOCUS_SOURCE})(), editable = !!a && (a.isContentEditable || /^(INPUT|TEXTAREA)$/.test(a.tagName));
     let typing = '';
     if (editable) {
       const value = String(a.isContentEditable ? a.textContent : a.value);

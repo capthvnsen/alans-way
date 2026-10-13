@@ -70,10 +70,13 @@ app.whenReady().then(async () => {
   // Page script could click the widget itself, so it waits until the check is gone.
   const script = await act({ action: 'eval', code: `document.querySelector('iframe').click()` });
   assert.equal(script.status, 409); assert.equal(script.data.code, 'challenge_present');
-  for (const method of ['Runtime.evaluate', 'Runtime.callFunctionOn', 'DOM.getDocument']) {
-    const refused = await act({ action: 'cdp', method, params: method === 'Runtime.evaluate' ? { expression: '1' } : {} });
+  // Raw CDP is held to read-only methods while the widget is there.
+  for (const [method, params] of [['Runtime.evaluate', { expression: '1' }], ['Runtime.callFunctionOn', {}], ['Page.setDocumentContent', { frameId: 'x', html: '<script>parent.document.title = "written"</script>' }], ['DOM.setOuterHTML', { nodeId: 1, outerHTML: '<p></p>' }], ['Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter' }]]) {
+    const refused = await act({ action: 'cdp', method, params });
     assert.equal(refused.status, 409, method); assert.equal(refused.data.code, 'challenge_present', method);
   }
+  assert.equal((await act({ action: 'cdp', method: 'DOM.getDocument', params: {} })).status, 200, 'reads still work');
+  assert.equal(await pageWc.executeJavaScript('document.title'), 'other');
 
   // A whole-page check goes to the human at once: the N2 release, made by the app.
   const gated = await act({ action: 'navigate', url: `${base}/sorry/index?continue=/results` });
@@ -121,6 +124,16 @@ app.whenReady().then(async () => {
   assert.equal(fresh.status, 200, JSON.stringify(fresh.data));
   assert.equal(fresh.data.challenge, undefined);
   assert.equal((await act({ action: 'eval', code: '1 + 1' })).data.value, 2, 'page script works again once the check is gone');
+
+  // A widget the page adds and focuses itself after the bot's last read: a
+  // bare Enter must not press its Verify button.
+  await pageWc.executeJavaScript(`(() => { const d = document.createElement('div'); d.className = 'g-recaptcha'; d.innerHTML = '<iframe width="304" height="78" src="/recaptcha/api2/anchor?k=x&size=normal"></iframe>'; document.body.append(d); })()`);
+  await waitFor(() => pageWc.executeJavaScript(`document.querySelector('.g-recaptcha iframe').contentDocument?.readyState === 'complete'`).catch(() => false), Boolean);
+  await pageWc.executeJavaScript(`(() => { const f = document.querySelector('.g-recaptcha iframe'), b = f.contentDocument.createElement('button'); b.textContent = 'Verify'; b.onclick = () => { document.title = 'verified'; }; f.contentDocument.body.append(b); f.focus(); b.focus(); })()`);
+  assert.equal(await pageWc.executeJavaScript(`document.activeElement === document.querySelector('.g-recaptcha iframe')`), true, 'the widget has focus');
+  const enter = await act({ action: 'press', key: 'Enter' });
+  assert.equal(enter.status, 409, JSON.stringify(enter.data)); assert.equal(enter.data.code, 'challenge_present');
+  assert.notEqual(await pageWc.executeJavaScript('document.title'), 'verified', 'the Verify button was not pressed');
 
   // The same site challenging again inside ten minutes: back off.
   const again = await act({ action: 'navigate', url: `${base}/sorry/index?again` });
