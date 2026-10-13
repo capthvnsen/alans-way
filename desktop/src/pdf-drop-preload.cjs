@@ -8,7 +8,7 @@ if (process.isMainFrame) {
   // relays native File objects to this isolated world; getPathForFile rejects
   // files constructed by page JavaScript (they have no on-disk backing).
   window.addEventListener('message', event => {
-    if (event.source === window || event.origin !== 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai' || event.data?.workspacePdfDrop !== true || !Array.isArray(event.data.files)) return;
+    if (!event.isTrusted || event.source === window || event.origin !== 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai' || event.data?.workspacePdfDrop !== true || !Array.isArray(event.data.files)) return;
     try { open(event.data.files.filter(file => /\.pdf$/i.test(file.name))); } catch {}
   });
   window.addEventListener('dragover', event => {

@@ -135,6 +135,19 @@ if (typeof electron === 'string') {
     // A page-created File has no native backing path and an untrusted event.
     await evaluate(`(()=>{const data=new DataTransfer();data.items.add(new File(['%PDF-'], 'forged.pdf'));window.dispatchEvent(new DragEvent('drop',{bubbles:true,dataTransfer:data}));})()`);
     check('synthetic drop opens nothing', (await state()).tabs.some(t => t.url.endsWith('/forged.pdf')), false);
+    // A forged MessageEvent can claim any origin. Use a genuinely disk-backed
+    // fixture File so this checks event authentication, not just File backing.
+    const beforeForgedMessage = (await state()).tabs.length;
+    win.webContents.debugger.attach('1.3');
+    try {
+      await evaluate("(()=>{const input=document.createElement('input');input.type='file';input.id='fixture-pdf-file';input.hidden=true;document.body.append(input);})()");
+      const { root } = await win.webContents.debugger.sendCommand('DOM.getDocument');
+      const { nodeId } = await win.webContents.debugger.sendCommand('DOM.querySelector', { nodeId: root.nodeId, selector: '#fixture-pdf-file' });
+      await win.webContents.debugger.sendCommand('DOM.setFileInputFiles', { nodeId, files: [path.join(profile, 'finder.pdf')] });
+      await evaluate(`(()=>{const input=document.querySelector('#fixture-pdf-file');const frame=document.createElement('iframe');frame.hidden=true;document.body.append(frame);window.dispatchEvent(new MessageEvent('message',{origin:'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai',source:frame.contentWindow,data:{workspacePdfDrop:true,files:[input.files[0]]}}));input.remove();frame.remove();})()`);
+      await new Promise(r => setTimeout(r, 300));
+    } finally { win.webContents.debugger.detach(); }
+    check('forged viewer origin with native File cannot open tab', (await state()).tabs.length, beforeForgedMessage);
 
     server = http.createServer((req, res) => {
       if (req.url.endsWith('.pdf')) {
