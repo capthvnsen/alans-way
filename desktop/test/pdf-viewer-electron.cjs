@@ -94,12 +94,18 @@ if (typeof electron === 'string') {
       check('invalid restored PDF discarded', await hasFile('fake.pdf'), false);
       return quitFixture();
     }
-    // Let queued cold-start events settle before counting.
-    await new Promise(r => setTimeout(r, 300));
+    // Wait for the queued files themselves: ready-time tab creation can outlast
+    // a fixed delay on a loaded CI runner.
+    if (baseline) await new Promise(r => setTimeout(r, 300));
+    else {
+      await waitFor(() => hasFile('cold start.pdf'));
+      await waitFor(() => hasFile('finder.pdf'));
+    }
     check('startup argv PDF', await hasFile('cold start.pdf'));
     check('queued Finder open-file PDF', await hasFile('finder.pdf'));
     app.emit('second-instance', {}, ['app', path.join(profile, 'picker.pdf')]);
-    await new Promise(r => setTimeout(r, 300));
+    if (baseline) await new Promise(r => setTimeout(r, 300));
+    else await waitFor(() => hasFile('picker.pdf'));
     check('second-instance argv PDF', await hasFile('picker.pdf'));
     const menu = Menu.getApplicationMenu().items.find(i => i.label === 'File').submenu.items.find(i => i.label === 'Open File…');
     check('Open File menu accelerator', menu?.accelerator || null, 'CmdOrCtrl+O');
@@ -131,7 +137,8 @@ if (typeof electron === 'string') {
     app.emit('open-file', { preventDefault() {} }, path.join(profile, 'fake.pdf'));
     check('Finder spoofed local PDF refused', (await state()).tabs.length, beforeSpoof);
     app.emit('open-file', { preventDefault() {} }, path.join(profile, 'finder.pdf'));
-    await new Promise(r => setTimeout(r, 100));
+    if (baseline) await new Promise(r => setTimeout(r, 100));
+    else await waitFor(state, s => s.tabs.length > beforeSpoof);
     check('running Finder event opens PDF', (await state()).tabs.length > beforeSpoof);
     // A page-created File has no native backing path and an untrusted event.
     await evaluate(`(()=>{const data=new DataTransfer();data.items.add(new File(['%PDF-'], 'forged.pdf'));window.dispatchEvent(new DragEvent('drop',{bubbles:true,dataTransfer:data}));})()`);
