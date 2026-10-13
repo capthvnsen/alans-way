@@ -59,6 +59,8 @@ jobs:
         timeout-minutes: 3
       - run: npm run test:auto-takeover
         timeout-minutes: 3
+      - run: npm run test:captcha
+        timeout-minutes: 3
 
   desktop-windows:
     runs-on: windows-latest

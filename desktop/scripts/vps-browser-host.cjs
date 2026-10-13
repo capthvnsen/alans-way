@@ -7,12 +7,12 @@ const fs = require('node:fs'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { CDP, AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
-const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, dialogAnswer, answerDialog } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, liveHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe, viewerUrl } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
-const { createAgentInput, tintScript, botAccent } = agentInputModule;
+const { createAgentInput, refuseChallenge, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
 const INPUT_ACTIONS = agentInputModule.INPUT_ACTIONS || new Set(['click', 'type', 'press', 'move', 'scroll']);
-const { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('../src/browser-page.cjs');
+const { snapshotExpression, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('../src/browser-page.cjs');
 const root =
   process.env.HERMES_VPS_BROWSER_DATA ||
   (process.platform === 'darwin'
@@ -129,6 +129,9 @@ async function serve() {
     if (!cdp) throw new Error('Configured VPS Chromium did not become available.');
   }
   const tabs = new Map();
+  // The noVNC page a person opens to solve a challenge on this desktop, when
+  // setup recorded one. Never with a password or token in it.
+  const viewer = viewerUrl(cfg.viewerUrl || process.env.ALANS_WAY_VIEWER_URL);
   // The Mac shell forwards each bot's display name so the in-page agent cursor
   // shows it instead of a generic "Agent" inside the streamed desktop.
   const botNames = new Map();
@@ -151,7 +154,7 @@ async function serve() {
     agentCursor: t.agentCursor || null,
     agentBusy: input.isDispatching(t),
     handoff: t.handoff || null,
-    handback: t.handback || null,
+    handback: liveHandback(t) || null,
     blocked: t.blocked || null,
   });
   function persist() {
@@ -285,6 +288,53 @@ async function serve() {
     process.stderr.write('Chromium disconnected; restarting the broker through its service.\n');
     process.exit(1);
   });
+  async function setController(tab, controller, human, handback) {
+    const wasAgent = tab.controller === 'agent';
+    tab.handback = handback;
+    tab.controller = controller === 'agent' ? 'agent' : 'human';
+    // Only a person holding the tab protects it from reaping; a bot's own
+    // release does not.
+    tab.humanHeld = human === true && tab.controller === 'human';
+    // An explicit human takeover seals the tab to bots until the human
+    // hands it back (the seal persists across restarts); a bot's own
+    // release or the idle clock stays retakeable, and a lock stays locked.
+    if (tab.controller === 'agent') { tab.humanLock = false; tab.agentSince = Date.now(); }
+    else if (wasAgent) tab.humanLock = human === true;
+    // A tab handed back ends the challenge encounter it was handed over for.
+    if (tab.controller === 'agent' && tab.challengeLog) tab.challengeLog.on = '';
+    tab.epoch++;
+    tab.refs.clear();
+    await syncFetch(tab);
+    await syncTrack(tab);
+    await input.clear(tab);
+    await tab.view.webContents.executeJavaScript(tintScript(tab.controller === 'agent')).catch(() => {});
+    await persist();
+  }
+  // A blocking challenge on a bot's tab is handed to the person at once, and
+  // unlike a bot's own release it holds the tab (awaiting_human) until the
+  // watch sees it clear or the 30-minute hold lapses.
+  async function handleChallenge(tab, url, raw) {
+    const challenge = challengeReply(tab, url, raw);
+    if (challenge?.blocking && tab.controller === 'agent')
+      await setController(tab, 'human', false, { ...captchaHandback(url, challenge), state: 'awaiting_human', botId: tab.botId, since: Date.now(), ...(viewer ? { viewerUrl: viewer } : {}) });
+    return challenge ? { challenge } : {};
+  }
+  setInterval(() => {
+    for (const tab of tabs.values()) {
+      const h = liveHandback(tab);
+      if (tab.controller !== 'human' || h?.reason !== 'captcha' || h.state === 'human_returned') { tab.captchaWatch = undefined; continue; }
+      if (tab.captchaProbing) continue;
+      tab.captchaProbing = true;
+      Promise.race([tab.view.webContents.executeJavaScript(challengeProbeExpression()), new Promise((r) => setTimeout(r, 2000, null))]).catch(() => null).then(async (probe) => {
+        tab.captchaProbing = false;
+        if (!tabs.has(tab.id) || liveHandback(tab) !== h) return;
+        tab.captchaWatch = captchaWatchStep(tab.captchaWatch || { seen: h.auto === true, clear: 0, typing: '' }, probe);
+        if (!tab.captchaWatch.resume) return;
+        tab.captchaWatch = undefined;
+        await setController(tab, 'agent', true, { ...h, state: 'human_returned', returnedAt: Date.now(), resumed: 'auto' });
+      }).catch(() => {});
+    }
+  }, 1000).unref();
   async function open(body, botId, human, prepare, reap = true) {
     if (body.host !== undefined && normalizeHost(body.host) !== 'vm')
       throw fail('This connection serves only the VPS browser. Use the Mac connector for Mac tasks.', 503);
@@ -346,7 +396,8 @@ async function serve() {
   // are skipped, and the most recently used one always survives.
   async function reapAgentTabs(botId, keep) {
     const now = Date.now();
-    const held = [...tabs.values()].filter((t) => t.botId === botId && t.hostOpened === true && t.humanHeld !== true);
+    // A tab waiting on the person (a CAPTCHA they may be solving) is theirs too.
+    const held = [...tabs.values()].filter((t) => t.botId === botId && t.hostOpened === true && t.humanHeld !== true && liveHandback(t)?.state !== 'awaiting_human');
     const newest = held.reduce((a, t) => (!a || (t.lastUsedAt || 0) > (a.lastUsedAt || 0) ? t : a), null);
     const closable = held.filter((t) => t !== keep && t !== newest && t.opening !== true && !(t.pendingActions > 0) && !input.isDispatching(t));
     const doomed = new Set(closable.filter((t) => now - (t.lastUsedAt || 0) > tabIdleMs));
@@ -424,7 +475,7 @@ async function serve() {
       requireAgentRead(tab);
       const effect = await readEffect((code) => tab.view.webContents.executeJavaScript(code), tab, opts);
       requireAgentRead(tab);
-      if (effect) return { ...effect, ...takePageEvents(tab) };
+      if (effect) return { ...effect, ...(await handleChallenge(tab, effect.effect?.url || tab.url, effect.challenge)), ...takePageEvents(tab) };
       return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.', ...takePageEvents(tab) };
     } catch (error) {
       if (error && error.status === 409) throw error;
@@ -484,6 +535,8 @@ async function serve() {
     if (body.action === 'eval') {
       const code = String(body.code || '');
       if (!code || code.length > 16384) throw fail('eval needs a code string (max 16KB).');
+      // Page script can reach a widget anywhere on the page.
+      await refuseChallenge(wc);
       let value = await Promise.race([
         wc.executeJavaScript(code),
         new Promise((_, reject) => setTimeout(() => reject(fail('eval timed out after 15s.', 408)), 15000)),
@@ -572,6 +625,9 @@ async function serve() {
         if (typeof params.url !== 'string' || !params.url) throw fail('Page.navigate needs a url string.');
         params.url = agentPageUrl(params.url);
       }
+      // While a challenge is on the page, only read-only methods run: raw input,
+      // script and DOM writes could all reach the widget.
+      if (!cdpChallengeSafe(method, params)) await refuseChallenge(wc);
       let value = await Promise.race([
         wc.command(method, params),
         new Promise((_, reject) => setTimeout(() => reject(fail('cdp timed out after 20s.', 408)), 20000)),
@@ -930,16 +986,20 @@ async function serve() {
         const work = tab.queue.then(async () => {
           const generation = ++tab.generation;
           let timer;
-          const data = await Promise.race([
+          const read = () => Promise.race([
             wc.executeJavaScript(snapshotExpression({ ...opts, seed: tab.refSeed })),
             new Promise((_, reject) => {
               timer = setTimeout(() => reject(fail('Snapshot timed out after 10s. The page may be unresponsive.', 503)), 10000);
             }),
           ]).finally(() => clearTimeout(timer));
+          let data = await read();
+          // A Cloudflare check that clears by itself is waited out here too.
+          if (!human && data?.challenge?.kind === 'cloudflare' && await passCloudflare((code) => wc.executeJavaScript(code))) data = await read();
           if (!data || !Array.isArray(data.elements)) throw fail('Snapshot returned no page data.', 503);
           tab.url = data.url;
           tab.title = data.title;
-          return { ...settleSnapshot(tab, data, generation, opts.since), tab: describe(tab) };
+          const settled = settleSnapshot(tab, data, generation, opts.since);
+          return { ...settled, ...(human ? {} : await handleChallenge(tab, data.url, settled.challenge)), tab: describe(tab) };
         });
         tab.queue = work.catch(() => {});
         return send(200, await work);
@@ -972,6 +1032,8 @@ async function serve() {
         tab.pendingActions = (tab.pendingActions || 0) + 1;
         const action = tab.queue.then(async () => {
           const result = await vpsPerform(tab, body, botId, overseer);
+          // The bot is acting on the tab again; human_returned has done its job.
+          if (tab.handback?.state === 'human_returned') tab.handback = null;
           await persist();
           return { ...result, tab: describe(tab) };
         }).finally(() => {
@@ -995,27 +1057,12 @@ async function serve() {
             createdAt: Number(body.handoff.createdAt) || Date.now(),
           };
         else if (human && body.controller === 'agent') tab.handoff = reviewedHandoff(tab.handoff);
-        const wasAgent = tab.controller === 'agent';
         // The VPS records why a bot released a tab and reports it in tab
         // status, but does not hold the tab for the human: the app has no
         // give-back control for VPS tabs. Any other control change clears it.
-        tab.handback = handback ? { ...handback, botId: tab.botId, since: Date.now() } : null;
-        tab.controller = body.controller === 'agent' ? 'agent' : 'human';
-        // Only a person holding the tab protects it from reaping; a bot's own
-        // release does not.
-        tab.humanHeld = human === true && tab.controller === 'human';
-        // An explicit human takeover seals the tab to bots until the human
-        // hands it back (the seal persists across restarts); a bot's own
-        // release or the idle clock stays retakeable, and a lock stays locked.
-        if (tab.controller === 'agent') { tab.humanLock = false; tab.agentSince = Date.now(); }
-        else if (wasAgent) tab.humanLock = human === true;
-        tab.epoch++;
-        tab.refs.clear();
-        await syncFetch(tab);
-        await syncTrack(tab);
-        await input.clear(tab);
-        await wc.executeJavaScript(tintScript(tab.controller === 'agent')).catch(() => {});
-        await persist();
+        // A CAPTCHA release names the viewer the person can solve it in, and
+        // the CAPTCHA watch returns the tab once the challenge clears.
+        await setController(tab, body.controller, human, handback ? { ...handback, botId: tab.botId, since: Date.now(), ...(handback.reason === 'captcha' && viewer ? { viewerUrl: viewer } : {}) } : null);
         return send(200, describe(tab));
       }
       if (human && req.method === 'POST' && m[2] === 'activate') {
@@ -1089,7 +1136,7 @@ async function serve() {
       }
       throw fail('Unsupported VPS operation.', 405);
     } catch (e) {
-      send((e && e.status) || 400, { error: errorMessage(e) });
+      send((e && e.status) || 400, { error: errorMessage(e), ...(e && e.code ? { code: e.code } : {}) });
     }
   });
   const port = cfg.port || 9465;

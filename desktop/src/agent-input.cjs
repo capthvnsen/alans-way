@@ -1,6 +1,6 @@
 // All input stays inside this tab's Chromium target. Never focus a native view,
 // activate a window, use the clipboard for typing, or move the system pointer.
-const { followUpArmExpression, followUpCloseExpression, FOLLOW_UP_KEY, REFS_KEY, refsSource } = require('./browser-page.cjs');
+const { followUpArmExpression, followUpCloseExpression, FOLLOW_UP_KEY, REFS_KEY, refsSource, CHALLENGE_HIT_SOURCE, challengeExpression, challengeHitExpression } = require('./browser-page.cjs');
 const INPUT_ACTIONS = new Set(['move', 'click', 'double_click', 'right_click', 'drag', 'type', 'press', 'scroll', 'select']);
 const CLICKS = { click: { button: 'left', buttons: 1, count: 1 }, double_click: { button: 'left', buttons: 1, count: 2 }, right_click: { button: 'right', buttons: 2, count: 1 } };
 const POINTER_ACTIONS = new Set(['move', 'drag', ...Object.keys(CLICKS)]);
@@ -43,6 +43,20 @@ function readJs(wc, code, ms = 5000, retryAfter = 2500) {
   const first = Promise.resolve().then(() => frameOf(wc).executeJavaScript(code)).catch(viaContents);
   const late = new Promise((resolve, reject) => { timer = setTimeout(() => viaContents().then(resolve, reject), retryAfter); });
   return withTimeout(Promise.race([first, late]), ms).finally(() => clearTimeout(timer));
+}
+
+// Bots never solve a challenge: input that would land on a CAPTCHA widget or
+// on a bot-check page is refused, and the reply says to hand the tab over.
+const checkFailed = () => fail('challenge_check_failed: the page could not be checked for a CAPTCHA before this input. Read the tab and retry.', 503);
+function challengePresent(c) {
+  return Object.assign(new Error(`challenge_present: this page shows a ${c.kind} challenge and bots never solve one. Release the tab with reason "captcha" (control: controller "human", reason "captcha") so the person can; it comes back to you once the challenge clears.`), { status: 409, code: 'challenge_present' });
+}
+// With no points it refuses on any challenge on the page: page script (eval,
+// Runtime.*, DOM.*) can reach a widget anywhere. A probe that fails or times
+// out refuses too, since the page could not be checked.
+async function refuseChallenge(wc, points = null, keyboard = false) {
+  const c = await boundedJs(wc, points ? challengeHitExpression(points, keyboard) : challengeExpression(), 3000).catch(() => { throw checkFailed(); });
+  if (typeof c?.kind === 'string') throw challengePresent(c);
 }
 
 // A ref resolves only through the page's ref store (see refsSource), which
@@ -254,6 +268,10 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     if (named.many) return { fail: 'ambiguous', many: named.many, count: named.count, cut: named.cut };
     const el = named.el, ref = named.ref, resolved = named.name, partial = named.cut;` : `const el = ${locateElement(target)}, ref = undefined, resolved = undefined, partial = undefined;`}
     if (!el) return { fail: ${target.ref ? "'stale'" : "'missing or disabled'"} };
+    // Bots never solve a challenge: a target inside one is refused before any
+    // path below can return a point for it, hidden or not.
+    const inside = (${CHALLENGE_HIT_SOURCE})([], false, [el]);
+    if (inside) return { fail: 'challenge', challenge: inside };
     if (el.disabled || el.matches(':disabled') || el.closest('[inert]')) return { fail: 'missing or disabled' };
     // A native select hidden behind a custom dropdown is chosen by value, so it needs no hit test.
     const loose = ${select} && el.tagName === 'SELECT';
@@ -278,7 +296,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     const l = Math.max(0, r.left), t = Math.max(0, r.top), rr = Math.min(view.innerWidth, r.right), b = Math.min(view.innerHeight, r.bottom);
     const w = rr - l, h = b - t;
     if (!r.width || !r.height || w <= 0 || h <= 0) return loose ? { x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) } : { fail: 'no visible area' };
-    let point = null, coveredBy = null;
+    let point = null, coveredBy = null, coveredAt = null;
     for (const [fx, fy] of [[.5,.5],[.5,.25],[.5,.75],[.25,.5],[.75,.5],[.2,.2],[.8,.2],[.2,.8],[.8,.8]]) {
       const lx = Math.round(l + w * fx), ly = Math.round(t + h * fy);
       let hit = view.document.elementFromPoint(lx, ly);
@@ -307,8 +325,11 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
       // styled track) is operated through its label; a hit on that label is a hit on it.
       if (hit && !own && hit.closest) { const label = hit.closest('label'); own = !!label && label.control === el; }
       if (hit && (own || el.contains(hit))) { point = { x: lx + ox, y: ly + oy }; break; }
-      if (hit && !coveredBy && !own && !el.contains(hit)) coveredBy = hit;
+      if (hit && !coveredBy && !own && !el.contains(hit)) { coveredBy = hit; coveredAt = { x: lx + ox, y: ly + oy }; }
     }
+    // Bots never solve a challenge: a point on one (or under its pop-up) is refused.
+    const challenge = (${CHALLENGE_HIT_SOURCE})([point || coveredAt], false);
+    if (challenge) return { fail: 'challenge', challenge };
     if (!point && loose) point = { x: Math.round(l + w / 2 + ox), y: Math.round(t + h / 2 + oy) };
     if (!point && coveredBy) {
       // Name the dialog or banner in the way, and what closes it.
@@ -350,6 +371,8 @@ function selectScript(target, body, dry = false) {
     if (!el) return { fail: ${target.ref ? "'stale'" : "'is not a select'"} };
     if (el.tagName !== 'SELECT') return { fail: 'is not a select' };
     if (el.disabled) return { fail: 'disabled' };
+    const challenge = (${CHALLENGE_HIT_SOURCE})([], false, [el]);
+    if (challenge) return { fail: 'challenge', challenge };
     const tries = ${JSON.stringify(tries)};
     const text = (o) => (o.label || o.text || '').trim();
     const options = [...el.options];
@@ -502,9 +525,10 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       if (path.length > 1) { await Promise.race([glide, delay(path.length * 16 + 150)]); check(); }
     }
     async function viewportPoint(x, y) {
-      const viewport = await boundedJs(wc, '({ width: innerWidth, height: innerHeight })');
+      const viewport = await boundedJs(wc, `({ width: innerWidth, height: innerHeight, challenge: (${CHALLENGE_HIT_SOURCE})([${JSON.stringify({ x, y })}], false) })`);
       check();
       if (x < 0 || y < 0 || x >= viewport.width || y >= viewport.height) throw fail('Pointer coordinates must be inside the tab viewport.');
+      if (typeof viewport.challenge?.kind === 'string') throw challengePresent(viewport.challenge);
       return { x, y };
     }
     async function resolve(target, options) {
@@ -512,6 +536,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       check();
       if (found && found.deferred) dry();
       if (found && found.fail === 'stale') throw staleRef(target.ref);
+      if (found && found.fail === 'challenge') throw challengePresent(found.challenge);
       const listed = (items) => items.map((item) => `${item.ref} ${JSON.stringify(item.name || '')}${item.row ? ` (row ${JSON.stringify(item.row)})` : ''}`).join(', ');
       const unread = found && found.cut ? ' The page has more controls than a name lookup reads; snapshot or scroll for the rest.' : '';
       if (found && found.fail === 'unnamed') {
@@ -606,6 +631,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
           const picked = await boundedJs(wc, selectScript(target, body, dryRun));
           check();
           if (picked && picked.fail === 'stale') throw staleRef(body.ref);
+          if (picked && picked.fail === 'challenge') throw challengePresent(picked.challenge);
           if (!picked || picked.fail) throw fail(`Element ${picked ? picked.fail : 'is unavailable'}${picked?.options ? ': ' + JSON.stringify(picked.options) : ''}.`);
           return picked;
         };
@@ -631,14 +657,21 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         else await keys(keyboardEvent({ key: 'Backspace' }));
         cursor(point, 'type', hl);
       } else if (action === 'press') {
-        await armFollowUp();
+        // A key goes to whatever has focus, wherever that is (a frame, a shadow
+        // root, a widget the page focused itself), so every press checks it.
+        // The check rides on the follow-up arm: no extra round trip.
+        const armed = await boundedJs(wc, `(() => { const challenge = (${CHALLENGE_HIT_SOURCE})([], true); return { challenge, armed: !challenge && ${followUpArmExpression()} }; })()`, 3000).catch(() => { throw checkFailed(); });
+        check();
+        if (typeof armed?.challenge?.kind === 'string') throw challengePresent(armed.challenge);
         await keys(keyEvent);
         likelyNavigation = keyEvent.key === 'Enter';
         if (point || tab.agentCursor) cursor(point || { x: tab.agentCursor.x, y: tab.agentCursor.y }, 'press', hl);
       } else if (action === 'scroll') {
-        const viewport = await boundedJs(wc, '({ width: innerWidth, height: innerHeight })');
+        // The wheel lands where the cursor is: never on a challenge.
+        const aim = await boundedJs(wc, `(() => { const p = { x: Math.max(0, Math.min(${Number.isFinite(tab.agentCursor?.x) ? tab.agentCursor.x : 100}, innerWidth - 1)), y: Math.max(0, Math.min(${Number.isFinite(tab.agentCursor?.y) ? tab.agentCursor.y : 100}, innerHeight - 1)) }; return { ...p, challenge: (${CHALLENGE_HIT_SOURCE})([p], false) }; })()`);
         check();
-        point = { x: Math.max(0, Math.min(tab.agentCursor?.x ?? 100, viewport.width - 1)), y: Math.max(0, Math.min(tab.agentCursor?.y ?? 100, viewport.height - 1)) };
+        if (typeof aim.challenge?.kind === 'string') throw challengePresent(aim.challenge);
+        point = { x: aim.x, y: aim.y };
         await armFollowUp();
         await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: Math.max(-2000, Math.min(2000, body.x || 0)), deltaY: Math.max(-2000, Math.min(2000, body.y || 0)) });
         cursor(point, 'scroll');
@@ -669,4 +702,4 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   return { perform, clear, isDispatching };
 }
 
-module.exports = { createAgentInput, PREFLIGHT_READY, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };
+module.exports = { createAgentInput, PREFLIGHT_READY, refuseChallenge, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };

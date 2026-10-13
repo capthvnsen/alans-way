@@ -1,0 +1,6 @@
+<!doctype html><title>Contact us</title>
+<form><textarea name="message"></textarea>
+<div id="ts" style="width:300px;height:65px"><input type="hidden" name="cf-turnstile-response" value=""></div>
+<button>Send</button></form>
+<script>const host = document.createElement('div'); host.style.cssText = 'width:300px;height:65px'; document.getElementById('ts').prepend(host);
+host.attachShadow({ mode: 'closed' }).innerHTML = '<iframe src="https://challenges.cloudflare.com/cdn-cgi/challenge-platform/turnstile/if/ov2" style="border:none;width:300px;height:65px"></iframe>';</script>

@@ -6,7 +6,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
@@ -25,10 +25,10 @@ const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked } = require('./vm-update.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
-const { createAgentInput, PREFLIGHT_READY, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
+const { createAgentInput, PREFLIGHT_READY, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
-const { snapshotExpression, settleSnapshot, readEffect, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
+const { snapshotExpression, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
 const { createVpsBrowser, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
@@ -140,7 +140,7 @@ const downloadStore = createDownloadStore({ getPreferences: () => prefs, savePre
   confirmOpen: async (name) => (await dialog.showMessageBox(win, { type: 'warning', buttons: ['Cancel', 'Open anyway'], defaultId: 0, cancelId: 0,
     message: `Open ${name}?`, detail: 'This file can run programs on your computer. Only open it if you trust where it came from.' })).response === 1 });
 const recordings = recorder.createRecordingStore(path.join(app.getPath('userData'), 'recordings'));
-let pointerTimer, activityTimer, idleTimer;
+let pointerTimer, activityTimer, idleTimer, captchaTimer;
 
 function readPreferences() {
   const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, vmUpdates: {},
@@ -650,6 +650,9 @@ function changeController(id, controller, source = 'human', handback = null) {
   const wasAgent = tab.controller === 'agent';
   tab.takeover = null;
   tab.handback = nextHandback(tab, controller, source, handback);
+  // Browsing a CAPTCHA tab themselves (address bar, back, reload) makes the
+  // human the one to give it back: the automatic return stops watching it.
+  if (wasAgent === false && source === 'human' && controller === 'human' && tab.handback?.reason === 'captcha') tab.handback = { ...tab.handback, watch: false };
   tab.controller = controller === 'agent' ? 'agent' : 'human';
   syncFollowUpSeed(tab);
   syncDialogGuard(tab);
@@ -658,6 +661,7 @@ function changeController(id, controller, source = 'human', handback = null) {
   // retakeable, and a tab already locked stays locked.
   if (tab.controller === 'agent') { tab.humanLock = false; tab.agentSince = Date.now(); }
   else if (wasAgent) { tab.humanLock = source === 'human'; tab.humanSince = Date.now(); }
+  if (tab.controller === 'agent' && tab.challengeLog) tab.challengeLog.on = '';
   if (tab.controller === 'agent' && tab.botId === 'shared' && prefs.selectedBotId) tab.botId = prefs.selectedBotId;
   // Bots can't plant persistent page scripts (the cdp action denies the
   // method) but strip any surviving registrations when the human takes over.
@@ -766,6 +770,38 @@ async function checkAction(tab, body, botId, depth = 0) {
     const methodError = cdpMethodError(String(body.method || ''));
     if (methodError) bad(methodError);
     if (body.method === 'Page.navigate') { if (typeof body.params?.url !== 'string' || !body.params.url) bad('Page.navigate needs a url string.'); agentPageUrl(body.params.url); }
+  }
+}
+// A read that finds a challenge reports it (with the back-off advice), and a
+// blocking one on a bot's tab goes to the human at once: the N2 release with
+// reason captcha, made by the app so the bot never has to remember.
+function handleChallenge(tab, raw) {
+  const url = tab.view.webContents.getURL();
+  const challenge = challengeReply(tab, url, raw);
+  if (challenge?.blocking && tab.controller === 'agent') {
+    try { changeController(tab.id, 'human', 'agent', captchaHandback(url, challenge)); } catch (error) { logError('captcha release', error); }
+  }
+  return challenge ? { challenge } : {};
+}
+// While a tab waits on a human for a CAPTCHA, a cheap page probe each second
+// hands it back once the challenge it saw has cleared (see captchaWatchStep).
+// The human can still give it back themselves.
+function watchCaptchas() {
+  for (const tab of tabs.values()) {
+    const h = liveHandback(tab), wc = tab.view.webContents;
+    if (h?.state !== 'awaiting_human' || h.reason !== 'captcha' || h.watch === false || wc.isDestroyed()) { tab.captchaWatch = undefined; continue; }
+    if (tab.captchaProbing) continue;
+    tab.captchaProbing = true;
+    readJs(wc, challengeProbeExpression(), 2000).catch(() => null).then((probe) => {
+      tab.captchaProbing = false;
+      if (!tabs.has(tab.id) || liveHandback(tab) !== h) return;
+      tab.captchaWatch = captchaWatchStep(tab.captchaWatch || { seen: h.auto === true, clear: 0, typing: '' }, probe);
+      if (!tab.captchaWatch.resume) return;
+      tab.captchaWatch = undefined;
+      try { changeController(tab.id, 'agent', 'human'); } catch (error) { return logError('captcha resume', error); }
+      tab.handback = { ...tab.handback, resumed: 'auto' };
+      broadcast();
+    });
   }
 }
 const HANDBACK_TEXT = { captcha: 'Solve the CAPTCHA, then give the tab back.', login: 'Sign in, then give the tab back.', two_factor: 'Enter the verification code, then give the tab back.', payment_details: 'Enter the card details, then give the tab back.', review: 'Review the page, then give the tab back.', other: 'Take a look, then give the tab back.' };
@@ -1882,14 +1918,18 @@ async function snapshot(tab, opts = {}) {
     let timer;
     // A wedged renderer leaves executeJavaScript pending forever; bound it so
     // a snapshot can never outlive the connector's own timeout.
-    const result = await Promise.race([
+    const read = () => Promise.race([
       readJs(tab.view.webContents, snapshotExpression({ parseWaitMs: SNAPSHOT_PARSE_MS, ...opts, seed: tab.refSeed }), 20000),
       new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000); }),
     ]).finally(() => clearTimeout(timer));
+    let result = await read();
+    // A Cloudflare check that clears by itself is waited out here too.
+    if (result?.challenge?.kind === 'cloudflare' && await passCloudflare((code) => readJs(tab.view.webContents, code, 3000))) result = await read();
     if (!result || !Array.isArray(result.elements)) throw Object.assign(new Error('Snapshot returned no page data.'), { status: 503 });
     // A takeover while the page was being read seals the response.
     requireAgentRead(tab);
-    return { ...settleSnapshot(tab, result, generation, opts.since), tab: describeTab(tab, true) };
+    const settled = settleSnapshot(tab, result, generation, opts.since);
+    return { ...settled, ...handleChallenge(tab, settled.challenge), tab: describeTab(tab, true) };
   });
   tab.queue = work.catch(() => {});
   return work;
@@ -2012,7 +2052,7 @@ async function actionEffect(tab, opts) {
     requireAgentRead(tab);
     const effect = await readEffect((code) => readJs(tab.view.webContents, code, 12000), tab, opts);
     requireAgentRead(tab);
-    if (effect) return { ...effect, ...takeDialogs(tab), ...takeOpened(tab), ...(await takeDownloads(tab)) };
+    if (effect) return { ...effect, ...handleChallenge(tab, effect.challenge), ...takeDialogs(tab), ...takeOpened(tab), ...(await takeDownloads(tab)) };
     return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.', ...takeDialogs(tab), ...takeOpened(tab), ...(await takeDownloads(tab)) };
   } catch (error) {
     if (error && error.status === 409) throw error;
@@ -2078,6 +2118,8 @@ async function performStep(tab, body, botId, depth, isAborted) {
     const code = String(body.code || '');
     if (!code || code.length > 16384) throw Object.assign(new Error('eval needs a code string (max 16KB).'), { status: 400 });
     const wc = tab.view.webContents;
+    // Page script can reach a widget anywhere on the page.
+    await refuseChallenge(wc);
     let evalTimer;
     dryRun(tab);
     let value = await Promise.race([
@@ -2181,6 +2223,9 @@ async function performStep(tab, body, botId, depth, isAborted) {
       if (typeof params.url !== 'string' || !params.url) throw Object.assign(new Error('Page.navigate needs a url string.'), { status: 400 });
       params.url = agentPageUrl(params.url);
     }
+    // While a challenge is on the page, only read-only methods run: raw input,
+    // script and DOM writes could all reach the widget.
+    if (!cdpChallengeSafe(method, params)) await refuseChallenge(wc);
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     dryRun(tab);
     let cdpTimer;
@@ -2661,6 +2706,8 @@ function createWindow() {
       if (now - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) > idleMs) changeController(tab.id, 'human', 'idle');
     }
   }, 30000).unref();
+  captchaTimer = setInterval(watchCaptchas, 1000);
+  captchaTimer.unref();
   const vpsTick = async () => { await refreshVpsTabs(); vpsTimer = setTimeout(vpsTick, backoffDelay(vpsFailures)); vpsTimer.unref(); };
   vpsTick();
   vpsMirrorTimer = setInterval(pushVpsMirror, 10000); vpsMirrorTimer.unref();
@@ -2734,6 +2781,6 @@ else {
     showWindow();
   });
   app.on('activate', showWindow);
-  app.on('before-quit', () => { isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close(); });
+  app.on('before-quit', () => { isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

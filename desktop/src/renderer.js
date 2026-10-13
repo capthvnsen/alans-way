@@ -1,5 +1,5 @@
 const api = window.workspace;
-let state, lastRecording = null, stoppedRecordingAt = 0, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '', handoffBusy = false;
+let state, lastRecording = null, resumeToasts = new Set(), stoppedRecordingAt = 0, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '', handoffBusy = false;
 const $ = (id) => document.getElementById(id);
 function element(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; }
 function toast(message) { $('toast').textContent = message; $('toast').classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.add('hidden'), 5000); }
@@ -319,6 +319,11 @@ function render(next) {
   if (takeover) {
     $('takeover-banner').style.setProperty('--h', String(tab.agentHue ?? 168));
     $('takeover-text').textContent = `${agentName} took over this tab`;
+  }
+  // The app gave a CAPTCHA tab back on its own once the challenge cleared.
+  for (const item of state.tabs) {
+    const key = item.handback?.resumed === 'auto' ? `${item.id}:${item.handback.returnedAt}` : '';
+    if (key && !resumeToasts.has(key)) { resumeToasts.add(key); toast('Thanks, continuing.'); }
   }
   // Recording runs only on a tab the human controls; a bot taking it, or the
   // tab closing, stops and saves it in main.
