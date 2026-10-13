@@ -74,8 +74,10 @@ GATEWAY_TIMEOUT="${ALANS_WAY_VM_GATEWAY_TIMEOUT:-180}"
 VM_BUDGET="${ALANS_WAY_VM_BUDGET:-270}"
 VERSION="" RESTARTED=false PLUGINS_JSON="" GATEWAY_RESTARTED=false
 # The gateway restart that works on this host; GW_EXTRA carries it into the
-# result JSON only when it is not the usual hermes command.
-GW_CMD="hermes gateway restart" GW_EXTRA=""
+# result JSON only when it is not the usual hermes command. GW_NAMED_CMD keeps
+# failed standalone named-profile starts on their own track, next to whatever
+# the manager or the default profile needed.
+GW_CMD="hermes gateway restart" GW_EXTRA="" GW_NAMED_CMD=""
 START_S="$(date +%s)"
 
 say() { printf 'vm-update: %s\n' "$*"; }
@@ -321,27 +323,28 @@ EOF
 
 # Starts only the profiles the earlier snapshot found live (GW_LIVE), so a
 # gateway that was down never grows a second instance next to a managed one.
-# Failed starts keep their exact remediation command in GW_CMD and pull
-# GATEWAY_RESTARTED back to false.
+# A failed named-profile start is tracked on its own in GW_NAMED_CMD: under a
+# service manager it never touches the managed restart's result; under hermes
+# the gateways are all script-owned, so it still pulls GATEWAY_RESTARTED down.
+# A failed default start keeps its remediation in GW_CMD either way.
 gateway_start_stopped_profiles() {
-  _gss_failed=false
+  GW_NAMED_CMD=""
   while read -r _gss_name; do
     [ -n "$_gss_name" ] || continue
     if [ "$_gss_name" = default ]; then
       run_hermes "$GATEWAY_TIMEOUT" gateway start >/dev/null 2>&1 || {
         GW_CMD="${GW_CMD}${GW_CMD:+; }hermes gateway start"
-        _gss_failed=true
+        GATEWAY_RESTARTED=false
       }
     else
       run_hermes "$GATEWAY_TIMEOUT" -p "$_gss_name" gateway start >/dev/null 2>&1 || {
-        GW_CMD="${GW_CMD}${GW_CMD:+; }hermes -p $_gss_name gateway start"
-        _gss_failed=true
+        GW_NAMED_CMD="${GW_NAMED_CMD}${GW_NAMED_CMD:+; }hermes -p $_gss_name gateway start"
+        [ "$GW_VIA" = hermes ] && GATEWAY_RESTARTED=false
       }
     fi
   done <<EOF
 $GW_LIVE
 EOF
-  [ "$_gss_failed" = true ] && GATEWAY_RESTARTED=false
   return 0
 }
 
@@ -634,15 +637,27 @@ EOF
       if [ "$GATEWAY_RESTARTED" = true ]; then say "agent gateway restarted"
       elif [ "$GW_VIA" = supervisor ]; then
         say "could not start the gateway; on the VM run: $GW_CMD (or: sudo $GW_CMD)"
-      else say "could not start the gateway; on the VM run: $GW_CMD"; fi
-      # A default-profile restart cannot recover a failed standalone
-      # named-profile start; when only those failed, leave its exact
-      # remediation in the result so the dialog can show it.
+      elif [ -n "$GW_CMD" ]; then
+        say "could not start the gateway; on the VM run: $GW_CMD"
+      fi
+      # A standalone named-profile start that failed is reported on its own:
+      # under a service manager the managed restart stands and the named
+      # gateway's exact command still reaches the dialog; under hermes it
+      # already pulled GATEWAY_RESTARTED down in the start loop.
+      if [ -n "$GW_NAMED_CMD" ]; then
+        say "could not start a named gateway; on the VM run: $GW_NAMED_CMD"
+        case "$GW_CMD" in
+          "hermes gateway start"*) ;;
+          *) GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_NAMED_CMD")\"" ;;
+        esac
+      fi
+      # Under hermes a failed default start still falls through to the restart
+      # fallback below; when only standalone named profiles failed, the result
+      # already carries their remediation and the fallback cannot recover them.
       if [ "$GW_VIA" = hermes ] && [ "$GATEWAY_RESTARTED" != true ]; then
         case "$GW_CMD" in
           "hermes gateway start"*) ;;
-          *) GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_CMD")\""
-             return 0;;
+          *) return 0;;
         esac
       fi
     else
@@ -715,7 +730,7 @@ EOF
       # the remediation names it rather than the hermes fallback it hides.
       GW_CMD="supervisorctl signal USR1 <program>"
     fi
-    [ "$GW_CMD" = "hermes gateway restart" ] || GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_CMD")\""
+    [ "$GW_CMD" = "hermes gateway restart" ] || GW_EXTRA=",\"gatewayRestartCmd\":\"$(json_string "$GW_CMD${GW_NAMED_CMD:+; $GW_NAMED_CMD}")\""
     if [ "$GATEWAY_RESTARTED" != true ] && run_hermes "$GATEWAY_TIMEOUT" gateway restart >/dev/null 2>&1; then
       GATEWAY_RESTARTED=true
     fi

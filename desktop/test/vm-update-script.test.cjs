@@ -1406,7 +1406,89 @@ test('a failed named-profile gateway start is reported without claiming a restar
   assert.equal(result.gatewayRestarted, false);
   assert.equal(result.gatewayRestartCmd, 'hermes -p work gateway start',
     'the result names the exact named-profile command the dialog shows');
-  assert.match(res.stdout, /could not start the gateway; on the VM run: hermes -p work gateway start/);
+  assert.match(res.stdout, /could not start a named gateway; on the VM run: hermes -p work gateway start/);
+  assert.doesNotMatch(log(), /gateway restart/, 'a default restart cannot recover the named standalone gateway');
+});
+
+test('a failed named-profile gateway start under supervisord reports next to the managed restart', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  fs.writeFileSync(path.join(bin, 'systemd-state'), 'offline\n');
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  fs.writeFileSync(path.join(state, 'gwstate.work'), 'running\n');
+  fs.writeFileSync(path.join(state, 'startfail.work'), '');
+  const { log } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  addProfile(home, 'work');
+  addPlugin(home, 'work', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(home, 'profiles', 'work', 'gateway.pid'), JSON.stringify({ pid: process.pid }));
+  const sstate = mktemp('vm-update-supervisor-');
+  const pid = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  const pid2 = spawnDaemon('hermes', 'gateway', 'run', '--no-supervise');
+  fs.writeFileSync(path.join(sstate, 'status'), `gw-one                          RUNNING   pid ${pid}, uptime 0:02:00\n`);
+  fs.writeFileSync(path.join(sstate, 'pid.gw-one'), `${pid}\n`);
+  fs.writeFileSync(path.join(sstate, 'next-pid.gw-one'), `${pid2}\n`);
+  addSupervisor(bin, marker, sstate);
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SUPERVISOR_STATE: sstate, FAKE_SVC_LOG: marker,
+    ALANS_WAY_VM_SUPERVISOR_CONFS: `${mktemp('vm-update-confd-')}/*.conf`,
+    ...pluginEnv(home, state),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(result.plugins.map((p) => [p.profile, p.name, p.status]), [
+    ['default', 'alans-way', 'updated'],
+    ['work', 'alans-way', 'updated'],
+  ], 'both refused updates ran while the gateways were down');
+  assert.equal(result.gatewayRestarted, true, 'the managed restart stands on its own');
+  assert.equal(result.gatewayRestartCmd, 'hermes -p work gateway start',
+    'the failed named-profile start keeps its exact remediation');
+  assert.match(res.stdout, /could not start a named gateway; on the VM run: hermes -p work gateway start/);
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.ok(markerText.includes('supervisorctl start gw-one'), 'the managed gateway came back up');
+  assert.ok(markerText.includes('hermes -p work gateway start'), 'the named start was attempted');
+  const drains = markerText.split('\n').filter((line) => line.includes('signal USR1 gw-one'));
+  assert.equal(drains.length, 1, 'the only drain is the pre-stop one; the bounce restart is not followed by another');
+  assert.ok(!markerText.includes('supervisorctl restart gw-one'), 'the restart fallback does not run for a managed gateway that came back');
+  assert.doesNotMatch(log(), /gateway restart/, 'a default restart cannot recover the named standalone gateway');
+});
+
+test('a failed named-profile gateway start under systemd reports next to the unit restart', async () => {
+  const checkout = makeCheckout(remote);
+  const { bin, marker } = makeBin();
+  // No systemd-state file: the fake systemctl answers "running" and the
+  // hermes-gateway unit is active.
+  const state = makeHermesState();
+  fs.writeFileSync(path.join(state, 'gwguard'), '');
+  fs.writeFileSync(path.join(state, 'gwstate'), 'running\n');
+  fs.writeFileSync(path.join(state, 'gwstate.work'), 'running\n');
+  fs.writeFileSync(path.join(state, 'startfail.work'), '');
+  const { log } = addHermes(bin, state);
+  const home = makeHermesHome();
+  addPlugin(home, 'default', 'alans-way', '0.6.1');
+  addProfile(home, 'work');
+  addPlugin(home, 'work', 'alans-way', '0.6.1');
+  fs.writeFileSync(path.join(home, 'profiles', 'work', 'gateway.pid'), JSON.stringify({ pid: process.pid }));
+  const port = await makeStatus({ version: '0.3.2', busy: false });
+  const res = await runScript(['v0.3.2'], envFor(checkout, makeDataDir(port), bin, {
+    FAKE_SVC_LOG: marker, ...pluginEnv(home, state),
+  }));
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(result.plugins.map((p) => [p.profile, p.name, p.status]), [
+    ['default', 'alans-way', 'updated'],
+    ['work', 'alans-way', 'updated'],
+  ], 'both refused updates ran while the gateways were down');
+  assert.equal(result.gatewayRestarted, true, 'the managed restart stands on its own');
+  assert.equal(result.gatewayRestartCmd, 'hermes -p work gateway start',
+    'the failed named-profile start keeps its exact remediation');
+  assert.match(res.stdout, /could not start a named gateway; on the VM run: hermes -p work gateway start/);
+  const markerText = fs.readFileSync(marker, 'utf8');
+  assert.ok(markerText.includes('systemctl --user start hermes-gateway'), 'the unit came back up');
+  assert.ok(markerText.includes('hermes -p work gateway start'), 'the named start was attempted');
   assert.doesNotMatch(log(), /gateway restart/, 'a default restart cannot recover the named standalone gateway');
 });
 

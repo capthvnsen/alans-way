@@ -99,11 +99,15 @@ test('the Windows driver keeps refs on the RuntimeId and checks each ref against
   assert.match(prune, /refBooks\.Remove\(/);
   const book = cs.slice(cs.indexOf('static Refs.Book RefBook('), cs.indexOf('static Snap DoWalk('));
   assert.match(book, /created == 0 \|\|[^\n]*book\.Created != created/);
+  const walk = cs.slice(cs.indexOf('static Snap DoWalk('), cs.indexOf('static void Collect('));
+  assert.match(walk, /Refs\.Conflicts\(book, snap\.Generation, seen\)/, 'a conflicting tree claims a fresh generation');
   for (const check of [
     'fresh refs', 'stable refs', 'empty key never binds by key', 'rebound ref refused',
     'same control accepted', 'recycled row refused', 'shifted namesake refused',
-    'empty key refused', 'history capped', 'repeat generation replaced',
-    'evicted generation missing', 'runtime id key', 'toggle states',
+    'empty key refused', 'history capped', 'repeat generation keeps its record',
+    'evicted generation missing', 'unchanged tree keeps its generation',
+    'rebuilt control claims a new generation', 'changed expansion claims a new generation',
+    'free generation never conflicts', 'runtime id key', 'toggle states',
     'flipped toggle refused', 'mixed toggle refused',
     'changed expansion refused', 'same expansion accepted',
   ]) {

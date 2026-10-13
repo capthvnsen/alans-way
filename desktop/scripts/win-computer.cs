@@ -498,6 +498,11 @@ static class WinComputer {
         };
       }
       snap.Generation = Fingerprint(snap.Items);
+      // A changed identity or state behind an identical fingerprint claims its
+      // own generation: the record callers still cite keeps its generation, so
+      // a stale request stays rejected until they take a fresh snapshot.
+      while (Refs.Conflicts(book, snap.Generation, seen))
+        snap.Generation = snap.Generation + 1;
       Refs.Remember(book, snap.Generation, seen);
     }
     return snap;
@@ -579,8 +584,8 @@ static class WinComputer {
   }
 
   // Never trusts the generation: the caller's record is read before the walk —
-  // a repeated generation replaces it — and every ref must still name the same
-  // control even when the fresh walk's fingerprint matches the caller's.
+  // a changed tree claims a new generation, so the record stands — and every
+  // ref must still name the same control even when fingerprints match.
   static void EnsureRefs(int pid, int generation, List<string> refs) {
     Refs.Book book;
     lock (cache) {
@@ -1613,13 +1618,10 @@ static class Refs {
   }
 
   public static void Remember(Book book, int generation, Dictionary<string, Seen> seen) {
-    // A repeated generation replaces the record: rebuilt controls behind an
-    // identical fingerprint must take their new runtime ids into the history,
-    // not hide behind the first walk's.
-    if (book.Generations.Count > 0 && book.Generations[book.Generations.Count - 1] == generation) {
-      book.History[book.History.Count - 1] = seen;
-      return;
-    }
+    // Only identical records ever share a generation: a conflicting walk claims
+    // the next free one first (see Conflicts), so the record a generation first
+    // named always stands.
+    if (book.Generations.Count > 0 && book.Generations[book.Generations.Count - 1] == generation) return;
     book.Generations.Add(generation);
     book.History.Add(seen);
     if (book.Generations.Count > HistoryMax) {
@@ -1632,6 +1634,20 @@ static class Refs {
     for (int i = 0; i < book.Generations.Count; i++)
       if (book.Generations[i] == generation) return book.History[i];
     return null;
+  }
+
+  // True when the generation is already taken by a record that names different
+  // controls or states — same fingerprint, new identities. The walk then claims
+  // the next free generation instead of borrowing the record callers still cite.
+  public static bool Conflicts(Book book, int generation, Dictionary<string, Seen> seen) {
+    Dictionary<string, Seen> recorded = Lookup(book, generation);
+    if (recorded == null) return false;
+    if (recorded.Count != seen.Count) return true;
+    foreach (KeyValuePair<string, Seen> pair in seen) {
+      Seen then;
+      if (!recorded.TryGetValue(pair.Key, out then) || !StillSame(then, pair.Value)) return true;
+    }
+    return false;
   }
 
   public static bool StillSame(Seen then, Seen now) {
@@ -1965,8 +1981,21 @@ static class SelfTest {
     Check(historyBook.History.Count == Refs.HistoryMax, "history capped");
     var replacedSeen = new Dictionary<string, Refs.Seen>();
     Refs.Remember(historyBook, 8, replacedSeen);
-    Check(historyBook.History.Count == Refs.HistoryMax && object.ReferenceEquals(Refs.Lookup(historyBook, 8), replacedSeen), "repeat generation replaced");
+    Check(historyBook.History.Count == Refs.HistoryMax && !object.ReferenceEquals(Refs.Lookup(historyBook, 8), replacedSeen), "repeat generation keeps its record");
     Check(Refs.Lookup(historyBook, 0) == null, "evicted generation missing");
+    var conflictBook = new Refs.Book();
+    var recordedSeen = new Dictionary<string, Refs.Seen> {
+      { "c1", new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "", 0, -1) } },
+    };
+    Refs.Remember(conflictBook, 42, recordedSeen);
+    Check(!Refs.Conflicts(conflictBook, 42, recordedSeen), "unchanged tree keeps its generation");
+    Check(Refs.Conflicts(conflictBook, 42, new Dictionary<string, Refs.Seen> {
+      { "c1", new Refs.Seen { Key = "2.1", Signature = recordedSeen["c1"].Signature } },
+    }), "rebuilt control claims a new generation");
+    Check(Refs.Conflicts(conflictBook, 42, new Dictionary<string, Refs.Seen> {
+      { "c1", new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "", 0, 1) } },
+    }), "changed expansion claims a new generation");
+    Check(!Refs.Conflicts(conflictBook, 43, recordedSeen), "free generation never conflicts");
     Check(Refs.Key(new int[] { 1, -2, 3 }) == "1.-2.3" && Refs.Key(null) == "" && Refs.Key(new int[0]) == "", "runtime id key");
     Check(Refs.ToggleSuffix(0) == " off" && Refs.ToggleSuffix(1) == " on" && Refs.ToggleSuffix(2) == " mixed", "toggle states");
     string label = new string('x', 120);
