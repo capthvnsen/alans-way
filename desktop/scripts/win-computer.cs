@@ -133,6 +133,7 @@ static class WinComputer {
     public string Value = "";
     public string Context = "";
     public int Ordinal;
+    public int Expand = -1;
     public double X, Y, Width, Height;
     public bool Password;
   }
@@ -325,6 +326,8 @@ static class WinComputer {
     request.Add(TogglePattern.ToggleStateProperty);
     request.Add(RangeValuePattern.Pattern);
     request.Add(RangeValuePattern.ValueProperty);
+    request.Add(ExpandCollapsePattern.Pattern);
+    request.Add(ExpandCollapsePattern.ExpandCollapseStateProperty);
     walkCache = request;
     return request;
   }
@@ -389,6 +392,12 @@ static class WinComputer {
     try {
       if (element.TryGetCachedPattern(TogglePattern.Pattern, out pattern))
         name += Refs.ToggleSuffix((int)((TogglePattern)pattern).Cached.ToggleState);
+    } catch { }
+    // Expand/collapse state joins the identity check, not the label: pressing a
+    // tree item must not undo an expansion the user changed since the snapshot.
+    try {
+      if (element.TryGetCachedPattern(ExpandCollapsePattern.Pattern, out pattern))
+        item.Expand = (int)((ExpandCollapsePattern)pattern).Cached.ExpandCollapseState;
     } catch { }
     if (!enabled) name += name.Length == 0 ? "disabled" : " disabled";
     item.Name = name;
@@ -485,10 +494,15 @@ static class WinComputer {
         snap.ByRef[item.Ref] = item;
         seen[item.Ref] = new Refs.Seen {
           Key = item.Key,
-          Signature = Refs.Signature(item.Role, item.Name, item.Context, item.Ordinal),
+          Signature = Refs.Signature(item.Role, item.Name, item.Context, item.Ordinal, item.Expand),
         };
       }
       snap.Generation = Fingerprint(snap.Items);
+      // A changed identity or state behind an identical fingerprint claims its
+      // own generation: the record callers still cite keeps its generation, so
+      // a stale request stays rejected until they take a fresh snapshot.
+      while (Refs.Conflicts(book, snap.Generation, seen))
+        snap.Generation = snap.Generation + 1;
       Refs.Remember(book, snap.Generation, seen);
     }
     return snap;
@@ -569,32 +583,32 @@ static class WinComputer {
     return snap;
   }
 
-  // Never trusts the cached generation: the tree is walked again and the cache replaced.
+  // Never trusts the generation: the caller's record is read before the walk —
+  // a changed tree claims a new generation, so the record stands — and every
+  // ref must still name the same control even when fingerprints match.
   static void EnsureRefs(int pid, int generation, List<string> refs) {
-    Snap snap = DoWalk(pid);
-    CachePut(pid, snap);
-    if (snap.Generation == generation) return;
     Refs.Book book;
     lock (cache) {
       if (!refBooks.TryGetValue(pid, out book))
         throw Err("stale_ref", "stale_ref: The app changed since your snapshot. Take a fresh snapshot.");
     }
-    lock (book) {
-      Dictionary<string, Refs.Seen> seen = Refs.Lookup(book, generation);
-      if (seen == null) throw Err("stale_ref", "stale_ref: The app changed since your snapshot. Take a fresh snapshot.");
-      foreach (string reference in refs) {
-        Refs.Seen then;
-        Found found;
-        Refs.Seen now = null;
-        if (snap.ByRef.TryGetValue(reference, out found)) {
-          now = new Refs.Seen {
-            Key = found.Key,
-            Signature = Refs.Signature(found.Role, found.Name, found.Context, found.Ordinal),
-          };
-        }
-        if (!seen.TryGetValue(reference, out then) || !Refs.StillSame(then, now))
-          throw Err("stale_ref", "stale_ref: " + reference + " is gone or changed since your snapshot. Take a fresh snapshot.");
+    Dictionary<string, Refs.Seen> seen;
+    lock (book) { seen = Refs.Lookup(book, generation); }
+    if (seen == null) throw Err("stale_ref", "stale_ref: The app changed since your snapshot. Take a fresh snapshot.");
+    Snap snap = DoWalk(pid);
+    CachePut(pid, snap);
+    foreach (string reference in refs) {
+      Refs.Seen then;
+      Found found;
+      Refs.Seen now = null;
+      if (snap.ByRef.TryGetValue(reference, out found)) {
+        now = new Refs.Seen {
+          Key = found.Key,
+          Signature = Refs.Signature(found.Role, found.Name, found.Context, found.Ordinal, found.Expand),
+        };
       }
+      if (!seen.TryGetValue(reference, out then) || !Refs.StillSame(then, now))
+        throw Err("stale_ref", "stale_ref: " + reference + " is gone or changed since your snapshot. Take a fresh snapshot.");
     }
   }
 
@@ -1604,6 +1618,9 @@ static class Refs {
   }
 
   public static void Remember(Book book, int generation, Dictionary<string, Seen> seen) {
+    // Only identical records ever share a generation: a conflicting walk claims
+    // the next free one first (see Conflicts), so the record a generation first
+    // named always stands.
     if (book.Generations.Count > 0 && book.Generations[book.Generations.Count - 1] == generation) return;
     book.Generations.Add(generation);
     book.History.Add(seen);
@@ -1619,13 +1636,29 @@ static class Refs {
     return null;
   }
 
+  // True when the generation is already taken by a record that names different
+  // controls or states — same fingerprint, new identities. The walk then claims
+  // the next free generation instead of borrowing the record callers still cite.
+  public static bool Conflicts(Book book, int generation, Dictionary<string, Seen> seen) {
+    Dictionary<string, Seen> recorded = Lookup(book, generation);
+    if (recorded == null) return false;
+    if (recorded.Count != seen.Count) return true;
+    foreach (KeyValuePair<string, Seen> pair in seen) {
+      Seen then;
+      if (!recorded.TryGetValue(pair.Key, out then) || !StillSame(then, pair.Value)) return true;
+    }
+    return false;
+  }
+
   public static bool StillSame(Seen then, Seen now) {
     return then != null && now != null && then.Key.Length > 0 && then.Key == now.Key && then.Signature == now.Signature;
   }
 
   // Win32/MSAA list items can have index-based RuntimeIds, so include the ordinal to reject shifted namesakes.
-  public static string Signature(string role, string name, string context, int ordinal) {
-    return role + "|" + name + "|" + context + "|" + ordinal.ToString(CultureInfo.InvariantCulture);
+  // Expand is the ExpandCollapseState (-1 when the control has none) so a press on a
+  // tree item the user expanded or collapsed since the snapshot fails its identity check.
+  public static string Signature(string role, string name, string context, int ordinal, int expand) {
+    return role + "|" + name + "|" + context + "|" + ordinal.ToString(CultureInfo.InvariantCulture) + "|" + expand.ToString(CultureInfo.InvariantCulture);
   }
 
   // UIA ToggleState: 0 off, 1 on, 2 indeterminate. Mixed must not read as off, or a
@@ -1925,34 +1958,53 @@ static class SelfTest {
     Refs.Assign(emptyBook, new List<string> { "" }, new List<string> { "Button|One|0" });
     Check(Refs.Assign(emptyBook, new List<string> { "" }, new List<string> { "Button|Two|0" })[0] == "c2"
       && !emptyBook.ByKey.ContainsKey(""), "empty key never binds by key");
-    var then = new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "", 0) };
+    var then = new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "", 0, -1) };
     Check(!Refs.StillSame(then, new Refs.Seen { Key = "1.4", Signature = then.Signature }), "rebound ref refused");
     Check(Refs.StillSame(then, new Refs.Seen { Key = "1.1", Signature = then.Signature }), "same control accepted");
     Check(!Refs.StillSame(
-      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "Row 3", 0) },
-      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "Row 7", 0) }), "recycled row refused");
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "Row 3", 0, -1) },
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "Row 7", 0, -1) }), "recycled row refused");
     Check(!Refs.StillSame(
-      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "", 0) },
-      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "", 1) }), "shifted namesake refused");
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "", 0, -1) },
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "", 1, -1) }), "shifted namesake refused");
     Check(!Refs.StillSame(
-      new Refs.Seen { Key = "", Signature = Refs.Signature("Button", "Go", "", 0) },
-      new Refs.Seen { Key = "", Signature = Refs.Signature("Button", "Go", "", 0) }), "empty key refused");
+      new Refs.Seen { Key = "", Signature = Refs.Signature("Button", "Go", "", 0, -1) },
+      new Refs.Seen { Key = "", Signature = Refs.Signature("Button", "Go", "", 0, -1) }), "empty key refused");
+    Check(!Refs.StillSame(
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("TreeItem", "Folder", "", 0, 1) },
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("TreeItem", "Folder", "", 0, 2) }), "changed expansion refused");
+    Check(Refs.StillSame(
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("TreeItem", "Folder", "", 0, 1) },
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("TreeItem", "Folder", "", 0, 1) }), "same expansion accepted");
     var historyBook = new Refs.Book();
     for (int i = 0; i < 9; i++) Refs.Remember(historyBook, i, new Dictionary<string, Refs.Seen>());
     Check(historyBook.History.Count == Refs.HistoryMax, "history capped");
-    Dictionary<string, Refs.Seen> lastSeen = Refs.Lookup(historyBook, 8);
-    Refs.Remember(historyBook, 8, new Dictionary<string, Refs.Seen>());
-    Check(historyBook.History.Count == Refs.HistoryMax && object.ReferenceEquals(Refs.Lookup(historyBook, 8), lastSeen), "repeat generation skipped");
+    var replacedSeen = new Dictionary<string, Refs.Seen>();
+    Refs.Remember(historyBook, 8, replacedSeen);
+    Check(historyBook.History.Count == Refs.HistoryMax && !object.ReferenceEquals(Refs.Lookup(historyBook, 8), replacedSeen), "repeat generation keeps its record");
     Check(Refs.Lookup(historyBook, 0) == null, "evicted generation missing");
+    var conflictBook = new Refs.Book();
+    var recordedSeen = new Dictionary<string, Refs.Seen> {
+      { "c1", new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "", 0, -1) } },
+    };
+    Refs.Remember(conflictBook, 42, recordedSeen);
+    Check(!Refs.Conflicts(conflictBook, 42, recordedSeen), "unchanged tree keeps its generation");
+    Check(Refs.Conflicts(conflictBook, 42, new Dictionary<string, Refs.Seen> {
+      { "c1", new Refs.Seen { Key = "2.1", Signature = recordedSeen["c1"].Signature } },
+    }), "rebuilt control claims a new generation");
+    Check(Refs.Conflicts(conflictBook, 42, new Dictionary<string, Refs.Seen> {
+      { "c1", new Refs.Seen { Key = "1.1", Signature = Refs.Signature("Button", "Go", "", 0, 1) } },
+    }), "changed expansion claims a new generation");
+    Check(!Refs.Conflicts(conflictBook, 43, recordedSeen), "free generation never conflicts");
     Check(Refs.Key(new int[] { 1, -2, 3 }) == "1.-2.3" && Refs.Key(null) == "" && Refs.Key(new int[0]) == "", "runtime id key");
     Check(Refs.ToggleSuffix(0) == " off" && Refs.ToggleSuffix(1) == " on" && Refs.ToggleSuffix(2) == " mixed", "toggle states");
     string label = new string('x', 120);
     Check(!Refs.StillSame(
-      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("CheckBox", label + Refs.ToggleSuffix(0), "", 0) },
-      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("CheckBox", label + Refs.ToggleSuffix(1), "", 0) }), "flipped toggle refused");
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("CheckBox", label + Refs.ToggleSuffix(0), "", 0, -1) },
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("CheckBox", label + Refs.ToggleSuffix(1), "", 0, -1) }), "flipped toggle refused");
     Check(!Refs.StillSame(
-      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("CheckBox", "Wrap" + Refs.ToggleSuffix(0), "", 0) },
-      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("CheckBox", "Wrap" + Refs.ToggleSuffix(2), "", 0) }), "mixed toggle refused");
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("CheckBox", "Wrap" + Refs.ToggleSuffix(0), "", 0, -1) },
+      new Refs.Seen { Key = "1.1", Signature = Refs.Signature("CheckBox", "Wrap" + Refs.ToggleSuffix(2), "", 0, -1) }), "mixed toggle refused");
   }
 }
 // </pure>
