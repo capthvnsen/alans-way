@@ -33,6 +33,7 @@ if (typeof electron === 'string') {
   fs.mkdirSync(path.join(profile, 'downloads'));
   for (const name of ['cold start.pdf', 'finder.pdf', 'picker.pdf', 'drop.pdf', 'restore.pdf']) fs.writeFileSync(path.join(profile, name), PDF);
   fs.writeFileSync(path.join(profile, 'fake.pdf'), '<html>not a PDF</html>');
+  fs.writeFileSync(path.join(profile, 'notes.txt'), 'non-PDF drop fixture');
   fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, macSshHost: '', bots: [{ id: '123', name: 'PDF fixture', isBot: true }], selectedBotId: '123' }));
   const launch = phase => new Promise((resolve, reject) => {
     const child = spawn(electron, [__filename, phase], { env: { ...process.env, PDF_FIXTURE_PROFILE: profile }, stdio: 'inherit' });
@@ -156,6 +157,13 @@ if (typeof electron === 'string') {
         return res.end(req.url.includes('fake') ? Buffer.from('not a pdf') : PDF);
       }
       res.setHeader('Content-Type', 'text/html');
+      if (req.url.endsWith('/upload')) return res.end(`<!doctype html><title>Upload fixture</title>
+        <style>html,body{margin:0}#zone{width:100vw;height:100vh}</style><div id="zone">Upload</div><script>
+        window.received=[];window.dragoverWasPrevented=[];
+        const zone=${req.url === '/window/upload' ? 'window' : "document.querySelector('#zone')"};
+        zone.addEventListener('dragover',event=>{window.dragoverWasPrevented.push(event.defaultPrevented);event.preventDefault();});
+        zone.addEventListener('drop',async event=>{event.preventDefault();for(const file of event.dataTransfer.files)window.received.push({name:file.name,contents:await file.text()});});
+        </script>`);
       res.end('<!doctype html><title>PDF links</title><style>a{display:block;margin:20px}</style><a id="same" href="/doc.pdf">same</a><a id="blank" target="_blank" href="/blank.pdf">blank</a><a id="middle" href="/middle.pdf">middle</a><a id="meta" href="/meta.pdf">meta</a>');
     });
     await new Promise(r => server.listen(0, '127.0.0.1', r));
@@ -202,6 +210,37 @@ if (typeof electron === 'string') {
       check(`${id} click opens viewer tab`, !!clicked);
       if (clicked) check(`${id} click keeps opener active`, (await state()).activeTabId, humanId);
     }
+    const nativeDrop = async (target, name) => {
+      // Activation reparents a view. Wait for its compositor frame before
+      // Chromium hit-tests the drag, especially for the viewer's child frame.
+      await target.capturePage();
+      const wasAttached = target.debugger.isAttached();
+      if (!wasAttached) target.debugger.attach('1.3');
+      try {
+        const data = { items: [], files: [path.join(profile, name)], dragOperationsMask: 1 };
+        for (const type of ['dragEnter', 'dragOver', 'drop']) await target.debugger.sendCommand('Input.dispatchDragEvent', { type, x: 300, y: 100, data });
+      } finally { if (!wasAttached) target.debugger.detach(); }
+    };
+    // Page upload handlers run first in both browser and Telegram sessions.
+    const telegramUpload = await waitFor(() => webContents.getAllWebContents().find(w => w.getURL().startsWith('https://web.telegram.org/')));
+    const telegramUrl = telegramUpload.getURL();
+    try {
+      for (const [target, label, route] of [[human, 'web', '/upload'], [human, 'window-handler web', '/window/upload'], [telegramUpload, 'Telegram-session', '/upload']]) {
+        await target.loadURL(`${base}${route}`);
+        if (target === human) { await command('activate', { id: humanId }); target.focus(); }
+        const before = (await state()).tabs.length;
+        await nativeDrop(target, 'finder.pdf');
+        await new Promise(r => setTimeout(r, 300));
+        check(`${label} upload zone receives PDF File`, await target.executeJavaScript('window.received.map(file=>({name:file.name,pdf:file.contents.startsWith("%PDF-")}))'), [{ name: 'finder.pdf', pdf: true }]);
+        check(`${label} handled PDF drop opens no tab`, (await state()).tabs.length, before);
+        check(`${label} upload dragover reaches page uncancelled`, await target.executeJavaScript('window.dragoverWasPrevented.every(value=>value===false)'));
+        await nativeDrop(target, 'notes.txt');
+        await new Promise(r => setTimeout(r, 100));
+        check(`${label} non-PDF upload unchanged`, await target.executeJavaScript('window.received.at(-1)'), { name: 'notes.txt', contents: 'non-PDF drop fixture' });
+        check(`${label} non-PDF drop opens no tab`, (await state()).tabs.length, before);
+      }
+    } finally { await telegramUpload.loadURL(telegramUrl); }
+    await human.loadURL(base);
     // Drag a real on-disk file using trusted Chromium input, not a synthetic
     // File.path or a renderer-supplied path. Cover both shell and web view.
     for (const [target, name] of [[win.webContents, 'restore.pdf'], [human, 'finder.pdf'], [tabContents(`${base}/blank.pdf`)[0], 'picker.pdf']]) {
@@ -213,15 +252,12 @@ if (typeof electron === 'string') {
       if (target !== human && target !== win.webContents && !baseline) {
         const frame = await viewerOf(target);
         await waitFor(() => frame.executeJavaScript('window.workspacePdfDropInstalled === true').catch(() => false));
+        // The child frame's hit-test surface follows its resize after activation.
+        await frame.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
       }
-      target.debugger.attach('1.3');
-      try {
-        const data = { items: [], files: [path.join(profile, name)], dragOperationsMask: 1 };
-        await target.debugger.sendCommand('Input.dispatchDragEvent', { type: 'dragEnter', x: 300, y: 100, data });
-        await target.debugger.sendCommand('Input.dispatchDragEvent', { type: 'drop', x: 300, y: 100, data });
-        if (baseline) await new Promise(r => setTimeout(r, 300));
-        else await waitFor(state, s => s.tabs.filter(t => t.url === fileUrl(name)).length > before);
-      } finally { target.debugger.detach(); }
+      await nativeDrop(target, name);
+      if (baseline) await new Promise(r => setTimeout(r, 300));
+      else await waitFor(state, s => s.tabs.filter(t => t.url === fileUrl(name)).length > before);
       check(`PDF drop onto ${target === human ? 'web tab' : target === win.webContents ? 'window' : 'PDF viewer'}`, (await state()).tabs.filter(t => t.url === fileUrl(name)).length > before);
     }
     // Save dialogs are deterministic fixture saves, never native dialogs on

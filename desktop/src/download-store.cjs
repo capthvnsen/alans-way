@@ -27,7 +27,7 @@ function insideDownloads(file, dir, realpath) {
   } catch { return false; }
 }
 
-// A dump of chat PDFs must not keep grabbing focus: only the first tab of a
+// A dump of PDFs must not keep grabbing focus: only the first tab of a
 // burst activates, and past a few per minute the files wait in the list.
 const AUTO_OPEN_LIMIT = 5, AUTO_OPEN_WINDOW_MS = 60_000, AUTO_OPEN_BURST_MS = 5_000;
 
@@ -122,11 +122,11 @@ function createDownloadStore({ getPreferences, savePreferences, onChanged = () =
       notify(true);
       // Human web downloads use the same viewer as chat attachments. A human's
       // native save picker may choose any directory; Telegram stays confined
-      // to Downloads and retains its burst/rate limit.
+      // to Downloads. Both use the same burst/rate limit.
       if (record.state === 'completed' && human && record.path && openInTab && isPdf(record) && isPdfFile(record.path) && (scope !== 'telegram' || insideDownloads(record.path, downloadsPath(), realpath))) {
         const decision = decideAutoOpen(autoOpens, now());
         autoOpens = decision.recent;
-        if (decision.open || scope !== 'telegram') Promise.resolve(openInTab(record, { activate: decision.activate })).catch(() => {});
+        if (decision.open) Promise.resolve(openInTab(record, { activate: decision.activate })).catch(() => {});
       }
     });
     if (item.getState() !== 'interrupted') item.setSaveDialogOptions?.({ title: 'Save download' });

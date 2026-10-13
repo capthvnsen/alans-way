@@ -11,14 +11,27 @@ if (process.isMainFrame) {
     if (!event.isTrusted || event.source === window || event.origin !== 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai' || event.data?.workspacePdfDrop !== true || !Array.isArray(event.data.files)) return;
     try { open(event.data.files.filter(file => /\.pdf$/i.test(file.name))); } catch {}
   });
-  window.addEventListener('dragover', event => {
-    if (event.isTrusted && [...(event.dataTransfer?.items || [])].some(item => item.kind === 'file')) event.preventDefault();
-  }, true);
-  window.addEventListener('drop', event => {
-    if (!event.isTrusted) return;
+  const dragover = event => {
+    if (!event.isTrusted || event.defaultPrevented) return;
+    // The page's upload zone gets first refusal. Only advertise the PDF
+    // fallback; other file drags keep their normal browser/page behaviour.
+    if ([...(event.dataTransfer?.items || [])].some(item => item.kind === 'file' && item.type === 'application/pdf')) event.preventDefault();
+  };
+  const drop = event => {
+    if (!event.isTrusted || event.defaultPrevented) return;
     const files = pdfs(event);
     if (!files.length) return;
-    event.preventDefault(); event.stopImmediatePropagation();
+    event.preventDefault();
     open(files);
-  }, true);
+  };
+  const listen = () => {
+    // Refresh at the start of each gesture so even window handlers installed
+    // by the page after preload run before the fallback bubble listeners.
+    window.removeEventListener('dragover', dragover);
+    window.removeEventListener('drop', drop);
+    window.addEventListener('dragover', dragover);
+    window.addEventListener('drop', drop);
+  };
+  window.addEventListener('dragenter', listen);
+  listen();
 }
