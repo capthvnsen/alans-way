@@ -27,7 +27,9 @@ if (typeof electron === 'string') {
   const { spawn } = require('node:child_process');
   // Caller can keep local fixture scratch under its designated cache.
   const root = fs.existsSync(scratch) ? scratch : require('node:os').tmpdir();
-  const profile = fs.mkdtempSync(path.join(root, 'next-P-pdf-fixture-'));
+  // macOS temp paths may be symlinked; match the canonical paths opened by
+  // the PDF validator rather than comparing two aliases of the same file.
+  const profile = fs.realpathSync(fs.mkdtempSync(path.join(root, 'next-P-pdf-fixture-')));
   fs.mkdirSync(path.join(profile, 'downloads'));
   for (const name of ['cold start.pdf', 'finder.pdf', 'picker.pdf', 'drop.pdf', 'restore.pdf']) fs.writeFileSync(path.join(profile, name), PDF);
   fs.writeFileSync(path.join(profile, 'fake.pdf'), '<html>not a PDF</html>');
@@ -250,6 +252,17 @@ if (typeof electron === 'string') {
     const local = (await state()).tabs.find(t => t.url === pathToFileURL(path.join(profile, 'downloads', 'telegram.pdf')).href);
     await viewerOf(tabContents(local.url)[0]);
     check('file title is filename', local.title, 'telegram.pdf');
+    const telegramRecord = (await state()).downloads.find(d => d.name === 'telegram.pdf');
+    check('Telegram download metadata persists', { source: telegramRecord.source, mime: telegramRecord.mime, state: telegramRecord.state }, { source: 'Telegram', mime: 'application/pdf', state: 'completed' });
+    // Preserve the original regression: repeatedly opening the same downloads
+    // row stays in-app and each new file tab remains human-controlled.
+    for (const attempt of [1, 2]) {
+      const beforeOpen = (await state()).tabs.filter(t => t.url === local.url).length;
+      await command('open-download', { id: telegramRecord.id });
+      const reopened = await waitFor(state, s => s.tabs.filter(t => t.url === local.url).length > beforeOpen);
+      await viewerOf(tabContents(local.url).at(-1));
+      check(`downloads-list Open attempt ${attempt} activates human viewer`, { url: reopened.tabs.find(t => t.id === reopened.activeTabId).url, controller: reopened.tabs.find(t => t.id === reopened.activeTabId).controller }, { url: local.url, controller: 'human' });
+    }
     const nav = await apiRaw(`/v1/tabs/${agent.data.id}/actions`, 'POST', { action: 'navigate', url: local.url, epoch: agent.data.epoch });
     check('agent file navigation refused', nav.status, 400);
     check('agent cannot create file tab', (await apiRaw('/v1/tabs', 'POST', { url: local.url })).status, 400);
@@ -266,8 +279,10 @@ if (typeof electron === 'string') {
       const result = await apiRaw(`/v1/tabs/${local.id}${suffix}`, suffix === '/actions' ? 'POST' : 'GET', suffix === '/actions' ? { action: 'eval', expression: 'document.title', epoch: local.epoch } : undefined);
       check(`file tab API ${suffix || 'get'} refused`, result.status, 404);
     }
-    // Probe the real Chromium viewer's shadow DOM; controls must have effects.
-    const viewer = await viewerOf(tabContents(local.url)[0]);
+    // Downloads Open activated a new copy of this file: exercise that visible
+    // view's toolbar rather than an older copy hosted in the background.
+    const visiblePdf = win.contentView.children.find(view => view.webContents?.getURL() === local.url).webContents;
+    const viewer = await viewerOf(visiblePdf);
     await waitFor(() => viewer.executeJavaScript("!!document.querySelector('pdf-viewer')?.shadowRoot?.querySelector('viewer-toolbar')?.shadowRoot"));
     const beforeForgedViewer = (await state()).tabs.length;
     await viewer.executeJavaScript("window.top.postMessage({workspacePdfDrop:true,files:[new File(['%PDF-'], 'forged.pdf')]}, '*')");
