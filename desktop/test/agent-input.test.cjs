@@ -1,21 +1,21 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { createAgentInput, keyboardEvent, botAccent, cursorPath, boundedJs } = require('../src/agent-input.cjs');
+const { createAgentInput, APPROVED, keyboardEvent, botAccent, cursorPath, boundedJs } = require('../src/agent-input.cjs');
 const { requireActor } = require('../src/core.cjs');
 
 function fixture(options = {}) {
   const calls = [], scripts = [], shortcuts = [];
   let hook = async () => {};
-  const found = { x: 40, y: 60, ...options.found };
-  const tab = { botId: 'bot', controller: 'agent', epoch: 1, refs: new Set(['e1', 'e2']), view: { webContents: Object.assign(new EventEmitter(), {
+  const found = { x: 40, y: 60, look: { names: [], field: false, form: null }, ...options.found };
+  const tab = { id: 'tab-1', botId: 'bot', controller: 'agent', epoch: 1, refs: new Set(['e1', 'e2']), view: { webContents: Object.assign(new EventEmitter(), {
     isDestroyed: () => false,
     setIgnoreMenuShortcuts: value => shortcuts.push(value),
-    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : code.includes('elementFromPoint') ? found : code.includes('hw.submit') ? (options.submitted ?? null) : found; },
+    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.includes('.page()') ? (options.page ?? { origin: 'https://shop.example', names: [] }) : code.includes('return C.look(C.') ? (options.probe ?? null) : code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : code.includes('elementFromPoint') ? found : code.includes('hw.submit') ? (options.submitted ?? null) : found; },
     focus: () => { throw new Error('Native focus must never be used.'); },
     sendInputEvent: () => { throw new Error('Native input must never be used.'); },
   }) } };
-  const agent = createAgentInput({ requireActor, isVisible: () => options.visible !== false, delay: options.delay || (async () => {}), command: async (_tab, method, params) => { assert.equal(_tab, tab); calls.push({ method, ...params }); await hook(method, params); return {}; } });
+  const agent = createAgentInput({ requireActor, now: options.now, isVisible: () => options.visible !== false, delay: options.delay || (async () => {}), command: async (_tab, method, params) => { assert.equal(_tab, tab); calls.push({ method, ...params }); await hook(method, params); return {}; } });
   return { tab, agent, calls, scripts, shortcuts, hook: callback => { hook = callback; }, perform: body => agent.perform(tab, { epoch: 1, ...body }, 'bot') };
 }
 const pointer = f => f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').map(({ type, x, y, button, buttons, clickCount }) => ({ type, x, y, button, buttons, clickCount }));
@@ -341,3 +341,97 @@ test('a link click waits for a slow load to start, but an in-page route change e
   assert.ok(emittedAt > 0 && Date.now() - emittedAt < 250, 'an in-page route change does not wait out the window');
   watchSpa.stop();
 });
+
+const PAGE_WITH_ORDER = { origin: 'https://shop.example', names: ['Add to cart', 'Place order'] };
+const dispatched = f => f.calls.filter(call => call.method.startsWith('Input.'));
+const approvalFor = (f, extra = {}) => ({ nonce: 'n-' + Math.random().toString(36).slice(2).padEnd(16, '0'), kind: 'purchase', summary: 'Desk lamp', issuedAt: Date.now(), tabId: f.tab.id, epoch: f.tab.epoch, ...extra });
+const approved = async (f, body, approval = approvalFor(f)) => { body = { epoch: 1, ...body, approval }; f.agent.approve(f.tab, body); return f.agent.perform(f.tab, body, 'bot'); };
+
+test('a click whose resolved target reads as a commit is refused before any input, and runs once approved', async () => {
+  const f = fixture({ found: { look: { names: ['Plаce ​order'], field: false, form: null } } });
+  await assert.rejects(f.perform({ action: 'click', name: 'x' }), err => err.status === 403 && /^commit_required: "Pl.*" looks like it buys/.test(err.message));
+  await assert.rejects(f.perform({ action: 'right_click', name: 'x' }), /commit_required/);
+  assert.deepEqual(dispatched(f), [], 'nothing was sent');
+  await approved(f, { action: 'click', name: 'x' });
+  assert.deepEqual(pointer(f).map(call => call.type), ['mouseMoved', 'mousePressed', 'mouseReleased']);
+});
+
+test('look-alike names pass: Add to cart, Send code, a Pay with picker, Purchase history, a filter chip delete', async () => {
+  for (const name of ['Add to cart', 'Send code', 'Pay with Google Pay', 'Purchase history', 'Delete filter']) {
+    const f = fixture({ found: { look: { names: [name], field: false, form: null } } });
+    await f.perform({ action: 'click', name });
+    assert.equal(pointer(f).filter(call => call.type === 'mousePressed').length, 1, name);
+  }
+});
+
+test('Enter in a field is judged by its form\'s submit controls; a space in a field or a click into one is not', async () => {
+  const field = { names: ['Email'], field: true, form: ['Place order'] };
+  const f = fixture({ found: { look: field }, probe: field });
+  for (const key of ['Enter', 'Return', '\r']) {
+    await assert.rejects(f.perform({ action: 'press', ref: 'e1', key }), /commit_required: pressing Enter here submits the form with "Place order"/, key);
+    await assert.rejects(f.perform({ action: 'press', key }), /commit_required: pressing Enter/, `${key} on the focused field`);
+  }
+  assert.deepEqual(dispatched(f), []);
+  await f.perform({ action: 'press', ref: 'e1', key: ' ' });
+  await f.perform({ action: 'click', ref: 'e1' });
+  const search = fixture({ found: { look: { names: ['Search'], field: true, form: ['Search'] } } });
+  await search.perform({ action: 'press', ref: 'e1', key: 'Enter' });
+  assert.equal(search.calls.filter(call => call.type === 'keyDown').length, 1, 'Enter in a search form submits');
+});
+
+test('input landing in a cross-origin frame needs approval; an unreadable point fails closed only on a commit page', async () => {
+  const frame = fixture({ probe: { frame: true } });
+  await assert.rejects(frame.perform({ action: 'click', x: 100, y: 100 }), /commit_required: a click here lands in a cross-origin frame/);
+  await assert.rejects(frame.perform({ action: 'press', key: 'Enter' }), /commit_required: pressing Enter here lands in a cross-origin frame/);
+  await assert.rejects(frame.perform({ action: 'drag', ref: 'e1', toX: 300, toY: 300 }), /cross-origin frame/, 'a drag judges where it drops');
+  assert.deepEqual(dispatched(frame), []);
+  await approved(frame, { action: 'click', x: 100, y: 100 });
+  const blank = fixture({ probe: null, page: PAGE_WITH_ORDER });
+  await assert.rejects(blank.perform({ action: 'click', x: 100, y: 100 }), /where the app cannot read the page here could set off "Place order"/);
+  const quiet = fixture({ probe: null });
+  await quiet.perform({ action: 'click', x: 100, y: 100 });
+  const named = fixture({ probe: { names: ['Place order'], field: false, form: null } });
+  await assert.rejects(named.perform({ action: 'double_click', x: 100, y: 100 }), /commit_required: "Place order"/, 'a coordinate is hit-tested to its control');
+});
+
+test('an approval counts once, within 120s, on its own tab and epoch, and a bad one refuses the action', async () => {
+  let clock = 1_000_000;
+  const f = fixture({ now: () => clock, found: { look: { names: ['Buy now'], field: false, form: null } } });
+  const once = approvalFor(f, { issuedAt: clock });
+  await approved(f, { action: 'click', ref: 'e1' }, once);
+  await assert.rejects(approved(f, { action: 'click', ref: 'e1' }, once), err => err.status === 403 && /^approval_invalid: the approval was already used/.test(err.message));
+  clock += 121000;
+  await assert.rejects(approved(f, { action: 'click', ref: 'e1' }, approvalFor(f, { issuedAt: clock - 120001 })), /expired/);
+  await assert.rejects(approved(f, { action: 'click', ref: 'e1' }, approvalFor(f, { issuedAt: clock + 6000 })), /expired/, 'a clock far ahead is not trusted');
+  await approved(f, { action: 'click', ref: 'e1' }, approvalFor(f, { issuedAt: clock + 4000 }));
+  await assert.rejects(approved(f, { action: 'click', ref: 'e1' }, approvalFor(f, { issuedAt: clock, epoch: 2 })), /another tab or control epoch/);
+  await assert.rejects(approved(f, { action: 'click', ref: 'e1' }, approvalFor(f, { issuedAt: clock, tabId: 'tab-2' })), /another tab or control epoch/);
+  for (const bad of [null, 'yes', { nonce: 'short', kind: 'purchase', summary: 's', issuedAt: clock }, approvalFor(f, { kind: 'shopping' }), approvalFor(f, { summary: 'x'.repeat(201) }), approvalFor(f, { issuedAt: 'now' })])
+    assert.throws(() => f.agent.approve(f.tab, { approval: bad }), /approval_invalid: approval needs/);
+  const body = { action: 'click', ref: 'e1', [APPROVED]: true };
+  assert.equal(body[APPROVED], true, 'only approve() sets the mark; JSON cannot carry a symbol key');
+  assert.equal(JSON.parse(JSON.stringify(body))[APPROVED], undefined);
+});
+
+test('page scripts, acting DevTools calls, reloads and action addresses are refused while the page shows a commit control', async () => {
+  const live = fixture({ page: PAGE_WITH_ORDER });
+  const refuse = (body, pattern) => assert.rejects(live.agent.guard(live.tab, body), pattern, JSON.stringify(body));
+  await refuse({ action: 'eval', code: '1' }, /commit_required: a page script here could set off "Place order"/);
+  for (const method of ['Runtime.evaluate', 'Runtime.callFunctionOn', 'Input.dispatchMouseEvent', 'DOM.setAttributeValue'])
+    await refuse({ action: 'cdp', method }, new RegExp(`the DevTools call ${method.replace('.', '\\.')} here`));
+  await refuse({ action: 'reload' }, /reloading here could resubmit/);
+  await refuse({ action: 'cdp', method: 'Page.reload' }, /reloading here could resubmit/);
+  await refuse({ action: 'navigate', url: 'https://shop.example/checkout/complete' }, /looks like an address that confirms/);
+  await refuse({ action: 'cdp', method: 'Page.navigate', params: { url: 'shop.example/orders/7/delete' } }, /looks like an address/);
+  for (const body of [{ action: 'cdp', method: 'DOM.getDocument' }, { action: 'cdp', method: 'Accessibility.getFullAXTree' }, { action: 'cdp', method: 'Emulation.setDeviceMetricsOverride' },
+    { action: 'navigate', url: 'https://other.example/checkout/complete' }, { action: 'navigate', url: 'https://shop.example/maps/place/x' }, { action: 'read' }, { action: 'wait', text: 'x' },
+    { action: 'cdp', method: 'Page.addScriptToEvaluateOnNewDocument' }, { action: 'eval', code: '1', [APPROVED]: true }])
+    await live.agent.guard(live.tab, body);
+  const quiet = fixture();
+  await quiet.agent.guard(quiet.tab, { action: 'eval', code: '1' });
+  await quiet.agent.guard(quiet.tab, { action: 'reload' });
+  const silent = fixture({ page: 'no answer' });
+  await assert.rejects(silent.agent.guard(silent.tab, { action: 'eval', code: '1' }), /did not answer the commit check/, 'a page that does not answer fails closed for scripts');
+  await silent.agent.guard(silent.tab, { action: 'navigate', url: 'https://shop.example/pay' });
+});
+

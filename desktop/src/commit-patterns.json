@@ -1,0 +1,21 @@
+{
+  "about": "Control names that commit (buy, book, send, post, submit, delete, change an account), shared by the workspace router's commit gate and the app's dispatch check. Each entry is a regular-expression fragment matched case-insensitively with Unicode (flags iu); a space stands for one or more spaces, dashes or underscores. First remove every notCommit match (flags giu) from the name, then test names (which must not touch another letter or digit on either side) and namesAnywhere (matched anywhere, for scripts without word breaks).",
+  "names": [
+    "place order", "place your order", "complete order", "order now", "purchase", "buy",
+    "pay(?:ment)?", "confirm", "book", "complete booking", "reserv(?:e|ation)",
+    "send", "post", "publish", "reply", "comment", "submit", "easy apply",
+    "delete", "remove", "close account", "subscribe", "donate", "transfer", "schedule", "bid",
+    "bestellen", "kauf abschlie(?:ß|ss)en", "kaufen", "bezahlen",
+    "commander", "payer", "valider la commande", "confirmer la commande", "réserver",
+    "comprar", "pagar", "realizar pedido", "confirmar pedido"
+  ],
+  "namesAnywhere": ["注文を確定する", "購入する", "支払う", "予約する"],
+  "notCommit": [
+    "send(?: (?:me|a|new|verification|security|login|sign in|one time|sms|text))* (?:code|otp|passcode)",
+    "^\\s*pay with [\\p{L}\\p{N}]+(?: pay)?\\s*$",
+    "purchase history",
+    "(?:delete|remove) filter|filter[\\s,:_-]*(?:delete|remove)\\s*$",
+    "address book",
+    "confirm (?:your )?(?:e(?: )?mail(?: address)?|password)"
+  ]
+}

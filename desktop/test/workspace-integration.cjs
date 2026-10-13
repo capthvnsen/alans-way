@@ -126,7 +126,7 @@ app.whenReady().then(async () => {
     if (req.url === '/favicon-local') return res.end('<title>favicon-local</title><link rel="icon" href="/icon.png">');
     if (req.url === '/favicon-cross') return res.end(`<title>favicon-cross</title><link rel="icon" href="http://localhost:${server.address().port}/icon.png">`);
     if (req.url === '/streaming') { res.write('<title>streaming</title><h1>First half</h1>'); setTimeout(() => res.end('<p>Second half</p>'), 600); return; }
-    if (req.url === '/form') return res.end('<!doctype html><title>form</title><form id="f"><input name="a" aria-label="Field A"><input name="b" aria-label="Field B"><input name="c" aria-label="Field C"><button type="submit">Send form</button></form><p id="out">idle</p><script>f.onsubmit=e=>{e.preventDefault();out.textContent=[f.a.value,f.b.value,f.c.value].join("|")}</script>');
+    if (req.url === '/form') return res.end('<!doctype html><title>form</title><form id="f"><input name="a" aria-label="Field A"><input name="b" aria-label="Field B"><input name="c" aria-label="Field C"><button type="submit">Save form</button></form><p id="out">idle</p><script>f.onsubmit=e=>{e.preventDefault();out.textContent=[f.a.value,f.b.value,f.c.value].join("|")}</script>');
     if (req.url === '/dialogs') return res.end('<!doctype html><title>dialogs</title><button id="b" onclick="alert(\'hello\');const ok=confirm(\'Sure?\');document.title=\'ok=\'+ok">Go</button>');
     if (req.url === '/file.csv') { res.setHeader('Content-Type', 'text/csv'); res.setHeader('Content-Disposition', 'attachment; filename="r.csv"'); return res.end('a,b\n1,2\n'); }
     if (req.url === '/download') return res.end('<!doctype html><title>download</title><a href="/file.csv" download="r.csv">Get report</a>');
@@ -407,7 +407,7 @@ app.whenReady().then(async () => {
   console.log('PASS: selector-targeted typing inside a self-contained batch.');
   // Snapshot refs stay valid across an entire batch until navigation.
   const formTab = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/form` });
-  const formNames = ['Field A', 'Field B', 'Field C', 'Send form'];
+  const formNames = ['Field A', 'Field B', 'Field C', 'Save form'];
   const formSnap = await waitFor(() => api(`/v1/tabs/${formTab.id}/snapshot`), snap => snap.title === 'form' && formNames.every(name => (snap.elements || []).some(el => el.name === name)));
   await waitFor(async () => {
     try { return (await api(`/v1/tabs/${formTab.id}/actions`, 'POST', { action: 'eval', code: 'typeof f.onsubmit', epoch: formTab.epoch })).value; }

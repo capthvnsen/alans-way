@@ -14,15 +14,15 @@ const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-agent-input-'));
 app.setPath('userData', temp);
 app.setName('Hermes isolated input test');
 let win, server;
-const fixture = `<!doctype html><meta charset="utf-8"><style>body{font:20px system-ui;margin:30px}input,button{font:inherit;padding:12px}#space{height:1800px}</style><h1>Isolated agent input</h1><form id="form"><input id="entry" aria-label="Agent input" data-hermes-workspace-ref="s1-1"><button id="submit" data-hermes-workspace-ref="s1-2">Confirm</button></form><p id="result">Waiting</p><div id="space"></div><script>window.events=[];for(const name of ['input','click','keydown','pointermove'])document.addEventListener(name,e=>events.push({type:e.type,trusted:e.isTrusted,key:e.key,x:e.clientX,y:e.clientY}));document.querySelector('#form').onsubmit=e=>{e.preventDefault();document.querySelector('#result').textContent='Confirmed: '+document.querySelector('#entry').value};</script>`;
-const longForm = `<!doctype html><meta charset="utf-8"><style>body{font:20px system-ui;margin:30px}input,button{font:inherit;padding:12px}</style><form id="longform"><input id="custname" aria-label="Customer name" data-hermes-workspace-ref="s1-1"><div style="height:2200px"></div><button type="submit" id="order" data-hermes-workspace-ref="s1-2">Submit order</button></form><p id="result">Waiting</p><script>longform.onsubmit=e=>{e.preventDefault();result.textContent='Submitted: '+custname.value}</script>`;
+const fixture = `<!doctype html><meta charset="utf-8"><style>body{font:20px system-ui;margin:30px}input,button{font:inherit;padding:12px}#space{height:1800px}</style><h1>Isolated agent input</h1><form id="form"><input id="entry" aria-label="Agent input" data-hermes-workspace-ref="s1-1"><button id="submit" data-hermes-workspace-ref="s1-2">Apply</button></form><button id="buy" type="button" title="Buy now" onclick="document.querySelector('#result').textContent='bought'"></button><p id="result">Waiting</p><div id="space"></div><script>window.events=[];for(const name of ['input','click','keydown','pointermove'])document.addEventListener(name,e=>events.push({type:e.type,trusted:e.isTrusted,key:e.key,x:e.clientX,y:e.clientY}));document.querySelector('#form').onsubmit=e=>{e.preventDefault();document.querySelector('#result').textContent='Confirmed: '+document.querySelector('#entry').value};</script>`;
+const longForm = `<!doctype html><meta charset="utf-8"><style>body{font:20px system-ui;margin:30px}input,button{font:inherit;padding:12px}</style><form id="longform"><input id="custname" aria-label="Customer name" data-hermes-workspace-ref="s1-1"><div style="height:2200px"></div><button type="submit" id="order" data-hermes-workspace-ref="s1-2">Save details</button></form><p id="result">Waiting</p><script>longform.onsubmit=e=>{e.preventDefault();result.textContent='Submitted: '+custname.value}</script>`;
 const widgets = `<!doctype html><meta charset="utf-8"><style>body{font:18px system-ui;margin:20px}#src,#dst,#h5src,#h5dst{display:inline-block;width:90px;height:50px;margin:8px;background:#ddd}#dst,#h5dst{background:#bdf}</style>
 <input id="t" aria-label="t" data-hermes-workspace-ref="s1-1" value="hello world"><select id="sel" data-hermes-workspace-ref="s1-2"><option value="a">Alpha</option><option value="b">Beta</option><option value="c">Gamma</option></select>
 <button id="dbl" data-hermes-workspace-ref="s1-3">double</button><div id="ctx" data-hermes-workspace-ref="s1-4" style="width:100px;height:40px;background:#ccc">ctx</div>
 <input type="range" id="rng" min="0" max="100" value="0" data-hermes-workspace-ref="s1-5" style="width:300px"><br>
 <div id="src" data-hermes-workspace-ref="s1-6">src</div><div id="dst" data-hermes-workspace-ref="s1-7">dst</div>
 <div id="h5src" draggable="true" data-hermes-workspace-ref="s1-8">h5</div><div id="h5dst" data-hermes-workspace-ref="s1-9">h5 drop</div>
-<form id="f1"><input name="q" value="1"><button id="sub" name="which" value="primary" data-hermes-workspace-ref="s1-10">Send</button></form>
+<form id="f1"><input name="q" value="1"><button id="sub" name="which" value="primary" data-hermes-workspace-ref="s1-10">Go</button></form>
 <form id="f2"><button id="prev" onclick="event.preventDefault()" data-hermes-workspace-ref="s1-11">Prevented</button></form>
 <form id="f3"><fieldset disabled><button id="fsd" data-hermes-workspace-ref="s1-12">Disabled</button></fieldset></form>
 <select id="hs" style="display:none" data-hermes-workspace-ref="s1-13"><option value="x">X</option><option value="y">Y</option></select>
@@ -37,7 +37,7 @@ const humanPage = '<title>Human focus fixture</title><input id="human" value="Hu
 const shadowPage = `<!doctype html><meta charset="utf-8"><style>body{font:20px system-ui;margin:30px}</style>
 <div id="host"></div><p id="result">Waiting</p>
 <div style="position:relative"><button id="blocked" data-hermes-workspace-ref="s1-3" style="width:200px;height:44px">Blocked</button><div id="veil" style="position:absolute;inset:0;background:#fdd">overlay</div></div>
-<script>const shadow = host.attachShadow({mode:'open'});shadow.innerHTML='<div id="ed" contenteditable="true" style="width:300px;height:44px;background:#eee" data-hermes-workspace-ref="s1-1"></div><button id="ok" data-hermes-workspace-ref="s1-2">Send</button>';shadow.getElementById('ok').onclick=()=>{result.textContent='Sent: '+shadow.getElementById('ed').textContent.trim()};</script>`;
+<script>const shadow = host.attachShadow({mode:'open'});shadow.innerHTML='<div id="ed" contenteditable="true" style="width:300px;height:44px;background:#eee" data-hermes-workspace-ref="s1-1"></div><button id="ok" data-hermes-workspace-ref="s1-2">Go</button>';shadow.getElementById('ok').onclick=()=>{result.textContent='Sent: '+shadow.getElementById('ed').textContent.trim()};</script>`;
 async function value(wc, expression) { return wc.executeJavaScript(expression); }
 // Fixture controls carry data-hermes-workspace-ref="s1-N" as a marker; the
 // page's ref store (the only thing refs resolve through) learns them as eN,
@@ -80,7 +80,7 @@ app.whenReady().then(async () => {
   await view.webContents.loadURL(root);
   await bindRefs(view.webContents);
   if (process.argv.includes('--visible')) win.showInactive();
-  const tab = { view, botId: 'fixture-agent', controller: 'agent', epoch: 1, refs: new Set(['e1', 'e2']) };
+  const tab = { id: 'fixture-tab', view, botId: 'fixture-agent', controller: 'agent', epoch: 1, refs: new Set(['e1', 'e2']) };
   const command = async (target, method, params) => {
     const debuggerSession = target.view.webContents.debugger;
     if (!debuggerSession.isAttached()) debuggerSession.attach('1.3');
@@ -113,6 +113,10 @@ app.whenReady().then(async () => {
   await perform({ action: 'type', ref: 'e1', text: 'Enter submits' });
   await perform({ action: 'press', key: 'Enter' });
   await eventuallyEquals(() => value(view.webContents, 'result.textContent'), 'Confirmed: Enter submits');
+  await assert.rejects(perform({ action: 'click', selector: '#buy' }), /commit_required: "Buy now"/);
+  await assert.rejects(agent.guard(tab, { action: 'eval', code: '1' }), /commit_required: a page script here could set off "Buy now"/);
+  assert.equal(await value(view.webContents, 'result.textContent'), 'Confirmed: Enter submits', 'a refused click sends nothing');
+  console.log('PASS: an icon-only commit button and a page script are refused at dispatch in Electron.');
   await perform({ action: 'move', x: 420, y: 210 });
   await eventuallyEquals(() => value(view.webContents, 'events.filter(e=>e.type==="pointermove").at(-1)'), { type: 'pointermove', trusted: true, key: undefined, x: 420, y: 210 });
   assert.match(await value(view.webContents, 'document.getElementById("hermes-workspace-agent-cursor").style.transform'), /420px, 210px/);
