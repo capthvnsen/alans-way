@@ -627,7 +627,7 @@ async function serve() {
       }
       // While a challenge is on the page, only read-only methods run: raw input,
       // script and DOM writes could all reach the widget.
-      if (!cdpChallengeSafe(method)) await refuseChallenge(wc);
+      if (!cdpChallengeSafe(method, params)) await refuseChallenge(wc);
       let value = await Promise.race([
         wc.command(method, params),
         new Promise((_, reject) => setTimeout(() => reject(fail('cdp timed out after 20s.', 408)), 20000)),

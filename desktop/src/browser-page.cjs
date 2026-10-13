@@ -311,8 +311,9 @@ function refsSource(seed = 0) {
 
 // A challenge only a person can clear: a CAPTCHA widget or a bot-check page.
 // A few URL, title and selector checks, no layout beyond the frames' boxes.
-// Whole-page checks are read on the top document; widgets also in same-origin
-// frames (a cross-origin frame's document is not readable). Every widget on
+// Whole-page checks are read on the top document; widgets also in open shadow
+// roots and same-origin frames, nested either way (a cross-origin frame's
+// document and a closed root are not readable). Every widget on
 // the page is collected, of every provider. A widget whose own response token
 // is filled is solved and no longer counts; an invisible reCAPTCHA (the corner
 // badge) is not one until it pops its image challenge. page marks a whole-page
@@ -326,9 +327,13 @@ const CHALLENGE_SOURCE = `() => {
   // Its ids and titles are ordinary words on other pages too, so they need Cloudflare's own markers.
   if ((window._cf_chl_opt || document.querySelector('script[src*="/cdn-cgi/challenge-platform/"]'))
     && (document.querySelector('#challenge-form,#challenge-stage,#challenge-running,#cf-challenge-running,#cf-please-wait') || /^(just a moment|one more step|verify you are human)/i.test(title))) return whole('cloudflare');
-  const docs = [document];
-  for (let i = 0; i < docs.length && docs.length < 20; i++) for (const f of docs[i].querySelectorAll('iframe,frame')) { let d = null; try { d = shown(f) && f.contentDocument; } catch {} if (d) docs.push(d); }
-  const all = (sel) => docs.flatMap((d) => [...d.querySelectorAll(sel)]);
+  // ponytail: one querySelectorAll('*') per root; cap at 200 roots for pages built from thousands of components.
+  const roots = [document];
+  for (let i = 0; i < roots.length && roots.length < 200; i++) for (const el of roots[i].querySelectorAll('*')) {
+    if (el.shadowRoot) roots.push(el.shadowRoot);
+    else if (/^I?FRAME$/.test(el.tagName)) { let d = null; try { d = shown(el) && el.contentDocument; } catch {} if (d) roots.push(d); }
+  }
+  const all = (sel) => roots.flatMap((d) => [...d.querySelectorAll(sel)]);
   const frames = all('iframe').filter(shown);
   const src = (el) => String(el.src || '');
   // One element per widget, outermost first, in page order.
@@ -338,7 +343,7 @@ const CHALLENGE_SOURCE = `() => {
   // order. Counts that do not match leave the widget unsolved.
   const field = (name) => 'textarea[name^="' + name + '"],input[name^="' + name + '"]';
   const open = (list, name) => { const els = outer(list); return els.filter((el) => {
-    for (let p = el; p; p = p.parentElement) { const f = [...p.querySelectorAll(field(name))]; if (!f.length) continue; const w = els.filter((x) => p.contains(x)); return w.length !== f.length || !f[w.indexOf(el)].value; }
+    for (let p = el; p; p = p.parentNode) { const f = [...p.querySelectorAll(field(name))]; if (!f.length) continue; const w = els.filter((x) => p.contains(x)); return w.length !== f.length || !f[w.indexOf(el)].value; }
     return true;
   }); };
   // A popup challenge (appended to the body) stays until every field is filled.
@@ -374,9 +379,9 @@ function challengeExpression() {
   return `(() => { const c = (${CHALLENGE_SOURCE})(); return c && { kind: c.kind, blocking: c.blocking }; })()`;
 }
 // Whether input at these viewport points (or, for keys, into the focused
-// element) would land on a challenge: the widget's challenge when it would,
+// element, or on these elements however hidden) would land on a challenge: the widget's challenge when it would,
 // else null. The input locate scripts run it in the same round trip.
-const CHALLENGE_HIT_SOURCE = `(points, keyboard) => {
+const CHALLENGE_HIT_SOURCE = `(points, keyboard, els) => {
   const c = (${CHALLENGE_SOURCE})();
   if (!c) return null;
   if (c.page) return { kind: c.kind, blocking: c.blocking };
@@ -400,6 +405,7 @@ const CHALLENGE_HIT_SOURCE = `(points, keyboard) => {
   };
   const hits = points.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y)).map((p) => at(p.x, p.y));
   if (keyboard) hits.push((${FOCUS_SOURCE})());
+  if (els) hits.push(...els);
   const hit = hits.map(partOf).find(Boolean);
   return hit ? { kind: hit.kind, blocking: hit.blocking } : null;
 }`;

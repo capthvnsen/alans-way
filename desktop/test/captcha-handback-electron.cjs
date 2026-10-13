@@ -77,6 +77,22 @@ app.whenReady().then(async () => {
   }
   assert.equal((await act({ action: 'cdp', method: 'DOM.getDocument', params: {} })).status, 200, 'reads still work');
   assert.equal(await pageWc.executeJavaScript('document.title'), 'other');
+  // Navigating the widget's own frame would replace the challenge document.
+  const frameTree = (await act({ action: 'cdp', method: 'Page.getFrameTree', params: {} })).data.value;
+  const child = JSON.parse(typeof frameTree === 'string' ? frameTree : JSON.stringify(frameTree)).frameTree.childFrames[0].frame.id;
+  const swapped = await act({ action: 'cdp', method: 'Page.navigate', params: { frameId: child, url: `${base}/start` } });
+  assert.equal(swapped.status, 409, JSON.stringify(swapped.data)); assert.equal(swapped.data.code, 'challenge_present');
+  // A hidden control inside the widget is refused before select can change it.
+  await pageWc.executeJavaScript(`(() => { const d = document.querySelector('iframe').contentDocument; d.body.insertAdjacentHTML('beforeend', '<select id="lang" style="display:none"><option value="en">English</option><option value="de">Deutsch</option></select>'); })()`);
+  const picked = await act({ action: 'select', selector: '#lang', value: 'de' });
+  assert.equal(picked.status, 409, JSON.stringify(picked.data)); assert.equal(picked.data.code, 'challenge_present');
+  assert.equal(await pageWc.executeJavaScript(`document.querySelector('iframe').contentDocument.getElementById('lang').value`), 'en', 'the hidden select was not changed');
+  // The page moves the widget under the bot's cursor: the wheel is refused there.
+  await pageWc.executeJavaScript(`(() => { const f = document.querySelector('iframe'); f.dataset.style = f.getAttribute('style') || ''; f.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:9'; })()`);
+  const wheel = await act({ action: 'scroll', y: 300 });
+  assert.equal(wheel.status, 409, JSON.stringify(wheel.data)); assert.equal(wheel.data.code, 'challenge_present');
+  await pageWc.executeJavaScript(`(() => { const f = document.querySelector('iframe'); f.style.cssText = f.dataset.style; })()`);
+  assert.equal((await act({ action: 'scroll', y: 0 })).status, 200, 'the wheel works away from the widget');
 
   // A whole-page check goes to the human at once: the N2 release, made by the app.
   const gated = await act({ action: 'navigate', url: `${base}/sorry/index?continue=/results` });

@@ -103,6 +103,9 @@ test('while a challenge is on the page, raw CDP is held to read-only methods', (
     assert.equal(cdpChallengeSafe(method), false, method);
   for (const method of ['DOM.getDocument', 'DOM.querySelector', 'DOM.getBoxModel', 'Page.captureScreenshot', 'Page.navigate', 'Accessibility.getFullAXTree', 'DOMSnapshot.captureSnapshot'])
     assert.equal(cdpChallengeSafe(method), true, method);
+  // Leaving the page is fine; replacing a frame inside it (the widget's own) is not.
+  assert.equal(cdpChallengeSafe('Page.navigate', { url: 'https://x.example/' }), true);
+  assert.equal(cdpChallengeSafe('Page.navigate', { url: 'https://x.example/', frameId: 'F1' }), false);
 });
 
 test('a Cloudflare interstitial that clears by itself is waited out, so the reply shows the real page', async () => {
@@ -204,6 +207,7 @@ test('real Chromium: each kind of challenge is detected from its fixture, and lo
     framed: { kind: 'recaptcha', blocking: false },
     mixed: { kind: 'hcaptcha', blocking: false },
     'recaptcha-adjacent': { kind: 'recaptcha', blocking: false },
+    'shadow-widget': { kind: 'recaptcha', blocking: false },
     arkose: { kind: 'arkose', blocking: true },
     plain: null,
   };
@@ -241,6 +245,10 @@ test('real Chromium: input is refused on the widget or a bot-check page, and all
   const adjacent = await open(`http://127.0.0.1:${port}/recaptcha-adjacent`);
   assert.equal(await adjacent.executeJavaScript(challengeHitExpression([await at(adjacent, '#first')])), null);
   assert.deepEqual(await adjacent.executeJavaScript(challengeHitExpression([await at(adjacent, '#second')])), { kind: 'recaptcha', blocking: false });
+  // A widget inside an open shadow root, aimed at from the top page.
+  const shadowed = await open(`http://127.0.0.1:${port}/shadow-widget`);
+  const inShadow = await shadowed.executeJavaScript(`(() => { const r = document.querySelector('signup-card').shadowRoot.getElementById('w').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  assert.deepEqual(await shadowed.executeJavaScript(challengeHitExpression([inShadow])), { kind: 'recaptcha', blocking: false });
   const gate = await open(`http://127.0.0.1:${port}/cloudflare`);
   assert.deepEqual(await gate.executeJavaScript(challengeHitExpression([{ x: 5, y: 5 }])), { kind: 'cloudflare', blocking: true }, 'the whole page is the check');
 });

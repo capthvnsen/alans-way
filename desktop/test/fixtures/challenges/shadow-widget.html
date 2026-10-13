@@ -1,0 +1,10 @@
+<!doctype html><title>Newsletter</title>
+<signup-card></signup-card>
+<script>
+customElements.define('signup-card', class extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' }).innerHTML = '<form><input name="email"><div class="g-recaptcha"><iframe id="w" title="reCAPTCHA" width="304" height="78" src="https://www.google.com/recaptcha/api2/anchor?ar=1&amp;k=6Le-test&amp;size=normal"></iframe><textarea name="g-recaptcha-response" style="display:none"></textarea></div><button>Join</button></form>';
+  }
+});
+</script>

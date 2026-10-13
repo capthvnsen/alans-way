@@ -115,7 +115,9 @@ const CDP_BLOCKED = new Set([
 ]);
 // While a challenge is on the page only these run: reads and domain toggles,
 // plus leaving the page. Everything else can script, write the DOM or send
-// input, and a new method stays refused until it is listed here.
+// input, and a new method stays refused until it is listed here. A navigate
+// with a frameId could replace a challenge's own frame, so only the
+// top-frame form (no frameId) leaves the page.
 const CDP_CHALLENGE_SAFE = new Set([
   'Page.enable', 'Page.disable', 'Page.navigate', 'Page.stopLoading', 'Page.captureScreenshot', 'Page.getLayoutMetrics', 'Page.getFrameTree', 'Page.getNavigationHistory',
   'DOM.enable', 'DOM.disable', 'DOM.getDocument', 'DOM.getFlattenedDocument', 'DOM.querySelector', 'DOM.querySelectorAll', 'DOM.describeNode', 'DOM.getBoxModel', 'DOM.getContentQuads', 'DOM.getOuterHTML', 'DOM.getAttributes', 'DOM.getNodeForLocation',
@@ -124,7 +126,7 @@ const CDP_CHALLENGE_SAFE = new Set([
   'CSS.enable', 'CSS.disable', 'CSS.getComputedStyleForNode', 'CSS.getMatchedStylesForNode', 'CSS.getInlineStylesForNode',
   'Network.enable', 'Network.disable', 'Log.enable', 'Log.disable',
 ]);
-const cdpChallengeSafe = (method) => CDP_CHALLENGE_SAFE.has(method);
+const cdpChallengeSafe = (method, params = {}) => CDP_CHALLENGE_SAFE.has(method) && !(method === 'Page.navigate' && params.frameId !== undefined);
 function cdpMethodError(method) {
   if (CDP_BLOCKED.has(method)) return `cdp method ${method} is not available to agents.`;
   if (!CDP_METHOD_RE.test(method)) return 'Unsupported CDP method. Allowed domains: Page, Runtime, Input, Emulation, Network, DOM, DOMSnapshot, Accessibility, CSS, Log.';

@@ -265,6 +265,10 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     if (named.many) return { fail: 'ambiguous', many: named.many, count: named.count, cut: named.cut };
     const el = named.el, ref = named.ref, resolved = named.name, partial = named.cut;` : `const el = ${locateElement(target)}, ref = undefined, resolved = undefined, partial = undefined;`}
     if (!el) return { fail: ${target.ref ? "'stale'" : "'missing or disabled'"} };
+    // Bots never solve a challenge: a target inside one is refused before any
+    // path below can return a point for it, hidden or not.
+    const inside = (${CHALLENGE_HIT_SOURCE})([], false, [el]);
+    if (inside) return { fail: 'challenge', challenge: inside };
     if (el.disabled || el.matches(':disabled') || el.closest('[inert]')) return { fail: 'missing or disabled' };
     // A native select hidden behind a custom dropdown is chosen by value, so it needs no hit test.
     const loose = ${select} && el.tagName === 'SELECT';
@@ -363,6 +367,8 @@ function selectScript(target, body) {
     if (!el) return { fail: ${target.ref ? "'stale'" : "'is not a select'"} };
     if (el.tagName !== 'SELECT') return { fail: 'is not a select' };
     if (el.disabled) return { fail: 'disabled' };
+    const challenge = (${CHALLENGE_HIT_SOURCE})([], false, [el]);
+    if (challenge) return { fail: 'challenge', challenge };
     const tries = ${JSON.stringify(tries)};
     const text = (o) => (o.label || o.text || '').trim();
     const options = [...el.options];
@@ -604,6 +610,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         const picked = await boundedJs(wc, selectScript(target, body));
         check();
         if (picked && picked.fail === 'stale') throw staleRef(body.ref);
+        if (picked && picked.fail === 'challenge') throw challengePresent(picked.challenge);
         if (!picked || picked.fail) throw fail(`Element ${picked ? picked.fail : 'is unavailable'}${picked?.options ? ': ' + JSON.stringify(picked.options) : ''}.`);
         extra.matched = picked.matched;
         cursor(point, 'click', hl);
@@ -631,9 +638,11 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         likelyNavigation = keyEvent.key === 'Enter';
         if (point || tab.agentCursor) cursor(point || { x: tab.agentCursor.x, y: tab.agentCursor.y }, 'press', hl);
       } else if (action === 'scroll') {
-        const viewport = await boundedJs(wc, '({ width: innerWidth, height: innerHeight })');
+        // The wheel lands where the cursor is: never on a challenge.
+        const aim = await boundedJs(wc, `(() => { const p = { x: Math.max(0, Math.min(${Number.isFinite(tab.agentCursor?.x) ? tab.agentCursor.x : 100}, innerWidth - 1)), y: Math.max(0, Math.min(${Number.isFinite(tab.agentCursor?.y) ? tab.agentCursor.y : 100}, innerHeight - 1)) }; return { ...p, challenge: (${CHALLENGE_HIT_SOURCE})([p], false) }; })()`);
         check();
-        point = { x: Math.max(0, Math.min(tab.agentCursor?.x ?? 100, viewport.width - 1)), y: Math.max(0, Math.min(tab.agentCursor?.y ?? 100, viewport.height - 1)) };
+        if (typeof aim.challenge?.kind === 'string') throw challengePresent(aim.challenge);
+        point = { x: aim.x, y: aim.y };
         await armFollowUp();
         await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: Math.max(-2000, Math.min(2000, body.x || 0)), deltaY: Math.max(-2000, Math.min(2000, body.y || 0)) });
         cursor(point, 'scroll');

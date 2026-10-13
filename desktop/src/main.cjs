@@ -2106,7 +2106,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     }
     // While a challenge is on the page, only read-only methods run: raw input,
     // script and DOM writes could all reach the widget.
-    if (!cdpChallengeSafe(method)) await refuseChallenge(wc);
+    if (!cdpChallengeSafe(method, params)) await refuseChallenge(wc);
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     let cdpTimer;
     let value = await Promise.race([
