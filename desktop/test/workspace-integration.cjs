@@ -263,7 +263,7 @@ app.whenReady().then(async () => {
     for (const read of ['snapshot', 'screenshot']) {
       const blocked = await apiRaw(`/v1/tabs/${human.id}/${read}`, 'GET', undefined, actor);
       assert.equal(blocked.status, 409, `${actor} ${read} on a human tab`);
-      assert.equal(blocked.data.error, 'Tab is under human control.');
+      assert.equal(blocked.data.error, 'Tab is under human control. Claim it to take it back, then read.');
     }
   }
   // A stranger cannot release; the overseer can, then reads after taking over.
@@ -289,9 +289,10 @@ app.whenReady().then(async () => {
   assert.equal(seizedByGrantee.controller, 'agent', 'A granted bot takes over a human-controlled tab.');
   assert.equal((await api(`/v1/tabs/${colored[0].id}`, 'GET', undefined, '456')).botId, 'capture-regression', 'Grantee control does not transfer ownership.');
   console.log('PASS: shared-tab claim by a known bot and granted-bot takeover of a human tab.');
-  // An explicit takeover through the UI seals the tab: no bot can flip it
-  // back — not the owner, a grantee or the overseer — and a bot POST of
-  // 'human' cannot wash the lock. Only Give to agent hands it back.
+  // With automatic takeover off, an explicit takeover through the UI seals the
+  // tab: no bot can flip it back — not the owner, a grantee or the overseer —
+  // and a bot POST of 'human' cannot wash the lock. Only Give to agent hands it back.
+  await invoke('settings', { autoTakeover: false });
   await invoke('control', { id: colored[0].id, controller: 'human' });
   for (const actor of ['capture-regression', '456', 'overseer-bot']) {
     const attempt = await apiRaw(`/v1/tabs/${colored[0].id}/control`, 'POST', { controller: 'agent' }, actor);
@@ -309,6 +310,7 @@ app.whenReady().then(async () => {
   assert.equal(humanMeta.title, '');
   await invoke('control', { id: colored[0].id, controller: 'agent' });
   assert.equal((await api(`/v1/tabs/${colored[0].id}`, 'GET', undefined, '456')).controller, 'agent', 'Give to agent hands the sealed tab back');
+  await invoke('settings', { autoTakeover: true });
   console.log('PASS: explicit takeover seals control and page metadata until the human hands the tab back.');
   // The Move button appears only for agent-owned tabs while the VM browser is
   // connected, and on the retired local copy it offers the way back. Both

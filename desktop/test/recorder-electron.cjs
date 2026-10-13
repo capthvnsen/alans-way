@@ -63,15 +63,21 @@ app.whenReady().then(async () => {
   const pageWc = await waitFor(() => webContents.getAllWebContents().find(item => item.getURL().startsWith(base)), Boolean);
   const loaded = path => waitFor(() => pageWc.executeJavaScript(`location.pathname === ${JSON.stringify(path)} && document.readyState === 'complete'`).catch(() => false), Boolean);
   await loaded('/login');
-  // Real input events, so the page sees trusted clicks and typing.
+  // Real input events, so the page sees trusted clicks and typing. They only
+  // land in a view that is on screen with native focus, which a run with the
+  // app in the background (or a sheet just closed) does not have, so check both.
+  const ready = async (contents) => {
+    await waitFor(() => contents.executeJavaScript('document.visibilityState === "visible" && innerWidth > 0').catch(() => false), Boolean);
+    for (let attempt = 0; attempt < 20 && !contents.isFocused(); attempt++) { app.focus({ steal: true }); win.focus(); contents.focus(); await pause(100); }
+    assert.ok(contents.isFocused(), 'the tab view never took native focus');
+  };
   const click = async (selector, contents = pageWc) => {
+    await ready(contents);
     const { x, y } = await contents.executeJavaScript(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
     contents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
     contents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
     await pause(150);
   };
-  // A click right after the Settings sheet closes can land before the tab view
-  // is back on screen, so retry until the field really has focus.
   const type = async (selector, text, contents = pageWc) => {
     const focused = () => contents.executeJavaScript(`document.activeElement === document.querySelector(${JSON.stringify(selector)})`);
     for (let attempt = 0; attempt < 20 && !await focused(); attempt++) await click(selector, contents);
@@ -155,16 +161,21 @@ app.whenReady().then(async () => {
   assert.equal(kept.keepTyped, true);
   assert.deepEqual(kept.steps.slice(1).map(step => step.value), ['ada@example.com', ...Array(9).fill('[redacted]')], 'secret-named fields stay redacted with Keep typed text');
 
-  // A bot taking a tab ends its recording (a tab the human never took over
-  // stays claimable, as before).
+  // A bot cannot take a tab while it records; with automatic takeover off, a
+  // bot taking a tab the human never took over ends its recording, as before.
   const fresh = await invoke('create-tab', { url: `${base}/login?fresh` });
   const freshWc = await waitFor(() => webContents.getAllWebContents().find(item => item.getURL().endsWith('?fresh')), Boolean);
   await waitFor(() => freshWc.executeJavaScript('document.readyState === "complete"').catch(() => false), Boolean);
   await invoke('record-start', { id: fresh.id });
   await type('#email', 'x', freshWc);
   await waitFor(getState, state => state.recording?.steps === 2);
+  const refused = await api(`/v1/tabs/${fresh.id}/control`, '4242', 'POST', { controller: 'agent' });
+  assert.equal(refused.status, 409); assert.match(refused.data.error, /^recording_in_progress/);
+  assert.equal((await getState()).recording?.steps, 2, 'the recording keeps running');
+  await invoke('settings', { autoTakeover: false });
   const claim = await api(`/v1/tabs/${fresh.id}/control`, '4242', 'POST', { controller: 'agent' });
   assert.equal(claim.status, 200, JSON.stringify(claim.data));
+  await invoke('settings', { autoTakeover: true });
   await waitFor(getState, state => !state.recording && state.recordings.length === 3);
   await waitFor(() => evaluate('document.getElementById("toast").textContent'), text => text.includes('Recording stopped'));
 
