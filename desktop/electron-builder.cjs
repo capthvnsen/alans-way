@@ -45,6 +45,7 @@ function createConfig(env) {
     // scheme the packaged macOS app is never a valid handler, so the runtime
     // setAsDefaultProtocolClient call alone cannot deliver cold-start links.
     protocols: [{ name: 'alansway', schemes: ['alansway'] }],
+    fileAssociations: [{ ext: 'pdf', name: 'PDF document', mimeType: 'application/pdf', role: 'Viewer', rank: 'Alternate' }],
     mac: {
       target: [
         { target: 'dmg', arch: ['arm64'] },
@@ -58,6 +59,7 @@ function createConfig(env) {
       // Without a usage string macOS kills the app when a page takes a granted
       // camera or microphone permission.
       extendInfo: {
+        CFBundleDocumentTypes: [{ CFBundleTypeName: 'PDF document', CFBundleTypeExtensions: ['pdf'], CFBundleTypeRole: 'Viewer', LSHandlerRank: 'Alternate', LSItemContentTypes: ['com.adobe.pdf'] }],
         NSCameraUsageDescription: 'A web page in this workspace can use the camera after you allow it.',
         NSMicrophoneUsageDescription: 'A web page in this workspace can use the microphone after you allow it.',
       },

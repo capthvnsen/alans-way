@@ -33,6 +33,7 @@ const { snapshotExpression, settleSnapshot, readEffect, passCloudflare, challeng
 const { createVpsBrowser, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
+const { pdfFile } = require('./local-pdf.cjs');
 const recorder = require('./recorder.cjs');
 const { ElectronChromeExtensions } = require('electron-chrome-extensions');
 
@@ -57,6 +58,19 @@ if (process.platform === 'win32') app.setAppUserModelId('app.alans-way.localapp'
 app.setAsDefaultProtocolClient('alansway');
 const claimTokens = cloudClaim.createTokenQueue();
 app.on('open-url', (event, url) => { event.preventDefault(); claimTokens.push(cloudClaim.parseClaimUrl(url)); });
+const pendingPdfs = [];
+let pdfWindowReady = false;
+function receivePdf(file) {
+  const valid = pdfFile(file);
+  if (!valid) return;
+  if (!pdfWindowReady) { if (pendingPdfs.length < 40) pendingPdfs.push(valid); return; }
+  try { createTab({ filePath: valid }); showWindow(); } catch (error) { logError('open-pdf', error); }
+}
+app.on('open-file', (event, file) => { event.preventDefault(); receivePdf(file); });
+async function pickPdf() {
+  const result = await dialog.showOpenDialog(win, { title: 'Open PDF', properties: ['openFile', 'multiSelections'], filters: [{ name: 'PDF documents', extensions: ['pdf'] }] });
+  if (!result.canceled) for (const file of result.filePaths) receivePdf(file);
+}
 // Keep existing sessions and connector discovery stable when the product name changes.
 app.setPath('userData', process.env.HERMES_WORKSPACE_DATA
   ? path.resolve(process.env.HERMES_WORKSPACE_DATA)
@@ -138,9 +152,12 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
 });
 const downloadStore = createDownloadStore({ getPreferences: () => prefs, savePreferences, onChanged: () => broadcast(),
   shell, existsSync: fs.existsSync, downloadsPath: () => app.getPath('downloads'), realpath: fs.realpathSync,
-  // Recorded downloads are the only files a tab may open: the path always
-  // comes from a store record, and agent tabs can never reach file: URLs
-  // (agentPageUrl rejects them and will-navigate blocks in-page file: jumps).
+  // Only a human source may auto-open a local PDF. Capture the source's
+  // control when the download starts, not when its done event arrives.
+  isHumanDownload: (source) => {
+    const tab = [...tabs.values()].find(t => t.view.webContents === source || t.view.webContents === source?.hostWebContents);
+    return !!tab && tab.controller === 'human' && !agentInput.isDispatching(tab);
+  },
   openInTab: async (record, { activate = true } = {}) => { createTab({ filePath: record.path, activate }); },
   confirmOpen: async (name) => (await dialog.showMessageBox(win, { type: 'warning', buttons: ['Cancel', 'Open anyway'], defaultId: 0, cancelId: 0,
     message: `Open ${name}?`, detail: 'This file can run programs on your computer. Only open it if you trust where it came from.' })).response === 1 });
@@ -196,7 +213,7 @@ function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
   const info = { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
-    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab), takeover: tab.takeover || null };
+    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, localPdf: tab.localPdf === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab), takeover: tab.takeover || null };
   return forBot ? redactTabForBot(info) : info;
 }
 function pageState(tab) {
@@ -443,6 +460,7 @@ function configureContents(contents, isTelegram = false) {
     if ((input.meta || input.control) && input.type === 'keyDown') {
       const key = input.key.toLowerCase();
       if (key === 'l') { event.preventDefault(); win.webContents.send('workspace:focus-address'); }
+      if (key === 'o') { event.preventDefault(); pickPdf().catch(error => logError('open-pdf', error)); }
       if (key === 't') { event.preventDefault(); createTab({}); }
       if (key === 'w' && !isTelegram && activeTabId !== 'home') { event.preventDefault(); closeTab(activeTabId); }
     }
@@ -528,6 +546,11 @@ async function resolveFavicon(tab, favicons) {
 }
 function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedBotId || 'shared', controller = 'human', options, skipLoad = false, activate = true, extensionPage = false } = {}) {
   if (tabs.size >= 40) throw new Error('Close a tab before opening another.');
+  if (filePath) {
+    filePath = pdfFile(filePath);
+    if (!filePath) throw new Error('This file is not a PDF document.');
+    controller = 'human';
+  }
   const targetUrl = filePath ? pathToFileURL(filePath).href : pageUrl(url, extensionPage);
   // plugins: true enables only Chromium's bundled PDF viewer, so a PDF URL
   // renders in the tab instead of downloading. The rest of the lockdown list
@@ -536,7 +559,7 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
     webPreferences: { ...options?.webPreferences, preload: undefined, partition: 'persist:browser', contextIsolation: true, nodeIntegration: false, sandbox: true,
       webSecurity: true, plugins: true, backgroundThrottling: false } });
   view.setBackgroundColor('#0b0b0c');
-  const tab = { id: crypto.randomUUID(), view, requestedUrl: skipLoad ? '' : targetUrl, botId: String(botId).slice(0, 100), controller, extensionPage, epoch: 1, title: 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
+  const tab = { id: crypto.randomUUID(), view, requestedUrl: skipLoad ? '' : targetUrl, botId: String(botId).slice(0, 100), controller, extensionPage, localPdf: !!filePath, epoch: 1, title: filePath ? path.basename(filePath) : 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
   if (controller === 'agent') tab.agentSince = Date.now();
   tabs.set(tab.id, tab);
   tab.host = backgroundHost();
@@ -556,9 +579,31 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
     const items = extensionHost?.getContextMenuItems(view.webContents, params) || [];
     if (items.length && tab.id === activeTabId && tab.controller === 'human') Menu.buildFromTemplate(items).popup({ window: win });
   });
-  view.webContents.on('page-title-updated', (_event, title) => { tab.title = title; broadcast(); });
+  const installViewerDrop = () => {
+    const wc = view.webContents;
+    if (wc.isDestroyed()) return;
+    for (const frame of wc.mainFrame.framesInSubtree) {
+      if (!frame.url.startsWith('chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/')) continue;
+      // Electron preloads do not run in the bundled viewer. Relay only native
+      // dropped File objects to the MIME shell's isolated preload, never paths.
+      frame.executeJavaScript(`(() => {
+        if (window.workspacePdfDropInstalled) return;
+        window.workspacePdfDropInstalled = true;
+        window.addEventListener('dragover', event => { if (event.isTrusted && [...(event.dataTransfer?.items || [])].some(item => item.kind === 'file')) event.preventDefault(); }, true);
+        window.addEventListener('drop', event => {
+          if (!event.isTrusted) return;
+          const files = [...(event.dataTransfer?.files || [])].filter(file => /\\.pdf$/i.test(file.name));
+          if (!files.length) return;
+          event.preventDefault(); event.stopImmediatePropagation();
+          window.top.postMessage({ workspacePdfDrop: true, files }, '*');
+        }, true);
+      })()`).catch(() => {});
+    }
+  };
+  view.webContents.on('did-frame-finish-load', installViewerDrop);
+  view.webContents.on('page-title-updated', (_event, title) => { tab.title = tab.localPdf && /^file:/.test(view.webContents.getURL()) ? path.basename(fileURLToPath(view.webContents.getURL())) : title; broadcast(); });
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
-  view.webContents.on('did-stop-loading', () => { tab.loading = false; savePreferencesSoon(); broadcast(); });
+  view.webContents.on('did-stop-loading', () => { tab.loading = false; installViewerDrop(); savePreferencesSoon(); broadcast(); });
   view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.snapshotStamp = null; tab.scan = null; tab.lastRead = null; tab.favicon = ''; tab.faviconSeq = (tab.faviconSeq || 0) + 1; tab.generation++; if (tab.controller === 'agent') { view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); scheduleVpsMirror(); } broadcast(); });
   view.webContents.on('page-favicon-updated', (event, favicons) => { resolveFavicon(tab, favicons).catch(() => {}); });
   view.webContents.on('did-navigate-in-page', () => { tab.generation++; if (tab.controller === 'agent') scheduleVpsMirror(); broadcast(); });
@@ -651,6 +696,7 @@ function takeOpened(tab) {
 function changeController(id, controller, source = 'human', handback = null) {
   const tab = tabs.get(id);
   if (!tab) throw new Error('Tab not found.');
+  if (tab.localPdf && controller === 'agent') throw new Error('Local PDF tabs stay under your control.');
   if (tab.extensionPage && controller === 'agent') throw new Error('Extension account pages stay under your control.');
   // Only the human's own browsing is recorded: a bot taking the tab ends it.
   if (recording?.tabId === id && (controller === 'agent' || tab.extensionPage)) { try { stopRecording(); } catch (error) { logError('recording', error); } }
@@ -695,6 +741,7 @@ function claimRules(tab) {
 // An action also holds the page's navigation generation, and dry-runs itself
 // (preflight) after the wait, so a refusal never takes the tab.
 async function claimTab(tab, botId, { isClosed = () => false, overseer = false, epoch, generation, preflight, beforeClaim } = {}) {
+  if (tab.localPdf) throw Object.assign(new Error('Local PDF tabs stay under your control.'), { status: 403 });
   const rules = () => claimRules(tab);
   requireAgentClaim(tab, Date.now(), rules());
   const auto = rules().autoTakeover && tab.controller === 'human';
@@ -1411,6 +1458,14 @@ async function claimWithToken(token) {
   } catch (error) { cloudError = error.message; startCloudOnboarding(); }
 }
 function registerIpc() {
+  ipcMain.handle('workspace:pdf-drop', (event, files) => {
+    const source = event.sender;
+    if (event.senderFrame !== source.mainFrame) throw new Error('PDFs must be dropped onto the main page.');
+    const tab = [...tabs.values()].find(t => t.view.webContents === source || t.view.webContents === source.hostWebContents);
+    const shellView = source === win?.webContents || source === telegramView?.webContents || source === remoteView?.webContents;
+    if ((!tab && !shellView) || (tab && (tab.controller !== 'human' || agentInput.isDispatching(tab)))) throw new Error('Only human drops can open a PDF.');
+    if (Array.isArray(files)) for (const file of files.slice(0, 40)) receivePdf(file);
+  });
   ipcMain.handle('workspace:get', (event) => { trustSender(event); return getState(); });
   ipcMain.on('workspace:layout', (event, value) => {
     try {
@@ -1512,6 +1567,7 @@ function registerIpc() {
       case 'grant-tab': {
         if (isVpsTab(value.id)) { await remoteRequest(value.id,'grant',value); break; }
         const tab = tabs.get(value.id); if (!tab) throw new Error('Tab not found.');
+        if (tab.localPdf) throw new Error('Local PDF tabs stay under your control.');
         if (tab.extensionPage) throw new Error('Extension account pages stay under your control.');
         if (typeof value.botId === 'string' && value.botId.length > 0 && value.botId.length <= 100) tab.botId = value.botId;
         tab.allowedBots = Array.isArray(value.botIds) ? [...new Set(value.botIds.filter(id => typeof id === 'string' && id.length > 0 && id.length <= 100 && id !== tab.botId))] : [];
@@ -2455,7 +2511,7 @@ function startApi() {
         // The 5s timer already keeps vpsTabs warm; a blocking SSH refresh here
         // cost seconds on a read-only list call. Serve the cache, refresh async.
         if(prefs.vpsBrowser?.sshHost)refreshVpsTabs();
-        return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage).map(tab => describeTab(tab, true)).concat([...vpsTabs.values()]).filter((tab) => overseer || tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
+        return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage && !tab.localPdf).map(tab => describeTab(tab, true)).concat([...vpsTabs.values()]).filter((tab) => overseer || tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
       }
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
@@ -2521,7 +2577,7 @@ function startApi() {
         const result=await vpsBrowser.request(url.pathname+url.search,req.method,req.method==='POST'?await readJson(req):undefined,{botId,botName:nameForBot(botId),epoch:Number(req.headers['x-control-epoch'])});
         const remote=result.tab || (result.id?result:null);if(remote)vpsTabs.set(remote.id,remote);if(req.method==='DELETE')vpsTabs.delete(match[1]);broadcast();return send(200,result);
       }
-      if (!tab || tab.extensionPage) return send(404, { error: 'Tab not found.' });
+      if (!tab || tab.extensionPage || tab.localPdf) return send(404, { error: 'Tab not found.' });
       // Shared tabs are claimable by any known bot via POST control; the
       // per-endpoint gates still fence reads/actions until it is claimed.
       requireActor(tab, botId, undefined, false, overseer || (tab.botId === 'shared' && prefs.bots.some((bot) => bot.id === botId)));
@@ -2761,7 +2817,7 @@ function watchTelegram(wc) {
 function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
-    { label: 'File', submenu: [{ label: 'New Browser Tab', accelerator: 'CmdOrCtrl+T', click: () => createTab({}) }, { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(activeTabId) }, ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, { role: 'quit' }])] },
+    { label: 'File', submenu: [{ label: 'Open File…', accelerator: 'CmdOrCtrl+O', click: () => pickPdf().catch(error => logError('open-pdf', error)) }, { label: 'New Browser Tab', accelerator: 'CmdOrCtrl+T', click: () => createTab({}) }, { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(activeTabId) }, ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, { role: 'quit' }])] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { label: 'View', submenu: [{ label: 'Reload Page', accelerator: 'CmdOrCtrl+R', click: () => tabs.get(activeTabId)?.view.webContents.reload() }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
     ...(process.platform === 'darwin' ? [{ label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }] : []),
@@ -2803,6 +2859,8 @@ function createWindow() {
     } catch {}
   }
   activeTabId = 'home';
+  pdfWindowReady = true;
+  for (const file of pendingPdfs.splice(0)) receivePdf(file);
   win.on('enter-full-screen', broadcast); win.on('leave-full-screen', broadcast);
   createTray();
   win.on('session-end', () => { isQuitting = true; prefsSaver.flush(); });
@@ -2844,7 +2902,7 @@ else {
   app.whenReady().then(async () => {
     prefs = readPreferences(); prefs.remoteControl = false; pinOnboarding(prefs); seedMacSshHost();
     // A cold start launched by the claim link (Windows/Linux) carries the URL in argv.
-    for (const arg of process.argv) claimTokens.push(cloudClaim.parseClaimUrl(arg));
+    for (const arg of process.argv) { claimTokens.push(cloudClaim.parseClaimUrl(arg)); receivePdf(arg); }
     // A session already stored means onboarding was in progress: resume it.
     if (cloudSession() && prefs.cloud?.step && prefs.cloud.step !== 'done') prefs.onboarded = false;
     session.defaultSession.protocol.handle(AVATAR_SCHEME, (request) => {
@@ -2858,6 +2916,9 @@ else {
     const stale = staleConnector();
     if (stale) try { fs.rmSync(stale, { recursive: true, force: true }); } catch (error) { logError('stale-connector', error); }
     const browserSession = session.fromPartition('persist:browser');
+    for (const target of [session.defaultSession, browserSession, session.fromPartition('persist:telegram')]) {
+      target.registerPreloadScript({ id: 'workspace-pdf-drop', type: 'frame', filePath: path.join(ROOT, 'pdf-drop-preload.cjs') });
+    }
     // Subresources (fetch, XHR, images) never hit will-navigate. Cancel the
     // ones an agent tab aims at a blocked address; the human's tabs are not
     // touched, and main-frame loads stay with the navigation hooks above.
@@ -2904,7 +2965,7 @@ else {
     startUpdates();
   });
   app.on('second-instance', (_event, argv) => {
-    for (const arg of argv || []) claimTokens.push(cloudClaim.parseClaimUrl(arg));
+    for (const arg of argv || []) { claimTokens.push(cloudClaim.parseClaimUrl(arg)); receivePdf(arg); }
     showWindow();
   });
   app.on('activate', showWindow);

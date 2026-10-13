@@ -31,7 +31,7 @@ function fixture(initial = [], files = { '/tmp/report.pdf': true }, confirmOpen,
   let prefs = { downloads: initial.map(item => ({ ...item })) }, saved = 0, notices = 0;
   const opened = [], shown = [], session = { handlers: {}, on(name, fn) { (this.handlers[name] ||= []).push(fn); } };
   const store = createDownloadStore({ getPreferences: () => prefs, savePreferences: () => saved++, onChanged: () => notices++, progressMs: 0,
-    downloadsPath: () => '/tmp/downloads', realpath: (file) => file,
+    downloadsPath: () => '/tmp/downloads', realpath: (file) => file, isPdfFile: (file) => files[file] === true,
     shell: { openPath: async (file) => { opened.push(file); return ''; }, showItemInFolder: (file) => shown.push(file) },
     existsSync: (file) => files[file] === true, ...(confirmOpen ? { confirmOpen } : {}), ...(openInTab ? { openInTab } : {}), ...extra });
   store.install(session, scope);
@@ -315,4 +315,28 @@ test('a dump of Telegram PDFs activates one tab, then stops at the per-minute ca
   now += 60_000;
   complete('g.pdf');
   assert.equal(inTab.length, 6, 'the cap resets with the window');
+});
+
+// Provenance is captured at will-download, so a controller change while the
+// network is still working cannot pop an agent download onto the human screen.
+test('human browser PDFs auto-open in a chosen directory; agent and unknown sources stay background', () => {
+  const opened = [], files = { '/tmp/chosen/report.pdf': true };
+  let human = true;
+  const f = fixture([], files, undefined, async record => opened.push(record.path), 'browser', { isHumanDownload: () => human });
+  const first = f.start({ savePath: '/tmp/chosen/report.pdf' });
+  human = false; first.emit('done', 'completed');
+  assert.deepEqual(opened, ['/tmp/chosen/report.pdf']);
+  const agent = f.start({ savePath: '/tmp/chosen/report.pdf' });
+  human = true; agent.emit('done', 'completed');
+  assert.equal(opened.length, 1, 'agent provenance is frozen at start');
+});
+
+test('spoofed PDF bytes never auto-open or reach the system viewer through Open', async () => {
+  const opened = [];
+  const f = fixture([], { '/tmp/downloads/fake.pdf': true }, undefined, async record => opened.push(record.path), 'telegram', { isPdfFile: () => false });
+  const item = f.start({ filename: 'fake.pdf', savePath: '/tmp/downloads/fake.pdf' });
+  item.emit('done', 'completed');
+  assert.deepEqual(opened, []);
+  await assert.rejects(f.store.open(f.store.list()[0].id), /not a PDF/);
+  assert.deepEqual(f.opened, []);
 });
