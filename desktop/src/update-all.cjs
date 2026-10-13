@@ -62,7 +62,8 @@ function versionRecord(previous, { target, check, pluginLatest = '', now }) {
   const verdict = parseHermesCheck(check.hermesCheck);
   const hermes = parseHermesVersion(check.hermesVersion);
   return { ...stamp, offline: false, hermes,
-    ...(check.hermesVersion && !hermes ? { hermesUnverified: true } : {}),
+    // A check verdict proves the CLI ran; without a valid version it is unverified, not absent.
+    ...((check.hermesVersion || check.hermesCheck) && !hermes ? { hermesUnverified: true } : {}),
     hermesUpdate: hermes ? verdict.available : null, hermesLatest: verdict.latest, plugin: String(check.pluginVersion || ''),
     ...(Array.isArray(check.plugins) ? { plugins: check.plugins.filter((p) => ['alans-way', 'alans-way-computer'].includes(p?.name)) } : {}),
     host: String(check.hostVersion || check.version || ''), gatewayRunning: typeof check.gatewayRunning === 'boolean' ? check.gatewayRunning : null };

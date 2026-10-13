@@ -24,6 +24,20 @@ test('whole Hermes probe tokens must be valid before claiming current', () => {
   assert.equal(U.parseHermesVersion('Hermes Agent v0.21.6+build.2 (fixture)'), '0.21.6');
 });
 
+test('a Hermes CLI that answers the check but prints no version is unverified, not current', () => {
+  for (const hermesVersion of ['', '   ', 'Hermes Agent v']) {
+    const cache = U.versionRecord(null, { target, check: { ok: true, hermesVersion, hermesCheck: 'up to date', plugins }, pluginLatest: '0.21.5', now: 1 });
+    const view = U.describeVersions({ app: '0.21.5', cache });
+    assert.equal(cache.hermesUnverified, true, JSON.stringify(hermesVersion));
+    assert.deepEqual(view.steps.map(s => s.id), ['hermes'], JSON.stringify(hermesVersion));
+    assert.match(view.tooltip, /Hermes: version unverified/);
+  }
+  // No CLI at all (no version, no check verdict) stays "not found" with no Hermes step.
+  const absent = U.versionRecord(null, { target, check: { ok: true, hermesVersion: '', hermesCheck: '', plugins }, pluginLatest: '0.21.5', now: 1 });
+  assert.equal(absent.hermesUnverified, undefined);
+  assert.match(U.describeVersions({ app: '0.21.5', cache: absent }).tooltip, /Hermes: not found/);
+});
+
 test('legacy scalar evidence cannot certify every plugin/profile as current', async () => {
   const guest = { ok: true, pluginVersion: '0.21.5', hermesVersion: 'Hermes Agent v0.21.6', hermesCheck: 'up to date' };
   const up = V.createVmUpdater({ readScript: () => '# fixture', run: async () => ({ code: 0, out: JSON.stringify(guest), err: '' }) });
