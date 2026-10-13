@@ -31,6 +31,7 @@ const handle = (request) => {
   }
   return reply({ id: request.id, ok: false, code: 'bad_request', error: `unknown command ${request.cmd}` });
 };
+if (mode === 'ok' && process.env.FAKE_STARTUP_DELAY_MS) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_STARTUP_DELAY_MS));
 if (command === 'serve') {
   if (mode === 'crash-on-serve') { process.stderr.write('cannot serve here\n'); process.exit(1); }
   readline.createInterface({ input: process.stdin }).on('line', (line) => { if (line.trim()) handle(JSON.parse(line)); }).on('close', () => process.exit(0));

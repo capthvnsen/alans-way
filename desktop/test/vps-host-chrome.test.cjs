@@ -223,6 +223,11 @@ test('real Chromium: an agent page cannot reach loopback or metadata by redirect
   assert.equal(loadedImages.data.value, 3, 'ordinary subresources still load through the filter');
   const viaEval = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: `location.href='http://u@127.0.0.1:${pb}/secret?eval';1`, epoch: ok.epoch });
   assert.equal(viaEval.status, 200);
+  assert.ok(await seenBlockedUrl('?eval'), 'script navigation was not blocked');
+  assert.ok(await until(async () => {
+    const state = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: "location.href === 'about:blank' && document.readyState === 'complete'", epoch: ok.epoch });
+    return state.status === 200 && state.data.value === true;
+  }), 'blocked navigation never settled on about:blank');
   // The probe's own request passes through the same Fetch check that stopped
   // the navigation, so its rejection is the awaited proof the guard ran.
   const probe = await api(`/v1/tabs/${ok.id}/actions`, 'POST', { action: 'eval', code: `fetch('http://127.0.0.1:${pb}/secret?eval-probe',{mode:'no-cors'}).then(function(){return 'reached'},function(){return 'denied'})`, epoch: ok.epoch, approval: harnessApproval(ok) });

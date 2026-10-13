@@ -6,11 +6,11 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { app, BrowserWindow, webContents, session } = require('electron');
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-recorder-'));
-process.env.HERMES_WORKSPACE_DATA = profile;
+const profile = process.env.HERMES_TEST_PROFILE || fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-recorder-'));
+const { prepareFixture, quitFixture } = require('./electron-fixture.cjs');
+prepareFixture(profile);
 fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false,
   bots: [{ id: '4242', isBot: true, name: 'Scout' }, { id: '5151', isBot: true, name: 'Other' }], selectedBotId: '4242' }));
-process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
 require('../src/main.cjs');
 // Typed only, never served: if either string is anywhere in the profile, a secret reached disk.
 const PASSWORD = 'Tr0ub4dor-recorder-test-pw', CARD = '4111222233334444', NOTE = 'Private note 8317 for Ada', BIO = 'Bio text 5521 never kept';
@@ -221,6 +221,7 @@ app.whenReady().then(async () => {
   assert.equal(files().length, 3);
   assert.ok(!files().includes(`${kept.id}.json`));
 
+  await pageWc.executeJavaScript("void (window.onbeforeunload = () => false)");
   console.log('PASS: Record captures clicks, typing and navigation on a human tab, redacts secrets, shares per bot, and keeps the password off disk.');
-  server.close(); app.quit();
+  quitFixture(server);
 }).catch(error => { console.error(error.stack); server?.close(); app.exit(1); });

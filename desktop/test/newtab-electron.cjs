@@ -6,11 +6,11 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { app, BrowserWindow, webContents, session, nativeImage } = require('electron');
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-newtab-'));
-process.env.HERMES_WORKSPACE_DATA = profile;
+const profile = process.env.HERMES_TEST_PROFILE || fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-newtab-'));
+const { prepareFixture, quitFixture } = require('./electron-fixture.cjs');
+prepareFixture(profile);
 // A finished first-run wizard; the wizard otherwise stands in for the empty state.
 fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true }));
-process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
 require('../src/main.cjs');
 const waitFor = async (read, predicate, timeout = 12000) => {
   const deadline = Date.now() + timeout;
@@ -121,5 +121,5 @@ app.whenReady().then(async () => {
   assert.equal(saved.savedTabs.length, 0, 'Destroyed tabs are not persisted.');
 
   console.log('PASS: new tabs open on the Hermes backdrop, no Start chip, empty state keeps the image, workspace chrome is compact.');
-  server.close(); app.quit();
+  quitFixture(server);
 }).catch(error => { console.error(error.stack); server?.close(); app.exit(1); });
