@@ -409,7 +409,7 @@ test('real Chromium: a confirm is dismissed, never approved on the agent\'s beha
 });
 
 test('real Chromium: a CAPTCHA on a VM tab is refused to the bot, handed to the person with the viewer, and handed back once it clears', { skip: skipNoChrome, timeout: 60000 }, async () => {
-  const h = await spawnHost({ ALANS_WAY_VIEWER_URL: 'http://100.64.0.9:6080/vnc.html?autoconnect=1&password=hunter2' });
+  const h = await spawnHost({ ALANS_WAY_VIEWER_URL: 'http://192.0.2.9:6080/vnc.html?autoconnect=1&password=hunter2' });
   const ha = (route, method, body, opts) => h.api(route, method, body, { bot: 'own-bot', ...opts });
   let tab = (await ha('/v1/tabs', 'POST', { url: `http://test.example:${pa}/captcha-form` })).data;
   const snap = await ha(`/v1/tabs/${tab.id}/snapshot`);
@@ -418,7 +418,15 @@ test('real Chromium: a CAPTCHA on a VM tab is refused to the bot, handed to the 
   const widget = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: 'iframe', epoch: tab.epoch });
   assert.equal(widget.status, 409);
   assert.match(widget.data.error, /^challenge_present: .*reason "captcha"/);
-  const box = (await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: `(() => { const r = document.querySelector('iframe').getBoundingClientRect(); return { x: r.left + 20, y: r.top + 20 }; })()`, epoch: tab.epoch })).data.value;
+  // Page script could click the widget itself, so it is refused while one is on the page.
+  const script = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: `document.querySelector('iframe').getBoundingClientRect().top`, epoch: tab.epoch });
+  assert.equal(script.status, 409); assert.equal(script.data.code, 'challenge_present');
+  for (const [method, params] of [['Runtime.evaluate', { expression: '1' }], ['Runtime.callFunctionOn', { functionDeclaration: 'function () {}' }], ['DOM.getDocument', {}]]) {
+    const refused = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'cdp', method, params, epoch: tab.epoch });
+    assert.equal(refused.status, 409, method); assert.match(refused.data.error, /^challenge_present/, method);
+  }
+  const viewerCdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+  const box = await (await viewerCdp.page(tab.targetId)).executeJavaScript(`(() => { const r = document.querySelector('iframe').getBoundingClientRect(); return { x: r.left + 20, y: r.top + 20 }; })()`);
   const raw = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'cdp', method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', ...box, button: 'left', clickCount: 1 }, epoch: tab.epoch });
   assert.equal(raw.status, 409, 'raw input on the widget is refused too');
   assert.match(raw.data.error, /^challenge_present/);
@@ -437,7 +445,7 @@ test('real Chromium: a CAPTCHA on a VM tab is refused to the bot, handed to the 
   assert.equal(gated.data.tab.handback.state, 'awaiting_human');
   assert.equal(gated.data.tab.handback.reason, 'captcha');
   assert.match(gated.data.tab.handback.note, /Google "unusual traffic" check on test\.example/);
-  assert.equal(gated.data.tab.handback.viewerUrl, 'http://100.64.0.9:6080/vnc.html?autoconnect=1');
+  assert.equal(gated.data.tab.handback.viewerUrl, 'http://192.0.2.9:6080/vnc.html?autoconnect=1');
   assert.equal(JSON.stringify(gated.data).includes('hunter2'), false);
   const claim = await ha(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' });
   assert.equal(claim.status, 409);
@@ -445,15 +453,16 @@ test('real Chromium: a CAPTCHA on a VM tab is refused to the bot, handed to the 
   assert.equal((await ha(`/v1/tabs/${tab.id}/snapshot`)).status, 409);
 
   // The person solves it in the viewer and the page moves on; the tab comes back.
-  const viewerCdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
   try { await (await viewerCdp.page(gated.data.tab.targetId)).executeJavaScript(`location.href = '/ok'`); } finally { viewerCdp.socket.close(); }
-  const back = await until(async () => { const t = (await ha(`/v1/tabs/${tab.id}`)).data; return t.controller === 'agent' && t; });
+  const back = await until(async () => { const t = (await ha(`/v1/tabs/${tab.id}`)).data; return t.controller === 'agent' && t; }, 20000);
   assert.ok(back, 'the tab returned to the bot');
   assert.equal(back.handback.state, 'human_returned');
   assert.equal(back.handback.resumed, 'auto');
   assert.ok(back.epoch > gated.data.tab.epoch, 'the give-back moves the epoch on');
   const stale = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'read', epoch: gated.data.tab.epoch });
   assert.match(stale.data.error, /^human_returned/);
+  const cleared = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: '1 + 1', epoch: back.epoch });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.data)); assert.equal(cleared.data.value, 2, 'page script works again once the check is gone');
 
   // A second challenge from the same site within ten minutes: back off.
   const again = await ha(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'navigate', url: `http://test.example:${pa}/sorry/index?again`, epoch: back.epoch });

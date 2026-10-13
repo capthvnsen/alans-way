@@ -11,7 +11,7 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
 const { challengeExpression, challengeHitExpression, challengeProbeExpression, readEffect } = require('../src/browser-page.cjs');
-const { rawInputTarget } = require('../src/agent-input.cjs');
+const { rawInputTarget, refuseChallenge } = require('../src/agent-input.cjs');
 const { challengeReply, captchaHandback, captchaWatchStep, viewerUrl } = require('../src/core.cjs');
 
 test('a second challenge from the same site within ten minutes tells the bot to back off', () => {
@@ -43,34 +43,59 @@ test('the automatic release names the site and the kind of check', () => {
   assert.equal(repeat.backOff, true); assert.equal(repeat.advice, 'Stop retrying it.');
 });
 
-test('the watch hands back only after a challenge it saw has cleared twice in a row and nobody is typing', () => {
+test('the watch hands back only after a challenge it saw has stayed clear about six seconds and nobody is mid-form', () => {
   const step = (watch, probe) => captchaWatchStep(watch, probe);
+  const quiet = (w, n, typing = '') => { for (let i = 0; i < n; i++) w = step(w, { challenge: null, loading: false, typing }); return w; };
   let w = { seen: false, clear: 0, typing: '' };
   // A bot's own captcha release on a page with no known challenge never auto-returns.
-  for (let i = 0; i < 5; i++) w = step(w, { challenge: null, loading: false, typing: '' });
+  w = quiet(w, 10);
   assert.equal(w.resume, false);
   w = step(w, { challenge: { kind: 'recaptcha', blocking: false }, loading: false, typing: '' });
   assert.equal(w.seen, true);
   w = step(w, { challenge: null, loading: true, typing: '' });
   assert.equal(w.clear, 0, 'a loading page is not clear yet');
-  w = step(w, { challenge: null, loading: false, typing: '' });
-  assert.equal(w.resume, false, 'one clear read is not enough');
-  w = step(w, { challenge: null, loading: false, typing: '5:abc' });
-  assert.equal(w.resume, false, 'the person typed between reads');
-  w = step(w, { challenge: null, loading: false, typing: '5:abc' });
+  w = quiet(w, 5);
+  assert.equal(w.resume, false, 'five quiet seconds are not enough');
+  w = step(w, { challenge: null, loading: false, typing: '0:abc' });
+  assert.equal(w.clear, 0, 'the person moved into a field between reads');
+  w = quiet(w, 5, '0:abc');
   assert.equal(w.resume, false);
-  w = step(w, { challenge: null, loading: false, typing: '5:abc' });
+  w = quiet(w, 1, '0:abc');
+  assert.equal(w.resume, true, 'an empty focused field is not someone mid-form');
+  // A focused field with text in it holds the tab however long it sits still.
+  w = quiet({ seen: true, clear: 0, typing: '' }, 30, '5:abc');
+  assert.equal(w.resume, false);
+  w = quiet(w, 1);
+  assert.equal(w.clear, 0, 'leaving the field starts the quiet time');
+  w = quiet(w, 6);
   assert.equal(w.resume, true);
-  assert.equal(step({ seen: true, clear: 1, typing: '' }, null).clear, 0, 'an unreadable page (mid-navigation) restarts the count');
+  assert.equal(step({ seen: true, clear: 5, typing: '' }, null).clear, 0, 'an unreadable page (mid-navigation) restarts the count');
 });
 
 test('the viewer address keeps no password, token or fragment', () => {
-  assert.equal(viewerUrl('http://100.64.0.2:6080/vnc.html?autoconnect=1&password=hunter2&path=websockify#password=x'), 'http://100.64.0.2:6080/vnc.html?autoconnect=1&path=websockify');
+  assert.equal(viewerUrl('http://192.0.2.2:6080/vnc.html?autoconnect=1&password=hunter2&path=websockify#password=x'), 'http://192.0.2.2:6080/vnc.html?autoconnect=1&path=websockify');
   assert.equal(viewerUrl('https://u:p@desk.example/vnc.html?token=abc&apiKey=1'), 'https://desk.example/vnc.html');
   assert.equal(viewerUrl('http://desk.example/vnc.html?pw=1&sig=2&jwt=3&resize=scale'), 'http://desk.example/vnc.html?resize=scale', 'only noVNC settings survive');
+  // A token tucked inside an allowed setting is dropped with it.
+  assert.equal(viewerUrl('http://192.0.2.2:6080/vnc.html?autoconnect=1&path=websockify%3Ftoken%3DSECRET'), 'http://192.0.2.2:6080/vnc.html?autoconnect=1');
+  assert.equal(viewerUrl('http://192.0.2.2/vnc.html?path=ws%2Fx&host=a%40b&port=%2F%2Fevil.example&shared=1'), 'http://192.0.2.2/vnc.html?shared=1');
+  assert.equal(viewerUrl('http://192.0.2.2/vnc.html?resize=scale%3Dx'), 'http://192.0.2.2/vnc.html');
   assert.equal(viewerUrl('ws://desk.example/websockify'), '');
   assert.equal(viewerUrl(''), '');
   assert.equal(viewerUrl(undefined), '');
+});
+
+test('the challenge preflight refuses when the page shows one, and when the page cannot be checked', async () => {
+  const page = (run) => ({ executeJavaScript: run });
+  await assert.doesNotReject(refuseChallenge(page(async () => null)));
+  await assert.rejects(refuseChallenge(page(async () => ({ kind: 'turnstile', blocking: false }))), (e) => e.code === 'challenge_present' && e.status === 409);
+  // With no points it asks whether any challenge is on the page; with points, whether they land on one.
+  const asked = [];
+  await refuseChallenge(page(async (code) => { asked.push(code); return null; }));
+  await refuseChallenge(page(async (code) => { asked.push(code); return null; }), [{ x: 1, y: 2 }]);
+  assert.equal(asked[0], challengeExpression()); assert.equal(asked[1], challengeHitExpression([{ x: 1, y: 2 }]));
+  await assert.rejects(refuseChallenge(page(async () => { throw new Error('Execution context was destroyed.'); })), (e) => e.status === 503 && /^challenge_check_failed/.test(e.message));
+  await assert.rejects(refuseChallenge(page(() => new Promise(() => {})), [], true), (e) => e.status === 503, 'a probe that times out fails closed');
 });
 
 test('raw CDP input is aimed at every point it lands on, or at the focus for keys', () => {
@@ -174,6 +199,9 @@ test('real Chromium: each kind of challenge is detected from its fixture, and lo
     cloudflare: { kind: 'cloudflare', blocking: true },
     'cloudflare-managed': { kind: 'cloudflare', blocking: true },
     onboarding: null,
+    quiz: null,
+    'recaptcha-two': { kind: 'recaptcha', blocking: false },
+    framed: { kind: 'recaptcha', blocking: false },
     arkose: { kind: 'arkose', blocking: true },
     plain: null,
   };
@@ -195,6 +223,13 @@ test('real Chromium: input is refused on the widget or a bot-check page, and all
   assert.equal(await page.executeJavaScript(challengeHitExpression([], true)), null, 'typing into the form is fine');
   await page.executeJavaScript(`document.querySelector('iframe').focus()`);
   assert.deepEqual(await page.executeJavaScript(challengeHitExpression([], true)), { kind: 'recaptcha', blocking: false }, 'keys into the widget are not');
+  // A widget inside a same-origin frame, aimed at from the top page.
+  const framed = await open(`http://127.0.0.1:${port}/framed`);
+  const inFrame = await framed.executeJavaScript(`(() => { const f = document.getElementById('pay').getBoundingClientRect(), r = document.getElementById('pay').contentDocument.querySelector('iframe').getBoundingClientRect(); return { x: f.left + r.left + r.width / 2, y: f.top + r.top + r.height / 2 }; })()`);
+  assert.deepEqual(await framed.executeJavaScript(challengeHitExpression([inFrame])), { kind: 'recaptcha', blocking: false });
+  assert.equal(await framed.executeJavaScript(challengeHitExpression([{ x: 5, y: 5 }])), null, 'the page around the frame is fine');
+  await framed.executeJavaScript(`document.getElementById('pay').contentDocument.querySelector('iframe').focus()`);
+  assert.deepEqual(await framed.executeJavaScript(challengeHitExpression([], true)), { kind: 'recaptcha', blocking: false }, 'keys into the framed widget are not');
   const gate = await open(`http://127.0.0.1:${port}/cloudflare`);
   assert.deepEqual(await gate.executeJavaScript(challengeHitExpression([{ x: 5, y: 5 }])), { kind: 'cloudflare', blocking: true }, 'the whole page is the check');
 });

@@ -2002,6 +2002,8 @@ async function performStep(tab, body, botId, depth, isAborted) {
     const code = String(body.code || '');
     if (!code || code.length > 16384) throw Object.assign(new Error('eval needs a code string (max 16KB).'), { status: 400 });
     const wc = tab.view.webContents;
+    // Page script can reach a widget anywhere on the page.
+    await refuseChallenge(wc);
     let evalTimer;
     let value = await Promise.race([
       frameOf(wc).executeJavaScript(code, true),
@@ -2102,8 +2104,10 @@ async function performStep(tab, body, botId, depth, isAborted) {
       if (typeof params.url !== 'string' || !params.url) throw Object.assign(new Error('Page.navigate needs a url string.'), { status: 400 });
       params.url = agentPageUrl(params.url);
     }
-    // Raw input is input too: it may not land on a challenge either.
+    // Raw input is input too: it may not land on a challenge either, and page
+    // script (Runtime.*, DOM.*) may not run while one is on the page.
     if (method.startsWith('Input.')) { const aim = rawInputTarget(method, params); await refuseChallenge(wc, aim.points, aim.keyboard); }
+    else if (/^(Runtime|DOM)\./.test(method)) await refuseChallenge(wc);
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     let cdpTimer;
     let value = await Promise.race([

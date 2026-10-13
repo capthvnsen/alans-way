@@ -1,7 +1,8 @@
 // Run: npx electron test/captcha-handback-electron.cjs
 // A bot's tab meets a CAPTCHA: input on the widget is refused, a whole-page
 // check is handed to the human with a note naming the site and the check, and
-// once the human clears it (and stops typing) the tab goes back on its own.
+// once the human clears it (and leaves the field they were typing in) the tab
+// goes back on its own. Page script waits while any challenge is on the page.
 // Uses an isolated profile and localhost pages. No Telegram sign-in required.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -66,6 +67,13 @@ app.whenReady().then(async () => {
   assert.equal(touched.data.code, 'challenge_present');
   assert.match(touched.data.error, /^challenge_present: .*reason "captcha"/);
   assert.equal((await act({ action: 'click', selector: '#other' })).status, 200, 'the rest of the page stays usable');
+  // Page script could click the widget itself, so it waits until the check is gone.
+  const script = await act({ action: 'eval', code: `document.querySelector('iframe').click()` });
+  assert.equal(script.status, 409); assert.equal(script.data.code, 'challenge_present');
+  for (const method of ['Runtime.evaluate', 'Runtime.callFunctionOn', 'DOM.getDocument']) {
+    const refused = await act({ action: 'cdp', method, params: method === 'Runtime.evaluate' ? { expression: '1' } : {} });
+    assert.equal(refused.status, 409, method); assert.equal(refused.data.code, 'challenge_present', method);
+  }
 
   // A whole-page check goes to the human at once: the N2 release, made by the app.
   const gated = await act({ action: 'navigate', url: `${base}/sorry/index?continue=/results` });
@@ -85,14 +93,20 @@ app.whenReady().then(async () => {
   await waitFor(getState, state => state.activeTabId === tab.id);
   await waitFor(() => evaluate('document.getElementById("needs-you-text").textContent'), text => text === `Scout needs you: ${h.note}`);
 
-  // The human solves it and the page moves on, but they keep typing: the tab
-  // stays theirs until they stop, then goes back with a thank-you.
+  // The human solves it and the page moves on, but they keep typing and then
+  // sit in the filled field: the tab stays theirs until they leave it and six
+  // quiet seconds pass, then goes back with a thank-you.
   await pageWc.executeJavaScript(`location.href = '/results'`);
   await waitFor(() => pageWc.executeJavaScript('location.pathname === "/results" && document.readyState === "complete"').catch(() => false), Boolean);
   await pageWc.executeJavaScript(`(() => { const q = document.getElementById('q'); q.focus(); let n = 0; const t = setInterval(() => { q.value += 'a'; if (++n >= 12) clearInterval(t); }, 300); })()`);
   await new Promise(r => setTimeout(r, 3000));
   assert.equal((await getState()).tabs.find(item => item.id === tab.id).controller, 'human', 'a person still typing keeps the tab');
-  const resumed = await waitFor(getState, state => state.tabs.find(item => item.id === tab.id).controller === 'agent', 12000, 'the automatic give-back');
+  await new Promise(r => setTimeout(r, 8000));
+  assert.equal((await getState()).tabs.find(item => item.id === tab.id).controller, 'human', 'a person sitting in a filled field keeps the tab');
+  await pageWc.executeJavaScript(`document.getElementById('q').blur()`);
+  const left = Date.now();
+  const resumed = await waitFor(getState, state => state.tabs.find(item => item.id === tab.id).controller === 'agent', 15000, 'the automatic give-back');
+  assert.ok(Date.now() - left >= 5000, 'the give-back waits out the quiet time');
   const back = resumed.tabs.find(item => item.id === tab.id);
   assert.equal(back.handback.state, 'human_returned'); assert.equal(back.handback.resumed, 'auto');
   assert.ok(back.epoch > gated.data.tab.epoch, 'the give-back moves the epoch on');
@@ -106,6 +120,7 @@ app.whenReady().then(async () => {
   const fresh = await act({ action: 'read' });
   assert.equal(fresh.status, 200, JSON.stringify(fresh.data));
   assert.equal(fresh.data.challenge, undefined);
+  assert.equal((await act({ action: 'eval', code: '1 + 1' })).data.value, 2, 'page script works again once the check is gone');
 
   // The same site challenging again inside ten minutes: back off.
   const again = await act({ action: 'navigate', url: `${base}/sorry/index?again` });
@@ -118,7 +133,7 @@ app.whenReady().then(async () => {
   // is gone, but the automatic return stands down.
   await invoke('navigate', { id: tab.id, url: `${base}/start` });
   await waitFor(() => pageWc.executeJavaScript('location.pathname === "/start" && document.readyState === "complete"').catch(() => false), Boolean);
-  await new Promise(r => setTimeout(r, 3500));
+  await new Promise(r => setTimeout(r, 8000));
   const browsing = (await getState()).tabs.find(item => item.id === tab.id);
   assert.equal(browsing.controller, 'human', 'the human\'s own browsing is not handed to the bot');
   assert.equal(browsing.handback.state, 'awaiting_human');

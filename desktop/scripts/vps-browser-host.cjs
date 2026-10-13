@@ -535,6 +535,8 @@ async function serve() {
     if (body.action === 'eval') {
       const code = String(body.code || '');
       if (!code || code.length > 16384) throw fail('eval needs a code string (max 16KB).');
+      // Page script can reach a widget anywhere on the page.
+      await refuseChallenge(wc);
       let value = await Promise.race([
         wc.executeJavaScript(code),
         new Promise((_, reject) => setTimeout(() => reject(fail('eval timed out after 15s.', 408)), 15000)),
@@ -623,8 +625,10 @@ async function serve() {
         if (typeof params.url !== 'string' || !params.url) throw fail('Page.navigate needs a url string.');
         params.url = agentPageUrl(params.url);
       }
-      // Raw input is input too: it may not land on a challenge either.
+      // Raw input is input too: it may not land on a challenge either, and page
+      // script (Runtime.*, DOM.*) may not run while one is on the page.
       if (method.startsWith('Input.')) { const aim = rawInputTarget(method, params); await refuseChallenge(wc, aim.points, aim.keyboard); }
+      else if (/^(Runtime|DOM)\./.test(method)) await refuseChallenge(wc);
       let value = await Promise.race([
         wc.command(method, params),
         new Promise((_, reject) => setTimeout(() => reject(fail('cdp timed out after 20s.', 408)), 20000)),
@@ -1133,7 +1137,7 @@ async function serve() {
       }
       throw fail('Unsupported VPS operation.', 405);
     } catch (e) {
-      send((e && e.status) || 400, { error: errorMessage(e) });
+      send((e && e.status) || 400, { error: errorMessage(e), ...(e && e.code ? { code: e.code } : {}) });
     }
   });
   const port = cfg.port || 9465;

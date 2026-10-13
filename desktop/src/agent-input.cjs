@@ -1,6 +1,6 @@
 // All input stays inside this tab's Chromium target. Never focus a native view,
 // activate a window, use the clipboard for typing, or move the system pointer.
-const { followUpArmExpression, followUpCloseExpression, FOLLOW_UP_KEY, REFS_KEY, refsSource, CHALLENGE_HIT_SOURCE, challengeHitExpression } = require('./browser-page.cjs');
+const { followUpArmExpression, followUpCloseExpression, FOLLOW_UP_KEY, REFS_KEY, refsSource, CHALLENGE_HIT_SOURCE, challengeExpression, challengeHitExpression } = require('./browser-page.cjs');
 const INPUT_ACTIONS = new Set(['move', 'click', 'double_click', 'right_click', 'drag', 'type', 'press', 'scroll', 'select']);
 const CLICKS = { click: { button: 'left', buttons: 1, count: 1 }, double_click: { button: 'left', buttons: 1, count: 2 }, right_click: { button: 'right', buttons: 2, count: 1 } };
 const POINTER_ACTIONS = new Set(['move', 'drag', ...Object.keys(CLICKS)]);
@@ -56,10 +56,13 @@ function rawInputTarget(method, params) {
 function challengePresent(c) {
   return Object.assign(new Error(`challenge_present: this page shows a ${c.kind} challenge and bots never solve one. Release the tab with reason "captcha" (control: controller "human", reason "captcha") so the person can; it comes back to you once the challenge clears.`), { status: 409, code: 'challenge_present' });
 }
-// A probe that fails or times out lets the input through: the reads and the
-// hosts' automatic release still catch a blocking challenge.
-async function refuseChallenge(wc, points, keyboard = false) {
-  const c = await boundedJs(wc, challengeHitExpression(points, keyboard), 3000).catch(() => null);
+// With no points it refuses on any challenge on the page: page script (eval,
+// Runtime.*, DOM.*) can reach a widget anywhere. A probe that fails or times
+// out refuses too, since the page could not be checked.
+async function refuseChallenge(wc, points = null, keyboard = false) {
+  const c = await boundedJs(wc, points ? challengeHitExpression(points, keyboard) : challengeExpression(), 3000).catch(() => {
+    throw fail('challenge_check_failed: the page could not be checked for a CAPTCHA before this input. Read the tab and retry.', 503);
+  });
   if (typeof c?.kind === 'string') throw challengePresent(c);
 }
 

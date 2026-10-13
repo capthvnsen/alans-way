@@ -232,19 +232,27 @@ function captchaHandback(url, challenge) {
 function captchaWatchStep(watch, probe) {
   if (!probe || probe.loading) return { ...watch, clear: 0, resume: false };
   if (probe.challenge) return { seen: true, clear: 0, typing: probe.typing, resume: false };
-  const clear = watch.seen && probe.typing === watch.typing ? watch.clear + 1 : 0;
-  return { seen: watch.seen, clear, typing: probe.typing, resume: clear >= 2 };
+  // A focused field with text in it is a person mid-form, typing or not.
+  const filled = /^[1-9]/.test(probe.typing || '');
+  const clear = watch.seen && !filled && probe.typing === watch.typing ? watch.clear + 1 : 0;
+  return { seen: watch.seen, clear, typing: probe.typing, resume: clear >= CAPTCHA_QUIET_READS };
 }
+// The watch reads once a second: about six quiet seconds before the hand-back.
+const CAPTCHA_QUIET_READS = 6;
 // The live desktop viewer a person opens to solve a challenge on the VM: an
 // http(s) address with no credentials or fragment (noVNC also reads a
-// password from the fragment), keeping only noVNC's harmless settings.
+// password from the fragment), keeping only noVNC's harmless settings. A
+// value that could carry a nested address or query (a token tucked into
+// path) is dropped, and path may only name noVNC's own websockify endpoint.
 const VIEWER_PARAMS = new Set(['autoconnect', 'reconnect', 'reconnect_delay', 'resize', 'quality', 'compression', 'show_dot', 'shared', 'view_only', 'view_clip', 'path', 'host', 'port', 'encrypt', 'bell', 'logging']);
 function viewerUrl(value) {
   try {
     const url = new URL(String(value || ''));
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
     url.username = ''; url.password = ''; url.hash = '';
-    for (const key of [...url.searchParams.keys()]) if (!VIEWER_PARAMS.has(key)) url.searchParams.delete(key);
+    for (const [key, value] of [...url.searchParams]) {
+      if (!VIEWER_PARAMS.has(key) || /[?=@]|\/\//.test(value) || (key === 'path' && value !== 'websockify')) url.searchParams.delete(key);
+    }
     return url.href;
   } catch { return ''; }
 }
