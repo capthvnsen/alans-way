@@ -60,12 +60,13 @@ async function eventually(fn, predicate) {
   console.log('Select the Workspace popup test tab, then click “Take over”. Agent popups intentionally preserve your selected tab. Press Enter here afterward.');
   rl = readline.createInterface({ input: process.stdin, output: process.stdout }); await rl.question('');
   rl.close();
-  // Automatic takeover (on by default): the bot's next action takes the tab
-  // back, and an epoch from before the takeover still answers stale.
+  // Automatic takeover (on by default): an epoch from before the takeover is
+  // refused and leaves the tab alone; the bot's claim takes it back.
   const result = await api(`/v1/tabs/${popupTab.id}/actions`, 'POST', { action: 'reload', epoch: popupTab.epoch });
-  assert.equal(result.status, 409); assert.match(result.data.error, /^stale_control_epoch: you took this tab back/);
-  assert.equal((await api(`/v1/tabs/${popupTab.id}`)).data.controller, 'agent');
-  console.log('PASS: the bot takes the tab back (the app shows "took over this tab" with Take back) and needs a new epoch.');
+  assert.equal(result.status, 409); assert.match(result.data.error, /^stale_control_epoch: the human took this tab/);
+  assert.equal((await api(`/v1/tabs/${popupTab.id}`)).data.controller, 'human');
+  assert.equal((await api(`/v1/tabs/${popupTab.id}/control`, 'POST', { controller: 'agent' })).data.controller, 'agent');
+  console.log('PASS: an old epoch leaves the tab with you; the claim takes it back (the app shows "took over this tab" with Take back).');
 })().catch(error => { console.error(error.message); process.exitCode = 1; }).finally(async () => {
   rl?.close();
   for (const id of created.reverse()) { const current = await api(`/v1/tabs/${id}`).catch(() => null); if (current?.data.controller === 'agent') await api(`/v1/tabs/${id}`, 'DELETE', undefined, botId, current.data.epoch).catch(() => {}); }

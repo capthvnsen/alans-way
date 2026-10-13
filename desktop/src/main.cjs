@@ -108,7 +108,7 @@ const OPEN_PARSE_MS = 8000;
 const SNAPSHOT_PARSE_MS = 1500;
 const WAIT_SLICE_MS = 1000;
 const HUMAN_INPUT = new Set(['mouseDown', 'rawKeyDown', 'keyDown', 'char', 'mouseWheel', 'gestureScrollBegin', 'gestureScrollUpdate', 'touchStart']);
-const TAKEOVER_NOTICE_MS = 8000;
+const TAKEOVER_NOTICE_MS = 8000, TAKE_BACK_MS = 60000;
 let isQuitting = false;
 let bundleWarningDismissed = false;
 const runningBundle = () => process.platform === 'darwin' && app.isPackaged ? macUpdate.bundleLocation(path.resolve(process.execPath, '../../..'), app.getName()) : null;
@@ -672,16 +672,20 @@ function changeController(id, controller, source = 'human', handback = null) {
 // A bot's claim, or an action on a tab the human holds, takes the tab back when
 // Settings allow it (on by default). The claim rules run before and after the
 // grace wait: the human may hand the tab over or start recording meanwhile.
-async function claimTab(tab, botId, isClosed = () => false) {
+async function claimTab(tab, botId, { isClosed = () => false, overseer = false } = {}) {
   const rules = () => { const autoTakeover = prefs.autoTakeover !== false; return { autoTakeover, recording: autoTakeover && recording?.tabId === tab.id }; };
   requireAgentClaim(tab, Date.now(), rules());
   const auto = rules().autoTakeover && tab.controller === 'human';
   if (auto) {
-    const started = Date.now();
+    const started = Date.now(), from = tab.epoch;
     for (let ms; (ms = takeoverDelay(tab.lastHumanInput, started)) > 0;) await new Promise((resolve) => setTimeout(resolve, ms));
     if (isClosed()) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
     if (!tabs.has(tab.id)) throw Object.assign(new Error('Tab not found.'), { status: 404 });
     requireAgentClaim(tab, Date.now(), rules());
+    // Another bot's claim, Take back or a navigation may have moved the tab
+    // while this one waited.
+    if (tab.botId !== 'shared') requireActor(tab, botId, undefined, false, overseer);
+    if (tab.epoch !== from) throw Object.assign(new Error('stale_control_epoch: the tab changed hands while you waited. Read the tab state and retry.'), { status: 409 });
   }
   // The notice is for a tab the human took or used, not one a bot released
   // that sat idle.
@@ -701,6 +705,32 @@ function takeoverError(error) {
   if (prefs.autoTakeover !== false && /^human_has_control/.test(error?.message || ''))
     error.message = 'human_took_tab: the human took this tab during your call. Check its effect, then call again; the tab comes back to you once they pause.';
   return error;
+}
+const STALE_HUMAN_EPOCH = 'stale_control_epoch: the human took this tab and may have changed the page. Claim it (control, controller "agent") to take it back, read it, then act.';
+const OTHER_ACTIONS = new Set(['navigate', 'back', 'forward', 'reload', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp']);
+const UNSUPPORTED_ACTION = 'Supported actions: navigate, click, double_click, right_click, drag, select, type, press, move, scroll, back, forward, reload, batch, read, eval, wait, viewport, cdp.';
+// The checks an action passes before it touches the page, run before a bot
+// takes a tab back so a malformed action never costs the human their tab.
+async function checkAction(tab, body, botId, depth = 0) {
+  const bad = (message) => { throw Object.assign(new Error(message), { status: 400 }); };
+  if (!body || typeof body !== 'object' || typeof body.action !== 'string') bad('action is required.');
+  const { action } = body;
+  if (!INPUT_ACTIONS.has(action) && !OTHER_ACTIONS.has(action)) bad(UNSUPPORTED_ACTION);
+  // Later steps may aim at refs the first one finds, so only the first is checked.
+  if (action === 'batch') return depth > 0 ? bad('Batches cannot nest.') : Array.isArray(body.steps) && body.steps.length ? checkAction(tab, body.steps[0], botId, 1) : bad('batch needs a non-empty steps array (max 25).');
+  if (INPUT_ACTIONS.has(action)) return agentInput.perform(tab, body, botId, { preflight: true });
+  const code = String(body.code || '');
+  if (action === 'eval' && (!code || code.length > 16384)) bad('eval needs a code string (max 16KB).');
+  if (action === 'wait' && !body.selector && !body.text && !body.url) bad('wait needs a selector, text, or url to wait for.');
+  const width = Math.round(Number(body.width)), height = Math.round(Number(body.height));
+  if (action === 'viewport' && body.clear !== true && !(width >= 100 && width <= 7680 && height >= 100 && height <= 4320))
+    bad('viewport needs width 100-7680 and height 100-4320, or clear:true.');
+  if (action === 'navigate') agentPageUrl(body.url);
+  if (action === 'cdp') {
+    const methodError = cdpMethodError(String(body.method || ''));
+    if (methodError) bad(methodError);
+    if (body.method === 'Page.navigate') { if (typeof body.params?.url !== 'string' || !body.params.url) bad('Page.navigate needs a url string.'); agentPageUrl(body.params.url); }
+  }
 }
 const HANDBACK_TEXT = { captcha: 'Solve the CAPTCHA, then give the tab back.', login: 'Sign in, then give the tab back.', two_factor: 'Enter the verification code, then give the tab back.', payment_details: 'Enter the card details, then give the tab back.', review: 'Review the page, then give the tab back.', other: 'Take a look, then give the tab back.' };
 // One notification per handback. Notifications are kept per tab so a click
@@ -1280,8 +1310,12 @@ function registerIpc() {
       case 'control': {
         if(isVpsTab(value.id)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller});}
         const tab = tabs.get(value.id);
-        if (tab && value.controller === 'agent') tab.handoff = reviewedHandoff(tab.handoff);
+        // Give to agent also ends a Take back cooldown.
+        if (tab && value.controller === 'agent') { tab.handoff = reviewedHandoff(tab.handoff); tab.tookBackUntil = 0; }
         if (tab && value.controller !== 'agent') tab.lastHumanInput = Date.now();
+        // Take back on the takeover notice keeps bots off the tab for a minute,
+        // and its epoch bump voids any takeover still waiting out the grace.
+        if (tab && value.takeBack === true) tab.tookBackUntil = Date.now() + TAKE_BACK_MS;
         return changeController(value.id, value.controller);
       }
       case 'share-page': {
@@ -2156,7 +2190,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
         throw Object.assign(error, { status: 400 });
       }
     }
-  } else throw Object.assign(new Error('Supported actions: navigate, click, double_click, right_click, drag, select, type, press, move, scroll, back, forward, reload, batch, read, eval, wait, viewport, cdp.'), { status: 400 });
+  } else throw Object.assign(new Error(UNSUPPORTED_ACTION), { status: 400 });
   // Seal navigation-family results too: a takeover while the page settled
   // makes this response the human's page state.
   requireActor(tab, botId, body.epoch, true, overseer);
@@ -2316,15 +2350,32 @@ function startApi() {
           if (closed) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
           // A malformed action must not cost the human their tab.
           if (!body || typeof body !== 'object' || typeof body.action !== 'string') throw Object.assign(new Error('action is required.'), { status: 400 });
-          // An epoch read while the human held the tab is still current after
-          // the takeover; an older one stays stale, as the page may have moved.
+          // An epoch read while the human held the tab carries over to the
+          // takeover; an older one is refused and the tab stays theirs.
+          let taken = 0, held;
           if (tab.controller !== 'agent' && prefs.autoTakeover !== false) {
-            const before = tab.epoch;
-            await claimTab(tab, botId, () => closed);
-            if (body.epoch !== before) throw Object.assign(new Error('stale_control_epoch: you took this tab back from the human, who may have changed the page. Read the tab state for its fresh epoch and retry.'), { status: 409 });
-            body.epoch = tab.epoch;
+            await checkAction(tab, body, botId);
+            if (body.epoch !== tab.epoch) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
+            held = { humanLock: tab.humanLock, humanSince: tab.humanSince };
+            taken = body.epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer })).epoch;
           }
-          return performAction(tab, body, botId, 0, () => closed).catch((error) => { throw takeoverError(error); });
+          // An action the page refused before any input or navigation reached it
+          // (a challenge, a commit check, a missing control) hands the tab
+          // straight back: the takeover bought the bot nothing.
+          const inputs = tab.inputsSent || 0, wc = tab.view.webContents;
+          let moved = false;
+          const onMove = () => { moved = true; };
+          const unrun = () => taken && tab.epoch === taken && tab.controller === 'agent' && (tab.inputsSent || 0) === inputs && !moved;
+          const giveBack = () => { changeController(tab.id, 'human', 'human'); Object.assign(tab, held); broadcast(); };
+          wc.on('did-start-navigation', onMove);
+          try {
+            const result = await performAction(tab, body, botId, 0, () => closed);
+            if (Array.isArray(result?.results) && !result.results.some((step) => step.ok) && unrun()) giveBack();
+            return result;
+          } catch (error) {
+            if (([400, 403, 409].includes(error?.status) || error?.code === 'stale_ref') && unrun()) giveBack();
+            throw takeoverError(error);
+          } finally { if (!wc.isDestroyed()) wc.off('did-start-navigation', onMove); }
         })
           .finally(() => { tab.pendingActions--; tab.lastAgentActivity = Date.now(); });
         tab.queue = action.catch(() => {});
@@ -2340,17 +2391,18 @@ function startApi() {
         if (botId !== tab.botId && !overseer && !granted) throw Object.assign(new Error('Only the owning bot can change control.'), { status: 403 });
         let closed = false;
         res.on('close', () => { if (!res.writableFinished) closed = true; });
-        if (body.controller === 'agent') return send(200, redactTabForBot(await claimTab(tab, botId, () => closed)));
+        if (body.controller === 'agent') return send(200, redactTabForBot(await claimTab(tab, botId, { isClosed: () => closed, overseer })));
         return send(200, redactTabForBot(changeController(tab.id, body.controller, 'agent', handbackRequest(body))));
       }
       if (req.method === 'DELETE' && !match[2]) {
-        let epoch = Number(req.headers['x-control-epoch']);
+        let epoch = Number(req.headers['x-control-epoch']), closed = false;
+        res.on('close', () => { if (!res.writableFinished) closed = true; });
         if (tab.controller !== 'agent' && prefs.autoTakeover !== false) {
           requireActor(tab, botId, undefined, false, overseer);
-          const before = tab.epoch;
-          await claimTab(tab, botId);
-          if (epoch === before) epoch = tab.epoch;
+          if (epoch !== tab.epoch) throw Object.assign(new Error(STALE_HUMAN_EPOCH), { status: 409 });
+          epoch = (await claimTab(tab, botId, { isClosed: () => closed, overseer })).epoch;
         }
+        if (closed) throw Object.assign(new Error('The request was closed before the tab closed.'), { status: 499 });
         requireActor(tab, botId, epoch, true, overseer); closeTab(tab.id); return send(200, { closed: true });
       }
       return send(405, { error: 'Method not supported.' });

@@ -419,14 +419,16 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   }
   function isDispatching(tab) { return !!tab && (states.get(tab)?.active || 0) > 0; }
 
-  async function perform(tab, body, botId) {
+  // preflight runs only the checks that need no page, so a bot taking a tab
+  // back from the human learns of a malformed action before it takes the tab.
+  async function perform(tab, body, botId, { preflight = false } = {}) {
     const wc = tab.view.webContents;
     const own = state(tab), revision = own.revision;
     const check = () => {
       requireActor(tab, botId, body.epoch, true);
       if (own.revision !== revision || wc.isDestroyed()) throw fail('Agent input was cancelled. Request fresh tab state.', 409);
     };
-    check();
+    if (!preflight) check();
     const action = body.action;
     if (!INPUT_ACTIONS.has(action)) throw fail('Unsupported agent input action.');
     if (action === 'type' && (typeof body.text !== 'string' || body.text.length > 20000)) throw fail('Provide text up to 20,000 characters.');
@@ -450,10 +452,11 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       else if (Number.isFinite(body.toX) && Number.isFinite(body.toY)) to = { x: body.toX, y: body.toY };
       else throw fail('drag needs a destination: toRef, toSelector, or toX and toY.');
     }
+    if (preflight) return null;
 
     // The API owner serializes perform() with screenshots and navigation in
     // tab.queue. Checks after awaits also stop an already queued revoked action.
-    const send = async (method, params) => { check(); const result = await withTimeout(command(tab, method, params), 10000); check(); return result; };
+    const send = async (method, params) => { check(); if (method.startsWith('Input.')) tab.inputsSent = (tab.inputsSent || 0) + 1; const result = await withTimeout(command(tab, method, params), 10000); check(); return result; };
     const visible = isVisible(tab) !== false;
     const accent = botAccent(botId);
     let mouseDown = null, keyDown = null;

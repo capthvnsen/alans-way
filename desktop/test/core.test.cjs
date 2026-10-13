@@ -150,6 +150,12 @@ test('automatic takeover never takes a tab the bot handed over or one being reco
   assert.throws(() => requireAgentClaim(waiting, 2000, { autoTakeover: true }), /awaiting_human/);
   assert.throws(() => requireAgentClaim({ controller: 'human', humanLock: true }, 2000, { autoTakeover: true, recording: true }), /^Error: recording_in_progress/);
 });
+test('Take back keeps automatic takeover off the tab for its cooldown', () => {
+  const tab = { controller: 'human', humanLock: true, tookBackUntil: 61000 };
+  assert.throws(() => requireAgentClaim(tab, 1000, { autoTakeover: true }), /^Error: human_took_back: .* for 60s/);
+  requireAgentClaim(tab, 61000, { autoTakeover: true });
+  assert.throws(() => requireAgentClaim(tab, 1000), /human_has_control/, 'the setting off keeps its own refusal');
+});
 test('a takeover waits until 3 seconds after the human\'s last input, for 10 seconds at most', () => {
   const t = 1_700_000_000_000;
   assert.equal(takeoverDelay(undefined, t, t), 0, 'no input: take over at once');

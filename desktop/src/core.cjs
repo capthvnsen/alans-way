@@ -233,6 +233,8 @@ function requireAgentClaim(tab, now = Date.now(), { autoTakeover = false, record
     throw Object.assign(new Error('recording_in_progress: the human is recording a task on this tab. Open your own tab, or read the tab state later.'), { status: 409 });
   if (tab.controller === 'human' && tab.humanLock && !autoTakeover)
     throw Object.assign(new Error('human_has_control: the human took this tab over; only they can hand it back.'), { status: 409 });
+  if (tab.controller === 'human' && autoTakeover && tab.tookBackUntil > now)
+    throw Object.assign(new Error(`human_took_back: the human pressed Take back, so leave this tab to them for ${Math.ceil((tab.tookBackUntil - now) / 1000)}s. Open your own tab, or tell them what you need.`), { status: 409 });
 }
 // Input in the last 3 seconds holds a takeover until the human pauses, for
 // 10 seconds at most, so a bot never yanks the page mid-keystroke.

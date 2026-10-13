@@ -54,8 +54,9 @@ app.whenReady().then(async () => {
 
   // The owner's case: the bot works in a Notion tab, the human takes it over
   // and types, and later asks the bot to do something there. The bot acts with
-  // the epoch it last held; the app takes the tab back and shows the banner,
-  // and the bot carries on after one tab read. No human_has_control on the way.
+  // the epoch it last held, which leaves the tab alone and says to claim it;
+  // the claim takes the tab back with the banner, and the bot carries on. No
+  // human_has_control on the way.
   const notion = (await api('/v1/tabs', 'POST', { url: `${base}/notion`, background: false })).data;
   const notionWc = await waitFor(() => webContents.getAllWebContents().find(item => item.getURL().endsWith('/notion')), Boolean);
   await waitFor(() => notionWc.executeJavaScript('document.readyState === "complete"').catch(() => false), Boolean);
@@ -66,16 +67,26 @@ app.whenReady().then(async () => {
   assert.match(await notionWc.executeJavaScript('document.getElementById("q").value'), /X/, 'the human typed in the tab');
   await sleep(3100);
   const asked = await api(`/v1/tabs/${notion.id}/actions`, 'POST', { action: 'type', selector: '#q', text: ' (bot)', epoch: notion.epoch });
-  assert.equal(asked.status, 409); assert.match(asked.data.error, /^stale_control_epoch: you took this tab back from the human/);
-  assert.equal(await controller(notion.id), 'agent', 'the app handed the tab to the bot');
+  assert.equal(asked.status, 409); assert.match(asked.data.error, /^stale_control_epoch: the human took this tab.*Claim it/);
+  assert.equal(await controller(notion.id), 'human', 'an old epoch never takes the tab');
+  const back = await api(`/v1/tabs/${notion.id}/control`, 'POST', { controller: 'agent' });
+  assert.equal(back.status, 200, JSON.stringify(back.data));
   assert.equal(await waitFor(banner, Boolean), 'Scout took over this tab');
-  const fresh = (await api(`/v1/tabs/${notion.id}`)).data;
-  const carried = await api(`/v1/tabs/${notion.id}/actions`, 'POST', { action: 'type', selector: '#q', text: ' (bot)', epoch: fresh.epoch });
+  const carried = await api(`/v1/tabs/${notion.id}/actions`, 'POST', { action: 'type', selector: '#q', text: ' (bot)', epoch: back.data.epoch });
   assert.equal(carried.status, 200, JSON.stringify(carried.data));
   assert.equal(await notionWc.executeJavaScript('document.getElementById("q").value'), ' (bot)', 'the bot carries on in the tab');
-  // The same case through a claim: the human takes the tab back, and the bot claims and acts.
+  // Take back keeps the bot off the tab for a minute: no wait, no takeover.
   await evaluate('document.getElementById("takeover-take-back").click()');
   await waitFor(() => controller(notion.id), value => value === 'human');
+  await sleep(3100);
+  let started = Date.now();
+  const cooled = await api(`/v1/tabs/${notion.id}/control`, 'POST', { controller: 'agent' });
+  assert.equal(cooled.status, 409); assert.match(cooled.data.error, /^human_took_back: /);
+  assert.ok(Date.now() - started < 1000, 'the cooldown refuses without waiting');
+  assert.equal(await controller(notion.id), 'human');
+  // Give to agent ends the cooldown; after a later Take over the bot claims and acts.
+  await invoke('control', { id: notion.id, controller: 'agent' });
+  await invoke('control', { id: notion.id, controller: 'human' });
   await sleep(3100);
   const reclaimed = await api(`/v1/tabs/${notion.id}/control`, 'POST', { controller: 'agent' });
   assert.equal(reclaimed.status, 200, JSON.stringify(reclaimed.data));
@@ -95,8 +106,18 @@ app.whenReady().then(async () => {
   assert.equal((await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'read', epoch: humanEpoch }, '5151')).status, 403);
   assert.equal((await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' }, '5151')).status, 403);
   assert.equal((await api(`/v1/tabs/${tab.id}/actions`, 'POST', { epoch: humanEpoch })).status, 400);
+  // Actions that fail their checks are refused before the takeover, during
+  // the grace, without waiting and without a new epoch.
+  started = Date.now();
+  for (const body of [{ action: 'typo' }, { action: 'type', text: 'x' }, { action: 'click', ref: 'e1' }, { action: 'batch', steps: [{ action: 'eval' }] }]) {
+    const refused = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { ...body, epoch: humanEpoch });
+    assert.ok(refused.status === 400 || refused.status === 409, JSON.stringify(refused.data));
+    assert.doesNotMatch(refused.data.error, /human_has_control/);
+  }
+  assert.ok(Date.now() - started < 1000, `refusals do not wait (${Date.now() - started}ms)`);
   assert.equal(await controller(tab.id), 'human');
-  let started = Date.now();
+  assert.equal((await api(`/v1/tabs/${tab.id}`)).data.epoch, humanEpoch, 'no takeover happened');
+  started = Date.now();
   const act = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'read', epoch: humanEpoch });
   assert.equal(act.status, 200, JSON.stringify(act.data));
   assert.ok(Date.now() - started >= 2500, `the action waited for the human to pause (${Date.now() - started}ms)`);
@@ -106,10 +127,13 @@ app.whenReady().then(async () => {
   assert.equal(await waitFor(banner, Boolean), 'Scout took over this tab');
   assert.equal(await evaluate('document.getElementById("takeover-take-back").textContent'), 'Take back');
 
-  // Take back returns the tab to the human, who keeps it while typing on the page.
+  // Take back returns the tab to the human. After a later Take over, a key on
+  // the page holds a claim until the human pauses.
   await evaluate('document.getElementById("takeover-take-back").click()');
   await waitFor(() => controller(tab.id), value => value === 'human');
   assert.equal(await waitFor(banner, value => value === ''), '');
+  await invoke('control', { id: tab.id, controller: 'agent' });
+  await invoke('control', { id: tab.id, controller: 'human' });
   await sleep(3100);
   await humanTypes(pageWc, 'a');
   started = Date.now();
@@ -126,12 +150,65 @@ app.whenReady().then(async () => {
   await sleep(300);
   assert.equal(await banner(), '', 'no banner for a tab the human never had');
 
-  // An epoch from before the human took over still takes the tab, then answers stale.
+  // An epoch from before the human took over is refused and leaves the tab theirs.
   await invoke('control', { id: tab.id, controller: 'human' });
   await sleep(3100);
   const stale = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'read', epoch: agentEpoch });
   assert.equal(stale.status, 409); assert.match(stale.data.error, /^stale_control_epoch/);
-  assert.equal(await controller(tab.id), 'agent');
+  assert.equal(await controller(tab.id), 'human');
+  assert.equal((await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, '4242', agentEpoch)).status, 409);
+
+  // An action the page refuses (here a missing control, as with a CAPTCHA or a
+  // commit check) hands the tab straight back: the takeover bought nothing.
+  for (const body of [{ action: 'click', selector: '#missing' }, { action: 'batch', steps: [{ action: 'click', selector: '#missing' }] }]) {
+    const before = (await api(`/v1/tabs/${tab.id}`)).data.epoch;
+    const refused = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { ...body, epoch: before });
+    assert.match(JSON.stringify(refused.data), /missing/, JSON.stringify(refused.data));
+    assert.equal(await controller(tab.id), 'human', `a refused ${body.action} leaves the tab with the human`);
+    assert.equal(await banner(), '');
+  }
+
+  // A navigation during the grace wait voids the pending takeover's epoch.
+  await humanTypes(pageWc, 'n');
+  let before = (await api(`/v1/tabs/${tab.id}`)).data.epoch;
+  let pending = api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'type', selector: '#q', text: 'late', epoch: before });
+  await sleep(500);
+  await invoke('navigate', { id: tab.id, url: `${base}/moved` });
+  const voided = await pending;
+  assert.equal(voided.status, 409); assert.match(voided.data.error, /^stale_control_epoch: the tab changed hands/);
+  assert.equal(await controller(tab.id), 'human');
+  assert.notEqual(await pageWc.executeJavaScript('document.getElementById("q").value'), 'late', 'nothing typed into the new page');
+
+  // Take back during the grace wait voids a pending claim too.
+  await humanTypes(pageWc, 't');
+  pending = api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' });
+  await sleep(500);
+  await invoke('control', { id: tab.id, controller: 'human', takeBack: true });
+  const tookBack = await pending;
+  assert.equal(tookBack.status, 409); assert.match(tookBack.data.error, /^human_took_back/);
+  assert.equal(await controller(tab.id), 'human');
+  await invoke('control', { id: tab.id, controller: 'agent' });
+  await invoke('control', { id: tab.id, controller: 'human' });
+
+  // Two bots claiming a shared tab during the grace: one wins, one is refused.
+  await invoke('grant-tab', { id: tab.id, botId: 'shared', botIds: [] });
+  await humanTypes(pageWc, 's');
+  const raced = await Promise.all(['4242', '5151'].map(bot => api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' }, bot)));
+  assert.deepEqual(raced.map(reply => reply.status).sort(), [200, 403], JSON.stringify(raced.map(reply => reply.data)));
+  assert.equal((await getState()).tabs.find(item => item.id === tab.id).botId, ['4242', '5151'][raced.findIndex(reply => reply.status === 200)]);
+  await invoke('grant-tab', { id: tab.id, botId: '4242', botIds: [] });
+
+  // Closing a tab, then hanging up during the grace wait, leaves the tab open.
+  await invoke('control', { id: tab.id, controller: 'human' });
+  await humanTypes(pageWc, 'd');
+  before = (await api(`/v1/tabs/${tab.id}`)).data.epoch;
+  const abort = new AbortController();
+  const hungUp = fetch(`${connection.url}/v1/tabs/${tab.id}`, { method: 'DELETE', signal: abort.signal,
+    headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': '4242', 'X-Control-Epoch': String(before) } }).catch(() => null);
+  await sleep(500); abort.abort(); await hungUp; await sleep(3500);
+  assert.ok((await getState()).tabs.some(item => item.id === tab.id), 'the tab is still open');
+  assert.equal(await controller(tab.id), 'human');
+  await invoke('control', { id: tab.id, controller: 'agent' });
 
   // A tab the bot handed to the human stays theirs.
   const handed = await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'human', reason: 'captcha' });

@@ -63,15 +63,21 @@ app.whenReady().then(async () => {
   const pageWc = await waitFor(() => webContents.getAllWebContents().find(item => item.getURL().startsWith(base)), Boolean);
   const loaded = path => waitFor(() => pageWc.executeJavaScript(`location.pathname === ${JSON.stringify(path)} && document.readyState === 'complete'`).catch(() => false), Boolean);
   await loaded('/login');
-  // Real input events, so the page sees trusted clicks and typing.
+  // Real input events, so the page sees trusted clicks and typing. They only
+  // land in a view that is on screen with native focus, which a run with the
+  // app in the background (or a sheet just closed) does not have, so check both.
+  const ready = async (contents) => {
+    await waitFor(() => contents.executeJavaScript('document.visibilityState === "visible" && innerWidth > 0').catch(() => false), Boolean);
+    for (let attempt = 0; attempt < 20 && !contents.isFocused(); attempt++) { app.focus({ steal: true }); win.focus(); contents.focus(); await pause(100); }
+    assert.ok(contents.isFocused(), 'the tab view never took native focus');
+  };
   const click = async (selector, contents = pageWc) => {
+    await ready(contents);
     const { x, y } = await contents.executeJavaScript(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
     contents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
     contents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
     await pause(150);
   };
-  // A click right after the Settings sheet closes can land before the tab view
-  // is back on screen, so retry until the field really has focus.
   const type = async (selector, text, contents = pageWc) => {
     const focused = () => contents.executeJavaScript(`document.activeElement === document.querySelector(${JSON.stringify(selector)})`);
     for (let attempt = 0; attempt < 20 && !await focused(); attempt++) await click(selector, contents);
