@@ -14,6 +14,10 @@ test('a release candidate tag needs a matching base and keeps its tag version', 
 test('a final tag reports the package version unchanged', () => {
   assert.equal(checkTag('v0.3.0', '0.3.0').version, '0.3.0');
 });
+test('the release gate still rejects an already stamped RC package version', () => {
+  assert.equal(checkTag('v0.21.5-rc.1', '0.21.5-rc.1').ok, false);
+  assert.deepEqual(checkTag('v0.21.5-rc.1', '0.21.5'), { ok: true, version: '0.21.5-rc.1' });
+});
 test('anything that is not vX.Y.Z or vX.Y.Z-rc.N fails', () => {
   for (const tag of ['', 'garbage', '0.3.0', 'v0.3', 'v0.3.0.1', 'v0.3.0-beta.1', 'v0.3.0-rc', 'v0.3.0-rc.1.2', 'v01.3.0', undefined]) {
     assert.equal(checkTag(tag, '0.3.0').ok, false, String(tag));

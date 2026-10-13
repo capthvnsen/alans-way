@@ -19,6 +19,9 @@ test('release and main builds read as Production', () => {
 test('a release candidate reads as Pre-release', () => {
   assert.deepEqual({ ...describeBuild({ ...base, channel: 'prerelease' }), title: '' }, { text: 'Pre-release', tone: 'pre', title: '' });
 });
+test('a stamped release candidate includes its version', () => {
+  assert.equal(describeBuild({ ...base, channel: 'prerelease', version: '0.21.5-rc.1' }).text, 'Pre-release 0.21.5-rc.1');
+});
 test('a dev build shows its commit and flags local changes', () => {
   assert.deepEqual(describeBuild({ ...base, channel: 'dev' }).text, 'Dev · abc1234');
   assert.equal(describeBuild({ ...base, channel: 'dev' }).tone, 'dev');
@@ -33,15 +36,15 @@ test('unknown or garbled info falls back to dev', () => {
     assert.equal(normalizeBuildInfo(raw).channel, 'dev', JSON.stringify(raw));
     assert.equal(describeBuild(raw).tone, 'dev');
   }
-  assert.deepEqual(normalizeBuildInfo({ channel: 'main', commit: { a: 1 }, dirty: 'yes', builtAt: 5 }), { channel: 'main', commit: '', dirty: false, builtAt: '' });
+  assert.deepEqual(normalizeBuildInfo({ channel: 'main', version: {}, commit: { a: 1 }, dirty: 'yes', builtAt: 5 }), { channel: 'main', version: '', commit: '', dirty: false, builtAt: '' });
 });
 test('readBuildInfo treats a missing or garbled file as dev', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-info-'));
   try {
-    assert.deepEqual(readBuildInfo(path.join(dir, 'missing.json')), { channel: 'dev', commit: '', dirty: false, builtAt: '' });
+    assert.deepEqual(readBuildInfo(path.join(dir, 'missing.json')), { channel: 'dev', version: '', commit: '', dirty: false, builtAt: '' });
     fs.writeFileSync(path.join(dir, 'bad.json'), '{not json');
     assert.equal(readBuildInfo(path.join(dir, 'bad.json')).channel, 'dev');
     fs.writeFileSync(path.join(dir, 'ok.json'), JSON.stringify({ ...base, channel: 'main', version: '0.3.0' }));
-    assert.deepEqual(readBuildInfo(path.join(dir, 'ok.json')), { ...base, channel: 'main' });
+    assert.deepEqual(readBuildInfo(path.join(dir, 'ok.json')), { ...base, channel: 'main', version: '0.3.0' });
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
