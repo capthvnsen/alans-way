@@ -1,7 +1,8 @@
 // Run: npx electron test/update-all-electron.cjs
 // The bottom bar's versions and the "Update everything" dialog, end to end in
 // the real window with every machine-touching step stubbed: no ssh, no hermes,
-// no GitHub. The plugin step fails on purpose to cover stop-on-failure.
+// no GitHub. The plugin step fails on purpose to cover stop-on-failure, then
+// succeeds so a full run reaches the browser host.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -18,7 +19,7 @@ process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10
 // main.cjs destructures these at load, so patching the exports first swaps
 // the real ssh-driven updater and the GitHub read for recorders.
 const calls = [];
-let hermesNow = '0.21.6', releaseHermes, checkGate = null, failReport = false;
+let hermesNow = '0.21.6', releaseHermes, checkGate = null, failReport = false, pluginOk = false;
 const hermesGate = new Promise((resolve) => { releaseHermes = resolve; });
 require('../src/update-all.cjs').latestPluginTag = async () => '0.21.1';
 require('../src/vm-update.cjs').createVmUpdater = () => ({
@@ -39,6 +40,8 @@ require('../src/vm-update.cjs').createVmUpdater = () => ({
   },
   updatePluginsVm: async (target) => {
     calls.push(`plugin ${target.id}`);
+    if (pluginOk) return { id: target.id, ok: true, state: 'ok', gatewayRestarted: true, plugins: [{ profile: 'default', name: 'alans-way', before: '0.21.0', after: '0.21.1', status: 'updated' }],
+      pluginLines: [{ text: 'Plugin updated to 0.21.1.', tone: 'ok' }] };
     const plugins = [{ profile: 'default', name: 'alans-way', before: '0.21.0', after: '0.21.0', status: 'failed', error: 'registry unreachable' }];
     return { id: target.id, ok: true, state: 'ok', plugins, gatewayRestarted: false, pluginLines: [{ text: 'Plugin update failed: registry unreachable', tone: 'warn' }] };
   },
@@ -156,7 +159,21 @@ app.whenReady().then(async () => {
   await waitFor(() => text('update-all-copy'), (t) => t.startsWith('Update everything stopped:'), 8000, 'the error in the dialog');
   assert.match(await text('update-all-copy'), /relay down/);
   assert.equal(await evaluate('document.getElementById("update-all-cancel").disabled'), false, 'and it can be closed');
+  await click('update-all-cancel');
 
-  console.log('PASS: the bottom bar shows versions with details on hover; Update everything confirms first, runs in order under one lock, stops at a failure and reports once.');
+  // A fully successful run: the plugin updates, so the browser host runs too.
+  failReport = false; pluginOk = true;
+  await waitFor(() => hidden('update-all-popup'), Boolean);
+  const start = calls.length;
+  await click('update-all');
+  await waitFor(lines, (l) => l.length > 0, 3000, 'the plan');
+  await click('update-all-go');
+  await waitFor(() => evaluate('document.getElementById("update-all-cancel").disabled'), (d) => d === false, 8000, 'the run to end');
+  assert.deepEqual((await lines()).map((l) => l.split('|')[0]), ['done', 'done']);
+  assert.deepEqual(calls.slice(start).filter((c) => !c.startsWith('check')), ['plugin agent', `host agent v${version}`,
+    `report Update everything finished. Now on plugin 0.21.1, browser host ${version}.`]);
+  assert.match(await text('update-all-copy'), /^Everything is updated\./);
+
+  console.log('PASS: the bottom bar shows versions with details on hover; Update everything confirms first, runs in order under one lock, stops at a failure, finishes a clean run, and reports once.');
   app.quit();
 }).catch(error => { console.error(error.stack); app.exit(1); });

@@ -912,7 +912,7 @@ async function runUpdateStep(step, target) {
     const bad = result.plugins.find((p) => p.status === 'failed' || p.status === 'blocked');
     // The version it actually reached; a run that moved nothing stays on `from`.
     const after = result.plugins.find((p) => p.name === 'alans-way' && p.after)?.after || step.from;
-    return { ok: result.ok && !bad, error: result.ok ? pluginStatusText(bad) : result.error, version: after,
+    return { ok: result.ok && !bad, error: !result.ok ? result.error : bad ? pluginStatusText(bad) : '', version: after,
       detail: result.pluginLines.map((line) => line.text).join(' ') };
   }
   if (step.id === 'host') {
