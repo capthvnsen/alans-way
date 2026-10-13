@@ -31,10 +31,11 @@ test('secret fields are always redacted, whatever the page sends', () => {
     assert.equal(finishSteps([input({ selector: `input[name="${label}"]`, value: 'hunter2' })], { keepTyped: true })[0].value, REDACTED, `selector ${label}`);
   }
   for (const name of ['Shipping notes', 'Spinner', 'Pinterest handle', 'Tokenomics essay', 'Phone time zone', 'Expected delivery', 'Account name', 'Card message',
-    // "card no"/"cc no" spellings count only at a word edge and at the end of
-    // the name or before a digit or "number"; these are not card fields.
-    'Gift card note', 'postcard_notes', 'acc_no', 'card_notify', 'cc notes']) assert.equal(input({ name }).value, 'typed', `${name} is not a secret`);
-  for (const label of ['card_no', 'cardno', 'ccno', 'cc_no', 'card no 4', 'ccno2', 'cc no number', 'your_card_no']) {
+    // "card no"/"cc no" spellings count only at a word edge (camelCase splits
+    // words too) and at the end of the name or before a digit or "number";
+    // these are not card fields.
+    'Gift card note', 'postcard_notes', 'postcardNotes', 'acc_no', 'accNo', 'card_notify', 'cardNoted', 'cc notes']) assert.equal(input({ name }).value, 'typed', `${name} is not a secret`);
+  for (const label of ['card_no', 'cardno', 'cardNo', 'paymentCardNo', 'ccno', 'ccNo', 'cc_no', 'card no 4', 'ccno2', 'cc no number', 'your_card_no']) {
     for (const key of ['name', 'field']) {
       assert.equal(finishSteps([input({ [key]: label, value: 'hunter2' })], { keepTyped: true })[0].value, REDACTED, `${key} ${label}`);
     }
@@ -102,9 +103,13 @@ test('without keep typed text, part of a typed term still cannot reach disk', ()
   const done = finishRecording([type('Zebra umbrella 7731'),
     navigateStep('https://shop.example/s/zebra-umbrella.html'),
     navigateStep('https://shop.example/zebra-umbrella-results'),
+    navigateStep('https://shop.example/search/prefixzebrasuffix'),
     navigateStep('https://shop.example/results/page-2')], { title: 'Shop', fallbackTitle: 'shop.example' });
   assert.deepEqual(done.steps.map(step => step.url), ['https://shop.example/login',
-    'https://shop.example/s/[redacted]', 'https://shop.example/[redacted]', 'https://shop.example/results/page-2']);
+    'https://shop.example/s/[redacted]', 'https://shop.example/[redacted]', 'https://shop.example/search/[redacted]', 'https://shop.example/results/page-2']);
+  // A lone short word works as a substring too: /search/prefixzebrasuffix.
+  assert.equal(finishRecording([type('zebra'), navigateStep('https://shop.example/search/prefixzebrasuffix')]).steps[1].url,
+    'https://shop.example/search/[redacted]');
   assert.equal(done.title, 'Shop', 'a title without the term stays');
   // A title or a click name showing only part of the typed term is caught.
   assert.equal(finishRecording([type('Zebra umbrella 7731')], { title: 'Zebra - Shop', fallbackTitle: 'shop.example' }).title, 'shop.example');
@@ -119,9 +124,31 @@ test('without keep typed text, part of a typed term still cannot reach disk', ()
   assert.equal(echoed.steps[3].name, 'Go');
   assert.equal(echoed.steps[3].selector, '#go');
   assert.ok(!JSON.stringify(echoed).toLowerCase().includes('umbrella'));
+  // Type steps are scrubbed too: a page can name or select a field by what
+  // was typed into it.
+  const fieldEcho = finishRecording([input({ name: 'Zebra search', selector: 'input[name="zebra_q"]', value: 'Zebra umbrella 7731' })], { fallbackTitle: 'shop.example' });
+  assert.equal(fieldEcho.steps[0].name, REDACTED, 'a type-step name echoing the typed text');
+  assert.equal(fieldEcho.steps[0].selector, REDACTED, 'a type-step selector echoing it too');
   // keepTyped still keeps names and selectors as recorded.
   const kept = finishRecording([type('Zebra umbrella 7731'), click({ name: 'Zebra umbrella 7731' })], { keepTyped: true });
   assert.equal(kept.steps[1].name, 'Zebra umbrella 7731');
+});
+
+test('typed terms never reach the recording file on disk', () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'recorder-test-')), 'recordings');
+  const store = createRecordingStore(dir);
+  // A camelCase card field redacts its value even when typed text is kept.
+  store.save({ title: 'Pay', steps: finishSteps([input({ field: 'paymentCardNo', value: 'cn-90425' })], { keepTyped: true }), keepTyped: true });
+  // A typed term echoed in a path, title, type-step name/selector or click
+  // name/selector is scrubbed before the file is written.
+  const done = finishRecording([input({ name: 'Zebra search', selector: 'input[name="zebra_q"]', value: 'Zebra umbrella 7731' }),
+    normalizeEvent({ kind: 'click', url: 'https://shop.example/find', role: 'button', name: 'prefixzebrasuffix', selector: '#xzebrax' }),
+    navigateStep('https://shop.example/search/prefixzebrasuffix')], { title: 'prefixzebrasuffix', fallbackTitle: 'shop.example' });
+  store.save({ title: done.title, steps: done.steps });
+  for (const file of fs.readdirSync(dir)) {
+    const bytes = fs.readFileSync(path.join(dir, file));
+    for (const term of ['cn-90425', 'zebra', 'umbrella', '7731']) assert.ok(!bytes.includes(term), `${term} reached disk in ${file}`);
+  }
 });
 
 test('steps merge keystrokes, redirects and the submit a click caused', () => {

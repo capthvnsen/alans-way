@@ -20,7 +20,9 @@ const SECRET_WORDS = new Set(['password', 'passwd', 'pwd', 'passcode', 'pin', 'o
 // fields often have no autocomplete attribute, only a name like ccnum.
 const SECRET_PHRASE = /securitycode|socialsecurity|verificationcode|onetime(code|pass|pin)|cardnum|creditcard|ccnum|cvc|cvv|cardexp|ccexp|exp(iry|iration)?(date|month|year|mm|yy)/;
 // "card no" and "cc no" count only at a word edge, ending the name or before
-// a digit or "number": postcard_notes, gift card note and acc_no hold no card.
+// a digit or "number". It is matched against the label split into words, so
+// spaces, _- and camelCase all mark edges: paymentCardNo is a card field,
+// postcard_notes, gift card note and acc_no are not.
 const CARD_NO = /(^|[^a-z0-9])(?:card|cc)[\s._-]*no(?:[\s._-]*number)?($|[^a-z])/;
 
 // Runs in an isolated world on each document of the recorded tab, so the page
@@ -119,7 +121,10 @@ const words = value => String(value || '').replace(/([a-z\d])([A-Z])/g, '$1 $2')
 function isSecret(raw) {
   if (raw.secret === true || SECRET_TYPES.test(String(raw.type || '')) || SECRET_AUTOCOMPLETE.test(String(raw.autocomplete || ''))) return true;
   const labels = [raw.name, raw.field, raw.selector].map(String);
-  return labels.some(label => SECRET_PHRASE.test(label.toLowerCase().replace(/[^a-z0-9]/g, '')) || CARD_NO.test(label.toLowerCase()) || words(label).some(word => SECRET_WORDS.has(word)));
+  return labels.some(label => {
+    const parts = words(label);
+    return SECRET_PHRASE.test(label.toLowerCase().replace(/[^a-z0-9]/g, '')) || CARD_NO.test(parts.join(' ')) || parts.some(word => SECRET_WORDS.has(word));
+  });
 }
 
 // A page event becomes a step, or null when it is malformed or not from a web
@@ -155,32 +160,28 @@ function addStep(steps, step) {
 
 // Typed text stays only when the user ticked "keep typed text". Without it,
 // a page that echoes what was typed must not carry it to disk either: a path
-// segment holding a typed value or one of its words (/search/<term>,
-// /s/<term>.html, /<term>-results) is redacted, a title or a clicked name
-// that echoes any of it (an autocomplete suggestion) is replaced, and a
-// selector carrying it is dropped. A type step's name and selector name the
-// field itself and are left alone.
+// segment, title, step name or selector holding a typed value or one of its
+// 3+ letter words as a substring (/search/<term>, /s/<term>.html,
+// /prefix<term>suffix, a clicked suggestion) is redacted.
 const plain = value => { try { value = decodeURIComponent(value); } catch {} return value.toLowerCase().replace(/[\s+_-]+/g, ' ').trim(); };
 function finishRecording(steps, { keepTyped = false, title = '', fallbackTitle = '' } = {}) {
   if (keepTyped) return { title, steps: steps.map(step => ({ ...step })) };
   const typed = steps.filter(step => step.action === 'type' && step.value !== REDACTED).map(step => plain(step.value)).filter(value => value.length >= 2);
-  // A word of 3+ characters from anything typed also marks a leak: a slug or
-  // a clicked suggestion that keeps only part of the term still carries it.
-  const terms = new Set(typed.flatMap(value => words(value)).filter(word => word.length >= 3));
+  const terms = [...new Set(typed.flatMap(value => words(value)).filter(word => word.length >= 3))];
   const leaks = text => {
     const flat = plain(text);
-    return typed.some(value => value.length >= 3 && flat.includes(value)) || words(flat).some(word => terms.has(word));
+    return typed.some(value => value.length >= 3 ? flat.includes(value) : flat === value) || terms.some(term => flat.includes(term));
   };
   const scrub = href => {
     const url = new URL(href);
-    return url.origin + url.pathname.split('/').map(segment => segment && (typed.includes(plain(segment)) || words(plain(segment)).some(word => terms.has(word))) ? REDACTED : segment).join('/');
+    return url.origin + url.pathname.split('/').map(segment => segment && leaks(segment) ? REDACTED : segment).join('/');
   };
   return {
     title: !title || leaks(title) ? fallbackTitle : title,
     steps: steps.map(step => ({ ...step, url: scrub(step.url),
       ...(step.action === 'type' ? { value: REDACTED } : {}),
-      ...(step.action !== 'type' && leaks(step.name) ? { name: REDACTED } : {}),
-      ...(step.action !== 'type' && leaks(step.selector) ? { selector: REDACTED } : {}) })),
+      ...(leaks(step.name) ? { name: REDACTED } : {}),
+      ...(leaks(step.selector) ? { selector: REDACTED } : {}) })),
   };
 }
 
