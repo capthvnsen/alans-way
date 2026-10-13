@@ -55,13 +55,13 @@ exit /b 0\r
 echo Hermes Agent v9.9.9 test\r
 exit /b 0\r
 :update\r
-if exist "%FAKE_HERMES_STATE%\\hang.ps1" goto hang\r
+if exist "%FAKE_HERMES_STATE%\\hang.exe" goto hang\r
 type "%FAKE_HERMES_STATE%\\update-out" 2>nul\r
 set rc=0\r
 if exist "%FAKE_HERMES_STATE%\\update-rc" set /p rc=<"%FAKE_HERMES_STATE%\\update-rc"\r
 exit /b %rc%\r
 :hang\r
-"${POWERSHELL}" -NoProfile -ExecutionPolicy Bypass -File "%FAKE_HERMES_STATE%\\hang.ps1"\r
+"%FAKE_HERMES_STATE%\\hang.exe"\r
 exit /b %errorlevel%\r
 :gateway\r
 if "%sub%"=="status" goto status\r
@@ -107,14 +107,18 @@ public class FakeHermes {
   }
 }
 `);
+  compileExe(source, path.join(f.bin, 'hermes.exe'));
+  return f;
+}
+
+function compileExe(source, output) {
   const build = spawnSync(POWERSHELL, ['-NoProfile', '-Command',
     '$PSVersionTable.PSVersion.ToString(); Add-Type -Path $env:FAKE_HERMES_SOURCE -OutputAssembly $env:FAKE_HERMES_EXE -OutputType ConsoleApplication'], {
     encoding: 'utf8', timeout: 30000,
-    env: { ...process.env, FAKE_HERMES_SOURCE: source, FAKE_HERMES_EXE: path.join(f.bin, 'hermes.exe') },
+    env: { ...process.env, FAKE_HERMES_SOURCE: source, FAKE_HERMES_EXE: output },
   });
   assert.equal(build.status, 0, build.stderr + build.stdout);
   assert.match(build.stdout, /^5\.1\./m, 'the runtime regression must exercise Windows PowerShell 5.1');
-  return f;
 }
 
 const runScript = (f, extraEnv = {}) => spawnSync(POWERSHELL, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT], {
@@ -223,10 +227,23 @@ test('nonzero update and restart exits are preserved even without error output',
 
 test('a timed-out shim kills its child and still restarts the stopped gateways', e2e, () => {
   const f = makeHermes();
-  fs.writeFileSync(path.join(f.state, 'hang.ps1'), `
-[IO.File]::WriteAllText((Join-Path $env:FAKE_HERMES_STATE 'child.pid'), [string]$PID)
-Start-Sleep -Seconds 120
+  // A native child writes its PID immediately; PowerShell startup on a
+  // loaded runner can itself exceed the updater's eight-second deadline.
+  const source = path.join(f.state, 'Hang.cs');
+  fs.writeFileSync(source, `
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Threading;
+public class Hang {
+  public static void Main() {
+    File.WriteAllText(Path.Combine(Environment.GetEnvironmentVariable("FAKE_HERMES_STATE"), "child.pid"),
+      Process.GetCurrentProcess().Id.ToString());
+    Thread.Sleep(120000);
+  }
+}
 `);
+  compileExe(source, path.join(f.state, 'hang.exe'));
   const res = runScript(f, { ALANS_WAY_HERMES_UPDATE_TIMEOUT: '8' });
   const result = lastJson(res);
   assert.equal(res.error, undefined, 'the updater must finish within the harness timeout');
