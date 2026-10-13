@@ -678,27 +678,30 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     }
     const probe = async (expression) => { const look = await boundedJs(wc, `(() => { const C = ${commitSource(tab.refSeed)}; return ${expression}; })()`).catch(() => null); check(); return look && typeof look === 'object' ? look : null; };
     // A target is judged by its names, and Enter in a field by the controls
-    // its form submits with. Input the router cannot judge by name (an
-    // unnamed control, a field outside a form) is the router's to refuse.
+    // its form submits with. Enter in a field outside a form (a chat box that
+    // sends on Enter), or in a form with no named submit control, is judged by
+    // the page: it is refused while the page shows a commit control, as the
+    // router does. An unnamed control is the router's to refuse.
     // Input landing in a cross-origin frame (an embedded booking or payment
     // widget) has no name the app can read, so it needs approval; a page that
     // did not answer fails closed when it shows a commit control.
     async function judge(look) {
       const what = action === 'press' ? `pressing ${keyEvent.key === ' ' ? 'Space' : 'Enter'}` : `a ${action.replace('_', '-')}`;
       if (look && look.frame) throw commitRequired(`${what} here lands in a cross-origin frame, where the app cannot read what it would set off`);
-      if (!look) {
+      const pageCheck = async (where) => {
         const page = await pageNames(tab);
         check();
         if (!page) throw commitRequired(`the page did not answer the commit check, so ${what} could set off a commit control`);
         const live = page.names.find(looksLikeCommit);
-        if (live) throw commitRequired(`${what} where the app cannot read the page here could set off "${live.slice(0, 80)}"`);
-        return;
-      }
+        if (live) throw commitRequired(`${what} ${where} here could set off "${live.slice(0, 80)}"`);
+      };
+      if (!look) return pageCheck('where the app cannot read the page');
       // Clicking into a field, a checkbox or a select, or typing a space, submits nothing.
       if (look.field && (action !== 'press' || keyEvent.windowsVirtualKeyCode === 32)) return;
       const enterInField = action === 'press' && look.field;
       const hit = ((enterInField ? look.form : look.names) || []).find(looksLikeCommit);
       if (hit) throw commitRequired(enterInField ? `pressing Enter here submits the form with "${hit.slice(0, 80)}", which ${LOOKS}` : `"${hit.slice(0, 80)}" ${LOOKS}`);
+      if (enterInField && !(look.form && look.form.length)) return pageCheck(look.form ? 'in a form with no named submit control' : 'in a field outside a form');
     }
     // The page-side tracker counts the follow-up work the action starts (its
     // short timers and requests) so the effect read can wait it out. Arm just

@@ -75,6 +75,9 @@
     "(?:continue|proceed) to (?:payment|checkout)",
     "post code",
     "remove from (?:cart|basket|bag)",
-    "use this payment method"
+    "use this payment method",
+    "buy it again",
+    "book a demo",
+    "subscribe (?:&|and) save"
   ]
 }

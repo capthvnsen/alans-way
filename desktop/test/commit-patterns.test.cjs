@@ -11,7 +11,7 @@ const COMMITS = ['Place order', 'Place your order', 'Pay', 'Buy now', 'Buy-now',
   'Complete reservation', 'Confirm reservation', 'Confirm', 'Confirm payment', 'Make payment', 'Reply', 'Comment', 'Remove', 'Schedule Event', 'Place bid', 'Close account',
   'Pay with Google Pay now', 'Confirm email and pay'];
 const LOOK_ALIKES = ['Add to cart', 'Send code', 'Send me a verification code', 'Pay with Google Pay', 'Pay with PayPal', 'Purchase history', 'Delete filter', 'Remove filter', 'Brand filter, remove',
-  'Confirm email', 'Confirm password', 'Confirm your e-mail address', 'Address book', 'Comments', 'Replies', 'Booking details', 'Cancel subscription', 'Repay', 'Sendung verfolgen'];
+  'Confirm email', 'Confirm password', 'Confirm your e-mail address', 'Address book', 'Comments', 'Replies', 'Booking details', 'Buy it again', 'Book a demo', 'Subscribe & Save', 'Subscribe and save', 'Cancel subscription', 'Repay', 'Sendung verfolgen'];
 
 test('commit names match, and the look-alikes the router lets through stay allowed', () => {
   for (const name of COMMITS) assert.equal(looksLikeCommit(name), true, name);
@@ -67,7 +67,7 @@ test('the commit name list is the one the router was given', () => {
     'acheter', 'envoyer', 'supprimer', 'comprar', 'pagar', 'reservar',
     'finalizar compra', 'enviar', 'eliminar', 'realizar pedido', 'confirmar',
   ]);
-  assert.equal(COMMIT_PATTERNS.notCommit.length, 10);
+  assert.equal(COMMIT_PATTERNS.notCommit.length, 13);
 });
 
 // The router (alans-way-agents PR #89) reads its own commit-patterns.json.

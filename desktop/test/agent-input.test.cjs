@@ -471,3 +471,15 @@ test('the router\'s approval receipt is accepted once, for its tab and epoch', a
   await assert.rejects(approved(f, { action: 'click', name: 'Place order' }, receipt), /already used/);
 });
 
+test('Enter in a field outside a form, or in a form with no named submit, is judged by the page', async () => {
+  for (const form of [null, []]) {
+    const field = { names: ['Message'], field: true, form };
+    const live = fixture({ found: { look: field }, probe: field, page: { origin: 'https://chat.example', names: ['Delete conversation'] } });
+    await assert.rejects(live.perform({ action: 'press', ref: 'e1', key: 'Enter' }), new RegExp(`commit_required: pressing Enter in ${form ? 'a form with no named submit control' : 'a field outside a form'} here could set off "Delete conversation"`));
+    assert.deepEqual(dispatched(live), []);
+    const quiet = fixture({ found: { look: field }, probe: field, page: { origin: 'https://chat.example', names: ['Search'] } });
+    await quiet.perform({ action: 'press', ref: 'e1', key: 'Enter' });
+    assert.equal(quiet.calls.filter(call => call.type === 'keyDown').length, 1, 'a page with no commit control lets Enter through');
+  }
+});
+

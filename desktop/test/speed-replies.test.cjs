@@ -207,7 +207,10 @@ const checkoutPage = `<!doctype html><meta charset="utf-8"><title>checkout</titl
 // An embedded widget from another origin (a booking or payment frame): the
 // app cannot read a name inside it.
 const embedPage = `<!doctype html><title>embed</title><button onclick="out.textContent='did:plain'">Plain</button><p id="out">none</p><iframe id="xo" title="Booking" style="position:fixed;left:300px;top:200px;width:300px;height:150px"></iframe><script>xo.onload=()=>{out.textContent='ready'};xo.src='http://127.0.0.1:'+location.port+'/frame-inner'</script>`;
-const routes = { '/hop-a': hopA, '/hop-b': hopB, '/crowd': crowdPage, '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage, '/checkout': checkoutPage, '/embed': embedPage };
+// A chat box that sends on Enter, outside any form, with an unlabeled send icon.
+const chatPage = `<!doctype html><title>chat</title><textarea aria-label="Message" onkeydown="if(event.key==='Enter'){event.preventDefault();out.textContent='did:sent'}"></textarea><button><svg width="16" height="16"><path d="M0 0l16 8-16 8z"/></svg></button><button onclick="out.textContent='did:deleted'">Delete conversation</button><p id="out">none</p>`;
+const quietChatPage = `<!doctype html><title>notes</title><textarea aria-label="Note" onkeydown="if(event.key==='Enter'){event.preventDefault();out.textContent='did:noted'}"></textarea><p id="out">none</p>`;
+const routes = { '/hop-a': hopA, '/hop-b': hopB, '/crowd': crowdPage, '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage, '/checkout': checkoutPage, '/embed': embedPage, '/chat': chatPage, '/notes': quietChatPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
 const api = (route, method = 'GET', body, epoch) =>
@@ -928,5 +931,17 @@ test('an approval lets one commit through once, on its tab and epoch, within 120
   assert.equal(await out(), 'did:order', 'no refused approval reached the page');
   const script = await act(tab, { action: 'eval', code: 'document.querySelector("#out").textContent', approval: approval() });
   assert.equal(script.data.value, 'did:order', 'an approved page script runs');
+});
+
+test('Enter in a field outside a form is refused while the page shows a commit control, and passes where it shows none', live, async () => {
+  const chat = await openTab('/chat');
+  const refused = await act(chat, { action: 'press', name: 'Message', key: 'Enter' });
+  assert.equal(refused.status, 403, JSON.stringify(refused.data));
+  assert.match(refused.data.error, /^commit_required: pressing Enter in a field outside a form here could set off "Delete conversation"/);
+  assert.match((await act(chat, { action: 'read', maxChars: 2000 })).data.text, /none/);
+  const notes = await openTab('/notes');
+  const passed = await act(notes, { action: 'press', name: 'Note', key: 'Enter' });
+  assert.equal(passed.status, 200, JSON.stringify(passed.data));
+  assert.equal(await pageText(notes, '#out'), 'did:noted');
 });
 
