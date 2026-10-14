@@ -63,11 +63,10 @@ if [ "$1" = -C ] && [ "$3" = fetch ]; then
     _dir="$2"; shift 3
     echo "fetch $_dir" >> "${marker}"
     case "$*" in
-      '--tags origin') exec "${REAL_GIT}" -C "$_dir" fetch --tags "$_remote";;
-      '--unshallow --tags origin') exec "${REAL_GIT}" -C "$_dir" fetch --unshallow --tags "$_remote";;
+      '--tags origin') exec "${REAL_GIT}" -C "$_dir" fetch --tags "$_remote" '+refs/heads/*:refs/remotes/origin/*';;
+      '--unshallow --tags origin') exec "${REAL_GIT}" -C "$_dir" fetch --unshallow --tags "$_remote" '+refs/heads/*:refs/remotes/origin/*';;
       *) echo 'unexpected fixture fetch arguments' >&2; exit 1;;
     esac
-    exit $?
   fi
 fi
 exec "${REAL_GIT}" "$@"
