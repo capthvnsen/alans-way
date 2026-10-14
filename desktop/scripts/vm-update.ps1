@@ -78,6 +78,9 @@ function Invoke-Hermes([int]$Secs, [string[]]$HermesArgs) {
         if ($exe -match '\.(cmd|bat)$') { $argLine = "/d /c `"$exe`" $argLine"; $exe = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' } }
         $p = Start-Process -FilePath $exe -ArgumentList $argLine -NoNewWindow -PassThru `
             -RedirectStandardOutput $out -RedirectStandardError $err -RedirectStandardInput $inp
+        # PowerShell 5.1 can lose ExitCode after a timed redirected wait unless
+        # the process handle is retained (same fix as hermes-update.ps1).
+        $processHandle = $p.Handle
         if ($p.WaitForExit($Secs * 1000)) { $code = $p.ExitCode }
         else { try { $p.Kill() } catch {}; $code = 124 }
         $text = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue) + "`n" +
@@ -195,6 +198,8 @@ function Invoke-Git([string[]]$GitArgs, [bool]$OriginIdentity = $false) {
         $p = Start-Process -FilePath $exe -ArgumentList $argLine -NoNewWindow -PassThru `
             -WorkingDirectory (Get-Location).Path `
             -RedirectStandardOutput $out -RedirectStandardError $err -RedirectStandardInput $inp
+        # Retain the handle before the timed wait so ExitCode stays available.
+        $processHandle = $p.Handle
         if (-not $p.WaitForExit($secs * 1000)) {
             # /T includes Git's ssh, credential helpers and hooks.
             & taskkill.exe /PID $p.Id /T /F 2>$null | Out-Null
