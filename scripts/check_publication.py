@@ -8,11 +8,12 @@ from __future__ import annotations
 import ast
 import ipaddress
 from pathlib import Path
+import posixpath
 import re
 import stat
 import subprocess
 import sys
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import SplitResult, parse_qs, unquote, urlsplit
 
 RULES = (
     ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")),
@@ -66,16 +67,20 @@ def valid_binary_asset(path: str, blob: bytes) -> bool:
     return bool(signature and blob.startswith(signature) and len(blob) <= limit)
 
 
-def agent_reference_rule(url: str) -> str | None:
+def normalize_agent_url(url: str) -> SplitResult:
+    parts = urlsplit("https:" + url if url.startswith("//") else url)
+    return parts._replace(netloc=parts.netloc.lower(), path=posixpath.normpath(unquote(parts.path)))
+
+
+def agent_reference_rule(parts: SplitResult) -> str | None:
     """Require explicit pins for repo sources and reject unresolved installers.
 
     Short install links have no approved targets here: replace them with a
     reviewed, pinned source URL. Checking is offline so redirects cannot silently
     change what CI approves.
     """
-    parts = urlsplit(url)
-    host = (parts.hostname or "").casefold()
-    segments = unquote(parts.path).strip("/").split("/")
+    host = parts.hostname or ""
+    segments = parts.path.strip("/").split("/")
     if host in {"openalan.com", "www.openalan.com"} and segments[0].startswith("install-"):
         return "unresolved-agent-script"
     if host == "api.github.com":
@@ -107,10 +112,9 @@ def agent_reference_rule(url: str) -> str | None:
     return None
 
 
-def relative_executable_link(url: str) -> bool:
-    parts = urlsplit(url)
+def relative_executable_link(parts: SplitResult) -> bool:
     return bool(not parts.scheme and not parts.netloc
-                and Path(unquote(parts.path)).suffix.casefold() in {".sh", ".ps1", ".py", ".js", ".cjs", ".mjs", ".bat", ".cmd"})
+                and Path(parts.path).suffix.casefold() in {".sh", ".ps1", ".py", ".js", ".cjs", ".mjs", ".bat", ".cmd"})
 
 
 def inspect_text(path: str, text: str) -> list[dict]:
@@ -123,13 +127,15 @@ def inspect_text(path: str, text: str) -> list[dict]:
         findings.append({"file": path, "line": 0, "rule": "runtime-or-private-artifact"})
     for number, line in enumerate(text.splitlines(), 1):
         if path in AGENT_PROMPTS:
-            for match in AGENT_REFERENCE.finditer(line):
-                rule = agent_reference_rule(match.group())
+            targets = [match.group() for match in AGENT_REFERENCE.finditer(line)]
+            targets.extend(next(value for value in match.groups() if value is not None)
+                           for match in AGENT_LINK.finditer(line))
+            for target in dict.fromkeys(targets):
+                parts = normalize_agent_url(target)
+                rule = agent_reference_rule(parts)
                 if rule:
                     findings.append({"file": path, "line": number, "rule": rule})
-            for match in AGENT_LINK.finditer(line):
-                target = next(value for value in match.groups() if value is not None)
-                if relative_executable_link(target):
+                if relative_executable_link(parts):
                     findings.append({"file": path, "line": number, "rule": "unresolved-agent-script"})
         for label, pattern in RULES:
             if pattern.search(line):

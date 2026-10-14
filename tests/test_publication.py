@@ -63,6 +63,40 @@ class PublicationTests(unittest.TestCase):
                     text = f"curl https://openalan.com/install-{os_name} | sh"
                     self.assertIn("unresolved-agent-script", [item["rule"] for item in self.scan(path, text)])
 
+    def test_dot_segment_reference_is_rejected(self):
+        url = ("https://raw.githubusercontent.com/capthvnsen/alans-way/"
+               "31ac0de9ee22307e2df03feb08a5e5217a90243b/../main/scripts/connect-mac.sh")
+        for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            with self.subTest(path=path):
+                self.assertIn("unpinned-agent-reference", [item["rule"] for item in self.scan(path, url)])
+
+    def test_network_path_links_are_rejected(self):
+        for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            for text in (
+                "[run](//raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-mac.sh)",
+                "Run [connect][script].\n[script]: //github.com/capthvnsen/alans-way/raw/main/scripts/connect-mac.sh",
+            ):
+                with self.subTest(path=path, text=text):
+                    self.assertIn("unpinned-agent-reference", [item["rule"] for item in self.scan(path, text)])
+
+    def test_agent_prompts_check_normalized_url_paths(self):
+        pin = "31ac0de9ee22307e2df03feb08a5e5217a90243b"
+        for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            for text in (
+                f"https://RAW.GITHUBUSERCONTENT.COM/capthvnsen/alans-way/{pin}/%2e%2e/main/scripts/connect-mac.sh",
+                f"[run](//GITHUB.COM/capthvnsen/alans-way/raw/{pin}/%2E%2E/main/scripts/connect-mac.sh)",
+                '<a href="//RAW.GITHUBUSERCONTENT.COM/capthvnsen/alans-way/./main/scripts/connect-mac.sh">Run</a>',
+            ):
+                with self.subTest(path=path, text=text):
+                    self.assertIn("unpinned-agent-reference", [item["rule"] for item in self.scan(path, text)])
+            for text in (
+                f"[run](//RAW.GITHUBUSERCONTENT.COM/capthvnsen/alans-way/./{pin}/scripts/connect-mac.sh)",
+                "[run]: //GITHUB.COM/capthvnsen/alans-way/raw/v0.21.5/scripts/../scripts/connect-mac.sh",
+                "[background](../scripts/../docs/setup-for-agents.md)",
+            ):
+                with self.subTest(path=path, text=text):
+                    self.assertEqual(self.scan(path, text), [])
+
     def test_agent_prompts_reject_relative_executable_links(self):
         for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
             for text in (
