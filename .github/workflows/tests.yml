@@ -82,6 +82,7 @@ jobs:
       - run: node --check src/win-computer.cjs
       - run: node --test test/win-computer.test.cjs
       - run: node --test test/hermes-update-ps1.test.cjs
+      - run: node --test test/vm-update-ps1.test.cjs
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
