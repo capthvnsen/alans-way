@@ -53,6 +53,15 @@ class SetupPromptTests(unittest.TestCase):
         for name in ("connect-mac.sh", "install-mac.sh"):
             subprocess.run(["sh", "-n", str(ROOT / "scripts" / name)], check=True)
 
+    def test_fresh_app_install_distinguishes_release_from_connector_pin(self):
+        prompt = " ".join(prompt_block("docs/setup-prompt.md").split())
+        for detail in ("latest published app release", "releases/latest", "--skip-install",
+                       "-SkipInstall", "source-build installers", "main",
+                       "not pinned to the skill's desktop revision", "release asset is unavailable"):
+            with self.subTest(detail=detail):
+                self.assertIn(detail, prompt)
+        self.assertNotIn("any install/build dependencies resolved to the reviewed desktop pin", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

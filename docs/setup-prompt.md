@@ -18,8 +18,8 @@ Rules for the whole job:
 - Run each check. Fix a failing check or report exactly what failed; distinguish
   working capabilities from skipped steps and warnings.
 - The installed workspace-setup skill is authoritative for preflight,
-  Tailscale, SSH trust, app installation, configuration, binding, verification
-  and the gateway restart. This prompt supplies bootstrap and human handoffs.
+  Tailscale, SSH trust, configuration, binding, verification and the gateway
+  restart. This prompt supplies bootstrap, app installation and human handoffs.
   If that skill links back to an older setup prompt, use it only for human
   handoff context; do not execute its separate clone, setup or key-append recipe.
 
@@ -43,13 +43,15 @@ Rules for the whole job:
    plugin; do not reconstruct the procedure from a web page.
    Follow its revision-resolution rules: resolve the plugin pin from Hermes'
    install record, or the matching release tag when the skill prescribes it,
-   and use the reviewed desktop revision it specifies. Check that checkouts
-   match before executing anything. Keep --repo-ref, --desktop-ref and
-   --skip-plugin when running setup; use --non-interactive and ask the
-   skill's questions yourself. Resolve every script and supporting document
-   to those pins, including connect-mac.sh, connect-windows.ps1 and
-   connect-linux.sh. Never use a branch URL or an unpinned checkout as an
-   executable source. If a pin cannot be resolved, stop and report it.
+   and use the reviewed desktop revision it specifies for server setup and
+   connector scripts. Check that checkouts match before executing anything.
+   Keep --repo-ref, --desktop-ref and --skip-plugin when running setup;
+   use --non-interactive and ask the skill's questions yourself.
+   Resolve server scripts, connector scripts and
+   supporting documents to those pins, including connect-mac.sh,
+   connect-windows.ps1 and connect-linux.sh. Never use a branch URL or an
+   unpinned checkout as an executable source. If a pin cannot be resolved,
+   stop and report it.
    Use the skill's validated --mac-key and --mac-host-key flow with --mac-ssh
    for the public outputs returned by my computer; never append pasted keys
    to SSH trust files yourself. Keep host-key checking enabled.
@@ -65,12 +67,25 @@ Rules for the whole job:
       Sharing and turn on Remote Login. On Windows, I open PowerShell as
       Administrator for the skill's OpenSSH steps. On Linux, I enable the
       SSH server and use a terminal in my desktop session.
-   4. Give me the skill's OS-specific connect command, with its script and
-      any install/build dependencies resolved to the reviewed desktop pin
-      and its public server values filled in. I paste it into my computer's
-      terminal and send back only the public output between the markers.
-      If the app is already installed and open, preserve it and use the
-      skill's skip-install option. If the command stops, I send its error.
+   4. If the app is absent, guide me to the latest published app release at
+      https://github.com/capthvnsen/alans-way/releases/latest and its asset
+      for my OS (Mac DMG, Windows installer, or Linux AppImage). I install
+      and open it. This app installer follows the latest app release; it is
+      not pinned to the skill's desktop revision. Record the release tag
+      and installed app version separately from the server/connector pin.
+      If the release asset is unavailable for my OS, stop and report it.
+      The source-build installers and connectors' default install paths
+      fetch installer scripts and/or app source from main; pinning a
+      connector alone does not pin those dependencies. Do not use those
+      paths for this setup.
+      Give me the skill's OS-specific connect command, with its script
+      resolved to the reviewed desktop pin and its public server values
+      filled in. Always pass --skip-install (Mac/Linux) or -SkipInstall
+      (Windows), including after a fresh release install. Preserve an
+      existing installed app and open it before connecting.
+      I paste the command into my computer's terminal and send back only
+      the public output between the markers.
+      If the command stops, I send its error.
    5. In Alan's Workspace, I scan its Telegram QR code: on my phone, Telegram
       → Settings → Devices → Link Desktop Device. This is separate from
       creating the bot's Telegram gateway.
@@ -95,7 +110,8 @@ Rules for the whole job:
       and tell me the page title." A tab with the bot's cursor should appear
       and the reply should say "Example Domain".
 
-Finish with a short report: the exact installed plugin and desktop revisions,
+Finish with a short report: the exact installed plugin revision, resolved
+server/connector desktop pin, installed app version and release tag (if known),
 what passed, every setup warning, and anything skipped or still needing me.
 ```
 
@@ -105,8 +121,9 @@ what passed, every setup warning, and anything skipped or still needing me.
    then send the bot a message.
 2. Approve the server's Tailscale login link and sign your computer into the
    same account.
-3. Enable your computer's SSH server (Remote Login on a Mac), paste the
-   pinned connect command your agent supplies, and return its public output.
+3. Enable your computer's SSH server (Remote Login on a Mac). If the app is
+   absent, install the latest app release for your OS. Paste the pinned
+   connect command with skip-install and return its public output.
 4. Sign in to Telegram in Alan's Workspace using its QR code.
 5. On a Mac, grant Accessibility and Screen Recording at the Mac itself.
 6. Answer the setup preferences, then use Test agent path and the browser

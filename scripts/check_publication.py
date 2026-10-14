@@ -12,6 +12,7 @@ import re
 import stat
 import subprocess
 import sys
+from urllib.parse import parse_qs, unquote, urlsplit
 
 RULES = (
     ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")),
@@ -43,9 +44,10 @@ FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pem", ".key", ".patch", ".
 FORBIDDEN_IMPORTS = {"gateway", "tui_gateway", "hermes_cli", "hermes_state", "run_agent", "model_tools", "tools", "agent"}
 AGENT_PROMPTS = {"docs/setup-prompt.md", "docs/update-for-agents.md"}
 AGENT_REFERENCE = re.compile(
-    r"https://(?:raw\.githubusercontent\.com/capthvnsen/alans-way(?:-agents)?/"
-    r"|github\.com/capthvnsen/alans-way(?:-agents)?/(?:blob|raw)/)"
-    r"([^\s\"'<>`)]+)")
+    r"https?://[^\s\"'<>`)]+", re.IGNORECASE)
+AGENT_LINK = re.compile(
+    r"\]\(\s*<?([^\s)>]+)|^\s*\[[^\]]+\]:\s*<?([^\s>]+)"
+    r"|\bhref\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
 PINNED_REF = re.compile(r"(?:[0-9a-fA-F]{40}|v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)")
 BINARY_ASSETS = {"desktop/assets/icon.png": b"\x89PNG\r\n\x1a\n", "desktop/assets/icon.icns": b"icns",
                  "desktop/assets/icon.ico": b"\x00\x00\x01\x00",
@@ -64,6 +66,53 @@ def valid_binary_asset(path: str, blob: bytes) -> bool:
     return bool(signature and blob.startswith(signature) and len(blob) <= limit)
 
 
+def agent_reference_rule(url: str) -> str | None:
+    """Require explicit pins for repo sources and reject unresolved installers.
+
+    Short install links have no approved targets here: replace them with a
+    reviewed, pinned source URL. Checking is offline so redirects cannot silently
+    change what CI approves.
+    """
+    parts = urlsplit(url)
+    host = (parts.hostname or "").casefold()
+    segments = unquote(parts.path).strip("/").split("/")
+    if host in {"openalan.com", "www.openalan.com"} and segments[0].startswith("install-"):
+        return "unresolved-agent-script"
+    if host == "api.github.com":
+        if segments[0] != "repos":
+            return None
+        segments = segments[1:]
+    if (host not in {"raw.githubusercontent.com", "raw.github.com", "github.com", "api.github.com"}
+            or len(segments) < 3 or segments[0].casefold() != "capthvnsen"
+            or segments[1].casefold() not in {"alans-way", "alans-way-agents"}):
+        return None
+    source = segments[2:]
+    if host == "api.github.com":
+        if source[0] != "contents" or len(source) < 2:
+            return None
+        refs = parse_qs(parts.query).get("ref", [])
+        ref = refs[0] if len(refs) == 1 else ""
+    else:
+        if host == "github.com":
+            if source[0] not in {"blob", "raw"}:
+                return None
+            source = source[1:]
+        if source[:2] == ["refs", "tags"]:
+            source = source[2:]
+        if len(source) < 2:
+            return None
+        ref = source[0]
+    if not PINNED_REF.fullmatch(ref):
+        return "unpinned-agent-reference"
+    return None
+
+
+def relative_executable_link(url: str) -> bool:
+    parts = urlsplit(url)
+    return bool(not parts.scheme and not parts.netloc
+                and Path(unquote(parts.path)).suffix.casefold() in {".sh", ".ps1", ".py", ".js", ".cjs", ".mjs", ".bat", ".cmd"})
+
+
 def inspect_text(path: str, text: str) -> list[dict]:
     """Return locations/rule labels only, never matching text or secret values."""
     name = Path(path).name.casefold()
@@ -75,9 +124,13 @@ def inspect_text(path: str, text: str) -> list[dict]:
     for number, line in enumerate(text.splitlines(), 1):
         if path in AGENT_PROMPTS:
             for match in AGENT_REFERENCE.finditer(line):
-                ref, _, target = match.group(1).partition("/")
-                if target and not PINNED_REF.fullmatch(ref):
-                    findings.append({"file": path, "line": number, "rule": "unpinned-agent-reference"})
+                rule = agent_reference_rule(match.group())
+                if rule:
+                    findings.append({"file": path, "line": number, "rule": rule})
+            for match in AGENT_LINK.finditer(line):
+                target = next(value for value in match.groups() if value is not None)
+                if relative_executable_link(target):
+                    findings.append({"file": path, "line": number, "rule": "unresolved-agent-script"})
         for label, pattern in RULES:
             if pattern.search(line):
                 findings.append({"file": path, "line": number, "rule": label})
