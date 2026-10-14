@@ -46,6 +46,9 @@ function createConfig(env) {
     // setAsDefaultProtocolClient call alone cannot deliver cold-start links.
     protocols: [{ name: 'alansway', schemes: ['alansway'] }],
     mac: {
+      // macOS offers an Alternate viewer. Windows association is omitted: the
+      // NSIS built-in registration overwrites the default PDF handler.
+      fileAssociations: [{ ext: 'pdf', name: 'PDF document', mimeType: 'application/pdf', role: 'Viewer', rank: 'Alternate' }],
       target: [
         { target: 'dmg', arch: ['arm64'] },
         // electron-updater on macOS only consumes the zip; the dmg stays for
@@ -58,6 +61,7 @@ function createConfig(env) {
       // Without a usage string macOS kills the app when a page takes a granted
       // camera or microphone permission.
       extendInfo: {
+        CFBundleDocumentTypes: [{ CFBundleTypeName: 'PDF document', CFBundleTypeExtensions: ['pdf'], CFBundleTypeRole: 'Viewer', LSHandlerRank: 'Alternate', LSItemContentTypes: ['com.adobe.pdf'] }],
         NSCameraUsageDescription: 'A web page in this workspace can use the camera after you allow it.',
         NSMicrophoneUsageDescription: 'A web page in this workspace can use the microphone after you allow it.',
       },

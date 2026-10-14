@@ -31,7 +31,7 @@ function fixture(initial = [], files = { '/tmp/report.pdf': true }, confirmOpen,
   let prefs = { downloads: initial.map(item => ({ ...item })) }, saved = 0, notices = 0;
   const opened = [], shown = [], session = { handlers: {}, on(name, fn) { (this.handlers[name] ||= []).push(fn); } };
   const store = createDownloadStore({ getPreferences: () => prefs, savePreferences: () => saved++, onChanged: () => notices++, progressMs: 0,
-    downloadsPath: () => '/tmp/downloads', realpath: (file) => file,
+    downloadsPath: () => '/tmp/downloads', realpath: (file) => file, isPdfFile: (file) => files[file] === true,
     shell: { openPath: async (file) => { opened.push(file); return ''; }, showItemInFolder: (file) => shown.push(file) },
     existsSync: (file) => files[file] === true, ...(confirmOpen ? { confirmOpen } : {}), ...(openInTab ? { openInTab } : {}), ...extra });
   store.install(session, scope);
@@ -315,4 +315,53 @@ test('a dump of Telegram PDFs activates one tab, then stops at the per-minute ca
   now += 60_000;
   complete('g.pdf');
   assert.equal(inTab.length, 6, 'the cap resets with the window');
+});
+
+// Provenance is captured at will-download, so a controller change while the
+// network is still working cannot pop an agent download onto the human screen.
+test('human browser PDFs auto-open in a chosen directory; agent and unknown sources stay background', () => {
+  const opened = [], files = { '/tmp/chosen/report.pdf': true };
+  let human = true;
+  const f = fixture([], files, undefined, async record => opened.push(record.path), 'browser', { isHumanDownload: () => human });
+  const first = f.start({ savePath: '/tmp/chosen/report.pdf' });
+  human = false; first.emit('done', 'completed');
+  assert.deepEqual(opened, ['/tmp/chosen/report.pdf']);
+  const agent = f.start({ savePath: '/tmp/chosen/report.pdf' });
+  human = true; agent.emit('done', 'completed');
+  assert.equal(opened.length, 1, 'agent provenance is frozen at start');
+});
+
+test('a burst of human web PDF downloads respects the auto-open cap and keeps every completed row', async () => {
+  const opened = [], files = {};
+  let now = 1_000_000;
+  const f = fixture([], files, undefined, async (record, options) => opened.push({ path: record.path, activate: options?.activate }),
+    'browser', { isHumanDownload: () => true, now: () => now });
+  const complete = (n) => {
+    const savePath = `/tmp/chosen/web-${n}.pdf`;
+    files[savePath] = true;
+    const item = f.start({ filename: `web-${n}.pdf`, savePath });
+    item.emit('done', 'completed');
+  };
+  for (let n = 0; n < AUTO_OPEN_LIMIT + 2; n++) complete(n);
+  assert.equal(opened.length, AUTO_OPEN_LIMIT, 'excess downloads must not flood tabs');
+  assert.deepEqual(opened.map(item => item.activate), [true, false, false, false, false]);
+  assert.equal(f.store.list().length, AUTO_OPEN_LIMIT + 2);
+  assert.ok(f.store.list().every(item => item.state === 'completed'));
+  const excess = f.store.list().find(item => item.name === `web-${AUTO_OPEN_LIMIT}.pdf`);
+  await f.store.open(excess.id);
+  assert.equal(opened.at(-1).path, excess.path, 'an excess download can still be opened explicitly');
+  now += 60_001;
+  complete(AUTO_OPEN_LIMIT + 2);
+  assert.equal(opened.length, AUTO_OPEN_LIMIT + 2, 'the cap resets after its window');
+  assert.equal(opened.at(-1).activate, true);
+});
+
+test('spoofed PDF bytes never auto-open or reach the system viewer through Open', async () => {
+  const opened = [];
+  const f = fixture([], { '/tmp/downloads/fake.pdf': true }, undefined, async record => opened.push(record.path), 'telegram', { isPdfFile: () => false });
+  const item = f.start({ filename: 'fake.pdf', savePath: '/tmp/downloads/fake.pdf' });
+  item.emit('done', 'completed');
+  assert.deepEqual(opened, []);
+  await assert.rejects(f.store.open(f.store.list()[0].id), /not a PDF/);
+  assert.deepEqual(f.opened, []);
 });

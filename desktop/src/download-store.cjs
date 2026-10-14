@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
+const { pdfFile } = require('./local-pdf.cjs');
 
 const MAX_DOWNLOADS = 50;
 const STATES = new Set(['progressing', 'completed', 'cancelled', 'interrupted']);
@@ -26,7 +27,7 @@ function insideDownloads(file, dir, realpath) {
   } catch { return false; }
 }
 
-// A dump of chat PDFs must not keep grabbing focus: only the first tab of a
+// A dump of PDFs must not keep grabbing focus: only the first tab of a
 // burst activates, and past a few per minute the files wait in the list.
 const AUTO_OPEN_LIMIT = 5, AUTO_OPEN_WINDOW_MS = 60_000, AUTO_OPEN_BURST_MS = 5_000;
 
@@ -59,7 +60,7 @@ function sanitize(entry) {
   return /^[\w-]{8,64}$/.test(record.id) ? record : null;
 }
 
-function createDownloadStore({ getPreferences, savePreferences, onChanged = () => {}, shell, existsSync = () => false, downloadsPath = () => '', progressMs = 250, confirmOpen = async () => false, openInTab = null, realpath = (file) => file, now = () => Date.now() }) {
+function createDownloadStore({ getPreferences, savePreferences, onChanged = () => {}, shell, existsSync = () => false, downloadsPath = () => '', progressMs = 250, confirmOpen = async () => false, openInTab = null, realpath = (file) => file, now = () => Date.now(), isPdfFile = pdfFile, isHumanDownload = () => false }) {
   const live = new Map();
   let progressTimer, restored = false, autoOpens = [];
   function records() {
@@ -88,7 +89,10 @@ function createDownloadStore({ getPreferences, savePreferences, onChanged = () =
     try { const host = new URL(url).hostname; if (host) return host; } catch {}
     return scope === 'telegram' ? 'Telegram' : '';
   }
-  function track(item, scope) {
+  function track(item, scope, source) {
+    // Capture who initiated it now: changing control before completion must
+    // never turn an agent's download into a human-visible auto-open.
+    const human = scope === 'telegram' || isHumanDownload(source);
     const record = {
       id: crypto.randomUUID(), name: String(item.getFilename() || 'download').slice(0, 300),
       path: '', source: sourceOf(item.getURL(), scope),
@@ -116,10 +120,10 @@ function createDownloadStore({ getPreferences, savePreferences, onChanged = () =
       live.delete(record.id);
       savePreferences();
       notify(true);
-      // Chat attachments arrive through the Telegram session; a finished PDF
-      // saved under the downloads directory opens in a workspace tab instead
-      // of surfacing a native dialog.
-      if (record.state === 'completed' && scope === 'telegram' && record.path && openInTab && isPdf(record) && insideDownloads(record.path, downloadsPath(), realpath)) {
+      // Human web downloads use the same viewer as chat attachments. A human's
+      // native save picker may choose any directory; Telegram stays confined
+      // to Downloads. Both use the same burst/rate limit.
+      if (record.state === 'completed' && human && record.path && openInTab && isPdf(record) && isPdfFile(record.path) && (scope !== 'telegram' || insideDownloads(record.path, downloadsPath(), realpath))) {
         const decision = decideAutoOpen(autoOpens, now());
         autoOpens = decision.recent;
         if (decision.open) Promise.resolve(openInTab(record, { activate: decision.activate })).catch(() => {});
@@ -129,7 +133,7 @@ function createDownloadStore({ getPreferences, savePreferences, onChanged = () =
     notify(true);
   }
   function install(session, scope = 'browser') {
-    session.on('will-download', (_event, item) => { try { track(item, scope); } catch {} });
+    session.on('will-download', (_event, item, source) => { try { track(item, scope, source); } catch {} });
   }
   function saved(record) {
     if (!record.path || !existsSync(record.path)) throw new Error('This file is no longer on disk.');
@@ -137,7 +141,10 @@ function createDownloadStore({ getPreferences, savePreferences, onChanged = () =
   }
   async function open(id) {
     const record = find(id), file = saved(record);
-    if (isPdf(record) && openInTab) return openInTab(record);
+    if (isPdf(record) && openInTab) {
+      if (!isPdfFile(file)) throw new Error('This file is not a PDF document.');
+      return openInTab(record);
+    }
     if ((RISKY.test(file) || RISKY.test(record.name)) && !(await confirmOpen(record.name))) return;
     const failure = await shell.openPath(file);
     if (failure) throw new Error(String(failure).slice(0, 300));

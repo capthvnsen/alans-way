@@ -286,10 +286,10 @@ function render(next) {
   positionPreview();
   $('control-button').textContent = tab?.controller === 'agent' ? 'Take over' : 'Give to agent';
   $('control-button').classList.toggle('agent', tab?.controller === 'agent');
-  $('control-button').disabled = !tab || tab.extensionPage;
+  $('control-button').disabled = !tab || tab.extensionPage || tab.localPdf;
   const askBot = $('ask-bot'); askBot.disabled = !tab || !/^https?:\/\//.test(tab?.url || ''); askBot.title = tab ? `Share ${tab.title || 'this page'} with ${bot?.name || 'the selected bot'}` : 'Discuss this page with your agent';
   $('browser-slot').classList.toggle('agent-live', !!tab && tab.controller === 'agent');
-  if (tab?.extensionPage) $('control-button').textContent = 'You';
+  if (tab?.extensionPage || tab?.localPdf) $('control-button').textContent = 'You';
   $('control-button').title = tab ? `Browser runs on ${tab.host==='vps'||tab.host==='remote'?'the '+remoteName():'your '+thisComputer()} · ${tab.controller === 'agent' ? 'Agent' : 'You'} control it` : 'Open a browser tab first';
   if (document.activeElement !== $('address')) $('address').value = tab?.internal ? '' : tab?.url || '';
   const agentName = tab ? state.bots.find(bot => bot.id === tab.botId)?.name || 'Agent' : '';
