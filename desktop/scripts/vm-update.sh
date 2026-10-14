@@ -15,8 +15,8 @@
 # gates (a re-pin that widens the plugin, new dependencies) can never be
 # answered here: hermes runs with stdin closed and those plugins come back as
 # needs_approval. Installs recorded with a file:// source re-clone it, so the
-# alans-way-agents clone is first advanced to its newest release tag - forward
-# only, never a branch tip, never over local changes.
+# alans-way-agents clone is first advanced to the browser release tag (newest
+# only without a browser checkout) - forward only, never over local changes.
 #
 #   sh vm-update.sh v0.3.2    update to the tag, restart broker + plugins
 #   sh vm-update.sh --check   read-only: print the checkout/live versions
@@ -401,11 +401,6 @@ plugin_version() {
   sed -n 's/^version:[[:space:]]*//p' "$1/plugin.yaml" 2>/dev/null | head -1 | \
     sed -E "s/[[:space:]]+#.*$//; s/^[[:space:]]*['\"]?v?//; s/['\"]?[[:space:]]*$//"
 }
-# $1 = install-metadata entry; prints its recorded revision ("" when absent).
-plugin_rev() {
-  printf '%s\n' "$1" | sed -n 's/.*"revision"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
-}
-
 # $1 = plugins dir, $2 = plugin name; prints the plugin's .install-metadata.json
 # entry. Parse JSON so another plugin's source/catalog on the same line
 # cannot masquerade as this plugin's metadata. Never read the whole registry
@@ -422,17 +417,41 @@ except (OSError,ValueError): pass' "$1/.install-metadata.json" "$2"
   fi
 }
 
-# $1 = clone dir. Advances an alans-way-agents clone to its newest release tag,
+# $1 = clone dir. Advances the capthvnsen/alans-way-agents source to the browser pin,
 # forward only - the tag is resolved as refs/tags/<tag>^{commit} so a branch
 # can never stand in for it. Prints "<outcome> <detail>": moved|ahead <ref>,
-# skipped <reason>, or none (not our clone / no release tags to aim at).
+# skipped <reason>. A plugin-only run without a browser uses the newest release.
 clone_refresh() {
   _cr="$1"
-  [ -d "$_cr/.git" ] || { echo "none"; return 0; }
-  _cr_url="$(run_git -C "$_cr" remote get-url origin 2>&1)"; _cr_rc=$?
-  [ "$_cr_rc" -ne 124 ] || { echo "skipped $_cr_url"; return 0; }
-  [ "$_cr_rc" -eq 0 ] || { echo "none"; return 0; }
-  case "$_cr_url" in *alans-way-agents*) ;; *) echo "none"; return 0;; esac
+  [ -e "$_cr/.git" ] || { echo "skipped file source is not a git clone"; return 0; }
+  # config --get returns the last URL, but fetch uses the first. Preserve
+  # trailing empty values with a sentinel so even an empty extra URL counts.
+  _cr_urls="$(run_git -C "$_cr" config --get-all remote.origin.url 2>&1; _cr_rc=$?; printf '.'; exit "$_cr_rc")"; _cr_rc=$?
+  _cr_urls="${_cr_urls%.}"
+  [ "$_cr_rc" -ne 124 ] || { echo "skipped $(printf '%s' "$_cr_urls" | safe_git_error)"; return 0; }
+  [ "$_cr_rc" -le 1 ] || { echo "skipped git origin inspection failed: $(printf '%s' "$_cr_urls" | safe_git_error)"; return 0; }
+  [ "$_cr_rc" -eq 0 ] && [ "$(printf '%s' "$_cr_urls" | wc -l | tr -d ' ')" = 1 ] \
+    || { echo "skipped ambiguous origin: source clone must have exactly one origin URL"; return 0; }
+  _cr_nl='
+'
+  _cr_raw="${_cr_urls%"$_cr_nl"}"
+  # get-url applies insteadOf to the fetch URL; pushurl/pushInsteadOf do not
+  # affect fetch. Check both identities without ever printing either URL.
+  _cr_url="$(run_git -C "$_cr" remote get-url origin 2>&1; _cr_rc=$?; printf '.'; exit "$_cr_rc")"; _cr_rc=$?
+  _cr_url="${_cr_url%.}"
+  [ "$_cr_rc" -eq 0 ] || { echo "skipped git origin inspection failed: $(printf '%s' "$_cr_url" | safe_git_error)"; return 0; }
+  _cr_url="${_cr_url%"$_cr_nl"}"
+  for _cr_identity in "$_cr_raw" "$_cr_url"; do
+    case "$_cr_identity" in
+      https://github.com/capthvnsen/alans-way-agents|https://github.com/capthvnsen/alans-way-agents.git|git@github.com:capthvnsen/alans-way-agents|git@github.com:capthvnsen/alans-way-agents.git|ssh://git@github.com/capthvnsen/alans-way-agents|ssh://git@github.com/capthvnsen/alans-way-agents.git) ;;
+      *) echo "skipped source clone origin is not capthvnsen/alans-way-agents"; return 0;;
+    esac
+  done
+  _cr_dirty="$(run_git -C "$_cr" status --porcelain 2>&1)" \
+    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_dirty" | safe_git_error)"; return 0; }
+  if [ -n "$_cr_dirty" ]; then
+    echo "skipped local changes; save, commit or stash them in $_cr before retrying"; return 0
+  fi
   _cr_fetch="$(run_git -C "$_cr" fetch --tags origin 2>&1)"; _cr_rc=$?
   [ "$_cr_rc" -ne 124 ] || { echo "skipped $_cr_fetch"; return 0; }
   if [ "$_cr_rc" -ne 0 ]; then
@@ -445,29 +464,26 @@ clone_refresh() {
     _cr_fetch="$(run_git -C "$_cr" fetch --unshallow --tags origin 2>&1)" \
       || { echo "skipped shallow history could not be fetched: $(printf '%s' "$_cr_fetch" | safe_git_error)"; return 0; }
   fi
-  _cr_tags="$(run_git -C "$_cr" tag -l 'v*' 2>&1)" \
-    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_tags" | safe_git_error)"; return 0; }
-  _cr_tag="$(printf '%s\n' "$_cr_tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1.2n -k2n -k3n | tail -1)"
-  [ -n "$_cr_tag" ] || { echo "none"; return 0; }
+  _cr_tag="$TAG"
+  # The plugin-only phase also honors an existing browser checkout's release.
+  [ -n "$_cr_tag" ] || { [ -z "$VERSION" ] || _cr_tag="v$VERSION"; }
+  if [ -z "$_cr_tag" ]; then
+    _cr_tags="$(run_git -C "$_cr" tag -l 'v*' 2>&1)" \
+      || { echo "skipped git inspection failed: $(printf '%s' "$_cr_tags" | safe_git_error)"; return 0; }
+    _cr_tag="$(printf '%s\n' "$_cr_tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1.2n -k2n -k3n | tail -1)"
+  fi
+  printf '%s' "$_cr_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+    || { echo "skipped no valid release tag for source clone"; return 0; }
   _cr_want="$(run_git -C "$_cr" rev-parse --verify -q "refs/tags/$_cr_tag^{commit}" 2>&1)" \
-    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_want" | safe_git_error)"; return 0; }
+    || { echo "skipped target tag $_cr_tag is not available in source clone: $(printf '%s' "$_cr_want" | safe_git_error)"; return 0; }
   _cr_head="$(run_git -C "$_cr" rev-parse HEAD 2>&1)" \
     || { echo "skipped git inspection failed: $(printf '%s' "$_cr_head" | safe_git_error)"; return 0; }
-  [ -n "$_cr_want" ] && [ -n "$_cr_head" ] || { echo "none"; return 0; }
-  _cr_ancestry="$(run_git -C "$_cr" merge-base --is-ancestor "$_cr_want" "$_cr_head" 2>&1)"; _cr_rc=$?
-  [ "$_cr_rc" -le 1 ] || { echo "skipped git ancestry check failed: $(printf '%s' "$_cr_ancestry" | safe_git_error)"; return 0; }
-  if [ "$_cr_rc" -eq 0 ]; then
-    echo "ahead $(run_git -C "$_cr" describe --tags --always 2>/dev/null || printf '%s' "$_cr_head" | cut -c1-12)"
-    return 0
-  fi
-  _cr_dirty="$(run_git -C "$_cr" status --porcelain 2>&1)" \
-    || { echo "skipped git inspection failed: $(printf '%s' "$_cr_dirty" | safe_git_error)"; return 0; }
-  if [ -n "$_cr_dirty" ]; then
-    echo "skipped local changes"; return 0
+  if [ "$_cr_want" = "$_cr_head" ]; then
+    echo "ahead $_cr_tag"; return 0
   fi
   _cr_ancestry="$(run_git -C "$_cr" merge-base --is-ancestor "$_cr_head" "$_cr_want" 2>&1)"; _cr_rc=$?
   [ "$_cr_rc" -le 1 ] || { echo "skipped git ancestry check failed: $(printf '%s' "$_cr_ancestry" | safe_git_error)"; return 0; }
-  [ "$_cr_rc" -eq 0 ] || { echo "skipped not an ancestor of $_cr_tag"; return 0; }
+  [ "$_cr_rc" -eq 0 ] || { echo "skipped HEAD is not an ancestor of $_cr_tag; refusing a rollback or diverged source clone"; return 0; }
   if _cr_err="$(run_git -C "$_cr" -c advice.detachedHead=false checkout -q "refs/tags/$_cr_tag" 2>&1)" \
       && [ "$(run_git -C "$_cr" rev-parse HEAD 2>/dev/null)" = "$_cr_want" ]; then
     echo "moved $_cr_tag"; return 0
@@ -525,7 +541,6 @@ plugin_update_try() {
     _pu_out="$(run_hermes "$PLUGIN_TIMEOUT" -p "$1" plugins update "$2")"
   fi; _pu_rc=$?
   _pu_after="$(plugin_version "$_pu_ph/plugins/$2")"
-  [ -n "$_pu_after" ] || _pu_after="$(plugin_rev "$(plugin_meta "$_pu_ph/plugins" "$2")")"
   _pu_cls="$(plugin_update_status "$_pu_rc" "$_pu_out")"
   _pu_st="${_pu_cls%%|*}"; _pu_err="${_pu_cls#*|}"
   [ "$_pu_st" = updated ] && CHANGED=true
@@ -564,7 +579,6 @@ update_hermes_plugins() {
       [ -d "$_pdir/$_name" ] || continue
       _meta="$(plugin_meta "$_pdir" "$_name")"
       _before="$(plugin_version "$_pdir/$_name")"
-      [ -n "$_before" ] || _before="$(plugin_rev "$_meta")"
       if [ "$(budget_left)" -le 15 ]; then
         PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$_pname" "$_name" "$_before" "$_before" skipped "plugin phase ran out of the time budget; retry the update")"
         continue
@@ -685,7 +699,6 @@ EOF
         else
           [ "$_pname" = default ] && _phome="$HHOME" || _phome="$HHOME/profiles/$_pname"
           _after="$(plugin_version "$_phome/plugins/$_name")"
-          [ -n "$_after" ] || _after="$(plugin_rev "$(plugin_meta "$_phome/plugins" "$_name")")"
           say "plugin $_name ($_pname): blocked"
           PLUGINS_JSON="${PLUGINS_JSON}${PLUGINS_JSON:+,}$(plugin_entry "$_pname" "$_name" "$_before" "$_after" blocked "$_err" "$_repo_ref")"
         fi

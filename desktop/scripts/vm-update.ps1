@@ -12,8 +12,8 @@
 # Consent gates are never answered: hermes gets an empty stdin and those
 # plugins come back as needs_approval. Installs recorded with a file://
 # source re-clone it, so the alans-way-agents clone is first advanced to its
-# newest release tag - forward only, never a branch tip, never over local
-# changes.
+# browser release tag (newest only without a browser checkout) - forward only,
+# never a branch tip, never over local changes.
 # The last stdout line is one JSON result:
 # {"ok":bool,"version":"x.y.z","restarted":bool,"error":"...",
 #  "plugins":[...],"gatewayRestarted":bool}.
@@ -78,6 +78,9 @@ function Invoke-Hermes([int]$Secs, [string[]]$HermesArgs) {
         if ($exe -match '\.(cmd|bat)$') { $argLine = "/d /c `"$exe`" $argLine"; $exe = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' } }
         $p = Start-Process -FilePath $exe -ArgumentList $argLine -NoNewWindow -PassThru `
             -RedirectStandardOutput $out -RedirectStandardError $err -RedirectStandardInput $inp
+        # PowerShell 5.1 can lose ExitCode after a timed redirected wait unless
+        # the process handle is retained (same fix as hermes-update.ps1).
+        $processHandle = $p.Handle
         if ($p.WaitForExit($Secs * 1000)) { $code = $p.ExitCode }
         else { try { $p.Kill() } catch {}; $code = 124 }
         $text = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue) + "`n" +
@@ -115,7 +118,9 @@ function Get-Profiles([string]$Hhome) {
 # Hermes has one atomic --all operation; older versions need one call each.
 function Stop-EveryGateway([string]$Hhome) {
     $script:GatewayNamed = @()
-    $profiles = @(Get-Profiles $Hhome)
+    # Get-Profiles returns one array object; wrapping it again nests all profiles
+    # and lets the default-profile check skip every named gateway in that bundle.
+    $profiles = Get-Profiles $Hhome
     foreach ($prof in $profiles) {
         if ($prof.name -eq 'default') { continue }
         $gatewayPid = 0
@@ -176,15 +181,15 @@ function Get-PluginMeta([string]$Pdir, [string]$Name) {
     return $null
 }
 
-# Advances an alans-way-agents clone to its newest release tag, forward only -
+# Advances the capthvnsen/alans-way-agents clone to the browser pin, forward only -
 # the tag resolves as refs/tags/<tag>^{commit} so a branch can never stand in
-# for it. Returns "moved|<ref>", "ahead|<ref>", "skipped|<reason>" or "none|".
+# for it. Returns "moved|<ref>", "ahead|<ref>", "skipped|<reason>" for an unsafe source.
 # Native stderr must be captured even under Windows PowerShell's Stop policy.
 # Quote argv for the Windows native command line, including paths with spaces.
 function Git-Argument([string]$Value) {
     return '"' + (($Value -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"'
 }
-function Invoke-Git([string[]]$GitArgs) {
+function Invoke-Git([string[]]$GitArgs, [bool]$OriginIdentity = $false) {
     $secs = [Math]::Min((EnvInt 'ALANS_WAY_VM_GIT_TIMEOUT' 60), (BudgetLeft) - 1)
     if ($secs -le 0) { return @{ code = 124; out = 'git timed out: VM time budget exhausted' } }
     $out = [IO.Path]::GetTempFileName(); $err = [IO.Path]::GetTempFileName()
@@ -195,6 +200,8 @@ function Invoke-Git([string[]]$GitArgs) {
         $p = Start-Process -FilePath $exe -ArgumentList $argLine -NoNewWindow -PassThru `
             -WorkingDirectory (Get-Location).Path `
             -RedirectStandardOutput $out -RedirectStandardError $err -RedirectStandardInput $inp
+        # Retain the handle before the timed wait so ExitCode stays available.
+        $processHandle = $p.Handle
         if (-not $p.WaitForExit($secs * 1000)) {
             # /T includes Git's ssh, credential helpers and hooks.
             & taskkill.exe /PID $p.Id /T /F 2>$null | Out-Null
@@ -202,7 +209,11 @@ function Invoke-Git([string[]]$GitArgs) {
             return @{ code = 124; out = "git timed out after ${secs}s" }
         }
         $p.WaitForExit()
-        $text = ([string](Get-Content $out -Raw -ErrorAction SilentlyContinue) + "`n" + [string](Get-Content $err -Raw -ErrorAction SilentlyContinue)).Trim()
+        $stdout = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue)
+        $text = ($stdout + "`n" + [string](Get-Content $err -Raw -ErrorAction SilentlyContinue)).Trim()
+        # Compare origin identity in memory; progress/results still redact errors.
+        # Redacting ssh://git@ before comparison would reject the legitimate origin.
+        if ($OriginIdentity -and $p.ExitCode -eq 0) { return @{ code = 0; out = $text; raw = $stdout } }
         return @{ code = $p.ExitCode; out = (Safe-Reason $text) }
     } catch {
         return @{ code = 1; out = (Safe-Reason $_.Exception.Message) }
@@ -210,13 +221,28 @@ function Invoke-Git([string[]]$GitArgs) {
 }
 
 function Update-Clone([string]$Dir) {
-    if (-not (Test-Path "$Dir\.git")) { return 'none|' }
+    if (-not (Test-Path "$Dir\.git")) { return 'skipped|file source is not a git clone' }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return 'skipped|git is not available' }
-    $url = ''
-    $r = Invoke-Git @('-C', $Dir, 'remote', 'get-url', 'origin')
+    # config --get returns the last URL, but fetch uses the first. Preserve
+    # empty entries and require exactly one before inspecting Git's fetch URL.
+    $r = Invoke-Git -GitArgs @('-C', $Dir, 'config', '--get-all', 'remote.origin.url') -OriginIdentity $true
     if ($r.code -eq 124) { return "skipped|$($r.out)" }
-    $url = if ($r.code -eq 0) { $r.out } else { '' }
-    if ($url -notmatch 'alans-way-agents') { return 'none|' }
+    if ($r.code -gt 1) { return "skipped|git origin inspection failed: $($r.out)" }
+    $urls = @()
+    if ($r.code -eq 0) { $urls = @(($r.raw -replace '\r?\n\z', '') -split '\r?\n') }
+    if ($urls.Count -ne 1) { return 'skipped|ambiguous origin: source clone must have exactly one origin URL' }
+    # get-url expands insteadOf for fetch, without consulting pushurl or
+    # pushInsteadOf. Keep both identities in memory to retain redaction.
+    $r = Invoke-Git -GitArgs @('-C', $Dir, 'remote', 'get-url', 'origin') -OriginIdentity $true
+    if ($r.code -ne 0) { return "skipped|git origin inspection failed: $($r.out)" }
+    foreach ($url in @($urls[0], ($r.raw -replace '\r?\n\z', ''))) {
+        if ($url -cnotmatch '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)capthvnsen/alans-way-agents(\.git)?\z') {
+            return 'skipped|source clone origin is not capthvnsen/alans-way-agents'
+        }
+    }
+    $r = Invoke-Git @('-C', $Dir, 'status', '--porcelain')
+    if ($r.code -ne 0) { return "skipped|git inspection failed: $($r.out)" }
+    if ($r.out) { return "skipped|local changes; save, commit or stash them in $Dir before retrying" }
     $r = Invoke-Git @('-C', $Dir, 'fetch', '--tags', 'origin')
     if ($r.code -eq 124) { return "skipped|$($r.out)" }
     if ($r.code -ne 0) { $r = Invoke-Git @('-C', $Dir, 'fetch', '--unshallow', '--tags', 'origin') }
@@ -227,32 +253,26 @@ function Update-Clone([string]$Dir) {
         $r = Invoke-Git @('-C', $Dir, 'fetch', '--unshallow', '--tags', 'origin')
         if ($r.code -ne 0) { return "skipped|shallow history could not be fetched: $($r.out)" }
     }
-    $r = Invoke-Git @('-C', $Dir, 'tag', '-l', 'v*')
-    if ($r.code -ne 0) { return "skipped|git inspection failed: $($r.out)" }
-    $tag = $r.out -split '\r?\n' |
-        Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
-        Sort-Object { [version]($_ -replace '^v', '') } | Select-Object -Last 1
-    if (-not $tag) { return 'none|' }
+    $tag = $env:ALANS_WAY_VM_TAG
+    if (-not $tag -and $script:Version) { $tag = "v$($script:Version)" }
+    if (-not $tag) {
+        $r = Invoke-Git @('-C', $Dir, 'tag', '-l', 'v*')
+        if ($r.code -ne 0) { return "skipped|git inspection failed: $($r.out)" }
+        $tag = $r.out -split '\r?\n' |
+            Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
+            Sort-Object { [version]($_ -replace '^v', '') } | Select-Object -Last 1
+    }
+    if ($tag -notmatch '^v\d+\.\d+\.\d+$') { return 'skipped|no valid release tag for source clone' }
     $r = Invoke-Git @('-C', $Dir, 'rev-parse', '--verify', '-q', "refs/tags/${tag}^{commit}")
-    if ($r.code -ne 0) { return "skipped|git inspection failed: $($r.out)" }
+    if ($r.code -ne 0) { return "skipped|target tag $tag is not available in source clone: $($r.out)" }
     $want = $r.out
     $r = Invoke-Git @('-C', $Dir, 'rev-parse', 'HEAD')
     if ($r.code -ne 0) { return "skipped|git inspection failed: $($r.out)" }
     $head = $r.out
-    if (-not $want -or -not $head) { return 'none|' }
-    $r = Invoke-Git @('-C', $Dir, 'merge-base', '--is-ancestor', $want, $head)
-    if ($r.code -eq 0) {
-        $desc = (Invoke-Git @('-C', $Dir, 'describe', '--tags', '--always')).out
-        if (-not $desc) { $desc = $head.Substring(0, 12) }
-        return "ahead|$desc"
-    }
-    if ($r.code -gt 1) { return "skipped|git ancestry check failed: $($r.out)" }
-    $r = Invoke-Git @('-C', $Dir, 'status', '--porcelain')
-    if ($r.code -ne 0) { return "skipped|git inspection failed: $($r.out)" }
-    if ($r.out) { return 'skipped|local changes' }
+    if ($want -eq $head) { return "ahead|$tag" }
     $r = Invoke-Git @('-C', $Dir, 'merge-base', '--is-ancestor', $head, $want)
     if ($r.code -gt 1) { return "skipped|git ancestry check failed: $($r.out)" }
-    if ($r.code -ne 0) { return "skipped|not an ancestor of $tag" }
+    if ($r.code -ne 0) { return "skipped|HEAD is not an ancestor of $tag; refusing a rollback or diverged source clone" }
     $r = Invoke-Git @('-C', $Dir, '-c', 'advice.detachedHead=false', 'checkout', '-q', "refs/tags/$tag")
     if ($r.code -eq 0 -and (Invoke-Git @('-C', $Dir, 'rev-parse', 'HEAD')).out -eq $want) { return "moved|$tag" }
     return "skipped|could not check out $tag`: $($r.out)"
@@ -278,7 +298,6 @@ function Invoke-PluginUpdate($Prof, $Name, $Before, $RepoRef, [bool]$Collect) {
     else { $updArgs = @('-p', $Prof.name, 'plugins', 'update', $Name) }
     $r = Invoke-Hermes (EnvInt 'ALANS_WAY_VM_PLUGIN_TIMEOUT' 90) $updArgs
     $after = Get-PluginVersion (Join-Path $pdir $Name)
-    if (-not $after) { $after = [string](Get-PluginMeta $pdir $Name).revision }
     $st = ''; $err = ''
     $full = ($r.out -replace '\r?\n', ' ').Trim()
     if ($r.code -eq 124) { $st = 'failed'; $err = 'the hermes update timed out' }
@@ -327,7 +346,6 @@ function Update-HermesPlugins {
             if (-not (Test-Path $pp)) { continue }
             $meta = Get-PluginMeta $pdir $name
             $before = Get-PluginVersion $pp
-            if (-not $before) { $before = [string]$meta.revision }
             if ((BudgetLeft) -le 15) {
                 Write-Output 'vm-update: plugin phase ran out of the time budget; remaining plugins will retry next update'
                 $script:Plugins += New-PluginEntry $prof.name $name $before $before 'skipped' 'plugin phase ran out of the time budget; retry the update' ''
@@ -370,7 +388,6 @@ function Update-HermesPlugins {
                 } else {
                     $fpdir = Join-Path $f.prof.home 'plugins'
                     $after = Get-PluginVersion (Join-Path $fpdir $f.name)
-                    if (-not $after) { $after = [string](Get-PluginMeta $fpdir $f.name).revision }
                     Write-Output "vm-update: plugin $($f.name) ($($f.prof.name)): blocked"
                     $script:Plugins += New-PluginEntry $f.prof.name $f.name $f.before $after 'blocked' $f.err $f.repoRef
                 }
