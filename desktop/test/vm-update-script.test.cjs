@@ -54,6 +54,24 @@ function makeCheckout(remote, ref = 'v0.3.1') {
 function makeBin() {
   const bin = mktemp('vm-update-bin-');
   const marker = path.join(bin, 'services.log');
+  // Substitute only fetch transport. Origin inspection still uses real Git,
+  // including insteadOf expansion, so it cannot hide an unsafe destination.
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh
+if [ "$1" = -C ] && [ "$3" = fetch ]; then
+  _remote="$("${REAL_GIT}" -C "$2" config --get fixture.fetchUrl)"
+  if [ -n "$_remote" ]; then
+    _dir="$2"; shift 3
+    echo "fetch $_dir" >> "${marker}"
+    case "$*" in
+      '--tags origin') exec "${REAL_GIT}" -C "$_dir" fetch --tags "$_remote";;
+      '--unshallow --tags origin') exec "${REAL_GIT}" -C "$_dir" fetch --unshallow --tags "$_remote";;
+      *) echo 'unexpected fixture fetch arguments' >&2; exit 1;;
+    esac
+    exit $?
+  fi
+fi
+exec "${REAL_GIT}" "$@"
+`, { mode: 0o755 });
   // The fake systemctl answers is-system-running from bin/systemd-state; no
   // file means a live systemd, which is what most fixtures stand in for.
   fs.writeFileSync(path.join(bin, 'systemctl'), `#!/bin/sh
@@ -594,7 +612,7 @@ function makePluginClone(versions = ['0.6.0', '0.6.2']) {
   git(clone, 'config', 'user.name', 'fixture');
   git(clone, 'checkout', '-q', `refs/tags/v${versions[0]}`);
   // The production origin identity, with fetches redirected to the local fixture.
-  git(clone, 'config', `url.${remoteDir}.insteadOf`, 'https://github.com/capthvnsen/alans-way-agents.git');
+  git(clone, 'config', 'fixture.fetchUrl', remoteDir);
   git(clone, 'remote', 'set-url', 'origin', 'https://github.com/capthvnsen/alans-way-agents.git');
   return clone;
 }
@@ -1942,7 +1960,7 @@ test('--doctor reports versions, plugin rows, the newest plugin tag and the setu
   const port = await makeStatus({ version: '0.3.1', busy: false });
   const data = makeDataDir(port);
   const setupCalls = addSetupScript(data, ['  ok   plugin enabled', '  FAIL browser host not running', '  warn no primary route bound'], 1);
-  const pluginRemote = git(makePluginClone(), 'remote', 'get-url', 'origin').trim();
+  const pluginRemote = git(makePluginClone(), 'config', '--get', 'fixture.fetchUrl').trim();
   const res = await runScript(['--doctor'], envFor(checkout, data, bin, { ...pluginEnv(home, state), ALANS_WAY_VM_PLUGIN_REMOTE: pluginRemote }));
   assert.equal(res.status, 0, res.stderr);
   assert.deepEqual(lastJson(res), {
@@ -2357,7 +2375,7 @@ test('diagnostics scrub credentials and arbitrary queries/fragments for every UR
   }
 });
 
-for (const mode of ['clean', 'clean-refused', 'plugins-only', 'dirty', 'diverged', 'other-origin', 'dirty-at-tag', 'dirty-at-latest', 'ahead', 'missing-tag']) {
+for (const mode of ['multi-origin', 'multi-origin-reversed', 'duplicate-origin', 'empty-extra-origin', 'no-origin', 'rewritten-origin', 'push-only', 'clean', 'clean-refused', 'plugins-only', 'dirty', 'diverged', 'other-origin', 'dirty-at-tag', 'dirty-at-latest', 'ahead', 'missing-tag']) {
   test(`file source browser pin fixture: ${mode}`, async () => {
     const home = makeHermesHome(), state = makeHermesState(), { bin } = makeBin();
     const { log } = addHermes(bin, state);
@@ -2372,6 +2390,21 @@ for (const mode of ['clean', 'clean-refused', 'plugins-only', 'dirty', 'diverged
     if (mode === 'other-origin') {
       git(clone, 'config', '--add', 'url.' + git(clone, 'remote', 'get-url', 'origin').trim() + '.insteadOf', 'https://github.com/other/alans-way-agents.git');
       git(clone, 'remote', 'set-url', 'origin', 'https://github.com/other/alans-way-agents.git');
+    }
+    const official = 'https://github.com/capthvnsen/alans-way-agents.git';
+    const foreign = 'https://github.com/lookalike/alans-way-agents.git';
+    if (mode === 'multi-origin') {
+      git(clone, 'remote', 'set-url', 'origin', foreign);
+      git(clone, 'config', '--add', 'remote.origin.url', official);
+    }
+    if (mode === 'multi-origin-reversed') git(clone, 'config', '--add', 'remote.origin.url', foreign);
+    if (mode === 'duplicate-origin') git(clone, 'config', '--add', 'remote.origin.url', official);
+    if (mode === 'empty-extra-origin') git(clone, 'config', '--add', 'remote.origin.url', '');
+    if (mode === 'no-origin') git(clone, 'config', '--unset-all', 'remote.origin.url');
+    if (mode === 'rewritten-origin') git(clone, 'config', `url.${foreign}.insteadOf`, official);
+    if (mode === 'push-only') {
+      git(clone, 'config', 'remote.origin.pushurl', foreign);
+      git(clone, 'config', `url.${foreign}.pushInsteadOf`, official);
     }
     const head = git(clone, 'rev-parse', 'HEAD');
     addProfile(home, 'work');
@@ -2392,7 +2425,7 @@ for (const mode of ['clean', 'clean-refused', 'plugins-only', 'dirty', 'diverged
     // Force a missing source target without affecting the browser host fixture.
     if (mode === 'missing-tag') {
       const fakeGit = path.join(bin, 'git-missing-tag');
-      fs.writeFileSync(fakeGit, `#!/bin/sh\ncase "$*" in *alans-way-agents-clone*'rev-parse --verify'*) exit 1;; esac\nexec "${REAL_GIT}" "$@"\n`, { mode: 0o755 });
+      fs.writeFileSync(fakeGit, `#!/bin/sh\ncase "$*" in *alans-way-agents-clone*'rev-parse --verify'*) exit 1;; esac\nexec "${path.join(bin, 'git')}" "$@"\n`, { mode: 0o755 });
       fs.writeFileSync(path.join(state, 'git-path'), fakeGit);
     }
     const extra = mode === 'missing-tag' ? { ALANS_WAY_VM_GIT: fs.readFileSync(path.join(state, 'git-path'), 'utf8') } : {};
@@ -2400,8 +2433,8 @@ for (const mode of ['clean', 'clean-refused', 'plugins-only', 'dirty', 'diverged
     assert.equal(result.plugins.length, 2);
     const step = { id: 'plugin', name: 'Plugins', from: '0.3.1', to: '0.3.2' };
     const rows = await runSteps([step], () => pluginStepResult(result, step));
-    assert.equal(rows[0].state, ['clean', 'clean-refused', 'plugins-only'].includes(mode) ? 'done' : 'warn');
-    if (['clean', 'clean-refused', 'plugins-only'].includes(mode)) {
+    assert.equal(rows[0].state, ['push-only', 'clean', 'clean-refused', 'plugins-only'].includes(mode) ? 'done' : 'warn');
+    if (['push-only', 'clean', 'clean-refused', 'plugins-only'].includes(mode)) {
       assert.equal(git(clone, 'rev-parse', 'HEAD'), git(clone, 'rev-parse', 'v0.3.2^{commit}'));
       if (mode === 'clean-refused') {
         assert.equal(result.gatewayRestarted, true);
@@ -2416,9 +2449,10 @@ for (const mode of ['clean', 'clean-refused', 'plugins-only', 'dirty', 'diverged
       assert.equal(git(clone, 'rev-parse', 'HEAD'), head);
       for (const plugin of result.plugins) {
         assert.equal(plugin.status, 'skipped'); assert.equal(plugin.after, '0.3.1');
-        assert.match(plugin.error, mode.startsWith('dirty') ? /local changes/ : mode === 'other-origin' ? /origin/ : mode === 'missing-tag' ? /target tag.*not available/ : /not an ancestor/);
+        assert.match(plugin.error, mode.startsWith('dirty') ? /local changes/ : ['multi-origin', 'multi-origin-reversed', 'duplicate-origin', 'empty-extra-origin', 'no-origin'].includes(mode) ? /ambiguous origin/ : ['other-origin', 'rewritten-origin'].includes(mode) ? /origin/ : mode === 'missing-tag' ? /target tag.*not available/ : /not an ancestor/);
       }
       assert.doesNotMatch(log(), /plugins update/);
+      if (mode.includes('origin')) assert.doesNotMatch(fs.readFileSync(path.join(bin, 'services.log'), 'utf8'), new RegExp(`fetch ${clone}`));
       if (mode.startsWith('dirty')) assert.equal(fs.readFileSync(path.join(clone, 'local.txt'), 'utf8'), 'keep this edit');
     }
   });
