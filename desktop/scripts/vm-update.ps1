@@ -209,10 +209,11 @@ function Invoke-Git([string[]]$GitArgs, [bool]$OriginIdentity = $false) {
             return @{ code = 124; out = "git timed out after ${secs}s" }
         }
         $p.WaitForExit()
-        $text = ([string](Get-Content $out -Raw -ErrorAction SilentlyContinue) + "`n" + [string](Get-Content $err -Raw -ErrorAction SilentlyContinue)).Trim()
+        $stdout = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue)
+        $text = ($stdout + "`n" + [string](Get-Content $err -Raw -ErrorAction SilentlyContinue)).Trim()
         # Compare origin identity in memory; progress/results still redact errors.
         # Redacting ssh://git@ before comparison would reject the legitimate origin.
-        if ($OriginIdentity -and $p.ExitCode -eq 0) { return @{ code = 0; out = $text } }
+        if ($OriginIdentity -and $p.ExitCode -eq 0) { return @{ code = 0; out = $text; raw = $stdout } }
         return @{ code = $p.ExitCode; out = (Safe-Reason $text) }
     } catch {
         return @{ code = 1; out = (Safe-Reason $_.Exception.Message) }
@@ -222,12 +223,22 @@ function Invoke-Git([string[]]$GitArgs, [bool]$OriginIdentity = $false) {
 function Update-Clone([string]$Dir) {
     if (-not (Test-Path "$Dir\.git")) { return 'skipped|file source is not a git clone' }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return 'skipped|git is not available' }
-    $url = ''
-    $r = Invoke-Git -GitArgs @('-C', $Dir, 'config', '--get', 'remote.origin.url') -OriginIdentity $true
+    # config --get returns the last URL, but fetch uses the first. Preserve
+    # empty entries and require exactly one before inspecting Git's fetch URL.
+    $r = Invoke-Git -GitArgs @('-C', $Dir, 'config', '--get-all', 'remote.origin.url') -OriginIdentity $true
     if ($r.code -eq 124) { return "skipped|$($r.out)" }
-    $url = if ($r.code -eq 0) { $r.out } else { '' }
-    if ($url -cnotmatch '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)capthvnsen/alans-way-agents(\.git)?$') {
-        return 'skipped|source clone origin is not capthvnsen/alans-way-agents'
+    if ($r.code -gt 1) { return "skipped|git origin inspection failed: $($r.out)" }
+    $urls = @()
+    if ($r.code -eq 0) { $urls = @(($r.raw -replace '\r?\n\z', '') -split '\r?\n') }
+    if ($urls.Count -ne 1) { return 'skipped|ambiguous origin: source clone must have exactly one origin URL' }
+    # get-url expands insteadOf for fetch, without consulting pushurl or
+    # pushInsteadOf. Keep both identities in memory to retain redaction.
+    $r = Invoke-Git -GitArgs @('-C', $Dir, 'remote', 'get-url', 'origin') -OriginIdentity $true
+    if ($r.code -ne 0) { return "skipped|git origin inspection failed: $($r.out)" }
+    foreach ($url in @($urls[0], ($r.raw -replace '\r?\n\z', ''))) {
+        if ($url -cnotmatch '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)capthvnsen/alans-way-agents(\.git)?\z') {
+            return 'skipped|source clone origin is not capthvnsen/alans-way-agents'
+        }
     }
     $r = Invoke-Git @('-C', $Dir, 'status', '--porcelain')
     if ($r.code -ne 0) { return "skipped|git inspection failed: $($r.out)" }

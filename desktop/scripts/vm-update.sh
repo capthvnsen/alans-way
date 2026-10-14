@@ -401,11 +401,6 @@ plugin_version() {
   sed -n 's/^version:[[:space:]]*//p' "$1/plugin.yaml" 2>/dev/null | head -1 | \
     sed -E "s/[[:space:]]+#.*$//; s/^[[:space:]]*['\"]?v?//; s/['\"]?[[:space:]]*$//"
 }
-# $1 = install-metadata entry; prints its recorded revision ("" when absent).
-plugin_rev() {
-  printf '%s\n' "$1" | sed -n 's/.*"revision"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
-}
-
 # $1 = plugins dir, $2 = plugin name; prints the plugin's .install-metadata.json
 # entry. Parse JSON so another plugin's source/catalog on the same line
 # cannot masquerade as this plugin's metadata. Never read the whole registry
@@ -429,13 +424,29 @@ except (OSError,ValueError): pass' "$1/.install-metadata.json" "$2"
 clone_refresh() {
   _cr="$1"
   [ -e "$_cr/.git" ] || { echo "skipped file source is not a git clone"; return 0; }
-  _cr_url="$(run_git -C "$_cr" config --get remote.origin.url 2>&1)"; _cr_rc=$?
-  [ "$_cr_rc" -ne 124 ] || { echo "skipped $_cr_url"; return 0; }
-  [ "$_cr_rc" -eq 0 ] || { echo "skipped source clone has no origin"; return 0; }
-  case "$_cr_url" in
-    https://github.com/capthvnsen/alans-way-agents|https://github.com/capthvnsen/alans-way-agents.git|git@github.com:capthvnsen/alans-way-agents|git@github.com:capthvnsen/alans-way-agents.git|ssh://git@github.com/capthvnsen/alans-way-agents|ssh://git@github.com/capthvnsen/alans-way-agents.git) ;;
-    *) echo "skipped source clone origin is not capthvnsen/alans-way-agents"; return 0;;
-  esac
+  # config --get returns the last URL, but fetch uses the first. Preserve
+  # trailing empty values with a sentinel so even an empty extra URL counts.
+  _cr_urls="$(run_git -C "$_cr" config --get-all remote.origin.url 2>&1; _cr_rc=$?; printf '.'; exit "$_cr_rc")"; _cr_rc=$?
+  _cr_urls="${_cr_urls%.}"
+  [ "$_cr_rc" -ne 124 ] || { echo "skipped $(printf '%s' "$_cr_urls" | safe_git_error)"; return 0; }
+  [ "$_cr_rc" -le 1 ] || { echo "skipped git origin inspection failed: $(printf '%s' "$_cr_urls" | safe_git_error)"; return 0; }
+  [ "$_cr_rc" -eq 0 ] && [ "$(printf '%s' "$_cr_urls" | wc -l | tr -d ' ')" = 1 ] \
+    || { echo "skipped ambiguous origin: source clone must have exactly one origin URL"; return 0; }
+  _cr_nl='
+'
+  _cr_raw="${_cr_urls%"$_cr_nl"}"
+  # get-url applies insteadOf to the fetch URL; pushurl/pushInsteadOf do not
+  # affect fetch. Check both identities without ever printing either URL.
+  _cr_url="$(run_git -C "$_cr" remote get-url origin 2>&1; _cr_rc=$?; printf '.'; exit "$_cr_rc")"; _cr_rc=$?
+  _cr_url="${_cr_url%.}"
+  [ "$_cr_rc" -eq 0 ] || { echo "skipped git origin inspection failed: $(printf '%s' "$_cr_url" | safe_git_error)"; return 0; }
+  _cr_url="${_cr_url%"$_cr_nl"}"
+  for _cr_identity in "$_cr_raw" "$_cr_url"; do
+    case "$_cr_identity" in
+      https://github.com/capthvnsen/alans-way-agents|https://github.com/capthvnsen/alans-way-agents.git|git@github.com:capthvnsen/alans-way-agents|git@github.com:capthvnsen/alans-way-agents.git|ssh://git@github.com/capthvnsen/alans-way-agents|ssh://git@github.com/capthvnsen/alans-way-agents.git) ;;
+      *) echo "skipped source clone origin is not capthvnsen/alans-way-agents"; return 0;;
+    esac
+  done
   _cr_dirty="$(run_git -C "$_cr" status --porcelain 2>&1)" \
     || { echo "skipped git inspection failed: $(printf '%s' "$_cr_dirty" | safe_git_error)"; return 0; }
   if [ -n "$_cr_dirty" ]; then
