@@ -58,6 +58,7 @@ if (typeof electron === 'string') {
   const baseline = process.env.PDF_BASELINE === '1';
   const phase = process.argv[2];
   prepareFixture(profile);
+  app.whenReady().then(() => session.fromPartition('persist:browser').protocol.handle('https', () => new Response('<!doctype html><title>Retained PDF provenance</title>')));
   process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
   app.setPath('downloads', path.join(profile, 'downloads'));
   if (phase === 'exercise') process.argv.push(path.join(profile, 'cold start.pdf'));
@@ -86,12 +87,28 @@ if (typeof electron === 'string') {
     const command = (name, value = {}) => evaluate(`window.workspace.command(${JSON.stringify(name)}, ${JSON.stringify(value)})`);
     const fileUrl = name => pathToFileURL(path.join(profile, name)).href;
     const hasFile = async name => (await state()).tabs.some(t => t.url === fileUrl(name));
+    // Only this generated fixture connection is read, never the live connection.
+    const connection = JSON.parse(fs.readFileSync(path.join(profile, 'connection.json')));
+    const apiRaw = async (route, method = 'GET', body, actor = '123') => {
+      const response = await fetch(new URL(route, connection.url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': actor, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      return { status: response.status, data: await response.json() };
+    };
     if (phase === 'restore') {
       const restored = await waitFor(state, s => s.tabs.some(t => t.url.endsWith('/restore.pdf')));
       const pdfTab = restored.tabs.find(t => t.url.endsWith('/restore.pdf'));
       await viewerOf(tabContents(pdfTab.url)[0]);
       check('PDF restored after actual restart', pdfTab.controller, 'human');
       check('invalid restored PDF discarded', await hasFile('fake.pdf'), false);
+      const retained = restored.tabs.find(t => t.url === 'https://pdf-provenance.invalid/');
+      check('navigated local PDF restores human provenance', retained?.localPdf, true);
+      check('restored local PDF cannot be granted', await command('grant-tab', { id: retained.id, botId: '123' }).then(() => true, () => false), false);
+      check('restored local PDF cannot change controller', await command('control', { id: retained.id, controller: 'agent' }).then(() => true, () => false), false);
+      check('restored local PDF cannot be claimed', (await apiRaw(`/v1/tabs/${retained.id}/control`, 'POST', { controller: 'agent' })).status, 404);
+      check('restored local PDF hidden from list', (await apiRaw('/v1/tabs')).data.tabs.some(t => t.id === retained.id), false);
+      for (const suffix of ['', '/snapshot', '/screenshot', '/actions']) {
+        check(`restored local PDF API ${suffix || 'get'} refused`, (await apiRaw(`/v1/tabs/${retained.id}${suffix}`, suffix === '/actions' ? 'POST' : 'GET', suffix === '/actions' ? { action: 'eval', expression: 'document.title', epoch: retained.epoch } : undefined)).status, 404);
+      }
+      check('restored refusals preserve controller and epoch', { controller: (await state()).tabs.find(t => t.id === retained.id).controller, epoch: (await state()).tabs.find(t => t.id === retained.id).epoch }, { controller: 'human', epoch: retained.epoch });
       return quitFixture();
     }
     // Wait for the queued files themselves: ready-time tab creation can outlast
@@ -175,12 +192,6 @@ if (typeof electron === 'string') {
     });
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     const base = `http://127.0.0.1:${server.address().port}`;
-    // Only this generated fixture connection is read, never the live connection.
-    const connection = JSON.parse(fs.readFileSync(path.join(profile, 'connection.json')));
-    const apiRaw = async (route, method = 'GET', body, actor = '123') => {
-      const response = await fetch(new URL(route, connection.url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': actor, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
-      return { status: response.status, data: await response.json() };
-    };
     const agent = await apiRaw('/v1/tabs', 'POST', { url: `${base}/agent.pdf`, background: true });
     assert.equal(agent.status, 201);
     await viewerOf(tabContents(`${base}/agent.pdf`)[0]);
@@ -249,6 +260,19 @@ if (typeof electron === 'string') {
         check(`${label} non-PDF drop opens no tab`, (await state()).tabs.length, before);
       }
     } finally { await telegramUpload.loadURL(telegramUrl); }
+    // Handlers installed during the gesture must retain the native File even
+    // when their drop listener runs after the isolated preload's listener.
+    for (const gesture of ['dragenter', 'dragover']) for (const receiver of ['window', 'document', 'target']) for (const capture of [false, true]) {
+      await human.loadURL(`${base}/dynamic`);
+      await command('activate', { id: humanId }); human.focus();
+      await human.executeJavaScript(`window.received=[]; const target=document.body; const receiver=${receiver === 'target' ? 'target' : receiver}; receiver.addEventListener('${gesture}', event => { event.preventDefault(); receiver.addEventListener('drop', async event => { event.preventDefault(); for(const file of event.dataTransfer.files) window.received.push({name:file.name,pdf:(await file.text()).startsWith('%PDF-')}); }, {capture:${capture},once:true}); }, {capture:${capture},once:true}); window.addEventListener('dragover',event=>event.preventDefault());`);
+      const before = (await state()).tabs.length;
+      await nativeDrop(human, 'finder.pdf');
+      await waitFor(() => human.executeJavaScript('window.received.length'));
+      await new Promise(r => setTimeout(r, 100));
+      check(`dynamic ${gesture}/${receiver}/${capture ? 'capture' : 'bubble'} receives PDF`, await human.executeJavaScript('window.received'), [{ name: 'finder.pdf', pdf: true }]);
+      check(`dynamic ${gesture}/${receiver}/${capture ? 'capture' : 'bubble'} opens no tab`, (await state()).tabs.length, before);
+    }
     await human.loadURL(base);
     // Drag a real on-disk file using trusted Chromium input, not a synthetic
     // File.path or a renderer-supplied path. Cover both shell and web view.
@@ -374,6 +398,9 @@ if (typeof electron === 'string') {
     await viewer.executeJavaScript("document.querySelector('pdf-viewer').shadowRoot.querySelector('viewer-toolbar').shadowRoot.querySelector('viewer-download-controls').shadowRoot.querySelector('#save').click()");
     const savedViewer = await waitFor(state, s => s.downloads.length > downloadsBefore && s.downloads[0].state === 'completed');
     check('viewer download saves PDF bytes', fs.readFileSync(savedViewer.downloads[0].path).subarray(0,5).toString(), '%PDF-');
+    await command('navigate', { id: local.id, url: 'https://pdf-provenance.invalid/' });
+    await waitFor(state, s => s.tabs.find(t => t.id === local.id)?.url === 'https://pdf-provenance.invalid/');
+    check('local provenance retained after web navigation', (await state()).tabs.find(t => t.id === local.id).localPdf, true);
     // Seed restart through an already supported download Open path on main.
     const restorePath = path.join(profile, 'restore.pdf');
     if (!await hasFile('restore.pdf')) {
@@ -392,7 +419,7 @@ if (typeof electron === 'string') {
     const finalState = await waitFor(state, s => s.tabs.some(t => t.url.endsWith('/restore.pdf')));
     const keep = finalState.tabs.find(t => t.url.endsWith('/restore.pdf'));
     assert.ok(keep, 'a PDF remains to persist');
-    for (const tab of finalState.tabs) if (tab.id !== keep.id) await command('close-tab', { id: tab.id });
+    for (const tab of finalState.tabs) if (tab.id !== keep.id && tab.id !== local.id) await command('close-tab', { id: tab.id });
     quitFixture(server);
   }).catch(error => { console.error(error.stack); server?.closeAllConnections(); server?.close(); app.exit(1); });
 }

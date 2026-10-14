@@ -187,7 +187,7 @@ function readPreferences() {
 const prefsSaver = createSaver({
   snapshot() {
     if (!prefs) return null;
-    if (win && !win.isDestroyed()) prefs.savedTabs = [...tabs.values()].filter(tab => !tab.extensionPage && tab.view?.webContents && !tab.view.webContents.isDestroyed()).map((tab) => ({ url: tab.view.webContents.getURL() || tab.requestedUrl, botId: tab.botId })).filter((item) => item.url);
+    if (win && !win.isDestroyed()) prefs.savedTabs = [...tabs.values()].filter(tab => !tab.extensionPage && tab.view?.webContents && !tab.view.webContents.isDestroyed()).map((tab) => ({ url: tab.view.webContents.getURL() || tab.requestedUrl, botId: tab.botId, ...(tab.localPdf ? { localPdf: true } : {}) })).filter((item) => item.url);
     return prefs;
   },
   write(text) {
@@ -544,22 +544,23 @@ async function resolveFavicon(tab, favicons) {
   }
   apply(inline);
 }
-function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedBotId || 'shared', controller = 'human', options, skipLoad = false, activate = true, extensionPage = false } = {}) {
+function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedBotId || 'shared', controller = 'human', options, skipLoad = false, activate = true, extensionPage = false, localPdf = false } = {}) {
   if (tabs.size >= 40) throw new Error('Close a tab before opening another.');
   if (filePath) {
     filePath = pdfFile(filePath);
     if (!filePath) throw new Error('This file is not a PDF document.');
-    controller = 'human';
   }
+  localPdf = !!filePath || localPdf === true;
+  if (localPdf) controller = 'human';
   const targetUrl = filePath ? pathToFileURL(filePath).href : pageUrl(url, extensionPage);
   // plugins: true enables only Chromium's bundled PDF viewer, so a PDF URL
   // renders in the tab instead of downloading. The rest of the lockdown list
   // is unchanged, and the extension preload ignores the viewer's own frame.
   const view = new WebContentsView({ ...(options?.webContents ? { webContents: options.webContents } : {}),
     webPreferences: { ...options?.webPreferences, preload: undefined, partition: 'persist:browser', contextIsolation: true, nodeIntegration: false, sandbox: true,
-      webSecurity: true, plugins: true, backgroundThrottling: false } });
+      webSecurity: true, navigateOnDragDrop: false, plugins: true, backgroundThrottling: false } });
   view.setBackgroundColor('#0b0b0c');
-  const tab = { id: crypto.randomUUID(), view, requestedUrl: skipLoad ? '' : targetUrl, botId: String(botId).slice(0, 100), controller, extensionPage, localPdf: !!filePath, epoch: 1, title: filePath ? path.basename(filePath) : 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
+  const tab = { id: crypto.randomUUID(), view, requestedUrl: skipLoad ? '' : targetUrl, botId: String(botId).slice(0, 100), controller, extensionPage, localPdf, epoch: 1, title: filePath ? path.basename(filePath) : 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
   if (controller === 'agent') tab.agentSince = Date.now();
   tabs.set(tab.id, tab);
   tab.host = backgroundHost();
@@ -2828,7 +2829,7 @@ function createWindow() {
       : { titleBarStyle: 'hidden', titleBarOverlay: { color: '#111112', symbolColor: '#e7e7eb', height: 40 } }),
     webPreferences: { preload: path.join(ROOT, 'preload.bundle.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   lockDown(win.webContents, INDEX_FILE);
-  telegramView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'telegram-preload.bundle.cjs'), partition: 'persist:telegram', contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  telegramView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'telegram-preload.bundle.cjs'), partition: 'persist:telegram', navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true } });
   telegramView.setBackgroundColor('#09090a');
   configureContents(telegramView.webContents, true);
   watchTelegram(telegramView.webContents);
@@ -2851,7 +2852,7 @@ function createWindow() {
   for (const item of prefs.savedTabs.filter((item) => item.url && item.url !== 'about:blank').slice(0, 12)) {
     try {
       if (/^file:\/\//i.test(String(item.url))) createTab({ filePath: fileURLToPath(item.url), botId: item.botId, activate: false });
-      else createTab({ url: item.url, botId: item.botId, activate: false });
+      else createTab({ url: item.url, botId: item.botId, localPdf: item.localPdf === true, activate: false });
     } catch {}
   }
   activeTabId = 'home';

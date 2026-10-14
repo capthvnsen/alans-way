@@ -45,8 +45,10 @@ function createConfig(env) {
     // scheme the packaged macOS app is never a valid handler, so the runtime
     // setAsDefaultProtocolClient call alone cannot deliver cold-start links.
     protocols: [{ name: 'alansway', schemes: ['alansway'] }],
-    fileAssociations: [{ ext: 'pdf', name: 'PDF document', mimeType: 'application/pdf', role: 'Viewer', rank: 'Alternate' }],
     mac: {
+      // macOS offers an Alternate viewer. Windows association is omitted: the
+      // NSIS built-in registration overwrites the default PDF handler.
+      fileAssociations: [{ ext: 'pdf', name: 'PDF document', mimeType: 'application/pdf', role: 'Viewer', rank: 'Alternate' }],
       target: [
         { target: 'dmg', arch: ['arm64'] },
         // electron-updater on macOS only consumes the zip; the dmg stays for

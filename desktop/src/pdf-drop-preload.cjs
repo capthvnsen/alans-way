@@ -18,19 +18,24 @@ if (process.isMainFrame) {
     if ([...(event.dataTransfer?.items || [])].some(item => item.kind === 'file' && item.type === 'application/pdf')) event.preventDefault();
   };
   const drop = event => {
-    if (!event.isTrusted || event.defaultPrevented) return;
-    const files = pdfs(event);
-    if (!files.length) return;
-    event.preventDefault();
-    open(files);
+    if (!event.isTrusted) return;
+    // DataTransfer is readable only during dispatch. Capture native paths now,
+    // but decide after every page listener (including dynamically added window
+    // listeners) has had its chance to keep the file with preventDefault().
+    const paths = pdfs(event).map(file => webUtils.getPathForFile(file)).filter(Boolean);
+    if (!paths.length) return;
+    setTimeout(() => {
+      if (!event.defaultPrevented) ipcRenderer.invoke('workspace:pdf-drop', paths).catch(() => {});
+    }, 0);
   };
+  // Chromium's file-drop navigation is disabled by the webPreferences. The
+  // next-task decision therefore cannot race a navigation or replace this tab.
+  window.addEventListener('drop', drop, true);
   const listen = () => {
     // Refresh at the start of each gesture so even window handlers installed
-    // by the page after preload run before the fallback bubble listeners.
+    // by the page after preload run before the fallback dragover listener.
     window.removeEventListener('dragover', dragover);
-    window.removeEventListener('drop', drop);
     window.addEventListener('dragover', dragover);
-    window.addEventListener('drop', drop);
   };
   window.addEventListener('dragenter', listen);
   listen();

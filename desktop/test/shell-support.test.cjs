@@ -60,6 +60,12 @@ test('normalizePreferences replaces wrong-typed fields with defaults and keeps v
   assert.deepEqual(normalizePreferences('nope', defaults), defaults);
 });
 
+test('saved local-PDF provenance accepts booleans only, preserving legacy tabs', () => {
+  const savedTabs = [undefined, false, true, 'true', 1, null].map(localPdf => ({ url: 'https://example.com/', ...(localPdf === undefined ? {} : { localPdf }) }));
+  const prefs = normalizePreferences({ savedTabs }, defaults);
+  assert.deepEqual(prefs.savedTabs, [{ url: 'https://example.com/' }, ...[false, true, false, false, false].map(localPdf => ({ url: 'https://example.com/', localPdf }))]);
+});
+
 test('createSaver debounces, skips unchanged data, and survives write errors', async () => {
   let data = { n: 1 }, writes = [], failing = false, errors = 0;
   const saver = createSaver({ snapshot: () => data, write: (text) => { if (failing) throw new Error('EPERM'); writes.push(text); }, onError: () => errors++, delayMs: 10 });

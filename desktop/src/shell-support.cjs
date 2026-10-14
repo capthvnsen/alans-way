@@ -54,6 +54,7 @@ function normalizePreferences(raw, defaults) {
     else if (isObject(fallback)) out[key] = isObject(value) ? value : fallback;
     else if (typeof value !== typeof fallback || (typeof value === 'number' && !Number.isFinite(value))) out[key] = fallback;
   }
+  out.savedTabs = out.savedTabs.map(item => Object.hasOwn(item, 'localPdf') ? { ...item, localPdf: item.localPdf === true } : item);
   return out;
 }
 
