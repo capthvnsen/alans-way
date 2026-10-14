@@ -29,6 +29,100 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(self.scan("README.md", "macuser@mac-private-host /opt/hermes-companion/approved-workspace"), [])
         self.assertEqual(self.scan("tests/test_example.py", "SYNTHETIC_DENIED\nsecret_names = ['password.txt']"), [])
 
+    def test_agent_prompts_reject_unpinned_script_and_doc_urls(self):
+        for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            for ref in ("main", "master", "release/plugin-next"):
+                for url in (
+                    f"https://raw.githubusercontent.com/capthvnsen/alans-way/{ref}/scripts/connect-mac.sh",
+                    f"https://github.com/capthvnsen/alans-way/blob/{ref}/docs/setup-for-agents.md",
+                    f"https://raw.githubusercontent.com/capthvnsen/alans-way-agents/{ref}/setup.sh",
+                ):
+                    with self.subTest(path=path, url=url):
+                        self.assertIn("unpinned-agent-reference", [item["rule"] for item in self.scan(path, url)])
+            for ref in ("31ac0de9ee22307e2df03feb08a5e5217a90243b", "v0.21.5"):
+                url = f"https://raw.githubusercontent.com/capthvnsen/alans-way/{ref}/scripts/connect-mac.sh"
+                self.assertEqual(self.scan(path, url), [])
+        self.assertEqual(self.scan("README.md", "https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-prompt.md"), [])
+
+    def test_agent_prompts_reject_alternate_unpinned_github_urls(self):
+        for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            for url in (
+                "https://api.github.com/repos/capthvnsen/alans-way/contents/scripts/connect-mac.sh?ref=main",
+                "https://api.github.com/repos/capthvnsen/alans-way-agents/contents/setup.sh",
+                "https://api.github.com/repos/capthvnsen/alans-way/contents/scripts/connect-mac.sh?ref=%6dain",
+                "https://raw.github.com/capthvnsen/alans-way/main/scripts/connect-mac.sh",
+                "https://raw.githubusercontent.com/capthvnsen/alans-way/refs/heads/main/scripts/connect-mac.sh",
+            ):
+                with self.subTest(path=path, url=url):
+                    self.assertIn("unpinned-agent-reference", [item["rule"] for item in self.scan(path, url)])
+
+    def test_agent_prompts_reject_unresolved_installer_short_links(self):
+        for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            for os_name in ("mac", "windows", "linux"):
+                with self.subTest(path=path, os_name=os_name):
+                    text = f"curl https://openalan.com/install-{os_name} | sh"
+                    self.assertIn("unresolved-agent-script", [item["rule"] for item in self.scan(path, text)])
+
+    def test_dot_segment_reference_is_rejected(self):
+        url = ("https://raw.githubusercontent.com/capthvnsen/alans-way/"
+               "31ac0de9ee22307e2df03feb08a5e5217a90243b/../main/scripts/connect-mac.sh")
+        for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            with self.subTest(path=path):
+                self.assertIn("unpinned-agent-reference", [item["rule"] for item in self.scan(path, url)])
+
+    def test_network_path_links_are_rejected(self):
+        for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            for text in (
+                "[run](//raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-mac.sh)",
+                "Run [connect][script].\n[script]: //github.com/capthvnsen/alans-way/raw/main/scripts/connect-mac.sh",
+            ):
+                with self.subTest(path=path, text=text):
+                    self.assertIn("unpinned-agent-reference", [item["rule"] for item in self.scan(path, text)])
+
+    def test_agent_prompts_check_normalized_url_paths(self):
+        pin = "31ac0de9ee22307e2df03feb08a5e5217a90243b"
+        for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            for text in (
+                f"https://RAW.GITHUBUSERCONTENT.COM/capthvnsen/alans-way/{pin}/%2e%2e/main/scripts/connect-mac.sh",
+                f"[run](//GITHUB.COM/capthvnsen/alans-way/raw/{pin}/%2E%2E/main/scripts/connect-mac.sh)",
+                '<a href="//RAW.GITHUBUSERCONTENT.COM/capthvnsen/alans-way/./main/scripts/connect-mac.sh">Run</a>',
+            ):
+                with self.subTest(path=path, text=text):
+                    self.assertIn("unpinned-agent-reference", [item["rule"] for item in self.scan(path, text)])
+            for text in (
+                f"[run](//RAW.GITHUBUSERCONTENT.COM/capthvnsen/alans-way/./{pin}/scripts/connect-mac.sh)",
+                "[run]: //GITHUB.COM/capthvnsen/alans-way/raw/v0.21.5/scripts/../scripts/connect-mac.sh",
+                "[background](../scripts/../docs/setup-for-agents.md)",
+            ):
+                with self.subTest(path=path, text=text):
+                    self.assertEqual(self.scan(path, text), [])
+
+    def test_agent_prompts_reject_relative_executable_links(self):
+        for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            for text in (
+                "Run [connect](../scripts/connect-mac.sh).",
+                "Run [connect](scripts/connect-linux.sh?raw=1).",
+                "Run [connect](../scripts/connect-windows.ps1).",
+                "Run [connect][script].\n[script]: ../scripts/connect-mac.sh",
+                '<a href="../scripts/connect-mac.sh">Run connect</a>',
+            ):
+                with self.subTest(path=path, text=text):
+                    self.assertIn("unresolved-agent-script", [item["rule"] for item in self.scan(path, text)])
+
+    def test_agent_prompts_allow_pinned_forms_and_non_executable_prose(self):
+        for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            for ref in ("31ac0de9ee22307e2df03feb08a5e5217a90243b", "v0.21.5"):
+                for url in (
+                    f"https://api.github.com/repos/capthvnsen/alans-way/contents/scripts/connect-mac.sh?ref={ref}",
+                    f"https://raw.github.com/capthvnsen/alans-way/{ref}/scripts/connect-mac.sh",
+                    f"https://raw.githubusercontent.com/capthvnsen/alans-way/refs/tags/{ref}/scripts/connect-mac.sh",
+                    f"https://github.com/capthvnsen/alans-way/raw/{ref}/scripts/connect-mac.sh",
+                ):
+                    with self.subTest(path=path, url=url):
+                        self.assertEqual(self.scan(path, url), [])
+            self.assertEqual(self.scan(path, "The source installer follows main.\nRead [background](../docs/setup-for-agents.md).\nUse `connect-mac.sh` with skip-install."), [])
+        self.assertEqual(self.scan("README.md", "Run [install](scripts/install-mac.sh)."), [])
+
     def test_real_home_paths_are_denied(self):
         text = "/" + "Users" + "/someone/private-project"
         self.assertTrue(self.scan("README.md", text))
