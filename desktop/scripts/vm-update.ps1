@@ -118,7 +118,9 @@ function Get-Profiles([string]$Hhome) {
 # Hermes has one atomic --all operation; older versions need one call each.
 function Stop-EveryGateway([string]$Hhome) {
     $script:GatewayNamed = @()
-    $profiles = @(Get-Profiles $Hhome)
+    # Get-Profiles returns one array object; wrapping it again nests all profiles
+    # and lets the default-profile check skip every named gateway in that bundle.
+    $profiles = Get-Profiles $Hhome
     foreach ($prof in $profiles) {
         if ($prof.name -eq 'default') { continue }
         $gatewayPid = 0
