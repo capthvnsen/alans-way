@@ -41,6 +41,12 @@ ALLOWED_ADDRESSES = {
 }
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pem", ".key", ".patch", ".diff", ".log"}
 FORBIDDEN_IMPORTS = {"gateway", "tui_gateway", "hermes_cli", "hermes_state", "run_agent", "model_tools", "tools", "agent"}
+AGENT_PROMPTS = {"docs/setup-prompt.md", "docs/update-for-agents.md"}
+AGENT_REFERENCE = re.compile(
+    r"https://(?:raw\.githubusercontent\.com/capthvnsen/alans-way(?:-agents)?/"
+    r"|github\.com/capthvnsen/alans-way(?:-agents)?/(?:blob|raw)/)"
+    r"([^\s\"'<>`)]+)")
+PINNED_REF = re.compile(r"(?:[0-9a-fA-F]{40}|v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)")
 BINARY_ASSETS = {"desktop/assets/icon.png": b"\x89PNG\r\n\x1a\n", "desktop/assets/icon.icns": b"icns",
                  "desktop/assets/icon.ico": b"\x00\x00\x01\x00",
                  "desktop/src/newtab-backdrop.png": b"\x89PNG\r\n\x1a\n"}
@@ -67,6 +73,11 @@ def inspect_text(path: str, text: str) -> list[dict]:
             or name in {"credentials.json", "auth.json", "tokens.json"}):
         findings.append({"file": path, "line": 0, "rule": "runtime-or-private-artifact"})
     for number, line in enumerate(text.splitlines(), 1):
+        if path in AGENT_PROMPTS:
+            for match in AGENT_REFERENCE.finditer(line):
+                ref, _, target = match.group(1).partition("/")
+                if target and not PINNED_REF.fullmatch(ref):
+                    findings.append({"file": path, "line": number, "rule": "unpinned-agent-reference"})
         for label, pattern in RULES:
             if pattern.search(line):
                 findings.append({"file": path, "line": number, "rule": label})

@@ -1,4 +1,4 @@
-"""The agent setup prompt is copied into the README; both must stay in step with the scripts."""
+"""Agent prompts bootstrap Hermes' plugin and delegate setup to its installed skill."""
 from pathlib import Path
 import re
 import subprocess
@@ -29,17 +29,25 @@ class SetupPromptTests(unittest.TestCase):
             with self.subTest(path=path.name):
                 self.assertNotRegex(text, r"[Ii]nstall the repository's `workspace-operations` skill in the profile")
 
-    def test_connect_mac_flags_in_the_prompt_exist(self):
-        prompt = prompt_block("docs/setup-prompt.md")
-        line = next(item for item in prompt.splitlines() if "connect-mac.sh" in item)
-        script = (ROOT / "scripts" / "connect-mac.sh").read_text(encoding="utf-8")
-        for flag in re.findall(r"--[a-z-]+", line.split("sh -s --", 1)[1]):
-            self.assertIn(f"    {flag})", script, f"{flag} is not parsed by connect-mac.sh")
+    def test_prompts_delegate_to_the_installed_setup_skill(self):
+        for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            prompt = prompt_block(path)
+            with self.subTest(path=path):
+                self.assertIn("installed workspace-setup skill", prompt)
+                self.assertIn("--repo-ref", prompt)
+                self.assertIn("--desktop-ref", prompt)
+                self.assertIn("--skip-plugin", prompt)
+                self.assertNotRegex(prompt, r"git[^\n]*(?:clone|pull)")
+                self.assertNotRegex(prompt, r"(?m)^\s*[^\n]*setup\.sh --")
+                self.assertNotIn("~/.ssh/authorized_keys", prompt)
 
-    def test_prompt_downloads_scripts_that_exist_here(self):
-        prompt = prompt_block("docs/setup-prompt.md")
-        for path in re.findall(r"raw\.githubusercontent\.com/capthvnsen/alans-way/main/(\S+)", prompt):
-            self.assertTrue((ROOT / path).is_file(), path)
+    def test_prompts_keep_the_human_handoffs_and_connection_checks(self):
+        for doc in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            prompt = " ".join(prompt_block(doc).split())
+            for checkpoint in ("QR", "Tailscale", "Remote Login", "Accessibility",
+                               "Screen Recording", "Test agent path", "Example Domain"):
+                with self.subTest(doc=doc, checkpoint=checkpoint):
+                    self.assertIn(checkpoint, prompt)
 
     def test_mac_scripts_parse(self):
         for name in ("connect-mac.sh", "install-mac.sh"):

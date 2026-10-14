@@ -29,6 +29,21 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(self.scan("README.md", "macuser@mac-private-host /opt/hermes-companion/approved-workspace"), [])
         self.assertEqual(self.scan("tests/test_example.py", "SYNTHETIC_DENIED\nsecret_names = ['password.txt']"), [])
 
+    def test_agent_prompts_reject_unpinned_script_and_doc_urls(self):
+        for path in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
+            for ref in ("main", "master", "release/plugin-next"):
+                for url in (
+                    f"https://raw.githubusercontent.com/capthvnsen/alans-way/{ref}/scripts/connect-mac.sh",
+                    f"https://github.com/capthvnsen/alans-way/blob/{ref}/docs/setup-for-agents.md",
+                    f"https://raw.githubusercontent.com/capthvnsen/alans-way-agents/{ref}/setup.sh",
+                ):
+                    with self.subTest(path=path, url=url):
+                        self.assertIn("unpinned-agent-reference", [item["rule"] for item in self.scan(path, url)])
+            for ref in ("31ac0de9ee22307e2df03feb08a5e5217a90243b", "v0.21.5"):
+                url = f"https://raw.githubusercontent.com/capthvnsen/alans-way/{ref}/scripts/connect-mac.sh"
+                self.assertEqual(self.scan(path, url), [])
+        self.assertEqual(self.scan("README.md", "https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-prompt.md"), [])
+
     def test_real_home_paths_are_denied(self):
         text = "/" + "Users" + "/someone/private-project"
         self.assertTrue(self.scan("README.md", text))
