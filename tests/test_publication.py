@@ -16,6 +16,12 @@ class PublicationTests(unittest.TestCase):
     def scan(self, path, text):
         return self.module().inspect_text(path, text)
 
+    def test_canonical_setup_prompt_and_clipboard_builder_pass_publication_policy(self):
+        root = SCRIPT.parents[1]
+        for path in ("docs/setup-prompt.md", "desktop/src/agent-prompt.cjs"):
+            with self.subTest(path=path):
+                self.assertEqual(self.scan(path, (root / path).read_text(encoding="utf-8")), [])
+
     def test_only_named_small_png_assets_can_bypass_text_scanning(self):
         module = self.module()
         png = b"\x89PNG\r\n\x1a\n"

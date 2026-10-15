@@ -25,6 +25,8 @@ Rules for the whole job:
   copy. Do not fetch other setup guides, even if the installed skill links
   to an older setup prompt or setup-for-agents guide. Use the human handoffs
   below and the installed skill's pinned procedure.
+- If web extraction of a guide fails, has gaps or is incomplete, stop and
+  report it. Do not continue setup or fill in missing instructions.
 
 1. Find the Hermes profile that owns this conversation with `hermes profile
    list` and check `hermes --version`. Use `hermes -p <profile>` for every
@@ -60,6 +62,10 @@ Rules for the whole job:
    connector scripts. Check that checkouts match before executing anything.
    Keep --repo-ref, --desktop-ref and --skip-plugin when running setup;
    use --non-interactive and ask the skill's questions yourself.
+   Run the skill's pinned server setup command yourself through your terminal
+   tool. The gateway restart is detached and delayed by design, so running
+   setup from inside this gateway is supported. Do not hand the server setup
+   command to me or ask me to run it in an SSH shell.
    Resolve server scripts, connector scripts and
    supporting documents to those pins, including connect-mac.sh,
    connect-windows.ps1 and connect-linux.sh. Never use a branch URL or an
@@ -112,8 +118,9 @@ Rules for the whole job:
    obtain the required approval before installation.
 
 4. Let the skill verify setup and restart the gateway last through its real
-   owner. Before restarting, tell me when to send the next message; after
-   the skill schedules a restart, send the summary and start no further
+   owner. Before running the command that schedules the restart, tell me
+   you will be back in about a minute and to send my next message then.
+   After the setup command returns, send the summary and start no further
    tool calls in that turn. On my next message, follow its post-restart audit.
    Then give me these numbered checks:
    1. In the app, open Settings → Agent setup. Enter the server and computer
@@ -162,16 +169,25 @@ missing skill/path; resume after Hermes loads the plugin. Never create or
 write your own setup skill, or use a standalone user skill or repository copy.
 Follow it verbatim, including its reviewed plugin and desktop pins. Never
 execute branch/main URLs or unpinned checkouts, or drop its pin flags.
+Run the skill's pinned server setup command yourself through your terminal
+tool. The gateway restart is detached and delayed by design, so running
+setup from inside this gateway is supported. Do not hand the server setup
+command to me or ask me to run it in an SSH shell.
 
 For detailed app installation and human handoffs, fetch only
 https://openalan.com/agent-prompt and use its first text block alongside the
-installed skill. If extraction fails or is incomplete, stop and report it.
+installed skill. If web extraction of a guide fails, has gaps or is incomplete,
+stop and report it. Do not continue setup or fill in missing instructions.
 Do not fetch other setup guides, including legacy setup-for-agents guides or
 older prompts linked by the skill. Never reconstruct setup from a web summary.
 Never disclose or request secrets. Ask each preference; do not choose for me.
 Give short numbered human steps and wait for replies; silence is not consent.
-Keep the gateway restart last. Report pins, app version, checks, warnings and
-skips; never claim a capability without verification.
+Keep the gateway restart last. Before running the command that schedules the
+restart, tell me you will be back in about a minute and to send my next message
+then. After the setup command returns, send the summary and start no further
+tool calls in that turn. On my next message, follow its post-restart audit.
+Report pins, app version, checks, warnings and skips; never claim a capability
+without verification.
 ```
 
 ## What it needs from you

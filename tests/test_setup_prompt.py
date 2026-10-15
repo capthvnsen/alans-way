@@ -66,6 +66,31 @@ class SetupPromptTests(unittest.TestCase):
                 with self.subTest(doc=doc, checkpoint=checkpoint):
                     self.assertIn(checkpoint, prompt)
 
+    def test_setup_runs_in_the_bot_terminal_despite_its_gateway_restart(self):
+        source = (ROOT / "docs/setup-prompt.md").read_text(encoding="utf-8")
+        for index, block in enumerate(re.findall(r"```text\n(.*?)\n```", source, re.S)):
+            prompt = " ".join(block.split())
+            for instruction in (
+                "Run the skill's pinned server setup command yourself through your terminal tool",
+                "gateway restart is detached and delayed by design",
+                "running setup from inside this gateway is supported",
+                "Do not hand the server setup command to me or ask me to run it in an SSH shell",
+                "Before running the command that schedules the restart",
+                "back in about a minute",
+                "start no further tool calls in that turn",
+                "On my next message, follow its post-restart audit",
+            ):
+                with self.subTest(block=index, instruction=instruction):
+                    self.assertIn(instruction, prompt)
+
+    def test_both_setup_prompts_stop_on_incomplete_guide_extraction(self):
+        source = (ROOT / "docs/setup-prompt.md").read_text(encoding="utf-8")
+        for index, block in enumerate(re.findall(r"```text\n(.*?)\n```", source, re.S)):
+            prompt = " ".join(block.split())
+            with self.subTest(block=index):
+                self.assertIn("If web extraction of a guide fails, has gaps or is incomplete, stop and report it", prompt)
+                self.assertIn("Do not continue setup or fill in missing instructions", prompt)
+
     def test_mac_scripts_parse(self):
         for name in ("connect-mac.sh", "install-mac.sh"):
             subprocess.run(["sh", "-n", str(ROOT / "scripts" / name)], check=True)
