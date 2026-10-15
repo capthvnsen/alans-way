@@ -465,7 +465,7 @@ function renderOnboarding(show) {
   panel.classList.toggle('hidden', !show);
   if (!show) { onboardingSignature = ''; return; }
   const cloud = state.cloud || {};
-  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
+  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername, cloud.model, cloud.existingModel] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
   if (signature === onboardingSignature) return;
   onboardingSignature = signature;
   const go = (step) => { onboardingStep = step; renderOnboarding(true); };
@@ -542,6 +542,12 @@ function renderCloudOnboarding(card, actions, cloud) {
   const button = (label, className, onclick) => { const el = element('button', className, label); el.onclick = onclick; return el; };
   const go = (step) => command('cloud-goto', { step });
   const next = () => command('cloud-next');
+  if (cloud.diy && cloud.model === 'existing') {
+    const found = cloud.existingModel;
+    card.append(element('p', 'settings-note', found
+      ? `Using your server’s configured model: ${found.provider} / ${found.model}.`
+      : 'Using the model already set on your server.'));
+  }
   if (cloud.step === 'cloud-wait') {
     const labels = { new: 'Creating your computer…', client_created: 'Creating your computer…', computer_created: 'Booting your computer…', bootstrapping: 'Installing your agent…' };
     card.append(element('h2', '', 'Setting up your Alan computer'),
@@ -555,6 +561,7 @@ function renderCloudOnboarding(card, actions, cloud) {
       status.textContent = 'Checking…';
       const result = await command('cloud-connect', extra);
       status.textContent = result?.detail || '';
+      if (result?.existingModel) toast(result.detail);
     };
     if (cloud.diy) {
       card.append(element('h2', '', 'Use your own server'), element('p', 'settings-note', 'Enter the SSH address of the machine that will run your agent.'));
@@ -622,6 +629,14 @@ function renderCloudOnboarding(card, actions, cloud) {
         const result = await command('cloud-model', { choice: 'apikey', key: input.value.trim() });
         status.textContent = result?.detail || '';
       }));
+    if (cloud.diy) {
+      actions.append(button('Use the model already set on my server', 'secondary-button', () => command('cloud-model-existing')));
+      status.textContent = 'Checking your server’s model configuration…';
+      command('cloud-model-detect').then((result) => {
+        status.textContent = result?.detail || '';
+        if (result?.existingModel) toast(result.detail);
+      });
+    }
   } else if (cloud.step === 'telegram') {
     card.append(element('h2', '', 'Set up your Telegram bot'),
       element('p', 'settings-note', 'Alan talks to you through a Telegram bot. We can make one with @BotFather, or you can paste a token you already have.'));

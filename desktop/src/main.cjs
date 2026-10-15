@@ -1190,6 +1190,7 @@ function cloudView() {
     name: cloudComputer.computer_name || cloud.computerName || '', tailscaleUrl: cloudComputer.tailscale_url || cloud.tailscaleUrl || '' } : null;
   return { claimed: !!session || cloud.diy === true, diy: cloud.diy === true,
     step: cloudStep(prefs, cloudComputer) || '',
+    model: cloud.model || '', existingModel: cloud.diy === true ? cloudModel.parseExistingModel({ code: 0, out: `${cloud.existingModel?.provider || ''}\n${cloud.existingModel?.model || ''}` }) : null,
     migration: cloud.migration || '', tokenedProfiles: cloud.tokenedProfiles || [],
     migrateCommand: cloud.migration === 'bring' && (prefs.vpsBrowser?.sshHost || '').trim() ? cloudMigrate.migrateCommand(prefs.vpsBrowser.sshHost.trim()) : '',
     telegramFallback: cloud.telegramFallback === true, botUsername: cloud.botUsername || '',
@@ -1411,10 +1412,33 @@ function setServerConfig(config) {
   if (changed) { prefs.versionCache = {}; setTimeout(checkVersionsWhenIdle, 0); }
   return changed;
 }
+// Keeping a DIY model never writes credentials or restarts a running gateway.
+// Detection is best-effort; the manual choice also works with older Hermes CLIs.
+async function cloudKeepServerModel(detect = true) {
+  const host = (prefs.vpsBrowser?.sshHost || '').trim();
+  if (prefs.cloud?.diy !== true) throw new Error('This option is only for your own server.');
+  if (!host) throw new Error('Connect to the computer first.');
+  const cloud = prefs.cloud, step = cloud.step;
+  let existing = null;
+  if (detect) {
+    try { existing = cloudModel.parseExistingModel(await sshRun(host, cloudModel.existingModelCommand(), { timeoutMs: 8000 })); } catch {}
+    if (prefs.cloud !== cloud || cloud.step !== step || (prefs.vpsBrowser?.sshHost || '').trim() !== host) return { done: false, detail: '' };
+    if (!existing) return { done: false, detail: 'Could not detect a configured model. You can use the model already set on your server, or choose a new login below.' };
+  }
+  prefs.cloud.model = 'existing';
+  if (existing) prefs.cloud.existingModel = existing;
+  else delete prefs.cloud.existingModel;
+  const next = nextCloudStep(prefs, 'model');
+  setCloudStep(prefs, next);
+  if (next === 'done') prefs.onboarded = true;
+  savePreferences();
+  const name = existing ? `: ${existing.provider} / ${existing.model}` : '';
+  return { done: true, existingModel: existing, detail: `Using the model already set on your server${name}.` };
+}
 // The connect step advances as far as it can each click: CLI check, pairing
 // status, the computer's own state file, then the saved return path check.
 // {stage} tells the wizard which message to show; 'done' moves to migration
-// for a hosted computer, or straight to model setup for an existing DIY server.
+// for a hosted computer; DIY servers keep a detected model or offer model setup.
 async function cloudConnectRun(diyHost) {
   const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
   if (diyHost) {
@@ -1438,9 +1462,14 @@ async function cloudConnectRun(diyHost) {
       const path = await testAgentPath();
       if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
     }
-    setCloudStep(prefs, nextCloudStep(prefs, 'migrate'));
-    savePreferences();
-    return { stage: 'done', ok: true, detail: `Connected to ${sshHost}.` };
+    delete cloud.existingModel;
+    const model = await cloudKeepServerModel();
+    if (!model.done) {
+      if (cloud.model === 'existing') delete cloud.model;
+      setCloudStep(prefs, nextCloudStep(prefs, 'migrate'));
+      savePreferences();
+    }
+    return { stage: 'done', ok: true, existingModel: model.existingModel, detail: `Connected to ${sshHost}.${model.done ? ` ${model.detail}` : ''}` };
   }
   const cli = cloudConnect.tailscaleCli();
   if (!cli) return { stage: 'cli', ok: false, detail: 'Tailscale is not installed on this computer. Install it, then check again.' };
@@ -1969,6 +1998,13 @@ function registerIpc() {
           profiles: cloudMigrate.namedTokenedProfiles(prefs.cloud.tokenedProfiles),
           sharedToken: prefs.cloud.tokenedProfiles.includes(cloudMigrate.SHARED_TOKEN),
         };
+      }
+      case 'cloud-model-detect':
+      case 'cloud-model-existing': {
+        if (prefs.cloud?.step !== 'model') throw new Error('Open the model setup step first.');
+        const result = await cloudKeepServerModel(command === 'cloud-model-detect');
+        broadcastNow();
+        return result;
       }
       case 'cloud-model': {
         const host = (prefs.vpsBrowser?.sshHost || '').trim();

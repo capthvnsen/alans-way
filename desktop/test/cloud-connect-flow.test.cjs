@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const cloudConnect = require('../src/cloud-connect.cjs');
+const cloudModel = require('../src/cloud-model.cjs');
 const { isSshTarget } = require('../src/core.cjs');
 const { cloudStep, nextCloudStep, setCloudStep } = require('../src/onboarding.cjs');
 
@@ -16,13 +17,13 @@ const end = source.indexOf('\nasync function claimWithToken(', start);
 assert.ok(end > start);
 const connectSource = source.slice(start, end);
 
-function fixture({ diy = true, resume = false, step = 'connect', failure } = {}) {
+function fixture({ diy = true, resume = false, step = 'connect', failure, model = null, tokenedProfiles = [] } = {}) {
   const host = diy ? 'user@server.example' : 'root@192.0.2.7';
   const prefs = {
     onboarded: false,
     macSshHost: 'user@computer.example',
     ...(diy && !resume ? {} : {
-      cloud: { step, ...(diy ? { diy: true } : { sessionEnc: 'fixture-session', computerName: 'alan-fixture' }) },
+      cloud: { step, tokenedProfiles, ...(diy ? { diy: true } : { sessionEnc: 'fixture-session', computerName: 'alan-fixture' }) },
       vpsBrowser: { sshHost: host },
     }),
   };
@@ -32,6 +33,7 @@ function fixture({ diy = true, resume = false, step = 'connect', failure } = {})
     prefs, isSshTarget, nextCloudStep, setCloudStep,
     setTimeout() {}, checkVersionsWhenIdle() {},
     cloudComputer: null,
+    cloudModel,
     cloudConnect: { ...cloudConnect, tailscaleCli: () => 'fixture-tailscale' },
     localRun: async (cli, args) => {
       assert.equal(cli, 'fixture-tailscale');
@@ -39,11 +41,17 @@ function fixture({ diy = true, resume = false, step = 'connect', failure } = {})
       calls.push('pairing');
       return { code: 0, out: JSON.stringify({ Peer: { fixture: { HostName: 'alan-fixture', TailscaleIPs: ['192.0.2.7'], Online: true } } }) };
     },
-    sshRun: async (target, command) => {
+    sshRun: async (target, command, options) => {
       assert.equal(target, host);
       if (command === 'echo CONNECT_OK') {
         calls.push('ssh');
         return failure === 'ssh' ? { code: 1, out: '' } : { code: 0, out: 'CONNECT_OK\n' };
+      }
+      if (command.includes('hermes config get')) {
+        calls.push('model');
+        assert.equal(options.timeoutMs, 8000, 'the read-only model check must be bounded');
+        if (model === 'throw') throw new Error('fixture SSH timeout');
+        return model || { code: 1, out: '' };
       }
       assert.equal(command, cloudConnect.sshReadCommand('/var/lib/alan/state.json'));
       calls.push('state');
@@ -74,7 +82,7 @@ for (const resume of [false, true]) {
     assert.equal(cloudStep(f.prefs), 'model', 'reopening the wizard must not show migration');
     assert.equal(f.savedSteps.at(-1), 'model');
     assert.equal(f.prefs.onboarded, false, 'model and bot setup still remain');
-    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path']);
+    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model']);
   });
 }
 
@@ -111,5 +119,37 @@ for (const [failure, stage, calls] of [
     assert.equal(cloudStep(f.prefs), 'connect');
     assert.deepEqual(f.savedSteps, ['connect']);
     assert.deepEqual(f.calls, calls);
+  });
+}
+
+for (const resume of [false, true]) {
+  test(`a ${resume ? 'resumed' : 'new'} DIY server with OpenRouter bypasses new Anthropic credentials`, async () => {
+    const f = fixture({ resume, model: { code: 0, out: 'openrouter\nopenai/gpt-4.1\n' } });
+    const result = await f.connect();
+    assert.equal(result.ok, true);
+    assert.equal(f.prefs.cloud.step, 'telegram', 'existing model must skip the Anthropic-only card');
+    assert.equal(f.prefs.cloud.model, 'existing');
+    assert.equal(f.prefs.cloud.existingModel.provider, 'openrouter');
+    assert.equal(f.prefs.cloud.existingModel.model, 'openai/gpt-4.1');
+    assert.equal(f.savedSteps.at(-1), 'telegram');
+    assert.match(result.detail, /openrouter.*openai\/gpt-4\.1/);
+    assert.equal(f.prefs.onboarded, false);
+    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model']);
+  });
+}
+
+test('existing model and known bot coverage finish DIY setup', async () => {
+  const f = fixture({ resume: true, model: { code: 0, out: 'openrouter\nopenai/gpt-4.1\n' }, tokenedProfiles: ['*'] });
+  await f.connect();
+  assert.equal(f.prefs.cloud.step, 'done');
+  assert.equal(f.prefs.onboarded, true);
+});
+
+for (const model of ['throw', { code: -1, out: 'openrouter\nopenai/gpt-4.1\n' }, { code: 0, out: 'None\nNone\n' }]) {
+  test(`a failed or inconclusive DIY model probe falls back to the model card: ${JSON.stringify(model)}`, async () => {
+    const f = fixture({ model });
+    assert.equal((await f.connect()).ok, true);
+    assert.equal(f.prefs.cloud.step, 'model');
+    assert.equal(f.prefs.cloud.existingModel, undefined);
   });
 }

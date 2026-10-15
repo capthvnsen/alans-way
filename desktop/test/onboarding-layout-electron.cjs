@@ -66,6 +66,37 @@ app.whenReady().then(async () => {
     assert.deepEqual(result.calls, [{ name: 'cloud-migrate', value: { choice: 'fresh' } }]);
     console.log(`PASS: ${platform} Bring card offers a reachable Start fresh instead action`);
   }
+  for (const diy of [true, false]) {
+    const result = await win.webContents.executeJavaScript(`(async () => {
+      const calls = [];
+      window.workspace.command = async (name, value) => { calls.push({ name, value }); return { done: false, detail: 'Could not detect a model.' }; };
+      renderOnboarding(false);
+      state.cloud = { claimed: true, step: 'model', diy: ${diy} };
+      renderOnboarding(true);
+      await Promise.resolve();
+      const panel = document.getElementById('onboarding');
+      const keep = [...panel.querySelectorAll('button')].find(button => button.textContent === 'Use the model already set on my server');
+      if (!keep) return { found: false, calls };
+      keep.scrollIntoView({ block: 'nearest' });
+      const r = keep.getBoundingClientRect(), p = panel.getBoundingClientRect();
+      await keep.onclick();
+      return { found: true, reachable: r.width > 0 && r.left >= p.left && r.right <= p.right
+        && r.top >= p.top && r.bottom <= p.bottom && r.bottom <= innerHeight, calls };
+    })()`);
+    assert.equal(result.found, diy, 'only DIY offers the existing-server model escape');
+    assert.deepEqual(result.calls.map(call => call.name), diy ? ['cloud-model-detect', 'cloud-model-existing'] : []);
+    if (diy) assert.equal(result.reachable, true, 'manual keep must be reachable at 1024×640');
+    console.log(`PASS: ${diy ? 'DIY' : 'hosted'} model card actions and detection`);
+  }
+  const summary = await win.webContents.executeJavaScript(`(() => {
+    renderOnboarding(false);
+    state.cloud = { claimed: true, step: 'telegram', diy: true, model: 'existing',
+      existingModel: { provider: 'openrouter', model: 'openai/gpt-4.1' } };
+    renderOnboarding(true);
+    return document.getElementById('onboarding').textContent;
+  })()`);
+  assert.match(summary, /openrouter.*openai\/gpt-4\.1/, 'skipped model card must show the detected provider and model');
+  console.log('PASS: detected server model is visible on the next wizard card');
   win.destroy();
   app.quit();
 }).catch(error => { console.error(error); app.exit(1); });
