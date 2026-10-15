@@ -62,10 +62,23 @@ Rules for the whole job:
    connector scripts. Check that checkouts match before executing anything.
    Keep --repo-ref, --desktop-ref and --skip-plugin when running setup;
    use --non-interactive and ask the skill's questions yourself.
-   Run the skill's pinned server setup command yourself through your terminal
-   tool. The gateway restart is detached and delayed by design, so running
-   setup from inside this gateway is supported. Do not hand the server setup
-   command to me or ask me to run it in an SSH shell.
+   Prepare its pinned checkout yourself, but do not execute setup.sh through
+   your gateway terminal, even without --restart: Hermes scans the whole script.
+   Never bypass the lifecycle guard or change its settings. Apply this lifecycle
+   handoff even if an older installed skill says to run setup in your terminal.
+   Give me a JSON setup plan for Settings → Agent setup → Finish setup and restart
+   my bot. The app runs setup outside the gateway over its saved SSH connection.
+   Plan format: {"repoRef":"<resolved 40-character plugin commit>",
+   "desktopRef":"<reviewed 40-character desktop commit>","args":["--bot-id",
+   "<id>","--mac-ssh","<user@computer>","--host-os","<mac|windows|linux>",
+   "--timezone","<confirmed IANA zone>","--bind","--proactive","<yes|no>"]}.
+   Add --profile and its name for a named profile. Include public key flags,
+   --tone default, --keep-browser or --allow-desktop-actions only as the skill
+   requires and the user explicitly chose; never add a desktop opt-in yourself.
+   Resolve a release-tag plugin pin to its exact commit for repoRef.
+   Do not include --restart: the app adds it only in its external SSH process.
+   This also works with Hermes 0.21.x. A Windows gateway needs an external Git
+   Bash shell; the app step currently supports POSIX SSH shells.
    Resolve server scripts, connector scripts and
    supporting documents to those pins, including connect-mac.sh,
    connect-windows.ps1 and connect-linux.sh. Never use a branch URL or an
@@ -117,11 +130,12 @@ Rules for the whole job:
    do not choose answers for me. Relay any display-stack prerequisite and
    obtain the required approval before installation.
 
-4. Let the skill verify setup and restart the gateway last through its real
-   owner. Before running the command that schedules the restart, tell me
-   you will be back in about a minute and to send my next message then.
-   After the setup command returns, send the summary and start no further
-   tool calls in that turn. On my next message, follow its post-restart audit.
+4. Give me the plan, the two SSH addresses, and the short app handoff.
+   Setup verifies before scheduling its final restart through the real owner.
+   Report its output; never claim a scheduled restart has already completed.
+   Wait about a minute before my next message. For the post-restart audit, have
+   me run Check setup in the app and share its report; setup.sh is scanned even
+   in audit mode, so do not run it from this gateway. Continue the browser checks.
    Then give me these numbered checks:
    1. In the app, open Settings → Agent setup. Enter the server and computer
       addresses you verified, click Save addresses, then Test agent path.
@@ -169,10 +183,19 @@ missing skill/path; resume after Hermes loads the plugin. Never create or
 write your own setup skill, or use a standalone user skill or repository copy.
 Follow it verbatim, including its reviewed plugin and desktop pins. Never
 execute branch/main URLs or unpinned checkouts, or drop its pin flags.
-Run the skill's pinned server setup command yourself through your terminal
-tool. The gateway restart is detached and delayed by design, so running
-setup from inside this gateway is supported. Do not hand the server setup
-command to me or ask me to run it in an SSH shell.
+Prepare the skill's pinned checkout, but do not execute setup.sh from your
+terminal, even without --restart: Hermes scans the whole script. Never bypass
+the lifecycle guard or change its settings. This handoff overrides older skill
+instructions to execute setup inside the gateway.
+Give me a JSON setup plan for Settings → Agent setup → Finish setup and restart
+my bot. The app runs it outside the gateway over SSH:
+{"repoRef":"<resolved 40-character plugin commit>","desktopRef":"<reviewed 40-character desktop commit>","args":["--bot-id","<id>","--mac-ssh","<user@computer>","--host-os","<mac|windows|linux>","--timezone","<confirmed IANA zone>","--bind","--proactive","<yes|no>"]}
+Add --profile and its name when needed; include public key flags and other
+supported preferences only as the skill requires and I explicitly chose.
+Never add --allow-desktop-actions yourself. Resolve tag pins to exact commits.
+Do not include --restart; the app adds it outside the gateway. Give me both
+SSH addresses to save first. Hermes 0.21.x uses the same handoff. A Windows
+server needs an external Git Bash shell; this app step needs POSIX SSH.
 
 For detailed app installation and human handoffs, fetch only
 https://openalan.com/agent-prompt and use its first text block alongside the
@@ -182,10 +205,9 @@ Do not fetch other setup guides, including legacy setup-for-agents guides or
 older prompts linked by the skill. Never reconstruct setup from a web summary.
 Never disclose or request secrets. Ask each preference; do not choose for me.
 Give short numbered human steps and wait for replies; silence is not consent.
-Keep the gateway restart last. Before running the command that schedules the
-restart, tell me you will be back in about a minute and to send my next message
-then. After the setup command returns, send the summary and start no further
-tool calls in that turn. On my next message, follow its post-restart audit.
+Setup verifies before scheduling its restart. Wait about a minute, then on my
+next message do the post-restart audit through the app's Check setup report.
+Do not run setup.sh in audit mode inside the gateway either. Check real browser use.
 Report pins, app version, checks, warnings and skips; never claim a capability
 without verification.
 ```
@@ -201,5 +223,6 @@ without verification.
    connect command with skip-install and return its public output.
 4. Sign in to Telegram in Alan's Workspace using its QR code.
 5. On a Mac, grant Accessibility and Screen Recording at the Mac itself.
-6. Answer the setup preferences, then use Test agent path and the browser
+6. Answer the setup preferences, paste the bot’s JSON plan into Settings →
+   Agent setup → Finish setup and restart my bot, then use Test agent path and the browser
    example to check the connection after the gateway restart.
