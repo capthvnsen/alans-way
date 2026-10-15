@@ -16,13 +16,13 @@ const end = source.indexOf('\nasync function claimWithToken(', start);
 assert.ok(end > start);
 const connectSource = source.slice(start, end);
 
-function fixture({ diy = true, resume = false, failure } = {}) {
+function fixture({ diy = true, resume = false, step = 'connect', failure } = {}) {
   const host = diy ? 'user@server.example' : 'root@192.0.2.7';
   const prefs = {
     onboarded: false,
     macSshHost: 'user@computer.example',
     ...(diy && !resume ? {} : {
-      cloud: { step: 'connect', ...(diy ? { diy: true } : { sessionEnc: 'fixture-session', computerName: 'alan-fixture' }) },
+      cloud: { step, ...(diy ? { diy: true } : { sessionEnc: 'fixture-session', computerName: 'alan-fixture' }) },
       vpsBrowser: { sshHost: host },
     }),
   };
@@ -76,6 +76,14 @@ for (const resume of [false, true]) {
     assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path']);
   });
 }
+
+test('reconnecting an older DIY setup saved at migration advances to model setup', async () => {
+  const f = fixture({ resume: true, step: 'migrate' });
+  const result = await f.connect();
+  assert.equal(result.ok, true);
+  assert.equal(cloudStep(f.prefs), 'model');
+  assert.equal(f.savedSteps.at(-1), 'model');
+});
 
 test('a hosted connection still persists migration before model setup', async () => {
   const f = fixture({ diy: false });

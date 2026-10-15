@@ -1825,7 +1825,17 @@ function registerIpc() {
       case 'dismiss-bundle-warning': bundleWarningDismissed = true; broadcast(); break;
       case 'dismiss-updated': update.justUpdatedFrom = ''; break;
       case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;
-      case 'onboarding-open': prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; seedMacSshHost(); savePreferences(); applyLayout(); break;
+      case 'onboarding-open': {
+        const cloud = prefs.cloud;
+        // Revisit the hosted migration choice without repeating provisioning
+        // or offering migration to a server that already runs Hermes.
+        if (cloud?.sessionEnc && cloud.diy !== true && ['migrate', 'model', 'telegram', 'done'].includes(cloud.step)) {
+          cloud.step = 'migrate';
+          delete cloud.migration;
+        }
+        prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home';
+        seedMacSshHost(); savePreferences(); applyLayout(); break;
+      }
       case 'cloud-claim-code': {
         const token = cloudClaim.claimToken(value.code);
         if (!token) throw new Error('That does not look like a claim code or claim link.');
@@ -1868,7 +1878,12 @@ function registerIpc() {
         break;
       }
       case 'cloud-migrate': {
-        if (value.choice !== 'bring') { setCloudStep(prefs, nextCloudStep(prefs, 'migrate')); if (nextCloudStep(prefs, 'migrate') === 'done') { prefs.cloud.step = 'done'; prefs.onboarded = true; } savePreferences(); break; }
+        if (value.choice !== 'bring') {
+          delete prefs.cloud.migration;
+          setCloudStep(prefs, nextCloudStep(prefs, 'migrate'));
+          if (nextCloudStep(prefs, 'migrate') === 'done') { prefs.cloud.step = 'done'; prefs.onboarded = true; }
+          savePreferences(); break;
+        }
         const host = (prefs.vpsBrowser?.sshHost || '').trim();
         if (!host) throw new Error('Connect to the computer first.');
         const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
@@ -2900,7 +2915,9 @@ function createWindow() {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(async () => {
-    prefs = readPreferences(); prefs.remoteControl = false; pinOnboarding(prefs); seedMacSshHost();
+    prefs = readPreferences(); prefs.remoteControl = false;
+    if (pinOnboarding(prefs)) savePreferences();
+    seedMacSshHost();
     // A cold start launched by the claim link (Windows/Linux) carries the URL in argv.
     for (const arg of process.argv) { claimTokens.push(cloudClaim.parseClaimUrl(arg)); receivePdf(arg); }
     // A session already stored means onboarding was in progress: resume it.
