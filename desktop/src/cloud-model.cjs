@@ -56,32 +56,6 @@ function authLoggedIn(statusOutput) {
 function existingModelCommand() {
   return `provider=$(hermes config get model.provider 2>/dev/null) && model=$(hermes config get model.default 2>/dev/null) && printf '%s\\n%s\\n' "$provider" "$model"`;
 }
-// Documented one-shot CLI query, with only read-only search tools exposed. Safe
-// mode also excludes configured fallback routes: another provider cannot certify
-// this one. Older CLIs/custom routes that cannot run this check fail closed.
-// https://hermes-agent.nousresearch.com/docs/reference/cli-commands/
-// Bound the remote process group as well as SSH. Only a fixed marker crosses
-// SSH; provider errors, diagnostics and credentials are never returned.
-function existingModelCheckCommand(existing) {
-  const model = parseExistingModel({ code: 0, out: `${existing?.provider || ''}\n${existing?.model || ''}` });
-  if (!model) throw new Error('A configured provider and model are required.');
-  const args = ['hermes', 'chat', '-Q', '-q', 'Reply OK', '--max-turns', '1', '--safe-mode', '--toolsets', 'search', '--provider', model.provider, '--model', model.model];
-  const script = `import os, signal, subprocess, sys
-try:
-    child = subprocess.Popen(${JSON.stringify(args)}, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
-except OSError:
-    sys.exit(1)
-try:
-    out, _ = child.communicate(timeout=10)
-except subprocess.TimeoutExpired:
-    os.killpg(child.pid, signal.SIGKILL)
-    child.communicate()
-    sys.exit(124)
-if child.returncode != 0 or out.strip() != b'OK':
-    sys.exit(1)
-print('MODEL_OK')`;
-  return `python3 -c ${shellQuote(script)} 2>/dev/null`;
-}
 function parseExistingModel(result) {
   if (result?.code !== 0) return null;
   const lines = String(result.out || '').trim().split(/\r?\n/);
@@ -105,4 +79,4 @@ function chooseProfile(lsOutput) {
   return String(lsOutput || '').split('\n').map((line) => line.trim()).filter(Boolean).sort()[0] || '';
 }
 
-module.exports = { existingModelCommand, existingModelCheckCommand, parseExistingModel, setEnvValue, gatewayProgram, gatewayRestartCommand, authLoginCommand, extractAuthUrl, authLoggedIn, envPathFor, chooseProfile };
+module.exports = { existingModelCommand, parseExistingModel, setEnvValue, gatewayProgram, gatewayRestartCommand, authLoginCommand, extractAuthUrl, authLoggedIn, envPathFor, chooseProfile };

@@ -57,6 +57,7 @@ function telegramCovered(prefs) {
 // The step after `current`.
 function nextCloudStep(prefs, current) {
   if (current === 'migrate' && prefs?.cloud?.migrationOnly === true) return 'done';
+  if (current === 'model' && prefs?.cloud?.diy === true && prefs.cloud.modelOnly === true) return 'done';
   const index = CLOUD_FLOW.indexOf(current);
   let next = index === -1 ? 'done' : CLOUD_FLOW[index + 1] || 'done';
   if (next === 'telegram' && telegramCovered(prefs)) next = 'done';

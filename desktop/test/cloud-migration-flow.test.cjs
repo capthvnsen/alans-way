@@ -215,19 +215,17 @@ test('resuming a DIY model card detects and displays the existing provider', asy
       calls.push(command);
       assert.equal(host, 'user@server.example');
       const model = require('../src/cloud-model.cjs');
-      if (command === model.existingModelCommand()) {
-        assert.equal(options.timeoutMs, 8000);
-        return { code: 0, out: 'openrouter\nopenai/gpt-4.1\n' };
-      }
-      assert.equal(options.timeoutMs, 15000);
-      assert.equal(command, model.existingModelCheckCommand({ provider: 'openrouter', model: 'openai/gpt-4.1' }));
-      return { code: 0, out: 'MODEL_OK\n' };
+      assert.equal(command, model.existingModelCommand());
+      assert.equal(options.timeoutMs, 8000);
+      return { code: 0, out: 'openrouter\nopenai/gpt-4.1\n' };
     },
     sshWrite: async () => assert.fail('detection must never write'),
   });
-  assert.equal((await f.command('cloud-model-detect')).done, true);
-  assert.equal(calls.length, 2);
-  assert.equal(f.view().step, 'telegram');
+  assert.equal((await f.command('cloud-model-detect')).done, false);
+  assert.equal(calls.length, 1);
+  assert.equal(f.view().step, 'model');
+  assert.equal(f.view().modelDetected, true);
+  assert.equal(f.view().model, '');
   assert.equal(f.view().existingModel.provider, 'openrouter');
   assert.equal(f.view().existingModel.model, 'openai/gpt-4.1');
   const resumed = fixture(structuredClone(f.saved.at(-1).cloud));
@@ -246,42 +244,21 @@ test('a late detection does not undo the manual keep choice', async () => {
   assert.equal(f.saved.length, 1);
 });
 
-for (const code of [1, 124]) {
-  test(`resumed model card keeps found provider and reason after failed proof (${code})`, async () => {
-    const f = fixture({ diy: true, step: 'model' }, {
-      sshRun: async (_, command) => command.includes('hermes config get')
-        ? { code: 0, out: 'openrouter\nopenai/gpt-4.1' } : { code, out: 'private diagnostic', err: 'private error' },
-      sshWrite: async () => assert.fail('model checks must never write'),
+for (const step of ['telegram', 'done']) {
+  test(`DIY users can return from ${step} to model setup and confirm without replacing their bot`, async () => {
+    const f = fixture({ diy: true, step, model: 'existing', botUsername: 'original_bot', modelDetected: true }, {
+      sshRun: async () => assert.fail('reopening and manual confirmation must not run SSH'),
+      sshWrite: async () => assert.fail('must preserve the bot and credentials'),
     });
-    const result = await f.command('cloud-model-detect');
-    assert.equal(result.done, false);
-    assert.match(result.detail, /openrouter/);
-    assert.match(result.detail, code === 124 ? /timed out/ : /did not pass/);
-    assert.doesNotMatch(result.detail, /private/);
+    f.prefs.onboarded = step === 'done';
+    await f.command('onboarding-open');
     assert.equal(f.view().step, 'model');
-    assert.equal(f.view().modelCheck, code === 124 ? 'timeout' : 'failed');
-    assert.equal(f.view().existingModel.provider, 'openrouter');
-    const reopened = fixture(structuredClone(f.saved.at(-1).cloud));
-    assert.equal(reopened.view().modelCheck, f.view().modelCheck);
-    assert.equal(reopened.view().existingModel.provider, 'openrouter');
-    await f.command('cloud-model-existing');
-    assert.equal(f.view().step, 'telegram');
-    assert.equal(f.view().model, 'existing');
-    assert.equal(f.view().existingModel.provider, 'openrouter');
+    assert.equal(f.view().modelDetected, false, 'reopening must allow a fresh read of model identifiers');
+    assert.equal(f.prefs.onboarded, false);
+    const resumed = fixture(structuredClone(f.saved.at(-1).cloud));
+    await resumed.command('cloud-model-existing');
+    assert.equal(resumed.prefs.cloud.step, step, 'completed setup must not repeat bot creation');
+    assert.equal(resumed.prefs.cloud.botUsername, 'original_bot');
+    assert.equal(resumed.prefs.onboarded, step === 'done');
   });
 }
-
-test('late usability proof cannot undo a manual keep choice', async () => {
-  let finish;
-  const f = fixture({ diy: true, step: 'model' }, {
-    sshRun: (_, command) => command.includes('hermes config get')
-      ? Promise.resolve({ code: 0, out: 'openrouter\nopenai/gpt-4.1' }) : new Promise(resolve => { finish = resolve; }),
-  });
-  const pending = f.command('cloud-model-detect');
-  await new Promise(setImmediate);
-  await f.command('cloud-model-existing');
-  finish({ code: 0, out: 'MODEL_OK' });
-  assert.equal((await pending).cancelled, true);
-  assert.equal(f.view().step, 'telegram');
-  assert.equal(f.saved.length, 1);
-});

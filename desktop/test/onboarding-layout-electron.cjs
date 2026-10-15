@@ -88,38 +88,59 @@ app.whenReady().then(async () => {
     if (diy) assert.equal(result.reachable, true, 'manual keep must be reachable at 1024×640');
     console.log(`PASS: ${diy ? 'DIY' : 'hosted'} model card actions and detection`);
   }
-  for (const modelCheck of ['failed', 'timeout']) {
+  for (const provider of ['openrouter', '<img src=x onerror=alert(1)>']) {
     const result = await win.webContents.executeJavaScript(`(async () => {
       const calls = [];
       window.workspace.command = async name => { calls.push(name); };
       renderOnboarding(false);
-      state.cloud = { claimed: true, diy: true, step: 'model', modelCheck: '${modelCheck}',
-        existingModel: { provider: 'openrouter', model: 'openai/gpt-4.1' } };
+      state.cloud = { claimed: true, diy: true, step: 'model', modelDetected: true,
+        existingModel: { provider: ${JSON.stringify(provider)}, model: 'openai/gpt-4.1' } };
       renderOnboarding(true);
       await Promise.resolve();
       const panel = document.getElementById('onboarding');
       const text = panel.textContent;
-      const keep = [...panel.querySelectorAll('button')].find(button => button.textContent === 'Use the model already set on my server');
+      const buttons = [...panel.querySelectorAll('button')];
+      const keep = buttons.find(button => button.textContent === 'Use the model already on my server');
+      if (!keep) return { found: false, text };
       keep.scrollIntoView({ block: 'nearest' });
       const r = keep.getBoundingClientRect(), p = panel.getBoundingClientRect();
+      const primary = buttons.filter(button => button.classList.contains('primary-button')).map(button => button.textContent);
+      const callsBeforeClick = [...calls];
       await keep.onclick();
-      return { text, calls, reachable: r.width > 0 && r.top >= p.top && r.bottom <= p.bottom && r.bottom <= innerHeight };
+      return { found: true, text, calls, callsBeforeClick, primary, images: panel.querySelectorAll('img').length,
+        reachable: r.width > 0 && r.top >= p.top && r.bottom <= p.bottom && r.bottom <= innerHeight };
     })()`);
-    assert.match(result.text, /Found openrouter.*openai\/gpt-4\.1/);
-    assert.match(result.text, modelCheck === 'timeout' ? /timed out/ : /did not pass/);
+    assert.equal(result.found, true, 'detected model must have an explicit confirmation button');
+    assert.ok(result.text.includes(`Your server already uses ${provider} · openai/gpt-4.1`));
+    assert.match(result.text, /first reply/i);
+    assert.deepEqual(result.primary, ['Use the model already on my server']);
+    assert.equal(result.images, 0, 'provider identifiers must be literal text');
     assert.equal(result.reachable, true);
-    assert.deepEqual(result.calls, ['cloud-model-existing'], 'a failed check must not immediately repeat a paid probe');
-    console.log(`PASS: ${modelCheck} proof names provider, explains failure and offers reachable manual keep`);
+    assert.deepEqual(result.callsBeforeClick, [], 'showing a detected model must wait for user confirmation');
+    assert.deepEqual(result.calls, ['cloud-model-existing']);
+    console.log('PASS: detected model has a reachable primary confirmation and escaped identifiers');
   }
-  const summary = await win.webContents.executeJavaScript(`(() => {
+  const summary = await win.webContents.executeJavaScript(`(async () => {
+    const calls = [];
+    window.workspace.command = async (name, value) => { calls.push({ name, value }); };
     renderOnboarding(false);
     state.cloud = { claimed: true, step: 'telegram', diy: true, model: 'existing',
       existingModel: { provider: 'openrouter', model: 'openai/gpt-4.1' } };
     renderOnboarding(true);
-    return document.getElementById('onboarding').textContent;
+    const panel = document.getElementById('onboarding');
+    const change = [...panel.querySelectorAll('button')].find(button => button.textContent === 'Change model');
+    if (!change) return { found: false };
+    change.scrollIntoView({ block: 'nearest' });
+    const r = change.getBoundingClientRect(), p = panel.getBoundingClientRect();
+    await change.onclick();
+    return { found: true, text: panel.textContent, calls,
+      reachable: r.width > 0 && r.top >= p.top && r.bottom <= p.bottom && r.bottom <= innerHeight };
   })()`);
-  assert.match(summary, /openrouter.*openai\/gpt-4\.1/, 'skipped model card must show the detected provider and model');
-  console.log('PASS: detected server model is visible on the next wizard card');
+  assert.equal(summary.found, true, 'DIY pairing must offer a return to model setup');
+  assert.equal(summary.reachable, true);
+  assert.match(summary.text, /openrouter.*openai\/gpt-4\.1/, 'confirmed model must remain visible on the next wizard card');
+  assert.deepEqual(summary.calls, [{ name: 'cloud-goto', value: { step: 'model' } }]);
+  console.log('PASS: DIY pairing offers a reachable return to model setup');
   win.destroy();
   app.quit();
 }).catch(error => { console.error(error); app.exit(1); });

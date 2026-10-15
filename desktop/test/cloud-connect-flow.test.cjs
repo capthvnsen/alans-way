@@ -17,7 +17,7 @@ const end = source.indexOf('\nasync function claimWithToken(', start);
 assert.ok(end > start);
 const connectSource = source.slice(start, end);
 
-function fixture({ diy = true, resume = false, step = 'connect', failure, model = null, health = { code: 0, out: 'MODEL_OK\n' }, tokenedProfiles = [] } = {}) {
+function fixture({ diy = true, resume = false, step = 'connect', failure, model = null, tokenedProfiles = [] } = {}) {
   const host = diy ? 'user@server.example' : 'root@192.0.2.7';
   const prefs = {
     onboarded: false,
@@ -28,6 +28,7 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, model 
     }),
   };
   const calls = [];
+  const commands = [];
   const savedSteps = [];
   const run = vm.runInNewContext(`${connectSource}\ncloudConnectRun;`, {
     prefs, isSshTarget, nextCloudStep, setCloudStep,
@@ -42,16 +43,11 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, model 
       return { code: 0, out: JSON.stringify({ Peer: { fixture: { HostName: 'alan-fixture', TailscaleIPs: ['192.0.2.7'], Online: true } } }) };
     },
     sshRun: async (target, command, options) => {
+      commands.push(command);
       assert.equal(target, host);
       if (command === 'echo CONNECT_OK') {
         calls.push('ssh');
         return failure === 'ssh' ? { code: 1, out: '' } : { code: 0, out: 'CONNECT_OK\n' };
-      }
-      if (command.startsWith('python3 ')) {
-        calls.push('health');
-        assert.equal(options.timeoutMs, 15000, 'model usability check must have a short SSH budget');
-        if (health === 'throw') throw new Error('fixture health timeout with private diagnostics');
-        return health;
       }
       if (command.includes('hermes config get')) {
         calls.push('model');
@@ -74,7 +70,7 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, model 
     },
     savePreferences: () => savedSteps.push(prefs.cloud.step),
   });
-  return { prefs, calls, savedSteps, connect: () => run(diy && !resume ? host : undefined) };
+  return { prefs, calls, commands, savedSteps, connect: () => run(diy && !resume ? host : undefined) };
 }
 
 for (const resume of [false, true]) {
@@ -129,26 +125,27 @@ for (const [failure, stage, calls] of [
 }
 
 for (const resume of [false, true]) {
-  test(`a ${resume ? 'resumed' : 'new'} DIY server with OpenRouter bypasses new Anthropic credentials`, async () => {
+  test(`a ${resume ? 'resumed' : 'new'} DIY server with OpenRouter waits for the user to confirm its model`, async () => {
     const f = fixture({ resume, model: { code: 0, out: 'openrouter\nopenai/gpt-4.1\n' } });
     const result = await f.connect();
     assert.equal(result.ok, true);
-    assert.equal(f.prefs.cloud.step, 'telegram', 'existing model must skip the Anthropic-only card');
-    assert.equal(f.prefs.cloud.model, 'existing');
+    assert.equal(f.commands.length, 3, 'connection must only read reachability, state and model identifiers');
+    assert.equal(f.prefs.cloud.step, 'model', 'detected identifiers must leave the model card for confirmation');
+    assert.equal(f.prefs.cloud.model, undefined);
     assert.equal(f.prefs.cloud.existingModel.provider, 'openrouter');
     assert.equal(f.prefs.cloud.existingModel.model, 'openai/gpt-4.1');
-    assert.equal(f.savedSteps.at(-1), 'telegram');
+    assert.equal(f.savedSteps.at(-1), 'model');
     assert.match(result.detail, /openrouter.*openai\/gpt-4\.1/);
     assert.equal(f.prefs.onboarded, false);
-    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model', 'health']);
+    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model']);
   });
 }
 
-test('existing model and known bot coverage finish DIY setup', async () => {
+test('even known bot coverage leaves the detected model for confirmation', async () => {
   const f = fixture({ resume: true, model: { code: 0, out: 'openrouter\nopenai/gpt-4.1\n' }, tokenedProfiles: ['*'] });
   await f.connect();
-  assert.equal(f.prefs.cloud.step, 'done');
-  assert.equal(f.prefs.onboarded, true);
+  assert.equal(f.prefs.cloud.step, 'model');
+  assert.equal(f.prefs.onboarded, false);
 });
 
 for (const model of ['throw', { code: -1, out: 'openrouter\nopenai/gpt-4.1\n' }, { code: 0, out: 'None\nNone\n' }]) {
@@ -160,21 +157,6 @@ for (const model of ['throw', { code: -1, out: 'openrouter\nopenai/gpt-4.1\n' },
   });
 }
 
-for (const health of [{ code: 1, out: 'private diagnostics' }, { code: 124, out: '' }, 'throw', { code: 0, out: 'not a model answer' }]) {
-  test(`configured identifiers cannot skip model setup without usable proof: ${JSON.stringify(health)}`, async () => {
-    const f = fixture({ resume: true, model: { code: 0, out: 'openrouter\nopenai/gpt-4.1\n' }, health, tokenedProfiles: ['*'] });
-    const result = await f.connect();
-    assert.equal(result.ok, true);
-    assert.equal(f.prefs.cloud.step, 'model');
-    assert.equal(f.prefs.onboarded, false);
-    assert.equal(f.prefs.cloud.model, undefined);
-    assert.equal(f.prefs.cloud.existingModel.provider, 'openrouter');
-    assert.match(f.prefs.cloud.modelCheck, /^(failed|timeout)$/);
-    assert.doesNotMatch(result.detail, /private diagnostics/);
-    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model', 'health']);
-  });
-}
-
 test('overlapping Connect clicks and a replay cannot roll completed DIY setup backwards', async () => {
   const pending = [];
   const f = fixture({ resume: true, model: () => new Promise(resolve => pending.push(resolve)), tokenedProfiles: ['*'] });
@@ -183,7 +165,10 @@ test('overlapping Connect clicks and a replay cannot roll completed DIY setup ba
   await new Promise(setImmediate);
   pending[0]({ code: 0, out: 'openrouter\nopenai/gpt-4.1\n' });
   await first;
-  assert.equal(f.prefs.cloud.step, 'done');
+  assert.equal(f.prefs.cloud.step, 'model');
+  f.prefs.cloud.model = 'existing';
+  f.prefs.cloud.step = 'done';
+  f.prefs.onboarded = true;
   for (const resolve of pending.slice(1)) resolve({ code: 0, out: 'openrouter\nopenai/gpt-4.1\n' });
   await second;
   assert.equal(f.prefs.cloud.step, 'done', 'a stale probe must not roll back completion');
@@ -195,4 +180,13 @@ test('overlapping Connect clicks and a replay cannot roll completed DIY setup ba
   assert.equal(f.prefs.cloud.step, 'done', 'a queued click after completion must also be harmless');
   assert.equal(f.calls.length, calls);
   assert.equal(f.savedSteps.length, saves);
+});
+
+test('a new DIY connection clears the previous completed model review', async () => {
+  const f = fixture({ resume: true });
+  f.prefs.cloud.modelOnly = true;
+  f.prefs.cloud.migrationOnly = true;
+  await f.connect();
+  assert.equal(f.prefs.cloud.step, 'model');
+  assert.equal(nextCloudStep(f.prefs, 'model'), 'telegram', 'a new connection still needs bot setup');
 });

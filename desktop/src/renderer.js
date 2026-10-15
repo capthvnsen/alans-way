@@ -465,7 +465,7 @@ function renderOnboarding(show) {
   panel.classList.toggle('hidden', !show);
   if (!show) { onboardingSignature = ''; return; }
   const cloud = state.cloud || {};
-  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername, cloud.model, cloud.existingModel, cloud.modelCheck] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
+  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername, cloud.model, cloud.existingModel, cloud.modelDetected] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
   if (signature === onboardingSignature) return;
   onboardingSignature = signature;
   const go = (step) => { onboardingStep = step; renderOnboarding(true); };
@@ -607,14 +607,15 @@ function renderCloudOnboarding(card, actions, cloud) {
         button('Bring my existing Hermes', 'primary-button', () => command('cloud-migrate', { choice: 'bring' })));
     }
   } else if (cloud.step === 'model') {
+    const found = cloud.diy && cloud.existingModel;
     card.append(element('h2', '', 'Choose the model login'), element('p', 'settings-note', 'Sign in with your Claude subscription, or paste an Anthropic API key for the agent.'));
-    const status = element('p', 'settings-note', '');
+    const status = element('p', 'settings-note', found ? `Your server already uses ${found.provider} · ${found.model}.` : '');
     const field = element('div', 'field'), lab = element('label', '', 'Anthropic API key'); lab.htmlFor = 'ob-api-key';
     const input = element('input'); input.id = 'ob-api-key'; input.placeholder = 'sk-ant-…'; input.type = 'password'; input.autocomplete = 'off';
     field.append(lab, input);
     card.append(field, status);
     actions.append(
-      button('Use my Claude subscription', 'primary-button', async () => {
+      button('Use my Claude subscription', found ? 'secondary-button' : 'primary-button', async () => {
         status.textContent = 'Starting the sign-in…';
         const result = await command('cloud-model-subscribe');
         status.textContent = result?.detail || '';
@@ -630,21 +631,19 @@ function renderCloudOnboarding(card, actions, cloud) {
         status.textContent = result?.detail || '';
       }));
     if (cloud.diy) {
-      actions.append(button('Use the model already set on my server', 'secondary-button', () => command('cloud-model-existing')));
-      if (['failed', 'timeout', 'unavailable'].includes(cloud.modelCheck)) {
-        const found = cloud.existingModel;
-        status.textContent = found
-          ? `Found ${found.provider} / ${found.model}, but ${cloud.modelCheck === 'timeout' ? 'the model check timed out' : 'the model did not pass the quick reply check'}. You can use it anyway, or choose a new login.`
-          : 'Could not detect a configured model. You can use the model already set on your server, or choose a new login.';
-      } else {
-        status.textContent = 'Checking whether your server’s model can reply…';
-        command('cloud-model-detect').then((result) => {
-          status.textContent = result?.detail || '';
-          if (result?.done && result.existingModel) toast(result.detail);
-        });
+      const keep = button(found ? 'Use the model already on my server' : 'Use the model already set on my server',
+        found ? 'primary-button' : 'secondary-button', () => command('cloud-model-existing'));
+      if (found) actions.prepend(keep); else actions.append(keep);
+      card.append(element('p', 'settings-note', 'Your bot’s first reply after pairing will confirm the model works. Return here with “Change model” during pairing or “Run setup wizard” in Settings.'));
+      if (!cloud.modelDetected) {
+        if (!found) status.textContent = 'Reading your server’s configured model…';
+        command('cloud-model-detect').then((result) => { status.textContent = result?.detail || ''; });
+      } else if (!found) {
+        status.textContent = 'Could not detect a configured model. You can use the model already set on your server, or choose a new login.';
       }
     }
   } else if (cloud.step === 'telegram') {
+    if (cloud.diy) actions.append(button('Change model', 'secondary-button', () => go('model')));
     card.append(element('h2', '', 'Set up your Telegram bot'),
       element('p', 'settings-note', 'Alan talks to you through a Telegram bot. We can make one with @BotFather, or you can paste a token you already have.'));
     const status = element('p', 'settings-note', '');
