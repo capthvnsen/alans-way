@@ -11,10 +11,13 @@ function firstLink(message) {
   for (const entity of body?.entities || []) {
     if (entity?.type === 'MessageEntityTextUrl' && typeof entity.url === 'string') { url = entity.url; break; }
     if (entity?.type === 'MessageEntityUrl' && Number.isInteger(entity.offset) && Number.isInteger(entity.length)) {
-      url = text.slice(entity.offset, entity.offset + entity.length); break;
+      const candidate = text.slice(entity.offset, entity.offset + entity.length);
+      // Telegram also linkifies bare hosts and filenames such as SKILL.md.
+      // Only an explicit web scheme in the message opts into auto-open.
+      if (/^https?:\/\//i.test(candidate)) { url = candidate; break; }
     }
   }
-  if (!url) url = text.match(/https?:\/\/[^\s<>"'()]+/)?.[0]?.replace(/[.,;:!?]+$/, '') || '';
+  if (!url) url = text.match(/https?:\/\/[^\s<>"'()]+/i)?.[0]?.replace(/[.,;:!?]+$/, '') || '';
   if (url && !/^https?:\/\//i.test(url)) url = `https://${url}`;
   try {
     if (SKIP_HOSTS.test(new URL(url).hostname)) return '';
