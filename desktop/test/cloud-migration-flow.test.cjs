@@ -16,20 +16,24 @@ function section(start, end) {
 
 // Run the shipped commands and state projection with fixture-only preferences.
 // No Electron startup, SSH, local migration, clipboard or network is available.
-function fixture(cloud) {
+function fixture(cloud, { sshRun, sshWrite } = {}) {
   const prefs = { onboarded: false, cloud, vpsBrowser: { sshHost: 'user@server.example' } };
   const saved = [];
   const context = vm.createContext({
-    ...onboarding, prefs, readPreferences: () => prefs, cloudMigrate, cloudComputer: null, cloudError: '',
+    ...onboarding, prefs, sshRun, sshWrite,
+    cloudModel: require('../src/cloud-model.cjs'), cloudTelegram: require('../src/cloud-telegram.cjs'),
+    cloudConnect: require('../src/cloud-connect.cjs'), telegramView: null, broadcast() {}, readPreferences: () => prefs, cloudMigrate, cloudComputer: null, cloudError: '',
     cloudClaim: { apiBase: () => 'https://cloud.example' },
     cloudSession: () => prefs.cloud.sessionEnc ? 'fixture-session' : '',
     trustSender: () => {}, seedMacSshHost: () => {}, applyLayout: () => {}, broadcastNow: () => {},
     activeTabId: 'settings', savePreferences: () => saved.push(structuredClone(prefs)),
   });
   vm.runInContext(section('function cloudView() {', '\n// The wait step'), context);
+  vm.runInContext(section('async function cloudWriteEnv(', '\n// Minted or pasted'), context);
+  vm.runInContext(section('async function cloudFinishTelegram(', '\n// Local and remote probes'), context);
   context.getState = () => context.cloudView();
   const run = vm.runInContext(`${section('  const runCommand = async', '\n  // Failed actions')}\nrunCommand;`, context);
-  return { prefs, saved, view: () => context.cloudView(), command: (name, value) => run(null, name, value),
+  return { prefs, saved, finishTelegram: (...args) => context.cloudFinishTelegram(...args), view: () => context.cloudView(), command: (name, value) => run(null, name, value),
     launch: () => vm.runInContext(section('    prefs = readPreferences();', '    // A cold start'), context) };
 }
 
@@ -60,7 +64,7 @@ for (const step of ['migrate', 'model', 'telegram', 'done']) {
     assert.equal(f.prefs.cloud.sessionEnc, 'fixture');
     assert.equal(f.prefs.cloud.computerName, 'alan-fixture');
     await f.command('cloud-migrate', { choice: 'fresh' });
-    assert.equal(f.view().step, 'model');
+    assert.equal(f.view().step, step === 'done' ? '' : 'model');
   });
 }
 
@@ -99,4 +103,74 @@ test('Run setup wizard keeps a DIY server out of hosted migration even with a st
   const f = fixture({ diy: true, sessionEnc: 'fixture', step: 'model' });
   await f.command('onboarding-open');
   assert.equal(f.view().step, 'model');
+});
+
+// Review repro: complete the real bot writer, reopen, choose fresh, and only
+// offer another bot if the shipped state machine leads to Telegram again.
+for (const legacy of [false, true]) {
+  test(`completed hosted setup preserves its bot on Start fresh (${legacy ? 'older saved state' : 'new completion'})`, async () => {
+    let env = 'TELEGRAM_BOT_TOKEN=fixture-original\n';
+    const writes = [];
+    const f = fixture({ sessionEnc: 'fixture', ...(legacy ? { step: 'done', botUsername: 'original_bot' } : { step: 'telegram' }) }, {
+      sshRun: async (_, command) => ({ code: 0, out: command.startsWith('ls ') ? 'personal\n' : command.startsWith('cat ') ? env : 'anthropic: logged in' }),
+      sshWrite: async (_, file, value) => { writes.push(file); env = value; return { code: 0 }; },
+    });
+    if (!legacy) await f.finishTelegram('fixture-original', 'original_bot');
+    assert.equal(f.prefs.cloud.step, 'done');
+    writes.length = 0;
+    const originalEnv = env;
+    await f.command('onboarding-open');
+    assert.equal(f.view().step, 'migrate');
+    await f.command('cloud-migrate', { choice: 'fresh' });
+    if (f.view().step === 'model') await f.command('cloud-model-check');
+    if (f.view().step === 'telegram') await f.finishTelegram('fixture-replacement', 'replacement_bot');
+    assert.equal(writes.length, 0, 'replaying completed setup must never replace the working bot token');
+    assert.equal(env, originalEnv);
+    assert.equal(f.prefs.cloud.botUsername, 'original_bot');
+    assert.equal(f.prefs.cloud.step, 'done', 'completed setup changes migration choice only');
+    assert.equal(f.prefs.onboarded, true);
+    assert.equal(f.saved.at(-1).cloud.step, 'done');
+  });
+}
+
+for (const choice of ['fresh', 'bring']) {
+  test(`completed migration review survives restart and finishes ${choice} without model or bot setup`, async () => {
+    const remote = {
+      sshRun: async (_, command) => {
+        if (command === cloudMigrate.migrateCheckCommand()) return { code: 0, out: '/fixture/.hermes/.migrated' };
+        if (command === cloudMigrate.profilesWithTokenCommand()) return { code: 0, out: '/fixture/.hermes/profiles/personal/.env' };
+        assert.equal(command, 'ls ~/.hermes/profiles 2>/dev/null');
+        return { code: 0, out: 'personal\n' };
+      },
+    };
+    const f = fixture({ sessionEnc: 'fixture', step: 'done', botUsername: 'original_bot' }, remote);
+    await f.command('onboarding-open');
+    await f.command('cloud-migrate', { choice: 'bring' });
+    const resumed = fixture(structuredClone(f.saved.at(-1).cloud), choice === 'bring' ? remote : {
+      sshRun: async () => { throw new Error('Start fresh must not touch the host'); },
+    });
+    resumed.launch();
+    if (choice === 'fresh') await resumed.command('cloud-migrate', { choice });
+    else {
+      const result = await resumed.command('cloud-migrate-check');
+      assert.equal(result.done, true);
+    }
+    const done = resumed;
+    assert.equal(done.prefs.cloud.step, 'done');
+    assert.equal(done.prefs.onboarded, true);
+    assert.equal(done.prefs.cloud.botUsername, 'original_bot');
+    await done.command('onboarding-open');
+    assert.equal(done.view().step, 'migrate', 'the migration choice remains reversible on subsequent reopens');
+    await done.command('cloud-migrate', { choice: 'fresh' });
+    assert.equal(done.prefs.cloud.step, 'done');
+  });
+}
+
+test('an unfinished hosted migration still continues through model setup', async () => {
+  const f = fixture({ sessionEnc: 'fixture', step: 'migrate', migration: 'bring' }, {
+    sshRun: async () => ({ code: 0, out: '/fixture/.hermes/.migrated' }),
+  });
+  await f.command('cloud-migrate-check');
+  assert.equal(f.view().step, 'model');
+  assert.equal(f.prefs.onboarded, false);
 });

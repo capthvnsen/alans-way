@@ -1841,6 +1841,10 @@ function registerIpc() {
         // Revisit the hosted migration choice without repeating provisioning
         // or offering migration to a server that already runs Hermes.
         if (cloud?.sessionEnc && cloud.diy !== true && ['migrate', 'model', 'telegram', 'done'].includes(cloud.step)) {
+          // Completed setups revisit only this choice. Replaying model/bot
+          // setup could replace a working token, including on older saves
+          // that never recorded tokenedProfiles after creating their bot.
+          if (cloud.step === 'done') cloud.migrationOnly = true;
           cloud.step = 'migrate';
           delete cloud.migration;
         }
@@ -1937,7 +1941,9 @@ function registerIpc() {
         const profiles = await sshRun(host, 'ls ~/.hermes/profiles 2>/dev/null');
         const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
         prefs.cloud = { ...cloud, profiles: cloudMigrate.profileNames(profiles.out), tokenedProfiles: cloudMigrate.profilesWithToken(grep.out) };
-        setCloudStep(prefs, 'model');
+        const next = nextCloudStep(prefs, 'migrate');
+        setCloudStep(prefs, next);
+        if (next === 'done') prefs.onboarded = true;
         savePreferences();
         return {
           done: true,
