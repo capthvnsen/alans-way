@@ -33,6 +33,15 @@ test('a token in the shared home env or secrets dir covers every profile', () =>
   assert.equal(nextCloudStep(prefs, 'model'), 'done');
 });
 
+test('DIY with any existing bot goes to chat setup, including mixed profile coverage', () => {
+  for (const tokenedProfiles of [['personal'], ['personal', 'work'], ['*']]) {
+    const prefs = { cloud: { diy: true, profiles: ['personal', 'work'], tokenedProfiles } };
+    assert.equal(nextCloudStep(prefs, 'model'), 'bot-chat');
+    assert.equal(nextCloudStep(prefs, 'bot-chat'), 'done');
+  }
+  assert.equal(nextCloudStep({ cloud: { diy: true, tokenedProfiles: [] } }, 'model'), 'telegram');
+});
+
 test('steps still advance and finish in order', () => {
   const prefs = { cloud: { sessionEnc: 'x', step: 'migrate' } };
   assert.equal(nextCloudStep(prefs, 'connect'), 'migrate');

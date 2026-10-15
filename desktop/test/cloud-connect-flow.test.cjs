@@ -17,7 +17,8 @@ const end = source.indexOf('\nasync function claimWithToken(', start);
 assert.ok(end > start);
 const connectSource = source.slice(start, end);
 
-function fixture({ diy = true, resume = false, step = 'connect', failure, model = null, tokenedProfiles = [] } = {}) {
+function fixture({ diy = true, resume = false, step = 'connect', failure, model = null, tokenedProfiles = [],
+  inventory = tokenedProfiles.map(name => name === '*' ? '/fixture/.hermes/.env' : `/fixture/.hermes/profiles/${name}/.env`).join('\n') } = {}) {
   const host = diy ? 'user@server.example' : 'root@192.0.2.7';
   const prefs = {
     onboarded: false,
@@ -30,11 +31,16 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, model 
   const calls = [];
   const commands = [];
   const savedSteps = [];
-  const run = vm.runInNewContext(`${connectSource}\ncloudConnectRun;`, {
+  const broadcasts = [];
+  const commandSource = source.slice(source.indexOf('  const runCommand = async'), source.indexOf('\n  // Failed actions'));
+  const run = vm.runInNewContext(`${connectSource}\n${commandSource}\nrunCommand;`, {
     prefs, isSshTarget, nextCloudStep, setCloudStep,
+    trustSender() {}, getState: () => ({ step: prefs.cloud?.step }),
+    broadcastNow: () => broadcasts.push(prefs.cloud?.step),
     setTimeout() {}, checkVersionsWhenIdle() {},
     cloudComputer: null,
     cloudModel,
+    cloudMigrate: require('../src/cloud-migrate.cjs'),
     cloudConnect: { ...cloudConnect, tailscaleCli: () => 'fixture-tailscale' },
     localRun: async (cli, args) => {
       assert.equal(cli, 'fixture-tailscale');
@@ -45,8 +51,18 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, model 
     sshRun: async (target, command, options) => {
       commands.push(command);
       assert.equal(target, host);
+      if (command === require('../src/cloud-migrate.cjs').profilesWithTokenCommand()) {
+        calls.push('tokens');
+        assert.equal(options.timeoutMs, 8000);
+        return { code: 0, out: inventory };
+      }
+      if (command === 'ls ~/.hermes/profiles 2>/dev/null') {
+        calls.push('profiles');
+        return { code: 0, out: 'personal\nwork\n' };
+      }
       if (command === 'echo CONNECT_OK') {
         calls.push('ssh');
+        if (failure === 'throw') throw new Error('fixture connection failure');
         return failure === 'ssh' ? { code: 1, out: '' } : { code: 0, out: 'CONNECT_OK\n' };
       }
       if (command.includes('hermes config get')) {
@@ -70,8 +86,31 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, model 
     },
     savePreferences: () => savedSteps.push(prefs.cloud.step),
   });
-  return { prefs, calls, commands, savedSteps, connect: () => run(diy && !resume ? host : undefined) };
+  return { prefs, calls, commands, savedSteps, broadcasts,
+    connect: () => run(null, 'cloud-connect', diy && !resume ? { host } : {}) };
 }
+
+test('Connect publishes the model card before returning, including a replay', async () => {
+  const f = fixture();
+  assert.equal((await f.connect()).ok, true);
+  assert.equal(f.broadcasts.at(-1), 'model', 'the open renderer must leave Connect without reopening');
+  await f.connect();
+  assert.equal(f.broadcasts.length, 2);
+});
+
+test('the shared command boundary publishes partial state even when Connect rejects', async () => {
+  const f = fixture({ failure: 'throw' });
+  await assert.rejects(f.connect(), /fixture connection failure/);
+  assert.deepEqual(f.broadcasts, ['connect']);
+});
+
+test('DIY inventories bot presence without reading token values', async () => {
+  const f = fixture({ inventory: '/fixture/.hermes/profiles/personal/.env\n' });
+  await f.connect();
+  assert.deepEqual(Array.from(f.prefs.cloud.tokenedProfiles || []), ['personal']);
+  assert.deepEqual(Array.from(f.prefs.cloud.profiles || []), ['personal', 'work']);
+  assert.equal(nextCloudStep(f.prefs, 'model'), 'bot-chat');
+});
 
 for (const resume of [false, true]) {
   test(`a ${resume ? 'resumed' : 'new'} DIY connection skips migration and persists the Start fresh destination`, async () => {
@@ -84,7 +123,7 @@ for (const resume of [false, true]) {
     assert.equal(cloudStep(f.prefs), 'model', 'reopening the wizard must not show migration');
     assert.equal(f.savedSteps.at(-1), 'model');
     assert.equal(f.prefs.onboarded, false, 'model and bot setup still remain');
-    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model']);
+    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model', 'tokens', 'profiles']);
   });
 }
 
@@ -103,6 +142,7 @@ test('a hosted connection still persists migration before model setup', async ()
   assert.equal(result.stage, 'done');
   assert.equal(cloudStep(f.prefs), 'migrate');
   assert.equal(f.savedSteps.at(-1), 'migrate');
+  assert.deepEqual(f.broadcasts, ['migrate'], 'hosted early returns also publish their destination');
   assert.equal(nextCloudStep(f.prefs, 'migrate'), 'model');
   assert.deepEqual(f.calls, ['pairing', 'state', 'authorize', 'path']);
 });
@@ -129,7 +169,7 @@ for (const resume of [false, true]) {
     const f = fixture({ resume, model: { code: 0, out: 'openrouter\nopenai/gpt-4.1\n' } });
     const result = await f.connect();
     assert.equal(result.ok, true);
-    assert.equal(f.commands.length, 3, 'connection must only read reachability, state and model identifiers');
+    assert.equal(f.commands.length, 5, 'connection only reads reachability, state, model identifiers and bot presence');
     assert.equal(f.prefs.cloud.step, 'model', 'detected identifiers must leave the model card for confirmation');
     assert.equal(f.prefs.cloud.model, undefined);
     assert.equal(f.prefs.cloud.existingModel.provider, 'openrouter');
@@ -137,7 +177,7 @@ for (const resume of [false, true]) {
     assert.equal(f.savedSteps.at(-1), 'model');
     assert.match(result.detail, /openrouter.*openai\/gpt-4\.1/);
     assert.equal(f.prefs.onboarded, false);
-    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model']);
+    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model', 'tokens', 'profiles']);
   });
 }
 
