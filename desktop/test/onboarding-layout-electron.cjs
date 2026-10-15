@@ -20,6 +20,7 @@ app.whenReady().then(async () => {
     window.workspace = { command: async () => 'Fixture prompt' };
     ${renderer.slice(0, renderer.indexOf('function orderedBots('))}
     ${renderer.slice(renderer.indexOf('let onboardingStep ='), renderer.indexOf('function rect('))}
+    ${renderer.slice(renderer.indexOf('function appendServerSetup('), renderer.indexOf('function showSettings('))}
     const copyReport = () => {};
     state = { platform: 'darwin', telegramStatus: 'offline', inApplications: true };
     document.getElementById('home').classList.add('hidden');
