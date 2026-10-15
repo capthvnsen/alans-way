@@ -8,6 +8,7 @@ const http = require('node:http');
 const { app, BrowserWindow, webContents, session } = require('electron');
 const profile = process.env.HERMES_TEST_PROFILE || fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-recorder-'));
 const { prepareFixture, quitFixture } = require('./electron-fixture.cjs');
+const { scanProfile } = require('./profile-disk-scan.cjs');
 prepareFixture(profile);
 fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false,
   bots: [{ id: '4242', isBot: true, name: 'Scout' }, { id: '5151', isBot: true, name: 'Other' }], selectedBotId: '4242' }));
@@ -26,10 +27,6 @@ const waitFor = async (read, predicate, timeout = 12000) => {
   throw new Error(`Timed out waiting for recorder state: ${JSON.stringify(value?.recording ?? value)?.slice(0, 300)}`);
 };
 const pause = ms => new Promise(r => setTimeout(r, ms));
-const filesUnder = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
-  const file = path.join(dir, entry.name);
-  return entry.isDirectory() ? filesUnder(file) : entry.isFile() ? [file] : [];
-});
 let server;
 app.whenReady().then(async () => {
   const win = await waitFor(() => BrowserWindow.getAllWindows()[0], win => !!win);
@@ -207,12 +204,11 @@ app.whenReady().then(async () => {
   // The test password, card number, notes, named secrets and the search never reached disk.
   session.fromPartition('persist:browser').flushStorageData();
   await pause(500);
-  for (const file of filesUnder(profile)) {
-    const bytes = fs.readFileSync(file);
+  scanProfile(profile, (bytes, file) => {
     for (const text of [NOTE, BIO, ...Object.values(NAMED_SECRETS), ...TERM_FORMS]) assert.ok(!bytes.includes(text) && !bytes.includes(Buffer.from(text, 'utf16le')), `typed text that was not kept is in ${file}`);
     assert.ok(!bytes.includes(PASSWORD) && !bytes.includes(Buffer.from(PASSWORD, 'utf16le')), `the password is in ${file}`);
     assert.ok(!bytes.includes(CARD) && !bytes.includes(Buffer.from(CARD, 'utf16le')), `the card number is in ${file}`);
-  }
+  });
 
   // Each recording is deletable.
   const files = () => fs.readdirSync(path.join(profile, 'recordings'));
