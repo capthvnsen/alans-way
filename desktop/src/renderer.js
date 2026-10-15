@@ -465,7 +465,8 @@ function renderOnboarding(show) {
   panel.classList.toggle('hidden', !show);
   if (!show) { onboardingSignature = ''; return; }
   const cloud = state.cloud || {};
-  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername, cloud.model, cloud.existingModel, cloud.modelDetected] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
+  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername, cloud.model, cloud.existingModel, cloud.modelDetected,
+    cloud.tokenedProfiles, cloud.existingBotId, cloud.existingBotProfile, cloud.step === 'bot-chat' ? state.bots?.map(({ id, name, username }) => [id, name, username]) : null] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
   if (signature === onboardingSignature) return;
   onboardingSignature = signature;
   const go = (step) => { onboardingStep = step; renderOnboarding(true); };
@@ -642,6 +643,57 @@ function renderCloudOnboarding(card, actions, cloud) {
         status.textContent = 'Could not detect a configured model. You can use the model already set on your server, or choose a new login.';
       }
     }
+  } else if (cloud.step === 'bot-chat' && cloud.diy) {
+    card.append(element('h2', '', 'Continue with your existing bot'),
+      element('p', 'settings-note', 'Open the Telegram bot already used by your Hermes gateway, then paste the setup prompt into its chat on the left.'));
+    const profiles = cloud.tokenedProfiles || [];
+    const profile = element('select'); profile.id = 'ob-bot-profile';
+    if (profiles.length > 1) profile.append(element('option', '', 'Choose a profile…'));
+    for (const name of profiles) {
+      const option = element('option', '', name === '*' ? 'Shared Hermes bot' : name);
+      option.value = name; profile.append(option);
+    }
+    if (profiles.length > 1) profile.options[0].value = '';
+    if (cloud.existingBotProfile) profile.value = cloud.existingBotProfile;
+    if (profiles.length) {
+      const field = element('div', 'field'), label = element('label', '', 'Hermes profile');
+      label.htmlFor = profile.id; field.append(label, profile); card.append(field);
+    }
+    const field = element('div', 'field'), label = element('label', '', 'Telegram bot username');
+    const input = element('input'); input.id = 'ob-existing-bot'; input.placeholder = '@your_hermes_bot'; input.autocomplete = 'off';
+    label.htmlFor = input.id;
+    const bots = (state.bots || []).filter(bot => bot.username && bot.username.toLowerCase() !== 'botfather');
+    const selected = bots.find(bot => bot.id === (cloud.existingBotId || state.selectedBotId));
+    input.value = selected?.username || '';
+    if (bots.length) {
+      const picker = element('select'); picker.setAttribute('aria-label', 'Choose an existing Telegram bot');
+      const placeholder = element('option', '', 'Choose a bot chat…'); placeholder.value = ''; picker.append(placeholder);
+      for (const bot of bots) {
+        const option = element('option', '', `${bot.name || bot.username} (@${bot.username})`);
+        option.value = bot.username; picker.append(option);
+      }
+      picker.value = input.value;
+      picker.onchange = () => { input.value = picker.value; };
+      field.append(picker);
+    }
+    field.append(label, input); card.append(field);
+    const status = element('p', 'settings-note', ''); card.append(status);
+    actions.append(button('Change model', 'secondary-button', () => go('model')),
+      button('Create a new bot', 'secondary-button', () => go('telegram')),
+      button('Open bot chat', cloud.existingBotId ? 'secondary-button' : 'primary-button', async () => {
+        status.textContent = 'Opening your bot…';
+        const result = await command('cloud-existing-bot', { profile: profile.value, username: input.value.trim() });
+        status.textContent = result?.ok ? 'Your bot chat is open.' : 'Could not open the bot. Check your profile, username and Telegram sign-in, then try again.';
+      }));
+    if (cloud.existingBotId) {
+      const box = element('textarea', 'onboarding-prompt'); box.readOnly = true; box.rows = 7;
+      box.setAttribute('aria-label', 'Setup prompt for your existing bot');
+      command('agent-prompt', { botId: cloud.existingBotId, copy: false }).then(text => { if (typeof text === 'string') box.value = text; });
+      card.append(box);
+      actions.append(button('Copy setup prompt', 'primary-button', async () => {
+        if (typeof await command('agent-prompt', { botId: cloud.existingBotId }) === 'string') toast('Prompt copied. Paste it into your Hermes bot chat.');
+      }), button('Done', 'secondary-button', next));
+    }
   } else if (cloud.step === 'telegram') {
     if (cloud.diy) actions.append(button('Change model', 'secondary-button', () => go('model')));
     card.append(element('h2', '', 'Set up your Telegram bot'),
@@ -659,7 +711,8 @@ function renderCloudOnboarding(card, actions, cloud) {
         status.textContent = result?.detail || '';
       }));
     } else {
-      actions.append(button('Create my bot', 'primary-button', async () => {
+      if (cloud.diy) actions.append(button('Use my existing bot', 'primary-button', () => go('bot-chat')));
+      actions.append(button(cloud.diy ? 'Create a new bot' : 'Create my bot', cloud.diy ? 'secondary-button' : 'primary-button', async () => {
         status.textContent = 'Talking to @BotFather…';
         const result = await command('cloud-telegram');
         status.textContent = result?.done ? 'Bot created.' : result?.detail || '';

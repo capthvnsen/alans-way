@@ -24,7 +24,7 @@ function pinOnboarding(prefs) {
 
 // Cloud onboarding steps in order. 'support' sits outside the linear flow: a
 // failed computer lands there, and the user can skip it to finish.
-const CLOUD_STEPS = ['cloud-wait', 'connect', 'migrate', 'model', 'telegram', 'support', 'done'];
+const CLOUD_STEPS = ['cloud-wait', 'connect', 'migrate', 'model', 'telegram', 'bot-chat', 'support', 'done'];
 const CLOUD_FLOW = ['cloud-wait', 'connect', 'migrate', 'model', 'telegram', 'done'];
 
 // Which wizard step a stored (or absent) cloud onboarding resolves to. The
@@ -60,7 +60,10 @@ function nextCloudStep(prefs, current) {
   if (current === 'model' && prefs?.cloud?.diy === true && prefs.cloud.modelOnly === true) return 'done';
   const index = CLOUD_FLOW.indexOf(current);
   let next = index === -1 ? 'done' : CLOUD_FLOW[index + 1] || 'done';
-  if (next === 'telegram' && telegramCovered(prefs)) next = 'done';
+  if (next === 'telegram') {
+    if (prefs?.cloud?.diy === true && prefs.cloud.tokenedProfiles?.length) next = 'bot-chat';
+    else if (telegramCovered(prefs)) next = 'done';
+  }
   return next;
 }
 

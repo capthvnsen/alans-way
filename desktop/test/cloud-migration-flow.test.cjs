@@ -16,7 +16,7 @@ function section(start, end) {
 
 // Run the shipped commands and state projection with fixture-only preferences.
 // No Electron startup, SSH, local migration, clipboard or network is available.
-function fixture(cloud, { sshRun, sshWrite, telegramView = null } = {}) {
+function fixture(cloud, { sshRun, sshWrite, telegramView = null, openBot = async () => {} } = {}) {
   const prefs = { onboarded: false, cloud, vpsBrowser: { sshHost: 'user@server.example' } };
   const saved = [];
   const context = vm.createContext({
@@ -27,6 +27,7 @@ function fixture(cloud, { sshRun, sshWrite, telegramView = null } = {}) {
     cloudSession: () => prefs.cloud.sessionEnc ? 'fixture-session' : '',
     trustSender: () => {}, seedMacSshHost: () => {}, applyLayout: () => {}, broadcastNow: () => {},
     activeTabId: 'settings', savePreferences: () => saved.push(structuredClone(prefs)),
+    openTelegramUsername: async username => { await openBot(username); prefs.selectedBotId = 'fixture-bot-id'; },
   });
   vm.runInContext(section('async function cloudKeepServerModel(', '\n// The connect step'), context);
   vm.runInContext(section('function cloudView() {', '\n// The wait step'), context);
@@ -193,8 +194,8 @@ for (const tokenedProfiles of [[], ['*']]) {
       sshWrite: async () => { assert.fail('keep must never write credentials'); },
     });
     await f.command('cloud-model-existing');
-    assert.equal(f.prefs.cloud.step, tokenedProfiles.length ? 'done' : 'telegram');
-    assert.equal(f.prefs.onboarded, tokenedProfiles.length > 0);
+    assert.equal(f.prefs.cloud.step, tokenedProfiles.length ? 'bot-chat' : 'telegram');
+    assert.equal(f.prefs.onboarded, false, 'the existing bot still needs the setup prompt');
     assert.equal(f.prefs.cloud.model, 'existing');
     assert.equal(f.saved.at(-1).cloud.model, 'existing');
   });
@@ -215,6 +216,8 @@ test('resuming a DIY model card detects and displays the existing provider', asy
       calls.push(command);
       assert.equal(host, 'user@server.example');
       const model = require('../src/cloud-model.cjs');
+      if (command === cloudMigrate.profilesWithTokenCommand()) return { code: 0, out: '/fixture/.hermes/profiles/personal/.env' };
+      if (command === 'ls ~/.hermes/profiles 2>/dev/null') return { code: 0, out: 'personal\nwork\n' };
       assert.equal(command, model.existingModelCommand());
       assert.equal(options.timeoutMs, 8000);
       return { code: 0, out: 'openrouter\nopenai/gpt-4.1\n' };
@@ -222,12 +225,13 @@ test('resuming a DIY model card detects and displays the existing provider', asy
     sshWrite: async () => assert.fail('detection must never write'),
   });
   assert.equal((await f.command('cloud-model-detect')).done, false);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 3, 'model detection also inventories existing DIY bots');
   assert.equal(f.view().step, 'model');
   assert.equal(f.view().modelDetected, true);
   assert.equal(f.view().model, '');
   assert.equal(f.view().existingModel.provider, 'openrouter');
   assert.equal(f.view().existingModel.model, 'openai/gpt-4.1');
+  assert.deepEqual(Array.from(f.view().tokenedProfiles), ['personal']);
   const resumed = fixture(structuredClone(f.saved.at(-1).cloud));
   assert.equal(resumed.view().existingModel.model, 'openai/gpt-4.1');
 });
@@ -262,3 +266,75 @@ for (const step of ['telegram', 'done']) {
     assert.equal(resumed.prefs.onboarded, step === 'done');
   });
 }
+
+test('DIY existing-bot setup selects a profile and opens the bot without writing or restarting', async () => {
+  const opened = [];
+  const f = fixture({ diy: true, step: 'model', tokenedProfiles: ['personal', 'work'] }, {
+    sshRun: async () => assert.fail('keeping a bot must not read credentials or restart the gateway'),
+    sshWrite: async () => assert.fail('keeping a bot must not write credentials'),
+    openBot: async username => opened.push(username),
+  });
+  await f.command('cloud-model-existing');
+  assert.equal(f.view().step, 'bot-chat');
+  await assert.rejects(f.command('cloud-existing-bot', { username: 'work_bot' }), /profile/);
+  await assert.rejects(f.command('cloud-existing-bot', { profile: 'work', username: 'bad?username' }), /username/);
+  assert.equal(f.prefs.cloud.existingBotId, undefined);
+  assert.equal((await f.command('cloud-existing-bot', { profile: 'work', username: '@work_bot' })).ok, true);
+  assert.deepEqual(opened, ['work_bot']);
+  assert.equal(f.view().existingBotId, 'fixture-bot-id');
+  assert.equal(f.view().existingBotProfile, 'work');
+  assert.equal(f.view().step, 'bot-chat', 'keep the setup prompt available until the user finishes');
+  await f.command('cloud-next');
+  assert.equal(f.prefs.cloud.step, 'done');
+  assert.equal(f.prefs.onboarded, true);
+});
+
+test('a failed existing bot open keeps the wizard unfinished and can be retried', async () => {
+  let failed = true;
+  const f = fixture({ diy: true, step: 'bot-chat', tokenedProfiles: ['*'] }, {
+    openBot: async () => { if (failed) throw Error('fixture Telegram offline'); },
+  });
+  const choice = { profile: '*', username: 'shared_bot' };
+  await assert.rejects(f.command('cloud-existing-bot', choice), /offline/);
+  assert.equal(f.view().existingBotId, '');
+  assert.equal(f.view().step, 'bot-chat');
+  assert.equal(f.prefs.onboarded, false);
+  failed = false;
+  assert.equal((await f.command('cloud-existing-bot', choice)).ok, true);
+});
+
+test('hosted users cannot enter the DIY existing-bot handler', async () => {
+  const f = fixture({ sessionEnc: 'fixture', step: 'telegram' });
+  await assert.rejects(f.command('cloud-existing-bot', { username: 'work_bot' }), /existing bot setup/);
+  assert.equal(f.view().step, 'telegram');
+});
+
+test('older DIY saves at Telegram inventory profiles before opening their existing bot', async () => {
+  const f = fixture({ diy: true, step: 'telegram' }, {
+    sshRun: async (_, command) => ({ code: 0, out: command === cloudMigrate.profilesWithTokenCommand()
+      ? '/fixture/.hermes/profiles/personal/.env\n/fixture/.hermes/profiles/work/.env' : 'personal\nwork\n' }),
+    sshWrite: async () => assert.fail('inventory must never write credentials'),
+  });
+  await f.command('cloud-goto', { step: 'bot-chat' });
+  assert.equal(f.view().step, 'bot-chat');
+  assert.deepEqual(Array.from(f.view().tokenedProfiles), ['personal', 'work']);
+});
+
+test('a late bot inventory cannot roll back a manual model choice', async () => {
+  const pending = [];
+  const f = fixture({ diy: true, step: 'model' }, {
+    sshRun: async (_, command) => command.includes('hermes config get')
+      ? { code: 0, out: 'openrouter\nopenai/gpt-4.1' }
+      : new Promise(resolve => pending.push(resolve)),
+  });
+  const detection = f.command('cloud-model-detect');
+  await new Promise(setImmediate);
+  assert.equal(pending.length, 2);
+  await f.command('cloud-model-existing');
+  pending[0]({ code: 0, out: '/fixture/.hermes/.env' });
+  pending[1]({ code: 0, out: 'personal\n' });
+  assert.equal((await detection).cancelled, true);
+  assert.equal(f.view().step, 'telegram');
+  assert.equal(f.prefs.cloud.tokenedProfiles, undefined);
+  assert.equal(f.prefs.cloud.model, 'existing');
+});

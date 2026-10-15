@@ -78,7 +78,7 @@ test('Settings and the wizard request the same main-process setup prompt', () =>
   const wizard = renderer.slice(renderer.indexOf("} else if (onboardingStep === 2)"), renderer.indexOf('Finish the connection'));
   assert.match(wizard, /command\('agent-prompt', \{ botId: state.selectedBotId, copy: false \}\)/);
   assert.match(wizard, /command\('agent-prompt', \{ botId: state.selectedBotId \}\)/);
-  const settings = renderer.split('\n').find((line) => line.includes("'Copy setup prompt'"));
+  const settings = renderer.slice(renderer.indexOf('function showSettings(')).split('\n').find((line) => line.includes("'Copy setup prompt'"));
   assert.match(settings, /command\('agent-prompt', \{ botId: state.selectedBotId \}\)/);
   const main = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
   const handler = main.slice(main.indexOf("case 'agent-prompt':"), main.indexOf("case 'test-agent-path':"));

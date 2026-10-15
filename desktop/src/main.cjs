@@ -1195,6 +1195,8 @@ function cloudView() {
     migration: cloud.migration || '', tokenedProfiles: cloud.tokenedProfiles || [],
     migrateCommand: cloud.migration === 'bring' && (prefs.vpsBrowser?.sshHost || '').trim() ? cloudMigrate.migrateCommand(prefs.vpsBrowser.sshHost.trim()) : '',
     telegramFallback: cloud.telegramFallback === true, botUsername: cloud.botUsername || '',
+    existingBotId: cloud.diy === true ? cloud.existingBotId || '' : '',
+    existingBotProfile: cloud.diy === true ? cloud.existingBotProfile || '' : '',
     computer, error: cloudError,
     supportUrl: session ? `${cloudClaim.apiBase()}/api/discord/start?session=${encodeURIComponent(session)}` : `${cloudClaim.apiBase()}/api/discord/start` };
 }
@@ -1425,6 +1427,11 @@ async function cloudKeepServerModel(detect = true) {
   if (detect) {
     try { existing = cloudModel.parseExistingModel(await sshRun(host, cloudModel.existingModelCommand(), { timeoutMs: 8000 })); } catch {}
     if (!current()) return { done: false, cancelled: true, detail: '' };
+    if (!cloud.botInventoryChecked) {
+      const inventory = await cloudReadBotInventory(host);
+      if (!current()) return { done: false, cancelled: true, detail: '' };
+      Object.assign(cloud, inventory);
+    }
     cloud.modelDetected = true;
     if (existing) cloud.existingModel = existing;
     else delete cloud.existingModel;
@@ -1445,6 +1452,18 @@ async function cloudKeepServerModel(detect = true) {
   const name = existing ? `: ${existing.provider} / ${existing.model}` : '';
   return { done: true, existingModel: existing, detail: `Using the model already set on your server${name}.` };
 }
+// Reuse migration's presence-only inventory: SSH returns paths and names,
+// never bot tokens. Older DIY saves are inventoried when the model card opens.
+async function cloudReadBotInventory(host) {
+  try {
+    const [tokens, profiles] = await Promise.all([
+      sshRun(host, cloudMigrate.profilesWithTokenCommand(), { timeoutMs: 8000 }),
+      sshRun(host, 'ls ~/.hermes/profiles 2>/dev/null', { timeoutMs: 8000 }),
+    ]);
+    return { tokenedProfiles: cloudMigrate.profilesWithToken(tokens.out),
+      profiles: cloudMigrate.profileNames(profiles.out), botInventoryChecked: true };
+  } catch { return {}; }
+}
 // The connect step advances as far as it can each click: CLI check, pairing
 // status, the computer's own state file, then the saved return path check.
 // {stage} tells the wizard which message to show; 'done' moves to migration
@@ -1454,7 +1473,7 @@ function cloudConnectRun(diyHost) {
   if (cloudConnectPending) return cloudConnectPending;
   // A queued click from a removed card must not reset a later wizard step.
   const sameServer = !diyHost || diyHost === prefs.vpsBrowser?.sshHost;
-  if (sameServer && ['model', 'telegram', 'done'].includes(prefs.cloud?.step)) {
+  if (sameServer && ['model', 'telegram', 'bot-chat', 'done'].includes(prefs.cloud?.step)) {
     return Promise.resolve({ stage: 'done', ok: true, detail: 'Already connected.' });
   }
   cloudConnectPending = cloudConnectOnce(diyHost).finally(() => { cloudConnectPending = null; });
@@ -1488,6 +1507,11 @@ async function cloudConnectOnce(diyHost) {
     delete cloud.existingModel;
     delete cloud.modelDetected;
     delete cloud.modelOnly;
+    delete cloud.botInventoryChecked;
+    delete cloud.tokenedProfiles;
+    delete cloud.profiles;
+    delete cloud.existingBotId;
+    delete cloud.existingBotProfile;
     const model = await cloudKeepServerModel();
     if (model.cancelled) return { stage: 'done', ok: true, detail: '' };
     if (cloud.model === 'existing') delete cloud.model;
@@ -1573,6 +1597,11 @@ function registerIpc() {
   });
   const runCommand = async (event, command, value = {}) => {
     trustSender(event);
+    try { return await executeCommand(command, value); }
+    finally { broadcastNow(); }
+  };
+  // Publish after every command settles, including early returns and failures.
+  const executeCommand = async (command, value) => {
     switch (command) {
       case 'create-tab': return describeTab(createTab({ url: value.url || 'about:blank' }));
       case 'close-tab':
@@ -1920,7 +1949,7 @@ function registerIpc() {
           cloud.step = 'migrate';
           delete cloud.migration;
         }
-        if (cloud?.diy === true && ['model', 'telegram', 'done'].includes(cloud.step)) {
+        if (cloud?.diy === true && ['model', 'telegram', 'bot-chat', 'done'].includes(cloud.step)) {
           // Revisit model choice after a failed first reply without replacing
           // the bot on a completed server, including older saved setups.
           if (cloud.step === 'done') cloud.modelOnly = true;
@@ -1938,6 +1967,15 @@ function registerIpc() {
         break;
       }
       case 'cloud-goto': {
+        if (value.step === 'bot-chat') {
+          const cloud = prefs.cloud, step = cloud?.step;
+          if (cloud?.diy !== true) throw new Error('This option is only for your own server.');
+          if (!cloud.botInventoryChecked) {
+            const inventory = await cloudReadBotInventory((prefs.vpsBrowser?.sshHost || '').trim());
+            if (prefs.cloud !== cloud || cloud.step !== step) return getState();
+            Object.assign(cloud, inventory);
+          }
+        }
         if (value.step === 'done' && prefs.cloud) { prefs.cloud.step = 'done'; prefs.onboarded = true; savePreferences(); break; }
         if (!setCloudStep(prefs, String(value.step || ''))) throw new Error('Unknown setup step.');
         if (prefs.cloud.diy === true && value.step === 'model') delete prefs.cloud.modelDetected;
@@ -2035,8 +2073,22 @@ function registerIpc() {
       case 'cloud-model-existing': {
         if (prefs.cloud?.step !== 'model') throw new Error('Open the model setup step first.');
         const result = await cloudKeepServerModel(command === 'cloud-model-detect');
-        broadcastNow();
         return result;
+      }
+      case 'cloud-existing-bot': {
+        const cloud = prefs.cloud;
+        if (cloud?.diy !== true || cloud.step !== 'bot-chat') throw new Error('Open your existing bot setup first.');
+        const profile = String(value.profile || '');
+        const profiles = cloud.tokenedProfiles || [];
+        if (profiles.length && !profiles.includes(profile)) throw new Error('Choose the profile whose bot you want to use.');
+        const username = String(value.username || '').replace(/^@/, '');
+        if (!/^[A-Za-z][\w]{3,31}$/.test(username)) throw new Error('Enter your Telegram bot username.');
+        await openTelegramUsername(username);
+        if (prefs.cloud !== cloud || cloud.step !== 'bot-chat') return { ok: false };
+        cloud.existingBotId = prefs.selectedBotId;
+        cloud.existingBotProfile = profile;
+        savePreferences();
+        return { ok: true };
       }
       case 'cloud-model': {
         const host = (prefs.vpsBrowser?.sshHost || '').trim();
@@ -2131,11 +2183,11 @@ function registerIpc() {
         const username = String(value.username || '').replace(/^@/, '');
         if (!/^[A-Za-z][\w]{3,31}$/.test(username)) throw new Error('Enter a Telegram bot username.');
         await openTelegramUsername(username);
-        broadcastNow(); return { ok: true };
+        return { ok: true };
       }
       default: throw new Error('Unknown workspace command.');
     }
-    broadcastNow(); return getState();
+    return getState();
   };
   // Failed actions only reached the screen as a toast; log them so a copied
   // report shows what went wrong.
