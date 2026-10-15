@@ -17,7 +17,7 @@ const end = source.indexOf('\nasync function claimWithToken(', start);
 assert.ok(end > start);
 const connectSource = source.slice(start, end);
 
-function fixture({ diy = true, resume = false, step = 'connect', failure, model = null, tokenedProfiles = [] } = {}) {
+function fixture({ diy = true, resume = false, step = 'connect', failure, model = null, health = { code: 0, out: 'MODEL_OK\n' }, tokenedProfiles = [] } = {}) {
   const host = diy ? 'user@server.example' : 'root@192.0.2.7';
   const prefs = {
     onboarded: false,
@@ -47,11 +47,17 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, model 
         calls.push('ssh');
         return failure === 'ssh' ? { code: 1, out: '' } : { code: 0, out: 'CONNECT_OK\n' };
       }
+      if (command.startsWith('python3 ')) {
+        calls.push('health');
+        assert.equal(options.timeoutMs, 15000, 'model usability check must have a short SSH budget');
+        if (health === 'throw') throw new Error('fixture health timeout with private diagnostics');
+        return health;
+      }
       if (command.includes('hermes config get')) {
         calls.push('model');
         assert.equal(options.timeoutMs, 8000, 'the read-only model check must be bounded');
         if (model === 'throw') throw new Error('fixture SSH timeout');
-        return model || { code: 1, out: '' };
+        return typeof model === 'function' ? model() : model || { code: 1, out: '' };
       }
       assert.equal(command, cloudConnect.sshReadCommand('/var/lib/alan/state.json'));
       calls.push('state');
@@ -134,7 +140,7 @@ for (const resume of [false, true]) {
     assert.equal(f.savedSteps.at(-1), 'telegram');
     assert.match(result.detail, /openrouter.*openai\/gpt-4\.1/);
     assert.equal(f.prefs.onboarded, false);
-    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model']);
+    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model', 'health']);
   });
 }
 
@@ -153,3 +159,40 @@ for (const model of ['throw', { code: -1, out: 'openrouter\nopenai/gpt-4.1\n' },
     assert.equal(f.prefs.cloud.existingModel, undefined);
   });
 }
+
+for (const health of [{ code: 1, out: 'private diagnostics' }, { code: 124, out: '' }, 'throw', { code: 0, out: 'not a model answer' }]) {
+  test(`configured identifiers cannot skip model setup without usable proof: ${JSON.stringify(health)}`, async () => {
+    const f = fixture({ resume: true, model: { code: 0, out: 'openrouter\nopenai/gpt-4.1\n' }, health, tokenedProfiles: ['*'] });
+    const result = await f.connect();
+    assert.equal(result.ok, true);
+    assert.equal(f.prefs.cloud.step, 'model');
+    assert.equal(f.prefs.onboarded, false);
+    assert.equal(f.prefs.cloud.model, undefined);
+    assert.equal(f.prefs.cloud.existingModel.provider, 'openrouter');
+    assert.match(f.prefs.cloud.modelCheck, /^(failed|timeout)$/);
+    assert.doesNotMatch(result.detail, /private diagnostics/);
+    assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model', 'health']);
+  });
+}
+
+test('overlapping Connect clicks and a replay cannot roll completed DIY setup backwards', async () => {
+  const pending = [];
+  const f = fixture({ resume: true, model: () => new Promise(resolve => pending.push(resolve)), tokenedProfiles: ['*'] });
+  const first = f.connect();
+  const second = f.connect();
+  await new Promise(setImmediate);
+  pending[0]({ code: 0, out: 'openrouter\nopenai/gpt-4.1\n' });
+  await first;
+  assert.equal(f.prefs.cloud.step, 'done');
+  for (const resolve of pending.slice(1)) resolve({ code: 0, out: 'openrouter\nopenai/gpt-4.1\n' });
+  await second;
+  assert.equal(f.prefs.cloud.step, 'done', 'a stale probe must not roll back completion');
+  assert.equal(f.prefs.cloud.model, 'existing');
+  assert.equal(f.prefs.onboarded, true);
+  assert.equal(pending.length, 1, 'overlapping clicks share the in-flight connection');
+  const calls = f.calls.length, saves = f.savedSteps.length;
+  await f.connect();
+  assert.equal(f.prefs.cloud.step, 'done', 'a queued click after completion must also be harmless');
+  assert.equal(f.calls.length, calls);
+  assert.equal(f.savedSteps.length, saves);
+});

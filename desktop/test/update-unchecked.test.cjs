@@ -76,8 +76,10 @@ for (const route of ['DIY', 'hosted', 'settings']) {
       const end = source.indexOf("      case 'preview-move':", start);
       run = `async function save() { switch ('settings') { ${source.slice(start, end)} } } save();`;
     } else {
-      const start = source.indexOf('async function cloudConnectRun(');
+      const pending = source.indexOf('let cloudConnectPending =');
+      const start = pending === -1 ? source.indexOf('async function cloudConnectRun(') : pending;
       const end = source.indexOf('\nasync function claimWithToken(', start);
+      assert.ok(start >= 0 && end > start, 'include the connection guard and transition');
       run = source.slice(start, end) + `\ncloudConnectRun(${route === 'DIY' ? '"new.invalid"' : ''});`;
     }
     await vm.runInContext(run, context);

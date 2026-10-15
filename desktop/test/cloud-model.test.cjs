@@ -98,3 +98,38 @@ test('only successful, explicit model identifiers are persisted or displayed', (
   assert.equal(parseExistingModel({ code: 1, out: 'openrouter\nopenai/gpt-4.1' }), null);
   assert.deepEqual(parseExistingModel({ code: 0, out: 'openrouter\r\nopenai/gpt-4.1\r\n' }), { provider: 'openrouter', model: 'openai/gpt-4.1' });
 });
+
+
+test('usability command runs a bounded one-shot for the exact model and suppresses diagnostics', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { spawnSync } = require('node:child_process');
+  const { existingModelCheckCommand } = require('../src/cloud-model.cjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alan-model-check-'));
+  const command = existingModelCheckCommand({ provider: 'openrouter', model: 'openai/gpt-4.1' });
+  const expected = 'chat -Q -q Reply OK --max-turns 1 --safe-mode --toolsets search --provider openrouter --model openai/gpt-4.1';
+  try {
+    for (const [answer, exit, expectedStatus] of [['OK', 0, 0], ['OK', 1, 1], ['MODEL_OK', 0, 1], ['private diagnostic', 0, 1]]) {
+      fs.writeFileSync(path.join(dir, 'hermes'), `#!/bin/sh
+[ "$*" = '${expected}' ] || exit 99
+printf '%s\\n' 'private diagnostic' >&2
+printf '%s\\n' '${answer}'
+exit ${exit}
+`, { mode: 0o700 });
+      const result = spawnSync('/bin/sh', ['-c', command], { env: { PATH: `${dir}:${process.env.PATH}` }, timeout: 5000, encoding: 'utf8' });
+      assert.equal(result.status, expectedStatus, result.stderr);
+      assert.equal(result.stdout, expectedStatus === 0 ? 'MODEL_OK\n' : '');
+      assert.equal(result.stderr, '');
+    }
+    // The remote budget kills the process group, independently of SSH's budget.
+    fs.writeFileSync(path.join(dir, 'hermes'), '#!/bin/sh\nsleep 30\n', { mode: 0o700 });
+    const start = Date.now();
+    const timed = spawnSync('/bin/sh', ['-c', command], { env: { PATH: `${dir}:${process.env.PATH}` }, timeout: 14000, encoding: 'utf8' });
+    assert.equal(timed.status, 124, timed.stderr);
+    assert.ok(Date.now() - start < 14000);
+    assert.equal(timed.stdout, '');
+    assert.equal(timed.stderr, '');
+    assert.throws(() => existingModelCheckCommand({ provider: 'bad;command', model: 'anything' }), /configured/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

@@ -88,6 +88,29 @@ app.whenReady().then(async () => {
     if (diy) assert.equal(result.reachable, true, 'manual keep must be reachable at 1024×640');
     console.log(`PASS: ${diy ? 'DIY' : 'hosted'} model card actions and detection`);
   }
+  for (const modelCheck of ['failed', 'timeout']) {
+    const result = await win.webContents.executeJavaScript(`(async () => {
+      const calls = [];
+      window.workspace.command = async name => { calls.push(name); };
+      renderOnboarding(false);
+      state.cloud = { claimed: true, diy: true, step: 'model', modelCheck: '${modelCheck}',
+        existingModel: { provider: 'openrouter', model: 'openai/gpt-4.1' } };
+      renderOnboarding(true);
+      await Promise.resolve();
+      const panel = document.getElementById('onboarding');
+      const text = panel.textContent;
+      const keep = [...panel.querySelectorAll('button')].find(button => button.textContent === 'Use the model already set on my server');
+      keep.scrollIntoView({ block: 'nearest' });
+      const r = keep.getBoundingClientRect(), p = panel.getBoundingClientRect();
+      await keep.onclick();
+      return { text, calls, reachable: r.width > 0 && r.top >= p.top && r.bottom <= p.bottom && r.bottom <= innerHeight };
+    })()`);
+    assert.match(result.text, /Found openrouter.*openai\/gpt-4\.1/);
+    assert.match(result.text, modelCheck === 'timeout' ? /timed out/ : /did not pass/);
+    assert.equal(result.reachable, true);
+    assert.deepEqual(result.calls, ['cloud-model-existing'], 'a failed check must not immediately repeat a paid probe');
+    console.log(`PASS: ${modelCheck} proof names provider, explains failure and offers reachable manual keep`);
+  }
   const summary = await win.webContents.executeJavaScript(`(() => {
     renderOnboarding(false);
     state.cloud = { claimed: true, step: 'telegram', diy: true, model: 'existing',

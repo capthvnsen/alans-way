@@ -465,7 +465,7 @@ function renderOnboarding(show) {
   panel.classList.toggle('hidden', !show);
   if (!show) { onboardingSignature = ''; return; }
   const cloud = state.cloud || {};
-  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername, cloud.model, cloud.existingModel] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
+  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername, cloud.model, cloud.existingModel, cloud.modelCheck] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
   if (signature === onboardingSignature) return;
   onboardingSignature = signature;
   const go = (step) => { onboardingStep = step; renderOnboarding(true); };
@@ -631,11 +631,18 @@ function renderCloudOnboarding(card, actions, cloud) {
       }));
     if (cloud.diy) {
       actions.append(button('Use the model already set on my server', 'secondary-button', () => command('cloud-model-existing')));
-      status.textContent = 'Checking your server’s model configuration…';
-      command('cloud-model-detect').then((result) => {
-        status.textContent = result?.detail || '';
-        if (result?.existingModel) toast(result.detail);
-      });
+      if (['failed', 'timeout', 'unavailable'].includes(cloud.modelCheck)) {
+        const found = cloud.existingModel;
+        status.textContent = found
+          ? `Found ${found.provider} / ${found.model}, but ${cloud.modelCheck === 'timeout' ? 'the model check timed out' : 'the model did not pass the quick reply check'}. You can use it anyway, or choose a new login.`
+          : 'Could not detect a configured model. You can use the model already set on your server, or choose a new login.';
+      } else {
+        status.textContent = 'Checking whether your server’s model can reply…';
+        command('cloud-model-detect').then((result) => {
+          status.textContent = result?.detail || '';
+          if (result?.done && result.existingModel) toast(result.detail);
+        });
+      }
     }
   } else if (cloud.step === 'telegram') {
     card.append(element('h2', '', 'Set up your Telegram bot'),
