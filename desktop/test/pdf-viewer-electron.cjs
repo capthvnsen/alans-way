@@ -6,6 +6,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { pathToFileURL } = require('node:url');
 const electron = require('electron');
+const { selectPdfPage } = require('./pdf-viewer-controls.cjs');
 const scratch = process.env.PDF_FIXTURE_SCRATCH || require('node:os').tmpdir();
 function buildPdf() {
   const parts = ['%PDF-1.4\n'], offsets = [0];
@@ -388,7 +389,7 @@ if (typeof electron === 'string') {
     await viewer.executeJavaScript("document.querySelector('pdf-viewer').shadowRoot.querySelector('viewer-toolbar').shadowRoot.querySelector('[title=\"Zoom in\"]').click()");
     await waitFor(() => viewer.executeJavaScript("document.querySelector('pdf-viewer').viewport_.getZoom()"), n => n > zoomBefore);
     check('viewer zoom changes scale', true);
-    await viewer.executeJavaScript(`(()=>{const t=document.querySelector('pdf-viewer').shadowRoot.querySelector('viewer-toolbar').shadowRoot;const input=t.querySelector('viewer-page-selector').shadowRoot.querySelector('input');input.value='2';input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await selectPdfPage(viewer, 2, waitFor);
     await waitFor(() => viewer.executeJavaScript("document.querySelector('pdf-viewer').viewport_.getMostVisiblePage()"), n => n === 1);
     check('viewer page selector reaches page two', true);
     // Intercept only the plugin's native print command; CI must not send jobs
