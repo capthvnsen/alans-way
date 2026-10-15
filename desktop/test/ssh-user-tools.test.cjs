@@ -43,13 +43,13 @@ esac
 
 // Translate fixed system directories into a fixture root to model a remote
 // filesystem, including the missing case, without invoking machine tools.
-function remoteFixture(t) {
+function remoteFixture(t, shell = '/bin/sh', shellArgs = []) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alan-ssh-path-'));
   const home = path.join(root, "home with spaces ' $(touch injected) `id` $dollar");
   fs.mkdirSync(home);
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const env = { HOME: home, HERMES_HOME: path.join(home, 'custom hermes'), PATH: path.join(root, 'original'), FIXTURE_ROOT: root };
-  const run = (command, options = {}) => spawnSync('/bin/sh', ['-c', command
+  const run = (command, options = {}) => spawnSync(shell, [...shellArgs, '-c', command
     .replaceAll('/usr/local/bin', '$FIXTURE_ROOT/usr/local/bin')
     .replaceAll('/opt/homebrew/bin', '$FIXTURE_ROOT/opt/homebrew/bin')], { env, cwd: home, encoding: 'utf8', timeout: 1000, ...options });
   const tool = (dir, name, output) => {
@@ -59,21 +59,56 @@ function remoteFixture(t) {
   return { root, home, env, run, tool };
 }
 
-for (const location of ['install.sh / pipx', 'pip user (macOS)', 'Hermes home', '/usr/local/bin', 'Homebrew', 'inherited PATH', 'missing']) {
-  test(`user-tool PATH: ${location}`, (t) => {
-    const f = remoteFixture(t);
-    const dirs = {
-      'install.sh / pipx': path.join(f.home, '.local/bin'),
-      'pip user (macOS)': path.join(f.home, 'Library/Python/3.13/bin'),
-      'Hermes home': path.join(f.env.HERMES_HOME, 'bin'),
-      '/usr/local/bin': path.join(f.root, 'usr/local/bin'),
-      'Homebrew': path.join(f.root, 'opt/homebrew/bin'),
-      'inherited PATH': f.env.PATH,
-    };
-    if (dirs[location]) f.tool(dirs[location], 'hermes', 'found');
-    const result = f.run(posixCommand('hermes 2>/dev/null'));
-    assert.equal(result.status, location === 'missing' ? 127 : 0, result.stderr);
-    assert.equal(result.stdout, location === 'missing' ? '' : 'found\n');
+// The prelude runs in sshd's account shell, before any script's shebang.
+// Exercise strict glob handling as well as the POSIX shells available in CI.
+for (const [shell, shellArgs] of [
+  ['/bin/sh', []], ['/bin/bash', ['-O', 'failglob']], ['/bin/zsh', ['-f']], ['/bin/dash', []],
+]) {
+  const options = { skip: !fs.existsSync(shell) && `${shell} unavailable` };
+  test(`${shell}: empty HOME reaches the command without adding nonexistent bins`, options, (t) => {
+    const f = remoteFixture(t, shell, shellArgs);
+    const result = f.run(posixCommand(`printf '%s\\n' "command-reached" "$PATH"`));
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `command-reached\n${f.env.PATH}\n`);
+    assert.equal(result.stderr, '');
+  });
+  for (const location of ['install.sh / pipx', 'pip user (macOS)', 'pip user (legacy macOS)', 'Hermes home', 'default Hermes home', '/usr/local/bin', 'Homebrew', 'inherited PATH', 'missing']) {
+    test(`${shell} user-tool PATH: ${location}`, options, (t) => {
+      const f = remoteFixture(t, shell, shellArgs);
+      const dirs = {
+        'install.sh / pipx': path.join(f.home, '.local/bin'),
+        'pip user (macOS)': path.join(f.home, 'Library/Python/3.13/bin'),
+        'pip user (legacy macOS)': path.join(f.home, 'Library/Python/2.7/bin'),
+        'Hermes home': path.join(f.env.HERMES_HOME, 'bin'),
+        'default Hermes home': path.join(f.home, '.hermes/bin'),
+        '/usr/local/bin': path.join(f.root, 'usr/local/bin'),
+        'Homebrew': path.join(f.root, 'opt/homebrew/bin'),
+        'inherited PATH': f.env.PATH,
+      };
+      if (location === 'default Hermes home') delete f.env.HERMES_HOME;
+      if (dirs[location]) f.tool(dirs[location], 'hermes', 'found');
+      const result = f.run(posixCommand('hermes 2>/dev/null'));
+      assert.equal(result.status, location === 'missing' ? 127 : 0, result.stderr);
+      assert.equal(result.stdout, location === 'missing' ? '' : 'found\n');
+      assert.equal(result.stderr, '');
+      assert.equal(fs.existsSync(path.join(f.home, 'injected')), false);
+    });
+  }
+  test(`${shell}: sudo resolves user Node before resetting PATH`, options, (t) => {
+    const f = remoteFixture(t, shell, shellArgs);
+    const { remoteCommand } = require('../src/vps-browser.cjs');
+    f.tool(path.join(f.home, '.local/bin'), 'node', 'node-found');
+    fs.mkdirSync(f.env.PATH, { recursive: true });
+    fs.writeFileSync(path.join(f.env.PATH, 'sudo'), `#!/bin/sh
+[ "$1" = -n ] || exit 98
+shift
+PATH=/fixture-empty-secure-path
+export PATH
+exec "$@"
+`, { mode: 0o700 });
+    const result = f.run(remoteCommand({ scriptPath: '/fixture/my host.cjs', sudo: true }));
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'node-found\n');
     assert.equal(fs.existsSync(path.join(f.home, 'injected')), false);
   });
 }

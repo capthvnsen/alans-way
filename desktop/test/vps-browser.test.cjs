@@ -22,7 +22,7 @@ test('script paths are absolute Unix or Windows paths from a small safe alphabet
 test('POSIX browser commands add user tools; Windows keeps its native command', () => {
   assert.equal(remoteCommand({ scriptPath: '/opt/hermes app/h.cjs' }), posixCommand('node "/opt/hermes app/h.cjs" request'));
   assert.equal(remoteCommand({ scriptPath: 'C:\\Users\\a b\\h.cjs' }), 'node "C:\\Users\\a b\\h.cjs" request');
-  assert.equal(remoteCommand({ scriptPath: '/x/h.cjs', sudo: true }), posixCommand('sudo -n node "/x/h.cjs" request'));
+  assert.equal(remoteCommand({ scriptPath: '/x/h.cjs', sudo: true }), posixCommand('_alan_node=$(command -v node) && sudo -n "$_alan_node" "/x/h.cjs" request'));
 });
 
 test('requests are sent as ASCII so no shell re-encodes them', () => {
@@ -126,7 +126,7 @@ test('settleWithin gives up on a hung promise', async () => {
 
 test('sudo is never prepended for a Windows drive path', () => {
   assert.equal(remoteCommand({ scriptPath: 'C:\\h.cjs', sudo: true }), 'node "C:\\h.cjs" request');
-  assert.equal(remoteCommand({ scriptPath: '/h.cjs', sudo: true }), posixCommand('sudo -n node "/h.cjs" request'));
+  assert.equal(remoteCommand({ scriptPath: '/h.cjs', sudo: true }), posixCommand('_alan_node=$(command -v node) && sudo -n "$_alan_node" "/h.cjs" request'));
 });
 
 test('the mirror cap is measured on the escaped payload that is actually sent', () => {
