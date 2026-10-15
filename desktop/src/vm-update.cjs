@@ -9,6 +9,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { isSshTarget } = require('./core.cjs');
+const { posixCommand } = require('./remote-shell.cjs');
 const { isNewer } = require('./mac-update.cjs');
 const { compareVersions, normalizeVersion } = require('./update-version.cjs');
 const { redactReport } = require('./setup-check.cjs');
@@ -127,7 +128,7 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
     try { text = readScript(script); } catch { return { ok: false, state: 'failed', error: `The bundled ${script} is missing; reinstall the app.` }; }
     const prelude = Object.entries(vars).map(([name, value]) => kind === 'windows'
       ? `$env:${name} = '${plainText(value)}'\n` : `${name}='${plainText(value)}'\n`).join('');
-    text = prelude + text;
+    text = prelude + (kind === 'windows' ? text : posixCommand(text));
     // The guest script narrates phases as "vm-update: <text>" lines; forward the
     // ones that map to UI text so the popup can say what it is doing.
     let pending = '';

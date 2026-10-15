@@ -2,6 +2,7 @@
 // pipes scripts/hermes-update.sh over ssh, and the script itself run against
 // a fake hermes binary and fixture profiles. No real hermes or VM is touched.
 const { test, after } = require('node:test');
+const { posixCommand } = require('../src/remote-shell.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -62,7 +63,7 @@ test('the POSIX hermes-update script is piped over ssh stdin under the update ti
   assert.deepEqual(call.args.slice(0, -2), ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes']);
   assert.equal(call.args.at(-2), 'user@vm.example');
   assert.match(call.args.at(-1), /timeout \d+ sh -s/, 'a remote-side cap bounds a run whose ssh dies');
-  assert.equal(call.opts.input, SCRIPTS['hermes-update.sh']);
+  assert.equal(call.opts.input, posixCommand(SCRIPTS['hermes-update.sh']));
   assert.equal(call.opts.timeoutMs, HERMES_UPDATE_TIMEOUT_MS);
 });
 

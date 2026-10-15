@@ -1,4 +1,5 @@
 const { test } = require('node:test');
+const { posixCommand } = require('../src/remote-shell.cjs');
 const assert = require('node:assert/strict');
 const {
   createVmUpdater, vmTargets, parseResultLine, shouldShowUpdatePopup, snoozeUntil,
@@ -70,7 +71,7 @@ test('the bundled POSIX script is piped over ssh stdin with the tag as its only 
   assert.equal(call.args.at(-2), 'user@vm.example');
   assert.match(call.args.at(-1), /sh -s -- v0\.3\.2/);
   assert.match(call.args.at(-1), /timeout \d+ sh -s/, 'a remote-side cap bounds a run whose ssh dies');
-  assert.equal(call.opts.input, SCRIPTS['vm-update.sh']);
+  assert.equal(call.opts.input, posixCommand(SCRIPTS['vm-update.sh']));
   assert.equal(call.opts.timeoutMs, VM_TIMEOUT_MS);
 });
 
@@ -224,13 +225,13 @@ test('script variables ride ahead of the piped script as plain text only', async
   const { calls, run } = fakeRun({ code: 0, out: '{"ok":true,"version":"0.21.7","updated":true,"messaged":false,"messages":[]}\n', err: '' });
   const updater = createVmUpdater({ run, readScript: (name) => SCRIPTS_H[name] });
   await updater.hermesUpdateVm(vm(), { quiet: true });
-  assert.equal(calls[0].opts.input, "ALANS_WAY_HERMES_QUIET='1'\necho payload\n");
+  assert.equal(calls[0].opts.input, "ALANS_WAY_HERMES_QUIET='1'\n" + posixCommand("echo payload\n"));
   await updater.hermesUpdateVm(vm(), { report: "Done: it's $(rm -rf ~) `x` \"q\" & ok" });
-  assert.equal(calls[1].opts.input, "ALANS_WAY_HERMES_REPORT='Done: its (rm -rf ) x q  ok'\necho payload\n");
+  assert.equal(calls[1].opts.input, "ALANS_WAY_HERMES_REPORT='Done: its (rm -rf ) x q  ok'\n" + posixCommand("echo payload\n"));
   await updater.hermesUpdateVm(vm({ scriptPath: 'C:\\a\\vps-browser-host.cjs' }), { report: 'All good.' });
   assert.equal(calls[2].opts.input, "$env:ALANS_WAY_HERMES_REPORT = 'All good.'\nWrite-Output payload\n");
   await updater.hermesUpdateVm(vm());
-  assert.equal(calls[3].opts.input, 'echo payload\n', 'the Settings button runs the script unchanged');
+  assert.equal(calls[3].opts.input, posixCommand('echo payload\n'), 'the Settings button uses the same PATH prelude');
   assert.equal(plainText("a'b\"c$d`e;f\ng"), 'abcde;fg');
 });
 
@@ -398,7 +399,7 @@ test('doctorVm pipes the bundled script with --doctor under the doctor cap and r
   assert.deepEqual(result, report);
   assert.equal(calls[0].args.at(-1), 'sh -s -- --doctor');
   assert.equal(calls[0].opts.timeoutMs, DOCTOR_TIMEOUT_MS);
-  assert.equal(calls[0].opts.input, SCRIPTS['vm-update.sh']);
+  assert.equal(calls[0].opts.input, posixCommand(SCRIPTS['vm-update.sh']));
 });
 
 test('doctorVm never runs against a Windows server', async () => {
