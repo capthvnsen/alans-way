@@ -1382,7 +1382,8 @@ async function runSetupCheck() {
 }
 // The connect step advances as far as it can each click: CLI check, pairing
 // status, the computer's own state file, then the saved return path check.
-// {stage} tells the wizard which message to show; 'done' moves to migrate.
+// {stage} tells the wizard which message to show; 'done' moves to migration
+// for a hosted computer, or straight to model setup for an existing DIY server.
 async function cloudConnectRun(diyHost) {
   const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
   if (diyHost) {
@@ -1406,7 +1407,7 @@ async function cloudConnectRun(diyHost) {
       const path = await testAgentPath();
       if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
     }
-    setCloudStep(prefs, 'migrate');
+    setCloudStep(prefs, nextCloudStep(prefs, 'migrate'));
     savePreferences();
     return { stage: 'done', ok: true, detail: `Connected to ${sshHost}.` };
   }
