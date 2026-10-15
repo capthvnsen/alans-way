@@ -32,7 +32,10 @@ function createConfig(env) {
     directories: { output: 'dist' },
     // The cloud connect step reuses the tailnet key helpers from the repo's
     // connect script at runtime, so it must ship inside the package.
-    extraResources: [{ from: '../scripts/connect-mac.sh', to: 'connect-mac.sh' }],
+    extraResources: [
+      { from: '../scripts/connect-mac.sh', to: 'connect-mac.sh' },
+      { from: '../docs/setup-prompt.md', to: 'setup-prompt.md' },
+    ],
     files: [
       '**/*',
       '!test{,/**}',

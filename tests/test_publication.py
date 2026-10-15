@@ -63,6 +63,20 @@ class PublicationTests(unittest.TestCase):
                     text = f"curl https://openalan.com/install-{os_name} | sh"
                     self.assertIn("unresolved-agent-script", [item["rule"] for item in self.scan(path, text)])
 
+    def test_setup_prompt_rejects_even_pinned_or_relative_legacy_guides(self):
+        for path in ("docs/setup-prompt.md", "desktop/src/agent-prompt.cjs"):
+            for text in (
+                "[setup](setup-for-agents.md)",
+                "[background](../scripts/../docs/setup-for-agents.md)",
+                "https://raw.githubusercontent.com/capthvnsen/alans-way/v0.21.5/docs/setup-for-agents.md",
+            ):
+                with self.subTest(path=path, text=text):
+                    self.assertIn("legacy-setup-guide", [item["rule"] for item in self.scan(path, text)])
+
+    def test_clipboard_builder_cannot_reintroduce_unpinned_executable_sources(self):
+        text = "https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-mac.sh"
+        self.assertIn("unpinned-agent-reference", [item["rule"] for item in self.scan("desktop/src/agent-prompt.cjs", text)])
+
     def test_dot_segment_reference_is_rejected(self):
         url = ("https://raw.githubusercontent.com/capthvnsen/alans-way/"
                "31ac0de9ee22307e2df03feb08a5e5217a90243b/../main/scripts/connect-mac.sh")
@@ -92,7 +106,7 @@ class PublicationTests(unittest.TestCase):
             for text in (
                 f"[run](//RAW.GITHUBUSERCONTENT.COM/capthvnsen/alans-way/./{pin}/scripts/connect-mac.sh)",
                 "[run]: //GITHUB.COM/capthvnsen/alans-way/raw/v0.21.5/scripts/../scripts/connect-mac.sh",
-                "[background](../scripts/../docs/setup-for-agents.md)",
+                "[background](../scripts/../docs/remote-preview.md)",
             ):
                 with self.subTest(path=path, text=text):
                     self.assertEqual(self.scan(path, text), [])
@@ -120,7 +134,7 @@ class PublicationTests(unittest.TestCase):
                 ):
                     with self.subTest(path=path, url=url):
                         self.assertEqual(self.scan(path, url), [])
-            self.assertEqual(self.scan(path, "The source installer follows main.\nRead [background](../docs/setup-for-agents.md).\nUse `connect-mac.sh` with skip-install."), [])
+            self.assertEqual(self.scan(path, "The source installer follows main.\nRead [background](../docs/remote-preview.md).\nUse `connect-mac.sh` with skip-install."), [])
         self.assertEqual(self.scan("README.md", "Run [install](scripts/install-mac.sh)."), [])
 
     def test_real_home_paths_are_denied(self):
