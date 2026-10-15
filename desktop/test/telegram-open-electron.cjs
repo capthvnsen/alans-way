@@ -47,7 +47,7 @@ window.setup = async (mode) => {
             if(mode === 'composer') mid.innerHTML+='<div class="Composer"></div>';
             else { const start=document.createElement('button'); start.className='Button primary fluid'; start.textContent='Start'; start.onclick=()=>window.startClicks++; mid.append(start); }
           };
-          if(mode === 'delayed') setTimeout(render,250); else render();
+          if(mode === 'delayed') window.renderTarget=render; else render();
         });
         document.querySelector('#results').append(row);
       }
@@ -66,7 +66,21 @@ app.whenReady().then(async () => {
   for (const [mode, ok] of [['start',true],['composer',true],['missing',false],['human',false],['wrong-chat',false],['blank',false],['stale-chat',false],['wrong-header',false],['delayed',true]]) {
     await wc.loadURL(root + (mode === 'composer' ? '?account=2' : ''));
     await wc.executeJavaScript('window.setup(' + JSON.stringify(mode) + ')');
-    const result = await wc.executeJavaScript(openUsernameScript('fresh_bot', 1000));
+    const opening = wc.executeJavaScript(openUsernameScript('fresh_bot', mode === 'delayed' ? 5000 : 1000));
+    if (mode === 'delayed') {
+      // Hold rendering until the host observes the target click. Check the
+      // acknowledgement while the old chat is still present, then release it.
+      let ready = false;
+      for (let i = 0; i < 60 && !ready; i++) {
+        ready = await wc.executeJavaScript('typeof window.renderTarget === "function"');
+        if (!ready) await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      assert.equal(ready, true, 'target result must be clicked');
+      const finishedEarly = await Promise.race([opening.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 150))]);
+      assert.equal(finishedEarly, false, 'opening must wait while the previous chat is rendered');
+      await wc.executeJavaScript('window.renderTarget()');
+    }
+    const result = await opening;
     assert.equal(result.ok, ok, mode + ': ' + JSON.stringify(result));
     const state = await wc.executeJavaScript('({startClicks,otherClicks,targetClicks,query:document.querySelector("input").value})');
     assert.equal(state.startClicks,0,'opening must never send /start');
