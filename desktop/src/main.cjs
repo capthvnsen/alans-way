@@ -25,7 +25,7 @@ const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
-const { latestPluginTag, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
+const { latestPluginTag, latestHostRelease, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -1065,7 +1065,8 @@ async function probeVersions() {
   const targets = vmTargets(prefs);
   prefs.vmUpdates = pruneVmUpdates(prefs.vmUpdates, targets);
   const target = targets[0] || LOCAL_TARGET;
-  const [result, pluginLatest] = await Promise.all([vmUpdater.checkVm(target), latestPluginTag().catch(() => '')]);
+  const [result, pluginLatest, hostLatest] = await Promise.all([vmUpdater.checkVm(target), latestPluginTag().catch(() => ''),
+    !target.local && app.getVersion().includes('-') ? latestHostRelease().catch(() => '') : '']);
   // The server address changed while this probe ran: its answer describes
   // the old machine, so drop it and probe the new one.
   if ((vmTargets(prefs)[0]?.sshHost || '') !== (target.sshHost || '')) { setTimeout(checkVersionsWhenIdle, 0); return; }
@@ -1073,12 +1074,11 @@ async function probeVersions() {
     const entry = vmCheckEntry(prefs.vmUpdates?.[target.id], result);
     if (entry) prefs.vmUpdates = { ...(prefs.vmUpdates || {}), [target.id]: entry };
   }
-  prefs.versionCache = versionRecord(prefs.versionCache, { target, check: result, pluginLatest, now: Date.now() });
+  prefs.versionCache = versionRecord(prefs.versionCache, { target, check: result, pluginLatest, hostLatest, now: Date.now() });
   savePreferencesSoon(); broadcast();
 }
-// The app version "Update everything" may plan for: only a build the updater
-// has staged, so the browser host never moves to a version the app cannot
-// install (update-now has the same guard).
+// The app step in "Update everything" only plans for a build the updater
+// has staged (update-now has the same guard).
 const stagedAppVersion = () => (updateDriver === 'electron-updater' ? update.ready : updateDriver === 'self' && Boolean(update.tag)) ? update.available : '';
 // Every update path takes its lock, then waits out a probe already in flight.
 const waitForVersionCheck = () => versionsProbe?.catch(() => {});

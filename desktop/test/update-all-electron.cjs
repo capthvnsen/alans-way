@@ -28,6 +28,7 @@ const gate = () => {
 };
 let successGates = null, checkFixture = null, appChecks = 0;
 require('../src/update-all.cjs').latestPluginTag = async () => '0.21.1';
+require('../src/update-all.cjs').latestHostRelease = async () => '0.21.6';
 require('../src/vm-update.cjs').createVmUpdater = () => ({
   checkVm: async (target) => {
     calls.push(`check ${target.id}`);
@@ -262,6 +263,21 @@ app.whenReady().then(async () => {
   await click('update-all-check');
   await waitFor(() => appChecks, n => n > checkedBefore);
   await waitFor(() => calls.filter(c => c.startsWith('check')).length, n => n > probesBefore);
+
+  // An RC app plans and executes a stable host release, never its own RC tag.
+  await click('update-all-cancel');
+  app.getVersion = () => '0.21.7-rc.2';
+  stagedUpdater.emit('update-downloaded', { version: '0.21.7-rc.2' });
+  checkFixture = { ok: true, hostVersion: '0.21.5', hermesVersion: 'Hermes Agent v0.21.7', hermesCheck: 'up to date',
+    plugins: [{ name: 'alans-way', profile: 'default', version: '0.21.1' }] };
+  await invoke('versions-refresh');
+  await click('update-all');
+  await waitFor(lines, (l) => l.some(row => row === '|Browser host: 0.21.5 → 0.21.6'), 3000, 'the stable host target for an RC app');
+  const rcStart = calls.length;
+  await click('update-all-go');
+  await waitFor(() => evaluate('document.getElementById("update-all-cancel").disabled'), d => d === false, 8000, 'the RC run to finish');
+  assert.ok(calls.slice(rcStart).includes('host agent v0.21.6'));
+  assert.ok(!calls.slice(rcStart).some(c => c.startsWith('host ') && c.includes('-rc.')));
 
   console.log('PASS: the bottom bar shows versions with details on hover; Update everything confirms first, runs in order under one lock, warns when a plugin stays behind, finishes a clean run, and reports once.');
   app.quit();
