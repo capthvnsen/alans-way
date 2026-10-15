@@ -44,6 +44,32 @@ function scan(fx, lastId, byId) {
     seen: fx.seen, sent: fx.sent, send: v => fx.sentMessages.push(v) });
 }
 
+for (const { text, entities, expected } of [
+  ...['SKILL.md', 'setup.sh', 'config.yaml', 'README.md', 'example.com'].map(text => ({
+    text, entities: [{ type: 'MessageEntityUrl', offset: 0, length: text.length }], expected: '',
+  })),
+  { text: 'https://example.com', entities: [{ type: 'MessageEntityUrl', offset: 0, length: 19 }], expected: 'https://example.com' },
+  { text: 'http://example.com', entities: [{ type: 'MessageEntityUrl', offset: 0, length: 18 }], expected: 'http://example.com' },
+  { text: 'HTTPS://example.com', expected: 'HTTPS://example.com' },
+  { text: 'documentation', entities: [{ type: 'MessageEntityTextUrl', offset: 0, length: 13, url: 'https://example.com/docs' }], expected: 'https://example.com/docs' },
+  { text: 'documentation (bare text_link target)', entities: [{ type: 'MessageEntityTextUrl', offset: 0, length: 13, url: 'example.com/docs' }], expected: 'https://example.com/docs' },
+  { text: 'setup.sh https://example.com', entities: [
+    { type: 'MessageEntityUrl', offset: 0, length: 8 },
+    { type: 'MessageEntityUrl', offset: 9, length: 19 },
+  ], expected: 'https://example.com' },
+  { text: 'SKILL.md https://example.com', entities: [{ type: 'MessageEntityUrl', offset: 0, length: 8 }], expected: 'https://example.com' },
+]) {
+  test(`auto-open requires an explicit scheme or text_link: ${text}`, () => {
+    const message = msg(text, { entities });
+    assert.equal(firstLink(message), expected);
+    const fx = fixture();
+    scan(fx, 7, { 7: msg('previous message') });
+    scan(fx, 8, { 8: message });
+    assert.deepEqual(fx.sentMessages, expected ? [{ chatId: '42', url: expected, outgoing: false }] : []);
+    assert.equal(fx.seen.get('42'), 8, 'ignored filenames still advance the scan');
+  });
+}
+
 test('first observation seeds the watermark without emitting', () => {
   const fx = fixture();
   scan(fx, 7, { 7: msg('https://old.example') });

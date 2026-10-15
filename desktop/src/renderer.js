@@ -511,7 +511,7 @@ function renderOnboarding(show) {
     card.append(element('h2', '', 'Give your agent this prompt'));
     const box = element('textarea', 'onboarding-prompt'); box.readOnly = true; box.rows = 7; box.setAttribute('aria-label', 'Setup prompt for your agent');
     command('agent-prompt', { botId: state.selectedBotId, copy: false }).then((text) => { if (typeof text === 'string') box.value = text; });
-    card.append(box, element('p', 'settings-note', 'Paste it into the chat with your Hermes bot on the left. It stays current for every version of Alan’s Workspace.'));
+    card.append(box, element('p', 'settings-note', 'Paste it into the chat with your Hermes bot on the left. It tells your bot to use the installed Alan’s Way setup skill.'));
     const help = button('No Hermes agent yet? Start here ↗', 'link-button', () => command('create-tab', { url: 'https://github.com/NousResearch/hermes-agent' }));
     card.append(help);
     actions.append(button('Back', 'secondary-button', () => go(1)),

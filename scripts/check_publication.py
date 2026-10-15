@@ -43,7 +43,7 @@ ALLOWED_ADDRESSES = {
 }
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pem", ".key", ".patch", ".diff", ".log"}
 FORBIDDEN_IMPORTS = {"gateway", "tui_gateway", "hermes_cli", "hermes_state", "run_agent", "model_tools", "tools", "agent"}
-AGENT_PROMPTS = {"docs/setup-prompt.md", "docs/update-for-agents.md"}
+AGENT_PROMPTS = {"docs/setup-prompt.md", "docs/update-for-agents.md", "desktop/src/agent-prompt.cjs"}
 AGENT_REFERENCE = re.compile(
     r"https?://[^\s\"'<>`)]+", re.IGNORECASE)
 AGENT_LINK = re.compile(
@@ -132,6 +132,9 @@ def inspect_text(path: str, text: str) -> list[dict]:
                            for match in AGENT_LINK.finditer(line))
             for target in dict.fromkeys(targets):
                 parts = normalize_agent_url(target)
+                if (path in {"docs/setup-prompt.md", "desktop/src/agent-prompt.cjs"}
+                        and Path(parts.path).name.casefold() == "setup-for-agents.md"):
+                    findings.append({"file": path, "line": number, "rule": "legacy-setup-guide"})
                 rule = agent_reference_rule(parts)
                 if rule:
                     findings.append({"file": path, "line": number, "rule": rule})

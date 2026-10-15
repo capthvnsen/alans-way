@@ -41,6 +41,23 @@ class SetupPromptTests(unittest.TestCase):
                 self.assertNotRegex(prompt, r"(?m)^\s*[^\n]*setup\.sh --")
                 self.assertNotIn("~/.ssh/authorized_keys", prompt)
 
+    def test_setup_loads_the_registered_plugin_skill_before_proceeding(self):
+        source = (ROOT / "docs/setup-prompt.md").read_text(encoding="utf-8")
+        prompts = re.findall(r"```text\n(.*?)\n```", source, re.S)
+        self.assertEqual(len(prompts), 2, "full instructions and clipboard handoff")
+        for index, block in enumerate(prompts):
+            prompt = " ".join(block.split())
+            for instruction in (
+                'skill_view(name="alans-way:workspace-setup")',
+                'alans-way/skills/workspace-setup/SKILL.md',
+                'Follow it verbatim',
+                'Never create or write your own setup skill',
+                'Do not fetch other setup guides',
+            ):
+                with self.subTest(block=index, instruction=instruction):
+                    self.assertIn(instruction, prompt)
+            self.assertLess(prompt.index('plugins install alans-way'), prompt.index('skill_view('))
+
     def test_prompts_keep_the_human_handoffs_and_connection_checks(self):
         for doc in ("docs/setup-prompt.md", "docs/update-for-agents.md"):
             prompt = " ".join(prompt_block(doc).split())
