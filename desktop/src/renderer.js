@@ -423,8 +423,11 @@ function renderUpdateAll() {
   const steps = v.steps || [], list = $('update-all-steps'), go = $('update-all-go'), cancel = $('update-all-cancel');
   list.replaceChildren();
   if (planning) {
-    $('update-all-copy').textContent = steps.length ? 'This updates, in this order:' : 'Everything is up to date.';
+    $('update-all-copy').textContent = v.upToDate ? 'Everything is up to date.' : steps.length ? 'This updates, in this order:' : 'Some components are missing or have not been verified. Check now to refresh their versions.';
     for (const step of steps) list.append(element('p', 'update-line', `${step.name}: ${step.from} → ${step.to}`));
+    for (const row of v.components || []) {
+      if (!steps.some((step) => step.id === row.id)) list.append(element('p', 'update-line', `${row.name}: ${row.version ? `${row.version} · ` : ''}${row.status}`));
+    }
     if (steps.some((step) => step.id !== 'app')) list.append(element('p', 'update-line warn', 'Your bots restart briefly while the server updates.'));
     if (steps.some((step) => step.id === 'app')) list.append(element('p', 'update-line', 'The app update installs when you click Restart to finish.'));
   } else {
@@ -442,6 +445,7 @@ function renderUpdateAll() {
   go.classList.toggle('hidden', planning ? false : !run.restart || run.busy);
   go.textContent = planning ? 'Update everything' : 'Restart to finish';
   go.disabled = planning ? !steps.length : false;
+  $('update-all-check').classList.toggle('hidden', !planning);
   cancel.textContent = planning ? 'Cancel' : 'Close';
   cancel.disabled = !!run.busy;
   if (wasHidden) (go.disabled || go.classList.contains('hidden') ? cancel : go).focus();
@@ -1072,6 +1076,7 @@ $('vm-banner-retry').onclick = () => command('vm-update-retry');
 // be half an hour old; it re-renders when the answer lands.
 $('update-all').onclick = () => { updateAllOpen = true; updateAllView = state?.updateAll?.busy ? 'run' : 'plan'; renderUpdateAll(); if (updateAllView === 'plan') command('versions-refresh'); };
 $('update-all-cancel').onclick = closeUpdateAll;
+$('update-all-check').onclick = () => command('versions-refresh');
 $('update-all-go').onclick = () => {
   // The run view starts empty, not on a previous run's rows, until main's
   // first broadcast lands.

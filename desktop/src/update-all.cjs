@@ -94,7 +94,7 @@ function planSteps({ app, appUpdate = '', cache } = {}) {
 }
 
 // The bar text, its hover tooltip and the update plan, from one cache.
-function describeVersions({ app, appUpdate = '', cache, formatTime = (ms) => new Date(ms).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) } = {}) {
+function describeVersions({ app, appUpdate = '', appLatest = '', cache, formatTime = (ms) => new Date(ms).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) } = {}) {
   const c = cache || {};
   const where = c.where === 'local' ? 'this computer' : 'the server';
   const steps = planSteps({ app, appUpdate, cache: c });
@@ -112,7 +112,27 @@ function describeVersions({ app, appUpdate = '', cache, formatTime = (ms) => new
   if (c.where === 'server' && c.host) lines.push(`Browser host ${c.host} on the server${behind('host') ? ` · ${behind('host').to} goes with this app` : ''}`);
   lines.push(c.checkedAt ? `Checked ${formatTime(c.checkedAt)}` : 'Not checked yet');
   const hasUpdate = steps.some((step) => step.id !== 'hermes') || c.hermesUpdate === true;
-  return { text: parts.join(' · '), tooltip: lines.join('\n'), steps, hasUpdate };
+  // A plan contains actions, not evidence of currency. Keep every component
+  // visible even when nothing can safely be updated (fresh install/offline).
+  const checked = Boolean(c.checkedAt && !c.offline);
+  const valid = (v) => compareVersions(v, v) !== null;
+  const status = (version, latest, current = compareVersions(version, latest) === 0) =>
+    !valid(version) ? 'version unverified' : current ? 'up to date' : valid(latest) ? `latest ${latest}` : 'latest not checked yet';
+  const plugins = Array.isArray(c.plugins) ? c.plugins : null;
+  const components = [
+    { id: 'app', version: app, status: status(app, appLatest || appUpdate) },
+    { id: 'hermes', version: c.hermes || '', status: !checked ? 'not checked yet' : c.hermesUnverified ? 'version unverified'
+      : !c.hermes ? 'not installed' : status(c.hermes, c.hermesLatest, c.hermesUpdate === false) },
+    { id: 'plugin', version: plugins?.map((p) => `${p.name} (${p.profile || 'default'}) ${p.version || p.after || 'version unverified'}`).join('; ') || c.plugin || '',
+      status: !checked ? 'not checked yet' : !plugins ? 'profiles unverified' : !plugins.length ? 'not installed'
+        : plugins.every((p) => p.name && p.profile && valid(p.version || p.after) && compareVersions(p.version || p.after, c.pluginLatest) === 0) ? 'up to date'
+          : plugins.some((p) => !p.name || !p.profile || !valid(p.version || p.after)) ? 'version unverified'
+            : valid(c.pluginLatest) ? `latest ${c.pluginLatest}` : 'latest not checked yet' },
+    { id: 'host', version: c.host || '', status: c.where === 'local' ? 'not required on this computer' : !checked ? 'not checked yet'
+      : !c.host ? 'not installed' : status(c.host, appUpdate || app) },
+  ].map((row) => ({ ...row, name: NAMES[row.id], ...(c.offline && row.id !== 'app' ? { status: 'offline; not checked yet' } : {}) }));
+  const upToDate = !steps.length && components.every((row) => row.status === 'up to date' || row.status === 'not required on this computer');
+  return { text: parts.join(' · '), tooltip: lines.join('\n'), steps, hasUpdate, components, upToDate };
 }
 
 // Convert every profile's plugin result into evidence for the single step.
