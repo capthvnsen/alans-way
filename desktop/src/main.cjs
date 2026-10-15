@@ -100,6 +100,7 @@ let obscuredFocus = null;
 let extensionStore, extensionHost, extensionPopup, extensionPopupTabId, extensionActiveContentsId;
 let registeringExtensionTab = false;
 const update = { available: '', tag: '', ready: false, busy: false, error: '', justUpdatedFrom: '' };
+const serverSetup = require('./server-setup.cjs').createServerSetup();
 const vmUpdater = createVmUpdater({ log: (label, error) => logError(label, error) });
 // Per-VM progress while an update or retry runs; prefs.vmUpdates holds the
 // persistent record (known VM version / last failure) the retry banner reads.
@@ -1805,6 +1806,19 @@ function registerIpc() {
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, botId, sshHost: (prefs.macSshHost || '').trim() });
         if (value?.copy !== false) clipboard.writeText(text);
         return text;
+      }
+      case 'server-setup': {
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll }))
+          return { ok: false, detail: 'Wait for the current server operation to finish.' };
+        const target = vmTargets(prefs)[0];
+        if (!target) return { ok: false, detail: 'Save the agent machine SSH address first.' };
+        if (/^[A-Za-z]:/.test(target.scriptPath || ''))
+          return { ok: false, detail: 'This step needs a POSIX SSH shell. On a Windows server, run the pinned setup in an external Git Bash shell.' };
+        hermesUpdating = true;
+        try {
+          await waitForVersionCheck();
+          return await serverSetup(target.sshHost, value?.plan);
+        } finally { hermesUpdating = false; }
       }
       case 'test-agent-path': return testAgentPath();
       case 'setup-check': return runSetupCheck();

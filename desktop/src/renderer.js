@@ -533,6 +533,7 @@ function renderOnboarding(show) {
       if (!await command('settings', { macSshHost: mine.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } })) return;
       await runSetupCheck(checkButton, results);
     });
+    appendServerSetup(card, () => command('settings', { macSshHost: mine.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } }));
     card.append(checkButton, button('Copy report', 'secondary-button', copyReport), results);
     actions.append(button('Back', 'secondary-button', () => go(2)), button('Done', 'primary-button', finish));
   }
@@ -951,6 +952,28 @@ async function runSetupCheck(trigger, container) {
 async function copyReport() {
   if (await command('copy-report')) toast('Report copied. Paste it in Discord so we can take a look.');
 }
+// The bot prepares public setup inputs. The user's click runs the reviewed
+// script from the app's SSH process, outside the gateway lifecycle boundary.
+function appendServerSetup(container, beforeRun) {
+  container.append(element('p', 'settings-note', 'When your bot gives you a setup plan, paste it here. Finish setup runs it over SSH and lets setup restart your bot after its checks pass. Wait about a minute, then message your bot and run Check setup.'));
+  const plan = element('textarea', 'onboarding-prompt');
+  plan.rows = 4; plan.placeholder = 'Paste the JSON setup plan from your bot';
+  plan.setAttribute('aria-label', 'Server setup plan');
+  const result = element('pre', 'settings-note'); result.style.whiteSpace = 'pre-wrap';
+  const run = element('button', 'secondary-button', 'Finish setup and restart my bot');
+  run.onclick = async () => {
+    run.disabled = true;
+    result.textContent = 'Running setup over SSH. This can take several minutes. Keep the app open.';
+    try {
+      if (beforeRun && !await beforeRun()) return;
+      const reply = await command('server-setup', { plan: plan.value });
+      result.textContent = reply && typeof reply.ok === 'boolean'
+        ? `${reply.ok ? '✓' : '✗'} ${reply.detail}${reply.note ? `\n\n${reply.note}` : ''}`
+        : 'Setup did not return a report. Check the connection and retry.';
+    } finally { run.disabled = false; }
+  };
+  container.append(plan, run, result);
+}
 function showSettings() {
   openModal('Workspace settings');
   const body = $('modal-body'), field = element('div', 'field');
@@ -1025,6 +1048,7 @@ function showSettings() {
     hermesResult.textContent = result && typeof result === 'object' ? `${result.ok ? '✓' : '✗'} ${result.detail}` : '✗ The update did not run.';
   };
   body.append(vpsField, sshField, element('div', 'setting-row'), sshSave, agentSetup, agentPrompt, agentUpdate, agentTest, wizard, agentResult, checkSetup, report, support, checkResults, hermesUpdate, hermesResult);
+  appendServerSetup(body, () => command('settings', { macSshHost: sshInput.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vpsInput.value.trim() } }));
   const primaryField = element('div', 'field'), primaryLabel = element('label', '', 'Primary bot'); primaryLabel.htmlFor = 'primary-bot';
   const primarySelect = element('select'); primarySelect.id = 'primary-bot';
   const none = element('option', '', 'None (defaults to the overseer bot)'); none.value = ''; primarySelect.append(none);
