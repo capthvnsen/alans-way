@@ -59,3 +59,70 @@ test('the driver scripts talk to @BotFather and a bot handle', () => {
   assert.match(send, /maya_alan_aaaa_bot/);
   assert.match(send, /\/start/);
 });
+
+// Run the shipped completion transition with fixture preferences and no SSH.
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const cloudTelegram = require('../src/cloud-telegram.cjs');
+const main = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
+const finishSource = main.slice(main.indexOf('async function cloudFinishTelegram('), main.indexOf('// Local and remote probes for the connect step.'));
+function finishFixture({ send = { ok: true }, failure, destroyed = false } = {}) {
+  const prefs = { onboarded: false, cloud: { step: 'telegram' } };
+  const saved = [];
+  const finish = vm.runInNewContext('(' + finishSource + ')', {
+    prefs, cloudTelegram, cloudWriteEnv: async () => ({ ok: true }),
+    telegramView: { webContents: { isDestroyed: () => destroyed,
+      executeJavaScript: async () => { if (failure) throw failure; return send; } } },
+    savePreferences: () => saved.push(prefs.cloud.step), broadcast() {}, logError() {},
+  });
+  return { prefs, saved, finish: () => finish('fixture-token', 'fresh_bot') };
+}
+for (const [name, options] of [
+  ['open failure', { send: { ok: false, error: 'Could not open @fresh_bot.' } }],
+  ['missing composer', { send: { ok: false, error: 'No message box.' } }],
+  ['execution failure', { failure: Error('Telegram disconnected') }],
+  ['destroyed Telegram', { destroyed: true }],
+]) {
+  test('onboarding surfaces ' + name + ' without completing setup', async () => {
+    const f = finishFixture(options);
+    const result = await f.finish();
+    assert.equal(result.done, false);
+    assert.ok(result.detail);
+    assert.equal(f.prefs.cloud.step, 'telegram');
+    assert.equal(f.prefs.onboarded, false);
+    assert.deepEqual(f.saved, []);
+  });
+}
+test('onboarding finishes only after the bot chat accepts /start', async () => {
+  const f = finishFixture();
+  assert.equal((await f.finish()).done, true);
+  assert.equal(f.prefs.cloud.step, 'done');
+  assert.equal(f.prefs.onboarded, true);
+  assert.deepEqual(f.saved, ['done']);
+});
+
+// Both auto-created and pasted tokens use finish; automatic creation must
+// also surface BotFather resolution errors instead of retrying an ignored route.
+const autoSource = main.slice(main.indexOf("      case 'cloud-telegram': {"), main.indexOf("      case 'cloud-telegram-paste': {"));
+for (const failure of [false, true]) {
+  test('BotFather ' + (failure ? 'execution' : 'open') + ' failure reaches onboarding immediately', async () => {
+    const prefs = { cloud: { step: 'telegram' }, vpsBrowser: { sshHost: 'fixture.invalid' } };
+    let attempts = 0;
+    const run = vm.runInNewContext(`(async () => { switch ('cloud-telegram') { ${autoSource} } })`, {
+      prefs, cloudTelegram, telegramStatus: 'connected', telegramFirstName: async () => 'Fixture',
+      telegramView: { webContents: { isDestroyed: () => false, executeJavaScript: async () => {
+        attempts++;
+        if (failure) throw Error('Telegram disconnected');
+        return { ok: false, error: 'Could not resolve @BotFather.' };
+      } } },
+      savePreferences() {}, broadcast() {},
+    });
+    const result = await run();
+    assert.equal(result.done, false);
+    assert.match(result.detail, failure ? /Could not open @BotFather/ : /Could not resolve @BotFather/);
+    assert.equal(attempts, 1);
+    assert.equal(prefs.cloud.step, 'telegram');
+    assert.equal(prefs.cloud.telegramFallback, undefined);
+  });
+}

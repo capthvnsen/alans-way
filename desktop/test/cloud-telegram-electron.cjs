@@ -17,13 +17,50 @@ let win, server;
 
 const TOKEN = '123456789:AAEbbCCddEEffGGhhIIjjKKllMMnnOOp';
 const fixture = `<!doctype html><meta charset="utf-8">
+<div id="LeftColumn" style="display:none"><input id="telegram-search-input"><div id="results"></div></div>
 <div id="MiddleColumn"><div class="MiddleHeader">Pick a chat</div><div class="messages"></div>
 <div class="Composer"><div id="editable-message-text" contenteditable="true"></div></div></div>
 <script>
-const chatFor = () => (location.hash === '#@BotFather' ? 'BotFather' : location.hash.startsWith('#@') ? location.hash.slice(2) : 'Pick a chat');
-addEventListener('hashchange', () => { document.querySelector('.MiddleHeader').textContent = chatFor(); });
+// Like Web A, username hashes do nothing. Only a resolved search result
+// changes the rendered peer, and fresh bots show Start before the composer.
+const users = {
+  '1': { id:'1', type:'userTypeBot', username:'BotFather', firstName:'BotFather' },
+  '2': { id:'2', type:'userTypeBot', username:'maya_alan_aaaa_bot', firstName:"Maya's Alan" },
+};
+window.ready = new Promise(resolve => {
+  const r = indexedDB.open('tt-data',1);
+  r.onupgradeneeded = () => r.result.createObjectStore('store');
+  r.onsuccess = () => {
+    const db = r.result, tx = db.transaction('store','readwrite');
+    tx.objectStore('store').put({users:{byId:users}},'tt-global-state');
+    tx.oncomplete = () => { db.close(); resolve(); };
+  };
+});
+const composerHtml = '<div class="Composer"><div id="editable-message-text" contenteditable="true"></div></div>';
+window.started = new Set(); window.startClicks = 0; window.blockOpen = false;
+document.querySelector('input').addEventListener('input', event => {
+  document.querySelector('#results').replaceChildren();
+  const user = Object.values(users).find(user => user.username.toLowerCase() === event.target.value.toLowerCase());
+  if (!user) return;
+  const row = document.createElement('div'); row.className = 'search-result';
+  row.innerHTML = '<div class="ListItem-button"><span data-peer-id="'+user.id+'"></span><span class="handle">'+user.username+'</span></div>';
+  row.firstElementChild.onclick = () => {
+    location.hash = user.id;
+    if (window.blockOpen) return;
+    document.querySelector('.MiddleHeader').innerHTML = '<div data-peer-id="'+user.id+'"></div>'+user.firstName;
+    document.querySelector('.Composer')?.remove();
+    document.querySelector('#MiddleColumn > button')?.remove();
+    if (window.started.has(user.id)) document.querySelector('#MiddleColumn').insertAdjacentHTML('beforeend',composerHtml);
+    else {
+      const start = document.createElement('button'); start.className = 'Button primary fluid'; start.textContent = 'Start';
+      start.onclick = () => { window.startClicks++; window.started.add(user.id); start.remove(); document.querySelector('#MiddleColumn').insertAdjacentHTML('beforeend',composerHtml); add('own','/start'); };
+      document.querySelector('#MiddleColumn').append(start);
+    }
+  };
+  document.querySelector('#results').append(row);
+});
 const add = (cls, text) => { const el = document.createElement('div'); el.className = 'Message' + (cls ? ' ' + cls : ''); el.textContent = text; document.querySelector('.messages').append(el); };
-document.getElementById('editable-message-text').addEventListener('keydown', (event) => {
+document.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter') return;
   const el = event.target, text = el.textContent.trim(); el.textContent = '';
   add('own', text);
@@ -38,7 +75,7 @@ document.getElementById('editable-message-text').addEventListener('keydown', (ev
   }, 60);
 });
 window.__sent = [];
-document.getElementById('editable-message-text').addEventListener('input', (e) => window.__sent.push(e.target.textContent));
+document.addEventListener('input', (e) => { if(e.target.id === 'editable-message-text') window.__sent.push(e.target.textContent); });
 </script>`;
 
 async function eventually(fn, predicate, tries = 60) {
@@ -57,6 +94,7 @@ app.whenReady().then(async () => {
   view.setBounds({ x: 0, y: 0, width: 900, height: 640 });
   await view.webContents.loadURL(root);
   const wc = view.webContents;
+  await wc.executeJavaScript('window.ready');
 
   // Success path: the generated username is accepted on the first try.
   const first = await wc.executeJavaScript(botFatherScript({ name: "Maya's Alan", username: 'maya_alan_aaaa_bot' }));
@@ -90,6 +128,25 @@ app.whenReady().then(async () => {
   assert.equal(started.ok, true, JSON.stringify(started));
   await eventually(() => wc.executeJavaScript(`[...document.querySelectorAll('.Message.own')].map(m => m.textContent)`), (msgs) => msgs.includes('/start'));
 
+  assert.equal(await wc.executeJavaScript('window.startClicks'), 2, 'each new bot is started exactly once');
+  assert.equal(await wc.executeJavaScript("document.querySelector('.MiddleHeader [data-peer-id]').dataset.peerId"), '2');
+  assert.equal(await wc.executeJavaScript("[...document.querySelectorAll('.Message.own')].filter(m => m.textContent === '/start').length"), 2, 'Start must not be sent twice');
+  console.log('PASS cloud-telegram native resolution, BotFather retry/split replies, fresh bot Start');
+
+  await wc.executeJavaScript("window.blockOpen=true; document.querySelector('.MiddleHeader').innerHTML='<div data-peer-id=999></div>Previous bot'; window.__sent=[]");
+  const failed = await wc.executeJavaScript(sendMessageScript('maya_alan_aaaa_bot', '/start'));
+  assert.equal(failed.ok, false, 'stale chat must not receive /start');
+  const failedMint = await wc.executeJavaScript(botFatherScript({ name: "Maya's Alan", username: 'maya_alan_aaaa_bot' }));
+  assert.equal(failedMint.ok, false, 'stale chat must not receive BotFather commands');
+  assert.equal(await wc.executeJavaScript('window.__sent.length'), 0);
+  console.log('PASS cloud-telegram stale chat refuses /start and /newbot');
+
   server.close();
+  view.webContents.close(); win.destroy();
+  fs.rmSync(temp, { recursive:true, force:true });
   app.exit(0);
-}).catch((error) => { console.error(error); app.exit(1); });
+}).catch((error) => {
+  console.error(error); server?.closeAllConnections(); server?.close(); win?.destroy();
+  fs.rmSync(temp, { recursive:true, force:true });
+  app.exit(1);
+});

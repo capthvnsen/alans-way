@@ -66,7 +66,9 @@ async function resolveUsername(username, timeoutMs) {
     }
     while (bot && Date.now() < deadline) {
       const correctChat = location.hash.slice(1).split('_')[0] === bot.id;
-      const header = document.querySelector('#MiddleColumn .MiddleHeader');
+      // The hash changes before Web A replaces the previous chat. Its header
+      // avatar carries the rendered peer ID; display names are not identity.
+      const header = document.querySelector('#MiddleColumn .MiddleHeader [data-peer-id="' + bot.id + '"]');
       // A new bot has a primary footer action (Start) in place of a Composer.
       // Do not click it: opening a chat must leave first contact to the user.
       const control = document.querySelector('#MiddleColumn .Composer, #MiddleColumn button.Button.primary.fluid:not(:disabled)');

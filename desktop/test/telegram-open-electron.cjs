@@ -11,7 +11,7 @@ const fixture = `<!doctype html><div id="LeftColumn" style="display:none"><input
 window.startClicks = 0; window.otherClicks = 0; window.targetClicks = 0;
 window.setup = async (mode) => {
   location.hash = '';
-  document.querySelector('#MiddleColumn').replaceChildren();
+  document.querySelector('#MiddleColumn').innerHTML = ['stale-chat','wrong-header','delayed'].includes(mode) ? '<div class=MiddleHeader>Previous bot</div><div class=Composer></div>' : '';
   const db = await new Promise(resolve => { const r = indexedDB.open('tt-data', 1); r.onupgradeneeded = () => r.result.createObjectStore('store'); r.onsuccess = () => resolve(r.result); });
   const user = { id: '123', firstName: 'Fresh bot', type: mode === 'human' ? 'userTypeRegular' : 'userTypeBot', usernames: [{username:'fresh_bot', isActive:true}] };
   const slot = new URL(location.href).searchParams.get('account');
@@ -38,11 +38,16 @@ window.setup = async (mode) => {
           if(id !== '123') { window.otherClicks++; return; }
           window.targetClicks++;
           location.hash=mode === 'wrong-chat' ? '999' : id;
-          const mid=document.querySelector('#MiddleColumn');
-          mid.innerHTML='<div class="MiddleHeader">Fresh bot</div>';
-          if(mode === 'blank') return;
-          if(mode === 'composer') mid.innerHTML+='<div class="Composer"></div>';
-          else { const start=document.createElement('button'); start.className='Button primary fluid'; start.textContent='Start'; start.onclick=()=>window.startClicks++; mid.append(start); }
+          if(mode === 'stale-chat') return;
+          if(mode === 'wrong-header') { document.querySelector('.MiddleHeader').innerHTML='<div data-peer-id="999"></div>Fresh bot'; return; }
+          const render = () => {
+            const mid=document.querySelector('#MiddleColumn');
+            mid.innerHTML='<div class="MiddleHeader"><div data-peer-id="123"></div>Fresh bot</div>';
+            if(mode === 'blank') return;
+            if(mode === 'composer') mid.innerHTML+='<div class="Composer"></div>';
+            else { const start=document.createElement('button'); start.className='Button primary fluid'; start.textContent='Start'; start.onclick=()=>window.startClicks++; mid.append(start); }
+          };
+          if(mode === 'delayed') setTimeout(render,250); else render();
         });
         document.querySelector('#results').append(row);
       }
@@ -58,7 +63,7 @@ app.whenReady().then(async () => {
   const wc = win.webContents;
   const root = 'http://127.0.0.1:' + server.address().port;
   let passed = 0;
-  for (const [mode, ok] of [['start',true],['composer',true],['missing',false],['human',false],['wrong-chat',false],['blank',false]]) {
+  for (const [mode, ok] of [['start',true],['composer',true],['missing',false],['human',false],['wrong-chat',false],['blank',false],['stale-chat',false],['wrong-header',false],['delayed',true]]) {
     await wc.loadURL(root + (mode === 'composer' ? '?account=2' : ''));
     await wc.executeJavaScript('window.setup(' + JSON.stringify(mode) + ')');
     const result = await wc.executeJavaScript(openUsernameScript('fresh_bot', 1000));
@@ -68,7 +73,10 @@ app.whenReady().then(async () => {
     assert.equal(state.otherClicks,0,'prefix match must not open another account');
     assert.equal(state.query,'','search is cleared after success and failure');
     if (mode === 'human') assert.equal(state.targetClicks,0,'non-bots are refused before opening');
-    if (ok) { assert.equal(result.bot.id,'123'); assert.equal(result.bot.isBot,true); }
+    if (ok) {
+      assert.equal(result.bot.id,'123'); assert.equal(result.bot.isBot,true);
+      assert.equal(await wc.executeJavaScript('document.querySelector(".MiddleHeader [data-peer-id]")?.dataset.peerId'), '123', 'target header must render before acknowledgement');
+    }
     else assert.match(result.error,mode === 'human' ? /not a Telegram bot/ : /could not open/);
     passed++; console.log('PASS telegram-open ' + mode);
   }

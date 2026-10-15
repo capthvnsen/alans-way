@@ -1258,17 +1258,17 @@ async function cloudWriteEnv(host, key, value, tokenedProfiles) {
 // Minted or pasted, a good bot token finishes the wizard the same way: write
 // the env, open the bot chat and send /start so the pair meets.
 async function cloudFinishTelegram(token, username) {
+  if (!telegramView || telegramView.webContents.isDestroyed()) return { done: false, detail: 'Telegram is not loaded. Sign in and try again.' };
   const host = (prefs.vpsBrowser?.sshHost || '').trim();
   const write = await cloudWriteEnv(host, 'TELEGRAM_BOT_TOKEN', token, prefs.cloud?.tokenedProfiles);
   if (!write.ok) return { done: false, detail: write.detail };
+  const send = await telegramView.webContents.executeJavaScript(cloudTelegram.sendMessageScript(username, '/start'))
+    .catch(error => ({ ok: false, error: error.message }));
+  if (send?.ok !== true) return { done: false, detail: send?.error || `Opening @${username} and sending /start did not complete. Try again.` };
   const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
   prefs.cloud = { ...cloud, botUsername: username, step: 'done' };
   prefs.onboarded = true;
   savePreferences();
-  if (telegramView && !telegramView.webContents.isDestroyed()) {
-    const send = await telegramView.webContents.executeJavaScript(cloudTelegram.sendMessageScript(username, '/start')).catch(() => null);
-    if (send?.ok !== true) logError('cloud-telegram', new Error(`Opening the @${username} chat and sending /start did not complete.`));
-  }
   broadcast();
   return { done: true, username };
 }
@@ -2013,7 +2013,8 @@ function registerIpc() {
         for (let attempt = 0; attempt < 4; attempt++) {
           const username = cloudTelegram.retryUsername(first, attempt);
           const run = await wc.executeJavaScript(cloudTelegram.botFatherScript({ name: cloudTelegram.botName(first), username })).catch(() => null);
-          const reply = cloudTelegram.parseBotFatherReply(run?.reply || '');
+          if (run?.ok !== true) return { done: false, detail: run?.error || 'Could not open @BotFather. Check Telegram and try again.' };
+          const reply = cloudTelegram.parseBotFatherReply(run.reply || '');
           if (reply.type !== 'token') continue;
           const check = await cloudTelegram.validateToken(reply.token);
           if (!check.ok) continue;

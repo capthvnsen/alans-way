@@ -47,6 +47,8 @@ jobs:
         timeout-minutes: 3
       - run: npm run test:telegram-open
         timeout-minutes: 3
+      - run: npm run test:cloud-telegram
+        timeout-minutes: 3
       - run: npm run test:desktop
         timeout-minutes: 3
       - run: npm run test:agent-input
