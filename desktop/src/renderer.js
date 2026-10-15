@@ -983,7 +983,18 @@ function showAddBot() {
   const input = element('input'); input.id = 'bot-username'; input.placeholder = '@your_agent_bot'; input.autocomplete = 'off';
   field.append(label, input, element('p', '', 'The chat opens in Telegram. Only verified bot accounts are added to your agent list.'));
   const submit = element('button', 'primary-button', 'Open bot'); submit.type = 'submit';
-  form.append(field, submit); form.onsubmit = async (event) => { event.preventDefault(); const result = await command('open-username', { username: input.value.trim() }); if (result) closeModal(); };
+  const error = element('p', 'settings-note'); error.setAttribute('role', 'alert');
+  form.append(field, error, submit); form.onsubmit = async (event) => {
+    event.preventDefault();
+    if (submit.disabled) return;
+    submit.disabled = true; input.disabled = true; submit.textContent = 'Opening…'; error.textContent = '';
+    try {
+      const result = await api.command('open-username', { username: input.value.trim() });
+      if (result?.ok !== true) throw new Error('Telegram did not open the bot. Try again.');
+      if (form.isConnected) closeModal();
+    } catch (failure) { error.textContent = failure.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''); }
+    finally { submit.disabled = false; input.disabled = false; submit.textContent = 'Open bot'; }
+  };
   $('modal-body').append(form); input.focus();
 }
 $('search-toggle').onclick = () => { $('bot-search').classList.toggle('hidden'); if (!$('bot-search').classList.contains('hidden')) $('bot-search').focus(); else { $('bot-search').value = ''; renderBots(); } };

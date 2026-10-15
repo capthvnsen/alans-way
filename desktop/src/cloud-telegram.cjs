@@ -4,6 +4,8 @@
 // the value written to the remote env file — nothing logs them.
 'use strict';
 
+const { openUsernameScript } = require('./telegram-open.cjs');
+
 const TOKEN_PATTERN = /\d{6,}:[A-Za-z0-9_-]{30,}/;
 const TOKEN_STRICT = /^\d{6,}:[A-Za-z0-9_-]{30,}$/;
 
@@ -58,21 +60,23 @@ function untokenedProfile(lsOutput, tokenedProfiles) {
   return String(lsOutput || '').split('\n').map((line) => line.trim()).filter(Boolean).sort().find((name) => !taken.has(name)) || '';
 }
 
-// The whole conversation runs inside the page: open the chat by hash, type in
+// The whole conversation runs inside the page: resolve the bot, type in
 // the composer, and read each incoming reply. Works against real Telegram Web
 // A anchors (#MiddleColumn header/messages, contenteditable composer) and the
 // fake page the Electron suite drives.
 const PAGE_HELPERS = `
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const header = () => (document.querySelector('#MiddleColumn .MiddleHeader')?.textContent || '');
   const composer = () => document.querySelector('#editable-message-text') || document.querySelector('.Composer [contenteditable="true"], #MiddleColumn [contenteditable="true"]');
   const incoming = () => [...document.querySelectorAll('#MiddleColumn .Message:not(.own)')].map((el) => (el.innerText || el.textContent || '').trim()).filter(Boolean);
-  const openChat = async (handle) => {
-    const probe = new RegExp(handle.replace(/^@/, ''), 'i');
-    if (probe.test(header())) return true;
-    location.hash = '#' + handle;
-    for (let i = 0; i < 40; i++) { if (probe.test(header())) return true; await sleep(250); }
-    return probe.test(header());
+  const ensureComposer = async () => {
+    if (composer()) return { ok: true, started: false };
+    // Only onboarding initiates contact. The shared resolver has confirmed
+    // the target header before we can click its Start action.
+    const start = document.querySelector('#MiddleColumn button.Button.primary.fluid:not(:disabled)');
+    if (!start) return { ok: false, error: 'No message box.' };
+    start.click();
+    for (let i = 0; i < 60 && !composer(); i++) await sleep(250);
+    return composer() ? { ok: true, started: true } : { ok: false, error: 'The bot did not show a message box after Start.' };
   };
   const typeAndSend = (text) => {
     const el = composer();
@@ -104,20 +108,24 @@ const PAGE_HELPERS = `
 // for parseBotFatherReply to classify in the main process.
 function botFatherScript({ name, username }) {
   return `(async () => {${PAGE_HELPERS}
-  if (!await openChat('@BotFather')) return { ok: false, error: 'Could not open @BotFather.' };
-  for (let i = 0; i < 60 && !composer(); i++) await sleep(250);
-  if (!composer()) return { ok: false, error: 'No message box.' };
+  const opened = await ${openUsernameScript('BotFather')};
+  if (!opened.ok) return opened;
+  const ready = await ensureComposer();
+  if (!ready.ok) return ready;
   let reply = '';
   for (const text of ${JSON.stringify(['/newbot', name, username])}) reply = await sendAndRead(text);
   return { ok: true, reply }; })()`;
 }
 
-// Opens a bot chat (t.me/<username> resolves to the @handle hash) and sends a
+// Resolves and opens a bot chat through the same path as manual opening, then sends a
 // single message — the /start that completes setup.
 function sendMessageScript(handle, text) {
   return `(async () => {${PAGE_HELPERS}
-  if (!await openChat('@' + ${JSON.stringify(String(handle).replace(/^@/, ''))})) return { ok: false, error: 'Could not open the bot chat.' };
-  for (let i = 0; i < 60 && !composer(); i++) await sleep(250);
+  const opened = await ${openUsernameScript(String(handle).replace(/^@/, ''))};
+  if (!opened.ok) return opened;
+  const ready = await ensureComposer();
+  if (!ready.ok) return ready;
+  if (ready.started && ${JSON.stringify(text)} === '/start') return { ok: true };
   if (!typeAndSend(${JSON.stringify(text)})) return { ok: false, error: 'No message box.' };
   return { ok: true }; })()`;
 }

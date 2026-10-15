@@ -17,6 +17,7 @@ const cloudConnect = require('./cloud-connect.cjs');
 const cloudMigrate = require('./cloud-migrate.cjs');
 const cloudModel = require('./cloud-model.cjs');
 const cloudTelegram = require('./cloud-telegram.cjs');
+const { openUsernameScript } = require('./telegram-open.cjs');
 const macUpdate = require('./mac-update.cjs');
 const setupCheck = require('./setup-check.cjs');
 const { createLog } = require('./main-log.cjs');
@@ -998,6 +999,24 @@ async function openBot(id) {
   })()`).catch(() => false);
   if (!selected) await openTelegramHash(id);
 }
+let openingTelegramUsername = false;
+async function openTelegramUsername(username) {
+  if (!telegramView || telegramView.webContents.isDestroyed()) throw new Error('Telegram is not loaded.');
+  if (telegramStatus !== 'connected') throw new Error('Sign in to Telegram before opening a bot.');
+  if (openingTelegramUsername) throw new Error('Wait for the current bot to open, then try again.');
+  openingTelegramUsername = true;
+  try {
+    const result = await boundedJs(telegramView.webContents, openUsernameScript(username), 20000);
+    const bot = sanitizeBots([result?.bot])[0];
+    if (result?.ok !== true || !bot || bot.username.toLowerCase() !== username.toLowerCase()) {
+      throw new Error(result?.error || `Telegram could not open @${username}. Try again.`);
+    }
+    const existing = prefs.bots.find(item => item.id === bot.id);
+    if (!existing) prefs.bots.push(bot);
+    selectAgent(bot.id);
+    savePreferences();
+  } finally { openingTelegramUsername = false; }
+}
 // Changing only the hash keeps Telegram's session loaded; a full reload is for
 // when the hash already matches and the page is stuck.
 async function openTelegramHash(hash) {
@@ -1239,17 +1258,17 @@ async function cloudWriteEnv(host, key, value, tokenedProfiles) {
 // Minted or pasted, a good bot token finishes the wizard the same way: write
 // the env, open the bot chat and send /start so the pair meets.
 async function cloudFinishTelegram(token, username) {
+  if (!telegramView || telegramView.webContents.isDestroyed()) return { done: false, detail: 'Telegram is not loaded. Sign in and try again.' };
   const host = (prefs.vpsBrowser?.sshHost || '').trim();
   const write = await cloudWriteEnv(host, 'TELEGRAM_BOT_TOKEN', token, prefs.cloud?.tokenedProfiles);
   if (!write.ok) return { done: false, detail: write.detail };
+  const send = await telegramView.webContents.executeJavaScript(cloudTelegram.sendMessageScript(username, '/start'))
+    .catch(error => ({ ok: false, error: error.message }));
+  if (send?.ok !== true) return { done: false, detail: send?.error || `Opening @${username} and sending /start did not complete. Try again.` };
   const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
   prefs.cloud = { ...cloud, botUsername: username, step: 'done' };
   prefs.onboarded = true;
   savePreferences();
-  if (telegramView && !telegramView.webContents.isDestroyed()) {
-    const send = await telegramView.webContents.executeJavaScript(cloudTelegram.sendMessageScript(username, '/start')).catch(() => null);
-    if (send?.ok !== true) logError('cloud-telegram', new Error(`Opening the @${username} chat and sending /start did not complete.`));
-  }
   broadcast();
   return { done: true, username };
 }
@@ -1994,7 +2013,8 @@ function registerIpc() {
         for (let attempt = 0; attempt < 4; attempt++) {
           const username = cloudTelegram.retryUsername(first, attempt);
           const run = await wc.executeJavaScript(cloudTelegram.botFatherScript({ name: cloudTelegram.botName(first), username })).catch(() => null);
-          const reply = cloudTelegram.parseBotFatherReply(run?.reply || '');
+          if (run?.ok !== true) return { done: false, detail: run?.error || 'Could not open @BotFather. Check Telegram and try again.' };
+          const reply = cloudTelegram.parseBotFatherReply(run.reply || '');
           if (reply.type !== 'token') continue;
           const check = await cloudTelegram.validateToken(reply.token);
           if (!check.ok) continue;
@@ -2021,9 +2041,8 @@ function registerIpc() {
       case 'open-username': {
         const username = String(value.username || '').replace(/^@/, '');
         if (!/^[A-Za-z][\w]{3,31}$/.test(username)) throw new Error('Enter a Telegram bot username.');
-        const link = `tg://resolve?domain=${username}`;
-        prefs.selectedBotId = '';
-        await openTelegramHash(`?tgaddr=${encodeURIComponent(link)}`); break;
+        await openTelegramUsername(username);
+        broadcastNow(); return { ok: true };
       }
       default: throw new Error('Unknown workspace command.');
     }
