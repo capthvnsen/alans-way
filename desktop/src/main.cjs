@@ -310,7 +310,7 @@ function getState() {
       snoozedUntil: prefs.updateSnoozedUntil || 0,
       vms: vmTargets(prefs).map((target) => ({ id: target.id, label: target.label, ...(vmProgress[target.id] || {}) })),
       vmRetry: vmRetryState(app.getVersion(), prefs.vmUpdates, vmTargets(prefs)), vmRetrying },
-    versions: describeVersions({ app: app.getVersion(), appUpdate: stagedAppVersion(), cache: prefs.versionCache }),
+    versions: describeVersions({ app: app.getVersion(), appUpdate: stagedAppVersion(), appLatest, cache: prefs.versionCache }),
     updateAll: { busy: updatingAll, ...updateRun },
     bundleWarning: bundleWarningDismissed ? '' : setupCheck.bundleWarning(runningBundle(), app.getName()) || '',
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? setupCheck.inRouterApplications(process.execPath) : null,
@@ -1113,6 +1113,7 @@ async function runUpdateStep(step, target) {
 }
 // Offline or rate-limited checks stay quiet for the user; only the first failure is logged, and the next check retries.
 let updateDriver = 'none';
+let appLatest = '', checkAppVersions = () => {};
 function startUpdates() {
   mainLog().write('app', `v${app.getVersion()} started from ${path.resolve(process.execPath, '../../..')}`);
   if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
@@ -1130,23 +1131,26 @@ function startUpdates() {
     autoUpdater.autoInstallOnAppQuit = true;
     const note = (text) => mainLog().write('updater', text);
     autoUpdater.on('checking-for-update', () => note('checking'));
-    autoUpdater.on('update-available', (info) => note(`available ${info?.version}`));
-    autoUpdater.on('update-not-available', () => note('none available'));
-    autoUpdater.on('update-downloaded', (info) => { note(`downloaded ${info.version}`); update.available = info.version; update.ready = true; broadcast(); });
+    autoUpdater.on('update-available', (info) => { note(`available ${info?.version}`); appLatest = info?.version || ''; broadcast(); });
+    autoUpdater.on('update-not-available', (info) => { note('none available'); appLatest = info?.version || ''; broadcast(); });
+    autoUpdater.on('update-downloaded', (info) => { note(`downloaded ${info.version}`); appLatest = info.version; update.available = info.version; update.ready = true; broadcast(); });
     const feed = githubFeed(fs.existsSync(path.join(process.resourcesPath, 'app-update.yml')), PUBLISH);
     if (feed) autoUpdater.setFeedURL(feed);
     let logged = false;
-    const failed = (error) => { mainLog().write('updater error', String(error?.message || error)); if (!logged) { logged = true; logError('updater', error); } };
+    const failed = (error) => { appLatest = ''; broadcast(); mainLog().write('updater error', String(error?.message || error)); if (!logged) { logged = true; logError('updater', error); } };
     autoUpdater.on('error', failed);
     check = () => autoUpdater.checkForUpdates().catch(failed);
   } else if (updateDriver === 'self') {
     check = async () => {
       try {
         const latest = await macUpdate.checkLatest();
+        appLatest = latest?.version || '';
         if (latest && macUpdate.isNewer(latest.version, app.getVersion())) { update.available = latest.version; update.tag = latest.tag; broadcast(); }
-      } catch {}
+        broadcast();
+      } catch { appLatest = ''; broadcast(); }
     };
   } else return;
+  checkAppVersions = check;
   check(); setInterval(check, 6 * 60 * 60 * 1000);
 }
 // The claimed session stays encrypted in preferences and is never logged or
@@ -1389,6 +1393,7 @@ async function cloudConnectRun(diyHost) {
     if (!isSshTarget(diyHost)) throw new Error('Enter the server SSH address as user@host or host, with no spaces or symbols.');
     cloud.diy = true;
     cloud.step = 'connect';
+    if (diyHost !== prefs.vpsBrowser?.sshHost) { prefs.versionCache = {}; setTimeout(checkVersionsWhenIdle, 0); }
     prefs.vpsBrowser = { ...(prefs.vpsBrowser || {}), sshHost: diyHost };
     prefs.cloud = cloud;
     savePreferences();
@@ -1772,7 +1777,7 @@ function registerIpc() {
           return { ok: result.ok, detail: hermesUpdateDetail(result, target.label) };
         } finally { hermesUpdating = false; }
       }
-      case 'versions-refresh': checkVersionsWhenIdle(); break;
+      case 'versions-refresh': checkVersionsWhenIdle(); checkAppVersions(); break;
       // The bottom bar's "Update everything", sent only after the user
       // confirmed the plan in the popover. Server first (Hermes, then the
       // plugin that must match it), then the browser host, then this app,
@@ -1780,8 +1785,8 @@ function registerIpc() {
       // the versions refresh and the bot reports once in Telegram.
       case 'update-all': {
         if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) return { refused: 'Another update is already running. Try again when it finishes.' };
-        const { steps } = describeVersions({ app: app.getVersion(), appUpdate: stagedAppVersion(), cache: prefs.versionCache });
-        if (!steps.length) return { refused: 'Everything is already up to date.' };
+        const { steps, upToDate } = describeVersions({ app: app.getVersion(), appUpdate: stagedAppVersion(), appLatest, cache: prefs.versionCache });
+        if (!steps.length) return { refused: upToDate ? 'Everything is already up to date.' : 'No verified updates are ready. Check component versions first.' };
         const target = vmTargets(prefs)[0] || LOCAL_TARGET;
         updatingAll = true; updateRun = { steps: [], summary: '', restart: false }; holdAppInstall(true); broadcast();
         try {

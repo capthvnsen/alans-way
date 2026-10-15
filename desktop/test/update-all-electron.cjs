@@ -26,12 +26,13 @@ const gate = () => {
   const promise = new Promise((resolve) => { release = resolve; });
   return { promise, release };
 };
-let successGates = null;
+let successGates = null, checkFixture = null, appChecks = 0;
 require('../src/update-all.cjs').latestPluginTag = async () => '0.21.1';
 require('../src/vm-update.cjs').createVmUpdater = () => ({
   checkVm: async (target) => {
     calls.push(`check ${target.id}`);
     if (checkGate) await checkGate.promise;
+    if (checkFixture) return checkFixture;
     return { ok: true, version: '0.21.3', hostVersion: '0.21.3', busy: false, hermesVersion: `Hermes Agent v${hermesNow} (2026.9.24) · stable`,
       hermesCheck: hermesNow === '0.21.6' ? '→ Selected release available: stable v0.21.7 (71d34bad1045)' : '✓ Up to date with the latest release (stable v0.21.7 (71d34bad1045)).',
       pluginVersion: '0.21.0', plugins: [{ name: 'alans-way', profile: 'default', version: '0.21.0' }], gatewayRunning: true };
@@ -72,7 +73,7 @@ require('../src/mac-update.cjs').bundleLocation = () => null;
 require('../src/mac-update.cjs').isDeveloperIdSigned = () => true;
 require('../src/mac-update.cjs').updaterDriver = () => 'electron-updater';
 const stagedUpdater = new (require('node:events').EventEmitter)();
-stagedUpdater.checkForUpdates = async () => ({});
+stagedUpdater.checkForUpdates = async () => { appChecks++; return {}; };
 stagedUpdater.setFeedURL = () => {};
 stagedUpdater.quitAndInstall = () => { calls.push('install app'); throw new Error('Test must never install'); };
 require('electron-updater');
@@ -117,6 +118,7 @@ app.whenReady().then(async () => {
   await click('update-all');
   assert.equal(await hidden('update-all-popup'), false);
   assert.deepEqual(await lines(), ['|Hermes: 0.21.6 → 0.21.7', '|Alan’s Way plugin: 0.21.0 → 0.21.1', `|Browser host: 0.21.3 → ${version}`,
+    `|Alan’s Workspace: ${version} · latest not checked yet`,
     'warn|Your bots restart briefly while the server updates.']);
   assert.equal(await text('update-all-go'), 'Update everything');
   await click('update-all-cancel');
@@ -241,6 +243,25 @@ app.whenReady().then(async () => {
   assert.equal(await text('update-all-go'), 'Restart to finish');
   assert.equal(await hidden('update-all-go'), false, 'restart is offered once the run finishes');
   assert.equal(stagedUpdater.autoInstallOnAppQuit, true, 'installation hold is released after completion');
+
+  // A fresh server has Hermes but no plugin or host. Empty actions cannot
+  // certify currency; the user can explicitly retry both version probes.
+  await click('update-all-cancel');
+  stagedUpdater.emit('update-not-available', { version });
+  checkFixture = { ok: true, hermesVersion: 'Hermes Agent v0.22.1', hermesCheck: 'up to date', plugins: [] };
+  await invoke('versions-refresh');
+  await waitFor(() => text('version-label'), t => t.includes('0.22.1'));
+  await click('update-all');
+  assert.doesNotMatch(await text('update-all-copy'), /Everything is up to date/);
+  const missing = (await lines()).join('\n');
+  assert.match(missing, /Alan’s Way plugin: not installed/);
+  assert.match(missing, /Browser host: not installed/);
+  assert.match(missing, /Alan’s Workspace:/);
+  assert.match(missing, /Hermes:/);
+  const checkedBefore = appChecks, probesBefore = calls.filter(c => c.startsWith('check')).length;
+  await click('update-all-check');
+  await waitFor(() => appChecks, n => n > checkedBefore);
+  await waitFor(() => calls.filter(c => c.startsWith('check')).length, n => n > probesBefore);
 
   console.log('PASS: the bottom bar shows versions with details on hover; Update everything confirms first, runs in order under one lock, warns when a plugin stays behind, finishes a clean run, and reports once.');
   app.quit();
