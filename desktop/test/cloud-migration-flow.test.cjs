@@ -16,13 +16,13 @@ function section(start, end) {
 
 // Run the shipped commands and state projection with fixture-only preferences.
 // No Electron startup, SSH, local migration, clipboard or network is available.
-function fixture(cloud, { sshRun, sshWrite } = {}) {
+function fixture(cloud, { sshRun, sshWrite, telegramView = null } = {}) {
   const prefs = { onboarded: false, cloud, vpsBrowser: { sshHost: 'user@server.example' } };
   const saved = [];
   const context = vm.createContext({
     ...onboarding, prefs, sshRun, sshWrite,
     cloudModel: require('../src/cloud-model.cjs'), cloudTelegram: require('../src/cloud-telegram.cjs'),
-    cloudConnect: require('../src/cloud-connect.cjs'), telegramView: null, broadcast() {}, readPreferences: () => prefs, cloudMigrate, cloudComputer: null, cloudError: '',
+    cloudConnect: require('../src/cloud-connect.cjs'), telegramView, broadcast() {}, readPreferences: () => prefs, cloudMigrate, cloudComputer: null, cloudError: '',
     cloudClaim: { apiBase: () => 'https://cloud.example' },
     cloudSession: () => prefs.cloud.sessionEnc ? 'fixture-session' : '',
     trustSender: () => {}, seedMacSshHost: () => {}, applyLayout: () => {}, broadcastNow: () => {},
@@ -111,13 +111,22 @@ for (const legacy of [false, true]) {
   test(`completed hosted setup preserves its bot on Start fresh (${legacy ? 'older saved state' : 'new completion'})`, async () => {
     let env = 'TELEGRAM_BOT_TOKEN=fixture-original\n';
     const writes = [];
+    const scripts = [];
     const f = fixture({ sessionEnc: 'fixture', ...(legacy ? { step: 'done', botUsername: 'original_bot' } : { step: 'telegram' }) }, {
       sshRun: async (_, command) => ({ code: 0, out: command.startsWith('ls ') ? 'personal\n' : command.startsWith('cat ') ? env : 'anthropic: logged in' }),
       sshWrite: async (_, file, value) => { writes.push(file); env = value; return { code: 0 }; },
+      // Completion requires the embedded bot chat to accept /start (#165).
+      telegramView: { webContents: { isDestroyed: () => false,
+        executeJavaScript: async (script) => { scripts.push(script); return { ok: true }; } } },
     });
-    if (!legacy) await f.finishTelegram('fixture-original', 'original_bot');
+    if (!legacy) {
+      assert.equal((await f.finishTelegram('fixture-original', 'original_bot')).done, true);
+      assert.equal(writes.length, 1, 'initial setup must exercise the real bot token writer');
+      assert.deepEqual(scripts, [require('../src/cloud-telegram.cjs').sendMessageScript('original_bot', '/start')]);
+    }
     assert.equal(f.prefs.cloud.step, 'done');
     writes.length = 0;
+    scripts.length = 0;
     const originalEnv = env;
     await f.command('onboarding-open');
     assert.equal(f.view().step, 'migrate');
@@ -125,6 +134,7 @@ for (const legacy of [false, true]) {
     if (f.view().step === 'model') await f.command('cloud-model-check');
     if (f.view().step === 'telegram') await f.finishTelegram('fixture-replacement', 'replacement_bot');
     assert.equal(writes.length, 0, 'replaying completed setup must never replace the working bot token');
+    assert.equal(scripts.length, 0, 'replaying completed setup must not restart the bot chat');
     assert.equal(env, originalEnv);
     assert.equal(f.prefs.cloud.botUsername, 'original_bot');
     assert.equal(f.prefs.cloud.step, 'done', 'completed setup changes migration choice only');
