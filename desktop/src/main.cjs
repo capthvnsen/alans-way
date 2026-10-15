@@ -1386,7 +1386,8 @@ async function runSetupCheck() {
 }
 // The connect step advances as far as it can each click: CLI check, pairing
 // status, the computer's own state file, then the saved return path check.
-// {stage} tells the wizard which message to show; 'done' moves to migrate.
+// {stage} tells the wizard which message to show; 'done' moves to migration
+// for a hosted computer, or straight to model setup for an existing DIY server.
 async function cloudConnectRun(diyHost) {
   const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
   if (diyHost) {
@@ -1411,7 +1412,7 @@ async function cloudConnectRun(diyHost) {
       const path = await testAgentPath();
       if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
     }
-    setCloudStep(prefs, 'migrate');
+    setCloudStep(prefs, nextCloudStep(prefs, 'migrate'));
     savePreferences();
     return { stage: 'done', ok: true, detail: `Connected to ${sshHost}.` };
   }
@@ -2828,7 +2829,9 @@ function buildMenu() {
 }
 function createWindow() {
   nativeTheme.themeSource = 'dark';
-  win = new BrowserWindow({ width: 1550, height: 980, minWidth: 1120, minHeight: 680, backgroundColor: '#09090a', title: app.getName(),
+  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  win = new BrowserWindow({ width: Math.min(1550, width), height: Math.min(980, height),
+    minWidth: Math.min(1120, width), minHeight: Math.min(680, height), backgroundColor: '#09090a', title: app.getName(),
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 } }
       : { titleBarStyle: 'hidden', titleBarOverlay: { color: '#111112', symbolColor: '#e7e7eb', height: 40 } }),
