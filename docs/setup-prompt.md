@@ -1,7 +1,8 @@
 # Setup prompt for your cloud agent
 
-The app and README point here to start setup. This prompt gets the plugin
-installed and explains the human handoffs. The plugin's installed
+The app copies the shorter clipboard block from this same document, bundled
+with each release; the README and openalan.com/agent-prompt serve it online.
+This prompt gets the plugin installed and explains the human handoffs. The plugin's installed
 `workspace-setup` skill owns the setup procedure and revision pins.
 
 ```text
@@ -20,8 +21,10 @@ Rules for the whole job:
 - The installed workspace-setup skill is authoritative for preflight,
   Tailscale, SSH trust, configuration, binding, verification and the gateway
   restart. This prompt supplies bootstrap, app installation and human handoffs.
-  If that skill links back to an older setup prompt, use it only for human
-  handoff context; do not execute its separate clone, setup or key-append recipe.
+  Never create or write your own setup skill, or use a standalone user-skill
+  copy. Do not fetch other setup guides, even if the installed skill links
+  to an older setup prompt or setup-for-agents guide. Use the human handoffs
+  below and the installed skill's pinned procedure.
 
 1. Find the Hermes profile that owns this conversation with `hermes profile
    list` and check `hermes --version`. Use `hermes -p <profile>` for every
@@ -37,10 +40,20 @@ Rules for the whole job:
    Hermes requires a stopped gateway for installation, explain the pause and
    use its owner's documented drain/restart workflow, then resume here.
 
-2. Load the installed workspace-setup skill belonging to this profile's
-   alans-way plugin, not a standalone user-skill copy or an online branch.
-   If it is not available yet, report that and resume after Hermes loads the
-   plugin; do not reconstruct the procedure from a web page.
+2. Load the installed workspace-setup skill with Hermes' tool call
+   skill_view(name="alans-way:workspace-setup"). The plugin registers
+   workspace-setup; Hermes exposes it as alans-way:workspace-setup. Check
+   the returned source path belongs to this profile's installed alans-way
+   plugin: <profile-home>/plugins/alans-way/skills/workspace-setup/SKILL.md
+   (default: ~/.hermes/plugins/alans-way/skills/workspace-setup/SKILL.md;
+   named profile: ~/.hermes/profiles/<profile>/plugins/alans-way/skills/workspace-setup/SKILL.md).
+   If skill_view is unavailable, read that installed file directly in full.
+   Follow it verbatim. Do not use a bare skill name, a similarly named
+   user skill, a web summary or a repository copy as a substitute.
+   If the plugin is absent, install it from the catalog in step 1 first.
+   If it is installed but the skill cannot be loaded or read, stop, report
+   the exact missing skill/path and resume after Hermes loads the plugin;
+   do not reconstruct the procedure or fetch a fallback guide.
    Follow its revision-resolution rules: resolve the plugin pin from Hermes'
    install record, or the matching release tag when the skill prescribes it,
    and use the reviewed desktop revision it specifies for server setup and
@@ -113,6 +126,52 @@ Rules for the whole job:
 Finish with a short report: the exact installed plugin revision, resolved
 server/connector desktop pin, installed app version and release tag (if known),
 what passed, every setup warning, and anything skipped or still needing me.
+```
+
+## Prompt copied by the app
+
+This block fits in a Telegram message with the app's computer facts. Load the
+installed skill before fetching this document for the detailed handoffs above.
+Settings and the setup wizard copy the same block; setup steps and revision
+pins remain owned by the installed skill.
+
+<!-- clipboard-prompt -->
+```text
+Set up Alan's Workspace for me. Connect this Hermes server to my
+<Mac | Windows PC | Linux computer>. Do not modify Hermes itself.
+
+First find the Hermes profile owning this conversation with hermes profile
+list. Use hermes -p <profile> for plugin operations, including -p default.
+Check plugins list; preserve an existing alans-way install. If absent,
+install the plugin from Hermes' reviewed catalog first:
+  hermes -p <profile> plugins install alans-way --enable
+If the catalog is unavailable, stop and report it; never use a repository tip.
+Follow installed CLI help if flags differ. Never bypass security scanning:
+report blocked findings and obtain explicit approval for any documented
+one-install override. Never infer scan approval from this request.
+
+Before any setup, load the installed workspace-setup skill using Hermes'
+skill_view(name="alans-way:workspace-setup"). Check that its source is this
+profile's installed plugin file:
+<profile-home>/plugins/alans-way/skills/workspace-setup/SKILL.md
+(default: ~/.hermes/plugins/alans-way/skills/workspace-setup/SKILL.md;
+named profile: ~/.hermes/profiles/<profile>/plugins/alans-way/skills/workspace-setup/SKILL.md).
+If skill_view is unavailable, read that installed file directly in full.
+If the installed skill cannot be loaded or read, stop and report the exact
+missing skill/path; resume after Hermes loads the plugin. Never create or
+write your own setup skill, or use a standalone user skill or repository copy.
+Follow it verbatim, including its reviewed plugin and desktop pins. Never
+execute branch/main URLs or unpinned checkouts, or drop its pin flags.
+
+For detailed app installation and human handoffs, fetch only
+https://openalan.com/agent-prompt and use its first text block alongside the
+installed skill. If extraction fails or is incomplete, stop and report it.
+Do not fetch other setup guides, including legacy setup-for-agents guides or
+older prompts linked by the skill. Never reconstruct setup from a web summary.
+Never disclose or request secrets. Ask each preference; do not choose for me.
+Give short numbered human steps and wait for replies; silence is not consent.
+Keep the gateway restart last. Report pins, app version, checks, warnings and
+skips; never claim a capability without verification.
 ```
 
 ## What it needs from you
