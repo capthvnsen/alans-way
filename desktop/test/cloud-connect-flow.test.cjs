@@ -10,7 +10,7 @@ const { cloudStep, nextCloudStep, setCloudStep } = require('../src/onboarding.cj
 // Exercise the shipped main-process transition without booting Electron or
 // touching SSH, Tailscale, local keys or the user's preferences.
 const source = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
-const start = source.indexOf('async function cloudConnectRun(');
+const start = source.indexOf('function setServerConfig(');
 assert.notEqual(start, -1);
 const end = source.indexOf('\nasync function claimWithToken(', start);
 assert.ok(end > start);
@@ -28,8 +28,9 @@ function fixture({ diy = true, resume = false, step = 'connect', failure } = {})
   };
   const calls = [];
   const savedSteps = [];
-  const run = vm.runInNewContext(`(${connectSource})`, {
+  const run = vm.runInNewContext(`${connectSource}\ncloudConnectRun;`, {
     prefs, isSshTarget, nextCloudStep, setCloudStep,
+    setTimeout() {}, checkVersionsWhenIdle() {},
     cloudComputer: null,
     cloudConnect: { ...cloudConnect, tailscaleCli: () => 'fixture-tailscale' },
     localRun: async (cli, args) => {
