@@ -45,6 +45,8 @@ jobs:
       - run: npm ci
       - run: npm run test:electron-fixture
         timeout-minutes: 3
+      - run: npm run test:telegram-open
+        timeout-minutes: 3
       - run: npm run test:desktop
         timeout-minutes: 3
       - run: npm run test:agent-input

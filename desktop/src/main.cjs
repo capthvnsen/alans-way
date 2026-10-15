@@ -17,6 +17,7 @@ const cloudConnect = require('./cloud-connect.cjs');
 const cloudMigrate = require('./cloud-migrate.cjs');
 const cloudModel = require('./cloud-model.cjs');
 const cloudTelegram = require('./cloud-telegram.cjs');
+const { openUsernameScript } = require('./telegram-open.cjs');
 const macUpdate = require('./mac-update.cjs');
 const setupCheck = require('./setup-check.cjs');
 const { createLog } = require('./main-log.cjs');
@@ -997,6 +998,24 @@ async function openBot(id) {
     } return false;
   })()`).catch(() => false);
   if (!selected) await openTelegramHash(id);
+}
+let openingTelegramUsername = false;
+async function openTelegramUsername(username) {
+  if (!telegramView || telegramView.webContents.isDestroyed()) throw new Error('Telegram is not loaded.');
+  if (telegramStatus !== 'connected') throw new Error('Sign in to Telegram before opening a bot.');
+  if (openingTelegramUsername) throw new Error('Wait for the current bot to open, then try again.');
+  openingTelegramUsername = true;
+  try {
+    const result = await boundedJs(telegramView.webContents, openUsernameScript(username), 20000);
+    const bot = sanitizeBots([result?.bot])[0];
+    if (result?.ok !== true || !bot || bot.username.toLowerCase() !== username.toLowerCase()) {
+      throw new Error(result?.error || `Telegram could not open @${username}. Try again.`);
+    }
+    const existing = prefs.bots.find(item => item.id === bot.id);
+    if (!existing) prefs.bots.push(bot);
+    selectAgent(bot.id);
+    savePreferences();
+  } finally { openingTelegramUsername = false; }
 }
 // Changing only the hash keeps Telegram's session loaded; a full reload is for
 // when the hash already matches and the page is stuck.
@@ -2010,9 +2029,8 @@ function registerIpc() {
       case 'open-username': {
         const username = String(value.username || '').replace(/^@/, '');
         if (!/^[A-Za-z][\w]{3,31}$/.test(username)) throw new Error('Enter a Telegram bot username.');
-        const link = `tg://resolve?domain=${username}`;
-        prefs.selectedBotId = '';
-        await openTelegramHash(`?tgaddr=${encodeURIComponent(link)}`); break;
+        await openTelegramUsername(username);
+        broadcastNow(); return { ok: true };
       }
       default: throw new Error('Unknown workspace command.');
     }
