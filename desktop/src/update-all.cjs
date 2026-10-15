@@ -16,6 +16,23 @@ const SHORT = { hermes: 'Hermes', plugin: 'plugin', host: 'browser host', app: '
 const { normalizeVersion, compareVersions, validVersionToken } = require('./update-version.cjs');
 const isNewer = (a, b) => compareVersions(a, b) === 1;
 
+// A proactivity binding and an ordinary bot conversation do not configure
+// Hermes' home channel. Older setup scripts left it unset. Preserve the CLI's
+// reason and let the user choose the destination with /sethome in that bot's
+// chat; discovering an arbitrary recent chat would risk sending to a stranger.
+function reportDeliveryText(result) {
+  const messages = Array.isArray(result?.messages) ? result.messages : [];
+  const sent = result?.messaged === true || messages.some((m) => m.sent === true);
+  const failed = messages.filter((m) => m.sent !== true);
+  const reasons = failed.map((m) => `${m.profile || 'default'}: ${m.error || 'delivery failed'}`).join('; ')
+    || (!sent ? String(result?.error || '') : '');
+  const status = sent ? 'Your bot messaged you on Telegram.' : 'The bot could not message you on Telegram.';
+  const detail = reasons ? ` ${sent ? 'Other profiles could not send: ' : ''}${reasons}` : '';
+  const recovery = /no (?:chat specified and no )?home channel|home channel.*(?:not set|not configured)/i.test(reasons)
+    ? ' Send /sethome in the affected bot’s Telegram chat to enable future update reports.' : '';
+  return redactReport(`${status}${detail}${recovery}`);
+}
+
 // "Hermes Agent v0.21.6+763.g1fd1827 (2026.9.24) · stable" -> "0.21.6".
 function probeVersion(token) {
   return validVersionToken(token) ? token.split('+')[0] : '';
@@ -248,4 +265,4 @@ function restartWarning(names) {
   return { message: `${who} working in a tab right now.`, detail: 'Restarting interrupts that task. The update installs whenever you restart, so you can wait until they finish.' };
 }
 
-module.exports = { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, latestHostRelease, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText, pluginStepResult, runLogText, warningText };
+module.exports = { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, latestHostRelease, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, pluginStepResult, runLogText, warningText };

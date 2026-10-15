@@ -19,7 +19,7 @@ process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10
 // main.cjs destructures these at load, so patching the exports first swaps
 // the real ssh-driven updater and the GitHub read for recorders.
 const calls = [];
-let hermesNow = '0.21.6', releaseHermes, checkGate = null, failReport = false, pluginOk = false;
+let hermesNow = '0.21.6', releaseHermes, checkGate = null, failReport = false, noHomeReport = false, pluginOk = false;
 const hermesGate = new Promise((resolve) => { releaseHermes = resolve; });
 const gate = () => {
   let release;
@@ -43,6 +43,9 @@ require('../src/vm-update.cjs').createVmUpdater = () => ({
     if (opts.report) {
       calls.push(`report ${opts.report}`);
       if (successGates) await successGates.report.promise;
+      if (noHomeReport) return { ok: true, messaged: false, messages: [
+        { profile: 'main', sent: false, error: 'No home channel set for telegram to determine where to send the message.' },
+      ] };
       return { ok: true, messaged: true, messages: [{ profile: 'default', sent: true }] };
     }
     calls.push(`hermes ${target.id} quiet=${opts.quiet === true}`);
@@ -180,6 +183,19 @@ app.whenReady().then(async () => {
   checkGate = null; release();
   await updating;
   assert.ok(calls.indexOf('hermes agent quiet=false') > calls.lastIndexOf('check agent'), 'and runs once it finished');
+
+  // A paired bot can chat without a home channel: the final dialog must
+  // retain the delivery reason and tell the user where to set the target.
+  noHomeReport = true;
+  await click('update-all');
+  await waitFor(lines, (l) => l.length > 0, 3000, 'the plan without a Telegram home');
+  await click('update-all-go');
+  await waitFor(() => evaluate('document.getElementById("update-all-cancel").disabled'), d => d === false, 8000, 'the report failure');
+  assert.match(await text('update-all-copy'), /The bot could not message you on Telegram\. main: No home channel set for telegram/);
+  assert.match(await text('update-all-copy'), /Send \/sethome in the affected bot’s Telegram chat to enable future update reports/);
+  assert.deepEqual((await lines()).map(l => l.split('|')[0]), ['warn', 'done'], 'delivery does not change component outcomes');
+  await click('update-all-cancel');
+  noHomeReport = false;
 
   // An error that escapes the steps lands in the dialog, never a blank run.
   failReport = true;
