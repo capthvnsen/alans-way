@@ -44,6 +44,50 @@ function scan(fx, lastId, byId) {
     seen: fx.seen, sent: fx.sent, send: v => fx.sentMessages.push(v) });
 }
 
+// The RC.2 live repro's outgoing message used TextUrl, not Url, entities.
+// Its preview was populated too; neither representation opts into auto-open.
+for (const outgoing of [false, true]) {
+  for (const preview of [false, true]) {
+    test(`filename TextUrl message never opens a tab (outgoing=${outgoing}, preview=${preview})`, () => {
+      const message = { isOutgoing: outgoing, content: {
+        ...(preview ? { webPage: { url: 'http://SKILL.md/', title: 'Agent Skills' } } : {}),
+        text: {
+          text: 'Filename display test only: SKILL.md and setup.sh. Reply noted; do not open anything or take any other action.',
+          entities: [
+            { type: 'MessageEntityTextUrl', offset: 28, length: 8, url: 'http://SKILL.md/' },
+            { type: 'MessageEntityTextUrl', offset: 41, length: 8, url: 'http://setup.sh/' },
+          ],
+        },
+      } };
+      const fx = fixture();
+      scan(fx, 7, { 7: msg('previous message') });
+      scan(fx, 8, { 8: message });
+      assert.deepEqual(fx.sentMessages, [], 'no telegram:link IPC means no tab creation or activation');
+      assert.equal(fx.seen.get('42'), 8);
+      assert.equal(fx.sent.size, 0);
+    });
+  }
+}
+
+for (const label of ['SKILL.md', 'setup.sh', 'config.yaml', 'README.md', 'example.com', 'example.com/docs', 'example.com:8080/docs', ' SKILL.md ']) {
+  test(`TextUrl bare filename or host label is ignored: ${label}`, () => {
+    const entity = { type: 'MessageEntityTextUrl', offset: 0, length: label.length, url: 'https://target.example/docs' };
+    assert.equal(firstLink(msg(label, { entities: [entity] })), '');
+    assert.equal(firstLink(msg(label + ' https://explicit.example', { entities: [entity] })), 'https://explicit.example');
+    assert.equal(firstLink(msg(label + ' documentation', { entities: [entity,
+      { type: 'MessageEntityTextUrl', offset: label.length + 1, length: 13, url: 'https://docs.example' },
+    ] })), 'https://docs.example');
+  });
+}
+
+for (const label of ['https://example.com', 'http://example.com', 'HTTPS://example.com', 'Documentation v1.2', 'Read the docs.']) {
+  test(`intentional TextUrl label is preserved: ${label}`, () => {
+    assert.equal(firstLink(msg(label, { entities: [
+      { type: 'MessageEntityTextUrl', offset: 0, length: label.length, url: 'https://target.example/docs' },
+    ] })), 'https://target.example/docs');
+  });
+}
+
 for (const { text, entities, expected } of [
   ...['SKILL.md', 'setup.sh', 'config.yaml', 'README.md', 'example.com'].map(text => ({
     text, entities: [{ type: 'MessageEntityUrl', offset: 0, length: text.length }], expected: '',
