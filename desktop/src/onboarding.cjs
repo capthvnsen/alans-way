@@ -8,8 +8,18 @@ function shouldOnboard(prefs) {
 }
 
 // Decide once at launch: step 3 saves an SSH address, which must not end the wizard.
+// Return whether startup needs to persist a pinned or repaired setup state.
 function pinOnboarding(prefs) {
-  if (prefs.onboarded === undefined && shouldOnboard(prefs)) prefs.onboarded = false;
+  let changed = false;
+  // Older builds sent existing DIY servers through the hosted migration card.
+  // Resume them at the same destination as a successful DIY connection.
+  if (prefs.cloud?.diy === true && prefs.cloud.step === 'migrate') {
+    prefs.cloud.step = nextCloudStep(prefs, 'migrate');
+    delete prefs.cloud.migration;
+    changed = true;
+  }
+  if (prefs.onboarded === undefined && shouldOnboard(prefs)) { prefs.onboarded = false; changed = true; }
+  return changed;
 }
 
 // Cloud onboarding steps in order. 'support' sits outside the linear flow: a
@@ -46,6 +56,7 @@ function telegramCovered(prefs) {
 
 // The step after `current`.
 function nextCloudStep(prefs, current) {
+  if (current === 'migrate' && prefs?.cloud?.migrationOnly === true) return 'done';
   const index = CLOUD_FLOW.indexOf(current);
   let next = index === -1 ? 'done' : CLOUD_FLOW[index + 1] || 'done';
   if (next === 'telegram' && telegramCovered(prefs)) next = 'done';

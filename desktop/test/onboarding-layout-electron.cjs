@@ -44,6 +44,28 @@ app.whenReady().then(async () => {
     for (const button of result.buttons) assert.ok(button.reachable, `Step ${step}: ${JSON.stringify(button)}`);
     console.log(`PASS: wizard step ${step} actions reachable at 1024×640`);
   }
+  for (const platform of ['darwin', 'win32']) {
+    const result = await win.webContents.executeJavaScript(`(async () => {
+      const calls = [];
+      window.workspace.command = async (name, value) => { calls.push({ name, value }); };
+      renderOnboarding(false);
+      state.platform = ${JSON.stringify(platform)};
+      state.cloud = { claimed: true, step: 'migrate', migration: 'bring', migrateCommand: 'fixture-command' };
+      renderOnboarding(true);
+      const panel = document.getElementById('onboarding');
+      const fresh = [...panel.querySelectorAll('button')].find(button => button.textContent === 'Start fresh instead');
+      if (!fresh) return { found: false };
+      fresh.scrollIntoView({ block: 'nearest' });
+      const r = fresh.getBoundingClientRect(), p = panel.getBoundingClientRect();
+      await fresh.onclick();
+      return { found: true, reachable: r.width > 0 && r.left >= p.left && r.right <= p.right
+        && r.top >= p.top && r.bottom <= p.bottom && r.bottom <= innerHeight, calls };
+    })()`);
+    assert.equal(result.found, true, `${platform}: Bring must offer Start fresh instead`);
+    assert.equal(result.reachable, true, `${platform}: Start fresh instead must be reachable`);
+    assert.deepEqual(result.calls, [{ name: 'cloud-migrate', value: { choice: 'fresh' } }]);
+    console.log(`PASS: ${platform} Bring card offers a reachable Start fresh instead action`);
+  }
   win.destroy();
   app.quit();
 }).catch(error => { console.error(error); app.exit(1); });
