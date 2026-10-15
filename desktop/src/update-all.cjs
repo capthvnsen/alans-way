@@ -51,13 +51,27 @@ async function latestPluginTag(fetchImpl = fetch) {
   return newestTag(Array.isArray(tags) ? tags.map((tag) => tag?.name) : []);
 }
 
+// RC apps cannot send their own tag to the stable-only browser-host updater.
+// Use a published release, rather than stripping the RC suffix and guessing.
+async function latestHostRelease(fetchImpl = fetch) {
+  const res = await fetchImpl('https://api.github.com/repos/capthvnsen/alans-way/releases/latest', { headers: { accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(10000) });
+  if (!res.ok) return '';
+  const release = await res.json();
+  return release?.prerelease || release?.draft ? '' : newestTag([release?.tag_name]);
+}
+
+function stableHostTarget(app, appUpdate, cache) {
+  const appTarget = appUpdate && isNewer(appUpdate, app) ? appUpdate : app;
+  return newestTag([`v${appTarget}`, `v${app}`]) || newestTag([`v${cache?.hostLatest}`]);
+}
+
 // The cache the bar renders from. An unreachable machine keeps the last known
 // versions and only flips `offline`, so the tooltip can still say what ran
 // there when it was last seen.
-function versionRecord(previous, { target, check, pluginLatest = '', now }) {
+function versionRecord(previous, { target, check, pluginLatest = '', hostLatest = '', now }) {
   const where = target?.local ? 'local' : 'server';
   const base = previous?.where === where ? previous : {};
-  const stamp = { where, checkedAt: now, pluginLatest: pluginLatest || base.pluginLatest || '' };
+  const stamp = { where, checkedAt: now, pluginLatest: pluginLatest || base.pluginLatest || '', hostLatest: hostLatest || base.hostLatest || '' };
   if (!check?.ok) return { ...base, ...stamp, offline: true };
   const verdict = parseHermesCheck(check.hermesCheck);
   const hermes = parseHermesVersion(check.hermesVersion);
@@ -72,8 +86,8 @@ function versionRecord(previous, { target, check, pluginLatest = '', now }) {
 // The steps "Update everything" would run, in run order, each with the
 // versions it moves between. Hermes joins unless its check said it is
 // current: `hermes update` is a no-op then, so a check that gave no verdict
-// never hides an update. The browser host follows the app version it will
-// run with; it only exists on a server.
+// never hides an update. The browser host follows the stable app version it
+// will run with, or the latest stable release for an RC; it only exists on a server.
 function planSteps({ app, appUpdate = '', cache } = {}) {
   const c = cache || {};
   const steps = [];
@@ -88,7 +102,8 @@ function planSteps({ app, appUpdate = '', cache } = {}) {
   });
   if (!c.offline && (incomplete || c.pluginLatest && stale)) steps.push({ id: 'plugin', from: stale?.version || stale?.after || c.plugin || 'unverified', to: c.pluginLatest || 'latest' });
   const appTarget = appUpdate && isNewer(appUpdate, app) ? appUpdate : app;
-  if (c.where === 'server' && c.host && !c.offline && isNewer(appTarget, c.host)) steps.push({ id: 'host', from: c.host, to: appTarget });
+  const hostTarget = stableHostTarget(app, appUpdate, c);
+  if (c.where === 'server' && c.host && !c.offline && isNewer(hostTarget, c.host)) steps.push({ id: 'host', from: c.host, to: hostTarget });
   if (appTarget !== app) steps.push({ id: 'app', from: app, to: appTarget });
   return steps.map((step) => ({ ...step, name: NAMES[step.id] }));
 }
@@ -129,7 +144,7 @@ function describeVersions({ app, appUpdate = '', appLatest = '', cache, formatTi
           : plugins.some((p) => !p.name || !p.profile || !valid(p.version || p.after)) ? 'version unverified'
             : valid(c.pluginLatest) ? `latest ${c.pluginLatest}` : 'latest not checked yet' },
     { id: 'host', version: c.host || '', status: c.where === 'local' ? 'not required on this computer' : !checked ? 'not checked yet'
-      : !c.host ? 'not installed' : status(c.host, appUpdate || app) },
+      : !c.host ? 'not installed' : status(c.host, stableHostTarget(app, appUpdate, c)) },
   ].map((row) => ({ ...row, name: NAMES[row.id], ...(c.offline && row.id !== 'app' ? { status: 'offline; not checked yet' } : {}) }));
   const upToDate = !steps.length && components.every((row) => row.status === 'up to date' || row.status === 'not required on this computer');
   return { text: parts.join(' · '), tooltip: lines.join('\n'), steps, hasUpdate, components, upToDate };
@@ -233,4 +248,4 @@ function restartWarning(names) {
   return { message: `${who} working in a tab right now.`, detail: 'Restarting interrupts that task. The update installs whenever you restart, so you can wait until they finish.' };
 }
 
-module.exports = { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText, pluginStepResult, runLogText, warningText };
+module.exports = { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, latestHostRelease, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText, pluginStepResult, runLogText, warningText };

@@ -27,7 +27,7 @@ test('an installed pre-release or build-tagged plugin still counts as behind its
   const cache = { where: 'server', hermes: '0.21.6', hermesUpdate: false, plugin: '0.21.1-rc.2', plugins: [{ name: 'alans-way', profile: 'default', version: '0.21.1-rc.2' }], pluginLatest: '0.21.1', host: '0.21.4+20261012' };
   assert.deepEqual(planSteps({ app: '0.21.4', cache }).map((s) => [s.id, s.from, s.to]), [['plugin', '0.21.1-rc.2', '0.21.1']],
     'the host on 0.21.4+build is the app version, so it does not join');
-  assert.deepEqual(planSteps({ app: '0.21.5-rc.10', cache: { ...cache, plugin: '0.21.1', plugins: [{ name: 'alans-way', profile: 'default', version: '0.21.1' }], host: '0.21.5-rc.2' } }).map((s) => [s.id, s.to]), [['host', '0.21.5-rc.10']]);
+  assert.deepEqual(planSteps({ app: '0.21.5-rc.10', cache: { ...cache, plugin: '0.21.1', plugins: [{ name: 'alans-way', profile: 'default', version: '0.21.1' }], host: '0.21.5-rc.2', hostLatest: '0.21.5' } }).map((s) => [s.id, s.to]), [['host', '0.21.5']]);
 });
 
 test('the Hermes version comes from the --version banner, build suffixes dropped', () => {
@@ -68,7 +68,7 @@ const server = { id: 'agent', label: 'VPS', sshHost: 'u@vm' };
 
 test('a check becomes the cached record; an unreachable machine keeps the last versions and goes offline', () => {
   const record = versionRecord({}, { target: server, check: serverCheck, pluginLatest: '0.21.1', now: 1000 });
-  assert.deepEqual(record, { where: 'server', checkedAt: 1000, pluginLatest: '0.21.1', offline: false, hermes: '0.21.6',
+  assert.deepEqual(record, { where: 'server', checkedAt: 1000, pluginLatest: '0.21.1', hostLatest: '', offline: false, hermes: '0.21.6',
     hermesUpdate: true, hermesLatest: '0.21.7', plugin: '0.21.0', plugins: serverCheck.plugins, host: '0.21.4', gatewayRunning: true });
   const offline = versionRecord(record, { target: server, check: { ok: false, error: 'ssh: timed out' }, pluginLatest: '', now: 2000 });
   assert.equal(offline.offline, true);
