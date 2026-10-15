@@ -3,13 +3,21 @@
 'use strict';
 
 const SKIP_HOSTS = /(^|\.)t\.me$|(^|\.)telegram\.(org|me|dog)$/i;
+const BARE_LINK_LABEL = /^[^\s:/?#]+\.[^\s:/?#]+(?::\d+)?(?:[/?#]\S*)?$/u;
 
 function firstLink(message) {
   const body = message?.content?.text;
   const text = typeof body?.text === 'string' ? body.text : typeof body === 'string' ? body : '';
   let url = '';
   for (const entity of body?.entities || []) {
-    if (entity?.type === 'MessageEntityTextUrl' && typeof entity.url === 'string') { url = entity.url; break; }
+    if (entity?.type === 'MessageEntityTextUrl' && typeof entity.url === 'string') {
+      const label = text.slice(entity.offset, entity.offset + entity.length).trim();
+      // Telegram can represent linkified filenames/hosts as TextUrl too, with
+      // a scheme already added to the target. Inspect the displayed label;
+      // a filename alone still does not opt into opening a workspace tab.
+      if (BARE_LINK_LABEL.test(label)) continue;
+      url = entity.url; break;
+    }
     if (entity?.type === 'MessageEntityUrl' && Number.isInteger(entity.offset) && Number.isInteger(entity.length)) {
       const candidate = text.slice(entity.offset, entity.offset + entity.length);
       // Telegram also linkifies bare hosts and filenames such as SKILL.md.
