@@ -26,7 +26,7 @@ const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
-const { latestPluginTag, latestHostRelease, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
+const { latestPluginTag, latestHostRelease, versionRecord, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createActivityTracker } = require('./activity.cjs');
@@ -1914,7 +1914,9 @@ function registerIpc() {
           broadcast();
           if (prefs.versionCache?.hermes) {
             const sent = await vmUpdater.hermesUpdateVm(target, { report: reportText(rows) });
-            updateRun = { ...updateRun, summary: `${updateRun.summary} ${sent.messaged ? 'Your bot messaged you on Telegram.' : 'The bot could not message you on Telegram.'}` };
+            const delivery = reportDeliveryText(sent);
+            mainLog().write('update report', delivery);
+            updateRun = { ...updateRun, summary: `${updateRun.summary} ${delivery}` };
           }
         } catch (error) {
           // The dialog shows why the run stopped instead of an empty summary.

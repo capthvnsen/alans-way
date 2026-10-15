@@ -205,7 +205,12 @@ case "$cmd" in
           cat "${state}/update-out" 2>/dev/null
           rc="$(cat "${state}/update-rc" 2>/dev/null)"; exit "\${rc:-0}";;
   --version) echo "Hermes Agent v$(cat "${state}/version" 2>/dev/null || { [ -f "${state}/updated" ] && echo 9.9.9 || echo 9.9.8; }) (test) · stable"; exit 0;;
-  send) for last in "$@"; do :; done
+  send) if [ -f "${state}/send-home-missing" ]; then
+          # Hermes 0.22 suppresses failure output as well as success under -q.
+          case " $* " in *' -q '*) :;; *) echo "hermes send: No home channel set for telegram to determine where to send the message. Either specify a channel directly with 'telegram:CHANNEL_NAME', or set a home channel via: hermes config set TELEGRAM_HOME_CHANNEL <channel_id>" >&2;; esac
+          exit 1
+        fi
+        for last in "$@"; do :; done
         echo "send $prof: $last" >> "${state}/sends.log"
         grep -qxF "$prof" "${state}/send-fail" 2>/dev/null && { echo "no telegram target"; exit 1; }
         rc="$(cat "${state}/send-rc" 2>/dev/null)"; exit "\${rc:-0}";;
@@ -336,6 +341,29 @@ test('report mode skips the update and every profile sends the given text, prelu
   const sends = fs.readFileSync(sendLog, 'utf8');
   assert.match(sends, /^send default: Update everything finished\. Now on Hermes 0\.21\.7\.$/m);
   assert.match(sends, /^send coder: Update everything finished\. Now on Hermes 0\.21\.7\.$/m);
+});
+
+test('a fresh bound install without a Telegram home reports the actual delivery failure', async () => {
+  const { bin, state, log } = makeHermes();
+  fs.writeFileSync(path.join(state, 'send-home-missing'), '');
+  const env = envFor(bin, state, { HERMES_HOME: makeHermesHome() });
+  const updater = createVmUpdater({
+    run: async (_bin, _args, opts) => {
+      const res = spawnSync('sh', ['-s'], { input: opts.input, env: { ...process.env, ...env }, encoding: 'utf8', timeout: 30000 });
+      return { code: res.status, out: res.stdout, err: res.stderr };
+    },
+  });
+  const result = await updater.hermesUpdateVm(vm(), { report: 'Update everything finished.' });
+  assert.equal(result.ok, true, 'delivery failure does not change the update outcome');
+  assert.equal(result.messaged, false);
+  assert.deepEqual(result.messages.map((m) => [m.profile, m.sent]), [['default', false], ['coder', false]]);
+  for (const message of result.messages) assert.match(message.error, /No home channel set for telegram/);
+  // Model the user choosing a home with /sethome, then retrying the report.
+  fs.rmSync(path.join(state, 'send-home-missing'));
+  const retried = await updater.hermesUpdateVm(vm(), { report: 'Update everything finished.' });
+  assert.equal(retried.messaged, true);
+  assert.ok(retried.messages.every((m) => m.sent && !m.error));
+  assert.doesNotMatch(fs.readFileSync(log, 'utf8'), /hermes update|gateway/, 'report mode never updates or restarts');
 });
 
 test('the Windows twin carries the same quiet and report switches', () => {

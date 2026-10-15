@@ -150,10 +150,12 @@ elif [ "$(budget_left)" -gt 15 ]; then
       say 'ran out of the time budget; remaining profiles were not messaged'
       break
     fi
+    # Do not use -q: Hermes 0.22 suppresses errors too. Output is captured,
+    # so success stays quiet while failures retain their actionable reason.
     if [ "$_pname" = default ]; then
-      _s_out="$(run_hermes "$SEND_TIMEOUT" send -q -t telegram "$MSG")"
+      _s_out="$(run_hermes "$SEND_TIMEOUT" send -t telegram "$MSG")"
     else
-      _s_out="$(run_hermes "$SEND_TIMEOUT" -p "$_pname" send -q -t telegram "$MSG")"
+      _s_out="$(run_hermes "$SEND_TIMEOUT" -p "$_pname" send -t telegram "$MSG")"
     fi; _s_rc=$?
     if [ "$_s_rc" -eq 0 ]; then _s_sent=true _s_err="" MESSAGED=true
     else _s_sent=false _s_err="$(tail_text "$_s_out" | cut -c1-200)"; [ -n "$_s_err" ] || _s_err="send exited $_s_rc"; fi

@@ -84,8 +84,12 @@ exit /b %rc%\r
 type "%FAKE_HERMES_STATE%\\gateway-status" 2>nul\r
 exit /b 0\r
 :send\r
+if exist "%FAKE_HERMES_STATE%\\send-home-missing" goto nohome\r
 >> "%FAKE_HERMES_STATE%\\sends.log" echo %*\r
 exit /b 0\r
+:nohome\r
+if not "%~2"=="-q" if not "%~4"=="-q" echo hermes send: No home channel set for telegram to determine where to send the message. Either specify a channel directly with 'telegram:CHANNEL_NAME', or set a home channel via: hermes config set TELEGRAM_HOME_CHANNEL ^<channel_id^> 1>&2\r
+exit /b 1\r
 `);
   return { state, bin, home, ...paths };
 }
@@ -196,7 +200,7 @@ test('gateways stop and restart around a successful update that still fits the b
   assert.match(gateways, /^-p writer gateway start$/m);
   const sends = fs.readFileSync(f.sends, 'utf8').trim().split('\n');
   assert.equal(sends.length, 4, 'default plus three named profiles each message');
-  assert.match(sends[0], /^send -q -t telegram "Hermes update finished.*Now on v9\.9\.9\."\r?$/);
+  assert.match(sends[0], /^send -t telegram "Hermes update finished.*Now on v9\.9\.9\."\r?$/);
   assert.deepEqual(result.messages.map((m) => [m.profile, m.sent, m.error]), [
     ['default', true, ''], ['coder', true, ''], ['ops', true, ''], ['writer', true, ''],
   ]);
@@ -211,7 +215,24 @@ test('a bat shim in a path with spaces receives the complete quoted notification
   assert.equal(result.messaged, true);
   const sends = fs.readFileSync(f.sends, 'utf8').trim().split('\n');
   assert.equal(sends.length, 4);
-  assert.match(sends[3], /^-p writer send -q -t telegram "Hermes update finished.*Now on v9\.9\.9\."\r?$/);
+  assert.match(sends[3], /^-p writer send -t telegram "Hermes update finished.*Now on v9\.9\.9\."\r?$/);
+});
+
+test('a report without a Telegram home preserves every profile error without restarting gateways', e2e, () => {
+  const f = makeHermes();
+  fs.writeFileSync(path.join(f.state, 'send-home-missing'), '');
+  const res = runScript(f, { ALANS_WAY_HERMES_REPORT: 'Update everything finished.' });
+  const result = lastJson(res);
+  assert.equal(res.status, 0, res.stderr + res.stdout);
+  assert.equal(result.ok, true);
+  assert.equal(result.messaged, false);
+  assert.equal(result.messages.length, 4);
+  for (const message of result.messages) {
+    assert.equal(message.sent, false);
+    assert.match(message.error, /No home channel set for telegram/);
+  }
+  assert.doesNotMatch(fs.readFileSync(f.log, 'utf8'), /hermes update|gateway/);
+  assert.equal(fs.existsSync(f.gateways), false);
 });
 
 test('a failed update reports the error and still restarts the gateways and messages', e2e, () => {
@@ -306,7 +327,7 @@ test('an exe receives one notification argument and propagates zero and nonzero 
   assert.equal(result.messaged, true);
   const sends = fs.readFileSync(f.sends, 'utf8').trim().split('\n');
   assert.equal(sends.length, 4);
-  assert.match(sends[0], /^send\|-q\|-t\|telegram\|Hermes update finished[^|]*Now on v9\.9\.9\.$/);
+  assert.match(sends[0], /^send\|-t\|telegram\|Hermes update finished[^|]*Now on v9\.9\.9\.$/);
   fs.writeFileSync(path.join(f.state, 'update-rc'), '7');
   const failure = runScript(f);
   const failed = lastJson(failure);

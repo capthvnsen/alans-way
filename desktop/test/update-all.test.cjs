@@ -5,6 +5,30 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText, runLogText, pluginStepResult } = require('../src/update-all.cjs');
 
+test('the update summary explains a missing Telegram home and how to recover', () => {
+  const { reportDeliveryText } = require('../src/update-all.cjs');
+  const text = reportDeliveryText({ messaged: false, messages: [
+    { profile: 'main', sent: false, error: 'hermes send: No home channel set for telegram to determine where to send the message.' },
+  ] });
+  assert.match(text, /could not message you on Telegram/);
+  assert.match(text, /main:.*No home channel set for telegram/);
+  assert.match(text, /Send \/sethome in.*bot.*Telegram chat.*enable future update reports/);
+  assert.doesNotMatch(text, /updated|gateway.*restart/i);
+});
+
+test('report delivery retains partial failures and redacts machine errors', () => {
+  const { reportDeliveryText } = require('../src/update-all.cjs');
+  assert.equal(reportDeliveryText({ messaged: true }), 'Your bot messaged you on Telegram.');
+  const partial = reportDeliveryText({ messaged: true, messages: [
+    { profile: 'default', sent: true }, { profile: 'coder', sent: false, error: 'network unavailable' },
+  ] });
+  assert.match(partial, /Your bot messaged you.*Other profiles could not send: coder: network unavailable/);
+  assert.doesNotMatch(partial, /sethome/);
+  const failure = reportDeliveryText({ ok: false, error: 'Could not reach https://synthetic-password@example.com/relay?token=synthetic-query' });
+  assert.match(failure, /could not message.*Could not reach/);
+  assert.doesNotMatch(failure, /synthetic-/);
+});
+
 test('versions compare by SemVer precedence, pre-releases and build metadata included', () => {
   // The semver.org §11 example chain, each strictly older than the next.
   const chain = ['1.0.0-alpha', '1.0.0-alpha.1', '1.0.0-alpha.beta', '1.0.0-beta', '1.0.0-beta.2', '1.0.0-beta.11', '1.0.0-rc.1', '1.0.0'];
