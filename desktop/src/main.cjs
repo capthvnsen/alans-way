@@ -16,6 +16,7 @@ const cloudStatus = require('./cloud-status.cjs');
 const cloudConnect = require('./cloud-connect.cjs');
 const cloudMigrate = require('./cloud-migrate.cjs');
 const cloudModel = require('./cloud-model.cjs');
+const { posixCommand } = require('./remote-shell.cjs');
 const cloudTelegram = require('./cloud-telegram.cjs');
 const { openUsernameScript } = require('./telegram-open.cjs');
 const macUpdate = require('./mac-update.cjs');
@@ -1294,7 +1295,7 @@ function localRun(file, args, { timeoutMs = 10000 } = {}) {
 // ask). The wizard assigns the ssh host itself, so =yes would fail every new
 // peer with "Host key verification failed."
 function sshRun(host, remote, { timeoutMs = 15000 } = {}) {
-  return localRun('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, remote], { timeoutMs });
+  return localRun('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, posixCommand(remote)], { timeoutMs });
 }
 // Writes a whole file over stdin so the content never lands in the remote
 // command line (keys would leak into ps otherwise). Leading ~ stays unquoted
@@ -2114,7 +2115,7 @@ function registerIpc() {
         // The OAuth flow prints a URL once; it opens in the user's browser here
         // while the remote waits, and cloud-model-check polls for the result.
         if (!modelAuthChild) {
-          modelAuthChild = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, cloudModel.authLoginCommand()]);
+          modelAuthChild = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, posixCommand(cloudModel.authLoginCommand())]);
           let seen = '', opened = false;
           const feed = (chunk) => {
             seen = (seen + chunk).slice(-20000);

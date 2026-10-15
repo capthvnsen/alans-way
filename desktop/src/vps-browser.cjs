@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { isSshTarget } = require('./core.cjs');
+const { posixCommand } = require('./remote-shell.cjs');
 // A double-quoted path parses the same in sh, cmd.exe and PowerShell (the
 // shells a VM's sshd may start), so the allowlist is what keeps it inert: it has
 // no quote, $, backtick, %, ; or & to act on, and cannot end in a backslash
@@ -11,7 +12,13 @@ const { isSshTarget } = require('./core.cjs');
 const SCRIPT_PATH = /^(\/|[A-Za-z]:[\\/])[A-Za-z0-9 _.:\\/~-]*[A-Za-z0-9 _.:/~-]$/;
 const checkScriptPath = (value) => SCRIPT_PATH.test(value) ? '' : 'Invalid VPS browser script path. Use an absolute path of letters, digits, spaces and _ . : \\ / ~ - only.';
 // sudo is POSIX-only, so a Windows drive path never gets it.
-const remoteCommand = (cfg) => (cfg.sudo && !/^[A-Za-z]:/.test(cfg.scriptPath) ? 'sudo -n ' : '') + 'node "' + cfg.scriptPath + '" request';
+const remoteCommand = (cfg) => {
+  const windows = /^[A-Za-z]:/.test(cfg.scriptPath);
+  // Resolve Node before sudo's secure_path removes user install locations.
+  const node = cfg.sudo && !windows ? '_alan_node=$(command -v node) && sudo -n "$_alan_node"' : 'node';
+  const command = node + ' "' + cfg.scriptPath + '" request';
+  return windows ? command : posixCommand(command);
+};
 // Anything outside ASCII is escaped so a shell that re-encodes stdin or stdout (PowerShell) cannot corrupt it.
 const asciiJson = (value) => JSON.stringify(value).replace(/[\u007f-\uffff]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
 // Unix sockets cap at 104 bytes and ssh adds a 17 byte suffix while binding, so
