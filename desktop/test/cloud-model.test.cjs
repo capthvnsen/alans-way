@@ -66,3 +66,35 @@ test('the env file for a profile sits in its directory; bare home falls back', (
   assert.equal(chooseProfile('f4f\npersonal\n'), 'f4f');
   assert.equal(chooseProfile(''), '');
 });
+
+
+test('existing model probe queries only provider and default model, without reading credentials', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { execFileSync } = require('node:child_process');
+  const { existingModelCommand, parseExistingModel } = require('../src/cloud-model.cjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alan-model-probe-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'hermes'), `#!/bin/sh
+case "$*" in
+  'config get model.provider') echo openrouter ;;
+  'config get model.default') echo openai/gpt-4.1 ;;
+  *) exit 99 ;;
+esac
+`, { mode: 0o700 });
+    const out = execFileSync('/bin/sh', ['-c', existingModelCommand()], { env: { PATH: dir }, timeout: 1000, encoding: 'utf8' });
+    assert.deepEqual(parseExistingModel({ code: 0, out }), { provider: 'openrouter', model: 'openai/gpt-4.1' });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('only successful, explicit model identifiers are persisted or displayed', () => {
+  const { parseExistingModel } = require('../src/cloud-model.cjs');
+  for (const out of ['', 'None\nNone', 'auto\nopenai/gpt-4.1', 'openrouter\nnull', 'openrouter\n',
+    'warning\nopenrouter\nopenai/gpt-4.1', 'openrouter\nsk-fixture-private', 'openrouter\nhttps://example.com',
+    'openrouter\n<model>', 'open router\nopenai/gpt-4.1']) {
+    assert.equal(parseExistingModel({ code: 0, out }), null, out);
+  }
+  assert.equal(parseExistingModel({ code: 1, out: 'openrouter\nopenai/gpt-4.1' }), null);
+  assert.deepEqual(parseExistingModel({ code: 0, out: 'openrouter\r\nopenai/gpt-4.1\r\n' }), { provider: 'openrouter', model: 'openai/gpt-4.1' });
+});

@@ -28,6 +28,7 @@ function fixture(cloud, { sshRun, sshWrite, telegramView = null } = {}) {
     trustSender: () => {}, seedMacSshHost: () => {}, applyLayout: () => {}, broadcastNow: () => {},
     activeTabId: 'settings', savePreferences: () => saved.push(structuredClone(prefs)),
   });
+  vm.runInContext(section('async function cloudKeepServerModel(', '\n// The connect step'), context);
   vm.runInContext(section('function cloudView() {', '\n// The wait step'), context);
   vm.runInContext(section('async function cloudWriteEnv(', '\n// Minted or pasted'), context);
   vm.runInContext(section('async function cloudFinishTelegram(', '\n// Local and remote probes'), context);
@@ -184,3 +185,80 @@ test('an unfinished hosted migration still continues through model setup', async
   assert.equal(f.view().step, 'model');
   assert.equal(f.prefs.onboarded, false);
 });
+
+for (const tokenedProfiles of [[], ['*']]) {
+  test(`DIY users stuck at model can keep their server model without SSH or credentials (tokens: ${tokenedProfiles.length})`, async () => {
+    const f = fixture({ diy: true, step: 'model', tokenedProfiles }, {
+      sshRun: async () => { assert.fail('manual keep must not need a working probe'); },
+      sshWrite: async () => { assert.fail('keep must never write credentials'); },
+    });
+    await f.command('cloud-model-existing');
+    assert.equal(f.prefs.cloud.step, tokenedProfiles.length ? 'done' : 'telegram');
+    assert.equal(f.prefs.onboarded, tokenedProfiles.length > 0);
+    assert.equal(f.prefs.cloud.model, 'existing');
+    assert.equal(f.saved.at(-1).cloud.model, 'existing');
+  });
+}
+
+test('hosted users cannot use the DIY model escape', async () => {
+  const f = fixture({ sessionEnc: 'fixture', step: 'model' });
+  await assert.rejects(f.command('cloud-model-existing'), /own server/i);
+  assert.equal(f.prefs.cloud.step, 'model');
+  assert.equal(f.saved.length, 0);
+});
+
+
+test('resuming a DIY model card detects and displays the existing provider', async () => {
+  const calls = [];
+  const f = fixture({ diy: true, step: 'model' }, {
+    sshRun: async (host, command, options) => {
+      calls.push(command);
+      assert.equal(host, 'user@server.example');
+      const model = require('../src/cloud-model.cjs');
+      assert.equal(command, model.existingModelCommand());
+      assert.equal(options.timeoutMs, 8000);
+      return { code: 0, out: 'openrouter\nopenai/gpt-4.1\n' };
+    },
+    sshWrite: async () => assert.fail('detection must never write'),
+  });
+  assert.equal((await f.command('cloud-model-detect')).done, false);
+  assert.equal(calls.length, 1);
+  assert.equal(f.view().step, 'model');
+  assert.equal(f.view().modelDetected, true);
+  assert.equal(f.view().model, '');
+  assert.equal(f.view().existingModel.provider, 'openrouter');
+  assert.equal(f.view().existingModel.model, 'openai/gpt-4.1');
+  const resumed = fixture(structuredClone(f.saved.at(-1).cloud));
+  assert.equal(resumed.view().existingModel.model, 'openai/gpt-4.1');
+});
+
+test('a late detection does not undo the manual keep choice', async () => {
+  let finish;
+  const f = fixture({ diy: true, step: 'model' }, { sshRun: () => new Promise(resolve => { finish = resolve; }) });
+  const pending = f.command('cloud-model-detect');
+  await f.command('cloud-model-existing');
+  finish({ code: 0, out: 'openrouter\nopenai/gpt-4.1' });
+  assert.equal((await pending).done, false);
+  assert.equal(f.prefs.cloud.step, 'telegram');
+  assert.equal(f.prefs.cloud.existingModel, undefined);
+  assert.equal(f.saved.length, 1);
+});
+
+for (const step of ['telegram', 'done']) {
+  test(`DIY users can return from ${step} to model setup and confirm without replacing their bot`, async () => {
+    const f = fixture({ diy: true, step, model: 'existing', botUsername: 'original_bot', modelDetected: true }, {
+      sshRun: async () => assert.fail('reopening and manual confirmation must not run SSH'),
+      sshWrite: async () => assert.fail('must preserve the bot and credentials'),
+    });
+    f.prefs.onboarded = step === 'done';
+    await f.command('onboarding-open');
+    assert.equal(f.view().step, 'model');
+    assert.equal(f.view().modelDetected, false, 'reopening must allow a fresh read of model identifiers');
+    assert.equal(f.prefs.onboarded, false);
+    const resumed = fixture(structuredClone(f.saved.at(-1).cloud));
+    await resumed.command('cloud-model-existing');
+    assert.equal(resumed.prefs.cloud.step, step, 'completed setup must not repeat bot creation');
+    assert.equal(resumed.prefs.cloud.botUsername, 'original_bot');
+    assert.equal(resumed.prefs.onboarded, step === 'done');
+  });
+}

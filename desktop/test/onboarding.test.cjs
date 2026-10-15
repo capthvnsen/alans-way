@@ -39,3 +39,10 @@ test('steps still advance and finish in order', () => {
   assert.equal(nextCloudStep(prefs, 'telegram'), 'done');
   assert.equal(nextCloudStep(prefs, 'bogus'), 'done');
 });
+
+test('returning to a completed DIY model choice does not bypass hosted bot setup', () => {
+  const prefs = { cloud: { diy: true, step: 'model', modelOnly: true } };
+  assert.equal(nextCloudStep(prefs, 'model'), 'done');
+  prefs.cloud.diy = false;
+  assert.equal(nextCloudStep(prefs, 'model'), 'telegram');
+});

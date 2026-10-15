@@ -51,6 +51,25 @@ function authLoggedIn(statusOutput) {
     .some((line) => /^\s*[a-z0-9._-]+:\s*logged in\s*$/i.test(line));
 }
 
+// Query only public model identifiers, never the full config or auth/env files.
+// Missing/older CLIs fail closed; main bounds the entire SSH command to 8s.
+function existingModelCommand() {
+  return `provider=$(hermes config get model.provider 2>/dev/null) && model=$(hermes config get model.default 2>/dev/null) && printf '%s\\n%s\\n' "$provider" "$model"`;
+}
+function parseExistingModel(result) {
+  if (result?.code !== 0) return null;
+  const lines = String(result.out || '').trim().split(/\r?\n/);
+  if (lines.length !== 2) return null;
+  const [provider, model] = lines.map((line) => line.trim());
+  // Reject diagnostics, unset values and non-identifiers rather than surfacing
+  // arbitrary remote stdout in the wizard. A configured model is not an API test.
+  const unset = /^(?:none|null|auto|default|undefined)$/i;
+  if (unset.test(provider) || unset.test(model)) return null;
+  if (!/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(provider) || !/^[a-z0-9][a-z0-9._:/+-]{0,199}$/i.test(model)) return null;
+  if ([provider, model].some((value) => /^sk-/i.test(value) || value.includes('://'))) return null;
+  return { provider, model };
+}
+
 // Profiles live at ~/.hermes/profiles/<name>/.env; a bare install keeps one
 // env file at the home level.
 function envPathFor(profile) {
@@ -60,4 +79,4 @@ function chooseProfile(lsOutput) {
   return String(lsOutput || '').split('\n').map((line) => line.trim()).filter(Boolean).sort()[0] || '';
 }
 
-module.exports = { setEnvValue, gatewayProgram, gatewayRestartCommand, authLoginCommand, extractAuthUrl, authLoggedIn, envPathFor, chooseProfile };
+module.exports = { existingModelCommand, parseExistingModel, setEnvValue, gatewayProgram, gatewayRestartCommand, authLoginCommand, extractAuthUrl, authLoggedIn, envPathFor, chooseProfile };

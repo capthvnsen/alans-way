@@ -1190,6 +1190,8 @@ function cloudView() {
     name: cloudComputer.computer_name || cloud.computerName || '', tailscaleUrl: cloudComputer.tailscale_url || cloud.tailscaleUrl || '' } : null;
   return { claimed: !!session || cloud.diy === true, diy: cloud.diy === true,
     step: cloudStep(prefs, cloudComputer) || '',
+    model: cloud.model || '', existingModel: cloud.diy === true ? cloudModel.parseExistingModel({ code: 0, out: `${cloud.existingModel?.provider || ''}\n${cloud.existingModel?.model || ''}` }) : null,
+    modelDetected: cloud.diy === true && cloud.modelDetected === true,
     migration: cloud.migration || '', tokenedProfiles: cloud.tokenedProfiles || [],
     migrateCommand: cloud.migration === 'bring' && (prefs.vpsBrowser?.sshHost || '').trim() ? cloudMigrate.migrateCommand(prefs.vpsBrowser.sshHost.trim()) : '',
     telegramFallback: cloud.telegramFallback === true, botUsername: cloud.botUsername || '',
@@ -1411,11 +1413,54 @@ function setServerConfig(config) {
   if (changed) { prefs.versionCache = {}; setTimeout(checkVersionsWhenIdle, 0); }
   return changed;
 }
+// Keeping a DIY model never writes credentials or restarts a running gateway.
+// Detection is best-effort; the manual choice also works with older Hermes CLIs.
+async function cloudKeepServerModel(detect = true) {
+  const host = (prefs.vpsBrowser?.sshHost || '').trim();
+  if (prefs.cloud?.diy !== true) throw new Error('This option is only for your own server.');
+  if (!host) throw new Error('Connect to the computer first.');
+  const cloud = prefs.cloud, step = cloud.step;
+  const current = () => prefs.cloud === cloud && cloud.step === step && (prefs.vpsBrowser?.sshHost || '').trim() === host;
+  let existing = null;
+  if (detect) {
+    try { existing = cloudModel.parseExistingModel(await sshRun(host, cloudModel.existingModelCommand(), { timeoutMs: 8000 })); } catch {}
+    if (!current()) return { done: false, cancelled: true, detail: '' };
+    cloud.modelDetected = true;
+    if (existing) cloud.existingModel = existing;
+    else delete cloud.existingModel;
+    savePreferences();
+    return { done: false, existingModel: existing, detail: existing
+      ? `Your server already uses ${existing.provider} · ${existing.model}.`
+      : 'Could not detect a configured model. You can use the model already set on your server, or choose a new login below.' };
+  } else {
+    existing = cloudModel.parseExistingModel({ code: 0, out: `${cloud.existingModel?.provider || ''}\n${cloud.existingModel?.model || ''}` });
+  }
+  prefs.cloud.model = 'existing';
+  if (existing) prefs.cloud.existingModel = existing;
+  else delete prefs.cloud.existingModel;
+  const next = nextCloudStep(prefs, 'model');
+  setCloudStep(prefs, next);
+  if (next === 'done') prefs.onboarded = true;
+  savePreferences();
+  const name = existing ? `: ${existing.provider} / ${existing.model}` : '';
+  return { done: true, existingModel: existing, detail: `Using the model already set on your server${name}.` };
+}
 // The connect step advances as far as it can each click: CLI check, pairing
 // status, the computer's own state file, then the saved return path check.
 // {stage} tells the wizard which message to show; 'done' moves to migration
-// for a hosted computer, or straight to model setup for an existing DIY server.
-async function cloudConnectRun(diyHost) {
+// for a hosted computer; DIY servers show model setup for explicit confirmation.
+let cloudConnectPending = null;
+function cloudConnectRun(diyHost) {
+  if (cloudConnectPending) return cloudConnectPending;
+  // A queued click from a removed card must not reset a later wizard step.
+  const sameServer = !diyHost || diyHost === prefs.vpsBrowser?.sshHost;
+  if (sameServer && ['model', 'telegram', 'done'].includes(prefs.cloud?.step)) {
+    return Promise.resolve({ stage: 'done', ok: true, detail: 'Already connected.' });
+  }
+  cloudConnectPending = cloudConnectOnce(diyHost).finally(() => { cloudConnectPending = null; });
+  return cloudConnectPending;
+}
+async function cloudConnectOnce(diyHost) {
   const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
   if (diyHost) {
     if (!isSshTarget(diyHost)) throw new Error('Enter the server SSH address as user@host or host, with no spaces or symbols.');
@@ -1427,6 +1472,7 @@ async function cloudConnectRun(diyHost) {
   }
   if (cloud.diy === true) {
     const sshHost = (prefs.vpsBrowser?.sshHost || '').trim();
+    const step = cloud.step;
     if (!sshHost) return { stage: 'host', ok: false, detail: 'Enter the server SSH address first.' };
     const probe = await sshRun(sshHost, 'echo CONNECT_OK');
     if (probe.code !== 0 || !probe.out.includes('CONNECT_OK')) return { stage: 'ssh', ok: false, detail: `Could not reach ${sshHost} over SSH. Check the address and your key, then try again.` };
@@ -1438,9 +1484,16 @@ async function cloudConnectRun(diyHost) {
       const path = await testAgentPath();
       if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
     }
-    setCloudStep(prefs, nextCloudStep(prefs, 'migrate'));
+    if (prefs.cloud !== cloud || cloud.step !== step || (prefs.vpsBrowser?.sshHost || '').trim() !== sshHost) return { stage: 'done', ok: true, detail: '' };
+    delete cloud.existingModel;
+    delete cloud.modelDetected;
+    delete cloud.modelOnly;
+    const model = await cloudKeepServerModel();
+    if (model.cancelled) return { stage: 'done', ok: true, detail: '' };
+    if (cloud.model === 'existing') delete cloud.model;
+    setCloudStep(prefs, 'model');
     savePreferences();
-    return { stage: 'done', ok: true, detail: `Connected to ${sshHost}.` };
+    return { stage: 'done', ok: true, existingModel: model.existingModel, detail: `Connected to ${sshHost}. ${model.detail}` };
   }
   const cli = cloudConnect.tailscaleCli();
   if (!cli) return { stage: 'cli', ok: false, detail: 'Tailscale is not installed on this computer. Install it, then check again.' };
@@ -1867,6 +1920,13 @@ function registerIpc() {
           cloud.step = 'migrate';
           delete cloud.migration;
         }
+        if (cloud?.diy === true && ['model', 'telegram', 'done'].includes(cloud.step)) {
+          // Revisit model choice after a failed first reply without replacing
+          // the bot on a completed server, including older saved setups.
+          if (cloud.step === 'done') cloud.modelOnly = true;
+          cloud.step = 'model';
+          delete cloud.modelDetected;
+        }
         prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home';
         seedMacSshHost(); savePreferences(); applyLayout(); break;
       }
@@ -1880,6 +1940,7 @@ function registerIpc() {
       case 'cloud-goto': {
         if (value.step === 'done' && prefs.cloud) { prefs.cloud.step = 'done'; prefs.onboarded = true; savePreferences(); break; }
         if (!setCloudStep(prefs, String(value.step || ''))) throw new Error('Unknown setup step.');
+        if (prefs.cloud.diy === true && value.step === 'model') delete prefs.cloud.modelDetected;
         savePreferences(); break;
       }
       case 'cloud-next': {
@@ -1969,6 +2030,13 @@ function registerIpc() {
           profiles: cloudMigrate.namedTokenedProfiles(prefs.cloud.tokenedProfiles),
           sharedToken: prefs.cloud.tokenedProfiles.includes(cloudMigrate.SHARED_TOKEN),
         };
+      }
+      case 'cloud-model-detect':
+      case 'cloud-model-existing': {
+        if (prefs.cloud?.step !== 'model') throw new Error('Open the model setup step first.');
+        const result = await cloudKeepServerModel(command === 'cloud-model-detect');
+        broadcastNow();
+        return result;
       }
       case 'cloud-model': {
         const host = (prefs.vpsBrowser?.sshHost || '').trim();
