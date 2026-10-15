@@ -52,19 +52,80 @@ test('a successful fresh-server probe distinguishes absent components from unche
   assert.equal(view({}).components.find(c => c.id === 'plugin').status, 'not checked yet');
 });
 
-test('DIY server save discards old-machine evidence and schedules an immediate check', async () => {
+// Exercise address changes at the shipped onboarding/settings boundaries. All
+// machine I/O stops at a stubbed SSH failure, before any remote setup can run.
+for (const route of ['DIY', 'hosted', 'settings']) {
+  test(`${route} server save discards old-machine evidence and schedules an immediate check`, async () => {
+    const source = fs.readFileSync(require.resolve('../src/main.cjs'), 'utf8');
+    const timers = [], prefs = { versionCache: { ...current }, vpsBrowser: { sshHost: 'old.invalid' },
+      cloud: { computerName: 'fixture' } };
+    const context = { prefs, isSshTarget: () => true, savePreferences() {}, checkVersionsWhenIdle() {},
+      setTimeout: (fn, ms) => timers.push({ fn, ms }), sshRun: async () => ({ code: 1, out: '' }),
+      cloudComputer: null, cloudConnect: { ...require('../src/cloud-connect.cjs'), tailscaleCli: () => 'fixture-tailscale' },
+      localRun: async () => ({ code: 0, out: JSON.stringify({ Peer: { fixture: { HostName: 'fixture', TailscaleIPs: ['192.0.2.7'], Online: true } } }) }),
+      value: { vpsBrowser: { sshHost: 'new.invalid' } }, checkScriptPath: () => '', followVmRemoteUrl: () => '',
+      refreshVpsTabs() {}, applyLayout() {} };
+    vm.createContext(context);
+    // Include the shared setter when present; on the regression base each
+    // route still executes its original production save code.
+    const setter = source.indexOf('function setServerConfig(');
+    if (setter !== -1) vm.runInContext(source.slice(setter, source.indexOf('\n}', setter) + 2), context);
+    let run;
+    if (route === 'settings') {
+      const start = source.indexOf("      case 'settings':");
+      const end = source.indexOf("      case 'preview-move':", start);
+      run = `async function save() { switch ('settings') { ${source.slice(start, end)} } } save();`;
+    } else {
+      const start = source.indexOf('async function cloudConnectRun(');
+      const end = source.indexOf('\nasync function claimWithToken(', start);
+      run = source.slice(start, end) + `\ncloudConnectRun(${route === 'DIY' ? '"new.invalid"' : ''});`;
+    }
+    await vm.runInContext(run, context);
+    assert.equal(prefs.vpsBrowser.sshHost, route === 'hosted' ? 'root@192.0.2.7' : 'new.invalid');
+    const $ = renderPlan(view(prefs.versionCache, { appLatest: app }));
+    assert.doesNotMatch($('update-all-copy').textContent, /Everything is up to date/);
+    assert.equal(Object.keys(prefs.versionCache).length, 0);
+    assert.equal(timers.length, 1);
+    assert.equal(timers[0].fn, context.checkVersionsWhenIdle);
+    assert.equal(timers[0].ms, 0);
+  });
+}
+
+test('packaged Linux Check now reads app releases without staging an automatic install', async () => {
+  let release = `v${app}`, offline = false;
+  const requests = [], intervals = [];
+  // Run the real release reader with a fixture HTTP boundary.
+  const module = { exports: {} };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../src/mac-update.cjs'), 'utf8'), {
+    module, require, fetch: async (url) => {
+      requests.push(url);
+      if (offline) throw new Error('fixture offline');
+      return { ok: true, json: async () => ({ tag_name: release }) };
+    },
+  });
   const source = fs.readFileSync(require.resolve('../src/main.cjs'), 'utf8');
-  // Stop at the first SSH result: the production save path runs, all external work is stubbed.
-  const start = source.indexOf('async function cloudConnectRun(');
-  const end = source.indexOf('    const remote =', start);
-  const timers = [], prefs = { versionCache: { ...current }, vpsBrowser: { sshHost: 'old.invalid' } };
-  const context = { prefs, isSshTarget: () => true, savePreferences() {}, checkVersionsWhenIdle() {},
-    setTimeout: (fn, ms) => timers.push({ fn, ms }), sshRun: async () => ({ code: 1, out: '' }) };
+  const start = source.indexOf("let updateDriver = 'none';");
+  const end = source.indexOf('\nfunction cloudSession()', start);
+  const update = {}, context = { app: { isPackaged: true, getVersion: () => app }, prefs: { lastVersion: app }, update,
+    process: { platform: 'linux', execPath: '/fixture/alans-way' }, path: require('node:path'), macUpdate: module.exports,
+    mainLog: () => ({ write() {} }), savePreferences() {}, savePreferencesSoon() {}, broadcast() {},
+    checkVersionsWhenIdle() {}, VERSIONS_EVERY_MS: 1800000, setInterval: (fn) => intervals.push(fn) };
   vm.createContext(context);
-  await vm.runInContext(source.slice(start, end) + '\n}}\ncloudConnectRun("new.invalid");', context);
-  assert.equal(prefs.vpsBrowser.sshHost, 'new.invalid');
-  assert.equal(Object.keys(prefs.versionCache).length, 0);
-  assert.equal(timers.length, 1);
-  assert.equal(timers[0].fn, context.checkVersionsWhenIdle);
-  assert.equal(timers[0].ms, 0);
+  await vm.runInContext(source.slice(start, end) + '\nstartUpdates(); checkAppVersions();', context);
+  const versions = () => view(current, { appLatest: vm.runInContext('appLatest', context) });
+  assert.equal(versions().components.find(c => c.id === 'app').status, 'up to date');
+  assert.equal(versions().upToDate, true);
+  assert.ok(intervals.length >= 2, 'app release checking remains periodic on Linux');
+  requests.length = 0;
+  release = 'v0.21.7';
+  await vm.runInContext('checkAppVersions();', context);
+  assert.deepEqual(requests, ['https://api.github.com/repos/capthvnsen/alans-way/releases/latest']);
+  assert.equal(versions().components.find(c => c.id === 'app').status, 'latest 0.21.7');
+  assert.equal(versions().upToDate, false);
+  assert.deepEqual(update, {}, 'reading a release cannot stage a Linux installer');
+  assert.equal(vm.runInContext('updateDriver', context), 'none');
+  offline = true;
+  await vm.runInContext('checkAppVersions();', context);
+  assert.equal(versions().components.find(c => c.id === 'app').status, 'latest not checked yet');
+  assert.equal(versions().upToDate, false, 'a failed release check cannot certify currency');
 });

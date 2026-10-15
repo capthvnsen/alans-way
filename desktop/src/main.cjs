@@ -1140,16 +1140,17 @@ function startUpdates() {
     const failed = (error) => { appLatest = ''; broadcast(); mainLog().write('updater error', String(error?.message || error)); if (!logged) { logged = true; logError('updater', error); } };
     autoUpdater.on('error', failed);
     check = () => autoUpdater.checkForUpdates().catch(failed);
-  } else if (updateDriver === 'self') {
+  } else {
+    // Linux reads release evidence too, but only the Mac self-updater stages it.
     check = async () => {
       try {
         const latest = await macUpdate.checkLatest();
         appLatest = latest?.version || '';
-        if (latest && macUpdate.isNewer(latest.version, app.getVersion())) { update.available = latest.version; update.tag = latest.tag; broadcast(); }
+        if (updateDriver === 'self' && latest && macUpdate.isNewer(latest.version, app.getVersion())) { update.available = latest.version; update.tag = latest.tag; broadcast(); }
         broadcast();
       } catch { appLatest = ''; broadcast(); }
     };
-  } else return;
+  }
   checkAppVersions = check;
   check(); setInterval(check, 6 * 60 * 60 * 1000);
 }
@@ -1384,6 +1385,13 @@ async function runSetupCheck() {
   lastSetupCheck = { at: new Date().toISOString(), findings, server };
   return findings;
 }
+// Every server-address save drops evidence from the previous machine.
+function setServerConfig(config) {
+  const changed = config.sshHost !== prefs.vpsBrowser?.sshHost;
+  prefs.vpsBrowser = config;
+  if (changed) { prefs.versionCache = {}; setTimeout(checkVersionsWhenIdle, 0); }
+  return changed;
+}
 // The connect step advances as far as it can each click: CLI check, pairing
 // status, the computer's own state file, then the saved return path check.
 // {stage} tells the wizard which message to show; 'done' moves to migration
@@ -1394,8 +1402,7 @@ async function cloudConnectRun(diyHost) {
     if (!isSshTarget(diyHost)) throw new Error('Enter the server SSH address as user@host or host, with no spaces or symbols.');
     cloud.diy = true;
     cloud.step = 'connect';
-    if (diyHost !== prefs.vpsBrowser?.sshHost) { prefs.versionCache = {}; setTimeout(checkVersionsWhenIdle, 0); }
-    prefs.vpsBrowser = { ...(prefs.vpsBrowser || {}), sshHost: diyHost };
+    setServerConfig({ ...(prefs.vpsBrowser || {}), sshHost: diyHost });
     prefs.cloud = cloud;
     savePreferences();
   }
@@ -1425,7 +1432,7 @@ async function cloudConnectRun(diyHost) {
   const peer = status.code === 0 ? cloudConnect.findPeer(status.out, name) : null;
   if (!peer) return { stage: 'pairing', ok: false, detail: url ? 'Waiting for the computer to join your tailnet. Finish the pairing page, then check again.' : 'Waiting for the computer to join your tailnet…' };
   const sshHost = `root@${peer.ip}`;
-  if (prefs.vpsBrowser?.sshHost !== sshHost) { prefs.vpsBrowser = { ...(prefs.vpsBrowser || {}), sshHost }; savePreferences(); }
+  if (setServerConfig({ ...(prefs.vpsBrowser || {}), sshHost })) savePreferences();
   const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
   if (!remote) return { stage: 'state', ok: false, detail: 'The computer joined Tailscale. Waiting for its setup to finish…' };
   if (remote.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the computer failed.' };
@@ -1637,8 +1644,7 @@ function registerIpc() {
           // When the VM's SSH address moves to a different host, the noVNC
           // viewer follows unless remoteUrl was deliberately pointed elsewhere.
           const followed = followVmRemoteUrl(prefs.vpsBrowser.sshHost, sshHost, prefs.remoteUrl);
-          if (sshHost !== prefs.vpsBrowser?.sshHost) { prefs.versionCache = {}; setTimeout(checkVersionsWhenIdle, 0); }
-          prefs.vpsBrowser={sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}; if(!sshHost)prefs.vmUpdates={}; vpsBrowserStatus='connecting'; refreshVpsTabs();
+          setServerConfig({sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}); if(!sshHost)prefs.vmUpdates={}; vpsBrowserStatus='connecting'; refreshVpsTabs();
           if (followed) { prefs.remoteUrl = followed; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
         }
         if (Number.isFinite(value.agentIdleMinutes)) prefs.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
