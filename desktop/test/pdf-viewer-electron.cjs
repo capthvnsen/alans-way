@@ -267,7 +267,9 @@ if (typeof electron === 'string') {
       await command('activate', { id: humanId }); human.focus();
       await human.executeJavaScript(`window.received=[]; const target=document.body; const receiver=${receiver === 'target' ? 'target' : receiver}; receiver.addEventListener('${gesture}', event => { event.preventDefault(); receiver.addEventListener('drop', async event => { event.preventDefault(); for(const file of event.dataTransfer.files) window.received.push({name:file.name,pdf:(await file.text()).startsWith('%PDF-')}); }, {capture:${capture},once:true}); }, {capture:${capture},once:true}); window.addEventListener('dragover',event=>event.preventDefault());`);
       const before = (await state()).tabs.length;
-      await nativeDrop(human, 'finder.pdf');
+      // On narrow windows x=300 can hit the HTML margin outside the body.
+      const point = await human.executeJavaScript('(() => { const r = document.body.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()');
+      await nativeDrop(human, 'finder.pdf', point);
       await waitFor(() => human.executeJavaScript('window.received.length'));
       await new Promise(r => setTimeout(r, 100));
       check(`dynamic ${gesture}/${receiver}/${capture ? 'capture' : 'bubble'} receives PDF`, await human.executeJavaScript('window.received'), [{ name: 'finder.pdf', pdf: true }]);
