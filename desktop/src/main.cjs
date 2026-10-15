@@ -2823,7 +2823,9 @@ function buildMenu() {
 }
 function createWindow() {
   nativeTheme.themeSource = 'dark';
-  win = new BrowserWindow({ width: 1550, height: 980, minWidth: 1120, minHeight: 680, backgroundColor: '#09090a', title: app.getName(),
+  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  win = new BrowserWindow({ width: Math.min(1550, width), height: Math.min(980, height),
+    minWidth: Math.min(1120, width), minHeight: Math.min(680, height), backgroundColor: '#09090a', title: app.getName(),
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 } }
       : { titleBarStyle: 'hidden', titleBarOverlay: { color: '#111112', symbolColor: '#e7e7eb', height: 40 } }),
