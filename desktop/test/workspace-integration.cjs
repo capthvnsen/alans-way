@@ -10,7 +10,7 @@ const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 // Test harness scripts that use timers or event handlers carry an approval, as
 // a router-approved call would (see the app's commit check).
-const harnessApproval = (tabId, epoch) => ({ nonce: crypto.randomUUID(), kind: 'submit', summary: 'test harness script', issuedAt: Date.now(), tabId, epoch });
+const { harnessApproval, bindHarnessApproval } = require('./approval-fixture.cjs');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-integration-'));
 process.env.HERMES_WORKSPACE_DATA = profile;
 process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
@@ -171,6 +171,7 @@ app.whenReady().then(async () => {
   assert.notEqual(new URL(connection.url).port, process.env.HERMES_WORKSPACE_PORT, 'The API retried onto a free port after EADDRINUSE.');
   console.log('PASS: API port collision falls back to an ephemeral port and connection.json carries the real one.');
   const apiRaw = async (route, method = 'GET', body, actor = 'capture-regression') => {
+    await bindHarnessApproval(body, async () => (await apiRaw(route.replace(/\/actions$/, '/snapshot'), 'GET', undefined, actor)).data);
     const response = await fetch(new URL(route, connection.url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': actor, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
     return { status: response.status, data: await response.json() };
   };

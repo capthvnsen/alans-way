@@ -12,7 +12,7 @@ const { CDP } = require('../src/cdp.cjs');
 const crypto = require('node:crypto');
 // Test harness scripts that use timers or requests carry an approval, as a
 // router-approved call would (see the app's commit check).
-const harnessApproval = (tab, epoch = tab.epoch) => ({ nonce: crypto.randomUUID(), kind: 'submit', summary: 'test harness script', issuedAt: Date.now(), tabId: tab.id, epoch });
+const { harnessApproval, bindApproval, bindHarnessApproval } = require('./approval-fixture.cjs');
 
 function findChrome() {
   const home = os.homedir();
@@ -30,12 +30,14 @@ const chrome = findChrome();
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 
 let dir, profile, browser, host, site, secret, pa, pb, hits, marks, connection, stderr = '', cdpPort;
-const api = (route, method = 'GET', body, epoch) =>
-  fetch(connection.url + route, {
+const api = async (route, method = 'GET', body, epoch) => {
+  await bindHarnessApproval(body, async () => (await api(route.replace(/\/actions$/, '/snapshot'))).data);
+  return fetch(connection.url + route, {
     method,
     headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'chrome-bot', 'X-Control-Epoch': String(epoch ?? ''), 'Content-Type': 'application/json' },
     ...(body ? { body: JSON.stringify(body) } : {}),
   }).then(async (r) => ({ status: r.status, data: await r.json() }));
+};
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 // Host bookkeeping (blocked stamps, reaping, attaches) lands asynchronously;
 // await the condition instead of trusting a fixed sleep on a busy runner.
@@ -139,6 +141,8 @@ before(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vps-chrome-'));
   profile = path.join(dir, 'profile');
   browser = spawn(chrome, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-sandbox',
+    // A fresh macOS headless profile must not wait for the login keychain.
+    ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
     '--host-resolver-rules=MAP test.example 127.0.0.1', 'about:blank'], { stdio: 'ignore' });
   const portFile = path.join(profile, 'DevToolsActivePort');
   await ready(portFile, browser);

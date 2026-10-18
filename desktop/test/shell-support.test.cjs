@@ -166,7 +166,7 @@ test('main.cjs mirrors on in-page navigation, guards the poll-tier send, and nam
   assert.match(main, /'did-navigate', \(\) => \{[^\n]*faviconSeq = \(tab\.faviconSeq \|\| 0\) \+ 1/, 'a full navigation invalidates an in-flight favicon fetch');
   assert.match(main, /function sendToTelegram[\s\S]*?try \{[\s\S]*?mainFrame\.url[\s\S]*?catch/, 'the frame is probed before sending');
   assert.ok(!/telegramView\.webContents\.send\('(workspace:poll-tier|telegram:poll)'/.test(main), 'poll sends go through the guard');
-  assert.ok(main.includes('--host-os ${HOST_LABEL}'), 'the setup command and prompt name every non-Mac host');
+  assert.ok(main.includes('Computer OS: ${HOST_LABEL}'), 'setup review notes name the actual host OS');
   assert.ok(!main.includes('open on my Mac, so add --skip-install and'), 'the Mac wording stays Mac only');
 });
 

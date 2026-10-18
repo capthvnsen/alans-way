@@ -3,6 +3,7 @@
 const { followUpArmExpression, followUpCloseExpression, FOLLOW_UP_KEY, REFS_KEY, PICK, refsSource, CHALLENGE_HIT_SOURCE, challengeExpression, challengeHitExpression } = require('./browser-page.cjs');
 const { looksLikeCommit, isActionUrl, READ_ONLY_CDP } = require('./commit-patterns.cjs');
 const { cdpMethodError } = require('./core.cjs');
+const crypto = require('node:crypto');
 const INPUT_ACTIONS = new Set(['move', 'click', 'double_click', 'right_click', 'drag', 'type', 'press', 'scroll', 'select']);
 const CLICKS = { click: { button: 'left', buttons: 1, count: 1 }, double_click: { button: 'left', buttons: 1, count: 2 }, right_click: { button: 'right', buttons: 2, count: 1 } };
 const POINTER_ACTIONS = new Set(['move', 'drag', ...Object.keys(CLICKS)]);
@@ -27,6 +28,14 @@ const APPROVAL_MS = 120000, APPROVAL_SKEW_MS = 5000;
 // Set by approve() on an action whose approval checked out; a request body is
 // JSON, so it cannot carry this key itself. Batch steps inherit it.
 const APPROVED = Symbol('approved');
+const APPROVAL_BINDING_VERSION = 1;
+// Epoch/generation route the request; the approved operation itself must be
+// identical, including nested params, text, destination and dialog answers.
+function approvalActionKey(body) {
+  const stable = value => Array.isArray(value) ? value.map(stable) : value && typeof value === 'object'
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value;
+  return crypto.createHash('sha256').update(JSON.stringify(stable(Object.fromEntries(Object.entries(body).filter(([key]) => !['tabId', 'epoch', 'generation', 'approval', 'commit'].includes(key)))))).digest('hex');
+}
 const commitRequired = (why) => fail(`commit_required: ${why}. It did not run. Repeat the call with commit: {kind, summary, amount?, currency?, counterparty?} so the user can approve it.`, 403);
 const LOOKS = 'looks like it buys, books, sends, posts, submits or deletes';
 // Page script that sets up later work (a timer, an observer, an event
@@ -48,17 +57,30 @@ function withTimeout(promise, ms) {
 // webContents.executeJavaScript queues until the whole page, images and
 // trackers included, has finished loading. Once a document has committed the
 // main frame runs the same code now, so an action does not wait on stragglers.
+const pageUnavailable = () => Object.assign(new Error('The page document is unavailable. Reload the page and request fresh state.'), { status: 503, code: 'page_unavailable' });
 function frameOf(wc) {
-  try { const frame = wc.mainFrame; if (frame && /^https?:/.test(frame.url)) return frame; } catch { /* destroyed contents fall through */ }
+  if (wc.isDestroyed?.() || wc.isCrashed?.()) throw pageUnavailable();
+  try {
+    const frame = wc.mainFrame;
+    if (frame) {
+      if (frame.isDestroyed?.() || frame.detached) throw pageUnavailable();
+      if (/^https?:/.test(frame.url)) return frame;
+    }
+  } catch (error) {
+    // A crash disposes mainFrame before isCrashed()/renderer-gone arrives.
+    // Do not fall through to Electron's send against that absent document.
+    if (/Render frame was disposed|WebContents (?:was|is) destroyed|Object has been destroyed/.test(error.message)) throw pageUnavailable();
+    throw error;
+  }
   return wc;
 }
-const boundedJs = (wc, code, ms = 5000) => withTimeout(frameOf(wc).executeJavaScript(code), ms);
+const boundedJs = (wc, code, ms = 5000) => withTimeout(Promise.resolve().then(() => frameOf(wc).executeJavaScript(code)), ms);
 // A frame call that lands as the frame is swapped by a navigation can be lost,
 // so a read-only script retries through webContents (which waits for the load)
 // when the frame answers late or not at all. Never use this for a script with effects.
 function readJs(wc, code, ms = 5000, retryAfter = 2500) {
   let timer;
-  const viaContents = () => wc.executeJavaScript(code);
+  const viaContents = async () => { frameOf(wc); return wc.executeJavaScript(code); };
   const first = Promise.resolve().then(() => frameOf(wc).executeJavaScript(code)).catch(viaContents);
   const late = new Promise((resolve, reject) => { timer = setTimeout(() => viaContents().then(resolve, reject), retryAfter); });
   return withTimeout(Promise.race([first, late]), ms).finally(() => clearTimeout(timer));
@@ -145,7 +167,20 @@ function commitSource(seed) {
     // The names of the controls Enter in el's form would submit with; null outside a form.
     C.form = (el) => el && el.form ? clean([...el.form.elements].filter(c => (c.tagName === 'BUTTON' || c.tagName === 'INPUT') && (c.type === 'submit' || c.type === 'image')).flatMap(read)) : null;
     C.opaque = (el) => { if (!el || (el.tagName !== 'IFRAME' && el.tagName !== 'FRAME')) return false; try { return !el.contentDocument; } catch { return true; } };
-    C.look = (el) => el === 'frame' || C.opaque(el) ? { frame: true } : el ? { names: C.at(el), field: C.field(el), form: C.form(el) } : null;
+    // Read the live destination on the element input will reach, including a
+    // child inside a link. Snapshot hrefs may be stale, shortened or absent.
+    // closest stops at a shadow root, so continue through its host as well.
+    C.href = (el) => {
+      try {
+        for (let n = el; n && n.nodeType === 1;) {
+          const link = n.closest('a[href],area[href]');
+          if (link) return new URL(link.getAttribute('href'), link.ownerDocument.baseURI).href;
+          n = n.getRootNode && n.getRootNode().host;
+        }
+        return '';
+      } catch { return null; }
+    };
+    C.look = (el) => el === 'frame' || C.opaque(el) ? { frame: true } : el ? { names: C.at(el), field: C.field(el), form: C.form(el), href: C.href(el), approvalContext: S.approvalContext(), approvalTarget: S.approvalTarget(el) } : null;
     // The element at a viewport point, through open shadow roots and
     // same-origin frames; 'frame' for a cross-origin frame, which cannot be read.
     C.hit = (x, y) => {
@@ -547,8 +582,8 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   const states = new WeakMap();
   const usedNonces = new Map();
   const preflightApprovals = new WeakMap(), carriedApprovals = new WeakMap();
-  const invalidApproval = (why) => fail(`approval_invalid: ${why}. It did not run. Ask the user to approve it again.`, 403);
-  // The router sends approval: {nonce, kind, summary, issuedAt, tabId, epoch}
+  const invalidApproval = (why) => fail(`approval_invalid: ${why}. No further input was sent. Take a fresh snapshot, review the target, and request a new approval.`, 403);
+  // The router sends approval: {nonce, kind, summary, issuedAt, tabId, epoch, binding}
   // on the one action the user approved (a batch carries it for all its
   // steps). It counts once, within 120s, on that tab and control epoch;
   // anything else carrying an approval is refused outright.
@@ -562,6 +597,16 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     if (at - a.issuedAt > APPROVAL_MS || a.issuedAt - at > APPROVAL_SKEW_MS) throw invalid('the approval expired');
     if (a.tabId !== tab.id || a.epoch !== epoch) throw invalid('the approval is for another tab or control epoch');
     if (usedNonces.has(a.nonce)) throw invalid('the approval was already used');
+    if (a.binding?.version !== APPROVAL_BINDING_VERSION || !/^[a-f0-9]{32}$/.test(a.binding.documentId || '') || typeof a.binding.url !== 'string' || !Array.isArray(a.binding.steps))
+      throw invalid('document/target proof is unavailable; update the workspace plugin and browser host to approval-binding-v1 before approving again');
+    if (a.binding.key !== approvalActionKey(body)) throw invalid('the operation differs from the reviewed action');
+    const steps = body.action === 'batch' ? body.steps : [body];
+    if (!Array.isArray(steps) || steps.length !== a.binding.steps.length || steps.some((step, i) => {
+      const proof = a.binding.steps[i];
+      return !proof || proof.key !== approvalActionKey(step) || !Array.isArray(proof.targets)
+        || (INPUT_ACTIONS.has(step.action) && step.action !== 'scroll' && proof.targets.length !== (step.action === 'drag' ? 2 : 1))
+        || proof.targets.some(t => !t || !/^e\d+$/.test(t.ref || '') || !/^[a-f0-9]{32}$/.test(t.token || ''));
+    })) throw invalid('the operation differs from the reviewed action');
     return a;
   }
   function approve(tab, body) {
@@ -574,7 +619,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       usedNonces.set(a.nonce, a.issuedAt + APPROVAL_MS + APPROVAL_SKEW_MS);
       carriedApprovals.delete(body);
     }
-    body[APPROVED] = true;
+    body[APPROVED] = a.binding;
   }
   // Called only by the serialized takeover path before changing control,
   // after its generation/epoch recheck. JSON cannot forge the WeakMap evidence.
@@ -588,11 +633,38 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     carriedApprovals.set(body, { tab, approval: a, from, to: from + 1 });
   }
   const pageNames = (tab) => readJs(tab.view.webContents, `${commitSource(tab.refSeed)}.page()`).then(page => page && Array.isArray(page.names) ? page : null, () => null);
+  function approvedStep(body) {
+    const binding = body[APPROVED];
+    if (!binding) return null;
+    const step = binding.steps?.find(step => step.key === approvalActionKey(body));
+    if (!step) throw invalidApproval('the operation differs from the reviewed action');
+    return { binding, step };
+  }
+  function checkLiveBinding(body, live, target = 0) {
+    const proof = approvedStep(body);
+    if (!proof) return;
+    const context = live?.approvalContext;
+    if (!context || context.documentId !== proof.binding.documentId || context.url !== proof.binding.url)
+      throw invalidApproval('the reviewed document changed or could not be checked');
+    if (target >= 0 && proof.step.targets[target] && live.approvalTarget !== proof.step.targets[target].token)
+      throw invalidApproval('the reviewed control, name, role, row, or destination changed');
+  }
+  async function guardApproval(tab, body) {
+    const proof = approvedStep(body);
+    if (!proof) return;
+    if (INPUT_ACTIONS.has(body.action) && !['scroll'].includes(body.action) && !proof.step.targets.length)
+      throw invalidApproval('this input has no observed target proof; use a fresh snapshot ref or exact name');
+    if (body.action === 'cdp' && /^Input\./.test(String(body.method)))
+      throw invalidApproval('raw input has no observed target proof; use a fresh snapshot ref or exact name');
+    const live = await boundedJs(tab.view.webContents, `(() => { const S = ${refsSource(tab.refSeed)}; return { approvalContext: S.approvalContext(), targets: ${JSON.stringify(proof.step.targets.map(t => t.ref))}.map(ref => S.approvalTarget(S.find(ref))) }; })()`).catch(() => null);
+    checkLiveBinding(body, live, -1);
+    for (let i = 0; i < proof.step.targets.length; i++) checkLiveBinding(body, { approvalContext: live.approvalContext, approvalTarget: live.targets?.[i] }, i);
+  }
   // Page script and DevTools calls that can act, while the page shows a
   // commit control; a reload there (it may resubmit); a same-origin address
   // that reads like an action. Read-only DevTools calls pass.
   async function guard(tab, body) {
-    if (body[APPROVED]) return;
+    if (body[APPROVED]) return INPUT_ACTIONS.has(body.action) ? undefined : guardApproval(tab, body);
     const method = body.action === 'cdp' ? String(body.method || '') : '';
     // A method the host refuses anyway gets that refusal, not this one.
     if (method && cdpMethodError(method)) return;
@@ -621,6 +693,12 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     tab.agentCursor = null;
     const wc = tab.view.webContents;
     if (wc.isDestroyed()) { tab.focusEmulation = false; return; }
+    try { frameOf(wc); }
+    catch (error) {
+      if (error.code !== 'page_unavailable') throw error;
+      // The renderer is gone; only in-memory cancellation remains to clear.
+      tab.focusEmulation = false; return;
+    }
     // Focus emulation is held per tab across actions, so clear() is the
     // teardown that actually releases it.
     if (tab.focusEmulation) {
@@ -667,6 +745,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       else throw fail('drag needs a destination: toRef, toSelector, or toX and toY.');
     }
     if (argsOnly) return null;
+    if (body[APPROVED]) await guardApproval(tab, body);
 
     // The API owner serializes perform() with screenshots and navigation in
     // tab.queue. Checks after awaits also stop an already queued revoked action.
@@ -763,6 +842,11 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         if (live) throw commitRequired(`${what} ${where} here could set off "${live.slice(0, 80)}"`);
       };
       if (!look) return pageCheck('where the app cannot read the page');
+      const follows = action === 'click' || action === 'double_click' || (action === 'press' && keyEvent.windowsVirtualKeyCode === 13);
+      if (follows && look.href === null) throw commitRequired('the resolved link destination could not be read');
+      if (follows && typeof look.href === 'string' && look.href && isActionUrl(look.href)) {
+        throw commitRequired(`the link goes to ${look.href.slice(0, 80)}, an address that confirms, orders, pays, submits or deletes`);
+      }
       // Clicking into a field, a checkbox or a select, or typing a space, submits nothing.
       if (look.field && (action !== 'press' || keyEvent.windowsVirtualKeyCode === 32)) return;
       const enterInField = action === 'press' && look.field;
@@ -799,7 +883,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       // The source resolves last: scrolling it into view must not move a destination found earlier.
       if (to && (to.ref || to.selector)) end = await resolve(to, { look: gated });
       if (body.ref || body.selector || body.name) {
-        found = await resolve(target, { focus: action === 'type' || action === 'press', type: action === 'type', select: action === 'select', probe: action === 'click', look: gated });
+        found = await resolve(target, { focus: action === 'type' || action === 'press', type: action === 'type', select: action === 'select', probe: action === 'click', look: gated || !!body[APPROVED] });
         const { hl, submit, nav, ref, resolved, partial, look, ...xy } = found;
         point = xy; found = { hl, submit, nav, look };
         // A named control is the ref it resolved to from here on, and the reply
@@ -822,8 +906,21 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         await moveCursor(point, hl);
         if (CLICKS[action]) {
           const kind = CLICKS[action];
-          await armFollowUp();
+          // Pointer movement can run page handlers after the target resolved.
+          // Recheck the actual hit on the tracker-arm round trip immediately
+          // before its first press; an unreadable result sends no input.
+          if (gated || body[APPROVED]) {
+            dry();
+            const armed = await boundedJs(wc, `(() => { ${followUpArmExpression()}; const C = ${commitSource(tab.refSeed)}; return { look: C.look(C.hit(${Number(point.x)}, ${Number(point.y)})) }; })()`, 3000).catch(() => null);
+            check();
+            if (body[APPROVED]) checkLiveBinding(body, armed?.look);
+            else {
+              if (!armed || !armed.look) throw commitRequired('the resolved link destination could not be checked before input');
+              await judge(armed.look);
+            }
+          } else await armFollowUp();
           for (let count = 1; count <= kind.count; count++) {
+            if (count > 1 && body[APPROVED]) checkLiveBinding(body, await probe(`C.look(C.hit(${Number(point.x)}, ${Number(point.y)}))`));
             mouseDown = { point, button: kind.button };
             await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: kind.button, buttons: kind.buttons, clickCount: count });
             await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: kind.button, buttons: 0, clickCount: count });
@@ -845,6 +942,10 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         const { hl: endHl, submit, nav, look, ref, resolved, partial, ...target } = end || await viewportPoint(to.x, to.y);
         await moveCursor(point, hl);
         await armFollowUp();
+        if (body[APPROVED]) {
+          checkLiveBinding(body, await probe(`C.look(C.hit(${Number(point.x)}, ${Number(point.y)}))`));
+          checkLiveBinding(body, await probe(`C.look(C.hit(${Number(target.x)}, ${Number(target.y)}))`), 1);
+        }
         const path = cursorPath(point, target);
         mouseDown = { point, button: 'left' };
         await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
@@ -853,6 +954,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
           if (visible) { await delay(16); check(); }
           await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...next, button: 'left', buttons: 1 });
         }
+        if (body[APPROVED]) checkLiveBinding(body, await probe(`C.look(C.hit(${Number(target.x)}, ${Number(target.y)}))`), 1);
         await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...target, button: 'left', buttons: 0, clickCount: 1 });
         mouseDown = null;
         if (glide) await Promise.race([glide, delay(path.length * 16 + 150)]);
@@ -870,6 +972,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         if (tab.preflight) { await pick(true); dry(); }
         await moveCursor(point, hl);
         await armFollowUp();
+        if (body[APPROVED]) checkLiveBinding(body, await probe(`C.look(${locateElement(target)})`));
         const picked = await pick(false);
         tab.inputsSent = (tab.inputsSent || 0) + 1;
         extra.matched = picked.matched;
@@ -878,6 +981,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         // insertText is actual Chromium input (including input/beforeinput).
         // The selection belongs to the agent tab, never the human's focused tab.
         await armFollowUp();
+        if (body[APPROVED]) checkLiveBinding(body, await probe('C.look(C.focus())'));
         if (body.text) {
           await send('Input.insertText', { text: body.text });
           // A key event sent before the renderer has produced a frame after the
@@ -894,6 +998,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         const armed = await boundedJs(wc, `(() => { const challenge = (${CHALLENGE_HIT_SOURCE})([], ${!(tab.preflight && anticipated)}); return { challenge, armed: !challenge && ${tab.preflight ? 'null' : followUpArmExpression()} }; })()`, 3000).catch(() => { throw checkFailed(); });
         check();
         if (typeof armed?.challenge?.kind === 'string') throw challengePresent(armed.challenge);
+        if (body[APPROVED]) checkLiveBinding(body, await probe('C.look(C.focus())'));
         await keys(keyEvent);
         likelyNavigation = keyEvent.key === 'Enter';
         if (point || tab.agentCursor) cursor(point || { x: tab.agentCursor.x, y: tab.agentCursor.y }, 'press', hl);
@@ -933,4 +1038,4 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   return { perform, clear, isDispatching, approve, carryApproval, guard };
 }
 
-module.exports = { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };
+module.exports = { createAgentInput, PREFLIGHT_READY, APPROVED, APPROVAL_BINDING_VERSION, approvalActionKey, refuseChallenge, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };
