@@ -1739,11 +1739,11 @@ function registerIpc() {
   });
   const runCommand = async (event, command, value = {}) => {
     trustSender(event);
-    try { return await executeCommand(command, value); }
+    try { return await executeCommand(command, value, event); }
     finally { broadcastNow(); }
   };
   // Publish after every command settles, including early returns and failures.
-  const executeCommand = async (command, value) => {
+  const executeCommand = async (command, value, event) => {
     switch (command) {
       case 'settings-write-status': return settingsWriteReceipt(settingsWriteEntry(event, value, true));
       case 'create-tab': return describeTab(createTab({ url: value.url || 'about:blank' }));
