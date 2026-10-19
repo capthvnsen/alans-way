@@ -92,7 +92,7 @@ test('modal stays open with an inline error and can retry after failure', async 
   await f.form.onsubmit({ preventDefault() {} });
   assert.equal(f.closes(), 1);
 });
-test('modal waits for explicit success and suppresses duplicate submissions', async () => {
+test('modal waits for explicit success and suppresses duplicate submissions', { timeout: 1000 }, async () => {
   let finish, calls = 0;
   const f = modalFixture(() => { calls++; return new Promise(resolve => { finish = resolve; }); });
   const pending = f.form.onsubmit({ preventDefault() {} });
