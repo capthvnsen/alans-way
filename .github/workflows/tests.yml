@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
@@ -73,6 +73,49 @@ jobs:
         timeout-minutes: 3
       - run: npm run test:update-all
         timeout-minutes: 3
+      - uses: actions/checkout@v4
+        with:
+          repository: capthvnsen/alans-way-agents
+          ref: main
+          path: quality-plugin
+      - name: Configure headless binding fixtures
+        run: |
+          echo "ALANS_WAY_AGENTS=$GITHUB_WORKSPACE/quality-plugin" >> "$GITHUB_ENV"
+          echo "HERMES_TEST_CHROME=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" >> "$GITHUB_ENV"
+          echo "HERMES_APPROVAL_EVIDENCE=$RUNNER_TEMP/approval-binding" >> "$GITHUB_ENV"
+          echo "HERMES_BINDING_EVIDENCE=$RUNNER_TEMP/target-binding" >> "$GITHUB_ENV"
+      - run: npm run test:browser-continuation
+        timeout-minutes: 3
+      - run: npm run test:browser-recovery
+        timeout-minutes: 3
+      - run: npm run test:connections-drafts
+        timeout-minutes: 3
+      - run: npm run test:connections-journey
+        timeout-minutes: 3
+      - run: npm run test:hermes-conversation-electron
+        timeout-minutes: 3
+      - run: npm run test:hermes-session-wire-electron
+        timeout-minutes: 3
+      - run: npm run test:home-first-action
+        timeout-minutes: 3
+      - run: npm run test:plugin-approval-binding-headless
+        timeout-minutes: 3
+      - run: npm run test:plugin-target-binding-headless
+        timeout-minutes: 3
+      - run: npm run test:settings-async
+        timeout-minutes: 3
+      - run: npm run test:settings-navigation
+        timeout-minutes: 3
+      - run: npm run test:settings-pending-recovery
+        timeout-minutes: 3
+      - run: npm run test:settings-persistence
+        timeout-minutes: 3
+      - run: npm run test:shortcut-query
+        timeout-minutes: 3
+      - run: npm run test:shortcut-round2
+        timeout-minutes: 3
+      - run: npm run test:state-ordering
+        timeout-minutes: 3
 
   desktop-windows:
     runs-on: windows-latest
@@ -84,7 +127,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: node --check src/win-computer.cjs
