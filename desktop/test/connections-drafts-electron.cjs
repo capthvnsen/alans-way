@@ -258,7 +258,7 @@ app.whenReady().then(async () => {
     const saved = await captureClipboard();
     try {
       const custom = 'web application/x-alans-way-fixture';
-      for (const initial of ['current', 'empty', 'custom']) {
+      for (const initial of ['current', 'empty', 'custom', 'native-url']) {
         if (initial === 'empty') {
           clipboard.clear();
           // Electron includes the separate macOS find pasteboard in read().
@@ -267,8 +267,14 @@ app.whenReady().then(async () => {
         if (initial === 'custom') await clipboard.write([new electron.ClipboardItem({
           'text/plain': 'Connections clipboard fixture', 'text/html': '<b>Connections clipboard fixture</b>', [custom]: new Blob([Buffer.from([0, 1, 254, 255])]),
         })]);
+        if (initial === 'native-url') await clipboard.write([new electron.ClipboardItem({
+          'text/plain': 'https://fixture.invalid/',
+          'electron application/osclipboard;format="public.url"': new Blob(['https://fixture.invalid/']),
+          'electron application/osclipboard;format="public.url-name"': new Blob(['Fixture bookmark']),
+        })]);
         const before = await captureClipboard();
         if (initial === 'empty') assert.equal(before.items.length, 0, 'empty clipboard has no restorable formats');
+        if (initial === 'native-url' && process.platform === 'darwin') assert.ok(before.derived.some(entry => entry.type === 'electron application/bookmark'), 'native URL exposes a bookmark to verify after raw-format restoration');
         if (initial === 'custom') assert.ok(before.items.some(item => item.types.includes(custom)), 'custom clipboard bytes are captured');
         await open();
         try {
