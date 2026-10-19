@@ -307,6 +307,7 @@ function createHermesHub(deps = {}) {
       const fence = { seq: state.authSeq, base: state.base, profile: state.profile };
       const ctl = new AbortController();
       pendingAuth.add(ctl);
+      setStatus('needs_signin');
       let tokens;
       try {
         tokens = await remote.signIn({
@@ -318,7 +319,10 @@ function createHermesHub(deps = {}) {
         // An aborted/superseded sign-in reports 'stale' regardless of which
         // transport error the cancellation surfaced as.
         if (!authCurrent(fence)) throw staleAuth();
-        throw e;
+        const error = e.code === 'auth_failed' && /^POST \/auth\/password-login: Invalid credentials\.?$/i.test(e.message)
+          ? new HubError('auth_failed', 'Wrong username or password.') : e;
+        setStatus('needs_signin', error);
+        throw error;
       } finally {
         pendingAuth.delete(ctl);
       }

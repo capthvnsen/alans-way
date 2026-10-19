@@ -68,7 +68,7 @@ const document = {
   createDocumentFragment: () => new FakeFragment(),
 };
 global.document = document;
-const { createHermesView } = require('../src/hermes-view.js');
+const { createHermesView, commandErrorMessage } = require('../src/hermes-view.js');
 
 const tick = () => new Promise((r) => setImmediate(r));
 
@@ -1006,6 +1006,7 @@ function fakeGateway() {
   const event = (type, sessionId, payload = {}) =>
     write({ jsonrpc: '2.0', method: 'event',
       params: { type, session_id: sessionId, seq: ++seq, payload } });
+  gw.event = event;
   gw.request = (id, method, params) => write({ jsonrpc: '2.0', id, method, params });
   gw.ready = () => write({ jsonrpc: '2.0', method: 'event',
     params: { type: 'gateway.ready', payload: { replay_epoch: 'ep-1' } } });
@@ -1087,7 +1088,7 @@ function realStack({ holdSubmits = false, onSubmit = null } = {}) {
   const root = new FakeNode('div');
   createHermesView({ api, root });
   const textarea = root.findAll((n) => n.tagName === 'TEXTAREA')[0];
-  return { api, gw, textarea, pushState,
+  return { api, gw, root, hub, textarea, pushState,
     delivered: () => { pushState.flush(); } };
 }
 
@@ -1102,6 +1103,28 @@ async function realBoot(s) {
 const typeIn = (s, text) => { s.textarea.value = text; s.textarea.dispatchEvent(new FakeEvent('input')); };
 const enterIn = (s) => s.textarea.dispatchEvent(new FakeEvent('keydown', { key: 'Enter', shiftKey: false, isComposing: false }));
 const settle = () => new Promise((r) => setTimeout(r, 0));
+
+test('session wire deltas reach visible assistant text before message.complete through the real hub', async () => {
+  const s = realStack();
+  try {
+    const { sidA } = await realBoot(s);
+    await s.api.command('select', { sessionId: sidA }); s.delivered();
+    const assistant = () => s.root.findAll(n => n.hasClass('hermes-msg') && n.hasClass('assistant')).at(-1);
+    s.gw.event('message.start', sidA); s.delivered();
+    assert.ok(assistant().hasClass('streaming'));
+    assert.equal(assistant().querySelector('.hermes-text').textContent, '…');
+    s.gw.event('message.delta', sidA, { text: 'The lighthouse ' }); s.delivered();
+    assert.ok(assistant().hasClass('streaming'));
+    assert.equal(assistant().querySelector('.hermes-text').textContent, 'The lighthouse ');
+    s.gw.event('message.delta', sidA, { text: 'glowed.\n' }); s.delivered();
+    assert.equal(assistant().querySelector('.hermes-text').textContent, 'The lighthouse glowed.\n');
+    assert.ok(assistant().hasClass('streaming'), 'intermediate text is visible before completion');
+    s.gw.event('message.complete', sidA, { text: 'The lighthouse glowed.\n', status: 'complete' }); s.delivered();
+    assert.equal(assistant().querySelector('.hermes-text').textContent, 'The lighthouse glowed.\n');
+    assert.ok(!assistant().hasClass('streaming'));
+    assert.equal(s.root.findAll(n => n.hasClass('hermes-msg') && n.hasClass('assistant')).length, 1);
+  } finally { s.hub.dispose(); s.pushState.flush(); }
+});
 
 test('A→B→A through real hub/wire/controller restores the draft once the select push is delivered', async () => {
   const s = realStack();
@@ -1374,7 +1397,7 @@ test('retained pending requests leave no answerable cards and nothing replays on
   assert.equal(rec.calls.filter((c) => c.name === 'send').length, 0);
 });
 
-test('Change backend stays reachable only on the recovery surface and reaches the host once', async () => {
+test('Change backend stays reachable while connected and recovering and reaches the host once per click', async () => {
   const st = baseState({ conversation: liveConvo() });
   const rec = makeApi(st);
   const root = new FakeNode('div');
@@ -1382,16 +1405,39 @@ test('Change backend stays reachable only on the recovery surface and reaches th
   createHermesView({ api: rec.api, root, onShowSetup: () => { setups += 1; } });
   await tick();
   rec.emit(st);
-  assert.equal(root.findAll((n) => n.className.includes('hermes-change-backend')).length, 0,
-    'a live conversation shows no setup affordance');
+  const connected = root.findAll((n) => n.className.includes('hermes-change-backend'));
+  assert.equal(connected.length, 1, 'a live conversation keeps backend setup reachable');
+  connected[0].click();
+  assert.equal(setups, 1);
   rec.emit(droppedFrom(st));
   const change = root.findAll((n) => n.className.includes('hermes-change-backend'))[0];
   assert.ok(change, 'the recovery surface keeps backend setup reachable');
   change.click();
-  assert.equal(setups, 1);
+  assert.equal(setups, 2);
   // Input-requiring states land on the setup card itself — no affordance.
   rec.emit({ ...droppedFrom(st), status: 'needs_signin', error: null });
   assert.equal(root.findAll((n) => n.className.includes('hermes-change-backend')).length, 0);
+});
+
+test('Hermes command errors remove IPC and exception wrappers while retaining the useful message', () => {
+  for (const [raw, plain] of [
+    ["Error invoking remote method 'hermes:command': RemoteError: POST /auth/password-login: Invalid credentials", 'Wrong username or password.'],
+    ["Error invoking remote method 'hermes:command': HubError: Configure a backend first.", 'Configure a backend first.'],
+    ["Error invoking remote method 'hermes:command': ConversationError: Select a session first.", 'Select a session first.'],
+    ["Error invoking remote method 'hermes:command': WireError: prompt.submit timed out", 'prompt.submit timed out'],
+    ['Error: WebSocket closed 1006', 'WebSocket closed 1006'],
+    ['Delivery unconfirmed', 'Delivery unconfirmed'],
+  ]) assert.equal(commandErrorMessage(new Error(raw)), plain);
+});
+
+test('a rejected conversation command displays its useful cause without the raw IPC prefix', async () => {
+  const { root, textarea, rec } = view(baseState());
+  await tick();
+  rec.sendReplies.push(new Error("Error invoking remote method 'hermes:command': ConversationError: Select a session first."));
+  textarea.value = 'test';
+  textarea.dispatchEvent(new FakeEvent('keydown', { key: 'Enter' }));
+  await tick();
+  assert.equal(root.querySelector('.hermes-flash').textContent, 'Select a session first.');
 });
 
 test('input-requiring startup states show no transcript and no stale marker', async () => {

@@ -45,6 +45,16 @@
     complete: '', interrupted: 'Stopped', incomplete: 'Incomplete', error: 'Error',
   };
 
+  // Electron invoke serializes exceptions into a message with IPC/class
+  // wrappers. Both the pane and conversation surface show the useful cause.
+  function commandErrorMessage(error) {
+    let message = String(error?.message || error);
+    message = message.replace(/^Error invoking remote method ['"]hermes:command['"]:\s*/, '')
+      .replace(/^(?:RemoteError|HubError|ConversationError|WireError|Error):\s*/, '');
+    if (/^POST \/auth\/password-login: Invalid credentials\.?$/i.test(message)) return 'Wrong username or password.';
+    return message;
+  }
+
   function createHermesView({ api, root, onShowSetup }) {
     if (!api || !root) throw new Error('hermes view needs {api, root}');
     const drafts = new Map();          // exact target key -> {text, rev}; rev = this view's edit revision
@@ -194,7 +204,7 @@
     }
 
     function showError(e) {
-      const row = el('div', 'hermes-flash', String(e && e.message || e));
+      const row = el('div', 'hermes-flash', commandErrorMessage(e));
       bar.append(row);
       setTimeout(() => row.remove(), 6000);
     }
@@ -260,9 +270,8 @@
       }
       if (stopUnavailable()) bar.append(el('span', 'hermes-phase disconnected',
         'Work may still be running. Stop cannot be sent until this conversation is connected.'));
-      // While the conversation's recovery surface is up, backend setup stays
-      // reachable as a secondary, explicit choice — never a dead end.
-      if (recoverySurface() && typeof onShowSetup === 'function') {
+      // Keep backend setup reachable in the connected conversation too.
+      if ((state.status === 'ready' || recoverySurface()) && typeof onShowSetup === 'function') {
         const change = el('button', 'link-button hermes-change-backend', 'Change backend');
         change.type = 'button';
         change.onclick = () => onShowSetup();
@@ -677,7 +686,7 @@
     };
   }
 
-  const api = { createHermesView };
+  const api = { createHermesView, commandErrorMessage };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else window.HermesView = api;
 })();

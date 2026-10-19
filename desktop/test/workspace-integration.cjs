@@ -1,4 +1,4 @@
-require('./window-fixture.cjs');
+const { resizeWindow } = require('./window-fixture.cjs');
 // Run: npx electron test/workspace-integration.cjs
 // Uses an isolated profile and localhost pages. No Telegram messages are sent.
 const assert = require('node:assert/strict');
@@ -68,6 +68,64 @@ app.whenReady().then(async () => {
   assert.equal(persisted.avatarPreferences['123'].selectedId, builtin.id);
   await evaluate('document.getElementById("modal-close").click()');
   console.log('PASS: real app avatar gallery, image decode, selection, native import, removal, persistence; screenshot ' + shot);
+
+  // Real stylesheet + grid/flex ancestors: a long reply must scroll inside
+  // the transcript without pushing the composer/sidebar below the viewport.
+  const originalSize = win.getContentSize();
+  const layoutSend = wc.send.bind(wc);
+  wc.send = (channel, ...args) => { if (!['workspace:state', 'hermes:state'].includes(channel)) layoutSend(channel, ...args); };
+  try {
+    for (const [width, height] of [[1550, 980], [1024, 700]]) {
+      const size = await resizeWindow(win, width, height);
+      const layout = await evaluate(`(async () => {
+        const chat = document.querySelector('.chat-pane');
+        const siblings = [...chat.children].filter(n => !n.classList.contains('chat-header'));
+        const classes = siblings.map(n => n.className);
+        const pane = document.createElement('div'); pane.className = 'hermes-pane';
+        const root = document.createElement('div'); root.className = 'hermes-convo';
+        pane.append(root);
+        const h = { status: 'ready', generation: 1,
+          target: { url: 'https://gw.example', label: 'gw.example', profile: '' },
+          selected: { sessionId: 'layout', sessionKey: 'layout-key' }, sessions: [],
+          conversation: { phase: 'bound', transcript: [], pendingRequests: [], requestOutcomes: [], stats: {},
+            turn: { streaming: true, text: ('A long lighthouse story.\\n').repeat(300), tools: [] } } };
+        let view;
+        try {
+          siblings.forEach(n => n.classList.add('hidden')); chat.append(pane);
+          view = window.HermesView.createHermesView({ root, api: {
+            getState: async () => h, onState: () => () => {}, command: async () => ({ ok: true }) } });
+          const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const measure = async () => {
+            await frame();
+            const transcript = root.querySelector('.hermes-transcript');
+            const composer = root.querySelector('.hermes-composer').getBoundingClientRect();
+            const overflowing = transcript.scrollHeight > transcript.clientHeight;
+            transcript.scrollTop = transcript.scrollHeight;
+            const bottom = transcript.scrollTop;
+            transcript.scrollTop = 0;
+            return { height: innerHeight, body: document.body.scrollHeight,
+              composerTop: composer.top, composerBottom: composer.bottom,
+              transcriptHeight: transcript.clientHeight, overflowing, bottom, top: transcript.scrollTop,
+              sidebarBottom: document.querySelector('.sidebar').getBoundingClientRect().bottom };
+          };
+          const streaming = await measure();
+          view.setState({ ...h, conversation: { ...h.conversation, turn: null,
+            transcript: [{ role: 'assistant', text: h.conversation.turn.text, status: 'complete' }] } });
+          return { streaming, complete: await measure() };
+        } finally {
+          view?.dispose(); pane.remove();
+          siblings.forEach((n, i) => { n.className = classes[i]; });
+        }
+      })()`);
+      for (const [phase, measured] of Object.entries(layout)) {
+        const context = `${size.width}x${size.height} ${phase}: ${JSON.stringify(measured)}`;
+        assert.ok(measured.composerTop >= 0 && measured.composerBottom <= measured.height + 1, context);
+        assert.ok(measured.body <= measured.height + 1 && measured.sidebarBottom <= measured.height + 1, context);
+        assert.ok(measured.transcriptHeight > 0 && measured.overflowing && measured.bottom > 0 && measured.top === 0, context);
+      }
+    }
+  } finally { wc.send = layoutSend; await resizeWindow(win, ...originalSize); }
+  console.log('PASS: long streamed and completed Hermes replies scroll inside the transcript with composer and sidebar pinned at both effective sizes.');
 
   // Fixture-only activity exercises the actual renderer without claiming any
   // real Telegram bot is working or writing fabricated activity to app state.

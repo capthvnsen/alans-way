@@ -2043,7 +2043,8 @@ $('splitter').onpointerdown = (event) => {
 };
 // ── Native Hermes chat: sidebar section, setup card, surface mount ─────────
 async function hermesCommand(name, value = {}) {
-  try { return await hermesApi.command(name, value); } catch (error) { toast(error.message); return null; }
+  try { return await hermesApi.command(name, value); }
+  catch (error) { toast(window.HermesView.commandErrorMessage(error)); return null; }
 }
 function renderHermes() {
   const h = state.hermes || { status: 'unconfigured', sessions: [] };
@@ -2083,20 +2084,27 @@ function renderHermes() {
 // conversation surface instead: its last-known transcript, draft, tombstone
 // and one recovery action stay in place; explicit setup stays reachable via
 // the view's Change backend affordance and resets itself the moment input is
-// required anyway, the link recovers, the selection clears, or the pane
-// loses the target.
+// required anyway or the pane loses the target. Connected state pushes must
+// not close an explicitly opened backend editor.
 let hermesSetupForced = false;
 function renderHermesSetup(h) {
   const setup = $('hermes-setup'), convo = $('hermes-convo');
   if (!setup) return;
   const needsInput = h.status === 'unconfigured' || h.status === 'needs_signin' || h.status === 'needs_local_token';
-  if (needsInput || h.status === 'ready' || !h.selected || state.chatTarget !== 'hermes') hermesSetupForced = false;
-  const needsSetup = state.chatTarget === 'hermes' && h.status !== 'ready'
-    && (needsInput || !h.selected || hermesSetupForced);
+  if (needsInput || state.chatTarget !== 'hermes') hermesSetupForced = false;
+  const needsSetup = state.chatTarget === 'hermes'
+    && (hermesSetupForced || needsInput || (h.status !== 'ready' && !h.selected));
   setup.classList.toggle('hidden', !needsSetup);
   convo.classList.toggle('hidden', !!needsSetup);
-  const renderedKey = `${h.status}:${h.target?.label || ''}:${hermesSetupForced ? 'back' : ''}`;
-  if (!needsSetup || setup.dataset.rendered === renderedKey) return;
+  const renderedKey = JSON.stringify([h.status, h.target?.url, h.target?.profile, hermesSetupForced]);
+  if (!needsSetup) return;
+  const updateError = () => {
+    const error = setup.querySelector('.hermes-setup-error');
+    if (!error) return;
+    error.textContent = h.error?.message ? window.HermesView.commandErrorMessage(h.error) : '';
+    error.classList.toggle('hidden', !error.textContent);
+  };
+  if (setup.dataset.rendered === renderedKey) { updateError(); return; }
   setup.dataset.rendered = renderedKey;
   setup.innerHTML = '';
   const card = element('div', 'hermes-setup-card');
@@ -2137,24 +2145,33 @@ function renderHermesSetup(h) {
       pass.autocomplete = 'current-password';
       card.append(user, pass);
       card.append(setupButton('Sign in and connect', async () => {
-        const r = await hermesCommand('configure', { url: urlInput.value, profile: profileInput.value });
-        if (r) await hermesCommand('sign-in', { username: user.value, password: pass.value });
+        try {
+          // An unchanged target is already probed and needs credentials.
+          // Reconfiguring it would hide this form before sign-in settles.
+          const unchanged = urlInput.value === h.target?.url && profileInput.value === (h.target?.profile || '');
+          const r = unchanged || await hermesCommand('configure', { url: urlInput.value, profile: profileInput.value });
+          if (r) await hermesCommand('sign-in', { username: user.value, password: pass.value });
+        } finally { pass.value = ''; }
       }));
     } else {
       card.append(setupButton('Save and connect', async () => {
         const r = await hermesCommand('configure', { url: urlInput.value, profile: profileInput.value });
-        if (r) await hermesCommand('connect');
+        if (r) { hermesSetupForced = false; await hermesCommand('connect'); }
       }));
     }
   }
-  if (h.error?.message) card.append(element('p', 'hermes-setup-error', h.error.message));
-  if (hermesSetupForced && h.selected) {
+  const error = element('p', 'hermes-setup-error hidden');
+  error.setAttribute('role', 'status');
+  error.setAttribute('aria-live', 'polite');
+  card.append(error);
+  if (hermesSetupForced) {
     const back = element('button', 'link-button hermes-setup-back', 'Back to conversation');
     back.type = 'button';
     back.onclick = () => { hermesSetupForced = false; render(state); };
     card.append(back);
   }
   setup.append(card);
+  updateError();
 }
 function setupButton(text, onClick) {
   const b = element('button', 'primary-button hermes-setup-go', text);

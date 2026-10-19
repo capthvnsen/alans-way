@@ -92,6 +92,40 @@ test('unknown commands and non-object values are rejected by the allowlist', asy
   await assert.rejects(() => hub.command('shell', {}), /Unknown/);
 });
 
+test('wrong password keeps sign-in available with a plain inline error, then accepts a retry', async () => {
+  let attempts = 0;
+  const { RemoteError } = require('../src/hermes-remote.cjs');
+  const { hub } = fixture({ signIn: async () => {
+    if (++attempts === 1) throw new RemoteError('auth_failed', 'POST /auth/password-login: Invalid credentials');
+    return { accessToken: 'at-1', refreshToken: 'rt-1', userId: 'u', provider: 'basic' };
+  } });
+  try {
+    await hub.command('configure', { url: 'http://127.0.0.1:9119' });
+    await assert.rejects(hub.command('connect', {}), { code: 'needs_signin' });
+    await assert.rejects(hub.command('sign-in', { username: 'u', password: 'wrong' }), {
+      code: 'auth_failed', message: 'Wrong username or password.',
+    });
+    assert.equal(hub.getState().status, 'needs_signin');
+    assert.deepEqual(hub.getState().error, { code: 'auth_failed', message: 'Wrong username or password.' });
+    assert.equal(hub.getState().principal, null);
+    await hub.command('sign-in', { username: 'u', password: 'right' });
+    assert.equal(hub.getState().status, 'ready');
+    assert.equal(hub.getState().error, null);
+  } finally { hub.dispose(); }
+});
+
+test('sign-in transport failure keeps the form available without mislabeling it as a wrong password', async () => {
+  const { RemoteError } = require('../src/hermes-remote.cjs');
+  const { hub } = fixture({ signIn: async () => { throw new RemoteError('unreachable', 'Backend is unreachable.'); } });
+  try {
+    await hub.command('configure', { url: 'http://127.0.0.1:9119' });
+    await assert.rejects(hub.command('connect', {}), { code: 'needs_signin' });
+    await assert.rejects(hub.command('sign-in', { username: 'u', password: 'fixture-only' }), { code: 'unreachable' });
+    assert.equal(hub.getState().status, 'needs_signin');
+    assert.deepEqual(hub.getState().error, { code: 'unreachable', message: 'Backend is unreachable.' });
+  } finally { hub.dispose(); }
+});
+
 test('unconfigured hub reports unconfigured; configure persists without secrets in projection', async () => {
   const { hub } = fixture();
   assert.equal(hub.getState().status, 'unconfigured');

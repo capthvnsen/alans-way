@@ -34,7 +34,8 @@ class FakeNode {
   append(...kids) { for (const k of kids) { if (k) { k.parent = this; this.children.push(k); } } }
   setAttribute(k, v) { this.attributes[k] = String(v); }
   addEventListener(t, f) { (this.listeners[t] ||= []).push(f); }
-  click() { if (this.onclick) this.onclick({ type: 'click', stopPropagation() {} }); }
+  click() { if (this.onclick) return this.onclick({ type: 'click', stopPropagation() {} }); }
+  querySelector(sel) { return this.findAll(n => n.hasClass(sel.slice(1)))[0] || null; }
   hasClass(c) { return this.className.split(/\s+/).includes(c); }
   findAll(pred, out = []) {
     for (const c of this.children) { if (pred(c)) out.push(c); c.findAll(pred, out); }
@@ -71,6 +72,7 @@ function harness(h, { chatTarget = 'hermes' } = {}) {
     render: () => renders.push(1),
     toast: () => {},
     document: { activeElement: null },
+    window: { HermesView: require('../src/hermes-view.js') },
   };
   vm.runInNewContext(`${slice}\nthis.renderHermesSetup = renderHermesSetup;\nthis.setForced = (v) => { hermesSetupForced = v; };\nthis.getForced = () => hermesSetupForced;`, ctx);
   ctx.renderHermesSetup(h);
@@ -104,11 +106,21 @@ test('the setup card still owns the pane whenever input is required or nothing i
   }
 });
 
-test('ready always shows the conversation and clears any forced setup', () => {
+test('ready shows the conversation until Change backend is requested, then keeps the editor open across pushes', () => {
   const { setup, convo, ctx } = harness({ status: 'ready', target, selected: sel, error: null });
+  assert.ok(setup.hasClass('hidden'));
+  assert.ok(!convo.hasClass('hidden'));
   ctx.setForced(true);
   ctx.renderHermesSetup({ status: 'ready', target, selected: sel, error: null });
-  assert.equal(ctx.getForced(), false);
+  assert.equal(ctx.getForced(), true);
+  assert.ok(!setup.hasClass('hidden'));
+  assert.ok(convo.hasClass('hidden'));
+  const url = setup.findAll(n => n.attributes['aria-label'] === 'Hermes backend URL')[0];
+  url.value = 'https://other.example';
+  ctx.renderHermesSetup({ status: 'ready', target, selected: sel, error: null });
+  assert.equal(url.value, 'https://other.example', 'ordinary pushes preserve edits');
+  setup.findAll(n => n.hasClass('hermes-setup-back'))[0].click();
+  ctx.renderHermesSetup({ status: 'ready', target, selected: sel, error: null });
   assert.ok(setup.hasClass('hidden'));
   assert.ok(!convo.hasClass('hidden'));
 });
@@ -139,16 +151,104 @@ test('forced setup shows the form with a way back, and the flag self-clears', ()
   back.click();
   assert.equal(ctx.getForced(), false);
   assert.equal(renders.length, 1, 'going back re-renders once');
-  // The flag can never wedge the pane: input-required, ready, cleared
-  // selection or leaving the Hermes pane all reset it.
+  // Input-required states own the form and release the explicit override.
   for (const h2 of [
     { ...h, status: 'needs_signin' },
-    { ...h, selected: null },
+    { ...h, status: 'unconfigured', selected: null },
   ]) {
     ctx.setForced(true);
     ctx.renderHermesSetup(h2);
     assert.equal(ctx.getForced(), false, `flag self-cleared for ${JSON.stringify(h2.status)}`);
   }
+});
+
+test('sign-in retries retain the username and show updated errors inline without replacing the form', async () => {
+  const h = { status: 'needs_signin', target, selected: null, error: null };
+  const { setup, ctx, calls } = harness(h);
+  const user = setup.findAll(n => n.attributes['aria-label'] === 'Username')[0];
+  const pass = setup.findAll(n => n.attributes['aria-label'] === 'Password')[0];
+  user.value = 'test-user'; pass.value = 'fixture-only';
+  await setup.findAll(n => n.textContent === 'Sign in and connect')[0].click();
+  assert.deepEqual(calls.map(c => c.name), ['sign-in'], 'unchanged target does not disconnect before sign-in');
+  assert.equal(pass.value, '', 'the submitted password is cleared');
+  ctx.renderHermesSetup({ ...h, error: { code: 'auth_failed', message: 'Wrong username or password.' } });
+  assert.equal(setup.findAll(n => n.attributes['aria-label'] === 'Username')[0], user);
+  assert.equal(user.value, 'test-user');
+  const error = setup.querySelector('.hermes-setup-error');
+  assert.equal(error.textContent, 'Wrong username or password.');
+  assert.equal(error.attributes['aria-live'], 'polite');
+  assert.ok(!error.hasClass('hidden'));
+  assert.ok(setup.findAll(n => n.textContent === 'Sign in and connect')[0]);
+  ctx.renderHermesSetup(h);
+  assert.ok(error.hasClass('hidden'), 'the next attempt clears the previous error');
+});
+
+test('the real hub and setup pane keep the sign-in form throughout a failed password attempt', async () => {
+  const { createHermesHub } = require('../src/hermes-hub.cjs');
+  const { normalizeBaseUrl, RemoteError } = require('../src/hermes-remote.cjs');
+  let pane, rejectLogin;
+  const login = new Promise((_resolve, reject) => { rejectLogin = reject; });
+  const hub = createHermesHub({
+    remote: { normalizeBaseUrl,
+      probe: async () => ({ authRequired: true, authFlows: ['native_pkce'], authProviders: ['basic'] }),
+      providers: async () => [{ name: 'basic', supports_password: true }],
+      signIn: () => login },
+    notify: () => pane?.ctx.renderHermesSetup(hub.getState()),
+  });
+  try {
+    await hub.command('configure', { url: target.url, profile: target.profile });
+    await assert.rejects(hub.command('connect'), { code: 'needs_signin' });
+    pane = harness(hub.getState());
+    pane.ctx.hermesCommand = async (name, value) => {
+      try { return await hub.command(name, value); } catch { return null; }
+    };
+    const user = pane.setup.findAll(n => n.attributes['aria-label'] === 'Username')[0];
+    const pass = pane.setup.findAll(n => n.attributes['aria-label'] === 'Password')[0];
+    const submit = pane.setup.findAll(n => n.textContent === 'Sign in and connect')[0];
+    user.value = 'fixture-user'; pass.value = 'fixture-only';
+    const attempt = submit.click();
+    assert.equal(pane.setup.findAll(n => n.attributes['aria-label'] === 'Username')[0], user, 'pending sign-in keeps the same form');
+    rejectLogin(new RemoteError('auth_failed', 'POST /auth/password-login: Invalid credentials'));
+    await attempt;
+    assert.equal(pane.setup.findAll(n => n.attributes['aria-label'] === 'Username')[0], user);
+    assert.equal(pane.setup.querySelector('.hermes-setup-error').textContent, 'Wrong username or password.');
+    assert.equal(submit.disabled, false, 'the same button is ready for an inline retry');
+    assert.equal(user.value, 'fixture-user');
+    assert.equal(pass.value, '');
+  } finally { hub.dispose(); }
+});
+
+test('Hermes pane CSS constrains the outer grid item so only the transcript scrolls', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../src/style.css'), 'utf8');
+  const rule = selector => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = css.match(new RegExp(`${escaped}\\{([^}]*)\\}`));
+    assert.ok(match, selector);
+    return Object.fromEntries(match[1].split(';').filter(Boolean).map(s => s.split(':').map(x => x.trim())));
+  };
+  assert.equal(rule('.chat-pane')['min-height'], '0', 'grid automatic minimum must not grow with transcript content');
+  for (const selector of ['.hermes-pane', '.hermes-convo']) {
+    assert.equal(rule(selector)['min-height'], '0');
+    assert.equal(rule(selector).overflow, 'hidden', selector);
+  }
+  assert.equal(rule('.hermes-transcript')['overflow-y'], 'auto');
+  assert.equal(rule('.hermes-transcript')['min-height'], '0');
+  assert.equal(rule('.hermes-composer')['flex-shrink'], '0', 'the composer retains its own height');
+});
+
+test('renderer Hermes command errors use the same plain messages as conversation errors', async () => {
+  const messages = [];
+  const start = src.indexOf('async function hermesCommand');
+  const end = src.indexOf('function renderHermes()', start);
+  assert.ok(start > 0 && end > start);
+  const ctx = {
+    window: { HermesView: require('../src/hermes-view.js') },
+    hermesApi: { command: async () => { throw new Error("Error invoking remote method 'hermes:command': HubError: Configure a backend first."); } },
+    toast: message => messages.push(message),
+  };
+  vm.runInNewContext(`${src.slice(start, end)}\nthis.run = hermesCommand;`, ctx);
+  assert.equal(await ctx.run('connect'), null);
+  assert.deepEqual(messages, ['Configure a backend first.']);
 });
 
 test('leaving the Hermes pane clears a forced setup so returning shows the conversation', () => {

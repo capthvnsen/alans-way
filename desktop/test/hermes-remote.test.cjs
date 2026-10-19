@@ -36,7 +36,7 @@ function wsUpgrade(req, socket) {
   });
 }
 
-function fixture(handler) {
+function fixture(handler, upgrade = wsUpgrade) {
   const hits = [];
   const sockets = new Set();
   const server = http.createServer((req, res) => {
@@ -49,7 +49,7 @@ function fixture(handler) {
     });
   });
   server.on('connection', (s) => { sockets.add(s); s.on('close', () => sockets.delete(s)); });
-  server.on('upgrade', (req, socket) => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); wsUpgrade(req, socket); });
+  server.on('upgrade', (req, socket) => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); upgrade(req, socket); });
   server.on('close', () => { for (const s of sockets) s.destroy(); });
   return new Promise((r) => server.listen(0, '127.0.0.1', () => r({ server, hits, url: `http://127.0.0.1:${server.address().port}` })));
 }
@@ -166,6 +166,54 @@ test('path prefixes survive; credentials in URLs are refused', async () => {
   assert.equal(remote.wsUrl({ base, ticket: 't' }), 'wss://gw.example/hermes/api/ws?ticket=t');
   assert.throws(() => remote.normalizeBaseUrl('https://u:p@gw.example'), /credentials/);
   assert.throws(() => remote.normalizeBaseUrl('ftp://gw.example'), /http/);
+});
+
+test('public WebSocket adapter delivers separate and coalesced deltas before completion', { timeout: 5000 }, async () => {
+  const { HermesSessionWire } = require('../src/hermes-session-wire.cjs');
+  let peer;
+  const { server, url } = await fixture(baseHandler, (req, socket) => {
+    peer = socket;
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+      `Sec-WebSocket-Accept: ${wsAccept(req.headers['sec-websocket-key'])}\r\n\r\n`);
+    socket.on('data', data => {
+      if ((data[0] & 0x0f) === 0x8) socket.end(Buffer.from([0x88, 0x02, 0x03, 0xe8]));
+    });
+  });
+  let conn, wire;
+  try {
+    conn = await createHermesRemote().connectSocket({ url: `${url.replace('http:', 'ws:')}/api/ws` });
+    wire = new HermesSessionWire({ input: conn.input, output: conn.output });
+    const events = [];
+    wire.on('event', event => events.push(event));
+    const frame = (type, seq, text) => {
+      const json = JSON.stringify({ jsonrpc: '2.0', method: 'event',
+        params: { type, session_id: 'stream-test', seq, payload: { text } } });
+      const bytes = Buffer.from(json + '\n');
+      const header = Buffer.alloc(4); header[0] = 0x81; header[1] = 126; header.writeUInt16BE(bytes.length, 2);
+      return Buffer.concat([header, bytes]);
+    };
+    const first = once(wire, 'event');
+    peer.write(frame('message.delta', 1, 'héllo '));
+    await first;
+    assert.equal(events[0].type, 'message.delta');
+    assert.equal(events[0].payload.text, 'héllo ');
+    const second = once(wire, 'event');
+    peer.write(Buffer.concat([frame('message.delta', 2, 'world'), frame('message.delta', 3, '!')]));
+    await second;
+    // The Node WebSocket dispatches each frame in this batch before the
+    // next event-loop turn. No completion has been sent yet.
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(events.map(e => e.type), ['message.delta', 'message.delta', 'message.delta']);
+    assert.equal(events.map(e => e.payload.text).join(''), 'héllo world!');
+    const complete = once(wire, 'event');
+    peer.write(frame('message.complete', 4, 'héllo world!')); await complete;
+    assert.equal(events.at(-1).type, 'message.complete');
+  } finally {
+    if (conn) { const closed = once(conn.input, 'close'); conn.socket.close(); await closed; }
+    wire?.dispose();
+    peer?.destroy();
+    await new Promise(resolve => server.close(resolve));
+  }
 });
 
 test('unreachable backend reports unreachable, not generic failure', async () => {
