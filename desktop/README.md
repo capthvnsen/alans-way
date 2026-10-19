@@ -81,7 +81,7 @@ npm start
 npm run package:mac
 ```
 
-Use Node 24 for development checks and desktop CI, matching Electron 44's embedded Node major. The release workflow keeps its existing runtime.
+Use Node 24 for development checks and desktop CI, matching Electron 44's embedded Node major. `npm run check` installs the Electron runtime once before starting parallel test workers, so its two embedded-Node compatibility tests cannot extract the same binary concurrently. The release workflow keeps its existing runtime.
 
 The macOS `desktop-electron` CI job also runs these isolated workspace suites. Each has an individual `npm run test:<name>` script; `test/run-workspace-suite.cjs` supplies current source paths and a fresh evidence directory under the system temporary directory.
 
