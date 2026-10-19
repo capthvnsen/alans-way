@@ -998,7 +998,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         const armed = await boundedJs(wc, `(() => { const challenge = (${CHALLENGE_HIT_SOURCE})([], ${!(tab.preflight && anticipated)}); return { challenge, armed: !challenge && ${tab.preflight ? 'null' : followUpArmExpression()} }; })()`, 3000).catch(() => { throw checkFailed(); });
         check();
         if (typeof armed?.challenge?.kind === 'string') throw challengePresent(armed.challenge);
-        if (body[APPROVED]) checkLiveBinding(body, await probe('C.look(C.focus())'));
+        if (body[APPROVED]) checkLiveBinding(body, tab.preflight && anticipated ? anticipated.look : await probe('C.look(C.focus())'));
         await keys(keyEvent);
         likelyNavigation = keyEvent.key === 'Enter';
         if (point || tab.agentCursor) cursor(point || { x: tab.agentCursor.x, y: tab.agentCursor.y }, 'press', hl);
