@@ -37,7 +37,7 @@
 
   const PHASE_TEXT = {
     detached: 'Not attached', binding: 'Attaching…', bound: '',
-    review: 'History incomplete — review before sending', blocked: 'Session blocked by the backend',
+    review: 'Review loaded history before continuing', blocked: 'Session blocked by the backend',
     disconnected: 'Connection lost', disposed: 'Detached',
   };
   const SEND_STATUS = {
@@ -47,8 +47,8 @@
 
   function createHermesView({ api, root, onShowSetup }) {
     if (!api || !root) throw new Error('hermes view needs {api, root}');
-    const drafts = new Map();          // sessionKey -> {text, rev}; rev = this view's edit revision
-    const answers = new Map();         // requestId -> {qid -> text} (in-progress form state)
+    const drafts = new Map();          // exact target key -> {text, rev}; rev = this view's edit revision
+    const answers = new Map();         // exact target + request id -> {qid -> text} (in-progress form state)
     let draftSeq = 0;                  // monotonic per-view revision counter
     let state = null;                  // last hub projection
     let retainedView = null;           // {targetKey, key, title, convo} — last live conversation
@@ -56,13 +56,21 @@
     let composing = false;             // IME composition guard
     let lastSig = '';
     let disposed = false;
+    let focusMemory = null;
+    const focusTargets = new Map();
 
     root.innerHTML = '';
     const bar = el('div', 'hermes-bar');
+    bar.setAttribute('role', 'status');
+    bar.setAttribute('aria-live', 'polite');
+    bar.setAttribute('tabindex', '-1');
     const transcript = el('div', 'hermes-transcript');
     transcript.setAttribute('role', 'log');
     transcript.setAttribute('aria-live', 'polite');
     const requestsDock = el('div', 'hermes-requests');
+    requestsDock.setAttribute('role', 'region');
+    requestsDock.setAttribute('aria-label', 'Hermes requests');
+    requestsDock.setAttribute('aria-live', 'polite');
     const composer = el('form', 'hermes-composer');
     const textarea = document.createElement('textarea');
     textarea.setAttribute('rows', '2');
@@ -73,6 +81,8 @@
     const stopBtn = el('button', 'hermes-stop secondary-button', 'Stop');
     stopBtn.type = 'button';
     const sendWarn = el('div', 'hermes-send-warn hidden');
+    sendWarn.setAttribute('role', 'status');
+    sendWarn.setAttribute('aria-live', 'polite');
     composer.append(textarea, sendWarn, el('div', 'hermes-composer-actions'));
     composer.lastChild.append(stopBtn, sendBtn);
     root.append(bar, transcript, requestsDock, composer);
@@ -83,10 +93,16 @@
     });
     const stick = () => { if (pinnedToBottom) transcript.scrollTop = transcript.scrollHeight; };
 
-    const sessionKey = () => {
-      const t = state?.target, sel = state?.selected;
-      return t && sel ? `${t.label}|${t.profile}|${sel.sessionId}` : '';
+    const retainedKey = (t, sel) => t && sel
+      ? JSON.stringify([t.url, t.profile, sel.sessionId, sel.sessionKey]) : '';
+    const sessionKey = () => retainedKey(state?.target, state?.selected);
+    const answerKey = req => JSON.stringify([sessionKey(), typeof req.id, req.id]);
+    const trackFocus = (node, key) => {
+      node.dataset.hermesFocus = key;
+      focusTargets.set(key, node);
+      return node;
     };
+    const requestFocus = (node, req, part) => trackFocus(node, JSON.stringify([answerKey(req), req.method, req.params, part]));
     const draft = () => drafts.get(sessionKey())?.text || '';
     // Re-asserting the same text without an edit gesture is not an edit — a
     // programmatic or send-time re-assert keeps the draft on the revision the
@@ -105,8 +121,6 @@
     // The retained transcript only ever belongs to one exact identity —
     // backend URL + profile + session id + session key. Anything less could
     // resurrect a different target's context as current.
-    const retainedKey = (t, sel) =>
-      (t && sel ? `${t.url}|${t.profile}|${sel.sessionId}|${sel.sessionKey}` : '');
     // Retained is display-only: it renders only while the SAME session is
     // still selected and no live conversation has replaced it. A generation
     // bump is exactly the disconnect being survived, so it cannot fence here.
@@ -119,6 +133,9 @@
     // selection: lost link, retry in flight, or reconnecting now.
     const recoverySurface = () => !state?.conversation && !!state?.selected
       && (state.status === 'error' || state.status === 'disconnected' || state.status === 'connecting');
+
+    const stopUnavailable = () => !!state?.selected
+      && (!state.conversation || !['bound', 'review'].includes(state.conversation.phase));
 
     textarea.addEventListener('input', () => setDraft(textarea.value, true));
     textarea.addEventListener('compositionstart', () => { composing = true; });
@@ -136,7 +153,7 @@
     });
     stopBtn.addEventListener('click', () => {
       const sel = state?.selected;
-      if (sel) api.command('stop', { sessionId: sel.sessionId, generation: state.generation }).catch(showError);
+      if (sel && !stopBtn.disabled) api.command('stop', { sessionId: sel.sessionId, generation: state.generation }).catch(showError);
     });
 
     async function send() {
@@ -186,12 +203,14 @@
     // + generation + pending request it was rendered for are all still live.
     function guard(requestId, fn) {
       const captured = { sessionId: state?.selected?.sessionId, generation: state?.generation };
+      const key = sessionKey();
+      const signature = JSON.stringify(state?.conversation?.pendingRequests?.find(r => r.id === requestId));
       return () => {
-        if (state?.selected?.sessionId !== captured.sessionId
-            || state?.generation !== captured.generation) return;
-        const still = (state?.conversation?.pendingRequests || []).some((r) => r.id === requestId);
-        if (!still) { render(); return; }
-        fn();
+        if (disposed || sessionKey() !== key || state?.generation !== captured.generation
+            || state?.conversation?.phase !== 'bound') return;
+        const still = state.conversation.pendingRequests.find(r => r.id === requestId);
+        if (!still || still.answerable === false || JSON.stringify(still) !== signature) { render(); return; }
+        fn(captured);
       };
     }
 
@@ -205,8 +224,18 @@
       if (convo) {
         const phase = PHASE_TEXT[convo.phase] || convo.phase;
         if (phase) bar.append(el('span', `hermes-phase ${convo.phase}`, phase));
+        if (convo.truncated?.replay) bar.append(el('span', 'hermes-phase review', 'Some earlier events are unavailable.'));
         if (convo.stats?.eventGaps > 0) {
           bar.append(el('span', 'hermes-phase review', `${convo.stats.eventGaps} event(s) missing — transcript may be incomplete`));
+        }
+        const error = convo.errors?.at(-1);
+        if (error) bar.append(el('span', 'hermes-phase review', error.message));
+        if (convo.phase === 'review') {
+          const captured = { sessionId: state.selected?.sessionId, generation: state.generation };
+          const acknowledge = trackFocus(el('button', 'secondary-button', 'Continue after review'), 'acknowledge-review');
+          acknowledge.type = 'button';
+          acknowledge.onclick = () => api.command('acknowledge-review', captured).catch(showError);
+          bar.append(acknowledge);
         }
         if (convo.statusLine?.text) bar.append(el('span', 'hermes-statusline', convo.statusLine.text));
       }
@@ -214,7 +243,7 @@
       // retry in flight becomes a passive chip, and a clean disconnect gets
       // Connect — never Connect and Reconnect side by side.
       const recover = (label) => {
-        const b = el('button', 'secondary-button hermes-retry', label);
+        const b = trackFocus(el('button', 'secondary-button hermes-retry', label), 'reconnect');
         b.type = 'button';
         b.onclick = () => api.command('connect', {}).catch(showError);
         return b;
@@ -222,11 +251,15 @@
       if (state.error) {
         bar.append(el('span', 'hermes-phase disconnected', `${state.error.code}: ${state.error.message}`));
         bar.append(recover('Reconnect'));
+      } else if (convo && ['review', 'blocked', 'disconnected'].includes(convo.phase)) {
+        bar.append(recover('Reconnect'));
       } else if (state.status === 'connecting') {
         bar.append(el('span', 'hermes-phase connecting', 'Reconnecting…'));
       } else if (state.status === 'disconnected' && t) {
         bar.append(recover('Connect'));
       }
+      if (stopUnavailable()) bar.append(el('span', 'hermes-phase disconnected',
+        'Work may still be running. Stop cannot be sent until this conversation is connected.'));
       // While the conversation's recovery surface is up, backend setup stays
       // reachable as a secondary, explicit choice — never a dead end.
       if (recoverySurface() && typeof onShowSetup === 'function') {
@@ -366,6 +399,22 @@
       head.append(el('span', 'hermes-card-kind', req.method),
         el('span', 'hermes-card-id', `#${String(req.id).slice(0, 40)}`));
       card.append(head);
+      if (req.answerable === false || state.conversation?.phase !== 'bound') {
+        const description = req.params?.description || req.params?.prompt;
+        if (description) card.append(el('div', 'hermes-card-body', description));
+        if (req.params?.command) card.append(el('pre', 'hermes-code', req.params.command));
+        for (const question of (Array.isArray(req.params?.questions) ? req.params.questions : [])) {
+          if (question?.question) card.append(el('div', 'hermes-question-text', question.question));
+        }
+      }
+      if (req.answerable === false) {
+        card.append(el('div', 'hermes-card-body', 'Recovered request: not answerable on this connection. Reconnect or answer it where it was raised.'));
+        return card;
+      }
+      if (state.conversation?.phase !== 'bound') {
+        card.append(el('div', 'hermes-card-body', 'Review the conversation or reconnect before answering.'));
+        return card;
+      }
       if (!req.attributed) {
         card.append(el('div', 'hermes-card-body', 'This request arrived without a session identity and cannot be answered safely.'));
         card.append(refuseRow(req, 'Dismiss'));
@@ -379,8 +428,9 @@
     }
 
     function clarifyBody(card, req) {
+      const key = answerKey(req);
       const body = el('div', 'hermes-card-body');
-      const held = answers.get(req.id) || {};
+      const held = answers.get(key) || {};
       const questions = Array.isArray(req.params?.questions) ? req.params.questions : [];
       for (const q of questions) {
         if (!q || typeof q.qid !== 'string') continue;
@@ -392,15 +442,18 @@
         input.placeholder = 'Your answer';
         input.value = held[q.qid] || '';
         input.dataset.qid = q.qid;
+        input.setAttribute('aria-label', q.question || q.qid);
+        requestFocus(input, req, q.qid);
         input.addEventListener('input', () => {
-          const cur = answers.get(req.id) || {};
+          const cur = answers.get(key) || {};
           cur[q.qid] = input.value;
-          answers.set(req.id, cur);
+          answers.set(key, cur);
         });
         wrap.append(input);
         for (const choice of (Array.isArray(q.choices) ? q.choices : [])) {
           const chip = el('button', 'hermes-choice', choice);
           chip.type = 'button';
+          requestFocus(chip, req, JSON.stringify([q.qid, choice]));
           chip.onclick = guard(req.id, () => { input.value = String(choice); input.dispatchEvent(new Event('input')); });
           wrap.append(chip);
         }
@@ -410,18 +463,20 @@
       const row = el('div', 'hermes-card-actions');
       const sendA = el('button', 'primary-button', 'Send answers');
       sendA.type = 'button';
-      sendA.onclick = guard(req.id, () => {
-        const heldNow = answers.get(req.id) || {};
+      requestFocus(sendA, req, 'send-answers');
+      sendA.onclick = guard(req.id, captured => {
+        const heldNow = answers.get(key) || {};
         const result = {};
         for (const q of questions) if (typeof q.qid === 'string') result[q.qid] = heldNow[q.qid] ?? null;
-        answers.delete(req.id);
-        api.command('answer-request', { requestId: req.id, sessionId: req.sessionId, result: { answers: result } }).catch(showError);
+        answers.delete(key);
+        api.command('answer-request', { requestId: req.id, sessionId: req.sessionId, generation: captured.generation, result: { answers: result } }).catch(showError);
       });
       const skip = el('button', 'secondary-button', 'Skip all');
       skip.type = 'button';
-      skip.onclick = guard(req.id, () => {
-        answers.delete(req.id);
-        api.command('answer-request', { requestId: req.id, sessionId: req.sessionId, result: { answers: null } }).catch(showError);
+      requestFocus(skip, req, 'skip');
+      skip.onclick = guard(req.id, captured => {
+        answers.delete(key);
+        api.command('answer-request', { requestId: req.id, sessionId: req.sessionId, generation: captured.generation, result: { answers: null } }).catch(showError);
       });
       row.append(skip, sendA);
       card.append(row, refuseRow(req));
@@ -440,39 +495,45 @@
         const b = el('button', choice === 'deny' ? 'secondary-button' : 'primary-button',
           { deny: 'Deny', once: 'Allow once', session: 'Allow this session', always: 'Always allow' }[choice]);
         b.type = 'button';
+        requestFocus(b, req, choice);
         // Deliberate one-time decision: no default selection, never a silent
         // permanent grant — 'always' is just another explicit click.
-        b.onclick = guard(req.id, () => api.command('answer-request',
-          { requestId: req.id, sessionId: req.sessionId, result: { choice } }).catch(showError));
+        b.onclick = guard(req.id, captured => api.command('answer-request',
+          { requestId: req.id, sessionId: req.sessionId, generation: captured.generation, result: { choice } }).catch(showError));
         row.append(b);
       }
       card.append(row, refuseRow(req));
     }
 
     function valueBody(card, req) {
+      const key = answerKey(req);
       const body = el('div', 'hermes-card-body');
       const label = req.params?.prompt || req.params?.description || `${req.method} is asking for a value.`;
       body.append(el('div', 'hermes-question-text', label));
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'hermes-answer-input';
-      input.value = (answers.get(req.id) || {}).value || '';
-      input.addEventListener('input', () => answers.set(req.id, { value: input.value }));
+      input.value = (answers.get(key) || {}).value || '';
+      input.setAttribute('aria-label', label);
+      requestFocus(input, req, 'value');
+      input.addEventListener('input', () => answers.set(key, { value: input.value }));
       body.append(input);
       card.append(body);
       const row = el('div', 'hermes-card-actions');
       const sendV = el('button', 'primary-button', 'Send');
       sendV.type = 'button';
-      sendV.onclick = guard(req.id, () => {
-        const v = (answers.get(req.id) || {}).value || '';
-        answers.delete(req.id);
-        api.command('answer-request', { requestId: req.id, sessionId: req.sessionId, result: { value: v } }).catch(showError);
+      requestFocus(sendV, req, 'send-value');
+      sendV.onclick = guard(req.id, captured => {
+        const v = (answers.get(key) || {}).value || '';
+        answers.delete(key);
+        api.command('answer-request', { requestId: req.id, sessionId: req.sessionId, generation: captured.generation, result: { value: v } }).catch(showError);
       });
       const decline = el('button', 'secondary-button', 'Decline');
       decline.type = 'button';
-      decline.onclick = guard(req.id, () => {
-        answers.delete(req.id);
-        api.command('answer-request', { requestId: req.id, sessionId: req.sessionId, result: { value: '' } }).catch(showError);
+      requestFocus(decline, req, 'decline');
+      decline.onclick = guard(req.id, captured => {
+        answers.delete(key);
+        api.command('answer-request', { requestId: req.id, sessionId: req.sessionId, generation: captured.generation, result: { value: '' } }).catch(showError);
       });
       row.append(decline, sendV);
       card.append(row, refuseRow(req));
@@ -488,8 +549,9 @@
       const row = el('div', 'hermes-card-actions hermes-refuse-row');
       const b = el('button', 'link-button hermes-refuse', label);
       b.type = 'button';
-      b.onclick = guard(req.id, () => api.command('refuse-request',
-        { requestId: req.id, sessionId: req.sessionId, message: `declined in companion app` }).catch(showError));
+      requestFocus(b, req, 'refuse');
+      b.onclick = guard(req.id, captured => api.command('refuse-request',
+        { requestId: req.id, sessionId: req.sessionId, generation: captured.generation, message: `declined in companion app` }).catch(showError));
       row.append(b);
       return row;
     }
@@ -499,13 +561,16 @@
       const sel = state.selected;
       const convo = state.conversation;
       const shown = convo || retained()?.convo;
-      // Only a LIVE bound/review conversation may send or answer — a retained
+      // Only a LIVE bound conversation may send or answer — a retained
       // transcript keeps the draft visible and the composer firmly disabled.
-      const usable = !!sel && convo && (convo.phase === 'bound' || convo.phase === 'review');
+      const usable = !!sel && convo && convo.phase === 'bound';
       textarea.disabled = !usable;
       sendBtn.disabled = !usable;
-      stopBtn.disabled = !(convo && convo.turn && convo.turn.streaming);
-      stopBtn.classList.toggle('hidden', !(convo && convo.turn && convo.turn.streaming));
+      const streaming = !!convo?.turn?.streaming;
+      const canStop = streaming && ['bound', 'review'].includes(convo.phase);
+      stopBtn.disabled = !canStop;
+      stopBtn.classList.toggle('hidden', !(streaming || stopUnavailable()));
+      stopBtn.textContent = !canStop && stopUnavailable() ? 'Stop unavailable' : 'Stop';
       // A selection or connection-generation change always reloads the draft —
       // the focused-typing guard must not pin the previous target's text onto
       // the new session.
@@ -535,10 +600,29 @@
 
     function render() {
       if (!state) return;
+      const active = document.activeElement;
+      const owned = root.contains(active);
+      if (focusMemory && (focusMemory.session !== sessionKey()
+          || (active && active !== document.body && active !== focusMemory.node && !owned))) focusMemory = null;
+      if (owned && (!focusMemory || active !== focusMemory.node)) {
+        focusMemory = { session: sessionKey(), key: active.dataset.hermesFocus || 'status', node: active };
+      }
+      focusTargets.clear();
+      trackFocus(textarea, 'message'); trackFocus(sendBtn, 'send');
+      trackFocus(stopBtn, 'stop'); trackFocus(bar, 'status');
       renderBar();
       renderTranscript();
       renderRequests();
       renderComposer();
+      if (focusMemory) {
+        const original = focusTargets.get(focusMemory.key);
+        const target = original && !original.disabled ? original
+          : focusTargets.get('acknowledge-review') || focusTargets.get('reconnect')
+            || (!textarea.disabled ? textarea : bar);
+        target.focus();
+        focusMemory.node = target;
+        if (!textarea.disabled) focusMemory = null;
+      }
     }
 
     function setState(next) {
@@ -547,7 +631,7 @@
       // a last-known transcript can survive for display. Retain the freshest
       // live conversation of the selected identity — one bounded entry —
       // and drop it outright on an explicit target change.
-      const targetKey = next.target ? `${next.target.url}|${next.target.profile}` : '';
+      const targetKey = next.target ? JSON.stringify([next.target.url, next.target.profile]) : '';
       if (retainedView && retainedView.targetKey !== targetKey) retainedView = null;
       if (next.conversation && next.selected) {
         const row = (next.sessions || []).find((s) => (s.id || s.sessionId) === next.selected.sessionId);
@@ -559,9 +643,10 @@
         };
       }
       state = next;
-      const sig = JSON.stringify([next.status, next.generation, next.selected,
+      const sig = JSON.stringify([next.status, next.generation, next.target, next.selected,
         next.conversation?.transcript?.length, next.conversation?.turn?.text?.length,
-        next.conversation?.pendingRequests?.length, next.error?.code,
+        next.conversation?.pendingRequests, next.conversation?.requestOutcomes, next.error,
+        next.conversation?.statusLine, next.conversation?.errors,
         next.conversation?.lastSend?.outcome, next.conversation?.phase, next.uncertain]);
       // Draft clearing is origin-aware and ack-driven — see dispatchSend. A
       // delivered lastSend (fresh, replayed, or hydrated) only drives the
@@ -586,6 +671,7 @@
         drafts.clear();
         answers.clear();
         retainedView = null;
+        focusMemory = null; focusTargets.clear();
         root.innerHTML = '';
       },
     };

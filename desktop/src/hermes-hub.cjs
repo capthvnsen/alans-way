@@ -276,14 +276,14 @@ function createHermesHub(deps = {}) {
 
   // ── command surface (the ONLY methods IPC may reach) ──────────────────────
   const commands = {
-    // Configure or re-point at a backend. URL changes drop the connection and
-    // stored tokens — a different origin means different credentials.
+    // Configure or re-point at a backend. URL/profile changes retire the
+    // connection context and its stored credentials.
     async 'configure'(v) {
       invalidateAuth(); // any reconfigure invalidates pending credential work
       const url = asString(v.url, 2000);
       const profile = asString(v.profile, 200);
       const next = remote.normalizeBaseUrl(url);
-      const moved = state.base && (state.base.origin !== next.origin || state.base.prefix !== next.prefix);
+      const moved = state.base && (state.base.origin !== next.origin || state.base.prefix !== next.prefix || state.profile !== profile);
       if (moved) { teardownConnection('Backend changed.'); state.tokens = null; state.principal = null; state.localToken = ''; state.uncertain.clear(); }
       state.base = next; state.profile = profile;
       if (typeof v.localToken === 'string') state.localToken = v.localToken.slice(0, 4000);
@@ -484,12 +484,12 @@ function createHermesHub(deps = {}) {
     async 'stop'(v) { return { ok: true, result: await fencedController(v).stop() }; },
 
     async 'answer-request'(v) {
-      const c = fencedController(v);
+      const c = fencedController(v, true);
       return { ok: true, result: await c.answerRequest(asString(v.requestId, 300), v.result) };
     },
 
     async 'refuse-request'(v) {
-      const c = fencedController(v);
+      const c = fencedController(v, true);
       return {
         ok: true,
         result: await c.refuseRequest(asString(v.requestId, 300), {
@@ -497,6 +497,10 @@ function createHermesHub(deps = {}) {
           message: asString(v.message, 500) || 'declined in companion app',
         }),
       };
+    },
+
+    async 'acknowledge-review'(v) {
+      return { ok: true, result: fencedController(v, true).acknowledgeReview() };
     },
 
     async 'set-draft'(v) {
@@ -527,8 +531,9 @@ function createHermesHub(deps = {}) {
 
   // Commands carrying {sessionId, generation} only reach the controller that
   // was selected when the renderer drew the control.
-  function fencedController(v) {
-    if (Number.isSafeInteger(v?.generation) && v.generation !== state.generation) {
+  function fencedController(v, requireGeneration = false) {
+    if ((requireGeneration && !Number.isSafeInteger(v?.generation))
+        || (Number.isSafeInteger(v?.generation) && v.generation !== state.generation)) {
       throw new HubError('stale_generation', 'The connection changed since this control was drawn.');
     }
     const expected = asString(v?.sessionId, 300);

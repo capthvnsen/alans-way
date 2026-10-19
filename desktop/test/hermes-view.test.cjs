@@ -44,6 +44,8 @@ class FakeNode {
     } };
   }
   append(...kids) { for (const k of kids) { if (k) { k.parent = this; this.children.push(k); } } }
+  focus() { if (!this.disabled) document.activeElement = this; }
+  contains(node) { return node === this || this.findAll(n => n === node).length > 0; }
   setAttribute(k, v) { this.attributes[k] = String(v); }
   addEventListener(t, f) { (this.listeners[t] ||= []).push(f); }
   dispatchEvent(e) { for (const f of this.listeners[e.type] || []) f.call(this, e); return true; }
@@ -61,6 +63,7 @@ class FakeNode {
 }
 const document = {
   activeElement: null,
+  body: new FakeNode('body'),
   createElement: (tag) => new FakeNode(tag),
   createDocumentFragment: () => new FakeFragment(),
 };
@@ -208,7 +211,7 @@ test('clarify card renders exact qids; answer dispatches once and is fenced to g
   const sendA = card.findAll((n) => n.tagName === 'BUTTON' && n.textContent === 'Send answers')[0];
   sendA.click();
   await new Promise((r) => setImmediate(r));
-  assert.deepEqual(rec.calls.at(-1).value, { requestId: 'req-9', sessionId: 's-1', result: { answers: { color: 'green' } } });
+  assert.deepEqual(rec.calls.at(-1).value, { requestId: 'req-9', sessionId: 's-1', generation: 7, result: { answers: { color: 'green' } } });
   // The same card after a reconnect (new generation) is inert.
   rec.emit({ ...st, generation: 8 });
   sendA.click();
@@ -235,7 +238,7 @@ test('approval offers deliberate choices; unsupported requests stay visibly pend
   assert.ok(cards[0].textContent.includes('rm -rf build'));
   const onceBtn = cards[0].findAll((n) => n.tagName === 'BUTTON' && n.textContent === 'Allow once')[0];
   onceBtn.click();
-  assert.deepEqual(rec.calls.at(-1).value, { requestId: 'a1', sessionId: 's-1', result: { choice: 'once' } });
+  assert.deepEqual(rec.calls.at(-1).value, { requestId: 'a1', sessionId: 's-1', generation: 7, result: { choice: 'once' } });
   assert.ok(cards[1].textContent.includes('not supported'));
   assert.equal(cards[1].findAll((n) => n.tagName === 'BUTTON').length >= 1, true);
 });
@@ -997,12 +1000,13 @@ function fakeGateway() {
   let seq = 0, creates = 0;
   const held = [];
   const gw = { input: s2c, output: c2s, socket: { close() { try { s2c.end(); } catch {} } },
-    sent: [], holdSubmits: false, onSubmit: null,
+    sent: [], responses: [], holdSubmits: false, onSubmit: null,
     release() { for (const fn of held.splice(0)) fn(); } };
   const write = (f) => s2c.write(JSON.stringify(f) + '\n');
   const event = (type, sessionId, payload = {}) =>
     write({ jsonrpc: '2.0', method: 'event',
       params: { type, session_id: sessionId, seq: ++seq, payload } });
+  gw.request = (id, method, params) => write({ jsonrpc: '2.0', id, method, params });
   gw.ready = () => write({ jsonrpc: '2.0', method: 'event',
     params: { type: 'gateway.ready', payload: { replay_epoch: 'ep-1' } } });
   let buf = '';
@@ -1017,6 +1021,7 @@ function fakeGateway() {
   });
   function answer(f) {
     const { id, method, params = {} } = f;
+    if (!method) { gw.responses.push(f); return; }
     const ok = (result) => write({ jsonrpc: '2.0', id, result });
     if (method === 'gateway.capabilities')
       return ok({ per_session_exclusive_submit: true });
@@ -1417,4 +1422,198 @@ test('a send typed before the drop stays disabled — reconnect alone never rese
   assert.equal(rec.calls.filter((c) => c.name === 'send').length, 0, 'no replay across the whole drop/recovery cycle');
   assert.equal(textarea.value, 'typed but never sent', 'the draft was preserved for the user');
   assert.equal(root.findAll((n) => n.tagName === 'BUTTON' && n.className.includes('hermes-send'))[0].disabled, false);
+});
+
+const reviewButton = (root, text) => root.findAll(n => n.tagName === 'BUTTON' && n.textContent === text)[0];
+const reviewInput = root => root.findAll(n => n.tagName === 'INPUT')[0];
+const editReview = (node, text) => { node.value = text; node.dispatchEvent(new FakeEvent('input')); };
+
+for (const field of ['url', 'sessionKey']) test(`message drafts are isolated by exact ${field}`, async () => {
+  const a = baseState({ target: { url: 'http://gw.example', label: 'gw.example', profile: 'default' } });
+  const s = view(a); await tick();
+  try {
+    editReview(s.textarea, 'private unsent draft');
+    const b = field === 'url' ? { ...a, target: { ...a.target, url: 'https://gw.example' } }
+      : { ...a, selected: { ...a.selected, sessionKey: 'other-stored-session' } };
+    s.rec.emit({ ...b, generation: 8 });
+    assert.equal(s.textarea.value, '');
+    s.rec.emit({ ...a, generation: 9 }); assert.equal(s.textarea.value, 'private unsent draft');
+  } finally { s.v.dispose(); }
+});
+
+for (const boundary of ['backend', 'profile', 'session']) test(`answer drafts do not cross the ${boundary} boundary with a reused request id`, async () => {
+  const request = { id: 'r1', method: 'secret', sessionId: 's-1', attributed: true, supported: true, params: { prompt: 'Server A secret' } };
+  const a = baseState({ conversation: { ...baseState().conversation, pendingRequests: [request] } });
+  const s = view(a); await tick();
+  try {
+    editReview(reviewInput(s.root), 'A-only-secret-draft');
+    const b = { ...a, generation: 8, target: { ...a.target }, selected: { ...a.selected } };
+    if (boundary === 'backend') b.target.url = 'https://other.example';
+    if (boundary === 'profile') b.target.profile = 'other';
+    if (boundary === 'session') b.selected.sessionKey = 'other-key';
+    s.rec.emit({ ...b, status: 'disconnected', conversation: null });
+    s.rec.emit(b);
+    assert.equal(reviewInput(s.root).value, '');
+    const send = s.root.findAll(n => n.hasClass?.('hermes-card'))[0].findAll(n => n.tagName === 'BUTTON' && n.textContent === 'Send')[0];
+    send.click(); await tick(); assert.equal(s.rec.calls.at(-1).value.result.value, '');
+    s.rec.emit({ ...a, generation: 9 }); assert.equal(reviewInput(s.root).value, 'A-only-secret-draft');
+  } finally { s.v.dispose(); }
+});
+
+for (const changeId of [true, false]) test(`coalesced request replacement rerenders ${changeId ? 'new identity' : 'changed contents'} and fences the old control`, async () => {
+  const request = { id: 'r-old', method: 'approval', sessionId: 's-1', attributed: true, supported: true, params: { description: 'OLD command', choices: ['deny', 'once'] } };
+  const a = baseState({ conversation: { ...baseState().conversation, pendingRequests: [request] } });
+  const s = view(a); await tick();
+  try {
+    const old = reviewButton(s.root, 'Allow once');
+    s.rec.emit({ ...a, conversation: { ...a.conversation, pendingRequests: [{ ...request, id: changeId ? 'r-new' : request.id, params: { ...request.params, description: 'NEW command' } }] } });
+    assert.ok(s.root.textContent.includes('NEW command')); assert.ok(!s.root.textContent.includes('OLD command'));
+    old.click(); assert.equal(s.rec.calls.length, 0);
+    reviewButton(s.root, 'Allow once').click(); assert.equal(s.rec.calls.at(-1).value.generation, 7);
+  } finally { s.v.dispose(); }
+});
+
+test('recovered requests are honest and noninteractive until the wire can answer them', async () => {
+  const request = { id: 'r1', method: 'approval', sessionId: 's-1', attributed: true, supported: true, answerable: false, replayed: true, params: { choices: ['once', 'deny'] } };
+  const a = baseState({ conversation: { ...baseState().conversation, pendingRequests: [request] } });
+  const s = view(a); await tick();
+  try {
+    assert.match(s.root.textContent, /not answerable on this connection/i);
+    assert.equal(reviewButton(s.root, 'Allow once'), undefined);
+    s.rec.emit({ ...a, conversation: { ...a.conversation, pendingRequests: [{ ...request, answerable: true }] } });
+    reviewButton(s.root, 'Allow once').click(); assert.equal(s.rec.calls.length, 1);
+  } finally { s.v.dispose(); }
+});
+
+test('review has an explicit acknowledgement and blocked has a reconnect path', async () => {
+  const a = baseState({ conversation: { ...baseState().conversation, phase: 'review' } });
+  const s = view(a); await tick();
+  try {
+    assert.equal(s.textarea.disabled, true);
+    reviewButton(s.root, 'Continue after review').click();
+    assert.deepEqual(s.rec.calls.at(-1), { name: 'acknowledge-review', value: { sessionId: 's-1', generation: 7 } });
+    s.rec.emit({ ...a, conversation: { ...a.conversation, phase: 'blocked' } });
+    assert.equal(s.textarea.disabled, true); reviewButton(s.root, 'Reconnect').click();
+    assert.equal(s.rec.calls.at(-1).name, 'connect');
+  } finally { s.v.dispose(); }
+});
+
+test('disconnected Stop stays visible with an honest unavailable state and works after reconnect', async () => {
+  const a = baseState({ conversation: { ...baseState().conversation, turn: { streaming: true, text: 'Working', tools: [] } } });
+  const s = view(a); await tick();
+  try {
+    s.rec.emit(droppedFrom(a, { uncertain: null }));
+    const stop = s.root.querySelector('.hermes-stop');
+    assert.equal(stop.hasClass('hidden'), false); assert.equal(stop.disabled, true);
+    assert.match(s.root.textContent, /work may still be running/i);
+    stop.click(); assert.equal(s.rec.calls.length, 0);
+    s.rec.emit({ ...a, generation: 9 });
+    assert.equal(stop.disabled, false); stop.click();
+    assert.deepEqual(s.rec.calls.at(-1), { name: 'stop', value: { sessionId: 's-1', generation: 9 } });
+  } finally { s.v.dispose(); }
+});
+
+test('status errors and request updates have live regions', async () => {
+  const s = view(baseState()); await tick();
+  try {
+    assert.equal(s.root.querySelector('.hermes-bar').attributes['aria-live'], 'polite');
+    assert.equal(s.root.querySelector('.hermes-requests').attributes['aria-live'], 'polite');
+    assert.equal(s.root.querySelector('.hermes-send-warn').attributes['aria-live'], 'polite');
+  } finally { s.v.dispose(); }
+});
+
+test('reconnect restores composer focus without stealing focus from outside the pane', async () => {
+  const a = baseState(); const s = view(a); await tick();
+  try {
+    s.textarea.focus(); s.rec.emit(droppedFrom(a));
+    assert.equal(document.activeElement, reviewButton(s.root, 'Reconnect'));
+    s.rec.emit({ ...droppedFrom(a), status: 'connecting', error: null });
+    s.rec.emit({ ...a, generation: 9 });
+    assert.equal(document.activeElement, s.textarea);
+    s.rec.emit(droppedFrom(a));
+    const outside = new FakeNode('button'); outside.focus();
+    s.rec.emit({ ...a, generation: 10 }); assert.equal(document.activeElement, outside);
+  } finally { s.v.dispose(); document.activeElement = null; }
+});
+
+test('a focused answer survives request rendering and reconnect for the exact target', async () => {
+  const request = { id: 'r1', method: 'secret', sessionId: 's-1', attributed: true, supported: true, params: { prompt: 'Secret' } };
+  const a = baseState({ conversation: { ...baseState().conversation, pendingRequests: [request] } });
+  const s = view(a); await tick();
+  try {
+    editReview(reviewInput(s.root), 'kept'); reviewInput(s.root).focus();
+    s.rec.emit(droppedFrom(a)); s.rec.emit({ ...a, generation: 9 });
+    assert.equal(document.activeElement, reviewInput(s.root)); assert.equal(reviewInput(s.root).value, 'kept');
+  } finally { s.v.dispose(); document.activeElement = null; }
+});
+
+for (const action of ['Allow once', 'Refuse']) test(`stale ${action} cannot cross a completed reconnect before the coalesced push`, async () => {
+  let gw;
+  const remote = { normalizeBaseUrl, probe: async () => ({ authRequired: false, authFlows: [], authProviders: [] }), wsUrl: () => 'ws://fake',
+    connectSocket: async () => { gw = fakeGateway(); setImmediate(() => gw.ready()); return { input: gw.input, output: gw.output, socket: gw.socket }; } };
+  const hub = createHermesHub({ remote }); let v;
+  try {
+    await hub.command('configure', { url: 'http://gw.test', localToken: 'fixture' }); await hub.command('connect'); await hub.command('new-session');
+    gw.request('reused-id', 'approval', { session_id: 'sess-1', description: 'Old action', choices: ['once', 'deny'] });
+    const old = hub.getState(), calls = [], root = new FakeNode('div');
+    v = createHermesView({ root, api: { getState: async () => old, onState: () => () => {}, command: (name, value) => { calls.push({ name, value }); return hub.command(name, value); } } });
+    await tick(); const oldButton = reviewButton(root, action); assert.ok(oldButton);
+    await hub.command('disconnect'); await hub.command('connect'); await hub.command('new-session');
+    gw.request('reused-id', 'approval', { session_id: 'sess-1', description: 'New action', choices: ['once', 'deny'] });
+    oldButton.click(); await tick();
+    assert.equal(calls[0].value.generation, old.generation);
+    assert.deepEqual(gw.responses, [], 'stale UI must not answer or refuse the new wire request');
+    v.setState(hub.getState()); reviewButton(root, action).click(); await tick();
+    assert.equal(gw.responses.length, 1); assert.equal(gw.responses[0].id, 'reused-id');
+  } finally { v?.dispose(); hub.dispose(); }
+});
+
+test('changed approval contents do not inherit keyboard focus from the prior decision', async () => {
+  const request = { id: 'r1', method: 'approval', sessionId: 's-1', attributed: true, supported: true, params: { description: 'Old action', choices: ['once'] } };
+  const a = baseState({ conversation: { ...baseState().conversation, pendingRequests: [request] } });
+  const s = view(a); await tick();
+  try {
+    reviewButton(s.root, 'Allow once').focus();
+    s.rec.emit({ ...a, conversation: { ...a.conversation, pendingRequests: [{ ...request, params: { ...request.params, description: 'New action' } }] } });
+    assert.equal(document.activeElement, s.textarea);
+    assert.equal(s.rec.calls.length, 0);
+  } finally { s.v.dispose(); document.activeElement = null; }
+});
+
+test('review acknowledgement leaves the missing-history warning visible', async () => {
+  const a = baseState({ conversation: { ...baseState().conversation, phase: 'review', truncated: { replay: true } } });
+  const s = view(a); await tick();
+  try {
+    reviewButton(s.root, 'Continue after review').click();
+    s.rec.emit({ ...a, conversation: { ...a.conversation, phase: 'bound' } });
+    assert.equal(s.textarea.disabled, false);
+    assert.match(s.root.textContent, /earlier events are unavailable/);
+  } finally { s.v.dispose(); }
+});
+
+test('a late recovered request does not take focus back from the restored composer', async () => {
+  const request = { id: 'r1', method: 'secret', sessionId: 's-1', attributed: true, supported: true, params: { prompt: 'Secret' } };
+  const a = baseState({ conversation: { ...baseState().conversation, pendingRequests: [request] } });
+  const s = view(a); await tick();
+  try {
+    reviewInput(s.root).focus(); s.rec.emit(droppedFrom(a));
+    s.rec.emit({ ...a, generation: 9, conversation: { ...a.conversation, pendingRequests: [{ ...request, answerable: false }] } });
+    assert.equal(document.activeElement, s.textarea);
+    s.rec.emit({ ...a, generation: 9 });
+    assert.equal(document.activeElement, s.textarea);
+  } finally { s.v.dispose(); document.activeElement = null; }
+});
+
+test('Stop remains honestly unavailable while a fresh controller is attaching', async () => {
+  const a = baseState({ conversation: { ...baseState().conversation, turn: { streaming: true, text: 'Working', tools: [] } } });
+  const s = view(a); await tick();
+  try {
+    s.rec.emit(droppedFrom(a));
+    s.rec.emit({ ...a, generation: 9, conversation: { ...a.conversation, phase: 'binding', turn: null } });
+    const stop = s.root.querySelector('.hermes-stop');
+    assert.equal(stop.hasClass('hidden'), false); assert.equal(stop.disabled, true);
+    assert.match(s.root.textContent, /work may still be running/i);
+    s.rec.emit({ ...a, generation: 9, conversation: { ...a.conversation, turn: null } });
+    assert.equal(stop.hasClass('hidden'), true, 'a fresh idle snapshot is authoritative');
+  } finally { s.v.dispose(); }
 });

@@ -725,3 +725,123 @@ test('controller works under Electron-as-Node (embedded Node 24)', { timeout: 30
   assert.equal(code, 0, `electron-as-node run failed: ${err}\n${out}`);
   assert.match(out, /ELECTRON-CONVERSATION-PASS/);
 });
+
+test('binding does not append a completion already in the activation snapshot', async () => {
+  const gw = new FakeGateway().bindDefaults();
+  gw.on('session.activate', () => {
+    gw.event('message.complete', 'sess-A', 1, { text: 'Finished answer', status: 'complete' });
+    return { session_id: 'sess-A', session_key: 'key-A', messages: [{ role: 'assistant', text: 'Finished answer' }], open_requests: [] };
+  });
+  gw.on('session.events.since', () => ({ epoch: EPOCH, events: [], open_requests: [], latest_seq: 1, truncated: false }));
+  const c = makeConv(gw);
+  try {
+    await c.bind({ expectedEpoch: EPOCH });
+    assert.deepEqual(c.getState().transcript.map(row => row.text), ['Finished answer']);
+    assert.equal(c.getState().needsReview, true, 'the snapshot has no cursor to disambiguate concurrent updates');
+    assert.equal(c.getState().errors.at(-1).code, 'activation_overlap');
+    await assert.rejects(c.send('before reviewing'), e => e.code === 'needs_review');
+  } finally { c.dispose(); gw.end(); }
+});
+
+test('binding preserves completions arriving after the activation snapshot while replay is pending', async () => {
+  const gw = new FakeGateway().bindDefaults({ transcript: [{ role: 'assistant', text: 'Earlier' }] });
+  gw.on('session.events.since', () => {
+    gw.event('message.complete', 'sess-A', 1, { text: 'Later', status: 'complete' });
+    return { epoch: EPOCH, events: [], open_requests: [], latest_seq: 1, truncated: false };
+  });
+  const c = makeConv(gw);
+  try {
+    await c.bind({ expectedEpoch: EPOCH });
+    assert.deepEqual(c.getState().transcript.map(row => row.text), ['Earlier', 'Later']);
+  } finally { c.dispose(); gw.end(); }
+});
+
+test('snapshot-only requests remain visible and unavailable until a fresh wire request arrives', async () => {
+  const request = { id: 'replayed-request', method: 'approval', params: { session_id: 'sess-A', choices: ['once', 'deny'] } };
+  const gw = new FakeGateway().bindDefaults({ openRequests: [request] });
+  const c = makeConv(gw, { maxPendingRequests: 1 });
+  try {
+    await c.bind({ expectedEpoch: EPOCH });
+    assert.equal(c.getState().pendingRequests[0].answerable, false);
+    await assert.rejects(c.answerRequest(request.id, { choice: 'once' }), e => e.code === 'request_unavailable');
+    await assert.rejects(c.refuseRequest(request.id), e => e.code === 'request_unavailable');
+    assert.equal(c.getState().pendingRequests.length, 1);
+    assert.equal(c.getState().requestOutcomes.length, 0);
+    gw.request(request.id, request.method, request.params);
+    assert.equal(c.getState().pendingRequests[0].answerable, true);
+    await c.answerRequest(request.id, { choice: 'once' });
+    assert.equal(gw.received.filter(f => f.id === request.id && f.result?.choice === 'once').length, 1);
+    await assert.rejects(c.answerRequest(request.id, { choice: 'once' }), e => e.code === 'unknown_request');
+  } finally { c.dispose(); gw.end(); }
+});
+
+test('review acknowledgement enables explicit actions without concealing missing history', async () => {
+  const gw = new FakeGateway().bindDefaults();
+  gw.on('session.events.since', () => ({ epoch: EPOCH, events: [], open_requests: [], latest_seq: 50, truncated: true }));
+  gw.on('prompt.submit', () => ({ status: 'admitted' }));
+  const c = makeConv(gw);
+  try {
+    await c.bind({ expectedEpoch: EPOCH });
+    await assert.rejects(c.send('before review'), e => e.code === 'needs_review');
+    c.acknowledgeReview();
+    assert.equal(c.getState().phase, 'bound');
+    assert.equal(c.getState().truncated.replay, true);
+    assert.equal(c.getState().needsReview, false);
+    await c.send('after review');
+    assert.equal(gw.received.filter(f => f.method === 'prompt.submit').length, 1);
+    gw.ready('changed-epoch');
+    assert.throws(() => c.acknowledgeReview(), e => e.code === 'blocked');
+  } finally { c.dispose(); gw.end(); }
+});
+
+test('a snapshot-only request is withdrawn by its session cancellation event without a reply', async () => {
+  const request = { id: 'snapshot-cancel', method: 'approval', params: { session_id: 'sess-A', choices: ['once'] } };
+  const gw = new FakeGateway().bindDefaults({ openRequests: [request] }); const c = makeConv(gw);
+  try {
+    await c.bind({ expectedEpoch: EPOCH });
+    gw.cancelRequest(request.id, 'sess-A', 1);
+    assert.deepEqual(c.getState().pendingRequests, []);
+    assert.equal(c.getState().requestOutcomes.at(-1).outcome, 'withdrawn');
+    assert.equal(gw.received.some(f => f.id === request.id), false);
+  } finally { c.dispose(); gw.end(); }
+});
+
+test('a request already pending on the wire before controller creation can be answered after activation', async () => {
+  const request = { id: 'early-frame', method: 'approval', params: { session_id: 'sess-A', choices: ['once'] } };
+  const gw = new FakeGateway().bindDefaults({ openRequests: [request] });
+  gw.request(request.id, request.method, request.params);
+  const c = makeConv(gw);
+  try {
+    await c.bind({ expectedEpoch: EPOCH });
+    assert.equal(c.getState().pendingRequests[0].answerable, true);
+    await c.answerRequest(request.id, { choice: 'once' });
+    assert.equal(gw.received.filter(f => f.id === request.id && f.result?.choice === 'once').length, 1);
+  } finally { c.dispose(); gw.end(); }
+});
+
+test('the fresh replay request list supersedes older activation requests', async () => {
+  const request = { id: 'old-snapshot', method: 'approval', params: { session_id: 'sess-A', choices: ['once'] } };
+  const gw = new FakeGateway().bindDefaults({ openRequests: [request] });
+  gw.on('session.events.since', () => ({ epoch: EPOCH, events: [], open_requests: [], latest_seq: 0, truncated: false }));
+  const c = makeConv(gw);
+  try {
+    await c.bind({ expectedEpoch: EPOCH });
+    assert.deepEqual(c.getState().pendingRequests, []);
+  } finally { c.dispose(); gw.end(); }
+});
+
+test('a cancellation racing the replay response cannot resurrect a snapshot-only request', async () => {
+  const request = { id: 'cancel-during-replay', method: 'approval', params: { session_id: 'sess-A', choices: ['once'] } };
+  const gw = new FakeGateway().bindDefaults({ openRequests: [request] });
+  gw.on('session.events.since', () => {
+    gw.cancelRequest(request.id, 'sess-A', 1);
+    return { epoch: EPOCH, events: [], open_requests: [request], latest_seq: 1, truncated: false };
+  });
+  const c = makeConv(gw);
+  try {
+    await c.bind({ expectedEpoch: EPOCH });
+    assert.deepEqual(c.getState().pendingRequests, []);
+    assert.equal(c.getState().requestOutcomes.filter(r => r.id === request.id && r.outcome === 'withdrawn').length, 1);
+    assert.equal(gw.received.some(f => f.id === request.id), false);
+  } finally { c.dispose(); gw.end(); }
+});

@@ -58,7 +58,7 @@ const DEFAULT_LIMITS = Object.freeze({
 // Phases: detached → binding → bound | review | blocked | disconnected → disposed
 //   bound        — verified identity + epoch; send/stop/answer allowed
 //   review       — bound but replay/history proved incomplete; read-only until
-//                  the caller reviews (sends and answers are disabled)
+//                  acknowledgeReview() (sends and answers are disabled)
 //   blocked      — live contract drift (epoch change, identity/reclaim loss)
 //   disconnected — wire closed/eof/failed while bound (terminal for binding)
 //   disposed     — caller detached this controller's subscriptions
@@ -151,6 +151,8 @@ class HermesConversation extends EventEmitter {
     };
     this._sendInFlight = false;
     this._disposed = false;
+    this._bindingSnapshotReady = false;
+    this._activationPending = false;
     this._bindingEpoch = null;      // epoch observed while binding, before attested exists
 
     this._onEvent = (e) => this._handleWireEvent(e);
@@ -182,7 +184,7 @@ class HermesConversation extends EventEmitter {
       errors: structuredClone(s.errors),
       pendingRequests: [...s.pending.values()].map((r) => ({
         id: r.id, method: r.method, sessionId: r.sessionId,
-        attributed: r.attributed, supported: r.supported, replayed: r.replayed,
+        attributed: r.attributed, supported: r.supported, replayed: r.replayed, answerable: r.answerable,
         advertised: r.advertised, cancelReason: r.cancelReason ?? null,
         receivedAt: r.receivedAt, params: structuredClone(r.params),
       })),
@@ -249,6 +251,7 @@ class HermesConversation extends EventEmitter {
           'reviewed live session_id + session_key pair not in session.active_list');
       }
 
+      this._activationPending = true;
       const snap = await this.wire.call('session.activate', {
         session_id: this.identity.sessionId, omit_messages: !!omitMessages,
       });
@@ -259,6 +262,15 @@ class HermesConversation extends EventEmitter {
           && snap.session_key !== this.identity.sessionKey) {
         throw new ConversationError('identity_drift', 'session.activate returned a different session_key');
       }
+
+      // Activation is the history baseline. Events received before its reply
+      // must not also be appended to that history. The stock snapshot has no
+      // event cursor: a concurrent update cannot be placed exactly, so expose
+      // that ambiguity for review rather than claiming a complete transcript.
+      if (!omitMessages && Array.isArray(snap.messages)) this._hydrateTranscript(snap.messages);
+      if (isPlainObject(snap.inflight)) this._hydrateInflight(snap.inflight);
+      this._activationPending = false;
+      this._bindingSnapshotReady = true;
 
       // Replay check: epoch must match this wire's epoch; truncation is honest.
       const replay = await this.wire.call('session.events.since',
@@ -290,11 +302,12 @@ class HermesConversation extends EventEmitter {
         boundAt: new Date().toISOString(),
       });
 
-      if (!omitMessages && Array.isArray(snap.messages)) this._hydrateTranscript(snap.messages);
-      if (isPlainObject(snap.inflight)) this._hydrateInflight(snap.inflight);
-      for (const r of snap.open_requests || []) this._adoptReplayedRequest(r);
+      // The later replay response supersedes activation's older request list.
       for (const r of replay.open_requests) this._adoptReplayedRequest(r);
 
+      if (s.epochChanged || s.reclaimed || this._disposed || this.wire.state !== 'open') {
+        throw new ConversationError('blocked', 'connection or session changed during bind');
+      }
       s.phase = s.needsReview ? 'review' : 'bound';
       this._bindingEpoch = null;
       this._changed();
@@ -346,7 +359,7 @@ class HermesConversation extends EventEmitter {
 
   _hydrateInflight(inflight) {
     const s = this._s;
-    if (s.turn) return; // a live turn already started via events during binding
+    if (s.turn) return; // never replace a turn already observed live
     const turn = this._newTurn();
     turn.streaming = inflight.streaming === true;
     turn.user = typeof inflight.user === 'string' ? inflight.user : null;
@@ -381,6 +394,17 @@ class HermesConversation extends EventEmitter {
     if (s.phase !== 'bound' && !(s.phase === 'review' && what === 'stop')) {
       throw new ConversationError('not_bound', `${what}: controller is ${s.phase}`);
     }
+  }
+
+  acknowledgeReview() {
+    const s = this._s;
+    if (s.phase !== 'review' || this._disposed || s.epochChanged || s.reclaimed || this.wire.state !== 'open') {
+      throw new ConversationError('blocked', 'review acknowledgement requires a live reviewed session');
+    }
+    s.needsReview = false;
+    s.phase = 'bound';
+    this._changed();
+    return this.getState();
   }
 
   setDraft(text) {
@@ -465,6 +489,7 @@ class HermesConversation extends EventEmitter {
     this._requireOperable('answerRequest');
     const rec = this._findPending(id);
     if (!rec) throw new ConversationError('unknown_request', 'no pending request with that exact id', { id });
+    if (rec.answerable === false) throw new ConversationError('request_unavailable', 'request is not answerable on this connection');
     if (!rec.attributed) {
       throw new ConversationError('ambiguous_request',
         'request params carry no bound-session id; refusing to route an answer', { id });
@@ -497,6 +522,7 @@ class HermesConversation extends EventEmitter {
     this._requireOperable('refuseRequest');
     const rec = this._findPending(id);
     if (!rec) throw new ConversationError('unknown_request', 'no pending request with that exact id', { id });
+    if (rec.answerable === false) throw new ConversationError('request_unavailable', 'request is not answerable on this connection');
     if (!rec.attributed) {
       throw new ConversationError('ambiguous_request',
         'request params carry no bound-session id; refusing to route a refusal', { id });
@@ -618,6 +644,16 @@ class HermesConversation extends EventEmitter {
       return; // foreign/session-less events never enter bound state
     }
     if (s.phase === 'detached' || s.phase === 'blocked' || s.phase === 'disconnected') return;
+    if (s.phase === 'binding' && !this._bindingSnapshotReady) {
+      if (this._activationPending && !s.needsReview) {
+        s.needsReview = true;
+        this._pushError('activation_overlap', 'Updates arrived while attaching; the loaded history may be incomplete.');
+      }
+      if (Number.isSafeInteger(e.seq) && e.seq > 0) s.lastSeq = Math.max(s.lastSeq, e.seq);
+      if (e.type === 'request.cancel' && isPlainObject(e.payload)) this._noteOutcomeCancel(e.payload);
+      if (e.type === 'session.reclaimed') { s.reclaimed = true; s.phase = 'blocked'; }
+      return;
+    }
     this._applyEventParams({ type: e.type, session_id: e.sessionId, seq: e.seq, payload: e.payload });
     this._changed();
   }
@@ -779,14 +815,14 @@ class HermesConversation extends EventEmitter {
       return; // another session's question — another controller owns it
     }
     const attributed = sid === this.identity.sessionId;
-    if (s.pending.size >= this.limits.maxPendingRequests) {
+    const key = idKey(r.id);
+    if (key === null || (s.pending.has(key) && s.pending.get(key).answerable !== false)) return;
+    if (!s.pending.has(key) && s.pending.size >= this.limits.maxPendingRequests) {
       s.stats.droppedRequests += 1;
       this._pushError('pending_cap', 'pending request cap reached; request left at the wire layer');
       this._changed();
       return;
     }
-    const key = idKey(r.id);
-    if (key === null || s.pending.has(key)) return;
     const method = r.method;
     s.pending.set(key, {
       id: r.id, method,
@@ -794,7 +830,7 @@ class HermesConversation extends EventEmitter {
       attributed,
       supported: Object.prototype.hasOwnProperty.call(ANSWER_SHAPES, method),
       advertised: s.attested ? s.attested.serverRequestMethods.includes(method) : null,
-      replayed: false,
+      replayed: false, answerable: true,
       params: structuredClone(isPlainObject(r.params) ? r.params : {}),
       receivedAt: new Date().toISOString(),
     });
@@ -809,7 +845,15 @@ class HermesConversation extends EventEmitter {
       s.pending.get(key).replayed = true;
       return;
     }
+    if (s.outcomes.some(out => idKey(out.id) === key && out.outcome === 'withdrawn')) return;
     const params = isPlainObject(r.params) ? r.params : {};
+    const live = (this.wire.pendingServerRequests || []).find(request => idKey(request.id) === key
+      && request.method === r.method && request.sessionId === this.identity.sessionId);
+    if (live) {
+      this._handleServerRequest(live);
+      if (s.pending.has(key)) s.pending.get(key).replayed = true;
+      return;
+    }
     if (params.session_id !== undefined && params.session_id !== this.identity.sessionId) {
       s.stats.foreignRequests += 1;
       return;
@@ -825,7 +869,7 @@ class HermesConversation extends EventEmitter {
       attributed: params.session_id === undefined || params.session_id === this.identity.sessionId,
       supported: Object.prototype.hasOwnProperty.call(ANSWER_SHAPES, r.method),
       advertised: s.attested ? s.attested.serverRequestMethods.includes(r.method) : null,
-      replayed: true,
+      replayed: true, answerable: false,
       params: structuredClone(params),
       receivedAt: new Date().toISOString(),
     });
@@ -852,7 +896,18 @@ class HermesConversation extends EventEmitter {
     // annotate the existing outcome entry.
     const key = idKey(payload.id);
     const rec = key === null ? undefined : this._s.pending.get(key);
-    if (rec) rec.cancelReason = payload.reason ?? null;
+    if (rec) {
+      rec.cancelReason = payload.reason ?? null;
+      // Snapshot-only requests have no wire record to emit a withdrawal.
+      if (rec.answerable === false) {
+        this._takePending(rec.id);
+        this._recordOutcome(rec, 'withdrawn');
+      }
+    } else if (this._s.phase === 'binding' && idKey(payload.id) !== null
+        && !this._s.outcomes.some(out => idKey(out.id) === idKey(payload.id))) {
+      this._recordOutcome({ id: payload.id, method: payload.method || 'request',
+        sessionId: this.identity.sessionId, cancelReason: payload.reason ?? null }, 'withdrawn');
+    }
   }
 
   _findPending(id) {

@@ -34,6 +34,7 @@ function fakeController(identity) {
   c.bind = async () => { c.calls.push('bind'); c.phase = 'bound'; c.emit('change'); };
   c.setDraft = (t) => { c.draftText = t; };
   c.send = async () => { c.calls.push('send'); return { status: 'running' }; };
+  c.acknowledgeReview = () => { c.calls.push('acknowledge-review'); c.phase = 'bound'; c.emit('change'); };
   c.stop = async () => { c.calls.push('stop'); return { status: 'interrupted' }; };
   c.answerRequest = async (id, result) => { c.calls.push(['answer', id, result]); return { ok: true }; };
   c.refuseRequest = async (id, opts) => { c.calls.push(['refuse', id, opts]); return { ok: true }; };
@@ -281,4 +282,56 @@ test('deliberate disconnect of a live conn never projects a false error', async 
   assert.ok(!statuses.slice(at).includes('error'));
   assert.equal(hub.getState().generation, gen + 1);
   assert.equal(wire.state, 'closed');
+});
+
+// Independent disconnect review: renderer pushes can lag a completed reconnect.
+for (const command of ['answer-request', 'refuse-request']) test(`${command} requires the generation even before the renderer sees a reconnect`, async () => {
+  const { hub, controllers } = fixture({ authRequired: false });
+  try {
+    await hub.command('configure', { url: 'http://gw.test', localToken: 'fixture' });
+    await hub.command('connect'); await hub.command('select', { sessionId: 's-1' });
+    const old = hub.getState().generation;
+    await hub.command('disconnect'); await hub.command('connect');
+    const value = { sessionId: 's-1', requestId: 'reused-id', result: { choice: 'once' } };
+    for (const generation of [undefined, null, '1', old]) {
+      await assert.rejects(hub.command(command, { ...value, generation }), e => e.code === 'stale_generation');
+    }
+    assert.deepEqual(controllers.at(-1).calls, ['bind']);
+    await hub.command(command, { ...value, generation: hub.getState().generation });
+    assert.equal(controllers.at(-1).calls.at(-1)[0], command === 'answer-request' ? 'answer' : 'refuse');
+  } finally { hub.dispose(); }
+});
+
+test('profile changes retire sessions, controllers and uncertain sends before reconnect', async () => {
+  const { hub, wire, controllers } = fixture({ authRequired: false });
+  try {
+    await hub.command('configure', { url: 'http://gw.test', profile: 'profile-A', localToken: 'fixture' });
+    await hub.command('connect'); await hub.command('select', { sessionId: 's-1' });
+    const generation = hub.getState().generation;
+    controllers[0].lastSend = { text: 'A-only pending text', outcome: 'inflight', target: { sessionId: 's-1', sessionKey: 'k-1' } };
+    await hub.command('configure', { url: 'http://gw.test', profile: 'profile-B', localToken: 'fixture' });
+    assert.equal(wire.state, 'closed'); assert.equal(controllers[0].phase, 'disposed');
+    assert.equal(hub.getState().generation, generation + 1);
+    assert.deepEqual(hub.getState().sessions, []); assert.equal(hub.getState().conversation, null);
+    await hub.command('connect'); await hub.command('select', { sessionId: 's-1' });
+    assert.equal(hub.getState().uncertain, null);
+    assert.equal(controllers.at(-1).identity.profile, 'profile-B');
+  } finally { hub.dispose(); }
+});
+
+test('review acknowledgement is allowlisted and fenced to the rendered connection and session', async () => {
+  const { hub, controllers } = fixture({ authRequired: false });
+  try {
+    await hub.command('configure', { url: 'http://gw.test', localToken: 'fixture' });
+    await hub.command('connect'); await hub.command('select', { sessionId: 's-1' });
+    controllers[0].phase = 'review'; const generation = hub.getState().generation;
+    await assert.rejects(hub.command('acknowledge-review', { sessionId: 's-1' }), e => e.code === 'stale_generation');
+    await assert.rejects(hub.command('acknowledge-review', { sessionId: 's-2', generation }), e => e.code === 'stale_session');
+    assert.deepEqual(controllers[0].calls, ['bind']);
+    await hub.command('acknowledge-review', { sessionId: 's-1', generation });
+    assert.equal(hub.getState().conversation.phase, 'bound');
+    assert.equal(controllers[0].calls.at(-1), 'acknowledge-review');
+    await hub.command('disconnect'); await hub.command('connect');
+    await assert.rejects(hub.command('acknowledge-review', { sessionId: 's-1', generation }), e => e.code === 'stale_generation');
+  } finally { hub.dispose(); }
 });
