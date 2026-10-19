@@ -236,9 +236,10 @@ async function fakeBackend(cfg = {}) {
     url: `http://127.0.0.1:${server.address().port}`,
     wsPeerCount: () => wsPeers.size,
     // True iff any recorded request carries a credential bearing `mark` in the
-    // Authorization header or the JSON body (refresh_token lives in the body).
+    // Authorization header or a token field. Random PKCE verifiers can contain
+    // the mark by chance, so the whole body is not scanned.
     leaked: (mark) => hits.some((h) =>
-      (h.headers.authorization || '').includes(mark) || JSON.stringify(h.body || {}).includes(mark)),
+      (h.headers.authorization || '').includes(mark) || ['refresh_token', 'access_token'].some((k) => String(h.body?.[k] || '').includes(mark))),
     close: () => new Promise((r) => {
       for (const s of sockets) s.destroy();
       server.close(r);

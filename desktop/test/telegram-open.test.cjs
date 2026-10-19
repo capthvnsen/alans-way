@@ -65,7 +65,8 @@ test('a page resolution error reaches the caller', async () => {
 });
 
 const renderer = fs.readFileSync(path.join(__dirname, '../src/renderer.js'), 'utf8');
-const modal = renderer.slice(renderer.indexOf('function showAddBot()'), renderer.indexOf("$('search-toggle').onclick"));
+const modalStart = renderer.indexOf('function showAddBot()');
+const modal = renderer.slice(modalStart, renderer.indexOf('\nfunction ', modalStart));
 function modalFixture(command) {
   const nodes = [];
   let closes = 0;

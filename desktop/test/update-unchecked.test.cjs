@@ -17,7 +17,7 @@ function renderPlan(versions) {
   };
   const source = fs.readFileSync(require.resolve('../src/renderer.js'), 'utf8');
   const fn = source.slice(source.indexOf('function renderUpdateAll()'), source.indexOf('\nfunction closeUpdateAll()'));
-  vm.runInNewContext(fn + '\nrenderUpdateAll();', { $, state: { versions }, updateAllOpen: true, updateAllView: 'plan', scheduleLayout() {},
+  vm.runInNewContext(fn + '\nrenderUpdateAll();', { $, state: { versions }, updateAllOpen: true, updateAllView: 'plan', scheduleLayout() {}, setDialogVisible() {},
     element: (tag, className, textContent) => ({ textContent, className }) });
   return $;
 }
@@ -64,8 +64,10 @@ for (const route of ['DIY', 'hosted', 'settings']) {
       cloudComputer: null, cloudConnect: { ...require('../src/cloud-connect.cjs'), tailscaleCli: () => 'fixture-tailscale' },
       localRun: async () => ({ code: 0, out: JSON.stringify({ Peer: { fixture: { HostName: 'fixture', TailscaleIPs: ['192.0.2.7'], Online: true } } }) }),
       value: { vpsBrowser: { sshHost: 'new.invalid' } }, checkScriptPath: () => '', followVmRemoteUrl: () => '',
-      refreshVpsTabs() {}, applyLayout() {} };
+      refreshVpsTabs() {}, applyLayout() {}, persistSettingsPreferences: (next) => Object.assign(prefs, next) };
     vm.createContext(context);
+    const revisions = source.indexOf('const settingsWriteFields =');
+    if (revisions !== -1) vm.runInContext(source.slice(revisions, source.indexOf('\nfunction settingsWriteEntry(', revisions)), context);
     // Include the shared setter when present; on the regression base each
     // route still executes its original production save code.
     const setter = source.indexOf('function setServerConfig(');
