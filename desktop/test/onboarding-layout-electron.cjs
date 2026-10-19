@@ -1,3 +1,4 @@
+const { resizeWindow } = require('./window-fixture.cjs');
 // Isolated renderer fixture: real HTML/CSS and wizard, no main-process services.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -15,6 +16,7 @@ app.whenReady().then(async () => {
   const win = new BrowserWindow({ show: false, width: 1024, height: 640, useContentSize: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
   await win.loadFile(path.join(__dirname, '../src/index.html'));
+  const effective = await resizeWindow(win, 1024, 640);
   const renderer = fs.readFileSync(path.join(__dirname, '../src/renderer.js'), 'utf8');
   await win.webContents.executeJavaScript(`
     window.workspace = { command: async () => 'Fixture prompt' };
@@ -40,10 +42,10 @@ app.whenReady().then(async () => {
           && r.bottom <= innerHeight };
       }) };
     })()`);
-    assert.equal(result.width, 1024);
+    assert.equal(result.width, effective.width);
     assert.ok(result.buttons.length > 0);
     for (const button of result.buttons) assert.ok(button.reachable, `Step ${step}: ${JSON.stringify(button)}`);
-    console.log(`PASS: wizard step ${step} actions reachable at 1024×640`);
+    console.log(`PASS: wizard step ${step} actions reachable at ${effective.width}×${effective.height}`);
   }
   for (const platform of ['darwin', 'win32']) {
     const result = await win.webContents.executeJavaScript(`(async () => {

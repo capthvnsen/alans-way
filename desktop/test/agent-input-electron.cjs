@@ -1,3 +1,4 @@
+require('./window-fixture.cjs');
 // Run: ./node_modules/.bin/electron test/agent-input-electron.cjs
 // Uses a fresh temporary Electron profile, hidden windows and localhost only.
 // Add --visible to watch the test fixture without activating its window.
@@ -75,7 +76,8 @@ app.whenReady().then(async () => {
   await win.loadURL(`${root}/human`);
   const view = new WebContentsView({ webPreferences: { sandbox: true, backgroundThrottling: false } });
   win.contentView.addChildView(view);
-  view.setBounds({ x: 0, y: 100, width: 900, height: 550 });
+  const [width, height] = win.getContentSize();
+  view.setBounds({ x: 0, y: 100, width: Math.min(900, width), height: Math.min(550, height - 100) });
   view.setVisible(false);
   await view.webContents.loadURL(root);
   await bindRefs(view.webContents);

@@ -9,37 +9,47 @@
   <div id="shell">
     <aside class="sidebar">
       <div class="side-title drag"><span aria-label="Alan's Workspace">Alan's<br>Workspace</span></div>
-      <div class="side-caption"><span>YOUR AGENTS</span><span class="caption-actions"><button id="search-toggle" class="cap-button no-drag" title="Search bots" aria-label="Search bots">⌕</button><button id="add-bot" class="cap-button no-drag" title="Open a Telegram bot" aria-label="Open a Telegram bot">＋</button><button id="sort-bots" class="cap-button no-drag sort-button" title="Sort agents" aria-label="Sort agents" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M8 5v14m0 0-3.5-3.5M8 19l3.5-3.5M16 19V5m0 0-3.5 3.5M16 5l3.5 3.5"/></svg></button><span id="bot-count" class="cap-count">0</span></span>
+      <div class="side-caption"><span>YOUR AGENTS</span><span class="caption-actions"><button id="search-toggle" aria-expanded="false" aria-controls="bot-search-controls" class="cap-button no-drag" title="Search bots" aria-label="Search bots">⌕</button><button id="add-bot" class="cap-button no-drag" title="Open a Telegram bot" aria-label="Open a Telegram bot">＋</button><button id="sort-bots" class="cap-button no-drag sort-button" title="Sort agents" aria-label="Sort agents" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M8 5v14m0 0-3.5-3.5M8 19l3.5-3.5M16 19V5m0 0-3.5 3.5M16 5l3.5 3.5"/></svg></button><span id="bot-count" class="cap-count">0</span></span>
         <div id="sort-menu" class="sort-menu hidden" role="menu">
           <button data-sort="recent" role="menuitemradio">Recent first</button>
           <button data-sort="alpha" role="menuitemradio">Alphabetical</button>
           <button data-sort="manual" role="menuitemradio">Manual sort</button>
         </div>
       </div>
-      <input id="bot-search" class="search-input hidden" placeholder="Search your bots" aria-label="Search bots">
-      <div id="bot-list" class="bot-list"></div>
-      <div id="empty-bots" class="empty-bots"><span class="outline-mark">◔</span><h3>Your agents, together.</h3><p>Sign in to Telegram to load your bot chats here.</p><p class="muted">Drag to sort. Hide any bot.</p></div>
+      <div id="bot-search-controls" class="bot-search-controls hidden"><input id="bot-search" class="search-input hidden" placeholder="Search your agents" aria-label="Search agents" aria-controls="bot-list" aria-describedby="bot-search-status" autocomplete="off" spellcheck="false"><button id="bot-search-clear" class="search-clear hidden" aria-label="Clear agent search" title="Clear search">×</button></div>
+      <div id="bot-search-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div class="bot-region">
+        <div id="bot-list" class="bot-list" role="list" aria-label="Your agents"></div>
+        <div id="empty-bots" class="empty-bots"><span class="outline-mark">◔</span><h3>Your agents, together.</h3><p>Sign in to Telegram to load your bot chats here.</p><p class="muted">Drag to sort. Hide any bot.</p></div>
+        <div id="bot-search-empty" class="bot-search-empty hidden"><h3>No agents found</h3><p>Try another name or clear your search to see your agents.</p><button id="bot-search-reset" class="secondary-button">Clear search</button></div>
+      </div>
+      <div class="side-caption hermes-caption"><span>HERMES</span><span class="caption-actions"><button id="hermes-new" class="cap-button no-drag hidden" title="New Hermes session" aria-label="New Hermes session">＋</button></span></div>
+      <div id="hermes-list" class="hermes-list" role="list" aria-label="Hermes conversations"></div>
+      <div id="hermes-connect" class="hermes-connect hidden"></div>
       <div id="agent-presence" class="agent-presence hidden"><button id="presence-avatar" class="presence-avatar" aria-label="Customize selected bot avatar"></button><div id="presence-name" class="presence-name"></div><div id="presence-status" class="presence-status"></div><button id="settings-button" class="icon-button presence-gear no-drag" title="Workspace settings" aria-label="Workspace settings"><span class="settings-glyph">⚙</span><span class="status-dot bridge-dot"></span></button></div>
       <div class="side-bottom"><button id="settings-fallback" class="icon-button no-drag" title="Workspace settings" aria-label="Workspace settings"><span class="settings-glyph">⚙</span><span class="status-dot bridge-dot"></span></button></div>
     </aside>
     <section class="chat-pane">
       <header class="chat-header drag"><div id="chat-pill" class="chat-pill"><span id="chat-avatar" class="small-avatar no-drag" role="button" tabindex="0" aria-label="Customize bot avatar">◔</span><span id="chat-title">Telegram</span></div><button id="bots-toggle" class="icon-button" title="Hide agent list" aria-label="Toggle agent list" aria-pressed="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button></header>
       <div id="telegram-slot" class="telegram-slot"><div class="loading-label">Connecting to Telegram…</div></div>
+      <div id="hermes-pane" class="hermes-pane hidden" aria-label="Hermes conversation"><div id="hermes-setup" class="hermes-setup hidden"></div><div id="hermes-convo" class="hermes-convo"></div></div>
       <div id="telegram-note" class="chat-note">Sign in with your Telegram account. Your bots appear on the left.</div>
     </section>
     <div id="splitter" class="splitter" role="separator" aria-label="Resize chat" aria-orientation="vertical"></div>
     <section class="workspace-pane">
       <div id="bundle-banner" class="vm-banner hidden" role="status"><span id="bundle-banner-text"></span><button id="bundle-banner-dismiss" class="secondary-button">Dismiss</button></div>
       <div id="vm-banner" class="vm-banner hidden" role="status"><span id="vm-banner-text"></span><button id="vm-banner-retry" class="secondary-button">Retry</button></div>
-      <div class="tab-bar drag"><div id="tabs" class="tabs"></div><button id="new-tab" class="icon-button new-tab no-drag" title="New local browser tab (⌘T)">＋</button><div class="pane-actions"><button id="browser-collapse" class="icon-button" title="Hide browser pane" aria-label="Hide browser pane" aria-pressed="false"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/></svg></button><button id="vm-toggle" class="icon-button" title="Expand virtual desktop" aria-label="Expand virtual desktop" aria-pressed="false"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 10V8h3M14 8h3v3M17 14v2h-3M10 16H7v-2"/></svg></button></div></div>
-      <div id="browser-toolbar" class="browser-toolbar"><button id="back" class="icon-button" title="Back">←</button><button id="forward" class="icon-button" title="Forward">→</button><button id="reload" class="icon-button" title="Reload">↻</button><form id="address-form"><span class="address-symbol">⌕</span><input id="address" placeholder="Search or enter a URL" autocomplete="off" spellcheck="false" aria-label="Browser address"></form><div id="pinned-extensions" class="pinned-extensions" role="toolbar" aria-label="Pinned extensions"></div><button id="extensions-button" class="icon-button" title="Extensions" aria-label="Extensions"><svg viewBox="0 0 24 24"><path d="M9 4h3a3 3 0 1 1 6 0h3v6a3 3 0 1 0 0 6v5h-6a3 3 0 1 0-6 0H4v-6a3 3 0 1 1 0-6V4h5Z"/></svg></button><button id="downloads-button" class="icon-button" title="Recent downloads" aria-label="Recent downloads" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 4v10m0 0-4.5-4.5M12 14l4.5-4.5M4.5 19.5h15"/></svg></button><div id="downloads-menu" class="downloads-menu hidden" role="menu" aria-label="Recent downloads"></div><button id="ask-bot" class="icon-button" title="Discuss this page with your agent" aria-label="Discuss this page with your agent"><svg viewBox="0 0 24 24"><path d="M4 5.5h16v10H9l-5 4z"/><path d="M12 13V8.5m0 0-2.4 2.4M12 8.5l2.4 2.4"/></svg></button><button id="record-button" class="icon-button record-button" title="Record a task to teach your agent" aria-label="Record a task to teach your agent" aria-pressed="false"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5.5"/></svg></button><button id="control-button" class="control-button">You</button><button id="handoff-button" class="control-button hidden">Move to VPS</button></div>
+      <div class="tab-bar drag"><div id="tabs" class="tabs" role="tablist" aria-label="Browser tabs" aria-orientation="horizontal"></div><button id="tabs-menu" class="icon-button tabs-menu no-drag hidden" title="Show all tabs" aria-label="Show all tabs" aria-haspopup="true" aria-expanded="false" aria-controls="tabs-panel"><span aria-hidden="true">▾</span><span id="tabs-menu-count"></span></button><div id="tabs-panel" class="tabs-panel hidden" role="menu" aria-label="All tabs"></div><button id="new-tab" class="icon-button new-tab no-drag" title="New local browser tab (⌘T)">＋</button><div class="pane-actions"><button id="browser-collapse" class="icon-button" title="Hide browser pane" aria-label="Hide browser pane" aria-pressed="false"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/></svg></button><button id="vm-toggle" class="icon-button" title="Expand virtual desktop" aria-label="Expand virtual desktop" aria-pressed="false"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 10V8h3M14 8h3v3M17 14v2h-3M10 16H7v-2"/></svg></button></div></div>
+      <div class="toolbar-bound"><div id="browser-toolbar" class="browser-toolbar"><button id="back" class="icon-button" title="Back">←</button><button id="forward" class="icon-button" title="Forward">→</button><button id="reload" class="icon-button" title="Reload">↻</button><form id="address-form"><span class="address-symbol">⌕</span><input id="address" placeholder="Search or enter a URL" autocomplete="off" spellcheck="false" aria-label="Browser address"></form><div id="pinned-extensions" class="pinned-extensions" role="toolbar" aria-label="Pinned extensions"></div><button id="extensions-button" class="icon-button" title="Extensions" aria-label="Extensions"><svg viewBox="0 0 24 24"><path d="M9 4h3a3 3 0 1 1 6 0h3v6a3 3 0 1 0 0 6v5h-6a3 3 0 1 0-6 0H4v-6a3 3 0 1 1 0-6V4h5Z"/></svg></button><button id="downloads-button" class="icon-button" title="Recent downloads" aria-label="Recent downloads" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 4v10m0 0-4.5-4.5M12 14l4.5-4.5M4.5 19.5h15"/></svg></button><div id="downloads-menu" class="downloads-menu hidden" role="menu" aria-label="Recent downloads"></div><button id="ask-bot" class="icon-button" title="Discuss this page with your agent" aria-label="Discuss this page with your agent"><svg viewBox="0 0 24 24"><path d="M4 5.5h16v10H9l-5 4z"/><path d="M12 13V8.5m0 0-2.4 2.4M12 8.5l2.4 2.4"/></svg></button><button id="record-button" class="icon-button record-button" title="Record a task to teach your agent" aria-label="Record a task to teach your agent" aria-pressed="false"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5.5"/></svg></button><button id="control-button" class="control-button">You</button><button id="handoff-button" class="control-button hidden">Move to VPS</button></div></div>
       <div id="recording-banner" class="vm-banner recording hidden" role="status"><span class="recording-dot"></span><span id="recording-text"></span><label class="recording-keep"><input id="recording-keep" type="checkbox"> Keep typed text</label><button id="recording-discard" class="secondary-button">Discard</button><button id="recording-stop" class="secondary-button">Stop and save</button></div>
       <div id="needs-you-banner" class="vm-banner needs-you hidden" role="alert"><span id="needs-you-text"></span><button id="needs-you-give-back" class="secondary-button">Give back to agent</button></div>
       <div id="takeover-banner" class="vm-banner needs-you hidden" role="status"><span id="takeover-text"></span><button id="takeover-take-back" class="secondary-button">Take back</button></div>
+      <div id="browser-error-banner" class="vm-banner browser-error hidden" role="status"><span id="browser-error-text"></span><button id="browser-error-reload" class="secondary-button">Reload page</button></div>
       <div id="browser-slot" class="browser-slot">
         <div id="home" class="home">
           <div class="home-symbol"><span></span><span></span></div><h1>A place to get things done.</h1><p id="home-copy">Talk to your agents. Browse on your Mac.<br>Keep their computer in view.</p>
           <form id="home-search" class="home-search"><span>⌕</span><input id="home-address" placeholder="Search or enter a URL" aria-label="Open a browser page"><button type="submit" aria-label="Go">↗</button></form>
+          <button id="home-agent" type="button" class="home-agent hidden"><svg viewBox="0 0 19 25" aria-hidden="true"><path d="M1 1v19l5-5 4 9 4-2-4-8h7Z"/></svg><span class="home-agent-lead">Open a page for </span><span class="home-agent-name"></span></button>
           <div class="quick-links"><button data-url="https://www.google.com">Google <span>↗</span></button><button data-url="https://github.com">GitHub <span>↗</span></button></div>
           <div class="home-bottom"><span class="status-dot"></span><span>Local Chromium. Your own computer.</span></div>
         </div>
@@ -50,11 +60,23 @@
         <div id="preview-screen" class="preview-screen"></div>
       </div>
       <button id="preview-chip" class="preview-chip hidden" title="Show VM preview">▣ VPS</button>
-      <footer class="workspace-footer"><button id="version-label" class="version-label"></button><button id="update-all" class="update-all-button">Update</button><span id="build-badge" class="build-badge hidden"></span><button id="update-note" class="update-note hidden"></button><span id="workspace-status">Ready</span><span id="connection-status">Browser connector starting…</span></footer>
+      <footer class="workspace-footer"><button id="version-label" class="version-label"></button><button id="update-all" class="update-all-button">Update</button><span id="build-badge" class="build-badge hidden"></span><button id="update-note" class="update-note hidden"></button><button id="shortcuts-button" class="shortcuts-button" title="Keyboard shortcuts" aria-haspopup="dialog"><span aria-hidden="true">⌨</span> Shortcuts</button><span id="workspace-status" role="button" tabindex="0">Ready</span><span id="connection-status" role="button" tabindex="0">Browser connector starting…</span><button id="status-more" class="status-more" title="Workspace status" aria-label="Workspace and connector status" aria-haspopup="dialog" aria-expanded="false" aria-controls="status-panel">ⓘ</button></footer>
+      <div id="status-panel" class="status-panel hidden" role="dialog" aria-label="Workspace status"></div>
     </section>
   </div>
-  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-card"><div class="modal-heading"><h2 id="modal-title">Workspace settings</h2><button id="modal-close" class="icon-button" title="Close">×</button></div><div id="modal-body"></div></div></div>
-  <div id="update-popup" class="modal update-popup hidden" role="dialog" aria-modal="true" aria-labelledby="update-popup-title">
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1"><div class="modal-card"><div class="modal-heading"><h2 id="modal-title">Workspace settings</h2><button id="modal-close" class="icon-button" title="Close" aria-label="Close dialog">×</button></div><div id="modal-body"></div></div></div>
+  <div id="shortcut-dialog" class="modal shortcut-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="shortcut-title" aria-describedby="shortcut-intro" tabindex="-1">
+    <div class="modal-card shortcut-card">
+      <div class="shortcut-header"><div class="modal-heading"><div><span class="shortcut-eyebrow">WORKSPACE GUIDE <span id="shortcut-platform"></span></span><h2 id="shortcut-title">Keyboard shortcuts</h2></div><button id="shortcut-close" class="icon-button" aria-label="Close keyboard shortcuts" title="Close">×</button></div>
+        <p id="shortcut-intro" class="shortcut-intro">A few keys for getting around. Region shortcuts work only where you’re focused.</p>
+        <div class="shortcut-search-wrap"><span aria-hidden="true">⌕</span><input id="shortcut-search" type="search" placeholder="Search actions or keys…" aria-label="Search keyboard shortcuts" aria-controls="shortcut-results" aria-describedby="shortcut-status" autocomplete="off" spellcheck="false"><button id="shortcut-clear" class="icon-button hidden" aria-label="Clear shortcut search" title="Clear search">×</button></div>
+        <div id="shortcut-status" class="shortcut-status" role="status" aria-live="polite" aria-atomic="true"></div>
+      </div>
+      <div id="shortcut-results" class="shortcut-results" tabindex="0" role="region" aria-label="Keyboard shortcut results" aria-description="Use arrow keys, Page Up, Page Down, Home or End to browse shortcuts."></div>
+      <div class="shortcut-footer">Your page’s typing and editing keys stay with the page. <span><kbd>Esc</kbd> to close</span></div>
+    </div>
+  </div>
+  <div id="update-popup" class="modal update-popup hidden" role="dialog" aria-modal="true" aria-labelledby="update-popup-title" tabindex="-1">
     <div class="modal-card update-card">
       <h2 id="update-popup-title">Update available</h2>
       <p id="update-popup-copy" class="settings-note"></p>
@@ -62,7 +84,7 @@
       <div class="update-actions"><button id="update-later" class="secondary-button">Later</button><button id="update-now" class="primary-button">Update now</button></div>
     </div>
   </div>
-  <div id="update-all-popup" class="modal update-popup hidden" role="dialog" aria-modal="true" aria-labelledby="update-all-title">
+  <div id="update-all-popup" class="modal update-popup hidden" role="dialog" aria-modal="true" aria-labelledby="update-all-title" tabindex="-1">
     <div class="modal-card update-card">
       <h2 id="update-all-title">Update everything</h2>
       <p id="update-all-copy" class="settings-note"></p>
@@ -71,5 +93,5 @@
     </div>
   </div>
   <div id="toast" class="toast hidden" role="status"></div>
-  <script src="avatars.js"></script><script src="renderer.js"></script>
+  <script src="avatars.js"></script><script src="workspace-shortcuts.cjs"></script><script src="hermes-view.js"></script><script src="renderer.js"></script>
 </body></html>

@@ -12,6 +12,24 @@ const COMMITS = ['Place order', 'Place your order', 'Pay', 'Buy now', 'Buy-now',
   'Pay with Google Pay now', 'Confirm email and pay'];
 const LOOK_ALIKES = ['Add to cart', 'Send code', 'Send me a verification code', 'Pay with Google Pay', 'Pay with PayPal', 'Purchase history', 'Delete filter', 'Remove filter', 'Brand filter, remove',
   'Confirm email', 'Confirm password', 'Confirm your e-mail address', 'Address book', 'Comments', 'Replies', 'Booking details', 'Buy it again', 'Book a demo', 'Subscribe & Save', 'Subscribe and save', 'Cancel subscription', 'Repay', 'Sendung verfolgen'];
+const EXACT_EXCEPTIONS = ['  BUY IT AGAIN\t', 'buy-it-again', 'buy_it_again', 'Buy\u00a0it\u2003again',
+  '\tBOOK A DEMO  ', 'book-a-demo', 'subscribe-&-save', '  SUBSCRIBE_AND_SAVE\n', 'Subscribe\u202fand\u3000save'];
+const ADVERSE_EXCEPTIONS = ['Buy it again now', 'Buy it again2', 'Buy it agains', 'Instant Buy it again',
+  'Buy it again / checkout', 'Buy it again and purchase history', 'Book a demo now', 'Book a demography',
+  'Book a demo2', 'Instant Book a demo', 'Book a demo / checkout', 'Book a demo and confirm email',
+  'Subscribe & Save now', 'Subscribe and saver', 'Subscribe and save2', 'Instant Subscribe and save',
+  'Subscribe & Save / checkout', 'Subscribe and save and use this payment method', 'Buy-it-again-now',
+  'Book_a_demo_now', 'Subscribe-and-save-now', 'Buy it again / confirm payment', 'Book a demo / send',
+  'Subscribe & Save and purchase', 'Send code and send', 'Purchase history and purchase'];
+
+test('the three navigation exceptions cover complete labels, preserving consequential variants', () => {
+  for (const name of EXACT_EXCEPTIONS) assert.equal(looksLikeCommit(name), false, name);
+  for (const name of ADVERSE_EXCEPTIONS) assert.equal(looksLikeCommit(name), true, name);
+  for (const name of ['Ｂｕｙ　ｉｔ　ａｇａｉｎ', 'Book\u200ba demo', 'Subscribe\u2060 and save'])
+    assert.equal(looksLikeCommit(name), false, name);
+  for (const name of ['Ｂｕｙ　ｉｔ　ａｇａｉｎ　ｎｏｗ', 'Book\u200ba demo now', 'Subscrib\u0435 and saver'])
+    assert.equal(looksLikeCommit(name), true, name);
+});
 
 test('commit names match, and the look-alikes the router lets through stay allowed', () => {
   for (const name of COMMITS) assert.equal(looksLikeCommit(name), true, name);
@@ -68,6 +86,9 @@ test('the commit name list is the one the router was given', () => {
     'finalizar compra', 'enviar', 'eliminar', 'realizar pedido', 'confirmar',
   ]);
   assert.equal(COMMIT_PATTERNS.notCommit.length, 13);
+  assert.deepEqual(COMMIT_PATTERNS.notCommit.slice(-3), [
+    '^\\s*buy it again\\s*$', '^\\s*book a demo\\s*$', '^\\s*subscribe (?:&|and) save\\s*$',
+  ]);
 });
 
 // The router (alans-way-agents PR #89) reads its own commit-patterns.json.
@@ -79,10 +100,35 @@ function routerCheckout() {
   return roots.map((root) => path.join(root, 'alans-way/scripts')).find((dir) => fs.existsSync(path.join(dir, 'commit-patterns.json'))) || null;
 }
 const routerDir = routerCheckout();
-test('the router copy is the same list and judges every name the same way', { skip: !routerDir && 'no alans-way-agents checkout with commit-patterns.json (set ALANS_WAY_AGENTS)' }, () => {
+test('the router copy is the same list and judges every name the same way', {
+  skip: !routerDir && 'no alans-way-agents checkout with commit-patterns.json (set ALANS_WAY_AGENTS)',
+}, () => {
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(routerDir, 'commit-patterns.json'), 'utf8')), COMMIT_PATTERNS, `${routerDir}/commit-patterns.json and src/commit-patterns.json differ`);
   const router = require(path.join(routerDir, 'workspace-router.cjs'));
-  assert.deepEqual([...COMMITS, ...LOOK_ALIKES].filter((name) => router.isCommitName(name) !== isCommitName(name)), [], 'the router and the app disagree on these names');
+  assert.deepEqual([...COMMITS, ...LOOK_ALIKES, ...EXACT_EXCEPTIONS, ...ADVERSE_EXCEPTIONS]
+    .filter((name) => router.isCommitName(name) !== isCommitName(name)), [], 'the router and the app disagree on these names');
   if (router.isActionUrl) for (const url of ['https://s.example/order/complete', 'https://s.example/buy', ' https://s.example/x?step=confirm ', 'https://s.example/maps/place/x'])
     assert.equal(router.isActionUrl(url, 'https://s.example'), isActionUrl(url, 'https://s.example'), url);
+});
+
+test('the app and running-router fixture contract agrees on names and action links', {
+  skip: !routerDir && 'no alans-way-agents checkout (set ALANS_WAY_AGENTS)',
+}, (t) => {
+  const fixturePath = path.resolve(routerDir, '../../tests/commit_pattern_fixtures.json');
+  // A pre-fixture plugin still supports the public router exports and the
+  // parity test above; absence of test data is not a runtime capability.
+  if (!fs.existsSync(fixturePath)) return t.skip('plugin checkout predates shared adverse fixtures');
+  const fixtures = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+  const router = require(path.join(routerDir, 'workspace-router.cjs'));
+  for (const fixture of fixtures.names) {
+    assert.equal(router.isCommitName(fixture.name), fixture.commit, `router: ${fixture.name}`);
+    assert.equal(isCommitName(fixture.name), fixture.commit, `app: ${fixture.name}`);
+    assert.equal(looksLikeCommit(fixture.name), fixture.commit, `folded app: ${fixture.name}`);
+  }
+  for (const fixture of fixtures.links) {
+    const actionUrl = isActionUrl(fixture.href, 'https://shop.example');
+    assert.equal(looksLikeCommit(fixture.name) || actionUrl, fixture.commit, fixture.href);
+    // The router checks link addresses privately; test_commit_gate.py sends
+    // these exact fixtures over MCP and verifies no blocked click forwards.
+  }
 });

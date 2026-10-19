@@ -1,5 +1,7 @@
 // Loopback PDFs, isolated sessions/downloads, native-event/picker fixtures and
 // two launches to exercise quit-time persistence. Never uses an installed app.
+// Drops request 1024x700 by default, capped at the display work area.
+// PDF_FIXTURE_BOUNDS=1550x980 covers a large window on a large display.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -53,7 +55,7 @@ if (typeof electron === 'string') {
     finally { fs.rmSync(profile, { recursive: true, force: true }); }
   })().catch(error => { console.error(error.stack); process.exitCode = 1; });
 } else {
-  const { app, BrowserWindow, webContents, session, dialog, Menu } = electron;
+  const { app, BrowserWindow, webContents, session, dialog, Menu, screen } = electron;
   const { prepareFixture, quitFixture } = require('./electron-fixture.cjs');
   const profile = process.env.PDF_FIXTURE_PROFILE;
   const baseline = process.env.PDF_BASELINE === '1';
@@ -231,10 +233,31 @@ if (typeof electron === 'string') {
       check(`${id} click opens viewer tab`, !!clicked);
       if (clicked) check(`${id} click keeps opener active`, (await state()).activeTabId, humanId);
     }
-    const nativeDrop = async (target, name, point = { x: 300, y: 100 }) => {
+    // Exercise the small work area used by macOS CI even on a large display.
+    // An explicit size also lets the same assertions cover a full-size window.
+    const bounds = process.env.PDF_FIXTURE_BOUNDS || '1024x700';
+    assert.match(bounds, /^\d+x\d+$/);
+    const [requestedWidth, requestedHeight] = bounds.split('x').map(Number);
+    const { resizeWindow } = require('./window-fixture.cjs');
+    const effective = await resizeWindow(win, requestedWidth, requestedHeight, { mode: 'bounds' });
+    const actualBounds = win.getBounds();
+    check('drop window bounds', [actualBounds.width, actualBounds.height], effective.outer);
+    check('drop window viewport', await evaluate('[innerWidth, innerHeight]'), [effective.width, effective.height]);
+    const dropPoint = async (target, element = 'document.documentElement') => {
+      const rect = await target.executeJavaScript(`(() => {
+        const r = (${element}).getBoundingClientRect();
+        const left = Math.max(0, r.left), right = Math.min(innerWidth, r.right);
+        const top = Math.max(0, r.top), bottom = Math.min(innerHeight, r.bottom);
+        return { left, right, top, bottom };
+      })()`);
+      assert.ok(rect.right > rect.left && rect.bottom > rect.top, 'Drop target has a visible rect');
+      return { x: Math.floor((rect.left + rect.right) / 2), y: Math.floor((rect.top + rect.bottom) / 2) };
+    };
+    const nativeDrop = async (target, name, { element = 'document.documentElement', frame = target } = {}) => {
       // Activation reparents a view. Wait for its compositor frame before
       // Chromium hit-tests the drag, especially for the viewer's child frame.
       await target.capturePage();
+      const point = await dropPoint(frame, element);
       const wasAttached = target.debugger.isAttached();
       if (!wasAttached) target.debugger.attach('1.3');
       try {
@@ -250,12 +273,13 @@ if (typeof electron === 'string') {
         await target.loadURL(`${base}${route}`);
         if (target === human) { await command('activate', { id: humanId }); target.focus(); }
         const before = (await state()).tabs.length;
-        await nativeDrop(target, 'finder.pdf');
+        const zone = { element: 'document.getElementById("zone")' };
+        await nativeDrop(target, 'finder.pdf', zone);
         await new Promise(r => setTimeout(r, 300));
         check(`${label} upload zone receives PDF File`, await target.executeJavaScript('window.received.map(file=>({name:file.name,pdf:file.contents.startsWith("%PDF-")}))'), [{ name: 'finder.pdf', pdf: true }]);
         check(`${label} handled PDF drop opens no tab`, (await state()).tabs.length, before);
         check(`${label} upload dragover reaches page uncancelled`, await target.executeJavaScript('window.dragoverWasPrevented.every(value=>value===false)'));
-        await nativeDrop(target, 'notes.txt');
+        await nativeDrop(target, 'notes.txt', zone);
         await new Promise(r => setTimeout(r, 100));
         check(`${label} non-PDF upload unchanged`, await target.executeJavaScript('window.received.at(-1)'), { name: 'notes.txt', contents: 'non-PDF drop fixture' });
         check(`${label} non-PDF drop opens no tab`, (await state()).tabs.length, before);
@@ -268,9 +292,7 @@ if (typeof electron === 'string') {
       await command('activate', { id: humanId }); human.focus();
       await human.executeJavaScript(`window.received=[]; const target=document.body; const receiver=${receiver === 'target' ? 'target' : receiver}; receiver.addEventListener('${gesture}', event => { event.preventDefault(); receiver.addEventListener('drop', async event => { event.preventDefault(); for(const file of event.dataTransfer.files) window.received.push({name:file.name,pdf:(await file.text()).startsWith('%PDF-')}); }, {capture:${capture},once:true}); }, {capture:${capture},once:true}); window.addEventListener('dragover',event=>event.preventDefault());`);
       const before = (await state()).tabs.length;
-      // On narrow windows x=300 can hit the HTML margin outside the body.
-      const point = await human.executeJavaScript('(() => { const r = document.body.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()');
-      await nativeDrop(human, 'finder.pdf', point);
+      await nativeDrop(human, 'finder.pdf', { element: 'document.body' });
       await waitFor(() => human.executeJavaScript('window.received.length'));
       await new Promise(r => setTimeout(r, 100));
       check(`dynamic ${gesture}/${receiver}/${capture ? 'capture' : 'bubble'} receives PDF`, await human.executeJavaScript('window.received'), [{ name: 'finder.pdf', pdf: true }]);
@@ -285,15 +307,17 @@ if (typeof electron === 'string') {
         const dropTab = (await state()).tabs.find(t => t.url === target.getURL());
         await command('activate', { id: dropTab.id }); target.focus();
       }
-      if (target !== human && target !== win.webContents && !baseline) {
+      let dropTarget;
+      if (target !== human && target !== win.webContents) {
         const frame = await viewerOf(target);
-        await waitFor(() => frame.executeJavaScript('window.workspacePdfDropInstalled === true').catch(() => false));
+        if (!baseline) await waitFor(() => frame.executeJavaScript('window.workspacePdfDropInstalled === true').catch(() => false));
         // The child frame's hit-test surface follows its resize after activation.
         await frame.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+        dropTarget = { frame, element: 'document.querySelector("pdf-viewer").shadowRoot.querySelector("viewer-toolbar")' };
       }
       // Use the viewer toolbar: the native PDF plugin surface below it can
       // consume Chromium drag input without delivering DOM drag events.
-      await nativeDrop(target, name, target !== human && target !== win.webContents ? { x: 300, y: 20 } : undefined);
+      await nativeDrop(target, name, dropTarget);
       if (baseline) await new Promise(r => setTimeout(r, 300));
       else await waitFor(state, s => s.tabs.filter(t => t.url === fileUrl(name)).length > before);
       check(`PDF drop onto ${target === human ? 'web tab' : target === win.webContents ? 'window' : 'PDF viewer'}`, (await state()).tabs.filter(t => t.url === fileUrl(name)).length > before);
@@ -318,11 +342,13 @@ if (typeof electron === 'string') {
     const agentPageWc = await waitFor(() => tabContents(base + '/').find(w => w !== human));
     const beforeAgentDrop = (await state()).tabs.length;
     for (const agentDropWc of [agentPageWc, tabContents(`${base}/agent.pdf`)[0]]) {
+      const point = agentDropWc === agentPageWc ? await dropPoint(agentDropWc, 'document.body')
+        : await dropPoint(await viewerOf(agentDropWc), 'document.querySelector("pdf-viewer").shadowRoot.querySelector("viewer-toolbar")');
       const wasAttached = agentDropWc.debugger.isAttached();
       if (!wasAttached) agentDropWc.debugger.attach('1.3');
       try {
         const data = { items: [], files: [path.join(profile, 'finder.pdf')], dragOperationsMask: 1 };
-        for (const type of ['dragEnter', 'drop']) await agentDropWc.debugger.sendCommand('Input.dispatchDragEvent', { type, x: 300, y: 100, data });
+        for (const type of ['dragEnter', 'drop']) await agentDropWc.debugger.sendCommand('Input.dispatchDragEvent', { type, ...point, data });
         await new Promise(r => setTimeout(r, 200));
       } finally { if (!wasAttached) agentDropWc.debugger.detach(); }
       check(`agent ${agentDropWc === agentPageWc ? 'web tab' : 'PDF viewer'} drop cannot open human tab`, (await state()).tabs.length, beforeAgentDrop);

@@ -1,3 +1,4 @@
+require('./window-fixture.cjs');
 // Run: npx electron test/captcha-handback-electron.cjs
 // A bot's tab meets a CAPTCHA: input on the widget is refused, a whole-page
 // check is handed to the human with a note naming the site and the check, and
@@ -31,13 +32,27 @@ const pages = {
   '/sorry/index': `<title>unusual traffic</title><form id="captcha-form" action="index" method="post">${widget}</form><p>Our systems have detected unusual traffic from your computer network.</p>`,
   '/results': '<title>results</title><input id="q" aria-label="Search"><p>Ten plumbers</p>',
 };
+// Electron otherwise replaces renderer exceptions with a generic rejection.
+// Keep the original renderer stack and the exact fixture expression in CI logs.
+const diagnose = contents => {
+  contents.on('console-message', details => console.error(`[captcha renderer ${contents.id}] ${details.level}: ${details.message} (${details.sourceId}:${details.lineNumber})`));
+  contents.on('render-process-gone', (_event, details) => console.error(`[captcha renderer ${contents.id}] gone: ${JSON.stringify(details)}`));
+};
+const evaluateOn = async (contents, code) => {
+  try {
+    return await contents.executeJavaScript(`(async () => { try { return await (${code}); } catch (error) { console.error('[captcha exception] ' + (error?.stack || String(error))); throw error; } })()`);
+  } catch (error) {
+    throw new Error(`CAPTCHA renderer ${contents.id} failed executing ${code}`, { cause: error });
+  }
+};
 let server;
 app.whenReady().then(async () => {
   const win = await waitFor(() => BrowserWindow.getAllWindows()[0], win => !!win);
   const wc = win.webContents;
   const telegram = webContents.getAllWebContents().find(item => item.session === session.fromPartition('persist:telegram'));
   if (telegram) { telegram.stop(); await telegram.loadURL('about:blank'); }
-  const evaluate = code => wc.executeJavaScript(code);
+  diagnose(wc);
+  const evaluate = code => evaluateOn(wc, code);
   await waitFor(() => evaluate('typeof window.workspace === "object"').catch(() => false), Boolean);
   const invoke = (name, value) => evaluate(`window.workspace.command(${JSON.stringify(name)}, ${JSON.stringify(value || {})})`);
   const getState = () => evaluate('window.workspace.getState()');
@@ -53,7 +68,9 @@ app.whenReady().then(async () => {
   const base = `http://127.0.0.1:${server.address().port}`;
   const tab = await invoke('create-tab', { url: `${base}/start` });
   const pageWc = await waitFor(() => webContents.getAllWebContents().find(item => item.getURL().startsWith(base)), Boolean);
-  await waitFor(() => pageWc.executeJavaScript('document.readyState === "complete"').catch(() => false), Boolean);
+  diagnose(pageWc);
+  const evaluatePage = code => evaluateOn(pageWc, code);
+  await waitFor(() => evaluatePage('document.readyState === "complete"').catch(() => false), Boolean);
   let epoch = (await invoke('control', { id: tab.id, controller: 'agent' })).epoch;
   const act = (body) => api(`/v1/tabs/${tab.id}/actions`, 'POST', { epoch, ...body });
 
@@ -76,22 +93,22 @@ app.whenReady().then(async () => {
     assert.equal(refused.status, 409, method); assert.equal(refused.data.code, 'challenge_present', method);
   }
   assert.equal((await act({ action: 'cdp', method: 'DOM.getDocument', params: {} })).status, 200, 'reads still work');
-  assert.equal(await pageWc.executeJavaScript('document.title'), 'other');
+  assert.equal(await evaluatePage('document.title'), 'other');
   // Navigating the widget's own frame would replace the challenge document.
   const frameTree = (await act({ action: 'cdp', method: 'Page.getFrameTree', params: {} })).data.value;
   const child = JSON.parse(typeof frameTree === 'string' ? frameTree : JSON.stringify(frameTree)).frameTree.childFrames[0].frame.id;
   const swapped = await act({ action: 'cdp', method: 'Page.navigate', params: { frameId: child, url: `${base}/start` } });
   assert.equal(swapped.status, 409, JSON.stringify(swapped.data)); assert.equal(swapped.data.code, 'challenge_present');
   // A hidden control inside the widget is refused before select can change it.
-  await pageWc.executeJavaScript(`(() => { const d = document.querySelector('iframe').contentDocument; d.body.insertAdjacentHTML('beforeend', '<select id="lang" style="display:none"><option value="en">English</option><option value="de">Deutsch</option></select>'); })()`);
+  await evaluatePage(`(() => { const d = document.querySelector('iframe').contentDocument; d.body.insertAdjacentHTML('beforeend', '<select id="lang" style="display:none"><option value="en">English</option><option value="de">Deutsch</option></select>'); })()`);
   const picked = await act({ action: 'select', selector: '#lang', value: 'de' });
   assert.equal(picked.status, 409, JSON.stringify(picked.data)); assert.equal(picked.data.code, 'challenge_present');
-  assert.equal(await pageWc.executeJavaScript(`document.querySelector('iframe').contentDocument.getElementById('lang').value`), 'en', 'the hidden select was not changed');
+  assert.equal(await evaluatePage(`document.querySelector('iframe').contentDocument.getElementById('lang').value`), 'en', 'the hidden select was not changed');
   // The page moves the widget under the bot's cursor: the wheel is refused there.
-  await pageWc.executeJavaScript(`(() => { const f = document.querySelector('iframe'); f.dataset.style = f.getAttribute('style') || ''; f.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:9'; })()`);
+  await evaluatePage(`(() => { const f = document.querySelector('iframe'); f.dataset.style = f.getAttribute('style') || ''; f.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:9'; })()`);
   const wheel = await act({ action: 'scroll', y: 300 });
   assert.equal(wheel.status, 409, JSON.stringify(wheel.data)); assert.equal(wheel.data.code, 'challenge_present');
-  await pageWc.executeJavaScript(`(() => { const f = document.querySelector('iframe'); f.style.cssText = f.dataset.style; })()`);
+  await evaluatePage(`(() => { const f = document.querySelector('iframe'); f.style.cssText = f.dataset.style; })()`);
   assert.equal((await act({ action: 'scroll', y: 0 })).status, 200, 'the wheel works away from the widget');
 
   // A whole-page check goes to the human at once: the N2 release, made by the app.
@@ -115,14 +132,14 @@ app.whenReady().then(async () => {
   // The human solves it and the page moves on, but they keep typing and then
   // sit in the filled field: the tab stays theirs until they leave it and six
   // quiet seconds pass, then goes back with a thank-you.
-  await pageWc.executeJavaScript(`location.href = '/results'`);
-  await waitFor(() => pageWc.executeJavaScript('location.pathname === "/results" && document.readyState === "complete"').catch(() => false), Boolean);
-  await pageWc.executeJavaScript(`(() => { const q = document.getElementById('q'); q.focus(); let n = 0; const t = setInterval(() => { q.value += 'a'; if (++n >= 12) clearInterval(t); }, 300); })()`);
+  await evaluatePage(`location.href = '/results'`);
+  await waitFor(() => evaluatePage('location.pathname === "/results" && document.readyState === "complete"').catch(() => false), Boolean);
+  await evaluatePage(`(() => { const q = document.getElementById('q'); q.focus(); let n = 0; const t = setInterval(() => { q.value += 'a'; if (++n >= 12) clearInterval(t); }, 300); })()`);
   await new Promise(r => setTimeout(r, 3000));
   assert.equal((await getState()).tabs.find(item => item.id === tab.id).controller, 'human', 'a person still typing keeps the tab');
   await new Promise(r => setTimeout(r, 8000));
   assert.equal((await getState()).tabs.find(item => item.id === tab.id).controller, 'human', 'a person sitting in a filled field keeps the tab');
-  await pageWc.executeJavaScript(`document.getElementById('q').blur()`);
+  await evaluatePage(`document.getElementById('q').blur()`);
   const left = Date.now();
   const resumed = await waitFor(getState, state => state.tabs.find(item => item.id === tab.id).controller === 'agent', 15000, 'the automatic give-back');
   assert.ok(Date.now() - left >= 5000, 'the give-back waits out the quiet time');
@@ -143,13 +160,13 @@ app.whenReady().then(async () => {
 
   // A widget the page adds and focuses itself after the bot's last read: a
   // bare Enter must not press its Verify button.
-  await pageWc.executeJavaScript(`(() => { const d = document.createElement('div'); d.className = 'g-recaptcha'; d.innerHTML = '<iframe width="304" height="78" src="/recaptcha/api2/anchor?k=x&size=normal"></iframe>'; document.body.append(d); })()`);
-  await waitFor(() => pageWc.executeJavaScript(`document.querySelector('.g-recaptcha iframe').contentDocument?.readyState === 'complete'`).catch(() => false), Boolean);
-  await pageWc.executeJavaScript(`(() => { const f = document.querySelector('.g-recaptcha iframe'), b = f.contentDocument.createElement('button'); b.textContent = 'Verify'; b.onclick = () => { document.title = 'verified'; }; f.contentDocument.body.append(b); f.focus(); b.focus(); })()`);
-  assert.equal(await pageWc.executeJavaScript(`document.activeElement === document.querySelector('.g-recaptcha iframe')`), true, 'the widget has focus');
+  await evaluatePage(`(() => { const d = document.createElement('div'); d.className = 'g-recaptcha'; d.innerHTML = '<iframe width="304" height="78" src="/recaptcha/api2/anchor?k=x&size=normal"></iframe>'; document.body.append(d); })()`);
+  await waitFor(() => evaluatePage(`document.querySelector('.g-recaptcha iframe').contentDocument?.readyState === 'complete'`).catch(() => false), Boolean);
+  await evaluatePage(`(() => { const f = document.querySelector('.g-recaptcha iframe'), b = f.contentDocument.createElement('button'); b.textContent = 'Verify'; b.onclick = () => { document.title = 'verified'; }; f.contentDocument.body.append(b); f.focus(); b.focus(); })()`);
+  assert.equal(await evaluatePage(`document.activeElement === document.querySelector('.g-recaptcha iframe')`), true, 'the widget has focus');
   const enter = await act({ action: 'press', key: 'Enter' });
   assert.equal(enter.status, 409, JSON.stringify(enter.data)); assert.equal(enter.data.code, 'challenge_present');
-  assert.notEqual(await pageWc.executeJavaScript('document.title'), 'verified', 'the Verify button was not pressed');
+  assert.notEqual(await evaluatePage('document.title'), 'verified', 'the Verify button was not pressed');
 
   // The same site challenging again inside ten minutes: back off.
   const again = await act({ action: 'navigate', url: `${base}/sorry/index?again` });
@@ -161,7 +178,7 @@ app.whenReady().then(async () => {
   // A human who browses the tab on from the address bar keeps it: the check
   // is gone, but the automatic return stands down.
   await invoke('navigate', { id: tab.id, url: `${base}/start` });
-  await waitFor(() => pageWc.executeJavaScript('location.pathname === "/start" && document.readyState === "complete"').catch(() => false), Boolean);
+  await waitFor(() => evaluatePage('location.pathname === "/start" && document.readyState === "complete"').catch(() => false), Boolean);
   await new Promise(r => setTimeout(r, 8000));
   const browsing = (await getState()).tabs.find(item => item.id === tab.id);
   assert.equal(browsing.controller, 'human', 'the human\'s own browsing is not handed to the bot');

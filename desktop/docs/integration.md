@@ -24,6 +24,46 @@ Allowed actions: navigate, move, click, double_click, right_click, drag, select,
 
 Agent tabs open in the background unless explicitly requested otherwise. Input travels through the tab’s Chromium DevTools target, with a decorative Agent cursor at dispatched coordinates. It does not use OS input, the clipboard, native window activation, or the human’s keyboard focus. Agent page popups preserve the selected human tab. Application menu shortcuts are suppressed during agent key dispatch.
 
+### Consequential browser approvals
+
+`approval-binding-v1` in `/v1/status` means this host enforces document and target binding for approved browser actions. Snapshots and action replies carry `approvalContext: {version: 1, documentId, url}` and an opaque `approvalTarget` token on each readable control. The router freezes that context, the exact operation, and the observed ref/token pairs **before** asking for approval. Its one-use receipt adds `binding: {version, documentId, url, key, steps: [{key, targets: [{ref, token}]}]}`. The operation keys are SHA-256 digests of canonical action arguments, excluding tab/epoch/generation routing metadata and the receipt itself. These are consistency markers within the trusted connector channel, not signatures or proof of a site's business semantics.
+
+Those proof fields describe the trusted host/connector wire. The workspace router retains them internally before omitting them from recognized successful snapshot/action descriptions sent to the agent, including recognized batch-step page descriptions. Page values, errors and arbitrary user JSON remain intact; uncached oversized replies retain their proof. Clients that need the proof should use the trusted connector API rather than depend on fields in the agent-facing description. Moving proof into custom MCP metadata would still expose it to vanilla Hermes.
+
+This projection covers the current connector's single JSON text item. Additional text items, `structuredContent` and custom `_meta` are not sanitized; a future connector that repeats observations there needs an explicit typed contract. Projection reduces the current description's size and does not make proof confidential.
+
+The host checks the current document and target before input, including after pointer hover and before the final press or key. A reload changes document identity even at the same URL. Replacing a control, or changing its name, role, row, full link destination, or form submission destination invalidates its old token. Display truncation of a row or href is not used for identity: the token checks the complete row text and destination. Unrelated UI updates leave an unchanged target usable. Ordinary refs can still follow a re-render; a pending approval cannot. Approved input requires an observed ref or a unique exact name; a drag also requires `toRef`. An unreadable frame, selector/coordinate-only approval, untargeted key, or raw CDP input has no sufficient target proof: use a fresh snapshot and the supported named/ref action, or leave the step for the person.
+
+| Plugin/router and connector | Browser host | Approval behavior |
+| --- | --- | --- |
+| Current router and connector | Advertises `approval-binding-v1` | Bound approval can run once on its reviewed document and target. |
+| Current router, older connector | Current enforcing host | Host still checks the bound receipt; tested with the prior connector. |
+| Current router and connector | Older host | Refuses unprovable approval; does not send a receipt the old host would ignore. |
+| Older router, current or prior connector | Current host | Host refuses receipts without binding; update the workspace plugin. |
+| Older router and host | Older host | No new binding guarantee; upgrade both together before relying on it. |
+
+The current connector checks host capability afresh for each approved request and pins that connection; the desktop proxy separately checks its actual remote backend on each approved forward and refuses a changed configuration. There is no approval-capability cache across these forwards.
+
+Connector caches and approved forwards use the URL and token as separate request strings for identity. Separators inside either value cannot make a different pair inherit an earlier capability answer.
+
+That checked connection also applies when a claim/release control call carries approval metadata. Such metadata grants no extra control authority and is not forwarded as a browser-action receipt; the control request still cannot move to another connection after its status check.
+
+An approval-bearing control call also refuses a missing reviewed tab instead of following its continuation. Ordinary claim/release calls retain the existing one-time missing-tab continuation behavior.
+
+A successful control reply must identify the requested tab, the requested controller and a nonnegative safe-integer epoch. Missing, mismatched, malformed or lost receipts are uncertain outcomes, never success or permission to replay. The connector marks `browserRequest.uncertainOutcome` and asks for an explicit `cua_alans_way_tabs` read to inspect the current controller and epoch. Only the exact supported missing-tab rejection permits ordinary continuation; unclear control failures do not.
+
+An explicit failure code, false `dispatched`/`ok`/`success`, or true `isError` makes a control reply uncertain even when its tab fields look valid. A plain tab `error` string is page-load state and remains intact in an otherwise valid control receipt. Per-tab tools require a nonempty string tab ID before any host request.
+
+Public status metadata and the workspace-operations skill limit the general retry hint to read-only calls. An uncertain action or control change requires an explicit tabs/controller/epoch read and fresh snapshot before deciding how to proceed; a connector restart does not prove that the prior mutation failed. Ordinary missing-tab continuation requires the supported pre-dispatch rejection, and approval-bearing calls require fresh review at the destination.
+
+Public snapshot and action descriptions qualify observation reuse as successful current-state reuse. Uncertain outcomes, stale state, continued destinations and required fresh approval review take priority over read optimizations; completed batch results are inspected before deciding on another input. A human takeover during a call does not authorize repeating uncertain input.
+
+This intentionally breaks approval compatibility across the boundary; ordinary supported unapproved actions remain usable. Update the browser host and workspace plugin/connector together, restart their sessions, take a fresh snapshot, review the current target, and request a new approval. `page_changed` or `approval_invalid` means the old approval cannot authorize a retry or move to a continued tab. A batch preserves completed step results and stops before a changed target; inspect those results before continuing. Lost/uncertain action receipts retain the existing **do not replay; inspect current state first** rule.
+
+Supported feature discovery is cached for a connector session. When a snapshot carries approval proof but an earlier capability answer lacked approval binding, the connector checks support again so an upgraded host at the same address can recover on the next snapshot. This does not dispatch an action or approve anything. The fresh capability check on each approved forward still refuses an unsupported or unavailable host.
+
+The final page probe and Chromium input are separate operations. Page handlers can still act after that probe, and finite name/URL classification cannot establish arbitrary business semantics. This contract prevents observed document/target changes from inheriting a pending approval; it does not promise atomic input or universal safety against arbitrary page scripts.
+
 A tab has `id`, `host`, `session`, `botId`, `allowedBots`, `controller`, and `epoch`. A bot can read its assigned or explicitly granted tabs. Mutation requires agent control and the current epoch. Take over, return control, assignment, and grant changes increment the epoch. Queued actions recheck it before dispatch. An input already sent to Chromium cannot be recalled. Human pointer input does not automatically change ownership: use Take over before intervening.
 
 Agent-initiated navigation — the `navigate` action, `POST /v1/tabs` and `cdp` `Page.navigate` — refuses loopback, link-local and cloud metadata addresses (127.0.0.0/8, ::1, localhost names, 0.0.0.0, 169.254.0.0/16), with numeric and hex IP spellings normalized before the check. Private LAN ranges stay reachable for dev servers and home tools; human navigation is unaffected. `HERMES_WORKSPACE_ALLOW_LOOPBACK=1` lifts the loopback part only and exists for test fixtures that serve pages from 127.0.0.1 — it has no place in a real deployment.

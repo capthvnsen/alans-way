@@ -1,17 +1,20 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { createAgentInput, APPROVED, keyboardEvent, botAccent, cursorPath, boundedJs } = require('../src/agent-input.cjs');
+const { createAgentInput, APPROVED, approvalActionKey, keyboardEvent, botAccent, cursorPath, boundedJs } = require('../src/agent-input.cjs');
 const { requireActor } = require('../src/core.cjs');
 
+const TEST_CONTEXT = { version: 1, documentId: 'a'.repeat(32), url: 'https://shop.example/checkout' };
+const TEST_TARGET = 'b'.repeat(32);
+const proofFor = body => ({ ...TEST_CONTEXT, key: approvalActionKey(body), steps: [{ key: approvalActionKey(body), targets: body.action ? [{ ref: body.ref || 'e1', token: TEST_TARGET }] : [] }] });
 function fixture(options = {}) {
   const calls = [], scripts = [], shortcuts = [];
   let hook = async () => {};
-  const found = { x: 40, y: 60, look: { names: [], field: false, form: null }, ...options.found };
+  const found = { x: 40, y: 60, ...options.found, look: { names: [], field: false, form: null, approvalContext: TEST_CONTEXT, approvalTarget: TEST_TARGET, ...options.found?.look } };
   const tab = { id: 'tab-1', botId: 'bot', controller: 'agent', epoch: 1, refs: new Set(['e1', 'e2']), view: { webContents: Object.assign(new EventEmitter(), {
     isDestroyed: () => false,
     setIgnoreMenuShortcuts: value => shortcuts.push(value),
-    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.endsWith('([], true)') ? (options.challenge ?? null) : code.includes('.page()') ? (options.page ?? { origin: 'https://shop.example', names: [] }) : code.includes('return C.look(C.') ? (options.probe ?? null) : code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : code.includes('elementFromPoint') ? found : code.includes('hw.submit') ? (options.submitted ?? null) : found; },
+    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.includes('targets: [') && code.includes('S.approvalTarget(S.find(ref))') ? { approvalContext: options.approvalContext || TEST_CONTEXT, targets: [options.approvalTarget || TEST_TARGET, options.approvalTarget || TEST_TARGET] } : code.endsWith('([], true)') ? (options.challenge ?? null) : code.includes('.page()') ? (options.page ?? { origin: 'https://shop.example', names: [] }) : code.includes('return C.look(C.') ? (options.probe ?? null) : code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : code.includes('elementFromPoint') ? found : code.includes('hw.submit') ? (options.submitted ?? null) : found; },
     focus: () => { throw new Error('Native focus must never be used.'); },
     sendInputEvent: () => { throw new Error('Native input must never be used.'); },
   }) } };
@@ -355,8 +358,26 @@ test('a link click waits for a slow load to start, but an in-page route change e
 
 const PAGE_WITH_ORDER = { origin: 'https://shop.example', names: ['Add to cart', 'Place order'] };
 const dispatched = f => f.calls.filter(call => call.method.startsWith('Input.'));
-const approvalFor = (f, extra = {}) => ({ nonce: 'n-' + Math.random().toString(36).slice(2).padEnd(16, '0'), kind: 'purchase', summary: 'Desk lamp', issuedAt: Date.now(), tabId: f.tab.id, epoch: f.tab.epoch, ...extra });
-const approved = async (f, body, approval = approvalFor(f)) => { body = { epoch: 1, ...body, approval }; f.agent.approve(f.tab, body); return f.agent.perform(f.tab, body, 'bot'); };
+const approvalFor = (f, extra = {}) => ({ nonce: 'n-' + Math.random().toString(36).slice(2).padEnd(16, '0'), kind: 'purchase', summary: 'Desk lamp', issuedAt: Date.now(), tabId: f.tab.id, epoch: f.tab.epoch, binding: proofFor({}), ...extra });
+const approved = async (f, body, approval = approvalFor(f)) => { approval.binding = proofFor(body); body = { epoch: 1, ...body, approval }; f.agent.approve(f.tab, body); return f.agent.perform(f.tab, body, 'bot'); };
+
+test('legacy proof, changed action arguments, changed document and changed target refuse before input', async () => {
+  const legacy = fixture(), body = { action: 'click', ref: 'e1' }, receipt = approvalFor(legacy);
+  delete receipt.binding;
+  assert.throws(() => legacy.agent.approve(legacy.tab, { ...body, approval: receipt }), /update.*plugin.*host/i);
+  assert.deepEqual(dispatched(legacy), []);
+  const changed = approvalFor(legacy, { binding: proofFor(body) });
+  assert.throws(() => legacy.agent.approve(legacy.tab, { action: 'click', ref: 'e2', approval: changed }), /operation differs/);
+  for (const options of [{ approvalContext: { ...TEST_CONTEXT, documentId: 'c'.repeat(32) } }, { approvalTarget: 'd'.repeat(32) }]) {
+    const f = fixture(options);
+    await assert.rejects(approved(f, body), /approval_invalid:.*(document|control)/);
+    assert.deepEqual(dispatched(f), []);
+  }
+  const a = { action: 'batch', dialog: { accept: false }, steps: [body] };
+  const b = { steps: [body], dialog: { accept: false }, action: 'batch', epoch: 8, tabId: 'another', generation: 19 };
+  assert.equal(approvalActionKey(a), approvalActionKey(b), 'routing metadata and JSON field order do not change the operation');
+  assert.notEqual(approvalActionKey(a), approvalActionKey({ ...a, dialog: { accept: true } }), 'outer batch dialog acceptance is part of review');
+});
 
 test('a click whose resolved target reads as a commit is refused before any input, and runs once approved', async () => {
   const f = fixture({ found: { look: { names: ['Plаce ​order'], field: false, form: null } } });
@@ -391,12 +412,12 @@ test('Enter in a field is judged by its form\'s submit controls; a space in a fi
 });
 
 test('input landing in a cross-origin frame needs approval; an unreadable point fails closed only on a commit page', async () => {
-  const frame = fixture({ probe: { frame: true } });
+  const frame = fixture({ probe: { frame: true }, found: { look: { frame: true, approvalContext: null, approvalTarget: null } } });
   await assert.rejects(frame.perform({ action: 'click', x: 100, y: 100 }), /commit_required: a click here lands in a cross-origin frame/);
   await assert.rejects(frame.perform({ action: 'press', key: 'Enter' }), /commit_required: pressing Enter here lands in a cross-origin frame/);
   await assert.rejects(frame.perform({ action: 'drag', ref: 'e1', toX: 300, toY: 300 }), /cross-origin frame/, 'a drag judges where it drops');
   assert.deepEqual(dispatched(frame), []);
-  await approved(frame, { action: 'click', x: 100, y: 100 });
+  await assert.rejects(approved(frame, { action: 'click', x: 100, y: 100 }), /approval_invalid/, 'opaque frame cannot supply live target proof');
   const blank = fixture({ probe: null, page: PAGE_WITH_ORDER });
   await assert.rejects(blank.perform({ action: 'click', x: 100, y: 100 }), /where the app cannot read the page here could set off "Place order"/);
   const quiet = fixture({ probe: null });
@@ -436,7 +457,7 @@ test('page scripts, acting DevTools calls, reloads and action addresses are refu
   await refuse({ action: 'cdp', method: 'Page.navigate', params: { url: 'shop.example/orders/7/delete' } }, /looks like an address/);
   for (const body of [{ action: 'cdp', method: 'DOM.getDocument' }, { action: 'cdp', method: 'Accessibility.getFullAXTree' }, { action: 'cdp', method: 'Emulation.setDeviceMetricsOverride' },
     { action: 'navigate', url: 'https://other.example/checkout/complete' }, { action: 'navigate', url: 'https://shop.example/maps/place/x' }, { action: 'read' }, { action: 'wait', text: 'x' },
-    { action: 'cdp', method: 'Page.addScriptToEvaluateOnNewDocument' }, { action: 'eval', code: '1', [APPROVED]: true }])
+    { action: 'cdp', method: 'Page.addScriptToEvaluateOnNewDocument' }])
     await live.agent.guard(live.tab, body);
   const quiet = fixture();
   await quiet.agent.guard(quiet.tab, { action: 'eval', code: '1' });
@@ -468,7 +489,11 @@ test('a page script that sets up later work or submits on its own needs approval
     await assert.rejects(quiet.agent.guard(quiet.tab, { action: 'cdp', method, params }), /commit_required: the DevTools call .* that uses/, method);
   for (const code of ['document.title', '[...document.querySelectorAll("li")].map(li => li.textContent)', '(() => { function f(x) { return x; } return typeof f === "function"; })()', 'document.querySelector("button[type=submit]").textContent', 'typeof f.onsubmit'])
     await quiet.agent.guard(quiet.tab, { action: 'eval', code });
-  await quiet.agent.guard(quiet.tab, { action: 'eval', code: 'setTimeout(go, 9)', [APPROVED]: true });
+  const body = { action: 'eval', code: 'setTimeout(go, 9)' };
+  body.approval = approvalFor(quiet, { binding: proofFor(body) });
+  body.approval.binding.steps[0].targets = [];
+  quiet.agent.approve(quiet.tab, body);
+  await quiet.agent.guard(quiet.tab, body);
 });
 
 // The receipt alans-way-agents #89 (1515ce6, settleApproval) attaches to the

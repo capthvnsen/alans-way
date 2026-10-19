@@ -76,8 +76,8 @@
     "post code",
     "remove from (?:cart|basket|bag)",
     "use this payment method",
-    "buy it again",
-    "book a demo",
-    "subscribe (?:&|and) save"
+    "^\\s*buy it again\\s*$",
+    "^\\s*book a demo\\s*$",
+    "^\\s*subscribe (?:&|and) save\\s*$"
   ]
 }

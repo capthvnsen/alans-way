@@ -1,3 +1,4 @@
+require('./window-fixture.cjs');
 const { app, BrowserWindow } = require('electron');
 const assert = require('node:assert/strict');
 const http = require('node:http');
