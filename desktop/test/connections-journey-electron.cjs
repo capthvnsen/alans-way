@@ -175,11 +175,11 @@ app.whenReady().then(async () => {
     assert.match(await js('document.getElementById("settings-agent-summary").textContent'), /Addresses saved.*not checked/);
     for (const detail of ['Connection refused (IPC fixture).', 'Agent machine offline (IPC fixture).']) {
       seams.set('test-agent-path', async () => ({ ok: false, detail })); await click('#settings-test-path'); await idle('#settings-test-path');
-      assert.equal(await js('document.querySelector("#settings-test-path + .settings-action-status").textContent'), detail); assert.equal(await js('document.activeElement.id'), 'settings-test-path');
+      assert.equal(await js('document.querySelector("[data-settings-section=agent-setup] .connection-check-status").textContent'), detail); assert.equal(await js('document.activeElement.id'), 'settings-test-path');
     }
-    seams.set('test-agent-path', async () => { throw Error('Slow path timed out (IPC fixture). Retry.'); }); await click('#settings-test-path'); await idle('#settings-test-path'); assert.match(await js('document.querySelector("#settings-test-path + .settings-action-status").textContent'), /timed out/);
+    seams.set('test-agent-path', async () => { throw Error('Slow path timed out (IPC fixture). Retry.'); }); await click('#settings-test-path'); await idle('#settings-test-path'); assert.match(await js('document.querySelector("[data-settings-section=agent-setup] .connection-check-status").textContent'), /timed out/);
     seams.set('test-agent-path', async () => ({ ok: true, detail: 'Synthetic success; no SSH.' })); await click('#settings-test-path'); await idle('#settings-test-path');
-    assert.match(await js('document.querySelector("#settings-test-path + .settings-action-status").textContent'), /SSH path passed.*authentication.*not checked/); await shot('configured-ssh-only-result');
+    assert.match(await js('document.querySelector("[data-settings-section=agent-setup] .connection-check-status").textContent'), /SSH path passed.*authentication.*not checked/); await shot('configured-ssh-only-result');
     seams.set('test-agent-path', async () => { throw Error('IPC delivery failed after previous successful fixture.'); }); await click('#settings-test-path'); await idle('#settings-test-path');
     assert.match(await js('document.getElementById("settings-agent-summary").textContent'), /not checked/);
   });
@@ -187,7 +187,7 @@ app.whenReady().then(async () => {
     let release, entered = false; seams.set('test-agent-path', () => { entered = true; return new Promise(resolve => { release = resolve; }); });
     await click('#settings-test-path'); await wait(() => entered); await call('open-bot', { id: bots[1].id }); await frame();
     release({ ok: true, detail: 'HELD_OLD_BOT_SUCCESS' }); await idle('#settings-test-path');
-    assert.equal(await js('document.getElementById("settings-setup-bot").value'), bots[1].id); assert.match(await js('document.querySelector("#settings-test-path + .settings-action-status").textContent'), /bot changed/);
+    assert.equal(await js('document.getElementById("settings-setup-bot").value'), bots[1].id); assert.match(await js('document.querySelector("[data-settings-section=agent-setup] .connection-check-status").textContent'), /bot changed/);
     entered = false; await click('#settings-test-path'); await wait(() => entered); await click('#modal-close'); await open();
     release({ ok: true, detail: 'HELD_OLD_SESSION_SUCCESS' }); await frame(); assert.doesNotMatch(await js('document.getElementById("settings-content").innerText'), /passed|HELD_OLD/); await shot('bot-and-session-stale');
   });
@@ -217,6 +217,7 @@ app.whenReady().then(async () => {
       await click('#settings-copy-setup-prompt'); await idle('#settings-copy-setup-prompt'); assert.match(await clipboard.readText(), /BOT_ID=74001/);
       observations.clipboard = { actual: true, reviewedBotIds: [bots[1].id, bots[0].id], heldRealCopyWrongBotSuppressed: true, repeatedCopyDispatchedOnce: true, setupPublicURLUnchanged: true, copiedLocalTokenNotRecorded: true, initialFormats: formats };
     } finally {
+      clipboard.clear();
       await clipboard.write(before); clipboardBefore = null;
       const restored = await clipboard.read();
       for (let index = 0; index < before.length; index++) for (const type of before[index].types) {

@@ -183,8 +183,11 @@ app.whenReady().then(async () => {
     const old = hold('autoOpenLinks', afterPersistence ? 'after' : 'before');
     await reach('#settings-auto-links'); await key('Enter'); await wait(() => old.entered);
     await reach('#settings-auto-takeover'); await key('Enter'); await idle('#settings-auto-takeover');
-    old.release('Ordering fixture held delivery failed. Retry.'); await idle('#settings-auto-links');
-    assert.match(await js('document.getElementById("settings-auto-links").parentElement.nextElementSibling.textContent'), /held delivery failed/);
+    old.release('Ordering fixture held delivery failed. Retry.');
+    await wait(() => js('!document.getElementById("settings-auto-links-check-save").hidden'));
+    assert.equal(await js('document.getElementById("settings-auto-links").getAttribute("aria-busy")'), 'true');
+    assert.match(await js('document.getElementById("settings-auto-links").parentElement.nextElementSibling.textContent'), /reply could not be confirmed.*Check saved state/);
+    await reach('#settings-auto-links-check-save'); await key('Enter'); await idle('#settings-auto-links');
     const failed = await matchesAuthority(); assert.equal(failed.api.autoOpenLinks, afterPersistence ? !original.autoOpenLinks : original.autoOpenLinks);
     await reach('#settings-auto-links'); await key('Enter'); await idle('#settings-auto-links');
     observations[afterPersistence ? 'failureAfterPersistence' : 'failureBeforePersistence'] = { failed, retried: await matchesAuthority() };

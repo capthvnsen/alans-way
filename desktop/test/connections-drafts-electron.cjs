@@ -262,13 +262,16 @@ app.whenReady().then(async () => {
       assert.match(text, /Expect approval steps/); assert.match(text, /report.*checks.*warnings.*unfinished/);
       await click('#settings-copy-setup-prompt'); await idle('#settings-copy-setup-prompt');
       const actual = await clipboard.readText();
-      assert.match(actual, /Fetch https:\/\/openalan.com\/agent-prompt and follow the text block/);
+      assert.match(actual, /Before any setup, load the installed workspace-setup skill/);
+      assert.match(actual, /skill_view\(name="alans-way:workspace-setup"\)/);
+      assert.match(actual, /Never.*\n.*execute branch\/main URLs or unpinned checkouts/);
       assert.match(actual, /BOT_ID=74001/); assert.ok(actual.includes('MAC_SSH=' + disk().macSshHost));
       observations.setupPrompt = actual; await shot('prompt-guidance');
       await click('#settings-enter-addresses');
       assert.equal(await js('document.getElementById("settings-agent-details").open'), true);
       assert.equal(await js('document.activeElement.id'), 'mac-ssh-host');
     } finally {
+      clipboard.clear();
       await clipboard.write(saved); clipboardBefore = null;
       const restored = await clipboard.read(); assert.deepEqual(restored.map(x => x.types), before.map(x => x.types));
       for (let n = 0; n < saved.length; n++) for (const type of saved[n].types) {

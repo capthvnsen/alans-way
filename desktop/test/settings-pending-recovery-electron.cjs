@@ -31,7 +31,7 @@ fs.writeFileSync(path.join(PROFILE, 'preferences.json'), JSON.stringify({
   onboarded: true, macSshHost: '', remoteUrl: '', vpsBrowser: { sshHost: '', scriptPath: '', sudo: false },
   bots: [{id:'81001',name:'Cedar',username:'cedar_fixture_bot'},{id:'81002',name:'Maple',username:'maple_fixture_bot'}], order: [], hidden: [], selectedBotId: '81001', accountId: '', savedTabs: [],
   autoOpenLinks: false, autoTakeover: true, preview: true, showBots: true, showBrowser: true,
-  browserExtensions: [], cloud: {}, versionCache: {}, lastVersion: '0.21.6'
+  browserExtensions: [], cloud: {}, versionCache: {}, lastVersion: app.getVersion()
 }));
 app.setAsDefaultProtocolClient = () => { journal.blocked.push({ kind: 'protocol registration' }); return false; };
 app.relaunch = () => { throw block('relaunch'); };

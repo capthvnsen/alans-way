@@ -13,7 +13,7 @@ process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false,
   macSshHost: 'fixture@local.invalid', bots: [{ id: '401', name: 'Research', isBot: true }], selectedBotId: '401' }));
 require('../src/main.cjs');
-const out = path.resolve(__dirname, '../../evidence/quality/shortcut-round2');
+const out = process.env.SHORTCUT_EVIDENCE_DIR ? path.resolve(process.env.SHORTCUT_EVIDENCE_DIR) : fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'shortcut-round2-'));
 fs.mkdirSync(out, { recursive: true });
 const phase = process.env.SHORTCUT_PHASE || 'green';
 const results = [], trusted = [], observations = {};
@@ -53,7 +53,14 @@ app.whenReady().then(async () => {
     try { await test(); results.push({ name, pass: true }); console.log('PASS:', name); }
     catch (error) { results.push({ name, pass: false, error: error.stack }); console.error('FAIL:', name, error.message); await shot(`failure-${results.length}`); }
   };
-  const open = async () => { await focus('#shortcuts-button'); await key('Enter'); await frame(); };
+  let opener;
+  const open = async () => {
+    const toolbarVisible = await js('document.getElementById("shortcuts-button").getBoundingClientRect().width > 0');
+    opener = toolbarVisible ? 'shortcuts-button' : 'status-more';
+    await focus('#' + opener);
+    if (toolbarVisible) await key('Enter'); else menu('Keyboard Shortcuts').click();
+    await frame();
+  };
   const close = async () => { await key('Escape'); await frame(); };
   const search = async query => {
     await focus('#shortcut-search');
@@ -98,7 +105,7 @@ app.whenReady().then(async () => {
       await key('Tab'); assert.equal(await active(), 'shortcut-search');
       await shot(`browse-${width}x${height}-top`);
     });
-    await close(); assert.equal(await active(), 'shortcuts-button');
+    await close(); assert.equal(await active(), opener);
   }
   await open();
   await check('unfiltered guide updates availability through real menu create/close and activation without moving focus or scroll', async () => {
@@ -142,7 +149,7 @@ app.whenReady().then(async () => {
       send('workspace:state', real); await frame();
       assert.equal(await active(), before.active); assert.equal(await scroll(), before.scroll);
     } finally { wc.send = send; send('workspace:state', real); }
-    await close(); assert.equal(await active(), 'shortcuts-button');
+    await close(); assert.equal(await active(), opener);
   });
   await check('agent-dispatched chords preserve a human page draft and open-guide query/focus/scroll', async () => {
     server = http.createServer((_req, res) => res.end('<!doctype html><title>Local round2 fixture</title><textarea id="draft">Human draft</textarea>'));

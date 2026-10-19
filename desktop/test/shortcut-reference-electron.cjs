@@ -76,7 +76,7 @@ app.whenReady().then(async () => {
   await check('search matches descriptions and key names and announces no results', async () => {
     await wc.insertText('first'); await frame();
     assert.match(await js('document.getElementById("shortcut-results").textContent'), /Home/);
-    await js('document.getElementById("shortcut-search").value=""'); await wc.insertText('command'); await frame();
+    await js('document.getElementById("shortcut-search").value=""'); await wc.insertText('command comma'); await frame();
     assert.match(await js('document.getElementById("shortcut-results").textContent'), /Settings/);
     await js('document.getElementById("shortcut-search").value=""'); await wc.insertText('zz-no-such-command'); await frame();
     assert.equal(await js('document.querySelectorAll(".shortcut-row").length'), 0);

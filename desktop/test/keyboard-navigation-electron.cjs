@@ -260,7 +260,7 @@ app.whenReady().then(async () => {
       await key('Tab', ['shift']); assert.equal(await rowId(), '419'); assert.equal(await active(), 'bot-open');
       await key('Enter'); await waitFor(getState, value => value.selectedBotId === '419'); await frame();
       await key('Tab'); assert.equal(await active(), 'bot-hide'); await key('Tab');
-      assert.equal(await active(), 'presence-avatar'); await key('Tab', ['shift']);
+      assert.equal(await active(), 'hermes-connect-row'); await key('Tab', ['shift']);
       // Hide is disclosed by focus-within; reverse entry returns through Open.
       assert.equal(await rowId(), '419'); assert.equal(await active(), 'bot-open');
       await key('Tab'); assert.equal(await active(), 'bot-hide'); await expectVisible(`${width}-tab-return`);

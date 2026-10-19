@@ -125,7 +125,7 @@ app.whenReady().then(async () => {
     const busy = await active();
     await key('Tab'); assert.equal((await active()).id, 'settings-copy-setup-prompt');
     await key('Tab', true); assert.equal((await active()).id, 'settings-test-path');
-    const box = await geometry('#settings-test-path', '#settings-test-path + .settings-action-status');
+    const box = await geometry('#settings-test-path', '[data-settings-section=agent-setup] .connection-check-status');
     await shot('path-busy-outline'); gate.release({ result: { ok: true, detail: 'Round2 external success fixture; no connection executed.' } });
     await wait(body, text => text.includes('Saved SSH path passed. Hermes authentication and bot setup were not checked.'));
     observations.busyActivation = { calls: count('test-agent-path') - before, busy, box, after: await active() };
@@ -267,10 +267,10 @@ app.whenReady().then(async () => {
   for (const size of [[1280, 800], [1120, 680], [1024, 640]]) await check(`${size.join('x')}: pending/rejected action keeps a complete outline and adjacent feedback`, async () => {
     win.setMinimumSize(0, 0); win.setContentSize(...size); await frame(); await click('#settings-category-connections'); await reach('#settings-test-path');
     const gate = hold('test-agent-path'); await key('Enter'); await wait(gate.entered);
-    const busy = await geometry('#settings-test-path', '#settings-test-path + .settings-action-status');
+    const busy = await geometry('#settings-test-path', '[data-settings-section=agent-setup] .connection-check-status');
     gate.release({ error: 'Round2 connection unavailable. Check the saved addresses, then retry this action.' });
     await wait(body, text => text.includes('Round2 connection unavailable'));
-    const after = await geometry('#settings-test-path', '#settings-test-path + .settings-action-status');
+    const after = await geometry('#settings-test-path', '[data-settings-section=agent-setup] .connection-check-status');
     observations[size.join('x')] = { busy, after }; await shot(`async-outline-${size.join('x')}`);
     assert.deepEqual(busy, { focused: true, outline: 2, complete: true, feedback: true }); assert.deepEqual(after, busy);
   });
