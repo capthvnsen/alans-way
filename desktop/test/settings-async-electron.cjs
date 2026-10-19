@@ -1,3 +1,4 @@
+const { resizeWindow } = require('./window-fixture.cjs');
 // Real Settings renderer/main + disposable local storage. External work is held
 // at the named IPC seam. Trusted Chromium input; no OS focus/permission calls.
 const assert = require('node:assert/strict');
@@ -95,7 +96,7 @@ app.whenReady().then(async () => {
     const a=document.querySelector(${JSON.stringify(selector)}),s=document.querySelector(${JSON.stringify(statusSelector)}),p=document.getElementById('settings-content'),b=a.getBoundingClientRect(),r=s.getBoundingClientRect(),q=p.getBoundingClientRect(),css=getComputedStyle(a),ring=parseFloat(css.outlineWidth)+Math.max(0,parseFloat(css.outlineOffset));
     return {focused:a===document.activeElement,outline:parseFloat(css.outlineWidth),complete:b.top-ring>=q.top-1&&b.bottom+ring<=q.bottom+1&&b.left-ring>=q.left-1&&b.right+ring<=q.right+1,feedback:r.height>0&&r.top>=q.top&&r.bottom<=q.bottom};
   })()`);
-  win.setContentSize(1120, 680); await frame();
+  await resizeWindow(win, 1120, 680); await frame();
   await js('window.round2Input=[];for(const type of ["keydown","keyup","pointerdown"])document.addEventListener(type,e=>round2Input.push({type,key:e.key,trusted:e.isTrusted,target:e.target.id||e.target.dataset.botId||e.target.tagName}),true);true');
   await check('delayed path rejection retains the initiating keyboard action and adjacent retry context', async () => {
     await click('#settings-category-connections'); await reach('#settings-test-path');
@@ -265,7 +266,7 @@ app.whenReady().then(async () => {
     assert.deepEqual(await active(), moved); assert.match(await body(), /No cookies stored/); assert.doesNotMatch(await body(), /stale-cookie/);
   });
   for (const size of [[1280, 800], [1120, 680], [1024, 640]]) await check(`${size.join('x')}: pending/rejected action keeps a complete outline and adjacent feedback`, async () => {
-    win.setMinimumSize(0, 0); win.setContentSize(...size); await frame(); await click('#settings-category-connections'); await reach('#settings-test-path');
+    win.setMinimumSize(0, 0); await resizeWindow(win, ...size); await frame(); await click('#settings-category-connections'); await reach('#settings-test-path');
     const gate = hold('test-agent-path'); await key('Enter'); await wait(gate.entered);
     const busy = await geometry('#settings-test-path', '[data-settings-section=agent-setup] .connection-check-status');
     gate.release({ error: 'Round2 connection unavailable. Check the saved addresses, then retry this action.' });

@@ -1,4 +1,5 @@
 'use strict';
+const { fitWindow, resizeWindow } = require('./window-fixture.cjs');
 // Builder fixture boundary adapted from settings-switches-critic/runtime-harness.cjs.
 // Actual frozen main/preload/renderer; own regressions and disposable profile.
 const assert = require('node:assert/strict');
@@ -91,7 +92,7 @@ function FixtureWindow(options) {
   const window = new BrowserWindow({ ...options, show: false, focusable: false, paintWhenInitiallyHidden: true,
     webPreferences: { ...options.webPreferences, backgroundThrottling: false } });
   window.setMinimumSize(1, 1);
-  window.setContentSize(1280, 900);
+  fitWindow(window, 1280, 900);
   window.focus = () => { journal.blocked.push({kind:'window focus suppressed'}); };
   window.show = () => window.showInactive();
   window.showInactive();
@@ -101,7 +102,7 @@ Object.setPrototypeOf(FixtureWindow, BrowserWindow);
 FixtureWindow.prototype = BrowserWindow.prototype;
 const fakeHost = { service: new Proxy({ close() {} }, { get: (obj, name) => obj[name] || (async () => { throw block(`host computer ${String(name)}`); }) }) };
 const electronView = { ...electron, BrowserWindow: FixtureWindow, Tray: InertTray,
-  screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1280, height: 900 } }), getCursorScreenPoint: () => ({ x: -1000, y: -1000 }) },
+  screen: { getPrimaryDisplay: () => electron.screen.getPrimaryDisplay(), getCursorScreenPoint: () => ({ x: -1000, y: -1000 }) },
   Menu: { ...electron.Menu, setApplicationMenu() {}, getApplicationMenu: () => null },
   shell: new Proxy({}, { get: (_obj, name) => () => { throw block(`shell.${String(name)}`); } }),
   clipboard: new Proxy({}, { get: (_obj, name) => () => { throw block(`clipboard.${String(name)}`); } }),
@@ -353,7 +354,7 @@ async function run() {
     assert.equal(disk().remoteUrl,url);assert.equal(await val('remote-url'),'invalid viewer');await click('#settings-discard-viewer');
   });
   for(const [width,height] of [[1280,900],[1120,760],[1024,680],[840,520]]) await test(`keyboard recovery, outline and feedback at ${width}x${height}`,async()=>{
-    win.setContentSize(width,height);await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});await show('settings-auto-links');
+    await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');const effective=await resizeWindow(win,width,height);await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width:effective.width,height:effective.height,deviceScaleFactor:1,mobile:false});await show('settings-auto-links');
     await js('document.getElementById("settings-auto-links").focus()');await key('Tab');await key('Tab',8);
     const h=hold('autoOpenLinks','before'),before=count('autoOpenLinks');await key('Enter');await until(()=>held.has(h.id));await key('Enter');await key(' ');await click('#settings-auto-links');assert.equal(count('autoOpenLinks')-before,1);
     await key('Tab');await key('Tab',8);const g=await geometry('#settings-auto-links');assert.ok(g.focused&&g.complete&&g.outline>=2,JSON.stringify(g));
@@ -361,18 +362,18 @@ async function run() {
     const recoveryGeometry=await geometry('#settings-auto-links-check-save');assert.ok(recoveryGeometry.complete&&recoveryGeometry.outline>=2,JSON.stringify(recoveryGeometry));await shot(`recovery-${width}`);
     await key('Enter');await settled('#settings-auto-links');assert.equal(await js('document.activeElement.id'),'settings-auto-links');
     await key('Tab');assert.equal(await js('document.activeElement.id'),'settings-auto-takeover');h.release();await sleep(80);
-    (journal.geometry ||= []).push({width,height,switch:g,recovery:recoveryGeometry});
+    (journal.geometry ||= []).push({requested:[width,height],...effective,switch:g,recovery:recoveryGeometry});
   });
   for(const spec of [{id:'settings-preview',key:'preview',check:'settings-preview-check-save'}, {id:'mac-ssh-host',key:'macSshHost',check:'mac-ssh-host-check-save'}, {id:'remote-url',key:'remoteUrl',check:'remote-url-check-save'}]) await test(`${spec.id}: pending recovery geometry across four sizes`,async()=>{
     await show(spec.id);const selector=spec.id==='settings-preview'?'#'+spec.id:saveFor(spec.id);
     if(spec.id==='mac-ssh-host')await edit(spec.id,'geometry@computer.invalid');if(spec.id==='remote-url')await edit(spec.id,'https://geometry.invalid/vnc.html');
     const h=hold(spec.key,'before');await click(selector);await until(()=>held.has(h.id));await until(()=>js(`!document.getElementById(${JSON.stringify(spec.check)}).hidden`),7000);
     for(const [width,height] of [[1280,900],[1120,760],[1024,680],[840,520]]) {
-      win.setContentSize(width,height);await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
+      await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');const effective=await resizeWindow(win,width,height);await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width:effective.width,height:effective.height,deviceScaleFactor:1,mobile:false});
       await js(`document.querySelector(${JSON.stringify(selector)}).focus()`);await key('Tab');
       if(spec.id!=='settings-preview')await key('Tab');assert.equal(await js('document.activeElement.id'),spec.check);
       const g=await geometry('#'+spec.check);assert.ok(g.focused&&g.complete&&g.outline>=2,JSON.stringify(g));await shot(`${spec.id}-recovery-${width}`);
-      (journal.geometry ||= []).push({id:spec.id,width,height,recovery:g});
+      (journal.geometry ||= []).push({id:spec.id,requested:[width,height],...effective,recovery:g});
     }
     await key('Enter');await settled(selector);assert.equal(await js(`document.activeElement===document.querySelector(${JSON.stringify(selector)})`),true);h.release();await sleep(60);
     if(spec.id!=='settings-preview')await click(spec.id==='remote-url'?'#settings-discard-viewer':'#settings-discard-addresses');

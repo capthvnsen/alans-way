@@ -1,3 +1,4 @@
+require('./window-fixture.cjs');
 // Run: npx electron test/workspace-integration.cjs
 // Uses an isolated profile and localhost pages. No Telegram messages are sent.
 const assert = require('node:assert/strict');

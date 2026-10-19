@@ -238,17 +238,11 @@ if (typeof electron === 'string') {
     const bounds = process.env.PDF_FIXTURE_BOUNDS || '1024x700';
     assert.match(bounds, /^\d+x\d+$/);
     const [requestedWidth, requestedHeight] = bounds.split('x').map(Number);
-    const { workArea, workAreaSize } = screen.getPrimaryDisplay();
-    const width = Math.min(requestedWidth, workAreaSize.width);
-    const height = Math.min(requestedHeight, workAreaSize.height);
-    console.log('DROP WINDOW:', JSON.stringify({ requested: [requestedWidth, requestedHeight], workAreaSize, expected: [width, height] }));
-    win.setMinimumSize(0, 0);
-    win.setBounds({ x: workArea.x, y: workArea.y, width, height });
-    await waitFor(() => win.getBounds(), size => size.width === width && size.height === height);
+    const { resizeWindow } = require('./window-fixture.cjs');
+    const effective = await resizeWindow(win, requestedWidth, requestedHeight, { mode: 'bounds' });
     const actualBounds = win.getBounds();
-    check('drop window bounds', [actualBounds.width, actualBounds.height], [width, height]);
-    await waitFor(() => evaluate('[innerWidth, innerHeight]'), size => size[0] === width && size[1] === height);
-    check('drop window viewport', await evaluate('[innerWidth, innerHeight]'), [width, height]);
+    check('drop window bounds', [actualBounds.width, actualBounds.height], effective.outer);
+    check('drop window viewport', await evaluate('[innerWidth, innerHeight]'), [effective.width, effective.height]);
     const dropPoint = async (target, element = 'document.documentElement') => {
       const rect = await target.executeJavaScript(`(() => {
         const r = (${element}).getBoundingClientRect();

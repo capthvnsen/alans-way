@@ -1,3 +1,4 @@
+const { resizeWindow } = require('./window-fixture.cjs');
 // Real main/renderer, disposable persistence, trusted Chromium input. Gates hold
 // actual IPC handlers/replies/broadcasts; they never manufacture state snapshots.
 const assert = require('node:assert/strict');
@@ -118,7 +119,7 @@ app.whenReady().then(async () => {
     catch (error) { results.push({ name, pass: false, error: error.stack }); console.error('FAIL:', name, error.message); await shot('failure-' + results.length); }
     finally { for (const gate of activeGates) gate.release(); activeGates.clear(); gates.clear(); heldBroadcast?.(); heldBroadcast = null; holdBroadcast = null; }
   };
-  win.setContentSize(1120, 680); await frame();
+  await resizeWindow(win, 1120, 680); await frame();
   await js('window.orderingInputs=[];for(const type of ["keydown","keyup","pointerdown","click"])document.addEventListener(type,e=>orderingInputs.push({type,key:e.key,trusted:e.isTrusted,id:e.target.id}),true);true');
   for (const reopen of [false, true]) await check(`${reopen ? 'reopened' : 'same'} Settings: older real save reply cannot undo newer real save`, async () => {
     const before = settingsCalls().length, old = hold('autoOpenLinks');

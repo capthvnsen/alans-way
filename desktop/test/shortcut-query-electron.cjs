@@ -1,3 +1,4 @@
+const { resizeWindow } = require('./window-fixture.cjs');
 // Focused matcher/renderer integration: real Electron, actual Help callback,
 // trusted Chromium click/input. No native accelerator or Settings acceptance.
 const assert = require('node:assert/strict');
@@ -31,7 +32,7 @@ app.whenReady().then(async () => {
   const wc = win.webContents;
   const js = code => wc.executeJavaScript(code);
   await wait(() => js('!!document.querySelector(".bot-open")').catch(() => false));
-  win.setMinimumSize(0, 0); win.setContentSize(1280, 800);
+  win.setMinimumSize(0, 0); await resizeWindow(win, 1280, 800);
   wc.debugger.attach('1.3');
   await wc.debugger.sendCommand('Page.enable');
   await wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });

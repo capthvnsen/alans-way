@@ -83,6 +83,8 @@ npm run package:mac
 
 Use Node 24 for development checks and desktop CI, matching Electron 44's embedded Node major. `npm run check` installs the Electron runtime once before starting parallel test workers, so its two embedded-Node compatibility tests cannot extract the same binary concurrently. The release workflow keeps its existing runtime.
 
+Native windows in the Electron CI fixtures use `test/window-fixture.cjs`. It clamps requested bounds or content sizes to the primary display work area, accounts for the native frame, logs requested and effective dimensions, and asserts the resulting bounds/content size. Explicit layout resizes also assert the renderer viewport. `WORKSPACE_TEST_MAX_WORKAREA=1440x700` caps that area for local runner-size reproduction; oversized requests are logged as clamped. Intentional CDP viewport emulation in the browser API test and headless Chromium viewports remain independent of the desktop work area.
+
 The macOS `desktop-electron` CI job also runs these isolated workspace suites. Each has an individual `npm run test:<name>` script; `test/run-workspace-suite.cjs` supplies current source paths and a fresh evidence directory under the system temporary directory.
 
 | CI suite | Isolation |

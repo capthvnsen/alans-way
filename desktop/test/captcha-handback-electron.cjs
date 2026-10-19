@@ -1,3 +1,4 @@
+require('./window-fixture.cjs');
 // Run: npx electron test/captcha-handback-electron.cjs
 // A bot's tab meets a CAPTCHA: input on the widget is refused, a whole-page
 // check is handed to the human with a note naming the site and the check, and

@@ -1,3 +1,4 @@
+const { resizeWindow } = require('./window-fixture.cjs');
 // Real Electron Settings + main persistence/copy; external work is blocked.
 // Run with: node test/run-electron.cjs test/connections-round2-electron.cjs
 const assert = require('node:assert/strict');
@@ -107,7 +108,7 @@ app.whenReady().then(async () => {
   const check = async (name, fn) => { if (process.env.CONNECTIONS_CASE && !name.includes(process.env.CONNECTIONS_CASE)) return; try { await call('settings', { macSshHost: `local${results.length}@fixture.invalid`, vpsBrowser: { enabled: false, sshHost: `agent${results.length}@fixture.invalid` }, remoteUrl: '', preview: false }); await call('open-bot', { id: bots[0].id }); await open(); await fn(); results.push({ name, pass: true }); console.log('PASS:', name); } catch (error) { results.push({ name, pass: false, error: error.stack }); console.error('FAIL:', name, error.message); await shot('failure-' + results.length); } finally { for (const gate of gates) gate.release(); gates.length = 0; seams.clear(); await frame(); } };
   server = http.createServer((_req, res) => res.end('<!doctype html><title>Inert loopback viewer fixture</title>'));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const url = `http://127.0.0.1:${server.address().port}/vnc.html`;
-  win.setContentSize(1280, 800); await frame();
+  await resizeWindow(win, 1280, 800); await frame();
   await js('window.journeyInputs=[];for(const type of ["keydown","pointerdown","input"])document.addEventListener(type,e=>journeyInputs.push({type,key:e.key,trusted:e.isTrusted,id:e.target.id}),true);true');
   await check('close and reopen retains an unsaved address without auto-saving', async () => {
     await disclose('#settings-agent-details');
@@ -313,7 +314,7 @@ app.whenReady().then(async () => {
     assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'not-checked@draft.invalid');
   });
   for (const size of [[1280, 800], [1120, 800], [1024, 800], [840, 800]]) await check(`${size.join('x')}: trusted forward/reverse keyboard routes keep focus visible and drafts recoverable`, async () => {
-    win.setMinimumSize(0, 0); win.setContentSize(...size); await frame();
+    win.setMinimumSize(0, 0); await resizeWindow(win, ...size); await frame();
     await click('#settings-enter-addresses'); await fill('#mac-ssh-host', 'keyboard@draft.invalid');
     await disclose('#settings-connector-details'); await disclose('#settings-remote-details');
     await click('#settings-category-connections'); const samples = [];

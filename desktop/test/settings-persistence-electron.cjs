@@ -1,4 +1,5 @@
 'use strict';
+const { resizeWindow } = require('./window-fixture.cjs');
 // Builder regression: guarded runtime scaffold adapted after the sealed Settings critic judgement.
 // No independence claim; added persistence-failure and draft-lifetime scenarios are builder authored.
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
@@ -124,7 +125,7 @@ app.whenReady().then(async()=>{
 
 async function fieldStatus(id) { return js(`(()=>{const e=$(${JSON.stringify(id)});return {value:e.value,dirty:e.dataset.dirty,status:(e.id==='remote-url'?e.closest('.settings-section-body').querySelector('button.primary-button'):$('settings-save-addresses')).nextElementSibling.textContent}})()`); }
 async function run(){
- BrowserWindow.prototype.showInactive.call(win);win.setSize(1440,900);await sleep(120);
+ BrowserWindow.prototype.showInactive.call(win);await resizeWindow(win,1440,900,{mode:'bounds'});await sleep(120);
  await legacyFailureRecovery();
  for(const [slot,id,query] of [['autoOpenLinks','settings-auto-links','takeover'],['autoTakeover','settings-auto-takeover','takeover'],['preview','settings-preview','viewer']]){
   await scenario(slot+' actual failed write then explicit choice',async()=>{
@@ -179,8 +180,8 @@ async function run(){
   await activate('settings-discard-viewer');
  });
  await scenario('minimum reduced-motion persistence failure feedback and keyboard focus',async()=>{
-  win.setSize(1120,680);await debug('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});await mount('takeover');failWrite=true;await activate('settings-auto-links');failWrite=false;await activate('settings-auto-links','Tab');await js(`$('settings-auto-links').focus()`);const e=await element('settings-auto-links');output.minimumFocus=e;output.reducedMotion=await js('matchMedia("(prefers-reduced-motion: reduce)").matches');
-  await assert('failure feedback and focus remain nearby at minimum with reduced motion',async()=>{if(!e.focus||parseFloat(e.outlineWidth)<2||e.rect.y<0||e.rect.y+e.rect.height>680||!output.reducedMotion)throw Error(JSON.stringify(e));return e;});await capture('failed-switch-minimum-reduced-motion');
+  const effective=await resizeWindow(win,1120,680,{mode:'bounds'});await debug('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});await mount('takeover');failWrite=true;await activate('settings-auto-links');failWrite=false;await activate('settings-auto-links','Tab');await js(`$('settings-auto-links').focus()`);const e=await element('settings-auto-links');output.minimumFocus=e;output.reducedMotion=await js('matchMedia("(prefers-reduced-motion: reduce)").matches');
+  await assert('failure feedback and focus remain nearby at minimum with reduced motion',async()=>{if(!e.focus||parseFloat(e.outlineWidth)<2||e.rect.y<0||e.rect.y+e.rect.height>effective.height||!output.reducedMotion)throw Error(JSON.stringify(e));return e;});await capture('failed-switch-minimum-reduced-motion');
  });
 }
 

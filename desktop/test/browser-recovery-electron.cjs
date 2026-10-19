@@ -28,11 +28,12 @@ if (typeof electron === 'string') {
     const receipt = { pid: child.pid, code, signal, startedAt, exitedAt: new Date().toISOString(), target, profileRemoved: false };
     fs.rmSync(profile, { recursive: true, force: true }); receipt.profileRemoved = !fs.existsSync(profile);
     fs.writeFileSync(path.join(out, 'process-exit.json'), JSON.stringify(receipt, null, 2) + '\n');
-    console.log(fs.readFileSync(path.join(out, 'electron.log'), 'utf8').split('\n').filter(line => /^\{|^PASS|^FAIL/.test(line)).join('\n'));
+    console.log(fs.readFileSync(path.join(out, 'electron.log'), 'utf8').split('\n').filter(line => /^\{|^PASS|^FAIL|^FIXTURE WINDOW:/.test(line)).join('\n'));
     console.log(JSON.stringify(receipt));
     if (code !== 0 || signal) process.exitCode = 1;
   });
 } else {
+  require('./window-fixture.cjs');
   const { EventEmitter } = require('node:events');
   const Module = require('node:module');
   const http = require('node:http');
@@ -130,7 +131,7 @@ if (typeof electron === 'string') {
       return win;
     },
   }),
-    screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1280, height: 800 } }), getCursorScreenPoint: () => ({ x: -1000, y: -1000 }) },
+    screen: { getPrimaryDisplay: () => electron.screen.getPrimaryDisplay(), getCursorScreenPoint: () => ({ x: -1000, y: -1000 }) },
     Menu: { ...electron.Menu, setApplicationMenu() {}, getApplicationMenu: () => null },
     powerMonitor: Object.assign(new EventEmitter(), { getSystemIdleTime: () => 0, getSystemIdleState: () => 'active' }),
   };

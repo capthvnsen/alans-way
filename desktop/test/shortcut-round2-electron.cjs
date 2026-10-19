@@ -1,3 +1,4 @@
+const { resizeWindow } = require('./window-fixture.cjs');
 // Focused UI regressions. Runs the actual source app with disposable storage.
 // No native focus, OS permission, accelerator, or editing acceptance is implied.
 const assert = require('node:assert/strict');
@@ -86,9 +87,9 @@ app.whenReady().then(async () => {
   await close();
   observations.viewports = [];
   for (const [width, height] of [[820, 560], [1024, 640], [1440, 900]]) {
-    win.setContentSize(width, height); await frame(); await open();
+    const effective = await resizeWindow(win, width, height); await frame(); await open();
     await check(`${width}x${height}: Tab enters results; navigation reaches last row and returns to opener`, async () => {
-      assert.deepEqual(await js('[innerWidth,innerHeight]'), [width, height]);
+      assert.deepEqual(await js('[innerWidth,innerHeight]'), [effective.width, effective.height]);
       await key('Tab'); assert.equal(await active(), 'shortcut-results', 'Tab from Search must enter the results');
       const start = await scroll(); await key('ArrowDown'); await wait(scroll, top => top > start);
       const arrow = await scroll(); await key('PageDown'); await wait(scroll, top => top > arrow);

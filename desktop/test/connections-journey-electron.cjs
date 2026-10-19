@@ -1,3 +1,4 @@
+const { resizeWindow } = require('./window-fixture.cjs');
 // Real Electron Settings + main persistence/copy; external work is blocked.
 // Run with: node test/run-electron.cjs test/connections-journey-electron.cjs
 const assert = require('node:assert/strict');
@@ -88,7 +89,7 @@ app.whenReady().then(async () => {
   const check = async (name, fn) => { if (process.env.CONNECTIONS_CASE && !name.includes(process.env.CONNECTIONS_CASE)) return; try { await open(); await fn(); results.push({ name, pass: true }); console.log('PASS:', name); } catch (error) { results.push({ name, pass: false, error: error.stack }); console.error('FAIL:', name, error.message); await shot('failure-' + results.length); } finally { for (const gate of gates) gate.release(); gates.length = 0; seams.clear(); } };
   server = http.createServer((_req, res) => res.end('<!doctype html><title>Inert loopback viewer fixture</title>'));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const url = `http://127.0.0.1:${server.address().port}/vnc.html`;
-  win.setContentSize(1280, 800); await frame();
+  await resizeWindow(win, 1280, 800); await frame();
   await js('window.journeyInputs=[];for(const type of ["keydown","pointerdown","input"])document.addEventListener(type,e=>journeyInputs.push({type,key:e.key,trusted:e.isTrusted,id:e.target.id}),true);true');
   if (phase === 'no-bot') {
     await check('no bot keeps setup unavailable with an explicit way to choose a bot', async () => {
@@ -104,7 +105,7 @@ app.whenReady().then(async () => {
       const dims = await js('[innerWidth,innerHeight]');
       const full = await wc.debugger.sendCommand('Page.captureScreenshot', {format:'png',fromSurface:true,captureBeyondViewport:true,clip:{x:0,y:0,width:dims[0],height:dims[1],scale:1}}); fs.writeFileSync(path.join(out, `${phase}-full-surface-first-glance.png`), Buffer.from(full.data,'base64'));
       observations.visualProbe = await js(`['modal','modal-body','settings-navigation','settings-content-title'].map(id=>{const e=document.getElementById(id),s=getComputedStyle(e),r=e.getBoundingClientRect();return {id,classes:e.className,opacity:s.opacity,visibility:s.visibility,display:s.display,background:s.backgroundColor,rect:{x:r.x,y:r.y,width:r.width,height:r.height}}})`);
-      const bounds = win.getContentSize(); win.setContentSize(bounds[0] + 1, bounds[1]); await frame(); win.setContentSize(...bounds); await frame(); await pause(180); await frame();
+      const bounds = win.getContentSize(); await resizeWindow(win, bounds[0] + 1, bounds[1]); await frame(); await resizeWindow(win, ...bounds); await frame(); await pause(180); await frame();
       await shot('settled-first-glance');
       const cdp = await wc.debugger.sendCommand('Page.captureScreenshot', { format: 'png', fromSurface: true }); fs.writeFileSync(path.join(out, `${phase}-cdp-first-glance.png`), Buffer.from(cdp.data, 'base64'));
       await pause(200); await shot('settled-repeat-first-glance');
@@ -227,7 +228,7 @@ app.whenReady().then(async () => {
     await shot('search-manual-controls');
   });
   for (const size of [[1280, 800], [1120, 680], [1024, 640], [840, 560]]) await check(`${size.join('x')}: collapsed and expanded keyboard routes keep full focus rings within the pane`, async () => {
-    win.setMinimumSize(0, 0); win.setContentSize(...size); await frame(); await click('#settings-category-connections');
+    win.setMinimumSize(0, 0); await resizeWindow(win, ...size); await frame(); await click('#settings-category-connections');
     const failures = [], stops = {};
     for (const expanded of [false, true]) {
       if (expanded) for (const id of ['settings-connector-details', 'settings-agent-details', 'settings-remote-details']) await disclose('#' + id);

@@ -1,3 +1,4 @@
+require('./window-fixture.cjs');
 // Run: ./node_modules/.bin/electron test/cloud-telegram-electron.cjs
 // Drives the BotFather script against a fake Telegram page: the composer is a
 // contenteditable, Enter appends an outgoing message, and a canned responder
@@ -91,7 +92,8 @@ app.whenReady().then(async () => {
   win = new BrowserWindow({ show: false, width: 900, height: 640, webPreferences: { sandbox: true } });
   const view = new WebContentsView({ webPreferences: { sandbox: true, backgroundThrottling: false } });
   win.contentView.addChildView(view);
-  view.setBounds({ x: 0, y: 0, width: 900, height: 640 });
+  const [width, height] = win.getContentSize();
+  view.setBounds({ x: 0, y: 0, width, height });
   await view.webContents.loadURL(root);
   const wc = view.webContents;
   await wc.executeJavaScript('window.ready');

@@ -1,3 +1,4 @@
+const { resizeWindow } = require('./window-fixture.cjs');
 // Actual renderer + main, disposable data, trusted Chromium keys. No OS focus lease.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -61,7 +62,8 @@ app.whenReady().then(async () => {
   const press = async selector => { await focus(selector); await key('Enter'); };
   const replace = async (selector, value) => { await focus(selector); await js(`document.querySelector(${JSON.stringify(selector)}).select()`); await wc.insertText(value); await frame(); };
   const close = async () => { await focus('#modal-close'); await key('Enter'); };
-  win.setContentSize(1280, 800); await frame();
+  const minimum = win.getMinimumSize();
+  await resizeWindow(win, 1280, 800); await frame();
   await js('window.settingsKeys=[];document.addEventListener("keydown",e=>settingsKeys.push({key:e.key,trusted:e.isTrusted}),true)');
   await open();
   await check('find Accessibility directly without tabbing through 24 bot switches', async () => {
@@ -213,10 +215,9 @@ app.whenReady().then(async () => {
     await shot('async-failed'); responses.delete('test-agent-path'); responses.delete('setup-check');
   });
   observations.viewports = [];
-  const minimum = win.getMinimumSize();
   for (const viewport of [{ name: '1280x800', size: [1280, 800] }, { name: 'app-minimum', size: minimum, outer: true }, { name: '1024x640', size: [1024, 640], forced: true }]) {
     if (viewport.forced) win.setMinimumSize(0, 0);
-    if (viewport.outer) win.setSize(...viewport.size); else win.setContentSize(...viewport.size);
+    if (viewport.outer) await resizeWindow(win, ...viewport.size, { mode: 'bounds' }); else await resizeWindow(win, ...viewport.size);
     await frame();
     await check(`${viewport.name}: categories/title remain visible and Tab/Shift+Tab reveal full focus outlines`, async () => {
       await category('general'); const dimensions = await js('[innerWidth,innerHeight]');

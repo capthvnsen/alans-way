@@ -1,3 +1,4 @@
+require('./window-fixture.cjs');
 const { bindApproval } = require('./approval-fixture.cjs');
 // Run: npx electron test/auto-takeover-commit-electron.cjs
 // Uses an isolated profile and a localhost page. No Telegram sign-in required.
