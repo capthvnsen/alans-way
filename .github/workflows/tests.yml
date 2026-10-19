@@ -76,7 +76,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: capthvnsen/alans-way-agents
-          ref: main
+          # Paired plugin with approval-binding-v1 (PR #122); move to the v0.21.7 tag at release.
+          ref: b9dfb89a1acb564b0750c1c800210ca60fbe3bf5
           path: quality-plugin
       - name: Configure headless binding fixtures
         run: |
