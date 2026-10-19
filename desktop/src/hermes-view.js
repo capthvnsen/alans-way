@@ -277,6 +277,12 @@
         change.onclick = () => onShowSetup();
         bar.append(change);
       }
+      if (state.status === 'ready') {
+        const refresh = trackFocus(el('button', 'link-button', 'Refresh conversations'), 'refresh-conversations');
+        refresh.type = 'button';
+        refresh.onclick = () => api.command('refresh-sessions', {}).catch(showError);
+        bar.append(refresh);
+      }
     }
 
     function renderTranscript() {
@@ -288,8 +294,13 @@
       const shown = convo || stale?.convo;
       transcript.classList.toggle('stale', !!stale);
       if (!shown) {
+        const emptyReady = state.storedSessionsError
+          ? `No live conversation is selected. ${state.storedSessionsError}`
+          : state.storedSessions?.length ? 'Resume a saved conversation from the sidebar, or start a new session.'
+            : state.sessions?.length ? 'Select a live conversation to start.'
+              : 'No live or saved conversations on this backend. Use New Hermes session to start.';
         transcript.append(el('div', 'hermes-empty',
-          state.status === 'ready' ? 'Select a conversation to start.'
+          state.status === 'ready' ? emptyReady
             : state.selected ? 'Connection lost — reconnect to load this conversation.' : ''));
         return;
       }
@@ -653,6 +664,7 @@
       }
       state = next;
       const sig = JSON.stringify([next.status, next.generation, next.target, next.selected,
+        next.sessions, next.storedSessions, next.storedSessionsError,
         next.conversation?.transcript?.length, next.conversation?.turn?.text?.length,
         next.conversation?.pendingRequests, next.conversation?.requestOutcomes, next.error,
         next.conversation?.statusLine, next.conversation?.errors,

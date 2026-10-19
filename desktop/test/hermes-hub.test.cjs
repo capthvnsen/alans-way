@@ -12,10 +12,20 @@ function fakeWire() {
   const wire = new EventEmitter();
   wire.state = 'open';
   wire.calls = [];
+  wire.sessions = [{ id: 's-1', session_key: 'k-1', title: 'First' }, { id: 's-2', session_key: 'k-2', title: 'Second' }];
+  wire.storedSessions = [];
   wire.call = async (method, params) => {
     wire.calls.push({ method, params });
     if (method === 'session.active_list') {
-      return { sessions: [{ id: 's-1', session_key: 'k-1', title: 'First' }, { id: 's-2', session_key: 'k-2', title: 'Second' }] };
+      return { sessions: wire.sessions.slice() };
+    }
+    if (method === 'session.list') return { sessions: wire.storedSessions.slice() };
+    if (method === 'session.resume') {
+      const row = wire.storedSessions.find(s => s.id === params.session_id);
+      if (!row) throw new Error('stored session not found');
+      const resumed = wire.resumeResult || { session_id: 's-resumed', session_key: row.id };
+      if (wire.publishResume !== false) wire.sessions.push({ id: resumed.session_id, session_key: wire.resumeLiveKey || resumed.session_key, title: row.title });
+      return resumed;
     }
     if (method === 'session.create') return { session_id: 's-9', session_key: 'k-9' };
     return { ok: true };
@@ -42,7 +52,7 @@ function fakeController(identity) {
   return c;
 }
 
-function fixture({ authRequired = true, tokens = null, persisted = {}, signIn, notify } = {}) {
+function fixture({ authRequired = true, tokens = null, persisted = {}, signIn, notify, setupWire } = {}) {
   const controllers = [];
   const wires = [fakeWire()];
   const wire = wires[0];
@@ -77,7 +87,7 @@ function fixture({ authRequired = true, tokens = null, persisted = {}, signIn, n
     remote,
     // Each connectSocket yields a fresh wire, like production; tests that
     // reuse the first socket still see `wire`, reconnects get wires.at(-1).
-    createWire: () => wires.at(-1),
+    createWire: () => { const w = wires.at(-1); setupWire?.(w); return w; },
     createController: ({ identity }) => { const c = fakeController(identity); controllers.push(c); return c; },
     persist: (r) => saved.push(r),
     load: () => persisted,
@@ -142,9 +152,134 @@ test('connect with stored refresh token: refresh → ticket → wire → session
   const s = hub.getState();
   assert.equal(s.status, 'ready');
   assert.deepEqual(s.sessions.map((x) => x.id), ['s-1', 's-2']);
-  assert.deepEqual(wire.calls.map((c) => c.method), ['session.active_list']);
+  assert.deepEqual(wire.calls.map((c) => c.method), ['session.active_list', 'session.list']);
   const text = JSON.stringify(s);
   assert.ok(!text.includes('rt-1') && !text.includes('tk-1') && !text.includes('at-2'));
+});
+
+test('restart and re-auth refresh saved history and explicit Resume binds a fresh live identity without sending', async () => {
+  const { hub, remote, wires, controllers } = fixture({
+    persisted: { url: 'http://127.0.0.1:9119', profile: 'work', tokens: { refreshToken: 'expired' },
+      selected: { sessionId: 's-before-restart', sessionKey: 'stored-1' } },
+    setupWire: wire => { wire.sessions = []; wire.storedSessions = [{ id: 'stored-1', title: 'Lighthouse' }]; },
+  });
+  try {
+    const refresh = remote.refresh;
+    remote.refresh = async value => {
+      if (value.refreshToken === 'expired') throw new (require('../src/hermes-remote.cjs').RemoteError)('session_expired', 'Stored sign-in expired; sign in again.');
+      return refresh(value);
+    };
+    await assert.rejects(hub.command('connect'), { code: 'needs_signin' });
+    await hub.command('sign-in', { username: 'u', password: 'fixture-only' });
+    const state = hub.getState();
+    assert.equal(state.status, 'ready');
+    assert.deepEqual(state.sessions, [], 'a restarted backend has no live sessions');
+    assert.deepEqual(state.storedSessions, [{ id: 'stored-1', title: 'Lighthouse' }]);
+    assert.equal(state.storedSessionsError, null);
+    assert.deepEqual(wires[0].calls.find(c => c.method === 'session.list').params, { profile: 'work', limit: 50 });
+    assert.equal(wires[0].calls.filter(c => c.method === 'session.resume').length, 0, 're-auth never resumes or submits automatically');
+    const result = await hub.command('resume-session', { storedSessionId: 'stored-1', generation: state.generation });
+    assert.equal(result.sessionId, 's-resumed');
+    assert.deepEqual(hub.getState().selected, { sessionId: 's-resumed', sessionKey: 'stored-1' });
+    assert.deepEqual(hub.getState().storedSessions, [], 'the now-live conversation is not duplicated in Saved');
+    assert.deepEqual(controllers[0].identity, { profile: 'work', sessionId: 's-resumed', sessionKey: 'stored-1', reviewed: true });
+    assert.deepEqual(controllers[0].calls, ['bind']);
+    assert.deepEqual(wires[0].calls.find(c => c.method === 'session.resume').params,
+      { session_id: 'stored-1', profile: 'work', lazy: true, inline_images: false });
+    assert.equal(wires[0].calls.some(c => c.method === 'prompt.submit'), false);
+    await hub.command('disconnect'); await hub.command('connect');
+    assert.deepEqual(hub.getState().storedSessions, [{ id: 'stored-1', title: 'Lighthouse' }], 'ordinary reconnect also refreshes saved history');
+    assert.ok(remote.wsUrlArgs.length >= 2);
+  } finally { hub.dispose(); }
+});
+
+test('saved-session resume rejects stale or unlisted controls before issuing an RPC', async () => {
+  const { hub, wire } = fixture({ authRequired: false, persisted: { url: 'http://127.0.0.1:9119', localToken: 'fixture' },
+    setupWire: w => { w.storedSessions = [{ id: 'stored-1', title: 'Saved' }]; } });
+  try {
+    await hub.command('connect');
+    const generation = hub.getState().generation;
+    for (const value of [{ storedSessionId: 'stored-1' }, { storedSessionId: 'stored-1', generation: generation - 1 }]) {
+      await assert.rejects(hub.command('resume-session', value), { code: 'stale_generation' });
+    }
+    await assert.rejects(hub.command('resume-session', { storedSessionId: 'not-listed', generation }), { code: 'unknown_session' });
+    assert.equal(wire.calls.filter(c => c.method === 'session.resume').length, 0);
+  } finally { hub.dispose(); }
+});
+
+test('resume requires the returned runtime/key pair in the fresh live list before it can bind', async () => {
+  for (const publishResume of [false, true]) {
+    const { hub, wire, controllers } = fixture({ authRequired: false,
+      persisted: { url: 'http://127.0.0.1:9119', localToken: 'fixture' },
+      setupWire: w => { w.storedSessions = [{ id: 'stored-1', title: 'Saved' }];
+        w.publishResume = publishResume; w.resumeLiveKey = 'different-key'; } });
+    try {
+      await hub.command('connect');
+      await assert.rejects(hub.command('resume-session', { storedSessionId: 'stored-1', generation: hub.getState().generation }), { code: 'identity_mismatch' });
+      assert.equal(controllers.length, 0);
+      assert.equal(hub.getState().selected, null);
+      assert.equal(wire.calls.filter(c => c.method === 'prompt.submit').length, 0);
+    } finally { hub.dispose(); }
+  }
+});
+
+test('saved-list errors keep the live list usable and are not presented as an empty saved history', async () => {
+  const { hub, wire } = fixture({ authRequired: false, persisted: { url: 'http://127.0.0.1:9119', localToken: 'fixture' } });
+  const call = wire.call;
+  wire.call = async (method, params) => {
+    if (method === 'session.list') throw Object.assign(new Error('unsupported'), { code: 'remote_error' });
+    return call(method, params);
+  };
+  try {
+    await hub.command('connect');
+    assert.equal(hub.getState().status, 'ready');
+    assert.equal(hub.getState().sessions.length, 2);
+    assert.ok(hub.getState().storedSessionsError);
+    wire.call = call;
+    await hub.command('refresh-sessions', {});
+    assert.equal(hub.getState().storedSessionsError, null);
+  } finally { hub.dispose(); }
+});
+
+test('a late saved-history list cannot cross a backend change', { timeout: 3000 }, async () => {
+  const { hub, wire } = fixture({ authRequired: false, persisted: { url: 'http://127.0.0.1:9119', localToken: 'fixture' } });
+  let release, started;
+  const pending = new Promise(resolve => { release = resolve; });
+  const entered = new Promise(resolve => { started = resolve; });
+  const call = wire.call;
+  wire.call = (method, params) => {
+    if (method === 'session.list') { started(); return pending; }
+    return call(method, params);
+  };
+  try {
+    const connecting = hub.command('connect'); await entered;
+    await hub.command('configure', { url: 'http://other.example:9119' });
+    release({ sessions: [{ id: 'old-history', title: 'Old backend' }] });
+    await assert.rejects(connecting, { code: 'stale' });
+    assert.deepEqual(hub.getState().storedSessions, []);
+    assert.deepEqual(hub.getState().sessions, []);
+    assert.equal(hub.getState().storedSessionsError, null);
+  } finally { release({ sessions: [] }); hub.dispose(); }
+});
+
+test('a late Resume cannot select a conversation after a backend change', { timeout: 3000 }, async () => {
+  const { hub, wire, controllers } = fixture({ authRequired: false,
+    persisted: { url: 'http://127.0.0.1:9119', localToken: 'fixture' },
+    setupWire: w => { w.storedSessions = [{ id: 'stored-1', title: 'Saved' }]; } });
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  try {
+    await hub.command('connect');
+    const call = wire.call;
+    wire.call = (method, params) => method === 'session.resume' ? pending : call(method, params);
+    const resuming = hub.command('resume-session', { storedSessionId: 'stored-1', generation: hub.getState().generation });
+    await hub.command('configure', { url: 'http://other.example:9119' });
+    release({ session_id: 'old-runtime', session_key: 'stored-1' });
+    await assert.rejects(resuming, { code: 'stale' });
+    assert.equal(controllers.length, 0);
+    assert.equal(hub.getState().selected, null);
+    assert.deepEqual(hub.getState().storedSessions, []);
+  } finally { release({}); hub.dispose(); }
 });
 
 test('needs_signin when auth required and no stored token; sign-in then connects', async () => {

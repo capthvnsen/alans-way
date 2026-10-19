@@ -2067,6 +2067,22 @@ function renderHermes() {
     row.append(open);
     list.append(row);
   }
+  if (h.status === 'ready') {
+    if (!h.sessions.length) list.append(element('div', 'hermes-note', 'No live conversations.'));
+    if (h.storedSessions?.length) {
+      list.append(element('div', 'hermes-note', 'Saved conversations'));
+      for (const saved of h.storedSessions) {
+        const row = element('div', 'bot-row hermes-row');
+        const resume = element('button', 'bot-open', `Resume ${saved.title || saved.id}`);
+        const generation = h.generation;
+        resume.onclick = () => hermesCommand('resume-session', { storedSessionId: saved.id, generation });
+        row.append(resume); list.append(row);
+      }
+    } else if (!h.sessions.length && !h.storedSessionsError) {
+      list.append(element('div', 'hermes-note', 'No saved conversations.'));
+    }
+    if (h.storedSessionsError) list.append(element('div', 'hermes-note', h.storedSessionsError));
+  }
   // Compact connection status in the sidebar; the full form lives in the pane.
   connect.classList.remove('hidden');
   connect.innerHTML = '';

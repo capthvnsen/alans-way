@@ -25,7 +25,7 @@ class FakeNode {
   get lastChild() { return this.children.at(-1); }
   get classList() {
     const node = this;
-    return { toggle(cls, force) {
+    return { add(cls) { node.classList.toggle(cls, true); }, remove(cls) { node.classList.toggle(cls, false); }, toggle(cls, force) {
       const set = new Set(node.className.split(/\s+/).filter(Boolean));
       if (force === undefined ? !set.has(cls) : force) set.add(cls); else set.delete(cls);
       node.className = [...set].join(' ');
@@ -249,6 +249,32 @@ test('renderer Hermes command errors use the same plain messages as conversation
   vm.runInNewContext(`${src.slice(start, end)}\nthis.run = hermesCommand;`, ctx);
   assert.equal(await ctx.run('connect'), null);
   assert.deepEqual(messages, ['Configure a backend first.']);
+});
+
+test('sidebar distinguishes saved conversations from live identities and dispatches a fenced Resume', () => {
+  const list = new FakeNode('div'), connect = new FakeNode('div'), newSession = new FakeNode('button');
+  const calls = [];
+  const h = { status: 'ready', generation: 42, target, sessions: [], storedSessions: [{ id: 'stored-1', title: 'Lighthouse' }] };
+  const ctx = { state: { chatTarget: 'hermes', hermes: h },
+    $: id => ({ 'hermes-list': list, 'hermes-connect': connect, 'hermes-new': newSession })[id],
+    element: (tag, cls, text) => { const n = new FakeNode(tag); n.className = cls || ''; if (text) n.textContent = text; return n; },
+    hermesCommand: (name, value) => calls.push({ name, value }), command: () => {}, renderHermesSetup: () => {} };
+  const start = src.indexOf('function renderHermes()'), end = src.indexOf('// The setup card owns', start);
+  assert.ok(start > 0 && end > start);
+  vm.runInNewContext(`${src.slice(start, end)}\nthis.renderHermes = renderHermes;`, ctx);
+  ctx.renderHermes();
+  assert.match(list.textContent, /No live conversations/);
+  assert.match(list.textContent, /Saved conversations/);
+  const resume = list.findAll(n => n.tagName === 'BUTTON' && n.textContent === 'Resume Lighthouse')[0];
+  assert.ok(resume, 'saved history has an explicit Resume action');
+  resume.click();
+  assert.equal(calls[0].name, 'resume-session');
+  assert.equal(calls[0].value.storedSessionId, 'stored-1');
+  assert.equal(calls[0].value.generation, 42);
+  assert.equal(calls.some(c => c.name === 'select'), false);
+  h.storedSessions = []; h.storedSessionsError = 'Saved conversations could not be loaded.';
+  ctx.renderHermes();
+  assert.match(list.textContent, /Saved conversations could not be loaded/);
 });
 
 test('leaving the Hermes pane clears a forced setup so returning shows the conversation', () => {

@@ -83,6 +83,7 @@ async function fakeBackend(cfg = {}) {
       case 'gateway.capabilities': return { result: { per_session_exclusive_submit: true, modes: ['default'] } };
       case 'client.capabilities': return { result: { server_requests: ['tool.approval'] } };
       case 'session.active_list': return { result: { sessions: liveSessions.slice() } };
+      case 'session.list': return { result: { sessions: [] } };
       case 'session.create': {
         const id = `sess-new-${Math.floor(Math.random() * 1e6)}`;
         if (!liveSessions.some((r) => r.id === id)) {

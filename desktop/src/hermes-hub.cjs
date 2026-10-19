@@ -48,6 +48,8 @@ function createHermesHub(deps = {}) {
     localToken: '',                     // private; loopback-only credential
     conn: null,                         // {input, output, socket, wire, epoch}
     sessions: [],                       // [{id, key, title, active}]
+    storedSessions: [],                 // [{id, title}] — persisted ids, never live identities
+    storedSessionsError: null,
     selected: null,                     // {sessionId, sessionKey}
     controllers: new Map(),             // sessionId -> {controller, off}
     uncertain: new Map(),               // sessionId -> {sessionKey,text,at,outcome,reason}
@@ -152,6 +154,7 @@ function createHermesHub(deps = {}) {
       try { conn.socket?.close?.(); } catch {}
     }
     state.sessions = [];
+    state.storedSessions = []; state.storedSessionsError = null;
     if (reason) state.error = { code: 'disconnected', message: reason };
   }
 
@@ -255,9 +258,10 @@ function createHermesHub(deps = {}) {
 
   async function refreshSessions() {
     if (!state.conn?.wire || state.conn.wire.state !== 'open') return;
-    const gen = state.generation;
-    const rows = await state.conn.wire.call('session.active_list', {});
-    if (state.generation !== gen) return;
+    const gen = state.generation, conn = state.conn;
+    const profile = state.profile ? { profile: state.profile } : {};
+    const rows = await conn.wire.call('session.active_list', profile);
+    if (state.generation !== gen || state.conn !== conn) return;
     const list = isPlainObject(rows) && Array.isArray(rows.sessions) ? rows.sessions : [];
     state.sessions = list.slice(0, MAX_SESSIONS).filter((r) => isPlainObject(r) && typeof r.id === 'string')
       .map((r) => ({
@@ -265,6 +269,24 @@ function createHermesHub(deps = {}) {
         title: asString(r.title || r.name || r.session_key || r.id, 200),
         active: true,
       }));
+    // active_list is process-local and empties on a backend restart. The
+    // separate DB listing survives it; its ids must never be bound as live.
+    let stored = [], storedError = null;
+    try {
+      const result = await conn.wire.call('session.list', { ...profile, limit: MAX_SESSIONS });
+      if (!isPlainObject(result) || !Array.isArray(result.sessions)) throw new HubError('contract_drift', 'session.list result drifted');
+      stored = result.sessions;
+    } catch {
+      storedError = 'Saved conversations could not be loaded. Use Refresh conversations to try again.';
+    }
+    if (state.generation !== gen || state.conn !== conn) return;
+    const liveKeys = new Set(state.sessions.map(s => s.key));
+    const seen = new Set();
+    state.storedSessions = stored.slice(0, MAX_SESSIONS)
+      .filter(r => isPlainObject(r) && typeof r.id === 'string' && r.id && r.id.length <= 300
+        && !liveKeys.has(r.id) && !seen.has(r.id) && seen.add(r.id))
+      .map(r => ({ id: r.id, title: asString(r.title || r.id, 200) }));
+    state.storedSessionsError = storedError;
     changed();
   }
 
@@ -426,9 +448,29 @@ function createHermesHub(deps = {}) {
 
     async 'refresh-sessions'() { await refreshSessions(); return { ok: true }; },
 
-    // Live sessions only — session.active_list is the process-local switcher
-    // surface. Creating a session mints a NEW session on this gateway; the UI
-    // labels it accordingly (never an existing remote conversation).
+    async 'resume-session'(v) {
+      if (!Number.isSafeInteger(v.generation) || v.generation !== state.generation) {
+        throw new HubError('stale_generation', 'The connection changed since this control was drawn.');
+      }
+      const storedId = asString(v.storedSessionId, 300);
+      if (!state.storedSessions.some(s => s.id === storedId)) throw new HubError('unknown_session', 'That saved conversation is no longer listed. Refresh conversations.');
+      if (!state.conn?.wire || state.conn.wire.state !== 'open') throw new HubError('disconnected', 'Connect first.');
+      const gen = state.generation, conn = state.conn;
+      // Lazy resume loads history without building an agent or sending a
+      // prompt. Only an explicit later Send can continue the conversation.
+      const resumed = await conn.wire.call('session.resume', { session_id: storedId,
+        ...(state.profile ? { profile: state.profile } : {}), lazy: true, inline_images: false });
+      if (state.generation !== gen || state.conn !== conn) throw new HubError('stale', 'connection changed during resume');
+      const id = asString(resumed?.session_id, 300), key = asString(resumed?.session_key, 300);
+      await refreshSessions();
+      if (state.generation !== gen || state.conn !== conn) throw new HubError('stale', 'connection changed during resume');
+      const live = state.sessions.find(s => s.id === id && s.key === key);
+      if (!id || !key || !live) throw new HubError('identity_mismatch', 'Resumed conversation is not in the backend live list. Refresh conversations.');
+      return commands.select({ sessionId: id, sessionKey: key });
+    },
+
+    // Creating mints a NEW live session. Saved history uses resume-session
+    // above and must acquire a verified live identity before selection too.
     async 'new-session'() {
       if (!state.conn?.wire) throw new HubError('disconnected', 'Connect first.');
       const gen = state.generation;
@@ -569,6 +611,8 @@ function createHermesHub(deps = {}) {
       providers: state.providers.map((p) => ({ name: p.name, displayName: asString(p.display_name || p.name, 200), password: p.supports_password === true })),
       principal: state.principal,
       sessions: state.sessions.map((s) => ({ ...s, selected: sel?.sessionId === s.id })),
+      storedSessions: state.storedSessions.map(s => ({ ...s })),
+      storedSessionsError: state.storedSessionsError,
       selected: sel ? { ...sel } : null,
       conversation: convo ? convo.getState() : null,
       uncertain: sel ? state.uncertain.get(sel.sessionId) || null : null,

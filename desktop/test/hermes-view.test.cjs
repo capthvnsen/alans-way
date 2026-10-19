@@ -1000,7 +1000,7 @@ function fakeGateway() {
   let seq = 0, creates = 0;
   const held = [];
   const gw = { input: s2c, output: c2s, socket: { close() { try { s2c.end(); } catch {} } },
-    sent: [], responses: [], holdSubmits: false, onSubmit: null,
+    sent: [], responses: [], storedSessions: [], holdSubmits: false, onSubmit: null,
     release() { for (const fn of held.splice(0)) fn(); } };
   const write = (f) => s2c.write(JSON.stringify(f) + '\n');
   const event = (type, sessionId, payload = {}) =>
@@ -1031,6 +1031,14 @@ function fakeGateway() {
     if (method === 'session.active_list')
       return ok({ sessions: [...sessions.entries()].map(([sid, s]) =>
         ({ id: sid, session_key: s.key, title: s.title })) });
+    if (method === 'session.list') return ok({ sessions: gw.storedSessions.map(s => ({ id: s.id, title: s.title })) });
+    if (method === 'session.resume') {
+      const saved = gw.storedSessions.find(s => s.id === params.session_id);
+      assert.ok(saved, 'only listed saved history may resume');
+      const id = `resumed-${++creates}`;
+      sessions.set(id, { key: saved.id, title: saved.title, messages: saved.messages });
+      return ok({ session_id: id, session_key: saved.id, resumed: saved.id, messages: saved.messages, inflight: null });
+    }
     if (method === 'session.create') {
       const sid = `sess-${++creates}`;
       sessions.set(sid, { key: `key-${creates}`, title: `S${creates}` });
@@ -1039,7 +1047,7 @@ function fakeGateway() {
     if (method === 'session.activate') {
       const s = sessions.get(params.session_id);
       return ok({ session_id: params.session_id, session_key: s && s.key,
-        messages: [], open_requests: [] });
+        messages: s?.messages || [], open_requests: [] });
     }
     if (method === 'session.events.since')
       return ok({ epoch: 'ep-1', events: [], open_requests: [], latest_seq: seq, truncated: false });
@@ -1123,6 +1131,42 @@ test('session wire deltas reach visible assistant text before message.complete t
     assert.equal(assistant().querySelector('.hermes-text').textContent, 'The lighthouse glowed.\n');
     assert.ok(!assistant().hasClass('streaming'));
     assert.equal(s.root.findAll(n => n.hasClass('hermes-msg') && n.hasClass('assistant')).length, 1);
+  } finally { s.hub.dispose(); s.pushState.flush(); }
+});
+
+test('ready empty states distinguish saved history, no conversations and failed history lookup with Refresh', async () => {
+  const initial = baseState({ selected: null, conversation: null, sessions: [], storedSessions: [], storedSessionsError: null });
+  const { root, transcript, rec } = view(initial); await tick();
+  assert.match(transcript.textContent, /No live or saved conversations/);
+  rec.emit({ ...initial, storedSessions: [{ id: 'stored-1', title: 'Saved' }] });
+  assert.match(transcript.textContent, /Resume a saved conversation/);
+  rec.emit({ ...initial, storedSessionsError: 'Saved conversations could not be loaded.' });
+  assert.match(transcript.textContent, /Saved conversations could not be loaded/);
+  root.findAll(n => n.tagName === 'BUTTON' && n.textContent === 'Refresh conversations')[0].click();
+  await tick();
+  assert.equal(rec.calls.at(-1).name, 'refresh-sessions');
+});
+
+test('saved history resume through the real wire hydrates the transcript and enables the composer without resending', async () => {
+  const s = realStack();
+  s.gw.storedSessions = [{ id: 'saved-key', title: 'Lighthouse', messages: [
+    { role: 'user', text: 'A story' }, { role: 'assistant', text: 'Saved lighthouse reply.' },
+  ] }];
+  try {
+    await s.api.command('configure', { url: 'http://gw.test:9119', localToken: 'fixture' });
+    await s.api.command('connect', {}); s.delivered();
+    const before = await s.api.getState();
+    assert.deepEqual(before.sessions, []);
+    assert.deepEqual(before.storedSessions, [{ id: 'saved-key', title: 'Lighthouse' }]);
+    assert.equal(s.textarea.disabled, true);
+    await s.api.command('resume-session', { storedSessionId: 'saved-key', generation: before.generation }); s.delivered();
+    const after = await s.api.getState();
+    assert.equal(after.selected.sessionKey, 'saved-key');
+    assert.notEqual(after.selected.sessionId, 'saved-key', 'persisted key is never treated as a runtime id');
+    assert.equal(after.conversation.phase, 'bound');
+    assert.equal(s.root.querySelector('.hermes-transcript').textContent, 'A storySaved lighthouse reply.');
+    assert.equal(s.textarea.disabled, false);
+    assert.deepEqual(s.gw.sent, [], 'resume never submits a prompt');
   } finally { s.hub.dispose(); s.pushState.flush(); }
 });
 
