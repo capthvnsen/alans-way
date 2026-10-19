@@ -1,6 +1,7 @@
 // Loopback PDFs, isolated sessions/downloads, native-event/picker fixtures and
 // two launches to exercise quit-time persistence. Never uses an installed app.
-// Drops use 1024x700 by default; PDF_FIXTURE_BOUNDS=1550x980 covers a large window.
+// Drops request 1024x700 by default, capped at the display work area.
+// PDF_FIXTURE_BOUNDS=1550x980 covers a large window on a large display.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -54,7 +55,7 @@ if (typeof electron === 'string') {
     finally { fs.rmSync(profile, { recursive: true, force: true }); }
   })().catch(error => { console.error(error.stack); process.exitCode = 1; });
 } else {
-  const { app, BrowserWindow, webContents, session, dialog, Menu } = electron;
+  const { app, BrowserWindow, webContents, session, dialog, Menu, screen } = electron;
   const { prepareFixture, quitFixture } = require('./electron-fixture.cjs');
   const profile = process.env.PDF_FIXTURE_PROFILE;
   const baseline = process.env.PDF_BASELINE === '1';
@@ -236,8 +237,16 @@ if (typeof electron === 'string') {
     // An explicit size also lets the same assertions cover a full-size window.
     const bounds = process.env.PDF_FIXTURE_BOUNDS || '1024x700';
     assert.match(bounds, /^\d+x\d+$/);
-    const [width, height] = bounds.split('x').map(Number);
-    win.setMinimumSize(0, 0); win.setBounds({ width, height });
+    const [requestedWidth, requestedHeight] = bounds.split('x').map(Number);
+    const { workArea, workAreaSize } = screen.getPrimaryDisplay();
+    const width = Math.min(requestedWidth, workAreaSize.width);
+    const height = Math.min(requestedHeight, workAreaSize.height);
+    console.log('DROP WINDOW:', JSON.stringify({ requested: [requestedWidth, requestedHeight], workAreaSize, expected: [width, height] }));
+    win.setMinimumSize(0, 0);
+    win.setBounds({ x: workArea.x, y: workArea.y, width, height });
+    await waitFor(() => win.getBounds(), size => size.width === width && size.height === height);
+    const actualBounds = win.getBounds();
+    check('drop window bounds', [actualBounds.width, actualBounds.height], [width, height]);
     await waitFor(() => evaluate('[innerWidth, innerHeight]'), size => size[0] === width && size[1] === height);
     check('drop window viewport', await evaluate('[innerWidth, innerHeight]'), [width, height]);
     const dropPoint = async (target, element = 'document.documentElement') => {
