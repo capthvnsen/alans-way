@@ -6,6 +6,7 @@ const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const electron = require('electron');
+const { captureClipboard, restoreClipboard } = require('./clipboard-fixture.cjs');
 const { app, BrowserWindow, ipcMain, session, clipboard } = electron;
 // A locked Mac can return incomplete accelerated surface readbacks.
 // Software compositing is fixture-only and identical for both comparisons.
@@ -74,7 +75,7 @@ const sourceHashes = Object.fromEntries(['src/main.cjs', 'src/renderer.js', 'src
 require(path.join(target, 'src/main.cjs'));
 const pause = (ms = 25) => new Promise(resolve => setTimeout(resolve, ms));
 async function wait(read, predicate = Boolean) { for (let i = 0; i < 200; i++) { const value = await read(); if (predicate(value)) return value; await pause(); } throw Error('Timed out waiting for Connections UI.'); }
-let win, wc, server, clipboardBefore;
+let win, wc, server;
 const holdSave = key => { let release; const gate = { match: (name, value) => name === 'settings' && key in value, pending: new Promise(resolve => { release = resolve; }), release: error => { gate.error = error; release(); } }; gates.push(gate); return gate; };
 app.whenReady().then(async () => {
   win = await wait(() => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')));
@@ -253,32 +254,44 @@ app.whenReady().then(async () => {
     await click('#settings-discard-viewer'); assert.equal(await js('document.getElementById("remote-url").value'), url + '?later');
   });
   await check('actual copied prompt and visible request, expected reply and continuation agree; clipboard restored', async () => {
-    const before = await clipboard.read(), saved = [];
-    for (const item of before) { const data = {}; for (const type of item.types) data[type] = await item.getType(type); saved.push(new electron.ClipboardItem(data)); }
-    clipboardBefore = saved;
+    const saved = await captureClipboard();
     try {
-      const text = await js('document.querySelector("[data-settings-section=agent-setup]").innerText');
-      assert.match(text, /follow openalan.com\/agent-prompt/); assert.match(text, /set up the Alan’s Way Plugin, preserving Hermes/);
-      assert.match(text, /Expect approval steps/); assert.match(text, /report.*checks.*warnings.*unfinished/);
-      await click('#settings-copy-setup-prompt'); await idle('#settings-copy-setup-prompt');
-      const actual = await clipboard.readText();
-      assert.match(actual, /Before any setup, load the installed workspace-setup skill/);
-      assert.match(actual, /skill_view\(name="alans-way:workspace-setup"\)/);
-      assert.match(actual, /Never.*\n.*execute branch\/main URLs or unpinned checkouts/);
-      assert.match(actual, /BOT_ID=74001/); assert.ok(actual.includes('MAC_SSH=' + disk().macSshHost));
-      observations.setupPrompt = actual; await shot('prompt-guidance');
-      await click('#settings-enter-addresses');
-      assert.equal(await js('document.getElementById("settings-agent-details").open'), true);
-      assert.equal(await js('document.activeElement.id'), 'mac-ssh-host');
-    } finally {
-      clipboard.clear();
-      await clipboard.write(saved); clipboardBefore = null;
-      const restored = await clipboard.read(); assert.deepEqual(restored.map(x => x.types), before.map(x => x.types));
-      for (let n = 0; n < saved.length; n++) for (const type of saved[n].types) {
-        const a = await saved[n].getType(type), b = await restored[n].getType(type);
-        if (a instanceof Blob) assert.deepEqual(Buffer.from(await a.arrayBuffer()), Buffer.from(await b.arrayBuffer())); else assert.deepEqual(a, b);
+      const custom = 'web application/x-alans-way-fixture';
+      for (const initial of ['current', 'empty', 'custom']) {
+        if (initial === 'empty') {
+          clipboard.clear();
+          // Electron includes the separate macOS find pasteboard in read().
+          if (process.platform === 'darwin') await clipboard.write([new electron.ClipboardItem({ 'electron application/findtext': '' })]);
+        }
+        if (initial === 'custom') await clipboard.write([new electron.ClipboardItem({
+          'text/plain': 'Connections clipboard fixture', 'text/html': '<b>Connections clipboard fixture</b>', [custom]: new Blob([Buffer.from([0, 1, 254, 255])]),
+        })]);
+        const before = await captureClipboard();
+        if (initial === 'empty') assert.equal(before.items.length, 0, 'empty clipboard has no restorable formats');
+        if (initial === 'custom') assert.ok(before.items.some(item => item.types.includes(custom)), 'custom clipboard bytes are captured');
+        await open();
+        try {
+          const text = await js('document.querySelector("[data-settings-section=agent-setup]").innerText');
+          assert.match(text, /follow openalan.com\/agent-prompt/); assert.match(text, /set up the Alan’s Way Plugin, preserving Hermes/);
+          assert.match(text, /Expect approval steps/); assert.match(text, /report.*checks.*warnings.*unfinished/);
+          await click('#settings-copy-setup-prompt'); await idle('#settings-copy-setup-prompt');
+          const actual = await clipboard.readText();
+          assert.match(actual, /Before any setup, load the installed workspace-setup skill/);
+          assert.match(actual, /skill_view\(name="alans-way:workspace-setup"\)/);
+          assert.match(actual, /Never.*\n.*execute branch\/main URLs or unpinned checkouts/);
+          assert.match(actual, /BOT_ID=74001/); assert.ok(actual.includes('MAC_SSH=' + disk().macSshHost));
+          observations.setupPrompt = actual; await shot('prompt-guidance');
+          await click('#settings-enter-addresses');
+          assert.equal(await js('document.getElementById("settings-agent-details").open'), true);
+          assert.equal(await js('document.activeElement.id'), 'mac-ssh-host');
+        } finally {
+          const formats = await restoreClipboard(before);
+          observations.clipboard = { restored: true, formats, unavailable: before.unavailable, initial };
+        }
+        console.log('PASS: actual copy and clipboard restoration with', initial, 'clipboard');
       }
-      observations.clipboard = { restored: true, formats: restored.map(x => x.types) };
+    } finally {
+      await restoreClipboard(saved);
     }
   });
   await check('continuation keeps keyboard focus across an unrelated real state refresh', async () => {
@@ -321,7 +334,6 @@ app.whenReady().then(async () => {
   assert.ok(observations.productModules.every(file => file.startsWith(target + path.sep)), 'Product modules must resolve inside the frozen target');
 }).catch(error => { results.push({ name: 'fixture', pass: false, error: error.stack }); console.error(error); }).finally(async () => {
   for (const gate of gates) gate.release();
-  if (clipboardBefore) await clipboard.write(clipboardBefore);
   const fail = results.filter(r => !r.pass).length;
   fs.writeFileSync(path.join(out, `${phase}-results.json`), JSON.stringify({ pass: results.length - fail, fail, results, observations, calls, safety, runtime: { pid: process.pid, profile: 'disposable', nativeInput: false, softwareCompositing: true, phase, sourceHashes } }, null, 2));
   app.once('will-quit', () => app.exit(fail ? 1 : 0)); quitFixture(server);

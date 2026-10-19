@@ -6,6 +6,7 @@ const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const electron = require('electron');
+const { captureClipboard, restoreClipboard } = require('./clipboard-fixture.cjs');
 const { app, BrowserWindow, ipcMain, session, clipboard } = electron;
 // A locked Mac can return incomplete accelerated surface readbacks.
 // Software compositing is fixture-only and identical for both comparisons.
@@ -64,7 +65,7 @@ const sourceHashes = Object.fromEntries(['src/main.cjs', 'src/renderer.js', 'src
 require(path.join(target, 'src/main.cjs'));
 const pause = (ms = 25) => new Promise(resolve => setTimeout(resolve, ms));
 async function wait(read, predicate = Boolean) { for (let i = 0; i < 200; i++) { const value = await read(); if (predicate(value)) return value; await pause(); } throw Error('Timed out waiting for Connections UI.'); }
-let win, wc, server, clipboardBefore;
+let win, wc, server;
 const holdSave = key => { let release; const gate = { match: (name, value) => name === 'settings' && key in value, pending: new Promise(resolve => { release = resolve; }), release: () => release() }; gates.push(gate); return gate; };
 app.whenReady().then(async () => {
   win = await wait(() => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')));
@@ -192,13 +193,8 @@ app.whenReady().then(async () => {
     release({ ok: true, detail: 'HELD_OLD_SESSION_SUCCESS' }); await frame(); assert.doesNotMatch(await js('document.getElementById("settings-content").innerText'), /passed|HELD_OLD/); await shot('bot-and-session-stale');
   });
   await check('actual copied setup payloads match the reviewed bot and clipboard is restored without setup execution', async () => {
-    const initial = await clipboard.read(), before = [];
-    for (const item of initial) {
-      const data = {}; for (const type of item.types) data[type] = await item.getType(type);
-      before.push(new electron.ClipboardItem(data));
-    }
-    const formats = initial.flatMap(item => item.types);
-    clipboardBefore = before;
+    const before = await captureClipboard();
+    const formats = before.items.flatMap(item => item.types);
     try {
       await click('#settings-copy-setup-prompt'); await idle('#settings-copy-setup-prompt'); const prompt = await clipboard.readText();
       assert.match(prompt, /https:\/\/openalan.com\/agent-prompt/); assert.match(prompt, new RegExp('BOT_ID=' + bots[1].id)); assert.match(prompt, /MAC_SSH=local@127\.0\.0\.1/);
@@ -217,14 +213,8 @@ app.whenReady().then(async () => {
       await click('#settings-copy-setup-prompt'); await idle('#settings-copy-setup-prompt'); assert.match(await clipboard.readText(), /BOT_ID=74001/);
       observations.clipboard = { actual: true, reviewedBotIds: [bots[1].id, bots[0].id], heldRealCopyWrongBotSuppressed: true, repeatedCopyDispatchedOnce: true, setupPublicURLUnchanged: true, copiedLocalTokenNotRecorded: true, initialFormats: formats };
     } finally {
-      clipboard.clear();
-      await clipboard.write(before); clipboardBefore = null;
-      const restored = await clipboard.read();
-      for (let index = 0; index < before.length; index++) for (const type of before[index].types) {
-        const expected = await before[index].getType(type), actual = await restored[index].getType(type);
-        if (expected instanceof Blob) assert.deepEqual(Buffer.from(await actual.arrayBuffer()), Buffer.from(await expected.arrayBuffer())); else assert.deepEqual(actual, expected);
-      }
-      observations.clipboard = { ...observations.clipboard, restored: true };
+      await restoreClipboard(before);
+      observations.clipboard = { ...observations.clipboard, restored: true, unavailable: before.unavailable };
     }
   });
   await check('metadata search reveals advanced controls while saved secret field values are never indexed', async () => {
@@ -256,7 +246,6 @@ app.whenReady().then(async () => {
   observations.input = await js('journeyInputs'); assert.ok(observations.input.length && observations.input.every(e => e.trusted));
 }).catch(error => { results.push({ name: 'fixture', pass: false, error: error.stack }); console.error(error); }).finally(async () => {
   for (const gate of gates) gate.release();
-  if (clipboardBefore) await clipboard.write(clipboardBefore);
   const fail = results.filter(r => !r.pass).length;
   fs.writeFileSync(path.join(out, `${phase}-results.json`), JSON.stringify({ pass: results.length - fail, fail, results, observations, calls, safety, runtime: { pid: process.pid, profile: 'disposable', nativeInput: false, softwareCompositing: true, phase, sourceHashes } }, null, 2));
   app.once('will-quit', () => app.exit(fail ? 1 : 0)); quitFixture(server);
