@@ -1,3 +1,4 @@
+const { resizeWindow } = require('./window-fixture.cjs');
 // Isolated renderer fixture: real HTML/CSS and wizard, no main-process services.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -15,37 +16,70 @@ app.whenReady().then(async () => {
   const win = new BrowserWindow({ show: false, width: 1024, height: 640, useContentSize: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
   await win.loadFile(path.join(__dirname, '../src/index.html'));
+  const effective = await resizeWindow(win, 1024, 640);
   const renderer = fs.readFileSync(path.join(__dirname, '../src/renderer.js'), 'utf8');
   await win.webContents.executeJavaScript(`
     window.workspace = { command: async () => 'Fixture prompt' };
     ${renderer.slice(0, renderer.indexOf('function orderedBots('))}
     ${renderer.slice(renderer.indexOf('let onboardingStep ='), renderer.indexOf('function rect('))}
-    ${renderer.slice(renderer.indexOf('function appendServerSetup('), renderer.indexOf('function showSettings('))}
+    ${renderer.slice(renderer.indexOf('function appendServerSetup('), renderer.indexOf('// A section owns'))}
     const copyReport = () => {};
     state = { platform: 'darwin', telegramStatus: 'offline', inApplications: true };
     document.getElementById('home').classList.add('hidden');
     document.getElementById('remote-preview-slot').classList.add('hidden');
     renderOnboarding(true);
   `);
-  for (const step of [1, 2, 3]) {
-    const result = await win.webContents.executeJavaScript(`(() => {
-      onboardingStep = ${step}; renderOnboarding(true);
-      const panel = document.getElementById('onboarding');
-      const buttons = [...panel.querySelectorAll('.onboarding-actions button')];
-      return { width: innerWidth, buttons: buttons.map(button => {
-        button.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-        const r = button.getBoundingClientRect();
-        const p = panel.getBoundingClientRect();
-        return { text: button.textContent, reachable: r.width > 0 && r.left >= 0 && r.right <= innerWidth
-          && r.left >= p.left && r.right <= p.right && r.top >= p.top && r.bottom <= p.bottom
-          && r.bottom <= innerHeight };
-      }) };
-    })()`);
-    assert.equal(result.width, 1024);
-    assert.ok(result.buttons.length > 0);
-    for (const button of result.buttons) assert.ok(button.reachable, `Step ${step}: ${JSON.stringify(button)}`);
-    console.log(`PASS: wizard step ${step} actions reachable at 1024×640`);
+  for (const [width, chatWidth, hideBots] of [[1024, 490, false], [1024, 680, false], [900, 680, false], [1024, 680, true]]) {
+    const size = await resizeWindow(win, width, 640);
+    await win.webContents.executeJavaScript(`
+      document.documentElement.style.setProperty('--chat-width', '${chatWidth}px');
+      document.getElementById('shell').classList.toggle('bots-hidden', ${hideBots});
+    `);
+    for (const step of [1, 2, 3]) {
+      const result = await win.webContents.executeJavaScript(`(() => {
+        onboardingStep = ${step}; renderOnboarding(true);
+        const panel = document.getElementById('onboarding');
+        const buttons = [...panel.querySelectorAll('.onboarding-actions button')];
+        return { width: innerWidth, buttons: buttons.map(button => {
+          button.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+          const r = button.getBoundingClientRect();
+          const p = panel.getBoundingClientRect();
+          return { text: button.textContent, reachable: r.width > 0 && r.left >= 0 && r.right <= innerWidth
+            && r.left >= p.left && r.right <= p.right && r.top >= p.top && r.bottom <= p.bottom
+            && r.bottom <= innerHeight };
+        }) };
+      })()`);
+      assert.equal(result.width, size.width);
+      assert.ok(result.buttons.length > 0);
+      for (const button of result.buttons) assert.ok(button.reachable, `Step ${step}: ${JSON.stringify(button)}`);
+      console.log(`PASS: wizard step ${step} actions reachable at ${size.width}×${size.height}, saved chat width ${chatWidth}, hideBots=${hideBots}`);
+    }
   }
+  await win.webContents.executeJavaScript(`
+    state.chatWidth = 680;
+    document.getElementById('shell').classList.remove('bots-hidden');
+    const scheduleLayout = () => {};
+    ${renderer.slice(renderer.indexOf("$('splitter').onpointerdown ="), renderer.indexOf('// ── Native Hermes chat:'))}
+    undefined;
+  `);
+  const splitter = await win.webContents.executeJavaScript(`(() => {
+    const r = document.getElementById('splitter').getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: 200,
+      width: document.querySelector('.chat-pane').getBoundingClientRect().width };
+  })()`);
+  win.webContents.sendInputEvent({ type: 'mouseDown', x: splitter.x, y: splitter.y, button: 'left', clickCount: 1 });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  win.webContents.sendInputEvent({ type: 'mouseMove', x: splitter.x - 20, y: splitter.y, button: 'left', modifiers: ['leftbuttondown'] });
+  const paneWidth = () => win.webContents.executeJavaScript(`document.querySelector('.chat-pane').getBoundingClientRect().width`);
+  let draggedWidth = await paneWidth();
+  for (const deadline = Date.now() + 5000; draggedWidth === splitter.width && Date.now() < deadline; draggedWidth = await paneWidth()) await new Promise(resolve => setTimeout(resolve, 50));
+  win.webContents.sendInputEvent({ type: 'mouseUp', x: splitter.x - 20, y: splitter.y, button: 'left', clickCount: 1 });
+  assert.equal(draggedWidth, splitter.width - 20, 'splitter starts from the clamped width without a dead zone');
+  await resizeWindow(win, effective.width, effective.height);
+  await win.webContents.executeJavaScript(`
+    document.documentElement.style.setProperty('--chat-width', '490px');
+    document.getElementById('shell').classList.remove('bots-hidden');
+  `);
   for (const platform of ['darwin', 'win32']) {
     const result = await win.webContents.executeJavaScript(`(async () => {
       const calls = [];

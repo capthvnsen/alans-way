@@ -1,3 +1,4 @@
+require('./window-fixture.cjs');
 // Run: ./node_modules/.bin/electron test/agent-input-electron.cjs
 // Uses a fresh temporary Electron profile, hidden windows and localhost only.
 // Add --visible to watch the test fixture without activating its window.
@@ -75,7 +76,8 @@ app.whenReady().then(async () => {
   await win.loadURL(`${root}/human`);
   const view = new WebContentsView({ webPreferences: { sandbox: true, backgroundThrottling: false } });
   win.contentView.addChildView(view);
-  view.setBounds({ x: 0, y: 100, width: 900, height: 550 });
+  const [width, height] = win.getContentSize();
+  view.setBounds({ x: 0, y: 100, width: Math.min(900, width), height: Math.min(550, height - 100) });
   view.setVisible(false);
   await view.webContents.loadURL(root);
   await bindRefs(view.webContents);
@@ -117,6 +119,20 @@ app.whenReady().then(async () => {
   await assert.rejects(agent.guard(tab, { action: 'eval', code: '1' }), /commit_required: a page script here could set off "Buy now"/);
   assert.equal(await value(view.webContents, 'result.textContent'), 'Confirmed: Enter submits', 'a refused click sends nothing');
   console.log('PASS: an icon-only commit button and a page script are refused at dispatch in Electron.');
+  await value(view.webContents, `
+    const income = document.createElement('button');
+    income.id = 'income'; income.type = 'button'; income.setAttribute('aria-expanded', 'false');
+    income.innerHTML = '<span>Business and Rental Income</span><small>1099-NEC, 1099-MISC, Schedule C, K-1s</small>';
+    income.onclick = () => income.setAttribute('aria-expanded', String(income.getAttribute('aria-expanded') !== 'true'));
+    document.body.prepend(income);
+  `);
+  await perform({ action: 'click', selector: '#income span' });
+  await eventuallyEquals(() => value(view.webContents, 'income.getAttribute("aria-expanded")'), 'true');
+  await value(view.webContents, `income.innerHTML = '<span>Schedule C - Submit return</span>';`);
+  await assert.rejects(perform({ action: 'click', selector: '#income span' }), /commit_required/);
+  assert.equal(await value(view.webContents, 'income.getAttribute("aria-expanded")'), 'true', 'an accordion attribute cannot exempt a real commit action');
+  await value(view.webContents, 'income.remove()');
+  console.log('PASS: tax-income disclosure text passes while a submission label stays gated.');
   // Refusal must happen before focusing a targeted commit button: the next
   // human key still belongs to their field, and no focus handler may run.
   await value(view.webContents, `entry.focus(); window.focusEffects = 0; document.getElementById('buy').addEventListener('focus', () => window.focusEffects++);`);

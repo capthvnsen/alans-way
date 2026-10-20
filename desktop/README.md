@@ -81,6 +81,47 @@ npm start
 npm run package:mac
 ```
 
+Use Node 24 for development checks and desktop CI, matching Electron 44's embedded Node major. `npm run check` installs the Electron runtime once before starting parallel test workers, so its two embedded-Node compatibility tests cannot extract the same binary concurrently. The release workflow uses the same Node 24.
+
+Native windows in the Electron CI fixtures use `test/window-fixture.cjs`. It clamps requested bounds or content sizes to the primary display work area, accounts for the native frame, logs requested and effective dimensions, and asserts the resulting bounds/content size. Explicit layout resizes also assert the renderer viewport. `WORKSPACE_TEST_MAX_WORKAREA=1440x700` caps that area for local runner-size reproduction; oversized requests are logged as clamped. Intentional CDP viewport emulation in the browser API test and headless Chromium viewports remain independent of the desktop work area.
+
+The macOS `desktop-electron` CI job also runs these isolated workspace suites. Each has an individual `npm run test:<name>` script; `test/run-workspace-suite.cjs` supplies current source paths and a fresh evidence directory under the system temporary directory.
+
+| CI suite | Isolation |
+| --- | --- |
+| browser-continuation | Loopback MCP fault proxy, disposable Electron profile, no native-focus assertion. |
+| browser-recovery | Hidden nonfocusable windows, blocked external work, real Chromium crashes. |
+| connections-drafts | Hidden nonfocusable windows, held IPC and disposable preferences. |
+| connections-journey | Hidden windows, blocked external work and disposable preferences. |
+| hermes-conversation-electron | In-memory scripted wire under Electron as Node. |
+| hermes-session-wire-electron | In-memory streams under Electron as Node. |
+| home-first-action | Fixture conversation and local HTTP page in a disposable profile. |
+| plugin-approval-binding-headless | Headless Chromium, real router and local host, loopback targets. |
+| plugin-target-binding-headless | Headless Chromium, real router and local host, loopback targets. |
+| settings-async | External work blocked, Chromium focus emulation, disposable preferences. |
+| settings-navigation | External work blocked, Chromium focus emulation, disposable preferences. |
+| settings-pending-recovery | Hidden nonfocusable windows, external work blocked, disposable preferences. |
+| settings-persistence | Hidden nonfocusable windows, controlled disk failures, disposable preferences. |
+| shortcut-query | Chromium focus emulation and actual menu callbacks, no native accelerators. |
+| shortcut-round2 | Chromium focus emulation, fixture pages, no native-focus acceptance. |
+| state-ordering | External work blocked, controlled IPC, disposable preferences. |
+
+The two `plugin-*-headless` suites require `ALANS_WAY_AGENTS` pointing at an alans-way-agents checkout and `HERMES_TEST_CHROME` pointing at a Chromium executable. CI checks out that repository's `main` and uses the runner's Google Chrome. `HERMES_APPROVAL_EVIDENCE` and `HERMES_BINDING_EVIDENCE` default to fresh temporary directories; CI explicitly points them into `RUNNER_TEMP`.
+
+`npm run test:live` runs the following suites sequentially, continues after failures, and exits nonzero if any suite fails. Reserve the shared desktop before running it; these suites are outside CI.
+
+| Live suite | Requirement |
+| --- | --- |
+| approval-proxy | Visible-app lease; actual app route and loopback fake SSH fixture. |
+| browser-reliability | Uncontested macOS display focus for a human window and selection assertions. |
+| browser-reload | Visible-app lease, explicitly acknowledged with `BROWSER_RELOAD_LEASE=granted`. |
+| hermes-conversation-native | macOS Seatbelt and a stock managed Hermes install at `~/.hermes/hermes-agent`, with launcher/runtime facts and no source credential fallback. |
+| hermes-session-wire-native | The same stock managed Hermes runtime and Seatbelt requirements. |
+| keyboard-navigation | Uncontested display focus for trusted Chromium keyboard navigation. |
+| shortcut-reference | Uncontested display focus; optional `SHORTCUT_NATIVE=1` additionally exercises native macOS shortcuts. |
+
+Live native harnesses create isolated UUID Hermes homes and a scripted loopback model provider. They do not verify authenticated remote execution. Evidence is printed by the runner and remains outside the repository.
+
 The package command builds an ad-hoc signed Apple Silicon app in `dist/mac-arm64` and the installer `dist/OpenAlan-mac.dmg` (`npm run package:mac -- --dir` skips the dmg). It includes a custom icon, the Node MCP connector and the prebuilt Mac computer helper. Public releases are built by `.github/workflows/release.yml`; notarized distribution is a later step. Building and running locally does not require a paid developer account.
 
 With the app open, `node test/browser-smoke.cjs` exercises the real MCP protocol against its own local test page. It checks typing, clicking, screenshots, popups, shared cookies, bot ownership, and stale epochs. It asks you to click Take over and Give to agent to verify the human control boundary. It sends no Telegram messages and operates no third-party forms.

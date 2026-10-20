@@ -1,3 +1,4 @@
+require('./window-fixture.cjs');
 // Run: npx electron test/auto-takeover-electron.cjs
 // Uses an isolated profile and a localhost page. No Telegram sign-in required.
 const assert = require('node:assert/strict');

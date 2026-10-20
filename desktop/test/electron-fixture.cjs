@@ -1,3 +1,4 @@
+require('./window-fixture.cjs');
 const { app, session, webContents } = require('electron');
 
 function prepareFixture(profile) {

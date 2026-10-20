@@ -1,3 +1,4 @@
+require('./window-fixture.cjs');
 // Run: npx electron test/update-all-electron.cjs
 // The bottom bar's versions and the "Update everything" dialog, end to end in
 // the real window with every machine-touching step stubbed: no ssh, no hermes,
@@ -292,10 +293,16 @@ app.whenReady().then(async () => {
   // displays a failed check without claiming the gateway restarted.
   await click('update-all-cancel');
   await click('settings-button');
+  await evaluate("document.querySelector('[data-category=connections]').click()");
+  assert.equal(await evaluate(`!!document.querySelector('[aria-label="Server setup plan"]')`), true,
+    'Agent machine settings must mount the external setup handoff');
   const setupPlan = JSON.stringify({ repoRef: 'a'.repeat(40), desktopRef: 'b'.repeat(40), args: [] });
   await evaluate(`document.querySelector('[aria-label="Server setup plan"]').value = ${JSON.stringify(setupPlan)}`);
   const setupButton = '[...document.querySelectorAll("button")].find(b => b.textContent === "Finish setup and restart my bot")';
-  await evaluate(`${setupButton}.click()`);
+  await evaluate(`document.getElementById('vps-ssh-host').value = 'tester@unsaved.invalid'; ${setupButton}.click()`);
+  await waitFor(() => evaluate('document.getElementById("modal-body").textContent'), text => text.includes('Save address changes before running setup.'));
+  assert.equal(setupCalls.length, 0, 'unsaved addresses cannot run setup against the previous host');
+  await evaluate(`document.getElementById('vps-ssh-host').value = 'tester@vm.invalid'; ${setupButton}.click()`);
   await waitFor(() => setupCalls.length, n => n === 1, 5000, 'the SSH setup handoff');
   assert.deepEqual(setupCalls[0], { host: 'tester@vm.invalid', plan: setupPlan });
   assert.equal(await evaluate(`${setupButton}.disabled`), true);

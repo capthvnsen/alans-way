@@ -5,9 +5,12 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 // Stop at the native window boundary: no app startup, profiles or connections.
+// The seam is createWindow's own closing brace: top-level wiring that lands
+// after it (e.g. the Hermes state push) is unrelated to window sizing.
 function windowOptions(workAreaSize) {
   const source = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
-  const createWindow = source.slice(source.indexOf('function createWindow() {'), source.indexOf('\nif (!app.requestSingleInstanceLock())'));
+  const start = source.indexOf('function createWindow() {');
+  const createWindow = source.slice(start, source.indexOf('\n}', start) + 2);
   let options;
   const captured = new Error('window options captured');
   assert.throws(() => vm.runInNewContext(`${createWindow}; createWindow();`, {

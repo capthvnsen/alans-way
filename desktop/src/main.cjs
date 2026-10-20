@@ -1,4 +1,5 @@
 const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, Notification, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
+const { ACCELERATORS } = require('./workspace-shortcuts.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -26,9 +27,10 @@ const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
-const { latestPluginTag, latestHostRelease, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
+const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
+const { createHermesHub } = require('./hermes-hub.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { snapshotExpression, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
@@ -113,6 +115,9 @@ let updatingAll = false;
 let updateRun = { steps: [], summary: '', restart: false };
 let lastSetupCheck = null;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
+// Native Hermes chat: 'telegram' shows the Telegram WebContentsView; 'hermes'
+// shows the DOM surface (the Telegram view then measures to zero and hides).
+let hermesHub = null, chatTarget = 'telegram';
 let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
 const tabs = new Map();
 const vpsTabs = new Map();
@@ -216,7 +221,7 @@ function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
   const info = { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
-    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, localPdf: tab.localPdf === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab), takeover: tab.takeover || null };
+    controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', ...(tab.recoveryUrl ? { recoveryUrl: tab.recoveryUrl } : {}), allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, localPdf: tab.localPdf === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab), takeover: tab.takeover || null };
   return forBot ? redactTabForBot(info) : info;
 }
 function pageState(tab) {
@@ -296,15 +301,98 @@ function selectAgent(id) {
   if (tabs.has(localId)) prefs.agentLastTabs[old] = localId;
   prefs.selectedBotId = id;
   prefs.remoteControl = false;
+  chatTarget = 'telegram';
   const own = [...tabs.values()].filter(tab => tab.botId === id || (tab.allowedBots ?? []).includes(id));
   const nextLocal = own.some(tab => tab.id === prefs.agentLastTabs[id]) ? prefs.agentLastTabs[id] : own.at(-1)?.id || 'home';
   browserReturnTabId = nextLocal;
   activeTabId = viewingVps ? 'vps' : nextLocal;
   applyLayout();
 }
+// Compact, transcript-free Hermes summary for the workspace shell (sidebar
+// rows + header). The full bounded conversation state ships on hermes:state.
+function hermesSummary() {
+  const h = hermesHub?.getState();
+  if (!h) return { status: 'unconfigured', sessions: [], error: null };
+  return { status: h.status, error: h.error, target: h.target, authRequired: h.authRequired,
+    principal: h.principal, sessions: h.sessions, selected: h.selected,
+    conversationPhase: h.conversation?.phase || '' };
+}
+let uiStateRevision = 0, uiStateSignature = '';
+// Settings writes use bounded, caller-local high-water marks. Retiring an unseen
+// request prevents its delayed delivery from reviving after a saved-state check.
+// A newer renderer time origin replaces the ledger; older origins stay fenced.
+const settingsWriteCallers = new WeakMap();
+const settingsWriteFields = {
+  autoOpenLinks: ['autoOpenLinks'], autoTakeover: ['autoTakeover'], preview: ['preview'],
+  addresses: ['macSshHost', 'vpsBrowser', 'remoteUrl'], viewer: ['remoteUrl'],
+};
+// Explicit same-value choices also advance their field. A delayed tracked write
+// cannot replace a newer choice made through the legacy public Settings command.
+const settingsFieldRevisions = Object.fromEntries([...new Set(Object.values(settingsWriteFields).flat())].map(field => [field, 0]));
+function settingsWriteEntry(event, token, checking = false, payload) {
+  trustSender(event);
+  if (!token || !Number.isFinite(token.client) || token.client <= 0 || !Number.isSafeInteger(token.sequence) || token.sequence < 1
+    || !Object.hasOwn(settingsWriteFields, token.slot)) throw Error('Invalid Settings save request.');
+  let ledger = settingsWriteCallers.get(event.sender);
+  if (ledger && token.client < ledger.client) return { superseded: true };
+  if (!ledger || token.client > ledger.client) {
+    ledger = { client: token.client, fields: new Map(), slots: new Map() };
+    settingsWriteCallers.set(event.sender, ledger);
+  }
+  const previous = ledger.slots.get(token.slot);
+  if (previous?.sequence === token.sequence) return { record: previous };
+  const fields = settingsWriteFields[token.slot];
+  if (fields.some(field => (ledger.fields.get(field)?.sequence || 0) >= token.sequence)) return { superseded: true };
+  if (!checking) {
+    const keys = Object.keys(payload).filter(key => !['_settingsWrite', '_settingsContext', '_settingsBase'].includes(key)).sort();
+    const expectedKeys = token.slot === 'addresses' ? ['macSshHost', 'vpsBrowser'] : token.slot === 'viewer' ? ['remoteUrl'] : [token.slot];
+    if (JSON.stringify(keys) !== JSON.stringify(expectedKeys) || (token.slot in { autoOpenLinks: 1, autoTakeover: 1, preview: 1 } && typeof payload[token.slot] !== 'boolean')) throw Error('Invalid Settings save fields.');
+  }
+  const record = { sequence: token.sequence, slot: token.slot, status: checking ? 'not-applied' : 'admitted', expected: payload };
+  ledger.slots.set(token.slot, record);
+  for (const field of fields) ledger.fields.set(field, record);
+  if (!checking && fields.some(field => payload._settingsBase?.[field] !== settingsFieldRevisions[field])) {
+    record.status = 'not-applied'; record.detail = 'A newer choice was made. Review the current saved value before saving again.';
+  }
+  if (!checking && ['addresses', 'viewer'].includes(token.slot)) {
+    const current = { bot: prefs.selectedBotId || '', host: HOST_LABEL, platform: prefs.remotePlatform || 'linux', mac: prefs.macSshHost || '', vps: prefs.vpsBrowser?.sshHost || '' };
+    if (JSON.stringify(payload._settingsContext) !== JSON.stringify(current)) {
+      record.status = 'not-applied'; record.detail = 'The connection changed. Review its saved addresses before saving again.';
+    }
+  }
+  return { record, admit: record.status === 'admitted' };
+}
+// Settings alone use a staged commit; the global automatic saver keeps its
+// existing behavior. Publish and seed only after the private-file write succeeds.
+function persistSettingsPreferences(next) {
+  if (win && !win.isDestroyed()) next.savedTabs = [...tabs.values()].filter(tab => !tab.extensionPage && tab.view?.webContents && !tab.view.webContents.isDestroyed()).map(tab => ({ url: tab.view.webContents.getURL() || tab.requestedUrl, botId: tab.botId, ...(tab.localPdf ? { localPdf: true } : {}) })).filter(item => item.url);
+  try {
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    writePrivateJson(path.join(app.getPath('userData'), 'preferences.json'), next);
+  } catch (error) {
+    throw new Error('App data could not be written. Check that it is writable before trying again.', { cause: error });
+  }
+  prefs = next;
+  prefsSaver.seed(prefs);
+}
+function settingsWriteReceipt(entry) {
+  let saved;
+  try { saved = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'preferences.json'), 'utf8')); }
+  catch { return { settingsWrite: { status: 'unknown', detail: 'Saved settings could not be read. Check again.' }, state: getState() }; }
+  const record = entry.record;
+  let status = entry.superseded ? 'changed' : record.status;
+  if (record?.expected && status !== 'failed') {
+    const keys = record.slot === 'addresses' ? ['macSshHost', 'vpsBrowser'] : record.slot === 'viewer' ? ['remoteUrl'] : [record.slot];
+    // Compare persisted values, never an optimistic renderer or in-memory flag.
+    const value = (source, key) => key === 'vpsBrowser' ? [source.vpsBrowser?.sshHost || '', source.vpsBrowser?.scriptPath || '', source.vpsBrowser?.sudo === true] : source[key];
+    const matches = keys.every(key => JSON.stringify(value(saved, key)) === JSON.stringify(value(record.expected, key)));
+    if (status !== 'not-applied') status = matches ? 'saved' : 'changed';
+  }
+  return { settingsWrite: { status, detail: record?.detail || '' }, state: getState() };
+}
 function getState() {
-  return { name: app.getName(), version: app.getVersion(), build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
-    selectedBotId: prefs.selectedBotId, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
+  const state = { name: app.getName(), version: app.getVersion(), build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
+    selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)), cloud: cloudView(),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
@@ -322,8 +410,14 @@ function getState() {
     autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false,
     activeTabId, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
+    chatTarget, hermes: hermesSummary(),
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
     fullscreen: !!win && !win.isDestroyed() && win.isFullScreen(), api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
+  // One authority orders native IPC reads, command replies and broadcasts by
+  // snapshot content, independent of when any asynchronous reply is delivered.
+  const signature = JSON.stringify(state);
+  if (signature !== uiStateSignature) { uiStateSignature = signature; uiStateRevision++; }
+  return { ...state, uiStateRevision };
 }
 let lastBotWorkSignature = '';
 // Bots with agent tabs that are dispatching, navigating, or recently acted
@@ -343,13 +437,12 @@ function sendBotWork() {
   lastBotWorkSignature = JSON.stringify(working);
   if (telegramView && !telegramView.webContents.isDestroyed()) telegramView.webContents.send('workspace:bot-activity', working);
 }
-let lastStateSignature = '';
+let lastStateRevision = 0;
 function sendState() {
   if (!win || win.isDestroyed() || !prefs) return;
   const state = getState();
-  const stateSignature = JSON.stringify(state);
-  if (stateSignature !== lastStateSignature) {
-    lastStateSignature = stateSignature;
+  if (state.uiStateRevision !== lastStateRevision) {
+    lastStateRevision = state.uiStateRevision;
     win.webContents.send('workspace:state', state);
     if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:state', state);
   }
@@ -547,6 +640,13 @@ async function resolveFavicon(tab, favicons) {
   }
   apply(inline);
 }
+// Until an interrupted navigation commits, Chromium reload still names the old
+// page. All explicit reload entrypoints use the retained destination. Load
+// failures remain visible through the tab's did-fail-load state.
+function reloadBrowserPage(tab) {
+  if (tab.error && tab.recoveryUrl) return tab.view.webContents.loadURL(tab.recoveryUrl).catch(() => {});
+  return tab.view.webContents.reload();
+}
 function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedBotId || 'shared', controller = 'human', options, skipLoad = false, activate = true, extensionPage = false, localPdf = false } = {}) {
   if (tabs.size >= 40) throw new Error('Close a tab before opening another.');
   if (filePath) {
@@ -583,10 +683,18 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
     const items = extensionHost?.getContextMenuItems(view.webContents, params) || [];
     if (items.length && tab.id === activeTabId && tab.controller === 'human') Menu.buildFromTemplate(items).popup({ window: win });
   });
-  const installViewerDrop = () => {
+  const liveBrowserFrames = () => {
     const wc = view.webContents;
-    if (wc.isDestroyed()) return;
-    for (const frame of wc.mainFrame.framesInSubtree) {
+    if (wc.isDestroyed()) return null;
+    try {
+      const frame = wc.mainFrame;
+      return frame.isDestroyed() || frame.detached ? null : frame.framesInSubtree;
+    } catch { return null; } // A crash can dispose the frame before renderer-gone.
+  };
+  const installViewerDrop = () => {
+    const frames = liveBrowserFrames();
+    if (!frames) return;
+    for (const frame of frames) {
       if (!frame.url.startsWith('chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/')) continue;
       // Electron preloads do not run in the bundled viewer. Relay only native
       // dropped File objects to the MIME shell's isolated preload, never paths.
@@ -607,14 +715,35 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
   view.webContents.on('did-frame-finish-load', installViewerDrop);
   view.webContents.on('page-title-updated', (_event, title) => { tab.title = tab.localPdf && /^file:/.test(view.webContents.getURL()) ? path.basename(fileURLToPath(view.webContents.getURL())) : title; broadcast(); });
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
-  view.webContents.on('did-stop-loading', () => { tab.loading = false; installViewerDrop(); savePreferencesSoon(); broadcast(); });
-  view.webContents.on('did-navigate', () => { tab.refs.clear(); tab.snapshotStamp = null; tab.scan = null; tab.lastRead = null; tab.favicon = ''; tab.faviconSeq = (tab.faviconSeq || 0) + 1; tab.generation++; if (tab.controller === 'agent') { view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); scheduleVpsMirror(); } broadcast(); });
+  view.webContents.on('did-start-navigation', (_event, url, inPlace, isMainFrame) => {
+    if (!isMainFrame || inPlace) return;
+    // getURL()/reload() still name the old committed page until this commits.
+    tab.navigationUrl = url; tab.recoveryUrl = ''; tab.error = ''; tab.loading = true; broadcast();
+  });
+  view.webContents.on('did-redirect-navigation', (_event, url, inPlace, isMainFrame) => {
+    if (isMainFrame && !inPlace) tab.navigationUrl = url;
+  });
+  view.webContents.on('did-stop-loading', () => {
+    if (view.webContents.isLoading()) return;
+    // A completed stop leaves the committed frame alive. Crash-induced stop can
+    // precede isCrashed()/renderer-gone, but its frame is already disposed: keep
+    // that interrupted destination for explicit recovery, never a canceled one.
+    if (liveBrowserFrames()) tab.navigationUrl = '';
+    tab.loading = false; installViewerDrop(); savePreferencesSoon(); broadcast();
+  });
+  view.webContents.on('did-navigate', () => { tab.navigationUrl = ''; tab.recoveryUrl = ''; tab.refs.clear(); tab.snapshotStamp = null; tab.scan = null; tab.lastRead = null; tab.favicon = ''; tab.faviconSeq = (tab.faviconSeq || 0) + 1; tab.generation++; if (tab.controller === 'agent') { view.webContents.executeJavaScript(tintScript(true)).catch(() => {}); scheduleVpsMirror(); } broadcast(); });
   view.webContents.on('page-favicon-updated', (event, favicons) => { resolveFavicon(tab, favicons).catch(() => {}); });
   view.webContents.on('did-navigate-in-page', () => { tab.generation++; if (tab.controller === 'agent') scheduleVpsMirror(); broadcast(); });
-  view.webContents.on('did-fail-load', (_e, code, description, _url, isMainFrame) => {
-    if (isMainFrame && code !== -3) { tab.error = description; tab.loading = false; broadcast(); }
+  view.webContents.on('did-fail-load', (_e, code, description, url, isMainFrame) => {
+    if (!isMainFrame || code === -3 || url !== (tab.navigationUrl || tab.recoveryUrl || view.webContents.getURL())) return;
+    tab.recoveryUrl = url; tab.navigationUrl = ''; tab.error = description; tab.loading = false; broadcast();
   });
-  view.webContents.on('render-process-gone', () => { tab.error = 'This page stopped. Reload to reconnect.'; broadcast(); });
+  view.webContents.on('render-process-gone', () => {
+    tab.recoveryUrl = tab.navigationUrl || view.webContents.getURL() || tab.requestedUrl;
+    tab.navigationUrl = ''; tab.loading = false;
+    tab.refs.clear(); tab.snapshotStamp = null; tab.scan = null; tab.lastRead = null; tab.generation++;
+    tab.error = 'This page stopped. Reload to reconnect.'; broadcast();
+  });
   // Pages can close themselves (OAuth popups end with window.close()); once the
   // webContents is gone the tab is a zombie — route it through normal cleanup.
   // During teardown the hosts are already gone and cleanup only throws, and
@@ -1406,15 +1535,22 @@ async function runSetupCheck() {
       server = report;
     }
   }
-  const findings = setupCheck.buildFindings({ appVersion: app.getVersion(), platform: process.platform, local, connection, server });
+  const findings = setupCheck.buildFindings({ appVersion: app.getVersion(), hostTarget: stableHostTarget(app.getVersion(), '', prefs.versionCache), platform: process.platform, local, connection, server });
   lastSetupCheck = { at: new Date().toISOString(), findings, server };
   return findings;
 }
 // Every server-address save drops evidence from the previous machine.
-function setServerConfig(config) {
-  const changed = config.sshHost !== prefs.vpsBrowser?.sshHost;
-  prefs.vpsBrowser = config;
-  if (changed) { prefs.versionCache = {}; setTimeout(checkVersionsWhenIdle, 0); }
+function setServerConfig(config, target = prefs) {
+  const changed = config.sshHost !== target.vpsBrowser?.sshHost;
+  target.vpsBrowser = config;
+  if (changed) {
+    target.versionCache = {};
+    if (target.cloud) {
+      if (target !== prefs) target.cloud = { ...target.cloud };
+      for (const field of ['botInventoryChecked', 'tokenedProfiles', 'profiles', 'existingBotId', 'existingBotProfile']) delete target.cloud[field];
+    }
+    if (target === prefs) setTimeout(checkVersionsWhenIdle, 0);
+  }
   return changed;
 }
 // Keeping a DIY model never writes credentials or restarts a running gateway.
@@ -1472,40 +1608,52 @@ async function cloudReadBotInventory(host) {
 // for a hosted computer; DIY servers show model setup for explicit confirmation.
 let cloudConnectPending = null;
 function cloudConnectRun(diyHost) {
-  if (cloudConnectPending) return cloudConnectPending;
+  const host = diyHost || (prefs.vpsBrowser?.sshHost || '').trim();
+  if (cloudConnectPending?.host === host) return cloudConnectPending.promise;
   // A queued click from a removed card must not reset a later wizard step.
   const sameServer = !diyHost || diyHost === prefs.vpsBrowser?.sshHost;
   if (sameServer && ['model', 'telegram', 'bot-chat', 'done'].includes(prefs.cloud?.step)) {
-    return Promise.resolve({ stage: 'done', ok: true, detail: 'Already connected.' });
+    return Promise.resolve({ host, stage: 'done', ok: true, detail: 'Already connected.' });
   }
-  cloudConnectPending = cloudConnectOnce(diyHost).finally(() => { cloudConnectPending = null; });
-  return cloudConnectPending;
+  const pending = { host };
+  cloudConnectPending = pending;
+  pending.promise = cloudConnectOnce(diyHost, pending).then(result => ({ ...result, host: pending.host })).finally(() => {
+    if (cloudConnectPending === pending) cloudConnectPending = null;
+  });
+  return pending.promise;
 }
-async function cloudConnectOnce(diyHost) {
-  const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+async function cloudConnectOnce(diyHost, pending) {
+  const cloud = { ...prefs.cloud };
   if (diyHost) {
     if (!isSshTarget(diyHost)) throw new Error('Enter the server SSH address as user@host or host, with no spaces or symbols.');
     cloud.diy = true;
     cloud.step = 'connect';
-    setServerConfig({ ...(prefs.vpsBrowser || {}), sshHost: diyHost });
     prefs.cloud = cloud;
+    setServerConfig({ ...(prefs.vpsBrowser || {}), sshHost: diyHost });
     savePreferences();
   }
+  prefs.cloud = cloud;
+  const step = cloud.step;
+  let host = (prefs.vpsBrowser?.sshHost || '').trim();
+  const current = () => cloudConnectPending === pending && prefs.cloud === cloud && cloud.step === step && (prefs.vpsBrowser?.sshHost || '').trim() === host;
+  const cancelled = { stage: 'connect', ok: false, cancelled: true, detail: '' };
   if (cloud.diy === true) {
-    const sshHost = (prefs.vpsBrowser?.sshHost || '').trim();
-    const step = cloud.step;
+    const sshHost = host;
     if (!sshHost) return { stage: 'host', ok: false, detail: 'Enter the server SSH address first.' };
     const probe = await sshRun(sshHost, 'echo CONNECT_OK');
+    if (!current()) return cancelled;
     if (probe.code !== 0 || !probe.out.includes('CONNECT_OK')) return { stage: 'ssh', ok: false, detail: `Could not reach ${sshHost} over SSH. Check the address and your key, then try again.` };
     const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
+    if (!current()) return cancelled;
     if (remote?.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the server failed.' };
     const back = await authorizeComputerKey(sshHost);
+    if (!current()) return cancelled;
     if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
     if ((prefs.macSshHost || '').trim()) {
       const path = await testAgentPath();
+      if (!current()) return cancelled;
       if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
     }
-    if (prefs.cloud !== cloud || cloud.step !== step || (prefs.vpsBrowser?.sshHost || '').trim() !== sshHost) return { stage: 'done', ok: true, detail: '' };
     delete cloud.existingModel;
     delete cloud.modelDetected;
     delete cloud.modelOnly;
@@ -1515,9 +1663,8 @@ async function cloudConnectOnce(diyHost) {
     delete cloud.existingBotId;
     delete cloud.existingBotProfile;
     const model = await cloudKeepServerModel();
-    if (model.cancelled) return { stage: 'done', ok: true, detail: '' };
+    if (!current() || model.cancelled) return cancelled;
     if (cloud.model === 'existing') delete cloud.model;
-    setCloudStep(prefs, 'model');
     savePreferences();
     return { stage: 'done', ok: true, existingModel: model.existingModel, detail: `Connected to ${sshHost}. ${model.detail}` };
   }
@@ -1526,19 +1673,24 @@ async function cloudConnectOnce(diyHost) {
   const url = cloud.tailscaleUrl || cloudComputer?.tailscale_url || '';
   if (url && !cloud.pairingOpened) { shell.openExternal(url).catch(() => {}); cloud.pairingOpened = true; prefs.cloud = cloud; savePreferencesSoon(); }
   const status = await localRun(...cloudConnect.pairPollCommand(cli));
+  if (!current()) return cancelled;
   const name = cloud.computerName || cloudComputer?.computer_name || '';
   const peer = status.code === 0 ? cloudConnect.findPeer(status.out, name) : null;
   if (!peer) return { stage: 'pairing', ok: false, detail: url ? 'Waiting for the computer to join your tailnet. Finish the pairing page, then check again.' : 'Waiting for the computer to join your tailnet…' };
   const sshHost = `root@${peer.ip}`;
   if (setServerConfig({ ...(prefs.vpsBrowser || {}), sshHost })) savePreferences();
+  pending.host = host = sshHost;
   const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
+  if (!current()) return cancelled;
   if (!remote) return { stage: 'state', ok: false, detail: 'The computer joined Tailscale. Waiting for its setup to finish…' };
   if (remote.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the computer failed.' };
   if (remote.state !== 'ready' && remote.step !== 'paired') return { stage: 'state', ok: false, detail: 'The computer is still finishing its setup…' };
   const back = await authorizeComputerKey(sshHost);
+  if (!current()) return cancelled;
   if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
   if ((prefs.macSshHost || '').trim()) {
     const path = await testAgentPath();
+    if (!current()) return cancelled;
     if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
   }
   setCloudStep(prefs, 'migrate');
@@ -1575,6 +1727,18 @@ function registerIpc() {
     if (Array.isArray(files)) for (const file of files.slice(0, 40)) receivePdf(file);
   });
   ipcMain.handle('workspace:get', (event) => { trustSender(event); return getState(); });
+  // Native Hermes chat bridge — the allowlisted command names are enforced by
+  // the hub; secrets (passwords, tokens) may arrive but are never returned
+  // through state or logged.
+  ipcMain.handle('hermes:get', (event) => { trustSender(event); return hermesHub.getState(); });
+  ipcMain.handle('hermes:command', async (event, name, value) => {
+    trustSender(event);
+    try {
+      const result = await hermesHub.command(name, value);
+      if (['select', 'new-session'].includes(name) && result?.ok !== false) { chatTarget = 'hermes'; broadcast(); }
+      return result;
+    } catch (error) { logError(`hermes ${String(name).slice(0, 40)}`, error); throw error; }
+  });
   ipcMain.on('workspace:layout', (event, value) => {
     try {
       trustSender(event);
@@ -1599,12 +1763,13 @@ function registerIpc() {
   });
   const runCommand = async (event, command, value = {}) => {
     trustSender(event);
-    try { return await executeCommand(command, value); }
+    try { return await executeCommand(command, value, event); }
     finally { broadcastNow(); }
   };
   // Publish after every command settles, including early returns and failures.
-  const executeCommand = async (command, value) => {
+  const executeCommand = async (command, value, event) => {
     switch (command) {
+      case 'settings-write-status': return settingsWriteReceipt(settingsWriteEntry(event, value, true));
       case 'create-tab': return describeTab(createTab({ url: value.url || 'about:blank' }));
       case 'close-tab':
         if (isVpsTab(value.id)) { if(activeTabId===value.id)prefs.remoteControl=false; await vpsBrowser.request(`/v1/tabs/${value.id}`,'DELETE',undefined,{human:true}); vpsTabs.delete(value.id); if(activeTabId===value.id)activeTabId='home'; applyLayout(); } else closeTab(value.id); break;
@@ -1624,7 +1789,8 @@ function registerIpc() {
         changeController(tab.id, 'human'); const history = tab.view.webContents.navigationHistory;
         if (value.action === 'back' && history.canGoBack()) history.goBack();
         if (value.action === 'forward' && history.canGoForward()) history.goForward();
-        if (value.action === 'reload') tab.view.webContents.reload(); break;
+        if (value.action === 'reload') await reloadBrowserPage(tab);
+        break;
       }
       case 'control': {
         if(isVpsTab(value.id)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller});}
@@ -1724,6 +1890,8 @@ function registerIpc() {
       case 'recording-share': recordings.share(String(value.id), value.botIds); broadcast(); break;
       case 'recording-delete': recordings.remove(String(value.id)); broadcast(); break;
       case 'open-bot': await openBot(String(value.id)); break;
+      case 'show-telegram': chatTarget = 'telegram'; broadcast(); break;
+      case 'show-hermes': chatTarget = 'hermes'; broadcast(); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
       case 'bot-sort': if (['recent', 'alpha', 'manual'].includes(value.mode)) { prefs.botSort = value.mode; savePreferences(); } break;
       case 'hide-bot':
@@ -1737,7 +1905,11 @@ function registerIpc() {
       }
       case 'set-site-permission': sitePermissions.set(value); break;
       case 'reset-site-permissions': sitePermissions.reset(); break;
-      case 'settings':
+      case 'settings': {
+        // Stage this explicit choice until the actual private-file write succeeds.
+        // Failed choices must not leak into broadcasts or later automatic saves.
+        const next = { ...prefs };
+        let followed = '', vpsChanged = false;
         if (typeof value.macSshHost === 'string' && value.macSshHost.trim() && !isSshTarget(value.macSshHost.trim())) throw new Error('Enter the Mac SSH address as user@host or host, with no spaces or symbols.');
         if (value.vpsBrowser && typeof value.vpsBrowser === 'object') {
           const sshHost = String(value.vpsBrowser.sshHost || '').trim();
@@ -1746,23 +1918,31 @@ function registerIpc() {
           if (scriptPath && checkScriptPath(scriptPath)) throw new Error(checkScriptPath(scriptPath));
           // When the VM's SSH address moves to a different host, the noVNC
           // viewer follows unless remoteUrl was deliberately pointed elsewhere.
-          const followed = followVmRemoteUrl(prefs.vpsBrowser.sshHost, sshHost, prefs.remoteUrl);
-          setServerConfig({sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}); if(!sshHost)prefs.vmUpdates={}; vpsBrowserStatus='connecting'; refreshVpsTabs();
-          if (followed) { prefs.remoteUrl = followed; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
+          followed = followVmRemoteUrl(next.vpsBrowser.sshHost, sshHost, next.remoteUrl);
+          vpsChanged = setServerConfig({sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}, next); if(!sshHost)next.vmUpdates={};
+          if (followed) { next.remoteUrl = followed; next.remoteControl = false; }
         }
-        if (Number.isFinite(value.agentIdleMinutes)) prefs.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
-        if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); prefs.remoteUrl = value.remoteUrl; remoteStatus = 'disconnected'; prefs.remoteControl = false; }
-        if (value.remotePlatform !== undefined) prefs.remotePlatform = value.remotePlatform === 'mac' ? 'mac' : 'linux';
-        if (typeof value.preview === 'boolean') prefs.preview = value.preview;
-        if (typeof value.showBots === 'boolean') prefs.showBots = value.showBots;
-        if (typeof value.showBrowser === 'boolean') prefs.showBrowser = value.showBrowser;
-        if (typeof value.macSshHost === 'string') prefs.macSshHost = value.macSshHost.trim();
-        if (typeof value.autoOpenLinks === 'boolean') prefs.autoOpenLinks = value.autoOpenLinks;
-        if (typeof value.autoTakeover === 'boolean') prefs.autoTakeover = value.autoTakeover;
-        if (typeof value.primaryBotId === 'string') prefs.primaryBotId = prefs.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : prefs.primaryBotId;
-        if (['ask', 'block', 'approximate'].includes(value.locationDefault)) prefs.locationDefault = value.locationDefault;
-        if (Number.isFinite(value.chatWidth)) prefs.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
-        savePreferences(); applyLayout(); break;
+        if (Number.isFinite(value.agentIdleMinutes)) next.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
+        if (typeof value.remoteUrl === 'string') { parseRemoteUrl(value.remoteUrl); next.remoteUrl = value.remoteUrl; next.remoteControl = false; }
+        if (value.remotePlatform !== undefined) next.remotePlatform = value.remotePlatform === 'mac' ? 'mac' : 'linux';
+        if (typeof value.preview === 'boolean') next.preview = value.preview;
+        if (typeof value.showBots === 'boolean') next.showBots = value.showBots;
+        if (typeof value.showBrowser === 'boolean') next.showBrowser = value.showBrowser;
+        if (typeof value.macSshHost === 'string') next.macSshHost = value.macSshHost.trim();
+        if (typeof value.autoOpenLinks === 'boolean') next.autoOpenLinks = value.autoOpenLinks;
+        if (typeof value.autoTakeover === 'boolean') next.autoTakeover = value.autoTakeover;
+        if (typeof value.primaryBotId === 'string') next.primaryBotId = next.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : next.primaryBotId;
+        if (['ask', 'block', 'approximate'].includes(value.locationDefault)) next.locationDefault = value.locationDefault;
+        if (Number.isFinite(value.chatWidth)) next.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
+        for (const field of Object.keys(settingsFieldRevisions)) {
+          if (Object.hasOwn(value, field) || (field === 'remoteUrl' && value.vpsBrowser && typeof value.vpsBrowser === 'object')) settingsFieldRevisions[field]++;
+        }
+        persistSettingsPreferences(next);
+        if (vpsChanged) setTimeout(checkVersionsWhenIdle, 0);
+        if (value.vpsBrowser && typeof value.vpsBrowser === 'object') { vpsBrowserStatus = 'connecting'; refreshVpsTabs(); }
+        if (followed || typeof value.remoteUrl === 'string') remoteStatus = 'disconnected';
+        applyLayout(); break;
+      }
       case 'preview-move': {
         // The mini VM window floats anywhere inside the workspace pane.
         const x = Number(value.x), y = Number(value.y);
@@ -1785,17 +1965,27 @@ function registerIpc() {
       case 'focus-workspace': win.webContents.send('workspace:focus-workspace'); break;
       case 'copy-connection': clipboard.writeText(JSON.stringify({ url: `http://127.0.0.1:${apiPort}`, token: API_TOKEN }, null, 2)); break;
       case 'agent-setup': {
-        const botId = String(value?.botId || prefs.selectedBotId || '').replace(/[^0-9A-Za-z_-]/g, '');
-        if (!botId) throw new Error('Select a bot first. Its ID goes in the agent config.');
+        // Retain the old IPC name for older callers, but never copy an installer.
+        const botId = String(value?.botId ?? prefs.selectedBotId ?? '');
         const bot = prefs.bots.find(item => item.id === botId);
-        seedMacSshHost();
-        const macSsh = (prefs.macSshHost || '').trim();
-        const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+        if (!bot) throw new Error('Choose an available bot, then copy its setup review notes again.');
+        const fact = text => String(text || '').replace(/[\r\n]/g, ' ').trim();
         clipboard.writeText([
-          "# Alan's Way Plugin setup: paste into a terminal on the host running your Hermes gateway",
-          `curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way-agents/main/setup.sh | bash -s -- --bot-id ${q(botId)}${bot ? ` --bot-name ${q(bot.name.replace(/'/g, ''))}` : ''}${macSsh ? ` --mac-ssh ${q(macSsh)}` : ''}${HOST_LABEL === 'mac' ? '' : ` --host-os ${HOST_LABEL}`} --timezone ${q(Intl.DateTimeFormat().resolvedOptions().timeZone)} --restart`,
-          '# The bootstrap installs the plugin, configures the browser connector,',
-          '# offers to bind the primary route, restarts the gateway, and verifies itself.',
+          "Alan's Workspace setup review notes: not shell commands.",
+          'Read these notes; do not paste them into a terminal. Copy setup prompt in Connections to begin guided setup in this bot’s Hermes chat.',
+          `Bot: ${fact(bot.name)}${bot.username ? ` (@${fact(bot.username)})` : ''}; BOT_ID=${botId}`,
+          `Computer OS: ${HOST_LABEL}; installed app version: ${app.getVersion()}`,
+          `Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+          `MAC_SSH=${fact(prefs.macSshHost) || 'not saved'}`,
+          `AGENT_SSH=${fact(prefs.vpsBrowser?.sshHost) || 'not saved'}`,
+          'Saved addresses are context, not proof of connectivity. Confirm this bot’s conversation-owning Hermes profile before setup; do not reuse another bot’s profile or route.',
+          '',
+          'Review with the agent before running anything:',
+          '1. Preserve Hermes and any existing alans-way install. If absent, use Hermes’ reviewed catalog; if unavailable or security scanning blocks it, stop and report the findings. Obtain explicit approval for any documented one-install scan override.',
+          '2. Load that profile’s installed workspace-setup skill. It owns the procedure and reviewed plugin and desktop pins. If the installed skill is missing or cannot resolve a pin, stop and report it; never substitute a repository tip, branch/main script, or reconstructed procedure. Keep its pin and skip-plugin flags, and use pinned connectors with skip-install to preserve the installed app.',
+          '3. Ask each preference separately. Give short numbered human steps for Telegram QR, Tailscale sign-in, SSH, public key outputs and local permissions as needed; wait for replies. Silence is not consent. Never request or disclose secrets. Keep SSH host-key checking enabled.',
+          '4. Review the proposed installation, trust/configuration changes and gateway pause with its owner first. Keep the gateway restart last through its real owner; agree when to send the next message and resume its audit then. Copying these notes performs none of those actions.',
+          '5. Report exact installed revisions and resolved pins, app version, checks, warnings and unfinished steps. Enter verified addresses in Connections, Save addresses, then Check saved path (SSH only). Follow the agent’s browser task to verify Hermes access.',
         ].join('\n'));
         break;
       }
@@ -1871,12 +2061,14 @@ function registerIpc() {
       case 'vm-update-retry': {
         if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
         vmRetrying = true; broadcast();
-        const tag = `v${app.getVersion()}`;
         try {
           await waitForVersionCheck();
+          const version = stableHostTarget(app.getVersion(), stagedAppVersion(), prefs.versionCache);
+          if (!version) throw new Error('Check component versions first to find the latest stable browser host release.');
+          const tag = `v${version}`;
           for (const target of vmTargets(prefs)) {
             const entry = prefs.vmUpdates?.[target.id] || {};
-            if (!value.force && !entry.failed && !(entry.version && macUpdate.isNewer(app.getVersion(), entry.version))) continue;
+            if (!value.force && !entry.failed && !(entry.version && macUpdate.isNewer(version, entry.version))) continue;
             vmProgress[target.id] = { state: 'updating' }; broadcast();
             const result = await vmUpdater.updateVm(target, tag, noteVmProgress);
             vmProgress[target.id] = vmProgressResult(result);
@@ -1986,14 +2178,17 @@ function registerIpc() {
           const cloud = prefs.cloud, step = cloud?.step;
           if (cloud?.diy !== true) throw new Error('This option is only for your own server.');
           if (!cloud.botInventoryChecked) {
-            const inventory = await cloudReadBotInventory((prefs.vpsBrowser?.sshHost || '').trim());
-            if (prefs.cloud !== cloud || cloud.step !== step) return getState();
+            const host = (prefs.vpsBrowser?.sshHost || '').trim();
+            const inventory = await cloudReadBotInventory(host);
+            if (prefs.cloud !== cloud || cloud.step !== step || (prefs.vpsBrowser?.sshHost || '').trim() !== host) return getState();
             Object.assign(cloud, inventory);
           }
         }
         if (value.step === 'done' && prefs.cloud) { prefs.cloud.step = 'done'; prefs.onboarded = true; savePreferences(); break; }
+        const from = prefs.cloud?.step;
         if (!setCloudStep(prefs, String(value.step || ''))) throw new Error('Unknown setup step.');
-        if (prefs.cloud.diy === true && value.step === 'model') delete prefs.cloud.modelDetected;
+        // Connect has just read the server's model, so only a later return to the model step re-reads it.
+        if (prefs.cloud.diy === true && value.step === 'model' && from !== 'connect') delete prefs.cloud.modelDetected;
         savePreferences(); break;
       }
       case 'cloud-next': {
@@ -2207,8 +2402,21 @@ function registerIpc() {
   // Failed actions only reached the screen as a toast; log them so a copied
   // report shows what went wrong.
   ipcMain.handle('workspace:command', async (event, command, value = {}) => {
+    if (command === 'settings' && value._settingsWrite) {
+      const entry = settingsWriteEntry(event, value._settingsWrite, false, value);
+      if (entry.admit) {
+        try { await runCommand(event, command, value); entry.record.status = 'finished'; }
+        catch (error) { entry.record.status = 'failed'; entry.record.detail = String(error?.message || error); logError('command settings', error); }
+      }
+      return settingsWriteReceipt(entry);
+    }
     try { return await runCommand(event, command, value); }
-    catch (error) { logError(`command ${command}`, error); throw error; }
+    catch (error) {
+      // Legacy Settings choices advance the fence even when persistence fails.
+      // Publish the retained saved values and new fence before the next choice.
+      if (command === 'settings') broadcastNow();
+      logError(`command ${command}`, error); throw error;
+    }
   });
   ipcMain.on('telegram:catalog', (event, value) => {
     if (event.sender !== telegramView?.webContents || event.senderFrame !== event.sender.mainFrame || !event.sender.getURL().startsWith(TELEGRAM)) return;
@@ -2376,9 +2584,9 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = 
     const wc = tab.view.webContents;
     const viaDevTools = async (cdpFormat) => {
       // clip.scale downscales at capture instead of a full-size decode then resize.
-      const size = await boundedJs(wc, '({ width: innerWidth, height: innerHeight, dsf: devicePixelRatio })');
+      const size = await boundedJs(wc, '({ width: globalThis.visualViewport?.width ?? innerWidth, height: globalThis.visualViewport?.height ?? innerHeight, pageLeft: globalThis.visualViewport?.pageLeft ?? scrollX, pageTop: globalThis.visualViewport?.pageTop ?? scrollY, dsf: devicePixelRatio })');
       const scale = maxWidth && size.width * size.dsf > maxWidth ? Math.max(0.01, maxWidth / size.width) : size.dsf;
-      const shot = await browserCommand(tab, 'Page.captureScreenshot', { format: cdpFormat, ...(cdpFormat === 'png' ? {} : { quality }), fromSurface: true, clip: { x: 0, y: 0, width: size.width, height: size.height, scale } });
+      const shot = await browserCommand(tab, 'Page.captureScreenshot', { format: cdpFormat, ...(cdpFormat === 'png' ? {} : { quality }), fromSurface: true, clip: { x: size.pageLeft, y: size.pageTop, width: size.width, height: size.height, scale } });
       return shot.data;
     };
     const encode = async () => {
@@ -2637,7 +2845,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     const history = wc.navigationHistory;
     const go = body.action === 'back' ? history.canGoBack() && (() => history.goBack())
       : body.action === 'forward' ? history.canGoForward() && (() => history.goForward())
-      : () => wc.reload();
+      : () => reloadBrowserPage(tab);
     if (go) didNavigate = await settleNavigation(wc, go);
     // History entries predate the address check, so a back/forward/reload can
     // land on one. will-navigate covers the cases Electron emits it for.
@@ -2674,7 +2882,7 @@ function startApi() {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
       const overseer = isOverseer(botId);
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets', 'commit-check'], tabCount: tabs.size+vpsTabs.size });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets', 'commit-check', ...(require('./agent-input.cjs').APPROVAL_BINDING_VERSION === 1 ? ['approval-binding-v1'] : [])], tabCount: tabs.size+vpsTabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await Promise.race([
           telegramView.webContents.executeJavaScript(`(() => ({
@@ -2758,7 +2966,17 @@ function startApi() {
       const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions|control))?$/.exec(url.pathname);
       const tab = match && tabs.get(match[1]);
       if(match&&!tab&&isVpsTab(match[1])){
-        const result=await vpsBrowser.request(url.pathname+url.search,req.method,req.method==='POST'?await readJson(req):undefined,{botId,botName:nameForBot(botId),epoch:Number(req.headers['x-control-epoch'])});
+        const body = req.method === 'POST' ? await readJson(req) : undefined;
+        if (match[2] === 'actions' && body?.approval !== undefined) {
+          // Local capability says nothing about the remote host. Check the
+          // actual backend on every approved forward, with no reconnect cache.
+          const configured = JSON.stringify(prefs.vpsBrowser);
+          let status;
+          try { status = await vpsBrowser.request('/v1/status', 'GET', undefined, { botId }); } catch { /* refuse below */ }
+          if (configured !== JSON.stringify(prefs.vpsBrowser) || !Array.isArray(status?.capabilities) || !status.capabilities.includes('approval-binding-v1'))
+            throw Object.assign(new Error('approval_binding_unavailable: the remote browser could not confirm document and target checks. Update the remote browser host and workspace connector, reconnect, take a fresh snapshot, and request approval again. No action was sent.'), { status: 403 });
+        }
+        const result=await vpsBrowser.request(url.pathname+url.search,req.method,body,{botId,botName:nameForBot(botId),epoch:Number(req.headers['x-control-epoch'])});
         const remote=result.tab || (result.id?result:null);if(remote)vpsTabs.set(remote.id,remote);if(req.method==='DELETE')vpsTabs.delete(match[1]);broadcast();return send(200,result);
       }
       if (!tab || tab.extensionPage || tab.localPdf) return send(404, { error: 'Tab not found.' });
@@ -2999,13 +3217,14 @@ function watchTelegram(wc) {
 // A claimed cloud computer keeps a permanent way back to support; the menu is
 // rebuilt when a session lands or clears so the item tracks cloud.sessionEnc.
 function buildMenu() {
+  const settings = { id: 'workspace-settings', label: 'Settings…', accelerator: ACCELERATORS.settings, click: () => { if (!layout.obscured) win.webContents.send('workspace:settings'); } };
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
-    { label: 'File', submenu: [{ label: 'Open File…', accelerator: 'CmdOrCtrl+O', click: () => pickPdf().catch(error => logError('open-pdf', error)) }, { label: 'New Browser Tab', accelerator: 'CmdOrCtrl+T', click: () => createTab({}) }, { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(activeTabId) }, ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, { role: 'quit' }])] },
+    ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, settings, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
+    { label: 'File', submenu: [{ label: 'Open File…', accelerator: ACCELERATORS['open-file'], click: () => pickPdf().catch(error => logError('open-pdf', error)) }, { label: 'New Browser Tab', accelerator: ACCELERATORS['new-tab'], click: () => createTab({}) }, { label: 'Close Tab', accelerator: ACCELERATORS['close-tab'], click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(activeTabId) }, ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, settings, { type: 'separator' }, { role: 'quit' }])] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: 'CmdOrCtrl+R', click: () => tabs.get(activeTabId)?.view.webContents.reload() }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
+    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: ACCELERATORS.reload, click: () => { const tab = tabs.get(activeTabId); if (tab) reloadBrowserPage(tab); } }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
     ...(process.platform === 'darwin' ? [{ label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }] : []),
-    ...(prefs?.cloud?.sessionEnc ? [{ label: 'Help', submenu: [{ label: 'Get help', click: () => shell.openExternal(cloudView().supportUrl).catch(() => {}) }] }] : []),
+    { label: 'Help', submenu: [{ id: 'workspace-shortcuts', label: 'Keyboard Shortcuts', click: () => win.webContents.send('workspace:shortcuts') }, ...(prefs?.cloud?.sessionEnc ? [{ type: 'separator' }, { label: 'Get help', click: () => shell.openExternal(cloudView().supportUrl).catch(() => {}) }] : [])] },
   ]));
 }
 function createWindow() {
@@ -3083,12 +3302,62 @@ function createWindow() {
   vpsTick();
   vpsMirrorTimer = setInterval(pushVpsMirror, 10000); vpsMirrorTimer.unref();
 }
+// ── Native Hermes chat: hub construction + persisted connection ─────────────
+// Secrets (refresh token, loopback token) are stored only when safeStorage can
+// encrypt them; otherwise they live for the process lifetime in memory only.
+const HERMES_STORE = () => path.join(app.getPath('userData'), 'hermes-gateway.json');
+const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+function hermesSecretsAvailable() { try { return safeStorage.isEncryptionAvailable(); } catch { return false; } }
+function loadHermesPersisted() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(HERMES_STORE(), 'utf8'));
+    if (!raw || typeof raw !== 'object') return {};
+    const out = { url: raw.url, profile: raw.profile, selected: raw.selected };
+    const unseal = (v) => {
+      try { return typeof v === 'string' && v ? safeStorage.decryptString(Buffer.from(v, 'base64')) : ''; }
+      catch { return ''; }
+    };
+    if (isPlainObject(raw.tokensEnc)) {
+      out.tokens = {
+        refreshToken: unseal(raw.tokensEnc.refreshToken), accessToken: unseal(raw.tokensEnc.accessToken),
+        expiresAt: raw.tokensEnc.expiresAt || 0, provider: raw.tokensEnc.provider || '', userId: raw.tokensEnc.userId || '',
+      };
+      if (!out.tokens.refreshToken) out.tokens = null;
+    }
+    out.localToken = unseal(raw.localTokenEnc);
+    return out;
+  } catch { return {}; }
+}
+function saveHermesPersisted(record) {
+  try {
+    const seal = (v) => hermesSecretsAvailable() && typeof v === 'string' && v
+      ? safeStorage.encryptString(v).toString('base64') : '';
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    writePrivateJson(HERMES_STORE(), JSON.stringify({
+      url: record.url || '', profile: record.profile || '', selected: record.selected || null,
+      tokensEnc: record.tokens ? {
+        refreshToken: seal(record.tokens.refreshToken), accessToken: seal(record.tokens.accessToken),
+        expiresAt: record.tokens.expiresAt || 0, provider: record.tokens.provider || '', userId: record.tokens.userId || '',
+      } : null,
+      localTokenEnc: seal(record.localToken),
+    }));
+  } catch (error) { logError('hermes-persist', error); }
+}
+const pushHermesState = coalesce(() => {
+  if (win && !win.isDestroyed() && hermesHub) win.webContents.send('hermes:state', hermesHub.getState());
+}, 60);
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(async () => {
     prefs = readPreferences(); prefs.remoteControl = false;
     if (pinOnboarding(prefs)) savePreferences();
     seedMacSshHost();
+    hermesHub = createHermesHub({
+      load: loadHermesPersisted,
+      persist: saveHermesPersisted,
+      notify: () => { pushHermesState(); broadcast(); },
+    });
+    pushHermesState();
     // A cold start launched by the claim link (Windows/Linux) carries the URL in argv.
     for (const arg of process.argv) { claimTokens.push(cloudClaim.parseClaimUrl(arg)); receivePdf(arg); }
     // A session already stored means onboarding was in progress: resume it.

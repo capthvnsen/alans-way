@@ -16,7 +16,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 // Test harness scripts that use timers or requests carry an approval, as a
 // router-approved call would (see the app's commit check).
-const harnessApproval = (tab, epoch = tab.epoch) => ({ nonce: crypto.randomUUID(), kind: 'submit', summary: 'test harness script', issuedAt: Date.now(), tabId: tab.id, epoch });
+const { harnessApproval, bindApproval, bindHarnessApproval } = require('./approval-fixture.cjs');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
 const { followUpArmExpression, followUpCloseExpression, snapshotExpression, FOLLOW_UP_KEY } = require('../src/browser-page.cjs');
@@ -213,12 +213,14 @@ const quietChatPage = `<!doctype html><title>notes</title><textarea aria-label="
 const routes = { '/hop-a': hopA, '/hop-b': hopB, '/crowd': crowdPage, '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage, '/checkout': checkoutPage, '/embed': embedPage, '/chat': chatPage, '/notes': quietChatPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
-const api = (route, method = 'GET', body, epoch) =>
-  fetch(connection.url + route, {
+const api = async (route, method = 'GET', body, epoch) => {
+  await bindHarnessApproval(body, async () => (await api(route.replace(/\/actions$/, '/snapshot'))).data);
+  return fetch(connection.url + route, {
     method,
     headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': 'bench-bot', 'X-Control-Epoch': String(epoch ?? ''), 'Content-Type': 'application/json' },
     ...(body ? { body: JSON.stringify(body) } : {}),
   }).then(async (r) => ({ status: r.status, data: await r.json() }));
+};
 
 before(async () => {
   if (!chrome) return;
@@ -237,6 +239,8 @@ before(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-bench-'));
   profile = path.join(dir, 'profile');
   browser = spawn(chrome, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-sandbox',
+    // A fresh macOS headless profile must not wait for the login keychain.
+    ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
     '--host-resolver-rules=MAP bench.example 127.0.0.1', 'about:blank'], { stdio: 'ignore' });
   const portFile = path.join(profile, 'DevToolsActivePort');
   // Child processes publish their endpoints through files; a loaded runner
@@ -398,17 +402,32 @@ test('a click landing inside the delivery window still counts the work it starte
       if (r.exceptionDetails) throw new Error(`eval threw: ${JSON.stringify(r.exceptionDetails).slice(0, 500)}`);
       return r.result && r.result.value;
     });
-    await evalOnTab(followUpArmExpression());
-    const scheduled = await evalOnTab(`(() => {
+    const result = await evalOnTab(`(async () => {
+      const armed = ${followUpArmExpression()};
       const closed = ${followUpCloseExpression()};
       const s = window[Symbol.for('hw.followUp')];
-      if (!closed || !s || !s.setT) return false;
+      if (!armed || !closed || !s || !s.setT) return { scheduled: false };
       const raw = s.setT;
-      raw(() => document.getElementById('bb').dispatchEvent(new Event('click', { bubbles: true })), 320);
-      return true;
+      let deliveryOpen;
+      // Keep the deliberate input delay inside the delivery bound; a CDP
+      // roundtrip between scheduling and reading can consume that bound on CI.
+      raw(() => {
+        deliveryOpen = s.cur.open;
+        document.getElementById('bb').dispatchEvent(new Event('click', { bubbles: true }));
+      }, 100);
+      const read = ${snapshotExpression({ effect: true, settle: true })};
+      const deadline = performance.now() + 5000;
+      while (!s.cur.delivered) {
+        if (performance.now() >= deadline) throw new Error('The late click never reached the page');
+        await new Promise(resolve => raw(resolve, 10));
+      }
+      return { scheduled: true, deliveryOpen, delivered: s.cur.delivered, total: s.cur.total, data: await read };
     })()`);
-    assert.equal(scheduled, true, 'the close ran and the late click was scheduled on the raw timer');
-    const data = await evalOnTab(snapshotExpression({ effect: true, settle: true }));
+    assert.equal(result.scheduled, true, 'the close ran and the late click was scheduled on the raw timer');
+    assert.equal(result.deliveryOpen, true, 'the settle read kept the delivery window open until the click arrived');
+    assert.equal(result.delivered, true, 'the page saw the late click while the settle read was in flight');
+    assert.equal(result.total, 1, 'the late click fetch was tracked without counting the delivery timer');
+    const data = result.data;
     assert.ok(data && typeof data.text === 'string', `the settle read returned nothing: ${JSON.stringify(data)}`);
     assert.ok(data.text.includes('Fetched payload text'), `the late click's fetch escaped the settle: ${JSON.stringify(data.text).slice(0, 300)} settledMs=${data.settledMs}`);
   } finally {
@@ -925,7 +944,9 @@ test('an approval lets one commit through once, on its tab and epoch, within 120
   const out = async () => /did:\w+|none/.exec((await act(tab, { action: 'read', maxChars: 4000 })).data.text)[0];
   const approval = (extra = {}) => ({ nonce: crypto.randomUUID(), kind: 'purchase', summary: 'One desk lamp', issuedAt: Date.now(), tabId: tab.id, epoch: tab.epoch, ...extra });
   const once = approval();
-  const ok = await act(tab, { action: 'batch', approval: once, steps: [{ action: 'type', name: 'Email', text: 'a@b.co' }, { action: 'click', name: 'Place order' }] });
+  const batch = { action: 'batch', approval: once, steps: [{ action: 'type', name: 'Email', text: 'a@b.co' }, { action: 'click', name: 'Place order' }] };
+  bindApproval(batch, (await api(`/v1/tabs/${tab.id}/snapshot`)).data);
+  const ok = await act(tab, batch);
   assert.deepEqual(ok.data.results.map((r) => r.ok), [true, true], JSON.stringify(ok.data));
   assert.equal(await out(), 'did:order');
   const again = await act(tab, { action: 'click', name: 'Buy now', approval: once });
@@ -937,7 +958,9 @@ test('an approval lets one commit through once, on its tab and epoch, within 120
     assert.match(reply.data.error, why);
   }
   assert.equal(await out(), 'did:order', 'no refused approval reached the page');
-  const script = await act(tab, { action: 'eval', code: 'document.querySelector("#out").textContent', approval: approval() });
+  const scriptBody = { action: 'eval', code: 'document.querySelector("#out").textContent', approval: approval() };
+  bindApproval(scriptBody, (await api(`/v1/tabs/${tab.id}/snapshot`)).data);
+  const script = await act(tab, scriptBody);
   assert.equal(script.data.value, 'did:order', 'an approved page script runs');
 });
 
@@ -952,4 +975,3 @@ test('Enter in a field outside a form is refused while the page shows a commit c
   assert.equal(passed.status, 200, JSON.stringify(passed.data));
   assert.equal(await pageText(notes, '#out'), 'did:noted');
 });
-

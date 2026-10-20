@@ -1,4 +1,7 @@
 const api = window.workspace;
+const hermesApi = window.hermes || null;
+let hermesView = null;
+let latestUiStateRevision = -1;
 let state, lastRecording = null, resumeToasts = new Set(), stoppedRecordingAt = 0, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '', handoffBusy = false;
 const $ = (id) => document.getElementById(id);
 function element(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; }
@@ -24,9 +27,20 @@ function colorFor(value) {
   return colors[Array.from(value).reduce((sum, letter) => sum + letter.charCodeAt(0), 0) % colors.length];
 }
 function renderBots() {
-  const search = $('bot-search').value.toLowerCase();
-  const bots = orderedBots().filter((bot) => `${bot.name} ${bot.username}`.toLowerCase().includes(search));
-  const list = $('bot-list');
+  const list = $('bot-list'), focused = document.activeElement.closest('.bot-row');
+  // Capture ownership before a zero-result filter can hide and blur the list.
+  const focusedId = focused?.dataset.botId, focusedHide = document.activeElement.classList.contains('bot-hide');
+  const previousIds = [...list.children].map(row => row.dataset.botId), focusedIndex = previousIds.indexOf(focusedId);
+  const search = $('bot-search').value.trim().toLowerCase();
+  const visibleBots = orderedBots();
+  const bots = visibleBots.filter((bot) => `${bot.name || ''} ${bot.username || ''}`.toLowerCase().includes(search));
+  list.classList.toggle('hidden', !!search && !bots.length);
+  $('bot-search-clear').classList.toggle('hidden', !search);
+  $('bot-search-empty').classList.toggle('hidden', !search || bots.length > 0);
+  $('bot-search-status').textContent = search ? (bots.length ? `${bots.length} agent${bots.length === 1 ? '' : 's'} found.` : 'No agents found.') : '';
+  $('bot-count').textContent = visibleBots.length;
+  $('empty-bots').classList.toggle('hidden', !!search || state.bots.length > 0);
+  $('empty-bots').querySelector('p').textContent = state.telegramStatus === 'connected' ? 'Finding your Telegram bot chats…' : 'Sign in to Telegram to load your bot chats here.';
   const signature = JSON.stringify([bots.map(({ activity, ...bot }) => bot), state.selectedBotId, state.primaryBotId, state.botSort]);
   if (signature === botListSignature) {
     for (const row of list.children) {
@@ -36,20 +50,34 @@ function renderBots() {
     document.querySelectorAll('.bridge-dot').forEach((dot) => dot.classList.toggle('offline', !state.api.ready));
     return;
   }
+  const remainingIds = new Set(bots.map(bot => bot.id));
+  // Continue at the next surviving neighbor; at the end, use the previous one.
+  const focusId = remainingIds.has(focusedId) ? focusedId : previousIds.slice(focusedIndex + 1).find(id => remainingIds.has(id))
+    || previousIds.slice(0, focusedIndex).reverse().find(id => remainingIds.has(id)) || bots[0]?.id;
+  const entryId = focusedId ? focusId : bots.find(bot => bot.id === state.selectedBotId)?.id || bots[0]?.id;
   botListSignature = signature; list.replaceChildren();
   for (const bot of bots) {
     const row = element('div', `bot-row${state.selectedBotId === bot.id ? ' selected' : ''}${state.primaryBotId === bot.id ? ' primary' : ''}`);
-    row.setAttribute('role', 'button'); row.setAttribute('tabindex', '0'); row.setAttribute('aria-label', `Open ${bot.name}`); row.draggable = (state.botSort || 'manual') === 'manual'; row.dataset.botId = bot.id;
+    row.setAttribute('role', 'listitem'); row.draggable = (state.botSort || 'manual') === 'manual'; row.dataset.botId = bot.id;
+    const open = element('button', 'bot-open'); open.type = 'button'; open.setAttribute('aria-label', `Open ${bot.name}`);
+    open.setAttribute('aria-current', String(state.selectedBotId === bot.id)); open.tabIndex = bot.id === entryId ? 0 : -1;
     const avatar = element('span', 'avatar'); window.HermesAvatars.paint(avatar, bot, state);
     const copy = element('span', 'bot-copy');
     const nameLine = element('div', 'bot-name', bot.name);
     if (state.primaryBotId === bot.id) nameLine.append(element('span', 'primary-badge', 'PRIMARY'));
     copy.append(nameLine, element('div', 'bot-preview', bot.preview || (bot.username ? `@${bot.username}` : 'Telegram bot')), element('div', 'bot-activity'));
     const hide = element('button', 'bot-hide', '×'); hide.title = `Hide ${bot.name}`; hide.setAttribute('aria-label', hide.title);
+    hide.tabIndex = bot.id === entryId ? 0 : -1;
     hide.onclick = (event) => { event.stopPropagation(); command('hide-bot', { id: bot.id }); };
-    row.append(avatar, copy); if (bot.unread) row.append(element('span', 'unread')); row.append(hide);
+    open.append(avatar, copy); if (bot.unread) open.append(element('span', 'unread')); row.append(open, hide);
     row.onclick = () => command('open-bot', { id: bot.id });
-    row.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); command('open-bot', { id: bot.id }); } };
+    open.onfocus = () => {
+      for (const item of list.querySelectorAll('.bot-row')) {
+        item.querySelector('.bot-open').tabIndex = item === row ? 0 : -1;
+        item.querySelector('.bot-hide').tabIndex = item === row ? 0 : -1;
+      }
+    };
+    open.onkeydown = (event) => moveNavigationFocus(event, [...list.querySelectorAll('.bot-open')], 'vertical');
     row.ondragstart = (event) => { draggingBot = bot.id; row.classList.add('dragging'); event.dataTransfer.setData('text/plain', bot.id); event.dataTransfer.effectAllowed = 'move'; };
     row.ondragend = () => { draggingBot = ''; row.classList.remove('dragging'); document.querySelectorAll('.drop-target').forEach((el) => el.classList.remove('drop-target')); };
     row.ondragover = (event) => { if (draggingBot && draggingBot !== bot.id && bot.id !== state.primaryBotId) { event.preventDefault(); row.classList.add('drop-target'); } };
@@ -61,10 +89,20 @@ function renderBots() {
     };
     renderBotActivity(row, bot); list.append(row);
   }
-  $('bot-count').textContent = orderedBots().length;
+  if (focusedId) {
+    const target = [...list.children].find(row => row.dataset.botId === focusId);
+    if (target && canFocus(target.querySelector('.bot-open'))) {
+      // Focusing Open aligns both roving stops before restoring the Hide action.
+      target.querySelector('.bot-open').focus({ preventScroll: true });
+      if (focusedHide) target.querySelector('.bot-hide').focus({ preventScroll: true });
+      // Reveal the row's padding too, so the focus outline stays inside the clip.
+      target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    } else {
+      const fallback = [$('bot-search'), $('search-toggle')].find(canFocus);
+      fallback?.focus();
+    }
+  }
   $('sort-bots').classList.toggle('active', (state.botSort || 'manual') !== 'manual');
-  $('empty-bots').classList.toggle('hidden', state.bots.length > 0);
-  $('empty-bots').querySelector('p').textContent = state.telegramStatus === 'connected' ? 'Finding your Telegram bot chats…' : 'Sign in to Telegram to load your bot chats here.';
   document.querySelectorAll('.bridge-dot').forEach((dot) => dot.classList.toggle('offline', !state.api.ready));
 }
 function renderBotActivity(row, bot) {
@@ -95,22 +133,125 @@ function tabIcon(tab) {
   return icon;
 }
 function renderTabs() {
-  const container = $('tabs'); container.replaceChildren();
+  const container = $('tabs'), focused = document.activeElement.closest('.tab');
+  const focusedId = focused?.dataset.tabId, focusedClose = document.activeElement.classList.contains('tab-close');
+  const focusedIndex = focused ? [...container.children].indexOf(focused) : -1;
+  container.replaceChildren();
   const entries = state.tabs.map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : '◈' }));
-  for (const tab of entries) {
+  entries.forEach((tab, index) => {
     const selected = state.browserTabId === tab.id;
-    const node = element('div', `tab${selected ? ' active' : ''}`); node.setAttribute('role', 'tab'); node.setAttribute('aria-selected', selected ? 'true' : 'false'); node.tabIndex = 0;
-    node.append(tabIcon(tab), element('span', 'tab-title', tab.title || 'New tab'));
+    const node = element('div', `tab${selected ? ' active' : ''}`); node.setAttribute('role', 'presentation'); node.dataset.tabId = tab.id;
+    const select = element('button', 'tab-select'); select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(selected));
+    select.setAttribute('aria-setsize', String(entries.length)); select.setAttribute('aria-posinset', String(index + 1));
+    select.setAttribute('aria-label', tab.title || 'New tab'); select.tabIndex = selected || (!state.tabs.some(item => item.id === state.browserTabId) && tab.id === entries[0]?.id) ? 0 : -1;
+    select.append(tabIcon(tab), element('span', 'tab-title', tab.title || 'New tab')); node.append(select);
     if (tab.controller === 'agent') { node.classList.add('agent'); node.append(element('span', 'agent-dot')); }
     if (tab.agentBusy) node.classList.add('busy');
     if (tab.handback?.state === 'awaiting_human') { const badge = element('span', 'needs-you-badge'); badge.style.setProperty('--h', String(tab.agentHue ?? 168)); badge.title = `${state.bots.find(bot=>bot.id===tab.botId)?.name || 'Agent'} needs you`; node.append(badge); }
     if(tab.host)node.title=`${hostName(tab.host)} · ${state.bots.find(bot=>bot.id===tab.botId)?.name || tab.botId}${tab.controller === 'agent' ? ' · agent-controlled' : ''}`;
     node.onclick = () => command('activate', { id: tab.id });
-    node.onkeydown = (event) => { if (event.key === 'Enter') command('activate', { id: tab.id }); };
+    select.onkeydown = (event) => {
+      if (event.key === 'Delete') { event.preventDefault(); command('close-tab', { id: tab.id }); return; }
+      const target = moveNavigationFocus(event, [...container.querySelectorAll('.tab:not(.tab-off) [role=tab]')], 'horizontal');
+      if (target) command('activate', { id: target.closest('.tab').dataset.tabId });
+    };
     const close = element('button', 'tab-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
+    close.tabIndex = selected ? 0 : -1;
     close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id }); }; node.append(close);
     container.append(node);
+  });
+  fitTabs();
+  if (focusedId) {
+    const target = [...container.children].find(node => node.dataset.tabId === focusedId) || container.children[Math.min(focusedIndex, container.children.length - 1)];
+    const fallback = target?.querySelector(focusedClose ? '.tab-close' : '[role=tab]');
+    (canFocus(fallback) ? fallback : canFocus($('tabs-menu')) ? $('tabs-menu') : $('new-tab')).focus({ preventScroll: true });
   }
+}
+// The strip never clips a tab mid-element: tabs that cannot fit hide into the
+// all-tabs menu (leftmost first, the active tab always stays). Every tab stays
+// selectable and closable through the panel when the strip is full.
+function fitTabs() {
+  const container = $('tabs'), menu = $('tabs-menu'), nodes = [...container.children];
+  for (const node of nodes) node.classList.remove('tab-off');
+  menu.classList.add('hidden');
+  let hiddenCount = 0;
+  if (container.scrollWidth > container.clientWidth + 1) {
+    menu.classList.remove('hidden');
+    while (container.scrollWidth > container.clientWidth + 1) {
+      const candidate = nodes.find(node => !node.classList.contains('tab-off') && node.dataset.tabId !== state?.browserTabId);
+      if (!candidate) break;
+      candidate.classList.add('tab-off'); hiddenCount++;
+    }
+  }
+  // Keep one tabbable stop inside the visible strip: when the selected tab is
+  // absent (VPS view) and the first tab hid, the next visible tab takes the stop.
+  if (!container.querySelector('.tab:not(.tab-off) [role=tab][tabindex="0"]')) {
+    const first = container.querySelector('.tab:not(.tab-off) [role=tab]'); if (first) first.tabIndex = 0;
+  }
+  $('tabs-menu-count').textContent = hiddenCount ? `+${hiddenCount}` : '';
+  const label = hiddenCount ? `Show all tabs, ${hiddenCount} more not currently visible` : 'Show all tabs';
+  menu.title = label; menu.setAttribute('aria-label', label);
+  if (menu.classList.contains('hidden')) setTabsPanel(false);
+  else if (!$('tabs-panel').classList.contains('hidden')) renderTabsPanel();
+}
+function setTabsPanel(open) {
+  const panel = $('tabs-panel'), wasOpen = !panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !open);
+  $('tabs-menu').setAttribute('aria-expanded', String(open));
+  $('tabs-menu').classList.toggle('active', open);
+  if (!open && wasOpen && document.activeElement && $('tabs-panel').contains(document.activeElement)) $('tabs-menu').focus({ preventScroll: true });
+  if (open) renderTabsPanel();
+  // The panel extends over the native browser view; like the app's dialogs it
+  // obscures the slot so the menu can paint and be picked reliably.
+  if (open !== wasOpen) scheduleLayout();
+}
+function renderTabsPanel() {
+  const panel = $('tabs-panel'), focusedTab = document.activeElement?.closest('.tabs-panel-row')?.dataset.tabId;
+  panel.replaceChildren();
+  for (const tab of state.tabs) {
+    const selected = state.browserTabId === tab.id;
+    const row = element('div', `tabs-panel-row${selected ? ' active' : ''}`); row.dataset.tabId = tab.id;
+    const pick = element('button', 'tabs-panel-select'); pick.setAttribute('role', 'menuitemradio'); pick.setAttribute('aria-checked', String(selected));
+    pick.setAttribute('aria-label', tab.title || 'New tab');
+    const owner = tab.host ? `${hostName(tab.host)} · ${state.bots.find(bot => bot.id === tab.botId)?.name || tab.botId}${tab.controller === 'agent' ? ' · agent-controlled' : ''}` : '';
+    pick.title = `${tab.title || 'New tab'}${owner ? ` · ${owner}` : ''}`;
+    pick.append(tabIcon(tab), element('span', 'tab-title', tab.title || 'New tab'), element('span', 'tabs-panel-owner', owner));
+    pick.onclick = () => { command('activate', { id: tab.id }); setTabsPanel(false); };
+    const close = element('button', 'tabs-panel-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
+    close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id }); };
+    row.append(pick, close); panel.append(row);
+  }
+  if (focusedTab) panel.querySelector(`.tabs-panel-row[data-tab-id="${CSS.escape(focusedTab)}"] .tabs-panel-select`)?.focus({ preventScroll: true });
+}
+// The compact status affordance and its panel report both exact footer texts
+// whenever the narrow footer suppresses a status span (and on demand at any
+// width). It obscures native views while open, like the tab panel and dialogs.
+function setStatusPanel(open) {
+  const panel = $('status-panel'), wasOpen = !panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !open);
+  $('status-more').setAttribute('aria-expanded', String(open));
+  if (!open && wasOpen && document.activeElement && panel.contains(document.activeElement)) (canFocus($('status-more')) ? $('status-more') : $('workspace-status')).focus({ preventScroll: true });
+  if (open) renderStatusPanel();
+  if (open !== wasOpen) scheduleLayout();
+}
+function renderStatusPanel() {
+  const panel = $('status-panel'), focused = document.activeElement?.closest('.status-panel-row')?.dataset.status;
+  panel.replaceChildren();
+  for (const [key, label, text] of [['workspace', 'Workspace', $('workspace-status').textContent], ['connector', 'Connector', $('connection-status').textContent]]) {
+    const row = element('div', 'status-panel-row'); row.dataset.status = key; row.tabIndex = 0; row.setAttribute('role', 'status');
+    row.append(element('span', 'status-panel-label', label), document.createTextNode(text || '-'));
+    panel.append(row);
+  }
+  if (focused) panel.querySelector(`.status-panel-row[data-status="${focused}"]`)?.focus({ preventScroll: true });
+}
+function moveNavigationFocus(event, items, orientation) {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  const previous = orientation === 'vertical' ? 'ArrowUp' : 'ArrowLeft', next = orientation === 'vertical' ? 'ArrowDown' : 'ArrowRight';
+  const index = items.indexOf(event.currentTarget);
+  const target = event.key === 'Home' ? items[0] : event.key === 'End' ? items.at(-1)
+    : event.key === previous ? items[(index - 1 + items.length) % items.length] : event.key === next ? items[(index + 1) % items.length] : null;
+  if (!target) return;
+  event.preventDefault(); target.focus(); target.scrollIntoView({ block: 'nearest', inline: 'nearest' }); return target;
 }
 function extensionIcon(item) {
   if (!item.icon) return element('span', 'extension-letter', item.name.slice(0, 1));
@@ -246,6 +387,13 @@ function renderDownloads() {
   }
 }
 function render(next) {
+  // Replies can arrive after newer broadcasts, even within one Settings session.
+  // Keep local re-renders of the current revision and accept unversioned hosts
+  // until this native IPC authority has supplied its first revision.
+  if (Number.isSafeInteger(next.uiStateRevision) && next.uiStateRevision >= 0) {
+    if (next.uiStateRevision < latestUiStateRevision) return;
+    latestUiStateRevision = next.uiStateRevision;
+  } else if (latestUiStateRevision >= 0) return;
   state = next;
   window.HermesAvatars.update(state);
   const bot = state.bots.find((item) => item.id === state.selectedBotId);
@@ -253,9 +401,21 @@ function render(next) {
   $('shell').classList.toggle('bots-hidden', state.showBots === false);
   $('bots-toggle').setAttribute('aria-pressed', String(state.showBots !== false));
   $('bots-toggle').title = state.showBots === false ? 'Show agent list' : 'Hide agent list';
-  $('chat-title').textContent = bot?.name || 'Telegram';
+  // The chat pane hosts either the Telegram WebContentsView or the native
+  // Hermes DOM surface. When the Hermes pane is up the slot collapses and its
+  // reported rect goes zero — main then hides the Telegram view for us.
+  const hermesActive = state.chatTarget === 'hermes';
+  $('telegram-slot').classList.toggle('hidden', hermesActive);
+  $('telegram-note').classList.toggle('hidden', hermesActive);
+  $('hermes-pane').classList.toggle('hidden', !hermesActive);
+  const hermesSelected = hermesActive && state.hermes?.sessions?.find((s) => s.selected);
+  $('chat-title').textContent = hermesActive
+    ? (hermesSelected?.title || `Hermes${state.hermes?.target ? ` · ${state.hermes.target.label}` : ''}`)
+    : (bot?.name || 'Telegram');
+  $('chat-avatar').style.display = hermesActive ? 'none' : '';
   window.HermesAvatars.paint($('chat-avatar'), bot || { id: '', name: 'Telegram' }, state);
   $('chat-avatar').title = bot ? `Customize ${bot.name} avatar` : 'Select a bot to customize its avatar';
+  renderHermes();
   $('agent-presence').classList.toggle('hidden', !bot);
   if (bot) {
     window.HermesAvatars.paint($('presence-avatar'), bot, state);
@@ -263,7 +423,7 @@ function render(next) {
     $('presence-status').textContent = window.HermesAvatars.activityLabel(bot.activity);
     $('presence-status').classList.toggle('active', window.HermesAvatars.isActive(bot.activity));
   }
-  renderBots(); renderTabs(); renderSettingsBots(); renderRecordings(); renderSitePermissions(); renderExtensions(); renderDownloads();
+  renderBots(); renderTabs(); renderSettingsBots(); renderRecordings(); renderSitePermissions(); renderExtensions(); renderDownloads(); refreshSettingsSections();
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
   const remote = state.activeTabId==='vps';
   $('vm-toggle').title = remote ? 'Return to browser' : 'Expand virtual desktop';
@@ -273,7 +433,7 @@ function render(next) {
   $('browser-collapse').title = state.showBrowser === false ? 'Show browser pane' : 'Hide browser pane';
   $('browser-collapse').setAttribute('aria-label', $('browser-collapse').title);
   $('browser-collapse').setAttribute('aria-pressed', String(state.showBrowser === false));
-  $('home').classList.toggle('hidden', !!tab || state.activeTabId === 'vps' || !!state.onboarding);
+  renderHome(bot, !!tab || state.activeTabId === 'vps' || !!state.onboarding);
   renderOnboarding(!tab && state.activeTabId !== 'vps' && !!state.onboarding);
   $('browser-toolbar').classList.toggle('hidden', state.activeTabId === 'vps');
   $('remote-preview-slot').classList.toggle('hidden', !state.preview || remote || !!state.onboarding);
@@ -281,17 +441,24 @@ function render(next) {
   $('preview-label').textContent = state.remoteStatus === 'connected' ? `${remoteName()} desktop` : `${remoteName()} · ${state.remoteStatus}`;
   document.body.classList.toggle('win32', state.platform === 'win32');
   $('new-tab').title = state.platform === 'darwin' ? 'New local browser tab (⌘T)' : 'New local browser tab (Ctrl+T)';
-  const homeCopy = $('home-copy');
-  if (homeCopy && state.platform !== 'darwin') homeCopy.innerHTML = `Talk to your agents. Browse on your ${thisComputer()}.<br>Keep their computer in view.`;
   positionPreview();
-  $('control-button').textContent = tab?.controller === 'agent' ? 'Take over' : 'Give to agent';
-  $('control-button').classList.toggle('agent', tab?.controller === 'agent');
-  $('control-button').disabled = !tab || tab.extensionPage || tab.localPdf;
+  const sharedTab = tab?.botId === 'shared';
+  const ownerName = tab && !sharedTab ? state.bots.find((item) => item.id === tab.botId)?.name || tab.botId : '';
+  const controlButton = $('control-button');
+  controlButton.textContent = tab?.controller === 'agent' ? 'Take over'
+    : sharedTab ? `Give to ${bot?.name || state.selectedBotId || 'agents'}`
+    : `Give to ${ownerName || 'agent'}`;
+  controlButton.classList.toggle('agent', tab?.controller === 'agent');
+  controlButton.disabled = !tab || tab.extensionPage || tab.localPdf;
   const askBot = $('ask-bot'); askBot.disabled = !tab || !/^https?:\/\//.test(tab?.url || ''); askBot.title = tab ? `Share ${tab.title || 'this page'} with ${bot?.name || 'the selected bot'}` : 'Discuss this page with your agent';
   $('browser-slot').classList.toggle('agent-live', !!tab && tab.controller === 'agent');
-  if (tab?.extensionPage || tab?.localPdf) $('control-button').textContent = 'You';
-  $('control-button').title = tab ? `Browser runs on ${tab.host==='vps'||tab.host==='remote'?'the '+remoteName():'your '+thisComputer()} · ${tab.controller === 'agent' ? 'Agent' : 'You'} control it` : 'Open a browser tab first';
-  if (document.activeElement !== $('address')) $('address').value = tab?.internal ? '' : tab?.url || '';
+  if (tab?.extensionPage || tab?.localPdf) controlButton.textContent = 'You';
+  const controlOffer = /^(Give|Take)/.test(controlButton.textContent) ? ` · ${controlButton.textContent}` : '';
+  controlButton.title = tab ? `Browser runs on ${tab.host==='vps'||tab.host==='remote'?'the '+remoteName():'your '+thisComputer()} · ${tab.controller === 'agent' ? (sharedTab ? 'Agents share control' : `${ownerName || 'Agent'} controls it`) : `You control it${sharedTab && !state.selectedBotId ? ' · an agent can claim it' : ''}`}${controlOffer}` : 'Open a browser tab first';
+  if (document.activeElement !== $('address')) $('address').value = tab?.recoveryUrl || (tab?.internal ? '' : tab?.url || '');
+  $('browser-error-banner').classList.toggle('hidden', !tab?.error);
+  $('browser-error-text').textContent = tab?.error ? `${tab.error}${tab.recoveryUrl ? ` · ${tab.recoveryUrl}` : ''}` : '';
+  $('reload').title = tab?.error ? 'Reload page' : 'Reload';
   const agentName = tab ? state.bots.find(bot => bot.id === tab.botId)?.name || 'Agent' : '';
   // The retired local copy of a handed-off tab is the way back: it offers to
   // pull the remote tab's current page state onto this computer again.
@@ -337,14 +504,21 @@ function render(next) {
   if (lastRecording && !recording && lastRecording.startedAt !== stoppedRecordingAt) toast('Recording stopped. Anything it caught is in Settings → Recordings.');
   lastRecording = recording;
   $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? `${agentName}${tab.agentBusy ? ' is working' : ' is browsing'}` : 'You'} in control${tab.controller === 'agent' ? ' · Take over anytime' : ''} · ${hostName(tab.host)}${tab.handoff?.phase==='handed_off'?` · Handed off to the ${hostName(tab.handoff.destinationHost)} (agents continue there)`:tab.handoff&&tab.handoff.phase!=='reviewed'?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `${remoteName()} · ${state.remoteStatus}` : 'Ready';
+  $('workspace-status').title = $('workspace-status').textContent;
+  $('workspace-status').setAttribute('aria-label', $('workspace-status').textContent);
   renderUpdate();
   $('connection-status').textContent = state.api.ready ? 'Browser connector ready' : state.api.error ? 'Browser connector unavailable' : 'Browser connector starting…';
+  $('connection-status').title = $('connection-status').textContent;
+  $('connection-status').setAttribute('aria-label', $('connection-status').textContent);
+  $('status-more').title = `${$('workspace-status').textContent} · ${$('connection-status').textContent}`;
+  if (!$('status-panel').classList.contains('hidden')) renderStatusPanel();
   const notes = { login: 'Sign in with your Telegram account. Your bots appear on the left.', connected: 'Your Telegram account · bot chats only', locked: 'Unlock Telegram to load your bot chats.', offline: 'Telegram is offline. Retrying automatically; or sync in Settings.', loading: 'Connecting to Telegram…', 'layout-changed': 'Telegram layout changed. Bot chats may not load until Alan’s Workspace is updated.' };
   $('telegram-note').textContent = notes[state.telegramStatus] || notes.loading;
   $('telegram-note').classList.toggle('warn', state.telegramStatus === 'layout-changed');
+  if (!$('shortcut-dialog').classList.contains('hidden')) refreshShortcutAvailability();
   scheduleLayout();
 }
-let updatePopupPinned = false, updatePopupFocused = false;
+let updatePopupPinned = false;
 function renderUpdate() {
   const version = $('version-label'); version.textContent = `v${state.version}`; version.title = `Release notes for v${state.version}`; version.onclick = () => command('open-release-notes');
   const badge = $('build-badge'), b = state.buildBadge;
@@ -371,9 +545,9 @@ function renderUpdatePopup() {
   const show = Boolean(u.popup || u.busy || (updatePopupPinned && u.available));
   // The popup is a DOM overlay painted below every attached view, so showing
   // or hiding it must reschedule the layout pass that obscures those views.
-  popup.classList.toggle('hidden', !show);
+  setDialogVisible(popup, show, () => $('update-now'));
   scheduleLayout();
-  if (!show) { updatePopupPinned = false; updatePopupFocused = false; return; }
+  if (!show) { updatePopupPinned = false; return; }
   $('update-popup-title').textContent = u.busy ? 'Updating' : 'Update available';
   $('update-popup-copy').textContent = u.busy ? 'Your VMs update first, then this app.' : `Alan’s Workspace v${u.available} is ready. You have v${state.version}.`;
   const progress = $('update-progress'); progress.replaceChildren();
@@ -393,7 +567,6 @@ function renderUpdatePopup() {
   const now = $('update-now'), later = $('update-later');
   now.disabled = !!u.busy; later.disabled = !!u.busy;
   now.textContent = u.busy ? 'Updating…' : 'Update now';
-  if (!updatePopupFocused) { updatePopupFocused = true; now.focus(); }
 }
 // The bottom bar's versions and "Update everything". The dialog shows the
 // plan first and nothing runs until its button is clicked; then it shows each
@@ -415,8 +588,7 @@ function renderVersions() {
 function renderUpdateAll() {
   const popup = $('update-all-popup'), v = state.versions || {}, run = state.updateAll || {};
   const show = updateAllOpen || !!run.busy;
-  const wasHidden = popup.classList.contains('hidden');
-  popup.classList.toggle('hidden', !show);
+  setDialogVisible(popup, show, () => $('update-all-go'));
   scheduleLayout();
   if (!show) return;
   const planning = updateAllView === 'plan' && !run.busy;
@@ -448,7 +620,6 @@ function renderUpdateAll() {
   $('update-all-check').classList.toggle('hidden', !planning);
   cancel.textContent = planning ? 'Cancel' : 'Close';
   cancel.disabled = !!run.busy;
-  if (wasHidden) (go.disabled || go.classList.contains('hidden') ? cancel : go).focus();
 }
 function closeUpdateAll() { if (state?.updateAll?.busy) return; updateAllOpen = false; renderUpdateAll(); }
 function renderVmBanner() {
@@ -459,13 +630,44 @@ function renderVmBanner() {
   $('vm-banner-text').textContent = u.vmRetrying ? 'Updating your VM…' : retry.version ? `Your VM is on v${retry.version}.` : 'Your VM is not up to date.';
   $('vm-banner-retry').disabled = !!(u.vmRetrying || u.busy);
 }
-let onboardingStep = 1, onboardingSignature = '';
+let onboardingStep = 1, onboardingSignature = '', homeWasVisible = false;
+function renderHome(bot, hidden) {
+  $('home').classList.toggle('hidden', hidden);
+  if (!hidden && !homeWasVisible && document.activeElement === document.body && canFocus($('home-address'))) $('home-address').focus({ preventScroll: true });
+  homeWasVisible = !hidden;
+  const homeAgent = $('home-agent');
+  homeAgent.classList.toggle('hidden', !bot);
+  if (bot) {
+    homeAgent.style.setProperty('--h', String(bot.hue ?? 168));
+    homeAgent.querySelector('.home-agent-name').textContent = bot.name;
+    homeAgent.title = `Open a page for ${bot.name}`;
+    homeAgent.setAttribute('aria-label', homeAgent.title);
+  }
+  const computer = state.platform === 'darwin' ? 'Mac' : thisComputer();
+  const remoteKnown = state.remoteStatus === 'connected' || !!state.remoteUrl || !!state.vpsBrowser?.sshHost;
+  // The chat offer is only real once the app observes a connected account; a
+  // saved agent list alone proves nothing about sign-in or chat readiness.
+  const waiting = {
+    loading: bot ? `${bot.name}’s chat is still connecting.` : 'Telegram is still connecting.',
+    login: bot ? `Sign in on the left to bring ${bot.name}’s chat here.` : 'Sign in to Telegram on the left to bring your agents here.',
+    locked: 'Unlock Telegram on the left to load your bot chats.',
+    offline: 'Telegram is offline. Reconnecting automatically.',
+    'layout-changed': 'Telegram’s layout changed. Bot chats may not load until Alan’s Workspace is updated.',
+  };
+  const firstLine = state.telegramStatus === 'connected'
+    ? bot ? `Talk to ${bot.name} in the left chat.` : state.bots.length ? 'Pick an agent on the left.' : 'Your agents appear on the left as bot chats.'
+    : waiting[state.telegramStatus] || waiting.loading;
+  $('home-copy').replaceChildren(
+    document.createTextNode(firstLine),
+    element('br'),
+    document.createTextNode(`${bot ? `Or open a page on your ${computer} and hand it to ${bot.name}.` : `Pages open on your ${computer} below.`}${remoteKnown ? ' Keep their computer in view.' : ''}`));
+}
 function renderOnboarding(show) {
   const panel = $('onboarding');
   panel.classList.toggle('hidden', !show);
   if (!show) { onboardingSignature = ''; return; }
   const cloud = state.cloud || {};
-  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername, cloud.model, cloud.existingModel, cloud.modelDetected,
+  const signature = JSON.stringify(cloud.step === 'connect' ? ['cloud', cloud.step, cloud.diy, cloud.error] : cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername, cloud.model, cloud.existingModel, cloud.modelDetected,
     cloud.tokenedProfiles, cloud.existingBotId, cloud.existingBotProfile, cloud.step === 'bot-chat' ? state.bots?.map(({ id, name, username }) => [id, name, username]) : null] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
   if (signature === onboardingSignature) return;
   onboardingSignature = signature;
@@ -559,16 +761,21 @@ function renderCloudOnboarding(card, actions, cloud) {
     actions.append(button('Get help', 'secondary-button', () => go('support')));
   } else if (cloud.step === 'connect') {
     const status = element('p', 'settings-note', '');
+    let input, attempt = 0;
     const check = async (extra = {}) => {
+      const request = ++attempt;
       status.textContent = 'Checking…';
-      const result = await command('cloud-connect', extra);
+      const result = await api.command('cloud-connect', extra).catch(error => ({ host: extra.host, detail: error.message }));
+      if (request !== attempt || !status.isConnected) return;
+      if (cloud.diy && result?.host !== input.value.trim()) { status.textContent = ''; return; }
       status.textContent = result?.detail || '';
       if (result?.existingModel) toast(result.detail);
+      if (cloud.diy && result?.ok && !result.cancelled) await go('model');
     };
     if (cloud.diy) {
       card.append(element('h2', '', 'Use your own server'), element('p', 'settings-note', 'Enter the SSH address of the machine that will run your agent.'));
       const field = element('div', 'field'), lab = element('label', '', 'Server SSH address'); lab.htmlFor = 'ob-diy-host';
-      const input = element('input'); input.id = 'ob-diy-host'; input.placeholder = 'you@your-server'; input.autocomplete = 'off'; input.value = state.vpsBrowser?.sshHost || '';
+      input = element('input'); input.id = 'ob-diy-host'; input.placeholder = 'you@your-server'; input.autocomplete = 'off'; input.value = state.vpsBrowser?.sshHost || '';
       field.append(lab, input); card.append(field);
       actions.append(button('Back', 'secondary-button', () => command('cloud-diy', { off: true })),
         button('Connect', 'primary-button', () => check({ host: input.value.trim() })));
@@ -736,7 +943,7 @@ function rect(id) {
 }
 function scheduleLayout() {
   cancelAnimationFrame(resizeFrame);
-  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: modalOpen || !$('update-popup').classList.contains('hidden') || !$('update-all-popup').classList.contains('hidden') }));
+  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: dialogStack.length > 0 || !$('tabs-panel').classList.contains('hidden') || !$('status-panel').classList.contains('hidden') }));
 }
 // The mini VM window is anchored bottom-right until dragged; its saved offset
 // is relative to the workspace pane and clamped so it can never get lost.
@@ -792,13 +999,130 @@ api.onPreviewDrop?.(() => {
 // not stack listeners or every log chunk would append once per past render.
 let cloudLogEl = null;
 api.onCloudLog?.((text) => { if (cloudLogEl?.isConnected) cloudLogEl.textContent = (cloudLogEl.textContent + text).slice(-8000); });
-function openModal(title) {
-  modalOpen = true; $('modal-title').textContent = title; $('modal-body').replaceChildren(); $('modal').classList.remove('hidden'); scheduleLayout();
+// All DOM dialogs share one focus boundary, including busy updates that have
+// no enabled actions. Inert keeps the obscured workspace out of the tab order.
+const dialogStack = [], dialogOpeners = new Map();
+function canFocus(node) {
+  return node instanceof HTMLElement && node.isConnected && !node.matches(':disabled') && !node.closest('[inert]')
+    && (node.tabIndex >= 0 || node.hasAttribute('tabindex') || node.isContentEditable)
+    && node.getClientRects().length > 0 && !['hidden', 'collapse'].includes(getComputedStyle(node).visibility);
 }
-function closeModal() { modalOpen = false; $('modal').classList.add('hidden'); scheduleLayout(); }
+function dialogItems(dialog) {
+  return [...dialog.querySelectorAll('button, input, select, textarea, a[href], summary, [tabindex]')].filter(node => node.tabIndex >= 0 && canFocus(node));
+}
+function focusDialog(dialog, preferred) {
+  (canFocus(preferred) ? preferred : dialogItems(dialog)[0] || dialog).focus({ preventScroll: true });
+}
+function setDialogVisible(dialog, show, initialFocus) {
+  const index = dialogStack.indexOf(dialog), changed = show !== (index >= 0), wasTop = dialogStack.at(-1) === dialog;
+  if (show && index < 0) { dialogOpeners.set(dialog, document.activeElement); dialogStack.push(dialog); }
+  if (!show && index >= 0) dialogStack.splice(index, 1);
+  dialog.classList.toggle('hidden', !show);
+  const top = dialogStack.at(-1);
+  $('shell').inert = !!top;
+  for (const id of ['modal', 'update-popup', 'update-all-popup', 'shortcut-dialog']) {
+    const popup = $(id); popup.inert = popup !== top;
+    popup.style.zIndex = String(100 + Math.max(0, dialogStack.indexOf(popup)));
+  }
+  if (show) {
+    queueMicrotask(() => {
+      if (dialogStack.at(-1) === dialog && (!dialog.contains(document.activeElement) || !canFocus(document.activeElement))) focusDialog(dialog, changed ? initialFocus?.() : null);
+    });
+  } else if (changed) {
+    const opener = dialogOpeners.get(dialog); dialogOpeners.delete(dialog);
+    if (wasTop) {
+      if (canFocus(opener)) opener.focus({ preventScroll: true });
+      else if (top) focusDialog(top);
+      else [$('settings-button'), $('settings-fallback'), $('search-toggle'), $('new-tab')].find(canFocus)?.focus({ preventScroll: true });
+    }
+  }
+}
+document.addEventListener('focusin', event => {
+  const dialog = dialogStack.at(-1);
+  if (dialog && !dialog.contains(event.target)) focusDialog(dialog);
+});
+document.addEventListener('keydown', event => {
+  const dialog = dialogStack.at(-1);
+  if (!dialog) return;
+  if (event.key === 'Escape') {
+    event.preventDefault(); event.stopImmediatePropagation();
+    if (dialog.id === 'shortcut-dialog') closeShortcuts();
+    else if (dialog.id === 'modal') {
+      if (settingsSession && $('settings-search')?.value) clearSettingsSearch();
+      else closeModal();
+    }
+    else if (dialog.id === 'update-all-popup') closeUpdateAll();
+    else if (!state?.update?.busy) $('update-later').click();
+  } else if (event.key === 'Tab') {
+    const items = dialogItems(dialog), index = items.indexOf(document.activeElement);
+    if (!items.length || index < 0 || (event.shiftKey ? index === 0 : index === items.length - 1)) {
+      event.preventDefault(); focusDialog(dialog, event.shiftKey ? items.at(-1) : items[0]);
+    }
+  }
+}, true);
+function openModal(title) {
+  settingsSession = null; $('modal').classList.remove('settings-modal');
+  modalOpen = true; $('modal-title').textContent = title; $('modal-body').replaceChildren();
+  setDialogVisible($('modal'), true, () => $('modal-close')); scheduleLayout();
+}
+function closeModal() { settingsSession = null; modalOpen = false; setDialogVisible($('modal'), false); scheduleLayout(); }
+function refreshShortcutAvailability() {
+  const available = state?.tabs.some(tab => tab.id === state.activeTabId && tab.host !== 'vps' && tab.host !== 'remote');
+  // Update badges in place: state broadcasts must not rebuild the reading
+  // region, steal its focus, reset a query, or move it back to the first row.
+  for (const item of $('shortcut-results').querySelectorAll('[data-requires="local-tab"]')) {
+    const note = item.querySelector('.shortcut-unavailable');
+    if (available) note?.remove();
+    else if (!note) item.querySelector('.shortcut-copy').append(element('span', 'shortcut-unavailable', 'No local tab open'));
+  }
+}
+function renderShortcuts() {
+  const query = $('shortcut-search').value.trim().toLocaleLowerCase(), results = $('shortcut-results');
+  const keyNames = { '⌘': 'Command', '⇧': 'Shift', '⇥': 'Tab', '↩': 'Return', '⌦': 'Forward Delete', '↑': 'Up arrow', '↓': 'Down arrow', '←': 'Left arrow', '→': 'Right arrow' };
+  results.replaceChildren(); let count = 0;
+  for (const group of api.shortcuts.groups) {
+    const matches = group.rows.filter(row => window.WorkspaceShortcuts.matchesShortcut(row, query));
+    if (!matches.length) continue;
+    count += matches.length;
+    const section = element('section', 'shortcut-section'), heading = element('h3', '', group.title);
+    section.append(heading, element('p', 'shortcut-scope', group.note));
+    const list = element('div', 'shortcut-list'); list.setAttribute('role', 'list'); list.setAttribute('aria-label', group.title);
+    for (const row of matches) {
+      const item = element('div', 'shortcut-row'), copy = element('div', 'shortcut-copy'), keys = element('div', 'shortcut-keys');
+      item.dataset.shortcut = row.id; item.setAttribute('role', 'listitem');
+      if (row.requires) item.dataset.requires = row.requires;
+      copy.append(element('div', 'shortcut-name', row.title), element('p', 'shortcut-description', row.description));
+      row.keys.forEach((chord, index) => {
+        if (index) keys.append(element('span', 'shortcut-or', 'or'));
+        const combo = element('span', 'shortcut-chord');
+        for (const key of chord) {
+          const cap = element('kbd', '', key); cap.setAttribute('aria-label', keyNames[key] || key); combo.append(cap);
+        }
+        keys.append(combo);
+      });
+      item.append(copy, keys); list.append(item);
+    }
+    section.append(list); results.append(section);
+  }
+  $('shortcut-clear').classList.toggle('hidden', !query);
+  $('shortcut-status').textContent = count ? `${count} shortcut${count === 1 ? '' : 's'}${query ? ' found' : ''}.` : 'No shortcuts found.';
+  if (!count) {
+    const empty = element('div', 'shortcut-empty');
+    empty.append(element('h3', '', 'No shortcuts found'), element('p', '', 'Try an action, a key, or a place like “agent” or “tab”.'));
+    results.append(empty);
+  }
+  refreshShortcutAvailability();
+}
+function showShortcuts() {
+  if (!$('shortcut-dialog').classList.contains('hidden')) { $('shortcut-search').focus(); return; }
+  $('shortcut-platform').textContent = api.shortcuts.platform;
+  $('shortcut-search').value = ''; renderShortcuts();
+  setDialogVisible($('shortcut-dialog'), true, () => $('shortcut-search')); scheduleLayout();
+}
+function closeShortcuts() { setDialogVisible($('shortcut-dialog'), false); scheduleLayout(); }
 function renderSettingsBots() {
   const list = $('settings-bots');
-  if (!modalOpen || !list) return;
+  if (!modalOpen || !list || list.querySelector('[aria-busy="true"]')) return;
   const bots = orderedBots(true);
   const signature = JSON.stringify(bots.map(bot => [bot.id, bot.name, bot.username, !state.hidden.includes(bot.id)]));
   if (list.dataset.signature === signature) return;
@@ -812,11 +1136,11 @@ function renderSettingsBots() {
     const copy = element('span', 'visibility-copy');
     copy.append(element('span', 'visibility-name', bot.name));
     if (bot.username) copy.append(element('span', 'visibility-username', `@${bot.username}`));
+    const status = element('span', 'settings-action-status settings-inline-status'); status.setAttribute('role', 'status'); copy.append(status);
     toggle.onchange = async () => {
-      const visible = toggle.checked; toggle.disabled = true;
-      const result = await command('set-bot-visibility', { id: bot.id, visible });
-      if (result) render(result);
-      else { toggle.checked = !state.hidden.includes(bot.id); toggle.disabled = false; }
+      const visible = toggle.checked;
+      const reply = await runSettingsAction(toggle, status, () => api.command('set-bot-visibility', { id: bot.id, visible }));
+      if (!reply.ok) toggle.checked = !state.hidden.includes(bot.id);
     };
     row.append(copy, toggle); list.append(row);
     if (focusedId === bot.id) toggle.focus({ preventScroll: true });
@@ -858,59 +1182,85 @@ function renderSitePermissions() {
   const list = $('site-permissions'); if (!modalOpen || !list) return;
   const signature = JSON.stringify(state.sitePermissions);
   if (list.dataset.signature === signature) return;
+  const focused = document.activeElement?.getAttribute('aria-label');
   list.dataset.signature = signature; list.replaceChildren();
   for (const [scope, sites] of Object.entries(state.sitePermissions || {})) {
     for (const [origin, permissions] of Object.entries(sites)) for (const [permission, decision] of Object.entries(permissions)) {
       if (!permissionLabels[permission]) continue;
       const row = element('div', 'setting-row'), copy = element('span', 'visibility-copy');
       copy.append(element('span', 'visibility-name', `${permissionLabels[permission]} · ${scope === 'telegram' ? 'Telegram' : 'Browser'}`), element('span', 'visibility-username', origin));
-      const choice = permissionChoice(decision, value => command('set-site-permission', {scope, origin, permission, decision:value}));
+      const status = element('span', 'settings-action-status settings-inline-status'); status.setAttribute('role', 'status'); copy.append(status);
+      const choice = permissionChoice(decision, async value => { const reply = await runSettingsAction(choice, status, () => api.command('set-site-permission', { scope, origin, permission, decision:value })); if (!reply.ok) choice.value = decision; });
       choice.setAttribute('aria-label', `${origin} ${permissionLabels[permission]}`); row.append(copy, choice); list.append(row);
     }
   }
+  if (focused) { const target = [...list.querySelectorAll('[aria-label]')].find(node => node.getAttribute('aria-label') === focused); if (canFocus(target)) target.focus({ preventScroll: true }); }
 }
 function showSitePermissionSettings(body) {
-  body.append(element('h3', '', 'Site permissions'), element('p', 'settings-note', 'General area only blocks precise location and allows approximate requests where supported. Sites can also estimate your area from your IP. Camera, microphone, notifications and clipboard access ask once per site and remember your choice. Only the tab you control can request access.'));
+  const details = element('details', 'settings-details'); details.append(element('summary', '', 'How site permissions work'), element('p', 'settings-note', 'General area only blocks precise location and allows approximate requests where supported. Sites can also estimate your area from your IP. Camera, microphone, notifications and clipboard access ask once per site and remember your choice. Only the tab you control can request access.')); body.append(details);
   const locationRow = element('div', 'setting-row'); locationRow.append(element('span', '', 'Location requests'));
   const location = element('select'); location.setAttribute('aria-label', 'Default location access');
   for (const [value, label] of [['approximate', 'General area only'], ['block', 'Block device location'], ['ask', 'Ask once for precise location']]) { const option = element('option', '', label); option.value = value; option.selected = state.locationDefault === value; location.append(option); }
-  location.onchange = () => command('settings', { locationDefault:location.value }); locationRow.append(location); body.append(locationRow);
+  locationRow.append(location); body.append(locationRow); const locationStatus = settingsStatus(body);
+  location.onchange = async () => { await runSettingsAction(location, locationStatus, () => api.command('settings', { locationDefault: location.value }), 'Saving…', 'Location access saved.'); location.value = state.locationDefault; };
   const field = element('div', 'field'), label = element('label', '', 'Add a site permission'), input = element('input');
   input.id = 'permission-origin'; label.htmlFor = input.id; input.placeholder = 'https://www.google.com';
   const permission = element('select'); permission.setAttribute('aria-label', 'Site permission type');
   for (const [value, label] of Object.entries(permissionLabels)) { const option = element('option', '', label); option.value = value; permission.append(option); }
   const decision = permissionChoice('block', () => {}); decision.setAttribute('aria-label', 'Site permission setting');
   const save = element('button', 'secondary-button', 'Save site permission');
-  save.onclick = async () => { const result = await command('set-site-permission', { origin:input.value.trim(), permission:permission.value, decision:decision.value }); if (result) { input.value = ''; toast('Site permission saved. Reload the site to apply it.'); } };
   field.append(label, input, permission, decision, save); body.append(field);
+  const saveStatus = settingsStatus(body);
+  save.onclick = async () => { const reply = await runSettingsAction(save, saveStatus, () => api.command('set-site-permission', { origin:input.value.trim(), permission:permission.value, decision:decision.value }), 'Saving site permission…', 'Site permission saved. Reload the site to apply it.'); if (reply.ok) input.value = ''; };
   const list = element('div'); list.id = 'site-permissions'; body.append(list); renderSitePermissions();
-  const reset = element('button', 'secondary-button', 'Reset browser permissions'); reset.onclick = () => command('reset-site-permissions'); body.append(reset, element('hr', 'section-divider'));
+  settingsAction(body, 'Reset browser permissions', 'reset-site-permissions', {}, { success: 'Browser permissions reset.' });
+  return () => { if (document.activeElement !== location) location.value = state.locationDefault; };
 }
-async function showCookieSettings(body) {
-  body.append(element('h3', '', 'Cookies and site data'), element('p', 'settings-note', 'Shared by all local browser tabs. Clearing a site signs you out of it.'));
+function showCookieSettings(body) {
   const list = element('div'); list.id = 'cookie-list';
+  const status = settingsStatus(body);
+  const retry = element('button', 'secondary-button', 'Refresh cookies'); retry.id = 'settings-refresh-cookies';
+  const replaceRows = rows => {
+    const replacingFocus = list.contains(document.activeElement);
+    list.replaceChildren(...rows);
+    if (replacingFocus && !body.closest('[hidden]')) retry.focus({ preventScroll: true });
+  };
   const refresh = async () => {
-    const items = await command('list-cookies');
-    list.replaceChildren(...(Array.isArray(items) && items.length ? items.map((item) => {
+    const reply = await runSettingsAction(retry, status, () => api.command('list-cookies'), 'Loading cookies…');
+    if (reply.stale || reply.busy) return;
+    const items = reply.result;
+    if (!reply.ok || !Array.isArray(items) || items.some(item => !item || typeof item.domain !== 'string' || !Number.isInteger(item.count) || item.count < 1)) {
+      if (reply.ok) { status.textContent = 'Cookies could not be read. Try Refresh cookies.'; status.classList.add('error'); }
+      replaceRows([element('p', 'settings-note', 'Current cookie data is unavailable. Refresh cookies to try again.')]); return;
+    }
+    replaceRows(items.length ? items.map((item) => {
       const row = element('div', 'setting-row');
       row.append(element('span', '', `${item.domain} · ${item.count} ${item.count === 1 ? 'cookie' : 'cookies'}`));
-      const clear = element('button', 'secondary-button', 'Clear'); clear.onclick = async () => { await command('clear-cookies', { domain: item.domain }); refresh(); };
+      const clear = element('button', 'secondary-button', 'Clear'); clear.setAttribute('aria-label', `Clear cookies for ${item.domain}`);
+      clear.onclick = async () => { const reply = await runSettingsAction(clear, status, () => api.command('clear-cookies', { domain: item.domain }), 'Clearing cookies…'); if (reply.ok) await refresh(); };
       row.append(clear); return row;
-    }) : [element('p', 'settings-note', 'No cookies stored.')]));
+    }) : [element('p', 'settings-note', 'No cookies stored.')]);
   };
-  const clearAll = element('button', 'secondary-button', 'Clear all cookies'); clearAll.onclick = async () => { await command('clear-cookies'); refresh(); };
-  body.append(list, clearAll, element('hr', 'section-divider'));
-  await refresh();
+  retry.onclick = refresh;
+  const clearAll = element('button', 'secondary-button', 'Clear all cookies'); clearAll.id = 'settings-clear-cookies';
+  clearAll.onclick = async () => { const reply = await runSettingsAction(clearAll, status, () => api.command('clear-cookies'), 'Clearing cookies…'); if (reply.ok) await refresh(); };
+  body.append(list, retry, clearAll); refresh();
 }
 function showMacPermissions(body) {
-  body.append(element('hr', 'section-divider'), element('h3', '', 'Permissions'), element('p', 'settings-note', 'Agents need these to read and operate other apps on this Mac. Turn on Alan’s Workspace (listed as alans-way-localapp) in each list.'));
+  body.append(element('p', 'settings-note', 'In System Settings, the app is listed as alans-way-localapp.'));
   const rows = [['accessibility', 'Accessibility'], ['screen', 'Screen Recording']].map(([pane, label]) => {
     const row = element('div', 'setting-row'), status = element('span', '', `${label}: checking…`), open = element('button', 'secondary-button', 'Open settings');
+    open.setAttribute('aria-label', `Open ${label} settings`);
     open.onclick = () => command('open-mac-privacy', { pane });
     row.append(status, open); body.append(row);
     return { pane, label, status };
   });
-  command('mac-permissions').then((result) => { if (result) for (const { pane, label, status } of rows) status.textContent = `${label}: ${result[pane] === true || result[pane] === 'granted' ? 'on' : 'off'}`; });
+  const retry = element('button', 'secondary-button', 'Refresh permission status'); body.append(retry); const message = settingsStatus(body);
+  const refresh = async () => {
+    const reply = await runSettingsAction(retry, message, () => api.command('mac-permissions'), 'Checking permission status…');
+    for (const { pane, label, status } of rows) status.textContent = `${label}: ${reply.ok && reply.result ? (reply.result[pane] === true || reply.result[pane] === 'granted' ? 'on' : 'off') : 'unavailable'}`;
+  };
+  retry.onclick = refresh; refresh();
 }
 const CHECK_GROUPS = [['computer', 'This computer'], ['connection', 'Connection'], ['server', 'Server']];
 const CHECK_MARKS = { ok: '✓', warn: '!', fail: '✗' };
@@ -970,106 +1320,554 @@ function appendServerSetup(container, beforeRun) {
       result.textContent = reply && typeof reply.ok === 'boolean'
         ? `${reply.ok ? '✓' : '✗'} ${reply.detail}${reply.note ? `\n\n${reply.note}` : ''}`
         : 'Setup did not return a report. Check the connection and retry.';
-    } finally { run.disabled = false; }
+    } catch (error) { result.textContent = error.message || 'Setup could not start. Check the connection and retry.'; }
+    finally { run.disabled = false; }
   };
   container.append(plan, run, result);
 }
+// A section owns its mounted controls and may return a refresh function. Search
+// uses this public copy only; field contents, URLs and credentials never enter it.
+let settingsSession = null;
+const SETTINGS_CATEGORIES = [
+  ['general', 'General'], ['bots', 'Bots & appearance'], ['browser', 'Browser'],
+  ['recordings', 'Recordings'], ['computer', 'Computer access'],
+  ['connections', 'Connections'], ['support', 'Updates & help'],
+];
+const SETTINGS_SECTIONS = [
+  { id: 'keyboard', category: 'general', title: 'Keyboard shortcuts', description: 'Find the keys for moving between agents, browser tabs and dialogs.', words: 'keyboard navigation keys guide shortcuts search', mount(body) { const button = element('button', 'secondary-button', 'Keyboard shortcuts'); button.id = 'settings-shortcuts'; button.onclick = showShortcuts; body.append(button); } },
+  { id: 'tab-behavior', category: 'general', title: 'Links and tab control', description: 'Choose how links from bot chats open and when bots can take back browser tabs.', words: 'automatic takeover auto open links control browser hand back', mount: mountTabBehavior },
+  { id: 'bot-appearance', category: 'bots', title: 'Bot appearance', description: 'Choose a marble avatar or import an image for your selected bot.', words: 'avatars image customize appearance eyes', mount(body) { const button = element('button', 'secondary-button', 'Customize bot avatars'); button.onclick = () => openSettingsDetail(() => showAvatarEditor()); body.append(button, element('p', 'settings-note', 'Eyes follow your mouse only while Telegram reports activity.')); } },
+  { id: 'primary-bot', category: 'bots', title: 'Primary bot', description: 'Pin one bot at the top of your sidebar. Without a preference, the overseer bot is used.', words: 'default primary pinned order sidebar', mount: mountPrimaryBot },
+  { id: 'bot-visibility', category: 'bots', title: 'Bot visibility', description: 'Choose which Telegram bots appear in your sidebar. Changes save immediately.', words: 'agents show hide hidden bots visibility sidebar telegram sync', mount: mountBotVisibility },
+  { id: 'extensions', category: 'browser', title: 'Browser extensions', description: 'Manage installed extensions, toolbar pins and password managers.', words: 'chrome web store add unpacked sign in passwords passkeys extension', mount(body) { const button = element('button', 'secondary-button', 'Manage browser extensions'); button.onclick = () => openSettingsDetail(showExtensions); body.append(button); } },
+  { id: 'site-permissions', category: 'browser', title: 'Site permissions', description: 'Manage location, camera, microphone, notifications and clipboard access for websites. These choices apply to browser sites, separately from computer permissions.', words: 'browser permission precise approximate general area privacy allow block reset', mount: showSitePermissionSettings },
+  { id: 'cookies', category: 'browser', title: 'Cookies and site data', description: 'Review cookies shared by local browser tabs. Clearing a site signs you out of it.', words: 'cookies site data storage clear delete logins privacy', mount: showCookieSettings },
+  { id: 'downloads', category: 'browser', title: 'Downloads', description: 'Open your downloads folder. Download progress and file actions are available beside the browser address bar.', words: 'downloads files folder save progress pause resume cancel', mount(body) { settingsAction(body, 'Open downloads folder', 'downloads-folder'); } },
+  { id: 'recordings', category: 'recordings', title: 'Task recordings', description: 'Teach a bot a task using the Record button on a browser tab you control. Share saved recordings with the bots you choose.', words: 'recordings record teach demonstration task skills share delete typed text', mount: mountTaskRecordings },
+  { id: 'computer-permissions', category: 'computer', title: 'Computer permissions', description: 'Allow agents to read and operate apps on this Mac. Accessibility and Screen Recording are managed in System Settings.', words: 'accessibility screen recording privacy permissions desktop apps', available: () => state.platform === 'darwin', mount: showMacPermissions },
+  { id: 'browser-connector', category: 'connections', title: 'This computer', description: 'Browser tabs and logins stay here.', words: 'browser connector local api pair connection token app data copy open details', mount: mountBrowserConnector },
+  { id: 'agent-setup', category: 'connections', title: 'Agent machine', description: 'Your existing Hermes machine.', words: 'agent setup remote connection cloud setup server hermes ssh address gateway tailscale wizard connect migrate manual command update prompt copy save addresses run bot', mount: mountAgentSetup },
+  { id: 'remote-desktop', category: 'connections', title: 'Remote desktop · Optional', description: 'Viewer only, separate from agent setup.', words: 'remote connection desktop preview vps vm novnc vnc tailscale watch macos linux viewer address save computer runs platform corner', mount: mountRemoteConnection },
+  { id: 'updates', category: 'support', title: 'Updates', description: 'Review version and update status for this app, Hermes and the agent plugin.', words: 'update status versions check refresh restart available errors hermes plugin', mount: mountSettingsUpdates },
+  { id: 'diagnostics', category: 'support', title: 'Diagnostics and help', description: 'Check this computer, your connection and the server. Copy a report or get help from the team.', words: 'diagnostics support help setup check troubleshoot error report discord', mount: mountSettingsDiagnostics },
+];
+function settingsSearchText(value) { return value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim(); }
+function availableSettingsSections() { return SETTINGS_SECTIONS.filter(section => !section.available || section.available()); }
+function refreshSettingsSections() {
+  if (!settingsSession) return;
+  for (const { refresh } of settingsSession.mounted.values()) refresh?.();
+}
+function clearSettingsSearch() { if (!$('settings-search')) return; $('settings-search').value = ''; filterSettingsSections(); $('settings-search').focus(); }
+function selectSettingsCategory(category) {
+  settingsSession.category = category; $('settings-search').value = ''; filterSettingsSections();
+}
+function filterSettingsSections() {
+  const session = settingsSession; if (!session) return;
+  const query = $('settings-search').value.trim();
+  const words = settingsSearchText(query).split(' ').filter(word => word && !['a', 'an', 'the', 'my', 'i', 'can', 'how', 'do', 'where', 'to', 'and'].includes(word));
+  const matches = availableSettingsSections().filter(section => query
+    ? words.every(word => settingsSearchText(`${section.title} ${section.description} ${section.words || ''} ${SETTINGS_CATEGORIES.find(([id]) => id === section.category)[1]}`).includes(word))
+    : section.category === session.category);
+  for (const button of $('settings-navigation').children) {
+    const selected = !query && button.dataset.category === session.category;
+    button.setAttribute('aria-selected', String(selected)); button.tabIndex = button.dataset.category === session.category ? 0 : -1;
+  }
+  const content = $('settings-content'); content.setAttribute('role', query ? 'region' : 'tabpanel');
+  if (query) { content.removeAttribute('aria-labelledby'); content.setAttribute('aria-label', 'Settings search results'); }
+  else { content.setAttribute('aria-labelledby', `settings-category-${session.category}`); content.removeAttribute('aria-label'); }
+  $('settings-content-title').textContent = query ? 'Search results' : SETTINGS_CATEGORIES.find(([id]) => id === session.category)[1];
+  $('settings-search-status').textContent = query ? `${matches.length} section${matches.length === 1 ? '' : 's'} found` : 'Search all settings';
+  $('settings-clear').hidden = !query;
+  for (const { node } of session.mounted.values()) node.hidden = true;
+  for (const section of matches) {
+    let mounted = session.mounted.get(section.id);
+    if (!mounted) {
+      const node = element('section', 'settings-section'); node.dataset.settingsSection = section.id;
+      const scope = element('p', 'settings-section-category', SETTINGS_CATEGORIES.find(([id]) => id === section.category)[1]);
+      const heading = element('h3', '', section.title); heading.id = `settings-section-${section.id}`; node.setAttribute('aria-labelledby', heading.id);
+      node.append(scope, heading, element('p', 'settings-section-description', section.description));
+      const body = element('div', 'settings-section-body'); node.append(body); content.append(node);
+      mounted = { node, scope, refresh: section.mount(body) }; session.mounted.set(section.id, mounted);
+    }
+    mounted.node.hidden = false; mounted.scope.hidden = !query; content.append(mounted.node);
+  }
+  $('settings-empty').hidden = matches.length > 0;
+  $('settings-empty-query').textContent = query ? `No settings match “${query}”.` : 'No settings are available in this category.';
+  content.scrollTop = 0; refreshSettingsSections();
+}
 function showSettings() {
-  openModal('Workspace settings');
-  const body = $('modal-body'), field = element('div', 'field');
-  const extensions = element('button', 'secondary-button', 'Manage browser extensions'); extensions.onclick = showExtensions;
-  body.append(extensions, element('hr', 'section-divider'));
-  body.append(element('h3', '', 'Telegram bots'));
-  body.append(element('p', 'settings-note', 'Choose which bots appear in your sidebar. Changes save immediately. Drag visible bots in the sidebar to sort them.'));
-  const bots = element('div', 'settings-bots'); bots.id = 'settings-bots';
-  body.append(bots); renderSettingsBots();
-  body.append(element('p', 'settings-note', 'Hiding a bot only changes this app. Its Telegram chat, messages and Hermes agent stay available.'), element('hr', 'section-divider'));
-  const avatars = element('button', 'secondary-button', 'Customize bot avatars');
-  avatars.onclick = () => showAvatarEditor(); body.append(avatars);
-  body.append(element('p', 'settings-note', 'Pick a marble avatar or import your own. Eyes follow your mouse only while Telegram reports activity.'), element('hr', 'section-divider'));
-  body.append(element('h3', '', 'Recordings'), element('p', 'settings-note', 'Teach a bot a task: on a tab you control, press ● in the browser toolbar, do the task once, then Stop and save. A recording is a list of clicks, typed fields and pages, never video. Passwords, card numbers, one-time codes and hidden fields are never saved; other typed text is kept only if you tick Keep typed text. Each bot sees only the recordings shared with it, and can turn one into a skill. Up to 20 recordings.'));
-  const recordingsList = element('div'); recordingsList.id = 'recordings-list'; body.append(recordingsList, element('hr', 'section-divider')); renderRecordings();
-  showSitePermissionSettings(body);
-  showCookieSettings(body);
-  const label = element('label', '', 'Remote desktop connection'); label.htmlFor = 'remote-url';
-  const input = element('input'); input.id = 'remote-url'; input.placeholder = 'https://your-server/vnc.html or wss://…'; input.value = state.remoteUrl;
-  field.append(label, input, element('p', '', 'Paste your existing noVNC viewer URL, from your VPS, or from scripts/mac-vm-preview.sh for a Mac VM. Connect through Tailscale when the machine is private. The small preview starts in watch mode.'));
-  const save = element('button', 'primary-button', 'Save connection'); save.onclick = async () => { const result = await command('settings', { remoteUrl: input.value.trim() }); if (result) { closeModal(); toast('Remote connection saved.'); } };
-  body.append(field, save);
-  const remoteOs = element('div', 'setting-row'); remoteOs.append(element('span', '', 'Remote computer runs'));
-  const remoteOsToggle = element('button', 'secondary-button', state.remotePlatform === 'mac' ? 'macOS' : 'Linux');
-  remoteOsToggle.onclick = async () => { const next = state.remotePlatform === 'mac' ? 'linux' : 'mac'; await command('settings', { remotePlatform: next }); state.remotePlatform = next; remoteOsToggle.textContent = next === 'mac' ? 'macOS' : 'Linux'; };
-  remoteOs.append(remoteOsToggle); body.append(remoteOs, element('hr', 'section-divider'));
-  const row = element('div', 'setting-row'); row.append(element('span', '', 'Remote desktop preview in the corner'));
-  const toggle = element('button', 'secondary-button', state.preview ? 'Hide preview' : 'Show preview'); toggle.onclick = async () => { await command('settings', { preview: !state.preview }); toggle.textContent = state.preview ? 'Hide preview' : 'Show preview'; }; row.append(toggle); body.append(row);
-  if (state.platform === 'darwin') showMacPermissions(body);
-  body.append(element('hr', 'section-divider'), element('h3', '', 'Browser connector'));
-  body.append(element('p', 'settings-note', state.api.ready ? `Ready at ${state.api.url}. Your add-on can pair with this local connection to operate assigned tabs.` : state.api.error || 'Starting…'));
-  const copy = element('button', 'secondary-button', 'Copy connection'); copy.onclick = async () => { await command('copy-connection'); toast('Connection URL and private token copied. Share only with your own agent connector.'); };
-  const folder = element('button', 'secondary-button', 'Open app data'); folder.onclick = () => command('show-data'); body.append(copy, folder);
-  body.append(element('h3', '', 'Agent setup'));
-  const checklist = element('div', 'checklist');
-  const checks = [
-    [state.telegramStatus === 'connected', 'Signed in to Telegram'],
-    [state.bots.length > 0, state.bots.length ? `${state.bots.length} bot${state.bots.length === 1 ? '' : 's'} discovered` : 'No bots discovered yet'],
-    [!!(state.vpsBrowser?.sshHost), `${remoteName()} SSH address saved`],
-    [!!state.macSshHost, 'This computer’s SSH address saved'],
-    [state.api.ready, 'Browser connector ready'],
-  ];
-  for (const [done, label] of checks) checklist.append(element('p', `check-item${done ? ' done' : ''}`, `${done ? '✓' : '○'} ${label}`));
-  body.append(checklist);
-  if (state.vpsBrowserError) body.append(element('p', 'settings-note', state.vpsBrowserError));
-  body.append(element('p', 'settings-note', `Connect your Hermes agents (on a VPS or VM) to this computer. Fill in both SSH addresses, run the setup on the agent machine, then test the agent path.`));
-  const vpsField = element('div', 'field'), vpsLabel = element('label', '', 'Agent machine SSH address (where your Hermes gateway runs)'); vpsLabel.htmlFor = 'vps-ssh-host';
-  const vpsInput = element('input'); vpsInput.id = 'vps-ssh-host'; vpsInput.placeholder = 'you@your-vps or you@vm'; vpsInput.value = state.vpsBrowser?.sshHost || ''; vpsInput.autocomplete = 'off';
-  vpsField.append(vpsLabel, vpsInput);
-  const sshField = element('div', 'field'), sshLabel = element('label', '', 'This computer’s SSH address (as the agent machine reaches it)'); sshLabel.htmlFor = 'mac-ssh-host';
-  const sshInput = element('input'); sshInput.id = 'mac-ssh-host'; sshInput.placeholder = state.platform === 'win32' ? 'you@mypc or mypc.tailnet-name' : 'you@mymac or mymac.tailnet-name'; sshInput.value = state.macSshHost || ''; sshInput.autocomplete = 'off';
-  sshField.append(sshLabel, sshInput);
-  const sshSave = element('button', 'secondary-button', 'Save addresses'); sshSave.onclick = async () => { if (await command('settings', { macSshHost: sshInput.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vpsInput.value.trim() } })) toast('SSH addresses saved.'); };
-  const agentSetup = element('button', 'secondary-button', 'Copy setup command'); agentSetup.onclick = async () => { const ok = await command('agent-setup', { botId: state.selectedBotId }); if (ok !== false) toast('Bootstrap command copied. Paste it in a terminal on the agent machine.'); };
-  const agentPrompt = element('button', 'secondary-button', 'Copy setup prompt'); agentPrompt.onclick = async () => { const ok = await command('agent-prompt', { botId: state.selectedBotId }); if (ok !== false) toast('Setup prompt copied. Paste it to a Hermes agent that has a terminal on the agent machine.'); };
-  const agentUpdate = element('button', 'secondary-button', 'Copy agent update prompt'); agentUpdate.onclick = async () => { if (typeof await command('agent-prompt', { botId: state.selectedBotId, kind: 'update' }) === 'string') toast('Update prompt copied. Paste it to your Hermes bot.'); };
-  const wizard = element('button', 'secondary-button', 'Run setup wizard'); wizard.onclick = async () => { closeModal(); await command('onboarding-open'); };
-  const agentTest = element('button', 'secondary-button', 'Test agent path'); const agentResult = element('p', 'settings-note', '');
-  agentTest.onclick = async () => { agentTest.disabled = true; agentResult.textContent = `Checking ${remoteName()} → computer ssh path…`; const result = await command('test-agent-path'); agentTest.disabled = false; agentResult.textContent = result && typeof result === 'object' ? `${result.ok ? '✓' : '✗'} ${result.detail}` : '✗ Path check failed.'; };
-  const checkSetup = element('button', 'secondary-button', 'Check setup');
-  const checkResults = element('div', 'checklist hidden');
-  checkSetup.onclick = () => runSetupCheck(checkSetup, checkResults);
-  const report = element('button', 'secondary-button', 'Copy report'); report.onclick = copyReport;
-  const support = element('button', 'link-button', 'Get help on Discord ↗'); support.onclick = () => command('open-support');
-  const hermesUpdate = element('button', 'secondary-button', 'Update Hermes');
-  const hermesResult = element('p', 'settings-note', '');
-  hermesUpdate.onclick = async () => {
-    hermesUpdate.disabled = true;
-    hermesResult.textContent = `Running hermes update on the ${remoteName()}; this can take a few minutes. Your bot will message you when it finishes.`;
-    const result = await command('hermes-update');
-    hermesUpdate.disabled = false;
-    hermesResult.textContent = result && typeof result === 'object' ? `${result.ok ? '✓' : '✗'} ${result.detail}` : '✗ The update did not run.';
+  if (settingsSession && modalOpen) { $('settings-search').focus(); return; }
+  openModal('Workspace settings'); $('modal').classList.add('settings-modal');
+  const categories = SETTINGS_CATEGORIES.filter(([category]) => availableSettingsSections().some(section => section.category === category));
+  settingsSession = { category: categories[0][0], mounted: new Map() };
+  const body = $('modal-body'), searchRow = element('div', 'settings-search-row'), wrap = element('div', 'settings-search-wrap');
+  const icon = element('span', '', '⌕'); icon.setAttribute('aria-hidden', 'true');
+  const search = element('input'); search.id = 'settings-search'; search.type = 'search'; search.placeholder = 'Search settings…'; search.autocomplete = 'off'; search.spellcheck = false;
+  search.setAttribute('aria-label', 'Search settings'); search.setAttribute('aria-controls', 'settings-content'); search.setAttribute('aria-describedby', 'settings-search-status'); search.oninput = filterSettingsSections;
+  const clear = element('button', 'icon-button', '×'); clear.id = 'settings-clear'; clear.setAttribute('aria-label', 'Clear settings search'); clear.onclick = clearSettingsSearch; clear.hidden = true;
+  wrap.append(icon, search, clear); const status = element('p', 'settings-search-status'); status.id = 'settings-search-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+  searchRow.append(wrap, status);
+  const layout = element('div', 'settings-layout'), navigation = element('nav', 'settings-navigation'); navigation.id = 'settings-navigation';
+  navigation.setAttribute('role', 'tablist'); navigation.setAttribute('aria-label', 'Settings categories'); navigation.setAttribute('aria-orientation', 'vertical');
+  for (const [id, label] of categories) {
+    const button = element('button', 'settings-category', label); button.id = `settings-category-${id}`; button.dataset.category = id;
+    button.setAttribute('role', 'tab'); button.setAttribute('aria-controls', 'settings-content'); button.onclick = () => selectSettingsCategory(id);
+    button.onkeydown = event => { const target = moveNavigationFocus(event, [...navigation.children], 'vertical'); if (target) selectSettingsCategory(target.dataset.category); };
+    navigation.append(button);
+  }
+  const content = element('div', 'settings-content'); content.id = 'settings-content'; content.tabIndex = 0;
+  const title = element('h2', 'settings-content-title'); title.id = 'settings-content-title';
+  const empty = element('div', 'settings-empty'); empty.id = 'settings-empty'; empty.hidden = true;
+  const emptyQuery = element('h3'); emptyQuery.id = 'settings-empty-query';
+  const reset = element('button', 'secondary-button', 'Clear search'); reset.id = 'settings-reset'; reset.onclick = clearSettingsSearch;
+  empty.append(emptyQuery, element('p', '', 'Try “cookies”, “remote connection” or “Accessibility”.'), reset);
+  content.append(title, empty); layout.append(navigation, content); body.append(searchRow, layout);
+  content.addEventListener('focusin', event => {
+    if (event.target === content) return;
+    // Keep the entire outline inside this sole scroller, in either direction.
+    const box = event.target.getBoundingClientRect(), pane = content.getBoundingClientRect(), margin = 8;
+    if (box.top < pane.top + margin) content.scrollTop -= pane.top + margin - box.top;
+    else if (box.bottom > pane.bottom - margin) content.scrollTop += box.bottom - pane.bottom + margin;
+  });
+  filterSettingsSections(); search.focus({ preventScroll: true });
+}
+function settingsStatus(body) {
+  const status = element('p', 'settings-action-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); body.append(status); return status;
+}
+const pendingSettingsActions = new WeakSet();
+async function runSettingsAction(button, status, task, busy = 'Saving…', success = '') {
+  if (pendingSettingsActions.has(status)) return { ok: false, busy: true };
+  const session = settingsSession;
+  const current = () => settingsSession === session && button.isConnected && status.isConnected;
+  const initiatedHere = document.activeElement === button;
+  // Native disabled controls blur and disappear from the Tab order. Keep the
+  // action reachable while guarding both activation and native value changes.
+  const block = event => {
+    if (event.type === 'keydown' && (event.key === 'Tab' || event.key === 'Escape' || event.ctrlKey || event.metaKey || (button.tagName !== 'SELECT' && !['Enter', ' '].includes(event.key)))) return;
+    event.preventDefault(); event.stopImmediatePropagation();
   };
-  body.append(vpsField, sshField, element('div', 'setting-row'), sshSave, agentSetup, agentPrompt, agentUpdate, agentTest, wizard, agentResult, checkSetup, report, support, checkResults, hermesUpdate, hermesResult);
-  appendServerSetup(body, () => command('settings', { macSshHost: sshInput.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vpsInput.value.trim() } }));
-  const primaryField = element('div', 'field'), primaryLabel = element('label', '', 'Primary bot'); primaryLabel.htmlFor = 'primary-bot';
-  const primarySelect = element('select'); primarySelect.id = 'primary-bot';
-  const none = element('option', '', 'None (defaults to the overseer bot)'); none.value = ''; primarySelect.append(none);
-  for (const bot of state.bots) { const option = element('option', '', `${bot.name}${bot.username ? ` @${bot.username}` : ''}`); option.value = bot.id; primarySelect.append(option); }
-  primarySelect.value = state.primaryBotPref || '';
-  primarySelect.onchange = async () => { await command('settings', { primaryBotId: primarySelect.value }); toast(primarySelect.value ? 'Primary bot pinned at the top of the sidebar.' : 'Primary bot cleared.'); };
-  primaryField.append(primaryLabel, primarySelect); body.append(primaryField);
-  const linkRow = element('div', 'setting-row'); linkRow.append(element('span', '', 'Open links sent in bot chats as tabs'));
-  const linkToggle = element('button', 'secondary-button', state.autoOpenLinks ? 'On' : 'Off');
-  linkToggle.onclick = async () => { const next = !state.autoOpenLinks; await command('settings', { autoOpenLinks: next }); state.autoOpenLinks = next; linkToggle.textContent = next ? 'On' : 'Off'; };
-  linkRow.append(linkToggle); body.append(linkRow);
-  const takeoverRow = element('div', 'setting-row'); takeoverRow.append(element('span', '', 'Let bots take over tabs automatically'));
-  const takeoverToggle = element('button', 'secondary-button', state.autoTakeover ? 'On' : 'Off');
-  takeoverToggle.onclick = async () => { const next = !state.autoTakeover; await command('settings', { autoTakeover: next }); state.autoTakeover = next; takeoverToggle.textContent = next ? 'On' : 'Off'; };
-  takeoverRow.append(takeoverToggle); body.append(takeoverRow);
-  body.append(element('p', 'settings-note', `A link sent by you or a bot opens a local tab assigned to that bot, so both of you can see it. If this computer is unreachable, the bot opens its own copy on the ${remoteName()} desktop instead.`));
-  body.append(element('p', 'settings-note', 'The setup installs the Alan’s Way Plugin on your gateway host and wires this computer’s browser connector for the selected bot. Run once per bot.'));
-  body.append(element('p', 'settings-note', `When bots take over automatically, a bot takes back a local tab you took over the next time it acts, once you pause for 3 seconds; Take back returns it to you and keeps bots off it for a minute. A tab a bot handed you, or one you are recording, stays yours. Turned off, taking over a local tab blocks new agent actions on that tab. ${remoteName()} control currently uses your existing shared desktop; it does not pause your Hermes bots.`));
-  body.append(element('hr', 'section-divider'));
-  const sync = element('button', 'secondary-button', 'Sync Telegram bots'); sync.onclick = () => { command('sync-telegram'); toast('Reading Telegram’s bot chat list…'); };
-  body.append(sync, element('p', 'settings-note', 'Bot discovery reads Telegram Web A’s local cache. Newly opened bot chats appear after Telegram saves them. Your Telegram session and browser logins stay on this computer.'));
+  const events = ['click', 'pointerdown', 'keydown'];
+  pendingSettingsActions.add(status);
+  for (const type of events) button.addEventListener(type, block, true);
+  button.setAttribute('aria-disabled', 'true'); button.setAttribute('aria-busy', 'true');
+  status.textContent = busy; status.classList.remove('error');
+  if (initiatedHere) revealSettingsFeedback(button, status);
+  try {
+    const result = await task();
+    if (result === false) throw new Error('The action did not finish. Try again.');
+    if (result?.bots && result?.api) render(result);
+    if (!current()) return { ok: false, stale: true };
+    status.textContent = success; return { ok: true, result };
+  } catch (error) {
+    if (!current()) return { ok: false, stale: true };
+    status.classList.add('error'); status.textContent = String(error?.message || error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+    return { ok: false };
+  } finally {
+    pendingSettingsActions.delete(status);
+    for (const type of events) button.removeEventListener(type, block, true);
+    button.removeAttribute('aria-disabled'); button.removeAttribute('aria-busy');
+    if (current() && document.activeElement === button) revealSettingsFeedback(button, status);
+    if (current() && button.closest('#settings-bots')) renderSettingsBots();
+  }
+}
+function revealSettingsFeedback(button, status) {
+  const pane = $('settings-content');
+  if (!pane?.contains(button) || !status.isConnected || button.closest('[hidden]')) return;
+  const a = button.getBoundingClientRect(), b = status.getBoundingClientRect(), p = pane.getBoundingClientRect();
+  const top = Math.min(a.top, b.height ? b.top : a.top), bottom = Math.max(a.bottom, b.bottom);
+  if (bottom - top > p.height - 16) return;
+  if (bottom > p.bottom - 8) pane.scrollTop += bottom - p.bottom + 8;
+  else if (top < p.top + 8) pane.scrollTop -= p.top + 8 - top;
+}
+function settingsAction(body, label, name, value = {}, options = {}) {
+  const button = element('button', options.primary ? 'primary-button' : 'secondary-button', label);
+  body.append(button); const status = settingsStatus(body);
+  button.onclick = async () => {
+    const reply = await runSettingsAction(button, status, () => api.command(name, typeof value === 'function' ? value() : value), options.busy || 'Working…', options.success || '');
+    if (reply.ok) options.done?.(reply.result);
+  };
+  return button;
+}
+function settingsField(body, id, labelText, value, placeholder) {
+  const field = element('div', 'field'), label = element('label', '', labelText), input = element('input');
+  label.htmlFor = id; input.id = id; input.value = value || ''; input.placeholder = placeholder || ''; input.autocomplete = 'off'; input.spellcheck = false;
+  input.oninput = () => { input.dataset.dirty = 'true'; };
+  field.append(label, input); body.append(field); return input;
+}
+// Drafts live only in this renderer session and belong to a bot + saved target.
+// A submitted save may move that target; unrelated host changes get a new draft.
+const settingsDrafts = new Map();
+const settingsSwitchWrites = new Map();
+function pruneSettingsDrafts() {
+  for (const [key, draft] of settingsDrafts) {
+    for (const button of draft.mounts || []) if (!button.isConnected || !settingsSession) draft.mounts.delete(button);
+    if (!draft.pending && !draft.dirty.some(Boolean) && !draft.mounts?.size) settingsDrafts.delete(key);
+  }
+}
+let settingsWriteSequence = 0;
+const SETTINGS_SAVE_WAIT_MS = 5000;
+function settingsWriteContext() {
+  return { bot: state.selectedBotId || '', host: state.hostLabel, platform: state.remotePlatform || 'linux', mac: state.macSshHost || '', vps: state.vpsBrowser?.sshHost || '' };
+}
+function settingsWriteFeedback(owner, busy) {
+  if (!owner.pending) return owner.notice || '';
+  if (owner.pending.checking) return 'Checking saved state… Your later edits are kept.';
+  return owner.pending.stalled ? `${owner.pending.issue || 'This save is taking longer than expected.'} Your later edits are kept. Check saved state before saving again.`
+    : `${busy} You can close Settings; this save stays pending.`;
+}
+function refreshSettingsWriteFeedback(button, status) {
+  refreshSettingsSections();
+  pruneSettingsDrafts();
+  if (document.activeElement === button) revealSettingsFeedback(button, status);
+}
+function startSettingsWrite(owner, slot, payload, settled, button, status) {
+  if (owner.pending) return;
+  const context = ['addresses', 'viewer'].includes(slot) ? settingsWriteContext() : null;
+  const base = { ...state.settingsFieldRevisions };
+  const op = { token: { client: performance.timeOrigin, sequence: ++settingsWriteSequence, slot }, stalled: false, checking: false };
+  owner.pending = op; owner.notice = ''; owner.error = false;
+  const receive = result => {
+    if (owner.pending !== op) return;
+    const receipt = result?.settingsWrite;
+    if (!receipt || receipt.status === 'unknown') {
+      op.stalled = true; op.issue = receipt?.detail || 'The save reply could not be confirmed.'; return;
+    }
+    clearTimeout(op.timer); owner.pending = null;
+    settled(receipt, result.state);
+    if (result.state?.bots && result.state?.api) render(result.state);
+  };
+  op.receive = receive;
+  op.timer = setTimeout(() => { if (owner.pending === op) { op.stalled = true; refreshSettingsWriteFeedback(button, status); } }, SETTINGS_SAVE_WAIT_MS);
+  refreshSettingsWriteFeedback(button, status);
+  // No timeout replays the write. A late response can settle only its own owner.
+  Promise.resolve().then(() => api.command('settings', { ...payload, _settingsWrite: op.token, _settingsBase: base,
+    ...(context ? { _settingsContext: context } : {}) }))
+    .then(receive, () => { if (owner.pending === op) { op.stalled = true; op.issue = 'The save reply could not be confirmed.'; } })
+    .finally(() => refreshSettingsWriteFeedback(button, status));
+}
+function settingsWriteRecovery(body, id, owner, button, status) {
+  const check = element('button', 'secondary-button', 'Check saved state'); check.id = id; check.hidden = true; body.append(check);
+  check.onclick = () => {
+    const currentOwner = owner(), op = currentOwner.pending;
+    if (!op?.stalled || op.checking) return;
+    op.checking = true;
+    const attempt = op.checkAttempt = (op.checkAttempt || 0) + 1;
+    const current = () => currentOwner.pending === op && op.checkAttempt === attempt;
+    const timer = setTimeout(() => { if (current()) { op.checking = false; refreshSettingsWriteFeedback(check, status); } }, SETTINGS_SAVE_WAIT_MS);
+    refreshSettingsWriteFeedback(check, status);
+    Promise.resolve().then(() => api.command('settings-write-status', op.token)).then(result => {
+      if (current()) op.receive(result);
+    }, () => { if (current()) op.issue = 'Saved state could not be checked.'; }).finally(() => {
+      clearTimeout(timer);
+      if (current()) op.checking = false;
+      refreshSettingsWriteFeedback(check, status);
+    });
+  };
+  return () => {
+    const pending = owner().pending;
+    const focused = document.activeElement === check;
+    check.hidden = !pending?.stalled;
+    check.setAttribute('aria-disabled', String(!!pending?.checking));
+    if (pending?.checking) check.setAttribute('aria-busy', 'true'); else check.removeAttribute('aria-busy');
+    if (focused && check.hidden && button.isConnected && !button.closest('[hidden]')) { button.focus({ preventScroll: true }); revealSettingsFeedback(button, status); }
+  };
+}
+function settingsSaveFields(body, label, fields, value, options = {}) {
+  const keyFor = values => JSON.stringify([options.draftScope(), state.remotePlatform || 'linux', ...values]);
+  const move = (draft, key) => {
+    const existing = settingsDrafts.get(key);
+    // An already retained draft at this target owns its own later edits.
+    if (existing && existing !== draft && (existing.pending || existing.dirty.some(Boolean))) return;
+    for (const [old, item] of settingsDrafts) if (item === draft) settingsDrafts.delete(old);
+    settingsDrafts.set(key, draft);
+  };
+  let draft;
+  const button = element('button', options.primary ? 'primary-button' : 'secondary-button', label);
+  body.append(button); const status = settingsStatus(body);
+  const discard = element('button', 'secondary-button', 'Discard unsaved changes'); body.append(discard);
+  discard.id = fields[0].id === 'remote-url' ? 'settings-discard-viewer' : 'settings-discard-addresses';
+  const recovery = settingsWriteRecovery(body, fields[0].id + '-check-save', () => draft, button, status);
+  body.append(element('p', 'settings-note', 'Unsaved changes stay in this app session when Settings closes. Save or discard them here before quitting the app.'));
+  const refresh = () => {
+    const saved = options.saved(), key = keyFor(saved), previous = draft;
+    draft = settingsDrafts.get(key);
+    if (!draft) {
+      // Main can broadcast a completed write before its held IPC reply arrives.
+      // Only that exact submitted target can carry the draft into the new scope.
+      draft = [...settingsDrafts.values()].find(item => item.pending?.key === key);
+      if (draft) move(draft, key);
+      else { draft = { values: saved, revisions: fields.map(() => 0), dirty: fields.map(() => false), notice: '' }; settingsDrafts.set(key, draft); }
+    }
+    if (previous !== draft) previous?.mounts?.delete(button);
+    (draft.mounts ||= new Set()).add(button);
+    pruneSettingsDrafts();
+    fields.forEach((field, index) => {
+      const next = draft.dirty[index] ? draft.values[index] : saved[index];
+      if (field.value !== next) field.value = next;
+      if (draft.dirty[index]) field.dataset.dirty = 'true'; else delete field.dataset.dirty;
+    });
+    const dirty = draft.dirty.some(Boolean);
+    button.setAttribute('aria-disabled', String(!!draft.pending));
+    if (draft.pending) button.setAttribute('aria-busy', 'true'); else button.removeAttribute('aria-busy');
+    discard.setAttribute('aria-disabled', String(!!draft.pending || !dirty));
+    status.classList.toggle('error', !!draft.error);
+    status.textContent = settingsWriteFeedback(draft, options.busy || 'Saving…') || (dirty ? 'Unsaved changes · Kept in this app session.' : '');
+    recovery();
+  };
+  fields.forEach((field, index) => field.addEventListener('input', () => {
+    draft.values[index] = field.value; draft.revisions[index]++; draft.dirty[index] = true;
+    draft.notice = ''; draft.error = false; refresh();
+  }));
+  discard.onclick = () => {
+    refresh(); if (draft.pending || !draft.dirty.some(Boolean)) return;
+    draft.values = options.saved(); draft.dirty.fill(false);
+    draft.revisions = draft.revisions.map(revision => revision + 1);
+    draft.notice = 'Unsaved changes discarded. Saved addresses are unchanged.'; draft.error = false;
+    refresh(); fields[0].dispatchEvent(new Event('change'));
+  };
+  button.onclick = () => {
+    refresh(); if (draft.pending) return;
+    const submittedDraft = draft, revisions = [...draft.revisions], payload = value();
+    const values = fields.map(field => field.value.trim());
+    const targetKey = keyFor(values);
+    startSettingsWrite(submittedDraft, fields[0].id === 'remote-url' ? 'viewer' : 'addresses', payload, (receipt, result) => {
+      if (receipt.status === 'saved') {
+        if (!Number.isSafeInteger(result?.uiStateRevision) || result.uiStateRevision >= latestUiStateRevision
+          // Unrelated state updates can precede this reply. A matching saved
+          // target still confirms this write without accepting an older UI state.
+          || JSON.stringify(options.saved()) === JSON.stringify(values)) {
+          move(submittedDraft, targetKey);
+          // A save owns only each field revision it submitted. Even another
+          // input event with the same value remains an unsaved, newer edit.
+          fields.forEach((_field, index) => { if (revisions[index] === submittedDraft.revisions[index]) submittedDraft.dirty[index] = false; });
+          submittedDraft.notice = (options.success || 'Saved values confirmed.') + (submittedDraft.dirty.some(Boolean) ? ' Newer edits are not saved.' : '');
+        } else submittedDraft.notice = 'Earlier save reply received. Review the current saved addresses before saving again.';
+      } else {
+        submittedDraft.error = true;
+        submittedDraft.notice = receipt.status === 'failed' ? 'Settings could not be saved. Your draft is kept; review it and choose Save again.' : receipt.status === 'not-applied' ? 'Saved state checked. That save was not applied. Your draft is kept; save again when ready.'
+          : 'Saved state checked. The submitted values are not the current saved addresses. Your draft is kept; review and save again.';
+        if (receipt.detail) submittedDraft.notice += ' ' + receipt.detail;
+      }
+    }, button, status);
+    // Main may announce persistence before returning the reply. Only the exact
+    // submitted context/target may carry this draft across that announcement.
+    submittedDraft.pending.key = targetKey; submittedDraft.pending.values = values;
+    refresh();
+  };
+  button.refreshDraft = refresh; refresh(); return button;
+}
+function settingsToggle(body, id, label, key) {
+  const row = element('div', 'setting-row'), copy = element('span', '', label), button = element('button', 'secondary-button'); button.id = id;
+  button.setAttribute('role', 'switch'); button.setAttribute('aria-label', label); row.append(copy, button); body.append(row);
+  if (!settingsSwitchWrites.has(key)) settingsSwitchWrites.set(key, { notice: '' });
+  const owner = settingsSwitchWrites.get(key), status = settingsStatus(body);
+  const recovery = settingsWriteRecovery(body, id + '-check-save', () => owner, button, status);
+  const refresh = () => {
+    button.textContent = state[key] ? 'On' : 'Off'; button.setAttribute('aria-checked', String(!!state[key]));
+    button.setAttribute('aria-disabled', String(!!owner.pending));
+    if (owner.pending) button.setAttribute('aria-busy', 'true'); else button.removeAttribute('aria-busy');
+    status.textContent = settingsWriteFeedback(owner, 'Saving…'); status.classList.toggle('error', !!owner.error); recovery();
+  };
+  button.onclick = () => {
+    if (owner.pending) return;
+    const desired = !state[key];
+    startSettingsWrite(owner, key, { [key]: desired }, (receipt, result) => {
+      owner.error = receipt.status !== 'saved';
+      const older = result?.uiStateRevision < latestUiStateRevision && desired !== state[key];
+      owner.notice = receipt.status === 'failed' ? 'Settings could not be saved. The saved value is still shown. Choose the switch again to save your change.' : receipt.status === 'saved' ? older ? 'Earlier save confirmed. The current saved value is shown.' : 'Saved.' : receipt.status === 'not-applied'
+        ? 'Saved state checked. That change was not applied. Choose the switch again to save it.'
+        : 'Saved state checked. The current value is shown. Choose the switch again to change it.';
+      if (receipt.detail) owner.notice += ' ' + receipt.detail;
+    }, button, status);
+  };
+  refresh(); return refresh;
+}
+function openSettingsDetail(open) {
+  const category = settingsSession?.category;
+  open();
+  if (!category || !modalOpen || settingsSession) return;
+  const back = element('button', 'settings-detail-back', '← Back to settings');
+  back.onclick = () => { showSettings(); selectSettingsCategory(category); $('settings-category-' + category).focus(); };
+  $('modal-body').prepend(back);
+}
+function mountTabBehavior(body) {
+  const links = settingsToggle(body, 'settings-auto-links', 'Open links sent in bot chats as tabs', 'autoOpenLinks');
+  const takeover = settingsToggle(body, 'settings-auto-takeover', 'Let bots take over tabs automatically', 'autoTakeover');
+  const detail = element('details', 'settings-details'); detail.append(element('summary', '', 'How tab control works'));
+  detail.append(element('p', 'settings-note', 'Links open local tabs assigned to the bot, so both of you can see them. If this computer is unreachable, the bot opens its own copy on the remote desktop.'));
+  detail.append(element('p', 'settings-note', 'Automatic takeover lets a bot take back a tab after you pause for 3 seconds. Take back keeps bots off it for a minute. A tab handed to you, or one you are recording, stays yours. With automatic takeover off, taking control blocks new agent actions on that tab. Remote desktop control uses the existing shared desktop and does not pause your bots.'));
+  body.append(detail); return () => { links(); takeover(); };
+}
+function mountPrimaryBot(body) {
+  const field = element('div', 'field'), label = element('label', '', 'Primary bot'), select = element('select'); select.id = 'primary-bot'; label.htmlFor = select.id; field.append(label, select); body.append(field);
+  const status = settingsStatus(body); let signature;
+  const refresh = () => {
+    const next = JSON.stringify(state.bots.map(bot => [bot.id, bot.name, bot.username]));
+    if (signature !== next) {
+      signature = next; select.replaceChildren(); const none = element('option', '', 'None (use the overseer bot)'); none.value = ''; select.append(none);
+      for (const bot of state.bots) { const option = element('option', '', `${bot.name}${bot.username ? ` @${bot.username}` : ''}`); option.value = bot.id; select.append(option); }
+    }
+    select.value = state.primaryBotPref || '';
+  };
+  select.onchange = async () => { await runSettingsAction(select, status, () => api.command('settings', { primaryBotId: select.value }), 'Saving…', 'Primary bot saved.'); refresh(); };
+  refresh(); return refresh;
+}
+function mountBotVisibility(body) {
+  body.append(element('p', 'settings-note', 'Hiding a bot changes only this app. Its Telegram chat, messages and Hermes agent stay available. Drag visible bots in the sidebar to sort them.'));
+  const list = element('div', 'settings-bots'); list.id = 'settings-bots'; body.append(list); renderSettingsBots();
+  const sync = settingsAction(body, 'Sync Telegram bots', 'sync-telegram', {}, { busy: 'Reading Telegram’s bot chat list…', success: 'Bot list refreshed.' }); sync.id = 'settings-sync-bots';
+  body.append(element('p', 'settings-note', 'Newly opened bot chats appear after Telegram saves them. Your Telegram session and browser logins stay on this computer.'));
+}
+function mountTaskRecordings(body) {
+  const detail = element('details', 'settings-details'); detail.append(element('summary', '', 'What a recording saves'));
+  detail.append(element('p', 'settings-note', 'Recordings contain clicks, typed fields and pages, never video. Passwords, card numbers, one-time codes and hidden fields are never saved. Other typed text is kept only if you choose Keep typed text. Each bot sees only recordings shared with it and can turn one into a skill. Up to 20 recordings.')); body.append(detail);
+  const list = element('div'); list.id = 'recordings-list'; body.append(list); renderRecordings();
+}
+function settingsConnectionDetails(body, id, label, search) {
+  body.closest('.settings-section').classList.add('settings-connection-section');
+  const details = element('details', 'settings-details connection-details'); details.id = id;
+  details.append(element('summary', '', label));
+  const content = element('div'); details.append(content); body.append(details);
+  return { content, details, reveal() { if (search.test($('settings-search')?.value || '')) details.open = true; } };
+}
+function mountRemoteConnection(body) {
+  const connection = element('p', 'connection-state'); body.append(connection);
+  const advanced = settingsConnectionDetails(body, 'settings-remote-details', 'Viewer address and preview', /remote connection|viewer|novnc|vnc|preview|remote desktop|remote computer|platform|linux|macos/i);
+  const input = settingsField(advanced.content, 'remote-url', 'Viewer address', state.remoteUrl, 'https://your-server/vnc.html or wss://…');
+  advanced.content.append(element('p', 'settings-note', 'Use an existing noVNC viewer address. A private machine may need Tailscale. Saving an address does not verify a connection; preview starts in watch mode.'));
+  const save = settingsSaveFields(advanced.content, 'Save connection', [input], () => ({ remoteUrl: input.value.trim() }), { primary: true, busy: 'Saving connection…', success: 'Viewer address saved. Connection status is shown above.', draftScope: () => ['viewer', state.selectedBotId || '', state.hostLabel, state.vpsBrowser?.sshHost || '', state.macSshHost || ''], saved: () => [state.remoteUrl || ''] });
+  const row = element('div', 'setting-row'), label = element('span', '', 'Remote computer runs'), os = element('select'); os.id = 'settings-remote-platform'; os.setAttribute('aria-label', 'Remote computer runs');
+  for (const [value, name] of [['linux', 'Linux'], ['mac', 'macOS']]) { const option = element('option', '', name); option.value = value; os.append(option); }
+  row.append(label, os); advanced.content.append(row); const status = settingsStatus(advanced.content);
+  os.onchange = async () => { await runSettingsAction(os, status, () => api.command('settings', { remotePlatform: os.value }), 'Saving…', 'Saved.'); os.value = state.remotePlatform || 'linux'; };
+  const preview = settingsToggle(advanced.content, 'settings-preview', 'Remote desktop preview in the corner', 'preview');
+  return () => {
+    advanced.reveal(); save.refreshDraft(); os.value = state.remotePlatform || 'linux'; preview();
+    connection.textContent = state.remoteUrl ? `Viewer address saved · ${state.remoteStatus || 'not connected'}.` : 'No viewer address saved.';
+  };
+}
+function mountBrowserConnector(body) {
+  const status = element('p', 'connection-state'); body.append(status);
+  const advanced = settingsConnectionDetails(body, 'settings-connector-details', 'Connector details', /connector|api|token|app data|pair|copy connection/i);
+  advanced.content.append(element('p', 'settings-note', 'Local availability does not confirm remote Hermes access. Share the private connection only with your own agent connector.'));
+  settingsAction(advanced.content, 'Copy connection', 'copy-connection', {}, { success: 'Local URL and private token copied. Paste into your own agent connector’s connection configuration.' });
+  settingsAction(advanced.content, 'Open app data', 'show-data');
+  return () => { advanced.reveal(); status.textContent = state.api.ready ? 'Local browser connector available · Agent access not checked.' : state.api.error || 'Local browser connector is starting…'; };
+}
+function mountAgentSetup(body) {
+  const review = element('div', 'setting-row connection-bot'), label = element('label', '', 'Bot to set up'), botSelect = element('select');
+  botSelect.id = 'settings-setup-bot'; label.htmlFor = botSelect.id; review.append(label, botSelect); body.append(review);
+  let reviewedBotId = state.selectedBotId || state.bots[0]?.id || '', selectedSource = state.selectedBotId, botSignature, scope, epoch = 0, checked = false;
+  const bot = () => state.bots.find(item => item.id === reviewedBotId);
+  const botName = () => bot()?.username ? `@${bot().username}` : bot()?.name || 'your bot';
+  const summary = element('p', 'connection-state'); summary.id = 'settings-agent-summary'; body.append(summary);
+  const actions = element('div', 'connection-actions'); body.append(actions);
+  const prompt = element('button', 'primary-button', 'Copy setup prompt'); prompt.id = 'settings-copy-setup-prompt'; actions.append(prompt);
+  const promptStatus = settingsStatus(actions);
+  const destination = element('p', 'settings-note connection-destination'), destinationText = element('span'); body.append(destination);
+  const continuation = element('button', 'link-button', 'Enter addresses from the agent’s reply'); continuation.id = 'settings-enter-addresses'; destination.append(destinationText, ' ', continuation);
+  continuation.onclick = () => { advanced.details.open = true; local.focus(); };
+  const advanced = settingsConnectionDetails(body, 'settings-agent-details', 'Addresses and manual setup', /ssh|address|manual|command|update|wizard|cloud|gateway|tailscale/i);
+  advanced.content.append(element('p', 'settings-note', 'Follow the agent’s restart instructions. Its final report should include installed revisions, checks, warnings and unfinished steps. Enter its verified server and computer SSH addresses, Save addresses, then Check saved path (SSH only). Follow its browser task to verify setup.'));
+  const vps = settingsField(advanced.content, 'vps-ssh-host', 'Agent machine SSH address', state.vpsBrowser?.sshHost, 'you@your-agent-machine');
+  const local = settingsField(advanced.content, 'mac-ssh-host', 'This computer’s SSH address', state.macSshHost, 'you@your-computer');
+  advanced.content.append(element('p', 'settings-note', 'Use this computer’s address as reached from the agent machine. These addresses are shared by your bots; setup instructions are specific to the bot selected above.'));
+  const save = settingsSaveFields(advanced.content, 'Save addresses', [local, vps], () => ({ macSshHost: local.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } }), { success: 'Addresses saved. Check the saved path next.', draftScope: () => ['agent', reviewedBotId, state.hostLabel], saved: () => [state.macSshHost || '', state.vpsBrowser?.sshHost || ''] }); save.id = 'settings-save-addresses';
+  appendServerSetup(advanced.content, () => {
+    if (local.value.trim() !== (state.macSshHost || '') || vps.value.trim() !== (state.vpsBrowser?.sshHost || ''))
+      throw Error('Save address changes before running setup.');
+    return true;
+  });
+  const test = element('button', 'primary-button', 'Check saved path'); test.id = 'settings-test-path'; actions.prepend(test); const result = settingsStatus(actions); result.classList.add('connection-check-status');
+  const invalidate = () => {
+    epoch++; checked = false;
+    if (result.textContent) { result.classList.remove('error'); result.textContent = 'Addresses or bot changed. Check the saved path again.'; }
+  };
+  for (const input of [local, vps]) for (const event of ['input', 'change']) input.addEventListener(event, () => { invalidate(); refresh(); });
+  const copy = async (button, status, name, kind) => {
+    const id = reviewedBotId, target = botName(), started = epoch;
+    const reply = await runSettingsAction(button, status, () => {
+      if (!bot()) throw Error('Choose a bot to prepare its setup instructions.');
+      if (local.value.trim() !== (state.macSshHost || '') || vps.value.trim() !== (state.vpsBrowser?.sshHost || '')) throw Error('Save address changes before copying instructions.');
+      return api.command(name, { botId: id, ...(kind ? { kind } : {}) });
+    }, 'Preparing instructions…');
+    if (reply.ok) status.textContent = started !== epoch || id !== reviewedBotId
+      ? `Instructions copied for ${target}. Bot or addresses changed; copy again for the current selection.`
+      : name === 'agent-setup' ? `Review notes copied for ${target}. Read them before guided setup; use Copy setup prompt in that bot’s Hermes chat to begin.`
+        : `${kind === 'update' ? 'Update' : 'Setup'} prompt copied for ${target}. Paste in that bot’s Hermes chat.`;
+    if (reply.ok && name === 'agent-setup') revealSettingsFeedback(button, status);
+  };
+  prompt.onclick = () => copy(prompt, promptStatus, 'agent-prompt');
+  const manual = element('div'); advanced.content.append(manual);
+  manual.append(element('p', 'settings-note', 'Review setup before running commands. These notes list this bot, saved addresses, required revision pins and human handoffs. Begin with Copy setup prompt above; the installed plugin skill supplies the procedure. Copying runs no setup or restart.'));
+  const setup = element('button', 'secondary-button', 'Copy setup review notes'); setup.id = 'settings-copy-setup-notes'; manual.append(setup); const setupStatus = settingsStatus(manual); setup.onclick = () => copy(setup, setupStatus, 'agent-setup');
+  const update = element('button', 'secondary-button', 'Copy agent update prompt'); manual.append(update); const updateStatus = settingsStatus(manual); update.onclick = () => copy(update, updateStatus, 'agent-prompt', 'update');
+  settingsAction(advanced.content, 'Run setup wizard', 'onboarding-open', {}, { done: closeModal });
+  const cloud = element('p', 'settings-note'), error = element('p', 'settings-note error'); advanced.content.append(cloud, error);
+  test.onclick = async () => {
+    if (local.value.trim() !== (state.macSshHost || '') || vps.value.trim() !== (state.vpsBrowser?.sshHost || '')) {
+      result.classList.add('error'); result.textContent = 'Save address changes before checking this path.'; advanced.details.open = true; save.focus(); return;
+    }
+    const started = epoch;
+    checked = false; refresh();
+    const reply = await runSettingsAction(test, result, () => api.command('test-agent-path'), 'Checking the saved SSH path to this computer…');
+    if (reply.stale || !result.isConnected) return;
+    if (started !== epoch) { result.classList.remove('error'); result.textContent = 'Addresses or bot changed. Check the saved path again.'; return; }
+    if (reply.ok) {
+      checked = reply.result?.ok === true;
+      result.textContent = checked ? 'Saved SSH path passed. Hermes authentication and bot setup were not checked.' : reply.result?.detail || 'The path check returned no result. Try again.';
+      result.classList.toggle('error', !checked); refresh();
+    }
+  };
+  botSelect.onchange = () => { reviewedBotId = botSelect.value; invalidate(); refresh(); };
+  const refresh = () => {
+    advanced.reveal();
+    if (selectedSource !== state.selectedBotId) { selectedSource = state.selectedBotId; reviewedBotId = selectedSource || ''; }
+    const signature = JSON.stringify(state.bots.map(item => [item.id, item.name, item.username]));
+    if (signature !== botSignature) {
+      botSignature = signature; botSelect.replaceChildren();
+      if (!state.bots.length) { const option = element('option', '', 'Open a Telegram bot first'); option.value = ''; botSelect.append(option); }
+      for (const item of state.bots) { const option = element('option', '', item.username ? `${item.name} · @${item.username}` : item.name); option.value = item.id; botSelect.append(option); }
+    }
+    if (!bot()) reviewedBotId = state.bots[0]?.id || ''; botSelect.value = reviewedBotId; botSelect.disabled = !state.bots.length;
+    const next = JSON.stringify([reviewedBotId, bot()?.name, bot()?.username, state.vpsBrowser?.sshHost || '', state.macSshHost || '']);
+    if (scope && scope !== next) invalidate(); scope = next;
+    save.refreshDraft();
+    const addresses = !!state.vpsBrowser?.sshHost && !!state.macSshHost;
+    test.hidden = !addresses; prompt.disabled = setup.disabled = !bot();
+    test.className = 'primary-button'; prompt.className = addresses ? 'secondary-button' : 'primary-button';
+    summary.textContent = checked ? 'SSH path checked · Hermes setup unverified.' : addresses ? 'Addresses saved · Path not checked.' : state.vpsBrowser?.sshHost ? 'Agent address saved · Add this computer’s address to check the path.' : 'No agent address saved · Start with your bot.';
+    if (state.vpsBrowser?.sshHost) summary.append(element('span', 'connection-target', `${state.vpsBrowser.sshHost}${state.macSshHost ? ` → ${state.macSshHost}` : ''}`));
+    destinationText.textContent = !bot() ? 'Open a bot in Telegram, then return here to prepare its instructions.'
+      : `Paste in ${botName()}’s Hermes chat: follow openalan.com/agent-prompt to set up the Alan’s Way Plugin, preserving Hermes. Expect approval steps and a report: checks, warnings and unfinished work.`;
+    continuation.hidden = !bot();
+    error.textContent = state.vpsBrowserError || '';
+    cloud.textContent = state.cloud?.error || (state.cloud?.step === 'done' ? 'Cloud wizard completed. Use the path check to check the saved SSH route.' : state.cloud?.step ? 'Cloud setup is in progress. Continue in the setup wizard.' : 'The setup wizard also supports cloud setup and your own server.');
+  };
+  return refresh;
+}
+function mountSettingsUpdates(body) {
+  const summary = element('p', 'settings-update-summary'), versions = element('p', 'settings-note settings-version-detail'), error = element('p', 'settings-note');
+  summary.id = 'settings-update-summary'; summary.setAttribute('role', 'status'); body.append(summary, versions, error);
+  settingsAction(body, 'Check for updates', 'versions-refresh', {}, { busy: 'Requesting update status…', success: 'Update check requested. New version information appears here when it is available.' });
+  const review = element('button', 'secondary-button', 'Review updates'); review.id = 'settings-review-updates'; review.onclick = () => $('update-all').click(); body.append(review);
+  const hermes = element('button', 'secondary-button', 'Update Hermes'); body.append(hermes); const status = settingsStatus(body);
+  hermes.onclick = async () => { const reply = await runSettingsAction(hermes, status, () => api.command('hermes-update'), 'Updating Hermes on the agent machine. This can take a few minutes.'); if (reply.ok) { status.textContent = reply.result?.detail || 'The update returned no result.'; status.classList.toggle('error', !reply.result?.ok); } };
+  return () => {
+    const v = state.versions || {}, u = state.update || {}, run = state.updateAll || {};
+    summary.textContent = run.busy || u.busy ? 'Updating…' : u.ready ? 'Restart is ready to finish the app update.' : v.hasUpdate || u.available ? 'Updates are available.' : v.tooltip ? 'No available updates reported.' : 'Version status has not been checked yet.';
+    versions.textContent = v.tooltip || v.text || `Alan’s Workspace ${state.version || ''}`;
+    error.textContent = u.error || run.summary || ''; error.classList.toggle('error', !!u.error);
+  };
+}
+function mountSettingsDiagnostics(body) {
+  const check = element('button', 'secondary-button', 'Check setup'); body.append(check); const status = settingsStatus(body), findings = element('div', 'checklist hidden'); body.append(findings);
+  check.onclick = async () => {
+    findings.classList.add('hidden'); const reply = await runSettingsAction(check, status, () => api.command('setup-check'), 'Checking this computer, the connection and the server. This can take up to two minutes.');
+    if (reply.ok && Array.isArray(reply.result)) { findings.classList.remove('hidden'); renderFindings(findings, reply.result); }
+  };
+  settingsAction(body, 'Copy report', 'copy-report', {}, { success: 'Report copied. Paste it in Discord so the team can take a look.' });
+  settingsAction(body, 'Get help on Discord ↗', 'open-support');
 }
 function showAvatarEditor(botId = state.selectedBotId || orderedBots()[0]?.id) {
   if (!botId) return toast('Open a Telegram bot before customizing its avatar.');
@@ -1096,11 +1894,36 @@ function showAddBot() {
   };
   $('modal-body').append(form); input.focus();
 }
-$('search-toggle').onclick = () => { $('bot-search').classList.toggle('hidden'); if (!$('bot-search').classList.contains('hidden')) $('bot-search').focus(); else { $('bot-search').value = ''; renderBots(); } };
+function clearBotSearch() { $('bot-search').value = ''; renderBots(); $('bot-search').focus(); }
+function toggleBotSearch(show) {
+  $('bot-search-controls').classList.toggle('hidden', !show); $('bot-search').classList.toggle('hidden', !show);
+  $('search-toggle').setAttribute('aria-expanded', String(show));
+  if (show) $('bot-search').focus();
+  else { $('bot-search').value = ''; renderBots(); $('search-toggle').focus(); }
+}
+$('search-toggle').onclick = () => toggleBotSearch($('bot-search').classList.contains('hidden'));
+$('bot-search-clear').onclick = clearBotSearch;
+$('bot-search-reset').onclick = clearBotSearch;
+function handleBotSearchKey(event) {
+  if (event.key === 'Escape') {
+    event.preventDefault(); event.stopPropagation();
+    if ($('bot-search').value) clearBotSearch(); else toggleBotSearch(false);
+  } else if (event.key === 'ArrowDown' && event.target === $('bot-search')) {
+    const first = $('bot-list').querySelector('.bot-open');
+    if (first) { event.preventDefault(); first.focus(); }
+  }
+}
+$('bot-search-controls').onkeydown = handleBotSearchKey;
+$('bot-search-empty').onkeydown = handleBotSearchKey;
 $('bot-search').oninput = renderBots;
 $('add-bot').onclick = showAddBot;
 $('settings-button').onclick = showSettings;
 $('settings-fallback').onclick = showSettings;
+$('shortcuts-button').onclick = showShortcuts;
+$('shortcut-close').onclick = closeShortcuts;
+$('shortcut-search').oninput = renderShortcuts;
+$('shortcut-clear').onclick = () => { $('shortcut-search').value = ''; renderShortcuts(); $('shortcut-search').focus(); };
+$('shortcut-dialog').onclick = event => { if (event.target === $('shortcut-dialog')) closeShortcuts(); };
 $('browser-collapse').onclick = () => { if (focusMode) { focusMode = false; $('shell').classList.remove('focus-workspace'); } command('settings', { showBrowser: state?.showBrowser === false }); };
 $('bots-toggle').onclick = () => command('settings', { showBots: state.showBots === false });
 $('sort-bots').onclick = (event) => {
@@ -1123,7 +1946,20 @@ $('sort-menu').onclick = (event) => {
 document.addEventListener('click', (event) => {
   if (!event.target.closest('#sort-menu') && !event.target.closest('#sort-bots')) { $('sort-menu').classList.add('hidden'); $('sort-bots').setAttribute('aria-expanded', 'false'); }
   if (!event.target.closest('#downloads-menu') && !event.target.closest('#downloads-button')) closeDownloads();
+  if (!event.target.closest('#tabs-panel') && !event.target.closest('#tabs-menu')) setTabsPanel(false);
+  if (!event.target.closest('#status-panel') && !event.target.closest('#status-more')) setStatusPanel(false);
 });
+const openStatusPanel = () => { setStatusPanel(true); $('status-panel').querySelector('.status-panel-row')?.focus({ preventScroll: true }); };
+$('status-more').onclick = (event) => { event.stopPropagation(); if ($('status-panel').classList.contains('hidden')) openStatusPanel(); else setStatusPanel(false); };
+for (const id of ['workspace-status', 'connection-status']) {
+  const el = $(id);
+  el.onclick = (event) => { event.stopPropagation(); openStatusPanel(); };
+  el.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); el.click(); } };
+}
+$('status-panel').onkeydown = (event) => {
+  if (event.key === 'Escape') { event.preventDefault(); setStatusPanel(false); (canFocus($('status-more')) ? $('status-more') : $('workspace-status')).focus({ preventScroll: true }); return; }
+  moveNavigationFocus(event, [...$('status-panel').querySelectorAll('.status-panel-row')], 'vertical');
+};
 $('presence-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };
@@ -1140,12 +1976,38 @@ $('downloads-button').onclick = (event) => {
   $('downloads-button').setAttribute('aria-expanded', String(open));
   if (open) { delete menu.dataset.signature; renderDownloads(); }
 };
+$('tabs-menu').onclick = (event) => {
+  event.stopPropagation();
+  const open = $('tabs-panel').classList.contains('hidden');
+  setTabsPanel(open);
+  if (open) $('tabs-panel').querySelector('.tabs-panel-select')?.focus({ preventScroll: true });
+};
+$('tabs-menu').onkeydown = (event) => {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  event.preventDefault();
+  setTabsPanel(true);
+  const items = [...$('tabs-panel').querySelectorAll('.tabs-panel-select')];
+  (event.key === 'ArrowDown' ? items[0] : items.at(-1))?.focus({ preventScroll: true });
+};
+$('tabs-panel').onkeydown = (event) => {
+  if (event.key === 'Escape') { event.preventDefault(); setTabsPanel(false); $('tabs-menu').focus({ preventScroll: true }); return; }
+  moveNavigationFocus(event, [...$('tabs-panel').querySelectorAll('.tabs-panel-select')], 'vertical');
+};
 $('new-tab').onclick = async () => { await command('create-tab'); $('address').focus(); };
 function submitUrl(event, inputId) { event.preventDefault(); const url = $(inputId).value.trim(); if (!url) return; if (state.tabs.some((tab) => tab.id === state.activeTabId)) command('navigate', { id: state.activeTabId, url }); else command('create-tab', { url }); }
 $('address-form').onsubmit = (event) => submitUrl(event, 'address');
 $('home-search').onsubmit = (event) => submitUrl(event, 'home-address');
+$('home-agent').onclick = async () => {
+  const button = $('home-agent');
+  button.disabled = true;
+  try {
+    const created = await command('create-tab', { url: $('home-address').value.trim() || 'about:blank' });
+    if (created?.id) await command('control', { id: created.id, controller: 'agent' });
+  } finally { button.disabled = false; }
+};
 document.querySelectorAll('[data-url]').forEach((button) => { button.onclick = () => command('create-tab', { url: button.dataset.url }); });
 for (const action of ['back', 'forward', 'reload']) $(action).onclick = () => command('history', { id: state.activeTabId, action });
+$('browser-error-reload').onclick = () => command('history', { id: state.activeTabId, action: 'reload' });
 $('control-button').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: tab.controller === 'agent' ? 'human' : 'agent' }); };
 async function stopRecording(save) {
   stoppedRecordingAt = state.recording?.startedAt || 0;
@@ -1204,33 +2066,181 @@ $('update-all-go').onclick = () => {
   else command('update-all-restart');
 };
 $('update-all-popup').onclick = (event) => { if (event.target === $('update-all-popup')) closeUpdateAll(); };
-$('update-all-popup').addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); closeUpdateAll(); } });
 $('update-popup').onclick = (event) => { if (event.target === $('update-popup') && !state?.update?.busy) $('update-later').click(); };
-$('update-popup').addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') {
-    event.stopPropagation();
-    if (!state?.update?.busy) $('update-later').click();
-    return;
-  }
-  if (event.key !== 'Tab') return;
-  const items = [...$('update-popup').querySelectorAll('button:not(:disabled)')];
-  if (!items.length) return;
-  const first = items[0], last = items.at(-1);
-  if (event.shiftKey ? document.activeElement === first : document.activeElement === last) { (event.shiftKey ? last : first).focus(); event.preventDefault(); }
-});
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { if (modalOpen) closeModal(); else closeDownloads(); } });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { if (modalOpen) closeModal(); else if (!$('tabs-panel').classList.contains('hidden')) { setTabsPanel(false); $('tabs-menu').focus({ preventScroll: true }); } else if (!$('status-panel').classList.contains('hidden')) { setStatusPanel(false); (canFocus($('status-more')) ? $('status-more') : $('workspace-status')).focus({ preventScroll: true }); } else closeDownloads(); } });
 $('splitter').onpointerdown = (event) => {
-  const startX = event.clientX, startWidth = state.chatWidth; $('splitter').setPointerCapture(event.pointerId); $('splitter').classList.add('active');
+  const startX = event.clientX, startWidth = document.querySelector('.chat-pane').getBoundingClientRect().width; $('splitter').setPointerCapture(event.pointerId); $('splitter').classList.add('active');
   const sidebar = document.querySelector('.sidebar');
   const handleMove = (ev) => { const max = Math.min(680, innerWidth - sidebar.getBoundingClientRect().width - 355); const width = Math.max(320, Math.min(max, startWidth + ev.clientX - startX)); document.documentElement.style.setProperty('--chat-width', `${width}px`); scheduleLayout(); };
   const end = () => { $('splitter').classList.remove('active'); $('splitter').removeEventListener('pointermove', handleMove); $('splitter').removeEventListener('pointerup', end); command('settings', { chatWidth: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--chat-width')) }); };
   $('splitter').addEventListener('pointermove', handleMove); $('splitter').addEventListener('pointerup', end);
 };
+// ── Native Hermes chat: sidebar section, setup card, surface mount ─────────
+async function hermesCommand(name, value = {}) {
+  try { return await hermesApi.command(name, value); }
+  catch (error) { toast(window.HermesView.commandErrorMessage(error)); return null; }
+}
+function renderHermes() {
+  const h = state.hermes || { status: 'unconfigured', sessions: [] };
+  const list = $('hermes-list'), connect = $('hermes-connect');
+  $('hermes-new').classList.toggle('hidden', h.status !== 'ready');
+  // The Telegram row is the way back — always present while a Hermes target is
+  // showing, so a bot-less workspace is never stranded on the Hermes pane.
+  list.innerHTML = '';
+  if (state.chatTarget === 'hermes') {
+    const back = element('div', 'bot-row hermes-row');
+    const open = element('button', 'bot-open', '← Telegram');
+    open.onclick = () => command('show-telegram');
+    back.append(open);
+    list.append(back);
+  }
+  for (const session of h.sessions) {
+    const row = element('div', `bot-row hermes-row${session.selected ? ' selected' : ''}`);
+    const open = element('button', 'bot-open', session.title || session.id);
+    open.onclick = () => hermesCommand('select', { sessionId: session.id, sessionKey: session.key });
+    row.append(open);
+    list.append(row);
+  }
+  if (h.status === 'ready') {
+    if (!h.sessions.length) list.append(element('div', 'hermes-note', 'No live conversations.'));
+    if (h.storedSessions?.length) {
+      list.append(element('div', 'hermes-note', 'Saved conversations'));
+      for (const saved of h.storedSessions) {
+        const row = element('div', 'bot-row hermes-row');
+        const resume = element('button', 'bot-open', `Resume ${saved.title || saved.id}`);
+        const generation = h.generation;
+        resume.onclick = () => hermesCommand('resume-session', { storedSessionId: saved.id, generation });
+        row.append(resume); list.append(row);
+      }
+    } else if (!h.sessions.length && !h.storedSessionsError) {
+      list.append(element('div', 'hermes-note', 'No saved conversations.'));
+    }
+    if (h.storedSessionsError) list.append(element('div', 'hermes-note', h.storedSessionsError));
+  }
+  // Compact connection status in the sidebar; the full form lives in the pane.
+  connect.classList.remove('hidden');
+  connect.innerHTML = '';
+  const label = { unconfigured: 'No backend configured', disconnected: 'Not connected', connecting: 'Connecting…', needs_signin: 'Sign in required', needs_local_token: 'Session token required', ready: `Connected · ${h.target?.label || ''}`, error: 'Connection error' }[h.status] || h.status;
+  const row = element('button', 'hermes-connect-row');
+  row.append(element('span', `status-dot hermes-dot ${h.status === 'ready' ? 'on' : ''}`), element('span', 'hermes-connect-label', label));
+  row.title = h.target?.label ? `Hermes backend: ${h.target.label}` : 'Set up a Hermes backend';
+  row.onclick = () => command('show-hermes');
+  connect.append(row);
+  renderHermesSetup(h);
+}
+// The setup card owns the pane only when the backend genuinely needs input —
+// first configure, sign-in, session token — or no established conversation
+// exists to recover. A dropped socket with a selected session keeps the
+// conversation surface instead: its last-known transcript, draft, tombstone
+// and one recovery action stay in place; explicit setup stays reachable via
+// the view's Change backend affordance and resets itself the moment input is
+// required anyway or the pane loses the target. Connected state pushes must
+// not close an explicitly opened backend editor.
+let hermesSetupForced = false;
+function renderHermesSetup(h) {
+  const setup = $('hermes-setup'), convo = $('hermes-convo');
+  if (!setup) return;
+  const needsInput = h.status === 'unconfigured' || h.status === 'needs_signin' || h.status === 'needs_local_token';
+  if (needsInput || state.chatTarget !== 'hermes') hermesSetupForced = false;
+  const needsSetup = state.chatTarget === 'hermes'
+    && (hermesSetupForced || needsInput || (h.status !== 'ready' && !h.selected));
+  setup.classList.toggle('hidden', !needsSetup);
+  convo.classList.toggle('hidden', !!needsSetup);
+  const renderedKey = JSON.stringify([h.status, h.target?.url, h.target?.profile, hermesSetupForced]);
+  if (!needsSetup) return;
+  const updateError = () => {
+    const error = setup.querySelector('.hermes-setup-error');
+    if (!error) return;
+    error.textContent = h.error?.message ? window.HermesView.commandErrorMessage(h.error) : '';
+    error.classList.toggle('hidden', !error.textContent);
+  };
+  if (setup.dataset.rendered === renderedKey) { updateError(); return; }
+  setup.dataset.rendered = renderedKey;
+  setup.innerHTML = '';
+  const card = element('div', 'hermes-setup-card');
+  card.append(element('h2', '', 'Hermes backend'));
+  card.append(element('p', 'settings-note', h.target
+    ? `${h.target.label}${h.target.profile ? ` · profile ${h.target.profile}` : ''}`
+    : 'Point this app at an existing Hermes backend (hermes serve). Nothing is shared with Telegram or the remote browser.'));
+  const urlInput = element('input', 'settings-input hermes-field');
+  urlInput.placeholder = 'https://host:9119 or http://127.0.0.1:9119';
+  urlInput.value = h.target?.url || '';
+  urlInput.setAttribute('aria-label', 'Hermes backend URL');
+  const profileInput = element('input', 'settings-input hermes-field');
+  profileInput.placeholder = 'Profile (optional)';
+  profileInput.value = h.target?.profile || '';
+  profileInput.setAttribute('aria-label', 'Hermes profile');
+  card.append(urlInput, profileInput);
+  if (h.status === 'needs_local_token') {
+    const tok = element('input', 'settings-input hermes-field');
+    tok.type = 'password';
+    tok.placeholder = 'Per-launch session token';
+    tok.setAttribute('aria-label', 'Backend session token');
+    card.append(element('p', 'settings-note', 'This backend runs unauthenticated loopback mode. Enter its session token (set HERMES_DASHBOARD_SESSION_TOKEN when launching it), or start the backend with authentication.'));
+    card.append(tok);
+    card.append(setupButton('Connect', async () => {
+      const r = await hermesCommand('configure', { url: urlInput.value, profile: profileInput.value, localToken: tok.value });
+      if (r) await hermesCommand('connect');
+    }));
+  } else {
+    if (h.status === 'needs_signin') {
+      const user = element('input', 'settings-input hermes-field');
+      user.placeholder = 'Username';
+      user.setAttribute('aria-label', 'Username');
+      user.autocomplete = 'username';
+      const pass = element('input', 'settings-input hermes-field');
+      pass.type = 'password';
+      pass.placeholder = 'Password';
+      pass.setAttribute('aria-label', 'Password');
+      pass.autocomplete = 'current-password';
+      card.append(user, pass);
+      card.append(setupButton('Sign in and connect', async () => {
+        try {
+          // An unchanged target is already probed and needs credentials.
+          // Reconfiguring it would hide this form before sign-in settles.
+          const unchanged = urlInput.value === h.target?.url && profileInput.value === (h.target?.profile || '');
+          const r = unchanged || await hermesCommand('configure', { url: urlInput.value, profile: profileInput.value });
+          if (r) await hermesCommand('sign-in', { username: user.value, password: pass.value });
+        } finally { pass.value = ''; }
+      }));
+    } else {
+      card.append(setupButton('Save and connect', async () => {
+        const r = await hermesCommand('configure', { url: urlInput.value, profile: profileInput.value });
+        if (r) { hermesSetupForced = false; await hermesCommand('connect'); }
+      }));
+    }
+  }
+  const error = element('p', 'hermes-setup-error hidden');
+  error.setAttribute('role', 'status');
+  error.setAttribute('aria-live', 'polite');
+  card.append(error);
+  if (hermesSetupForced) {
+    const back = element('button', 'link-button hermes-setup-back', 'Back to conversation');
+    back.type = 'button';
+    back.onclick = () => { hermesSetupForced = false; render(state); };
+    card.append(back);
+  }
+  setup.append(card);
+  updateError();
+}
+function setupButton(text, onClick) {
+  const b = element('button', 'primary-button hermes-setup-go', text);
+  b.type = 'button';
+  b.onclick = async () => { b.disabled = true; try { await onClick(); } finally { b.disabled = false; } };
+  return b;
+}
+$('hermes-new').onclick = () => hermesCommand('new-session');
+if (window.HermesView && hermesApi) {
+  hermesView = window.HermesView.createHermesView({ api: hermesApi, root: $('hermes-convo'),
+    onShowSetup: () => { hermesSetupForced = true; render(state); } });
+}
 api.onState(render);
 api.onPointer?.(point => window.HermesAvatars.receivePointer(point));
 api.onFocusAddress(() => { $('address').focus(); $('address').select(); });
-api.onSettings?.(showSettings);
+api.onSettings?.(() => { if (!dialogStack.length) showSettings(); });
+api.onShortcuts?.(showShortcuts);
 api.onFocusWorkspace?.(() => { if (state?.showBrowser === false) return; focusMode = !focusMode; $('shell').classList.toggle('focus-workspace', focusMode); scheduleLayout(); });
 new ResizeObserver(scheduleLayout).observe($('shell'));
+new ResizeObserver(() => fitTabs()).observe($('tabs'));
 window.addEventListener('resize', () => { positionPreview(); scheduleLayout(); });
 api.getState().then(render).catch((error) => toast(error.message));

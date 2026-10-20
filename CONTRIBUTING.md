@@ -6,7 +6,7 @@ git clone https://github.com/capthvnsen/alans-way && cd alans-way
 
 ## Desktop app (`desktop/`)
 
-You need macOS on Apple Silicon and Node 20+ (CI uses 22).
+You need macOS on Apple Silicon and Node 24 (matching the Node major embedded in Electron 44).
 
 ```sh
 cd desktop && npm ci
@@ -14,7 +14,7 @@ npm test          # syntax checks + unit tests; what CI runs
 npm start         # launch the app from source
 ```
 
-The Electron integration tests (`npm run test:desktop`, `test:agent-input`, `test:permissions`, `test:extensions`, `test:newtab`) need a Mac with a display and use a temporary profile; run the ones that cover your change. `test:web-store` needs the network, and `test:cross-host` needs a real VPS (see `desktop/test/cross-host-electron.cjs`). CI does not run these, so say in your pull request which ones you ran.
+The macOS `desktop-electron` CI job runs the integration scripts listed in `.github/workflows/tests.yml` with disposable profiles and step deadlines. Additional workspace suites, their live requirements, and temporary evidence paths are documented in [desktop/README.md](desktop/README.md#build-and-test). `test:extensions` needs a display, `test:web-store` needs the network, and `test:cross-host` needs a real VPS (see `desktop/test/cross-host-electron.cjs`); report which you ran.
 
 ### Releasing the desktop app
 

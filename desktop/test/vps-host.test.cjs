@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
+const vm = require('node:vm');
 const { spawn } = require('node:child_process');
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -62,7 +63,7 @@ function wsParse(buffer) {
   }
   return { frames, rest: buffer.subarray(offset) };
 }
-function stubEvaluate(pages, sessionId, expression) {
+function stubEvaluate(pages, sessionId, expression, viewport) {
   const page = pages.get(sessionId) || { url: 'about:blank', title: 'Stub page' };
   // Like a page, a document numbers its control after the tab's seed and keeps that ref.
   const seed = Number((/R\.assign\(entries, (\d+),/.exec(expression) || [])[1] || 0);
@@ -82,7 +83,7 @@ function stubEvaluate(pages, sessionId, expression) {
     return { verification: expression.includes('needs-review.example') || page.url !== c.url ? 'review_required' : 'ready', restored: 0, skipped: 0 };
   }
   if (expression.includes('link[rel~=icon]')) return '';
-  if (expression.includes('innerWidth')) return { width: 900, height: 700, deviceScaleFactor: 1 };
+  if (expression.includes('innerWidth')) return viewport;
   return null;
 }
 function createStubCdp() {
@@ -109,7 +110,7 @@ function createStubCdp() {
         return params.cookies.some((c) => c.name === 'bad') ? { __error: 'Invalid cookie fields' } : {};
       case 'Page.captureScreenshot': return { data: PNG };
       case 'Page.getNavigationHistory': return { currentIndex: 0, entries: [] };
-      case 'Runtime.evaluate': return { result: { value: stubEvaluate(pages, sessionId, params.expression) } };
+      case 'Runtime.evaluate': return { result: { value: stubEvaluate(pages, sessionId, params.expression, server.viewport) } };
       default: return {};
     }
   };
@@ -120,6 +121,7 @@ function createStubCdp() {
     res.end();
   });
   server.calls = [];
+  server.viewport = { width: 900, height: 700, deviceScaleFactor: 1, pageLeft: 0, pageTop: 0 };
   server.targets = [];
   server.send = (method, params, sessionId) => active.write(wsFrame(JSON.stringify({ method, params, sessionId })));
   server.on('upgrade', (req, socket) => {
@@ -270,6 +272,49 @@ test('snapshot bounds, since-dedupe and screenshot format params round-trip', as
   assert.equal((await api(`/v1/tabs/${tab.id}/screenshot?format=png`)).data.mimeType, 'image/png');
   assert.equal((await api(`/v1/tabs/${tab.id}/screenshot?format=tiff`)).status, 400, 'unknown formats are rejected');
   assert.equal((await api(`/v1/tabs/${tab.id}/snapshot?maxChars=abc`)).status, 400, 'non-integer bounds are rejected');
+});
+
+test('screenshot clip follows the scrolled visual viewport', async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: 'http://viewport.example/' })).data;
+  try {
+    for (const viewport of [
+      { width: 900, height: 700, deviceScaleFactor: 1, pageLeft: 0, pageTop: 2400 },
+      { width: 900, height: 700, deviceScaleFactor: 1, pageLeft: 0, pageTop: 0 },
+      { width: 450, height: 350, deviceScaleFactor: 1, pageLeft: 125, pageTop: 2425 },
+    ]) {
+      main.stub.viewport = viewport;
+      assert.equal((await api(`/v1/tabs/${tab.id}/screenshot?format=png`)).status, 200);
+      const { clip } = main.stub.calls.findLast((c) => c.method === 'Page.captureScreenshot').params;
+      assert.deepEqual(clip, { x: viewport.pageLeft, y: viewport.pageTop, width: viewport.width, height: viewport.height, scale: 1 });
+      const expression = main.stub.calls.findLast((c) => c.method === 'Runtime.evaluate' && c.params.expression.includes('innerWidth')).params.expression;
+      const page = { visualViewport: viewport, innerWidth: 900, innerHeight: 700, scrollX: 10, scrollY: 2400, devicePixelRatio: 1 };
+      assert.deepEqual({ ...vm.runInNewContext(expression, page) }, viewport);
+      assert.deepEqual({ ...vm.runInNewContext(expression, { ...page, visualViewport: undefined }) }, { width: 900, height: 700, deviceScaleFactor: 1, pageLeft: 10, pageTop: 2400 });
+    }
+  } finally {
+    main.stub.viewport = { width: 900, height: 700, deviceScaleFactor: 1, pageLeft: 0, pageTop: 0 };
+  }
+});
+
+test('desktop screenshot fallback uses the visual viewport and supports pages without it', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
+  const captureSource = source.slice(source.indexOf('async function captureTab('), source.indexOf('const EMPTY_EFFECT'));
+  for (const visualViewport of [
+    { width: 900, height: 700, pageLeft: 0, pageTop: 0 },
+    { width: 450, height: 350, pageLeft: 125, pageTop: 2425 },
+    undefined,
+  ]) {
+    const page = { innerWidth: 900, innerHeight: 700, scrollX: 10, scrollY: 2400, devicePixelRatio: 1, visualViewport };
+    let clip;
+    const capture = vm.runInNewContext(`${captureSource}; captureTab`, {
+      backgroundCaptureQueue: Promise.resolve(), win: 'visible-host',
+      boundedJs: async (_wc, code) => vm.runInNewContext(code, page),
+      browserCommand: async (_tab, method, params) => { assert.equal(method, 'Page.captureScreenshot'); clip = params.clip; return { data: PNG }; },
+    });
+    await capture({ host: 'visible-host', view: { webContents: { capturePage: async () => null } } });
+    const expected = visualViewport || { width: 900, height: 700, pageLeft: 10, pageTop: 2400 };
+    assert.deepEqual({ ...clip }, { x: expected.pageLeft, y: expected.pageTop, width: expected.width, height: expected.height, scale: 1 });
+  }
 });
 
 test('an overseer releases and retakes another bot tab; a stranger cannot', async () => {

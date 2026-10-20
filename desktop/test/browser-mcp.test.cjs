@@ -7,6 +7,382 @@ const http = require('node:http');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 
+test('public recovery guidance limits retries to reads and preserves uncertain mutation review', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-recovery-guidance-'));
+  const connection = path.join(profile, 'connection.json');
+  fs.writeFileSync(connection, JSON.stringify({ url: 'http://127.0.0.1:9', token: 'fixture' }));
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection],
+    env: { ELECTRON_RUN_AS_NODE: '1' } });
+  const client = new Client({ name: 'recovery-guidance-regression', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {}); await transport.close().catch(() => {});
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const tools = (await client.listTools()).tools;
+  const status = tools.find(tool => tool.name === 'cua_alans_way_status');
+  assert.equal(status.annotations.readOnlyHint, true);
+  assert.doesNotMatch(status.description, /on a tool error just retry|If the Mac goes offline mid-task, the connector continues/i,
+    'discovery must not recommend retrying every failed call or promise unconditional continuation');
+  assert.match(status.description, /retry a read-only call once/i);
+  assert.match(status.description, /uncertain action or control change.*do not repeat/i);
+  assert.match(status.description, /cua_alans_way_tabs.*controller and epoch.*fresh snapshot/i);
+  assert.match(status.description, /confirmed pre-dispatch missing tab.*approval-bearing calls.*fresh review/i);
+  for (const name of ['cua_alans_way_action', 'workspace_computer_action', 'cua_alans_way_snapshot']) {
+    const description = tools.find(tool => tool.name === name).description;
+    assert.match(description, /successful/i, `${name}: reuse applies to successful current state`);
+    assert.match(description, /recovery.*uncertain.*fresh/i, `${name}: recovery has a local fresh-state exception`);
+    assert.doesNotMatch(description, /Every reply carries effect|so do not snapshot after acting/);
+  }
+  assert.doesNotMatch(tools.find(tool => tool.name === 'cua_alans_way_action').description,
+    /human_took_tab means[^\n]*then call again/i, 'interrupted input cannot be blindly repeated');
+});
+
+test('control changes require a controller and epoch receipt and never replay uncertain replies', { timeout: 10000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-control-receipts-'));
+  const connection = path.join(profile, 'connection.json'), seen = [];
+  let status = 200, reply = '{}', loseBody = false;
+  const host = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* consume a control before replying or disconnecting */ }
+    seen.push(req.method + ' ' + req.url);
+    res.writeHead(req.method === 'POST' ? status : 200, { 'Content-Type': 'application/json' });
+    if (req.method !== 'POST') return res.end('{"tabs":[{"id":"next","controller":"human","epoch":7}]}');
+    if (loseBody) { res.write('{"controller":'); setTimeout(() => res.destroy(), 10); }
+    else res.end(reply);
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture' }));
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection,
+      '--tab-map', '{"old":"next"}'] });
+  const client = new Client({ name: 'control-receipts-regression', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {}); await transport.close().catch(() => {});
+    host.closeAllConnections(); await new Promise(resolve => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  for (const action of ['claim', 'release']) {
+    const controller = action === 'claim' ? 'agent' : 'human';
+    for (const [label, value] of Object.entries({
+      empty: '', null: 'null', array: '[]', object: '{}', boolean: 'true',
+      'action-only': '{"dispatched":true}', 'missing-epoch': JSON.stringify({ id: 'old', controller }),
+      'missing-controller': '{"id":"old","epoch":7}', 'wrong-controller': JSON.stringify({ id: 'old', controller: controller === 'human' ? 'agent' : 'human', epoch: 7 }),
+      'missing-id': JSON.stringify({ controller, epoch: 7 }), 'wrong-id': JSON.stringify({ id: 'another', controller, epoch: 7 }),
+      'number-id': JSON.stringify({ id: 1, controller, epoch: 7 }),
+      'string-epoch': JSON.stringify({ id: 'old', controller, epoch: '7' }), 'negative-epoch': JSON.stringify({ id: 'old', controller, epoch: -1 }),
+      'unsafe-epoch': JSON.stringify({ id: 'old', controller, epoch: Number.MAX_SAFE_INTEGER + 1 }),
+      'explicit-refusal': JSON.stringify({ id: 'old', controller, epoch: 7, error: 'Control was refused.', code: 'control_refused' }),
+      'failure-after-mutation': JSON.stringify({ id: 'old', controller, epoch: 7, error: 'Control failed after mutation', code: 'receipt_conflict' }),
+      'failure-code': JSON.stringify({ id: 'old', controller, epoch: 7, code: 'control_refused' }),
+      'not-dispatched': JSON.stringify({ id: 'old', controller, epoch: 7, dispatched: false }),
+      'not-ok': JSON.stringify({ id: 'old', controller, epoch: 7, ok: false }),
+      'not-successful': JSON.stringify({ id: 'old', controller, epoch: 7, success: false }),
+      'explicit-error': JSON.stringify({ id: 'old', controller, epoch: 7, isError: true }),
+      truncated: '{"controller":', html: '<html>failure</html>',
+      'empty-204': '', 'error-502': '{"error":"Tab not found."}',
+      'contradictory-404': '{"error":"Tab not found.","dispatched":true}', 'lost-body': '',
+    })) await t.test(`${action}: ${label}`, async () => {
+      reply = value; status = label === 'empty-204' ? 204 : label === 'error-502' ? 502 : label === 'contradictory-404' ? 404 : 200;
+      loseBody = label === 'lost-body';
+      const start = seen.length;
+      const result = await client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 'old', epoch: 1, action } });
+      assert.equal(result.isError, true, 'a missing, invalid or lost control receipt cannot imply success');
+      assert.equal(result._meta?.browserRequest?.uncertainOutcome, true);
+      assert.match(result.content[0].text, /control change may have executed.*do not repeat.*cua_alans_way_tabs/i);
+      const state = await client.callTool({ name: 'cua_alans_way_tabs', arguments: {} });
+      assert.equal(JSON.parse(state.content[0].text).tabs[0].epoch, 7);
+      assert.deepEqual(seen.slice(start), ['POST /v1/tabs/old/control', 'GET /v1/tabs'], 'one control attempt, then an explicit read; no continuation/replay');
+    });
+    for (const receipt of [{ id: 'old', controller, epoch: 0 }, { id: 'old', controller, epoch: 7, note: 'Current host details' },
+      { id: 'old', controller, epoch: 8, loading: false, error: 'ERR_NAME_NOT_RESOLVED' }]) {
+      reply = JSON.stringify(receipt); status = 200; loseBody = false;
+      const result = await client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 'old', epoch: 1, action } });
+      assert.equal(result.isError, undefined);
+      assert.deepEqual(JSON.parse(result.content[0].text), receipt, 'valid old/current host control details remain intact');
+    }
+  }
+  reply = '{}'; status = 200; loseBody = false;
+  for (const [label, tabId] of Object.entries({ empty: '', whitespace: ' \t ', missing: undefined, null: null, number: 0, array: [], object: {} })) {
+    for (const [tool, extra] of [
+      ['snapshot', {}], ['screenshot', {}], ['close', {}], ['action', { action: 'claim' }], ['action', { action: 'release' }],
+    ]) await t.test(`${tool} ${extra.action || ''}: ${label} tab ID`, async () => {
+      const start = seen.length;
+      const result = await client.callTool({ name: 'cua_alans_way_' + tool, arguments: { tabId, epoch: 1, ...extra } });
+      assert.equal(result.isError, true);
+      assert.match(result.content[0].text, /nonempty tabId.*cua_alans_way_tabs/);
+      assert.deepEqual(seen.slice(start), [], 'invalid tab IDs are refused before any capability or route request');
+    });
+  }
+});
+
+for (const action of ['claim', 'release']) test(`approval-bearing ${action} pins the checked connection before control`, { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-control-identity-'));
+  const connection = path.join(profile, 'connection.json'), seen = [];
+  let replacement;
+  const host = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* consume any fixture control body */ }
+    seen.push({ method: req.method, path: req.url, authorization: req.headers.authorization });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    if (req.url === '/v1/status') {
+      fs.writeFileSync(connection, JSON.stringify(replacement));
+      res.end('{"capabilities":["approval-binding-v1"]}');
+    } else res.end('{"controller":"human","epoch":2}');
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${host.address().port}`;
+  const token = 'a'.repeat(64);
+  fs.writeFileSync(connection, JSON.stringify({ url, token }));
+  replacement = { url, token: 'b'.repeat(64) };
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', connection] });
+  const client = new Client({ name: 'control-identity-regression', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {}); await transport.close().catch(() => {});
+    host.closeAllConnections(); await new Promise(resolve => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const result = await client.callTool({ name: 'cua_alans_way_action', arguments: {
+    tabId: 't1', epoch: 1, action, approval: { nonce: 'fixture-review' },
+  } });
+  assert.equal(result.isError, true, 'control must not move to a changed connection after its status check');
+  assert.match(result.content[0].text, /browser connection changed after review/);
+  assert.deepEqual(seen, [{ method: 'GET', path: '/v1/status', authorization: `Bearer ${token}` }]);
+});
+
+test('approved forwarding distinguishes URL and token pairs containing separators', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-identity-'));
+  const connection = path.join(profile, 'connection.json'), seen = [];
+  let replacement;
+  const host = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* consume any fixture action */ }
+    seen.push({ method: req.method, authorization: req.headers.authorization });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    if (req.url === '/v1/status') {
+      fs.writeFileSync(connection, JSON.stringify(replacement));
+      res.end('{"capabilities":["approval-binding-v1"]}');
+    } else res.end('{"dispatched":true}');
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${host.address().port}`;
+  fs.writeFileSync(connection, JSON.stringify({ url: `${origin}/a`, token: 'b|c' }));
+  replacement = { url: `${origin}/a|b`, token: 'c' };
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', connection] });
+  const client = new Client({ name: 'connection-identity-regression', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {}); await transport.close().catch(() => {});
+    host.closeAllConnections(); await new Promise(resolve => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const result = await client.callTool({ name: 'cua_alans_way_action', arguments: {
+    tabId: 't1', epoch: 1, action: 'click', ref: 'e1', approval: { nonce: 'fixture-review' },
+  } });
+  assert.equal(result.isError, true, 'a changed credential must not inherit the earlier status result');
+  assert.match(result.content[0].text, /browser connection changed after review/);
+  assert.deepEqual(seen, [{ method: 'GET', authorization: 'Bearer b|c' }], 'no approved POST reaches the changed connection');
+});
+
+test('snapshot proof recovers from an initially unsupported host without restarting the connector', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-capability-recovery-'));
+  let capabilities = ['tabs', 'snapshot'], statusReads = 0, actionPosts = 0;
+  const proof = { version: 1, documentId: 'fixture-document', url: 'https://example.com/review' };
+  const page = { tabId: 't1', epoch: 1, generation: 1, approvalContext: proof,
+    elements: [{ ref: 'e1', role: 'button', name: 'Pay', approvalTarget: 'fixture-target' }] };
+  const host = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* fixture consumes any action body */ }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    if (req.url === '/v1/status') { statusReads++; res.end(JSON.stringify({ capabilities })); }
+    else if (req.method === 'POST') { actionPosts++; res.end('{"dispatched":true}'); }
+    else res.end(JSON.stringify(page));
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  const connection = path.join(profile, 'connection.json');
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', connection] });
+  const client = new Client({ name: 'capability-recovery-regression', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {}); await transport.close().catch(() => {});
+    host.closeAllConnections(); await new Promise(resolve => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const snapshot = async () => JSON.parse((await client.callTool({ name: 'cua_alans_way_snapshot', arguments: { tabId: 't1' } })).content[0].text);
+  const unsupported = await snapshot();
+  assert.equal(unsupported.approvalContext, undefined);
+  assert.equal(unsupported.elements[0].approvalTarget, undefined);
+  assert.equal(statusReads, 1);
+  capabilities = ['tabs', 'snapshot', 'approval-binding-v1'];
+  const recovered = await snapshot();
+  assert.deepEqual(recovered.approvalContext, proof, 'a fresh snapshot learns restored support at the same address/token');
+  assert.equal(recovered.elements[0].approvalTarget, 'fixture-target');
+  assert.equal(statusReads, 2, 'only the missing capability answer is refreshed');
+  await snapshot();
+  assert.equal(statusReads, 2, 'supported ordinary snapshot reads retain the feature cache');
+  capabilities = ['tabs', 'snapshot'];
+  const refused = await client.callTool({ name: 'cua_alans_way_action', arguments: {
+    tabId: 't1', epoch: 1, action: 'click', ref: 'e1', approval: { nonce: 'fixture-nonce' },
+  } });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /approval_binding_unavailable/);
+  assert.equal(actionPosts, 0, 'cached positive discovery never authorizes an unsupported approved forward');
+});
+
+test('browser MCP rejects unusable action receipts as uncertain without replay', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-receipt-'));
+  const seen = [], records = [];
+  let responseBody = '', responseStatus = 200;
+  const host = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* action accepted before its receipt is lost */ }
+    seen.push(req.method + ' ' + req.url);
+    res.writeHead(req.method === 'POST' ? responseStatus : 200, { 'Content-Type': 'application/json' });
+    res.end(req.method === 'POST' ? responseBody : JSON.stringify({ epoch: 1, elements: [{ name: 'Draft', value: 'ran once' }] }));
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  const connection = path.join(profile, 'connection.json');
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', connection, '--tab-map', '{"t1":"vm1"}'] });
+  const client = new Client({ name: 'browser-receipt-regression', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {});
+    await transport.close().catch(() => {});
+    host.closeAllConnections();
+    await new Promise(resolve => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  for (const [label, body] of Object.entries({
+    empty: '', whitespace: '  ', null: 'null', string: '"receipt"', number: '1', boolean: 'true',
+    array: '[]', 'array-with-marker': '[{"dispatched":true}]', object: '{}',
+    'wrong-marker': '{"dispatched":"true"}', 'false-marker': '{"dispatched":false}',
+    'effect-only': '{"effect":{"changed":true}}', 'error-only': '{"error":"Tab not found."}',
+    truncated: '{"dispatched":', html: '<html>Tab not found</html>',
+    'empty-204': '', 'empty-502': '', 'null-502': 'null', 'object-502': '{}',
+  })) {
+    await t.test(label, async () => {
+      responseBody = body;
+      responseStatus = label.endsWith('-502') ? 502 : label.endsWith('-204') ? 204 : 200;
+      const before = seen.length;
+      const started = performance.now();
+      const receipt = await client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't1', epoch: 1, action: 'type', selector: '#draft', text: 'ran once' } });
+      const elapsedMs = performance.now() - started;
+      const recovery = await client.callTool({ name: 'cua_alans_way_snapshot', arguments: { tabId: 't1' } });
+      records.push({ label, body, responseStatus, receipt, elapsedMs, recovery, seen: seen.slice(before) });
+      assert.equal(receipt.isError, true);
+      assert.match(receipt.content[0].text, /action may have executed/i);
+      assert.match(receipt.content[0].text, /do not repeat.*cua_alans_way_snapshot.*"tabId":"t1"/i);
+      assert.doesNotMatch(receipt.content[0].text, /cancelled|canceled/i);
+      assert.equal(recovery.isError, undefined);
+      assert.deepEqual(JSON.parse(recovery.content[0].text), { epoch: 1, elements: [{ name: 'Draft', value: 'ran once' }] });
+      assert.deepEqual(seen.slice(before), ['POST /v1/tabs/t1/actions', 'GET /v1/tabs/t1/snapshot?maxChars=2000']);
+    });
+  }
+  if (process.env.HERMES_RELIABILITY_EVIDENCE) {
+    const dir = process.env.HERMES_RELIABILITY_EVIDENCE;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${process.env.HERMES_RELIABILITY_PHASE || 'after'}-receipt-matrix-stdio.json`), JSON.stringify(records, null, 2) + '\n');
+  }
+});
+
+test('browser MCP reports a response-body disconnect without replaying uncertain input', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
+  const seen = [];
+  let disconnect = true;
+  const host = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* consume the action before losing its reply */ }
+    seen.push(req.method + ' ' + req.url);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    if (disconnect) {
+      res.write('{"dispatched":');
+      setTimeout(() => res.destroy(), 20);
+    } else res.end('{"tabs":[]}');
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  const connectionFile = path.join(profile, 'connection.json');
+  fs.writeFileSync(connectionFile, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', connectionFile],
+    env: { ...process.env },
+  });
+  const client = new Client({ name: 'browser-mcp-test', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {});
+    await transport.close().catch(() => {});
+    host.closeAllConnections();
+    await new Promise(resolve => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const started = performance.now();
+  const result = await client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't1', epoch: 1, action: 'type', ref: 'e1', text: 'fixture input' } });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /action may have executed.*Do not repeat.*cua_alans_way_snapshot.*"tabId":"t1"/i);
+  assert.ok(performance.now() - started < 2000, 'a closed response must fail promptly');
+  assert.deepEqual(seen, ['POST /v1/tabs/t1/actions'], 'an uncertain action must never be replayed');
+  disconnect = false;
+  assert.deepEqual(JSON.parse((await client.callTool({ name: 'cua_alans_way_tabs', arguments: {} })).content[0].text), { tabs: [] }, 'the same connector can recover with a fresh read');
+});
+
+test('browser MCP preserves supported action receipts, API errors and empty read results', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-receipt-'));
+  let status = 200, reply = {};
+  const host = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* consume before responding */ }
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(reply === undefined ? '' : JSON.stringify(reply));
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  const connection = path.join(profile, 'connection.json');
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', connection] });
+  const client = new Client({ name: 'browser-receipt-compatibility', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {});
+    await transport.close().catch(() => {});
+    host.closeAllConnections();
+    await new Promise(resolve => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  for (const [action, expected] of [
+    ['type', { dispatched: true }],
+    ['move', { dispatched: true, effect: { navigated: false, changed: false, text: '' } }],
+    ['eval', { dispatched: true, value: null }],
+    ['eval', { dispatched: true }], // undefined JS result is omitted by JSON
+    ['cdp', { dispatched: true, value: {} }],
+    ['viewport', { dispatched: true, viewport: null }],
+    ['read', { dispatched: true, text: '' }],
+    ['wait', { dispatched: true, waited: 0 }],
+    ['batch', { dispatched: true, results: [{ ok: true, dispatched: true }, { ok: false, error: 'Missing control.' }] }],
+    ['type', { dispatched: true, effect: { navigated: false, changed: false, text: '' }, error: 'The page returned no state.' }],
+  ]) {
+    reply = expected;
+    const result = await client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't1', epoch: 1, action } });
+    assert.equal(result.isError, undefined, action);
+    assert.deepEqual(JSON.parse(result.content[0].text), expected, action);
+  }
+  for (const expected of [undefined, null, {}, { tabs: [] }, { unchanged: true }]) {
+    reply = expected;
+    const result = await client.callTool({ name: 'cua_alans_way_snapshot', arguments: { tabId: 't1' } });
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(JSON.parse(result.content[0].text), expected === undefined ? {} : expected);
+  }
+  status = 409; reply = { error: 'stale_control_epoch: read, then act.' };
+  const rejected = await client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't1', epoch: 1, action: 'type', text: 'refused' } });
+  assert.equal(rejected.isError, true);
+  assert.ok(rejected.content[0].text.includes(reply.error), 'an API error keeps its precise explanation');
+  assert.match(rejected.content[0].text, /action may have executed.*cua_alans_way_snapshot/i,
+    'legacy stale epochs can also follow input; inspect state before another dispatch');
+  assert.equal(rejected._meta.browserRequest.status, 409);
+});
+
 test('browser MCP exposes close and reports non-JSON host errors cleanly', { timeout: 8000 }, async (t) => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
   const bad = http.createServer((_req, res) => { res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('upstream timeout from proxy'); });
@@ -218,7 +594,7 @@ test('browser MCP exposes select, double click, right click and drag, and forwar
     let raw = ''; for await (const chunk of req) raw += chunk;
     received = JSON.parse(raw);
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end('{"dispatched":true}');
+    res.end(JSON.stringify(req.url.endsWith('/control') ? { id: 't', controller: received.controller, epoch: 3 } : { dispatched: true }));
   });
   await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
   fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
@@ -242,9 +618,11 @@ test('browser MCP exposes select, double click, right click and drag, and forwar
   assert.equal(result.isError, undefined);
   assert.deepEqual(received, { epoch: 2, action: 'drag', ref: 's1-1', toRef: 's1-2' });
   assert.deepEqual(action.reason.enum, ['captcha', 'login', 'two_factor', 'payment_details', 'review', 'other']);
-  await client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't', epoch: 2, action: 'release', reason: 'login', note: 'Sign in please' } });
+  const released = await client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't', epoch: 2, action: 'release', reason: 'login', note: 'Sign in please' } });
+  assert.equal(released.isError, undefined);
   assert.deepEqual(received, { controller: 'human', reason: 'login', note: 'Sign in please' });
-  await client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't', epoch: 2, action: 'claim', reason: 'login' } });
+  const claimed = await client.callTool({ name: 'cua_alans_way_action', arguments: { tabId: 't', epoch: 2, action: 'claim', reason: 'login' } });
+  assert.equal(claimed.isError, undefined);
   assert.deepEqual(received, { controller: 'agent' });
 });
 

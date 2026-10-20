@@ -120,7 +120,7 @@ function pluginRow(group, prefix, plugin, pluginTag) {
     : row(group, 'ok', `${prefix}${plugin.name} ${plugin.version} is the latest published version`);
 }
 
-function serverRows({ appVersion, server }) {
+function serverRows({ appVersion, hostTarget = appVersion, server }) {
   const s = 'server';
   if (!server) return [row(s, 'fail', 'Server checks skipped', 'Fix the connection above, then check again.')];
   if (server.ok !== true) {
@@ -132,8 +132,8 @@ function serverRows({ appVersion, server }) {
   // An empty version means the server has no browser host checkout; the
   // profile, plugin and audit rows below still apply.
   if (!server.version) rows.push(row(s, 'fail', 'Alan’s Tools aren’t installed on the server', SETUP_PROMPT));
-  else if (isNewer(appVersion, server.version)) rows.push(row(s, 'fail', 'The server is on an older version', `Server ${server.version}, this app ${appVersion}.`, 'update-server'));
-  else if (isNewer(server.version, appVersion)) rows.push(row(s, 'warn', 'The server is newer than this app', 'Update this app.'));
+  else if (isNewer(hostTarget, server.version)) rows.push(row(s, 'fail', 'The server is on an older version', `Server ${server.version}, this app ${appVersion}.`, 'update-server'));
+  else if (isNewer(server.version, hostTarget)) rows.push(row(s, 'warn', 'The server is newer than this app', 'Update this app.'));
   else rows.push(row(s, 'ok', `Server tools are on ${server.version}`));
   const causes = (server.hostCauses || []).filter((c) => HOST_CAUSES[c]);
   // With no tools on the server there is no browser host to update: real

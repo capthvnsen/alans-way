@@ -37,6 +37,14 @@ function refsSource(seed = 0) {
       try { Object.defineProperty(window, key, { value: S, configurable: true }); } catch { try { window[key] = S; } catch {} }
     }
     S.n = Math.max(S.n, ${floor});
+    // Approval identity is stricter than a ref: a ref can follow a re-render,
+    // while a pending approval must never silently follow a replacement node.
+    const token = () => Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+    S.documentId ||= token();
+    S.approvalNodes ||= new WeakMap();
+    S.approvalIds ||= new WeakMap();
+    const nodeId = el => { if (!el) return ''; let id = S.approvalIds.get(el); if (!id) S.approvalIds.set(el, id = token()); return id; };
+    S.approvalContext = () => ({ version: 1, documentId: S.documentId, url: location.href });
     const shortHref = ${SHORT_HREF};
     const pick = ${JSON.stringify(PICK)};
     // Widgets with no native tag or listed role: a state attribute, or a
@@ -147,17 +155,40 @@ function refsSource(seed = 0) {
     // The text around a control that shares its name with others (the row,
     // card or list item it sits in), without the control's own name: what
     // tells one "Delete" from the next for a person reading the page.
-    S.rowOf = (el, name) => {
+    S.rowOf = (el, name, limit = 60) => {
       const up = (node) => node.parentElement || (node.getRootNode() && node.getRootNode().host) || null;
       for (let node = up(el), hops = 0; node && hops < 4; node = up(node), hops++) {
         if (node.tagName === 'BODY' || node.tagName === 'HTML') return '';
         const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
         if (text.length <= name.length + 1) continue;
-        if (text.length > 200) return '';
+        if (limit === 60 && text.length > 200) return '';
         const at = name ? text.indexOf(name) : -1;
-        return (at >= 0 ? text.slice(0, at) + ' ' + text.slice(at + name.length) : text).replace(/\\s+/g, ' ').trim().slice(0, 60);
+        return (at >= 0 ? text.slice(0, at) + ' ' + text.slice(at + name.length) : text).replace(/\\s+/g, ' ').trim().slice(0, limit);
       }
       return '';
+    };
+    S.approvalTarget = (hit) => {
+      if (!hit || hit.nodeType !== 1 || !hit.isConnected) return null;
+      let el = hit;
+      const label = hit.closest('label');
+      if (label && label.control && !hit.matches(pick)) el = label.control;
+      for (let hops = 0; el && !el.matches(pick) && hops < 8; hops++) el = el.parentElement || el.getRootNode().host;
+      if (!el || !el.matches(pick)) return null;
+      const d = S.describe(el), form = el.form;
+      // Full destinations, including query and hash; the visible snapshot's
+      // shortened href is for reading and is never the approval identity.
+      const destination = n => n.hasAttribute('href') ? new URL(n.getAttribute('href'), n.ownerDocument.baseURI).href : '';
+      let rowNode = el.parentElement || el.getRootNode().host;
+      if (rowNode && /^(BODY|HTML)$/.test(rowNode.tagName)) rowNode = null;
+      const submit = n => [S.describe(n).name, n.formAction || form?.action || '', n.formMethod || form?.method || '', nodeId(n)];
+      const signature = JSON.stringify([d.role, d.name, d.type, S.rowOf(el, d.base, Number.MAX_SAFE_INTEGER), nodeId(rowNode), destination(el), el.target || '', el.getAttribute('download'),
+        el.getAttribute('aria-label') || '', el.title || '', el.innerText || '',
+        form ? [nodeId(form), form.action, form.method, ...[...form.elements].filter(n => /^(submit|image)$/.test(n.type)).map(submit)] : null]);
+      const previous = S.approvalNodes.get(el);
+      if (previous && previous.signature === signature) return previous.token;
+      const next = { signature, token: token() };
+      S.approvalNodes.set(el, next);
+      return next.token;
     };
     // Identity for a rebind: role, base name, row when the name repeats, and
     // the address including a hash route. A repeated name with no row text to
@@ -565,7 +596,7 @@ function snapshotExpression(opts = {}) {
         listed.add(x.ref);
         // Defaults stay out of the reply: an empty name, the implied type of a
         // non-input, 'text', and the constant value of a checkbox or radio.
-        const item = { ref: x.ref, role: d.role };
+        const item = { ref: x.ref, role: d.role, approvalTarget: R.approvalTarget(el) };
         if (d.name) item.name = d.name;
         if (x.row) item.row = x.row;
         if (d.type && el.tagName === 'INPUT' && d.type !== 'text') item.type = d.type;
@@ -671,7 +702,7 @@ function snapshotExpression(opts = {}) {
       textSig = sigNodes + ':' + (sigHash >>> 0).toString(36);
     } else textCut = ${maxChars} <= 0 && !!document.body?.textContent?.trim();
     const challenge = ${challengeExpression()};
-    return {title:document.title,url:location.href,sameDoc,challenge,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,elements:items,seq:R ? R.n : 0,gone,overlays,truncated:{text:textCut,elements:more},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
+    return {title:document.title,url:location.href,...(R ? { approvalContext: R.approvalContext() } : {}),sameDoc,challenge,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,elements:items,seq:R ? R.n : 0,gone,overlays,truncated:{text:textCut,elements:more},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
   })()`;
 }
 
@@ -897,7 +928,7 @@ function settleSnapshot(tab, data, generation, since) {
   // A challenge rides even on an unchanged read: its frames sit outside the text.
   const { sameDoc, textSig, seq, gone, overlays, challenge, ...page } = data;
   const flagged = challenge ? { challenge } : {};
-  return unchanged ? { unchanged: true, generation, ...flagged } : { ...page, ...(overlays && overlays.length ? { overlays } : {}), ...flagged, generation };
+  return unchanged ? { unchanged: true, generation, ...(data.approvalContext ? { approvalContext: data.approvalContext } : {}), ...flagged } : { ...page, ...(overlays && overlays.length ? { overlays } : {}), ...flagged, generation };
 }
 // A full list in an action reply stops here; unlisted says how many more a snapshot shows.
 const EFFECT_ELEMENTS = 40;
@@ -987,7 +1018,7 @@ async function readEffectOnce(execute, tab, { parseWaitMs, navigated, target, se
   }
   // A dialog or banner over the page rides on every reply while it is there.
   // So does a challenge (a CAPTCHA or a bot check) the page shows.
-  const overlays = { ...(result.overlays && result.overlays.length ? { overlays: result.overlays } : {}), ...(result.challenge ? { challenge: result.challenge } : {}) };
+  const overlays = { ...(result.approvalContext ? { approvalContext: result.approvalContext } : {}), ...(result.overlays && result.overlays.length ? { overlays: result.overlays } : {}), ...(result.challenge ? { challenge: result.challenge } : {}) };
   // Preserve scan truncation on every reply shape.
   const truncated = result.truncated && (result.truncated.text || result.truncated.elements) ? { truncated: result.truncated } : {};
   if (Number.isInteger(result.seq)) tab.refSeed = Math.max(tab.refSeed || 0, result.seq);

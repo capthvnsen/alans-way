@@ -248,4 +248,4 @@ function restartWarning(names) {
   return { message: `${who} working in a tab right now.`, detail: 'Restarting interrupts that task. The update installs whenever you restart, so you can wait until they finish.' };
 }
 
-module.exports = { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, latestHostRelease, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText, pluginStepResult, runLogText, warningText };
+module.exports = { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText, pluginStepResult, runLogText, warningText };

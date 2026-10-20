@@ -1,0 +1,1893 @@
+[
+  {
+    "id": "install",
+    "area": "First run",
+    "title": "Install and launch",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "window",
+    "area": "First run",
+    "title": "First window fits every display",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "welcome",
+    "area": "First run",
+    "title": "Welcome and value explanation",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "telegram-login",
+    "area": "First run",
+    "title": "Telegram sign-in and recovery",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "server-connect",
+    "area": "First run",
+    "title": "Existing Hermes server connection",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "cloud-claim",
+    "area": "First run",
+    "title": "Cloud claim and provisioning status",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "setup-check",
+    "area": "First run",
+    "title": "Setup checklist and actionable diagnostics",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "setup-resume",
+    "area": "First run",
+    "title": "Interrupted setup and resume",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "agent-list",
+    "area": "Conversations",
+    "title": "Agent list hierarchy and selection",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "agent-search",
+    "area": "Conversations",
+    "title": "Agent search and zero results",
+    "status": "accepted",
+    "builder": "Keyboard and dialogs builder",
+    "critic": "Fresh keyboard critic \u00b7 independent real Electron probes",
+    "acceptance": "Case-insensitive name/username search, no-match recovery, clear and Escape behavior, hidden agents and result announcement verified in Electron."
+  },
+  {
+    "id": "agent-order",
+    "area": "Conversations",
+    "title": "Order, hide, restore agents",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "conversation",
+    "area": "Conversations",
+    "title": "Conversation readability and composition",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "attachments",
+    "area": "Conversations",
+    "title": "Files, images, links and attachments",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "activity",
+    "area": "Conversations",
+    "title": "Truthful activity and offline state",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Only verified activity lights indicators; expiry, cancellation, disconnect and unavailable states remain truthful."
+  },
+  {
+    "id": "avatars",
+    "area": "Conversations",
+    "title": "Avatar customization and reduced motion",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "notifications",
+    "area": "Conversations",
+    "title": "Unread, attention and notifications",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "keyboard",
+    "area": "Workspace",
+    "title": "Keyboard navigation and shortcuts",
+    "status": "partial \u00b7 Chromium paths accepted; native unverified",
+    "builder": "Keyboard builders rounds1\u20132",
+    "critic": "Independent keyboard critics rounds1\u20132",
+    "acceptance": "Trusted Chromium navigation, dialog containment, tabs, search and dense removal focus have independent runtime acceptance. OS hotkeys and native window routing remain unverified while the Mac is locked."
+  },
+  {
+    "id": "dialogs",
+    "area": "Workspace",
+    "title": "Dialog focus and dismissal",
+    "status": "accepted",
+    "builder": "Keyboard and dialogs builder",
+    "critic": "Fresh keyboard critic \u00b7 independent real Electron probes",
+    "acceptance": "Initial focus, Tab/Shift+Tab containment, Escape and return focus work across ordinary and stacked dialogs; hidden/disabled controls excluded."
+  },
+  {
+    "id": "layout",
+    "area": "Workspace",
+    "title": "Pane sizing, collapse and restore",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "tabs",
+    "area": "Workspace",
+    "title": "Tab creation, selection, close and overflow",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "address",
+    "area": "Workspace",
+    "title": "Address/search navigation",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "new-tab",
+    "area": "Workspace",
+    "title": "Useful new-tab starting point",
+    "status": "accepted \u00b725/25 fresh checks; copy/action core only; discoverability/chat cue gaps retained",
+    "builder": "Devin \u00b7Home first-action revision",
+    "critic": "Different fresh Devin \u00b7concealed comparison+actual runtime",
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "history",
+    "area": "Workspace",
+    "title": "Back, forward, reload and loading",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "downloads",
+    "area": "Workspace",
+    "title": "Downloads, progress and recovery",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "extensions",
+    "area": "Workspace",
+    "title": "Extensions, permissions and compatibility",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "pdf",
+    "area": "Workspace",
+    "title": "PDF viewing and sharing",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "recording",
+    "area": "Workspace",
+    "title": "Teach an agent with recordings",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "settings",
+    "area": "Workspace",
+    "title": "Findable, understandable settings",
+    "status": "reviewing \u00b7 round2",
+    "builder": "Settings async/freshness builder",
+    "critic": "Fresh Settings recovery critic",
+    "acceptance": "A user can find and understand key controls quickly; keyboard works; direct comparison with actual searchable reference settings."
+  },
+  {
+    "id": "tool-status",
+    "area": "Agent control",
+    "title": "MCP status and capability discovery",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "snapshots",
+    "area": "Agent control",
+    "title": "Fresh snapshots, refs and epochs",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "input",
+    "area": "Agent control",
+    "title": "Trusted input and action result truth",
+    "status": "investigated",
+    "builder": "Browser reliability builder",
+    "critic": "Fresh critic pending",
+    "acceptance": "Input occurs once, stale targets fail before dispatch, input result uncertainty is explicit; verify with real MCP plus fixture page counters."
+  },
+  {
+    "id": "tool-receipts",
+    "area": "Agent control",
+    "title": "Uncertain action receipts and safe retry",
+    "status": "partial \u00b7 page-action scope accepted; control reviewing",
+    "builder": "Reliability builder round3",
+    "critic": "Fresh continuation critic round3",
+    "acceptance": "Response resets after input executes once and stalled bodies return actionable uncertainty; fresh snapshot recovers; exact latency measured."
+  },
+  {
+    "id": "navigation-waits",
+    "area": "Agent control",
+    "title": "Bounded navigation and failure recovery",
+    "status": "investigated",
+    "builder": "Browser reliability builder",
+    "critic": "Fresh critic pending",
+    "acceptance": "Navigation and response bodies finish or fail within a measured deadline; failure preserves inspect-before-retry guidance."
+  },
+  {
+    "id": "takeover",
+    "area": "Agent control",
+    "title": "Human takeover and queued cancellation",
+    "status": "investigated",
+    "builder": "Browser reliability builder",
+    "critic": "Fresh critic pending",
+    "acceptance": "Takeover revokes queued actions and stale epochs while retaining live page state; no later action slips through."
+  },
+  {
+    "id": "ownership",
+    "area": "Agent control",
+    "title": "Agent/tab ownership and privacy",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "needs-you",
+    "area": "Agent control",
+    "title": "Login, CAPTCHA and human handback",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "background",
+    "area": "Agent control",
+    "title": "Background actions without focus theft",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "performance",
+    "area": "Agent control",
+    "title": "Action latency and resource use",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "remote-connect",
+    "area": "Remote workspace",
+    "title": "Remote connection and failure state",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Refused, timed-out, invalid and recovered connection states expose a specific next action; no claim of active control before connected."
+  },
+  {
+    "id": "remote-preview",
+    "area": "Remote workspace",
+    "title": "Preview placement, resize and legibility",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "remote-control",
+    "area": "Remote workspace",
+    "title": "Watch versus control and clipboard",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "remote-browser",
+    "area": "Remote workspace",
+    "title": "VPS browser operation",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "host-routing",
+    "area": "Remote workspace",
+    "title": "Explicit host routing and offline fallback",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "continuity",
+    "area": "Remote workspace",
+    "title": "Reconnect and truthful continuity",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "fleet",
+    "area": "Remote workspace",
+    "title": "Multiple servers and agent profiles",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "plugin-install",
+    "area": "Hermes integration",
+    "title": "Plugin install and upgrade compatibility",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "plugin-contract",
+    "area": "Hermes integration",
+    "title": "Stock Hermes and public MCP contract",
+    "status": "partial \u00b7 discovery and supported binding accepted",
+    "builder": "Isolated Hermes plugin compatibility builder",
+    "critic": "Independent plugin critics rounds1\u20133",
+    "acceptance": "Stock Hermes discovers 13 tools; exact-label and supported router/connector/host binding repairs pass independent real-browser and compatibility review. Authenticated remote execution and human approval presentation remain unverified; Hermes is unchanged."
+  },
+  {
+    "id": "plugin-routing",
+    "area": "Hermes integration",
+    "title": "Agent skill, capability and host routing",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "proactivity",
+    "area": "Hermes integration",
+    "title": "Idle check-ins and pause controls",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "diagnostics",
+    "area": "Hermes integration",
+    "title": "Actionable CLI doctor and diagnostics",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "setup-docs",
+    "area": "Hermes integration",
+    "title": "Setup and repair documentation",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "restore",
+    "area": "Lifecycle",
+    "title": "Restart and tab restoration",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "updates",
+    "area": "Lifecycle",
+    "title": "App, plugin and fleet update truth",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Downloaded, installed, running and per-VM versions are distinguished; failed updates recover without losing tasks."
+  },
+  {
+    "id": "permissions",
+    "area": "Lifecycle",
+    "title": "macOS permission discovery and repair",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Denied and granted macOS states are correct; action opens the correct setting; browser-only use remains available."
+  },
+  {
+    "id": "accessibility",
+    "area": "Lifecycle",
+    "title": "Semantics, contrast and reduced motion",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "crash-recovery",
+    "area": "Lifecycle",
+    "title": "Crash, disconnect and retry recovery",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "regressions",
+    "area": "Lifecycle",
+    "title": "Cross-platform and regression checks",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
+  },
+  {
+    "id": "shortcut-reference",
+    "area": "Workspace",
+    "title": "Discoverable shortcut reference",
+    "status": "partial \u00b7 guide UI accepted; native unverified",
+    "builder": "Shortcut single-key/action semantics builder",
+    "critic": "Fresh query critic round4 + previous browse/live critics",
+    "acceptance": "Every advertised key binding works in the running app, is searchable and has a clear purpose; compare actual ChatGPT shortcut settings."
+  },
+  {
+    "id": "settings-search",
+    "area": "Workspace",
+    "title": "Search within settings",
+    "status": "accepted \u00b7 scoped idle UI",
+    "builder": "Settings navigation builder",
+    "critic": "Fresh Settings critic \u00b721states/84cycles",
+    "acceptance": "Find permissions, server, browser and updates by plain-language terms; zero results, keyboard and focus verified."
+  },
+  {
+    "id": "settings-categories",
+    "area": "Workspace",
+    "title": "Settings categories and hierarchy",
+    "status": "accepted \u00b7 scoped idle UI",
+    "builder": "Settings navigation builder",
+    "critic": "Fresh Settings critic \u00b721states/84cycles",
+    "acceptance": "Common controls are grouped and reachable without scanning a long wall; direct task comparison and small-window QA."
+  },
+  {
+    "id": "execution-context",
+    "area": "Agent control",
+    "title": "Agent, host and permission context",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "At task start show selected agent, actual execution host, verified connectivity and permission scope together; offline state has an actionable next step."
+  },
+  {
+    "id": "approval-labels",
+    "area": "Agent control",
+    "title": "Consequential action label boundaries",
+    "status": "partial \u00b7 scoped binding accepted",
+    "builder": "Plugin binding builder \u00b7 actual browser proof",
+    "critic": "Independent approval critics rounds2\u20133",
+    "acceptance": "Exact label exceptions and observed target/document/operation binding accepted within supported contract. Human review/recovery presentation and broader hidden page semantics remain separate."
+  },
+  {
+    "id": "telegram-recovery",
+    "area": "Conversations",
+    "title": "Conversation loading and reconnect",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Network/offline/login failures offer a clear recovery path without losing the draft or implying the bot stopped."
+  },
+  {
+    "id": "response-body-errors",
+    "area": "Agent control",
+    "title": "Dropped/stalled response error boundary",
+    "status": "accepted",
+    "builder": "Reliability builder round 1",
+    "critic": "Independent reliability critic",
+    "acceptance": "Actual MCP + Electron body reset/stall returns recovery error, no replay observed, fresh read recovers; reads25s/actions90s bounded. Narrow transport fix only."
+  },
+  {
+    "id": "tab-keyboard",
+    "area": "Workspace",
+    "title": "Keyboard selection and closing of tabs",
+    "status": "accepted",
+    "builder": "Keyboard builder round 1",
+    "critic": "Independent keyboard critic",
+    "acceptance": "24 real blank tabs: arrows/Home/End/Delete/close preserve visible focus; selected AX state verified. Live websites/extensions not covered."
+  },
+  {
+    "id": "approval-exact-labels",
+    "area": "Agent control",
+    "title": "Exact harmless-label exception boundaries",
+    "status": "accepted",
+    "builder": "Plugin contract builder",
+    "critic": "Independent plugin critic \u00b7 blind and actual router",
+    "acceptance": "Three anchored exceptions: exact tested navigation labels pass; tested longer/mixed labels require approval; older reader compatibility. No exhaustive Unicode or name-to-href guarantee."
+  },
+  {
+    "id": "malformed-action-receipts",
+    "area": "Agent control",
+    "title": "Reject missing and malformed success receipts",
+    "status": "accepted",
+    "builder": "Reliability builder round2",
+    "critic": "Fresh receipt critic round2 \u00b7 frozen source",
+    "acceptance": "Actual local MCP/Electron empty/null/invalid-shaped200 receipts return uncertainty and recover by snapshot; recorded one input per case. Continuation502 replay remains a separate P1."
+  },
+  {
+    "id": "agent-removal-focus",
+    "area": "Workspace",
+    "title": "Visible focus after dense agent removal and reorder",
+    "status": "accepted",
+    "builder": "Keyboard builder round2",
+    "critic": "Fresh keyboard critic round2",
+    "acceptance": "20 independent actual Electron scenarios at1280/1024 with26/29/34 agents, ordering/filter/fallback, full focused outline visible and selection preserved. Native child routing remains separate."
+  },
+  {
+    "id": "install-quarantine",
+    "parent": "install",
+    "area": "First run",
+    "title": "First launch from downloaded app",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "A newly quarantined local app opens or gives an accurate actionable macOS failure; installed user app and profile stay intact."
+  },
+  {
+    "id": "install-mcp-bundle",
+    "parent": "install",
+    "area": "First run",
+    "title": "Packaged public MCP entry point",
+    "status": "verified \u00b7 independent critic pending",
+    "builder": "Coordinator separate build smoke",
+    "critic": "Unassigned",
+    "acceptance": "The actual packaged executable starts its shipped MCP server and advertises13 expected public tools without source-checkout dependencies."
+  },
+  {
+    "id": "window-small-display",
+    "parent": "window",
+    "area": "First run",
+    "title": "Window bounds and smallest display",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "At the supported minimum and forced adverse size all primary actions remain reachable; relaunch restores on a connected display."
+  },
+  {
+    "id": "telegram-login-cancel",
+    "parent": "telegram-login",
+    "area": "First run",
+    "title": "Sign-in cancellation and retry",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Cancelling or timing out login returns to a usable state; retry neither duplicates sessions nor loses configured agents."
+  },
+  {
+    "id": "setup-address-validation",
+    "parent": "server-connect",
+    "area": "First run",
+    "title": "Agent and computer address validation",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Empty, malformed, IPv6 and valid SSH addresses yield accurate inline results before any remote side effect."
+  },
+  {
+    "id": "setup-connection-proof",
+    "parent": "server-connect",
+    "area": "First run",
+    "title": "Verified connection versus saved address",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Saving an address never claims connection; refused, unreachable and authenticated paths remain distinct with a concrete recovery action."
+  },
+  {
+    "id": "setup-report-redaction",
+    "parent": "setup-check",
+    "area": "First run",
+    "title": "Safe useful setup report",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Copy report retains versions and failed checks while removing tokens, private keys and credentials; report state matches actual diagnostics."
+  },
+  {
+    "id": "setup-partial-resume",
+    "parent": "setup-resume",
+    "area": "First run",
+    "title": "Resume partially completed setup",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Restart between each local setup stage restores progress and exposes retry without rerunning completed destructive steps."
+  },
+  {
+    "id": "agent-empty",
+    "parent": "agent-list",
+    "area": "Conversations",
+    "title": "No agents starting state",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "With no agents, one clear add/connect action is available by pointer and keyboard; no false activity or empty selection."
+  },
+  {
+    "id": "agent-long-names",
+    "parent": "agent-list",
+    "area": "Conversations",
+    "title": "Long names and agent identity",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Long, Unicode and duplicate display names stay distinguishable by username; selection and actions target the intended agent."
+  },
+  {
+    "id": "agent-order-persist",
+    "parent": "agent-order",
+    "area": "Conversations",
+    "title": "Persistent agent ordering",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Manual, alphabetical and recent order survive restart; selection/focus remain on intended identity during live reorder."
+  },
+  {
+    "id": "agent-restore-hidden",
+    "parent": "agent-order",
+    "area": "Conversations",
+    "title": "Restore hidden agent",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Hidden agent can be found and restored in settings without losing conversation selection or producing duplicate sidebar rows."
+  },
+  {
+    "id": "draft-per-agent",
+    "parent": "conversation",
+    "area": "Conversations",
+    "title": "Draft persistence per conversation",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Switch agents and reopen panes with different drafts; each draft remains attached to the correct conversation."
+  },
+  {
+    "id": "conversation-status",
+    "parent": "telegram-recovery",
+    "area": "Conversations",
+    "title": "Conversation connection status",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Connecting, signed-out, offline, failed and connected states reflect the actual embed lifecycle and offer a valid next action."
+  },
+  {
+    "id": "attachment-failure",
+    "parent": "attachments",
+    "area": "Conversations",
+    "title": "Attachment rejection and retry",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Unsupported, oversize, unreadable and cancelled files give useful feedback and preserve message draft; no phantom sent attachment."
+  },
+  {
+    "id": "activity-freshness",
+    "parent": "activity",
+    "area": "Conversations",
+    "title": "Activity freshness and offline truth",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Old activity never implies a live agent; absent timestamps, future skew and disconnect render explicit accurate states."
+  },
+  {
+    "id": "notification-identity",
+    "parent": "notifications",
+    "area": "Conversations",
+    "title": "Unread and attention identity",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Background attention identifies the correct agent and opens its conversation once; cleared state does not reappear after redraw."
+  },
+  {
+    "id": "avatar-state",
+    "parent": "avatars",
+    "area": "Conversations",
+    "title": "Avatar save failure and reduced motion",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Local avatar choice survives restart, failure is visible, cancel restores prior state and reduced motion stops nonessential animation."
+  },
+  {
+    "id": "shortcut-search-alias",
+    "parent": "shortcut-reference",
+    "area": "Workspace",
+    "title": "Shortcut action and chord search",
+    "status": "accepted",
+    "builder": "Shortcut query builder round4",
+    "critic": "Fresh runtime critic + concealed3wins3ties",
+    "acceptance": "Natural command names and equivalent modifier, arrow and symbol queries return intended rows without arbitrary substring overmatches."
+  },
+  {
+    "id": "shortcut-results-scroll",
+    "parent": "shortcut-reference",
+    "area": "Workspace",
+    "title": "Keyboard browsing shortcut results",
+    "status": "accepted",
+    "builder": "Shortcut builder round2",
+    "critic": "Fresh shortcut critic round2",
+    "acceptance": "Tab enters result region; Arrow/Page/Home/End reveal final row with visible focus at820/1024/1440 sizes, Escape returns opener."
+  },
+  {
+    "id": "shortcut-live-context",
+    "parent": "shortcut-reference",
+    "area": "Workspace",
+    "title": "Live shortcut availability",
+    "status": "accepted \u00b7 local/Home/remote view",
+    "builder": "Shortcut builder round2",
+    "critic": "Fresh shortcut critic round2",
+    "acceptance": "Real create/close/activate updates availability while guide stays open, preserving query, focus and sensible scroll."
+  },
+  {
+    "id": "shortcut-native-routing",
+    "parent": "keyboard",
+    "area": "Workspace",
+    "title": "Native accelerator and child-view routing",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "With a verified active native child, actual OS shortcuts invoke the intended workspace command once and editing stays in the child."
+  },
+  {
+    "id": "dialog-nested-return",
+    "parent": "dialogs",
+    "area": "Workspace",
+    "title": "Nested dialog return and background shielding",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Replacing/stacking dialogs preserves opener, child-view geometry, draft and forward/reverse focus; busy overlays cannot be escaped prematurely."
+  },
+  {
+    "id": "pane-resize-bounds",
+    "parent": "layout",
+    "area": "Workspace",
+    "title": "Pane resize, collapse and restoration",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Drag to extremes, collapse and relaunch; content and resize handle remain reachable with stable minimum widths and restored preference."
+  },
+  {
+    "id": "tab-overflow-selection",
+    "parent": "tabs",
+    "area": "Workspace",
+    "title": "Dense tab overflow and selected identity",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "With30 tabs and long titles, selecting/closing first/middle/last reveals correct tab and keeps the neighboring focus visible."
+  },
+  {
+    "id": "address-url-validation",
+    "parent": "address",
+    "area": "Workspace",
+    "title": "URL versus search intent",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Plain search, intranet, spaces, Unicode, malformed URL and supported schemes resolve predictably; invalid input preserves editable text."
+  },
+  {
+    "id": "navigation-cancel-error",
+    "parent": "history",
+    "area": "Workspace",
+    "title": "Navigation loading and error recovery",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Slow, refused, offline and cancelled navigation clear loading accurately; Back/Forward/Reload act on actual active tab without duplicate requests."
+  },
+  {
+    "id": "download-cancel",
+    "parent": "downloads",
+    "area": "Workspace",
+    "title": "Download progress and cancellation",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real localhost file progress, cancellation and interruption show actual bytes/state; retry creates the expected single file."
+  },
+  {
+    "id": "download-destination",
+    "parent": "downloads",
+    "area": "Workspace",
+    "title": "Download destination and reveal",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Changed destination persists; missing/unwritable folder fails clearly; Reveal opens the actual completed artifact."
+  },
+  {
+    "id": "extension-load-failure",
+    "parent": "extensions",
+    "area": "Workspace",
+    "title": "Extension load and incompatible state",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Valid and invalid local extension load results match runtime; failed extension can be removed without disrupting other tabs."
+  },
+  {
+    "id": "pdf-load-error",
+    "parent": "pdf",
+    "area": "Workspace",
+    "title": "PDF load and invalid document",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual valid/large/invalid local PDF has readable controls, accurate load failure and recoverable navigation."
+  },
+  {
+    "id": "recording-start-stop",
+    "parent": "recording",
+    "area": "Workspace",
+    "title": "Recording start, stop and interrupted save",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual event recording emits one usable artifact, stops after cancellation and handles failed save without claiming successful teaching."
+  },
+  {
+    "id": "settings-category-keys",
+    "parent": "settings-categories",
+    "area": "Workspace",
+    "title": "Category keyboard navigation",
+    "status": "accepted \u00b7 scoped idle UI",
+    "builder": "Settings navigation builder",
+    "critic": "Fresh Settings critic \u00b721states/84cycles",
+    "acceptance": "Selected category is exposed semantically; arrow/Home/End and Tab reach content with persistent title/close at supported/adverse sizes."
+  },
+  {
+    "id": "settings-search-empty",
+    "parent": "settings-search",
+    "area": "Workspace",
+    "title": "Settings no-results and recovery",
+    "status": "accepted \u00b7 scoped idle UI",
+    "builder": "Settings navigation builder",
+    "critic": "Fresh Settings critic \u00b721states/84cycles",
+    "acceptance": "Plain terms find intended controls; zero matches expose clear reset; Escape/reset preserve query/category and return focus predictably."
+  },
+  {
+    "id": "settings-async-error",
+    "parent": "settings",
+    "area": "Workspace",
+    "title": "Settings asynchronous failure state",
+    "status": "accepted \u00b7 recovery and state ordering scope",
+    "builder": "Settings async/freshness builder",
+    "critic": "Independent recovery critic; fresh ordering critic active",
+    "acceptance": "Pending focus, single dispatch and cookie failure/retry state independently accepted. Authoritative ordering has 47 builder checks green and awaits separate frozen-runtime criticism."
+  },
+  {
+    "id": "settings-ring-reveal",
+    "parent": "settings",
+    "area": "Workspace",
+    "title": "Focused settings action fully visible",
+    "status": "accepted \u00b7 scoped idle UI",
+    "builder": "Settings navigation builder",
+    "critic": "Fresh Settings critic \u00b721states/84cycles",
+    "acceptance": "Independent idle traversal: 84 forward/reverse cycles at 1280/1120/1024 in zero/dense profiles with complete focus outlines. The separate asynchronous focus repair later passed independent runtime review."
+  },
+  {
+    "id": "status-missing-config",
+    "parent": "tool-status",
+    "area": "Agent control",
+    "title": "MCP missing and invalid connection config",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual MCP status for missing/malformed/stale config gives actionable state without claiming browser or computer capability is connected."
+  },
+  {
+    "id": "snapshot-stale-ref",
+    "parent": "snapshots",
+    "area": "Agent control",
+    "title": "Stale references and document epoch",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Navigation and DOM removal invalidate relevant refs; old ref cannot act on a different new control, and recovery requests fresh snapshot."
+  },
+  {
+    "id": "input-selector-ambiguity",
+    "parent": "input",
+    "area": "Agent control",
+    "title": "Ambiguous live target refusal",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Duplicate, hidden, detached and moved live controls refuse or resolve according to documented contract before trusted input."
+  },
+  {
+    "id": "input-mid-batch-failure",
+    "parent": "input",
+    "area": "Agent control",
+    "title": "Batch partial outcome truth",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real first action succeeds and second fails; third never executes, receipt preserves exact failed step and known prior result."
+  },
+  {
+    "id": "continuation-pre-dispatch",
+    "parent": "tool-receipts",
+    "area": "Agent control",
+    "title": "Known non-dispatch continuation",
+    "status": "accepted",
+    "builder": "Reliability builder round3",
+    "critic": "Fresh reliability critic round3",
+    "acceptance": "Current and actual supported legacy404 refusals may continue once using fresh destination epoch; uncertain failures never trigger retarget."
+  },
+  {
+    "id": "continuation-host-trust",
+    "parent": "tool-receipts",
+    "area": "Agent control",
+    "title": "Request-bound non-dispatch proof",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "If arbitrary intermediary counterfeits exact trusted404 after input, one logical action still produces at most one mutation across targets; broader contract work."
+  },
+  {
+    "id": "takeover-queue-revoke",
+    "parent": "takeover",
+    "area": "Agent control",
+    "title": "Takeover revokes queued action",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real human takeover between queue and dispatch invalidates queued action before any input; later snapshots expose correct owner/epoch."
+  },
+  {
+    "id": "takeover-handback",
+    "parent": "takeover",
+    "area": "Agent control",
+    "title": "Manual handback and grace period",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Explicit and automatic return obey documented grace/cancel states; active human typing is not overwritten and UI matches actual ownership."
+  },
+  {
+    "id": "ownership-agent-isolation",
+    "parent": "ownership",
+    "area": "Agent control",
+    "title": "Cross-agent tab isolation",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "A different bot cannot enumerate sensitive tab contents or dispatch input to a tab outside its assigned contract."
+  },
+  {
+    "id": "approval-live-target",
+    "parent": "approval-labels",
+    "area": "Agent control",
+    "title": "Observed name to current link binding",
+    "status": "accepted",
+    "builder": "Approval builder rounds2\u20133",
+    "critic": "Independent actual-browser critics rounds2\u20133",
+    "acceptance": "Observed equivalent names and live href changes, including pointermove mutation, refuse before trusted press/click; scoped document/target/operation proof preserves reviewed context. Same accepted change as approval-once, not an extra metric count."
+  },
+  {
+    "id": "approval-once",
+    "parent": "approval-labels",
+    "area": "Agent control",
+    "title": "Approval single-use and target binding",
+    "status": "accepted",
+    "builder": "Approval builder round3",
+    "critic": "Independent actual-browser critic round3",
+    "acceptance": "Supported frozen router/connector/host contract: changed document, node, destination, operation and stale/lifecycle proofs refuse; unchanged approved action executes once. Partial batches report prior input honestly. Human presentation and remote deployment remain unverified."
+  },
+  {
+    "id": "handback-captcha",
+    "parent": "needs-you",
+    "area": "Agent control",
+    "title": "CAPTCHA and login handback",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual local challenge fixture requests human help with correct tab identity; agent never claims challenge solved or continues blocked action."
+  },
+  {
+    "id": "background-human-draft",
+    "parent": "background",
+    "area": "Agent control",
+    "title": "Background action preserves human draft",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "With verified native human editor focus, actual agent action in background tab preserves focused application, text selection and draft."
+  },
+  {
+    "id": "performance-startup",
+    "parent": "performance",
+    "area": "Agent control",
+    "title": "Cold and warm launch latency",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Measure actual source/package launch-to-interactive across repeated isolated runs; report distribution and resource use, not a single favorable sample."
+  },
+  {
+    "id": "performance-snapshot",
+    "parent": "performance",
+    "area": "Agent control",
+    "title": "Snapshot cost on large pages",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Measure real snapshot latency and output size on ordinary/large/changing fixtures; enforce meaningful bounds without dropping actionable controls."
+  },
+  {
+    "id": "remote-connect-errors",
+    "parent": "remote-connect",
+    "area": "Remote workspace",
+    "title": "Remote refused, timeout and auth failure",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual local fault server yields distinct connection states and actionable retry without sending credentials to wrong host."
+  },
+  {
+    "id": "remote-preview-reconnect",
+    "parent": "remote-preview",
+    "area": "Remote workspace",
+    "title": "Preview disconnect, resize and reconnect",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real local remote protocol fixture updates dimensions, shows disconnection truthfully and reconnects without stale frame posing as live."
+  },
+  {
+    "id": "remote-control-mode",
+    "parent": "remote-control",
+    "area": "Remote workspace",
+    "title": "Watch versus control boundary",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "View mode emits zero keyboard/pointer writes; explicit control mode targets current host and releases held keys on disconnect."
+  },
+  {
+    "id": "routing-host-identity",
+    "parent": "host-routing",
+    "area": "Remote workspace",
+    "title": "Visible execution host identity",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Each action and human control surface identifies local versus remote host; offline fallback changes identity before implying execution."
+  },
+  {
+    "id": "plugin-legacy-install",
+    "parent": "plugin-install",
+    "area": "Hermes integration",
+    "title": "Clean stock Hermes plugin discovery",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Disposable stock Hermes home loads plugin through public config, lists tools and removes cleanly without private core imports or source edits."
+  },
+  {
+    "id": "plugin-upgrade-contract",
+    "parent": "plugin-install",
+    "area": "Hermes integration",
+    "title": "Old plugin and new desktop compatibility",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual older router/current desktop and current router/supported older host agree on capabilities, refusals and public receipt meanings."
+  },
+  {
+    "id": "doctor-exit-code",
+    "parent": "diagnostics",
+    "area": "Hermes integration",
+    "title": "Diagnostic exit code and next action",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual CLI doctor has deterministic success/warning/failure exits and specific next action for missing, refused, stale and malformed connection states."
+  },
+  {
+    "id": "restart-draft-tab",
+    "parent": "restore",
+    "area": "Lifecycle",
+    "title": "Restart preserves intended workspace",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Restart isolated profile with multiple owners/tabs/panes; restore correct identity and draft without stale claiming of active control."
+  },
+  {
+    "id": "update-state-truth",
+    "parent": "updates",
+    "area": "Lifecycle",
+    "title": "Downloaded versus running version",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Slow/fail/complete update fixture distinguishes available/downloaded/installed/running versions and never reports success before activation."
+  },
+  {
+    "id": "permission-state",
+    "parent": "permissions",
+    "area": "Lifecycle",
+    "title": "Granted versus usable native capability",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Permission API granted state is distinct from an active GUI/focus precondition; UI gives accurate next step for each actual observed failure."
+  },
+  {
+    "id": "crash-tab-recovery",
+    "parent": "crash-recovery",
+    "area": "Lifecycle",
+    "title": "One crashed tab recovers without workspace loss",
+    "status": "accepted \u00b7 scoped toolbar/API/menu-callback recovery",
+    "builder": "Browser recovery builder",
+    "critic": "Fresh independent browser recovery critic",
+    "acceptance": "Kill only isolated renderer; affected tab offers reload, other conversations/tabs survive, and no uncertain action is automatically replayed."
+  },
+  {
+    "id": "a11y-reduced-motion",
+    "parent": "accessibility",
+    "area": "Lifecycle",
+    "title": "Reduced motion across primary surfaces",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual system/preference fixture removes nonessential motion, preserves all state information and leaves no indefinite invisible transition."
+  },
+  {
+    "id": "a11y-labels",
+    "parent": "accessibility",
+    "area": "Lifecycle",
+    "title": "Primary control accessible identity",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual AX tree exposes unique names, roles, selected/expanded/disabled states and logical order for primary workspace controls."
+  },
+  {
+    "id": "approval-unapproved-binding",
+    "parent": "approval-labels",
+    "area": "Agent control",
+    "title": "Unapproved observed name and fresh href binding",
+    "status": "accepted",
+    "builder": "Plugin binding builder round2",
+    "critic": "Fresh plugin critic round2",
+    "acceptance": "Actual router/MCP/Chromium probes: 25 whitespace forms, stale href and pointermove changes refuse before trusted press/click. Normal names, refs and rows remain usable. Pending approval substitution was separately repaired and accepted in round3."
+  },
+  {
+    "id": "router-literal-unicode-framing",
+    "parent": "plugin-routing",
+    "area": "Hermes integration",
+    "title": "Literal Unicode separators in JSON messages",
+    "status": "review incomplete \u00b7 provider block",
+    "builder": "Framing builder",
+    "critic": "Independent critic stopped after provider cyberPolicy error",
+    "acceptance": "Builder raw-wire and actual host/browser checks pass. Separate critic verified 394 hashes but its provider ended the turn before runtime tests; no independent acceptance or execution of the blocked fixture is claimed."
+  },
+  {
+    "id": "settings-pending-focus",
+    "parent": "settings-async-error",
+    "area": "Workspace",
+    "title": "Keyboard focus through pending settings actions",
+    "status": "accepted",
+    "builder": "Settings recovery builder",
+    "critic": "Fresh Settings2 critic",
+    "acceptance": "Held success/rejection retains initiating focus, full outline and retry; moved field/category/dialog/reopened focus is preserved. Actual three-size IPC/counter evidence."
+  },
+  {
+    "id": "settings-cookie-freshness",
+    "parent": "settings-async-error",
+    "area": "Workspace",
+    "title": "Current cookie read state after failure and retry",
+    "status": "accepted",
+    "builder": "Settings recovery builder",
+    "critic": "Fresh Settings2 critic",
+    "acceptance": "Initial/after-empty/after-populated/invalid failures show unavailable and retry; actual local refresh/domain clear/all clear read back accurately; stale responses do not replace reopened view."
+  },
+  {
+    "id": "settings-pending-once",
+    "parent": "settings-async-error",
+    "area": "Workspace",
+    "title": "Single dispatch while persistence response is pending",
+    "status": "accepted",
+    "builder": "Settings recovery builder",
+    "critic": "Fresh Settings2 critic",
+    "acceptance": "Real persistence/broadcast occurs while response held; busy switch/focus survive, repeated Enter/Space/pointer produce one dispatch. Independent counters at3sizes."
+  },
+  {
+    "id": "ui-state-ordering",
+    "parent": "settings-async-error",
+    "area": "Workspace",
+    "title": "Authoritative state after out-of-order real replies",
+    "status": "accepted",
+    "builder": "State ordering builder",
+    "critic": "Independent actual IPC critic",
+    "acceptance": "Independent actual-main/renderer/preload stale reply, broadcast, getState and later persistence cases pass with API/disk/UI readback. 24/25 assertions pass; the one inherited newer-draft loss is a separate tracked defect. 47 corroborating checks pass."
+  },
+  {
+    "id": "tool-reply-efficiency",
+    "parent": "performance",
+    "area": "Agent control",
+    "title": "Agent-facing response size with internal approval proof",
+    "status": "accepted",
+    "builder": "Reply efficiency builder",
+    "critic": "Independent public-reply critic",
+    "acceptance": "Current single-JSON-text connector path independently accepted: equal-page full reply 11,131 to 6,576 bytes, preserved business values and approval controls. No speedup, token-cost or generalized multi-part sanitization claim."
+  },
+  {
+    "id": "welcome-purpose",
+    "parent": "welcome",
+    "area": "First run",
+    "title": "Understand the workspace before setup",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "First welcome explains where the existing Hermes agent runs and what this Mac adds; a fresh observer can identify the next action from actual output."
+  },
+  {
+    "id": "welcome-exit",
+    "parent": "welcome",
+    "area": "First run",
+    "title": "Skip and revisit welcome safely",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Skipping or closing welcome preserves existing accounts and saved addresses; reopening resumes a consistent page without duplicate setup."
+  },
+  {
+    "id": "cloud-claim-expiry",
+    "parent": "cloud-claim",
+    "area": "First run",
+    "title": "Expired or repeated claim links",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual inert expired and repeated claim responses show distinct recovery without provisioning twice or exposing claim credentials."
+  },
+  {
+    "id": "cloud-claim-progress",
+    "parent": "cloud-claim",
+    "area": "First run",
+    "title": "Cloud step and failure truth",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Delayed, refused and interrupted provisioning show the last authoritative step; a saved token or optimistic click never means the computer is ready."
+  },
+  {
+    "id": "new-tab-query",
+    "parent": "new-tab",
+    "area": "Workspace",
+    "title": "New-tab address and search submission",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Keyboard submission distinguishes supported addresses from search text, handles Unicode and empty input, and navigates once with clear resulting focus."
+  },
+  {
+    "id": "new-tab-recovery",
+    "parent": "new-tab",
+    "area": "Workspace",
+    "title": "New-tab loading and offline recovery",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "The actual starting page remains useful with missing artwork, offline content and no bots; recovery preserves the intended destination."
+  },
+  {
+    "id": "navigation-timeout",
+    "parent": "navigation-waits",
+    "area": "Agent control",
+    "title": "Navigation deadline and cancellation",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real slow, stalled and redirecting fixture navigation settles within a measured bound and reports its actual final state without replaying consequential input."
+  },
+  {
+    "id": "navigation-failed-page",
+    "parent": "navigation-waits",
+    "area": "Agent control",
+    "title": "Failed destination versus blank page",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "DNS, TLS and refused inert destinations produce actionable failure state; Back, reload and a new address remain usable without losing existing tabs."
+  },
+  {
+    "id": "remote-browser-identity",
+    "parent": "remote-browser",
+    "area": "Remote workspace",
+    "title": "Remote browser and tab identity",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual public calls preserve remote host, tab and epoch identity across selection changes; remote refusal never silently executes on this Mac."
+  },
+  {
+    "id": "remote-browser-reconnect",
+    "parent": "remote-browser",
+    "area": "Remote workspace",
+    "title": "Remote browser reconnect and stale handles",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "A restarted real fixture retires stale tab/ref generations; a fresh observation recovers without replaying a prior mutation."
+  },
+  {
+    "id": "continuity-readback",
+    "parent": "continuity",
+    "area": "Remote workspace",
+    "title": "Reconnection re-observes current state",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "After a transport loss the actual workspace observes current tabs and controller before claiming recovery; stale cached content is distinguishable."
+  },
+  {
+    "id": "continuity-pending-action",
+    "parent": "continuity",
+    "area": "Remote workspace",
+    "title": "Pending action across a disconnect",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Disconnect before dispatch and lost response after dispatch produce distinct outcomes; an uncertain action is never automatically replayed."
+  },
+  {
+    "id": "fleet-selected-host",
+    "parent": "fleet",
+    "area": "Remote workspace",
+    "title": "Selected server identity in every action",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Changing the selected configured server changes only the intended target; held replies from another server never overwrite its status or operation context."
+  },
+  {
+    "id": "fleet-isolation",
+    "parent": "fleet",
+    "area": "Remote workspace",
+    "title": "Credentials and errors stay with their server",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Two inert server profiles keep credentials, status, refs and errors separate through edit, removal, relaunch and concurrent requests."
+  },
+  {
+    "id": "plugin-contract-matrix",
+    "parent": "plugin-contract",
+    "area": "Hermes integration",
+    "title": "Supported and older public contract matrix",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual selected current and prior router/connector/host implementations advertise and enforce their real capabilities; missing support produces a usable upgrade path."
+  },
+  {
+    "id": "plugin-contract-vanilla",
+    "parent": "plugin-contract",
+    "area": "Hermes integration",
+    "title": "Vanilla Hermes public discovery and tool call",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "An unchanged disposable Hermes profile discovers and uses the shipped public tools; no private imports, monkey patches or direct session writes support the proof."
+  },
+  {
+    "id": "proactivity-pause",
+    "parent": "proactivity",
+    "area": "Hermes integration",
+    "title": "Pause and resume automatic check-ins",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Pausing the existing supported check-in path prevents later scheduled work; resume is explicit and does not duplicate missed consequential actions."
+  },
+  {
+    "id": "proactivity-unattended",
+    "parent": "proactivity",
+    "area": "Hermes integration",
+    "title": "Unattended work cannot invent consent",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "A real unattended public session declines consequential approval when no person can answer, settles within a bound and explains the staged next step."
+  },
+  {
+    "id": "setup-docs-destination",
+    "parent": "setup-docs",
+    "area": "Hermes integration",
+    "title": "Setup instructions name the correct machine",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Copyable setup and repair instructions identify their execution host and selected bot; paths and commands match the actual shipped public contract."
+  },
+  {
+    "id": "setup-docs-upgrade",
+    "parent": "setup-docs",
+    "area": "Hermes integration",
+    "title": "Version-specific repair preserves ownership",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual current and supported older installations follow a reviewed upgrade/repair path without creating a second owner for a shared conversation."
+  },
+  {
+    "id": "regression-platform-boundary",
+    "parent": "regressions",
+    "area": "Lifecycle",
+    "title": "Unsupported platforms remain explicit",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Real platform selection and supported test fixtures reject absent operations rather than selecting a different operating system or host."
+  },
+  {
+    "id": "regression-build-inputs",
+    "parent": "regressions",
+    "area": "Lifecycle",
+    "title": "Packaged runtime matches reviewed inputs",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "A separate disposable package uses the reviewed source and generated runtime inputs; version, public tools and dependency provenance match without mutating the review snapshot."
+  },
+  {
+    "id": "context-current-agent",
+    "parent": "execution-context",
+    "area": "Agent control",
+    "title": "Visible current agent and tab owner",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Actual workspace identifies the selected agent and tab controller through ownership change, hidden agents and remote views without attributing another agent\u2019s work."
+  },
+  {
+    "id": "context-current-machine",
+    "parent": "execution-context",
+    "area": "Agent control",
+    "title": "Visible execution machine and capability",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Before a tool action, the displayed machine and supported control scope match the actual routed host; local API readiness alone never asserts authenticated remote agent readiness."
+  },
+  {
+    "id": "settings-save-draft",
+    "parent": "settings-async-error",
+    "area": "Workspace",
+    "title": "Newer draft survives a pending save",
+    "status": "accepted \u00b7 pending-save scope",
+    "builder": "Connections and draft builder",
+    "critic": "Independent Connections runtime critic",
+    "acceptance": "Later URL/SSH edits survive held actual Save replies and broadcasts; independently verified. Closing Settings still discards drafts and is separately being repaired."
+  },
+  {
+    "id": "approval-human-review",
+    "parent": "needs-you",
+    "area": "Agent control",
+    "title": "Rendered human approval review",
+    "status": "building",
+    "builder": "Vanilla public CLI approval builder",
+    "critic": "Fresh actual CLI critic pending",
+    "acceptance": "Test unchanged vanilla Hermes through a disposable local public CLI profile and inert model/MCP/browser fixture. Real rendered consent and actual input counters; no real account, provider or remote execution claim."
+  },
+  {
+    "id": "approval-human-refusal",
+    "parent": "needs-you",
+    "area": "Agent control",
+    "title": "Rendered refusal and recovery action",
+    "status": "partial \u00b7 bounded TUI runtime supported",
+    "builder": null,
+    "critic": "Fresh independent public Hermes TUI critic",
+    "acceptance": "An actual changed-target refusal visibly explains what happened, whether input occurred and the safe next step; partial outcomes never claim that nothing ran."
+  },
+  {
+    "id": "connections-guided-journey",
+    "parent": "server-connect",
+    "area": "First run",
+    "title": "One clear next step for connection setup",
+    "status": "partial \u00b7 primary guidance accepted; alternative reviewing",
+    "builder": "Connections journey builder",
+    "critic": "Fresh blind hierarchy and 40-case runtime critic",
+    "acceptance": "Actual Connections output distinguishes this computer, an existing agent and optional remote desktop; advanced fields remain findable while saved, checked, failed and changed states offer the appropriate next action."
+  },
+  {
+    "id": "approval-capability-recovery",
+    "parent": "tool-status",
+    "area": "Agent control",
+    "title": "Recover restored approval support without a restart",
+    "status": "accepted \u00b7 supported host recovery",
+    "builder": "Coordinator connector builder",
+    "critic": "Independent recovery critic",
+    "acceptance": "Same-endpoint proof snapshot recovery independently passes on Node26/24 with cached ordinary reads and fresh unsupported-forward refusal. Inherited delimiter identity collision is separately rejected and repaired under connection-request-identity."
+  },
+  {
+    "id": "settings-switch-affordance",
+    "parent": "settings",
+    "area": "Workspace",
+    "title": "Clear on/off and pending switch affordances",
+    "status": "accepted \u00b7 visible controls and mounted behavior only",
+    "builder": "Settings switch visual builder",
+    "critic": "Fresh concealed-comparison and runtime critic",
+    "acceptance": "Actual shared Settings switches clearly show on/off/pending states with preserved labels, keyboard operation, persistence, focus outlines and reduced motion; directly compare matched running output with reference controls."
+  },
+  {
+    "id": "connection-request-identity",
+    "parent": "tool-status",
+    "area": "Agent control",
+    "title": "Exact request identity across capability check and forwarding",
+    "status": "accepted \u00b7 action/control request consistency",
+    "builder": "Coordinator identity repair builder",
+    "critic": "Fresh independent action and control retry critics",
+    "acceptance": "Different accepted URL/token request strings cannot share a cache key or approved forward; equal serialized request values remain usable, and token/address changes during status send zero POSTs."
+  },
+  {
+    "id": "settings-draft-reopen",
+    "parent": "settings",
+    "area": "Workspace",
+    "title": "Recover unsaved addresses after closing Settings",
+    "status": "accepted \u00b7 scoped runtime",
+    "builder": "Connections round2 builder",
+    "critic": "Fresh independent Connections round2 critic",
+    "acceptance": "Actual address drafts survive close/reopen in the same app session without auto-saving, leaking to another bot/context, or losing later edits to pending/rejected saves; explicit save/discard remains predictable."
+  },
+  {
+    "id": "connections-setup-continuation",
+    "parent": "server-connect",
+    "area": "First run",
+    "title": "Understand the copied setup request and next reply",
+    "status": "accepted \u00b7 scoped runtime",
+    "builder": "Connections round2 builder",
+    "critic": "Fresh independent Connections round2 critic",
+    "acceptance": "Actual initial Connections output concisely previews the real setup request, expected agent reply and next address/check action, with matching copied prompt and no implied authenticated readiness."
+  },
+  {
+    "id": "control-change-receipts",
+    "parent": "tool-receipts",
+    "area": "Agent control",
+    "title": "Truthful control-change receipts and recovery",
+    "status": "accepted \u00b7 supported control and ID contract",
+    "builder": "Coordinator control receipt builder",
+    "critic": "Fresh independent round2 critic \u00b782 checks per runtime",
+    "acceptance": "Claim/release confirms the requested tab/controller and valid epoch; bogus, lost or mismatched replies remain uncertain with one POST and explicit read recovery. Actual host state, ordinary continuation and old/current host compatibility are tested."
+  },
+  {
+    "id": "settings-switch-reopen",
+    "parent": "settings",
+    "area": "Workspace",
+    "title": "Keep switch saves pending across Settings reopen",
+    "status": "accepted \u00b7 bounded lifetime, disk-truth and legacy fence scope",
+    "builder": "Settings pending recovery builder",
+    "critic": "Fresh Settings critic \u00b742/44 independent assertions",
+    "acceptance": "All three switches retain truthful pending state and prevent a second write across close/reopen, before and after real persistence; late results never override newer choices."
+  },
+  {
+    "id": "settings-save-unconfirmed",
+    "parent": "settings",
+    "area": "Workspace",
+    "title": "Recover a save whose reply never arrives",
+    "status": "accepted \u00b7 bounded lifetime, disk-truth and legacy fence scope",
+    "builder": "Settings pending recovery builder",
+    "critic": "Fresh Settings critic \u00b742/44 independent assertions",
+    "acceptance": "A bounded recovery preserves later drafts, reconciles actual saved state and fences late earlier work; no blind replay, invented cancellation or indefinite Save/Discard trap."
+  },
+  {
+    "id": "setup-reviewed-alternative",
+    "parent": "server-connect",
+    "area": "First run",
+    "title": "Keep the setup alternative consistent with reviewed steps",
+    "status": "accepted \u00b7 exact-final local notes only",
+    "builder": "Setup review notes builder",
+    "critic": "Fresh setup alternative critic \u00b723/23 runtime",
+    "acceptance": "Actual clipboard and UI present inert context-scoped notes and one reviewed guided setup owner; no main-branch executable pipe, hidden restart or invented pin."
+  },
+  {
+    "id": "vanilla-fixture-effective-config",
+    "parent": "plugin-contract",
+    "area": "Hermes integration",
+    "title": "Verify the effective public CLI tool configuration",
+    "status": "accepted \u00b7 bounded observed child/cleanup scope",
+    "builder": "Public CLI fixture repair builder",
+    "critic": "Fresh independent fixture critic \u00b7 exact approve/decline plus82-column supplement",
+    "acceptance": "Raw string configuration, preserved structured types, owned config readback and actual advertised eager tools agree through the unchanged public Hermes CLI."
+  },
+  {
+    "id": "vanilla-fixture-confinement",
+    "parent": "plugin-contract",
+    "area": "Hermes integration",
+    "title": "Confine disposable CLI tests and clean only owned work",
+    "status": "accepted \u00b7 bounded observed child/cleanup scope",
+    "builder": "Public CLI fixture repair builder",
+    "critic": "Fresh independent fixture critic \u00b7 exact approve/decline plus82-column supplement",
+    "acceptance": "Single tested policy protects existing root/profile/WAL/runtime facts/source before CLI, permits only normal bookkeeping and owned work, and cleanup uses positive ownership while unrelated activity remains untouched."
+  },
+  {
+    "id": "mutation-retry-guidance",
+    "parent": "tool-receipts",
+    "area": "Agent control",
+    "title": "Keep recovery instructions consistent after uncertain mutations",
+    "status": "accepted \u00b7 whole installed skill and public descriptions",
+    "builder": "Coordinator complete guidance repair",
+    "critic": "Fresh complete recovery-guidance critic",
+    "acceptance": "Actual public tool discovery and the installed skill scope retry-once to reads, require inspect-before-repeat for uncertain action/control results, and distinguish confirmed ordinary continuation from fresh approval review."
+  },
+  {
+    "id": "vanilla-fixture-request-declarations",
+    "parent": "plugin-contract",
+    "area": "Hermes integration",
+    "title": "Validate every scenario-bearing model request",
+    "status": "accepted \u00b7 bounded independent public-TUI and handler scope",
+    "builder": "Coordinator fixture validator repair",
+    "critic": "Fresh optional declaration-validator critic",
+    "acceptance": "The inert model transport checks actual declarations on every scenario-bearing request before choosing a tool, rejects later contradictions or missing tools, and preserves genuinely ancillary title/summary responses."
+  },
+  {
+    "id": "settings-save-disk-truth",
+    "parent": "settings-save-unconfirmed",
+    "area": "Workspace",
+    "title": "Keep failed preference writes consistent with saved disk state",
+    "status": "accepted \u00b7 tracked and legacy failed-write recovery scope",
+    "builder": "Settings disk-truth/draft builder",
+    "critic": "Fresh Settings persistence critic round2",
+    "acceptance": "Inject real owned saver failure, preserve actual disk values, show truthful current/unknown state and retained drafts, then one explicit next choice makes the intended single transition."
+  },
+  {
+    "id": "settings-clean-draft-retention",
+    "parent": "settings-draft-reopen",
+    "area": "Workspace",
+    "title": "Retire clean inactive drafts without losing edits",
+    "status": "accepted \u00b7 bounded clean churn and protected edits",
+    "builder": "Settings disk-truth/draft builder",
+    "critic": "Fresh Settings persistence critic round2",
+    "acceptance": "Modest target churn does not retain one clean draft per old target; mounted, dirty and pending drafts remain intact and return to their exact context."
+  },
+  {
+    "id": "browser-canceled-navigation",
+    "parent": "crash-tab-recovery",
+    "area": "Lifecycle",
+    "title": "Keep a canceled destination canceled after crash recovery",
+    "status": "accepted \u00b7 tested toolbar/banner cancellation scope",
+    "builder": "Browser cancellation repair builder",
+    "critic": "Fresh combined browser cancellation critic",
+    "acceptance": "Real stop/cancel followed by isolated renderer crash and explicit reload returns to committed current state; it does not revive the canceled pending URL, replay input or overwrite newer navigation."
+  },
+  {
+    "id": "settings-failed-legacy-fence",
+    "parent": "settings-save-disk-truth",
+    "area": "Workspace",
+    "title": "Reconcile failed legacy writes before the next explicit choice",
+    "status": "accepted \u00b744independent+14supplementary real-kernel checks",
+    "builder": "Fresh failed-legacy Settings builder",
+    "critic": "Different fresh critic required",
+    "acceptance": "An actual failed legacy write publishes its new revision and actual saved state; one following tracked choice succeeds exactly once without extra state reads, replay or release of older fenced work."
+  },
+  {
+    "id": "browser-reload-entrypoints",
+    "parent": "crash-tab-recovery",
+    "area": "Lifecycle",
+    "title": "Recover the intended destination through agent and menu Reload",
+    "status": "accepted \u00b7 original runtime10scenarios and lifecycle probes",
+    "builder": "Fresh browser API reload builder",
+    "critic": "Different fresh runtime critic required",
+    "acceptance": "An interrupted navigation recovers its intended destination through each authorized reload entrypoint without input replay, stale ref reuse, disposed-frame errors or changes to another actor\u2019s control. Completed cancellation remains canceled."
+  },
+  {
+    "id": "router-stdio-eof-cleanup",
+    "parent": "plugin-contract",
+    "area": "Lifecycle",
+    "title": "Close owned MCP children when the public client closes stdin",
+    "status": "accepted \u00b742originalscenarios+26focused eachruntime",
+    "builder": "Fresh router EOF builder",
+    "critic": "Different fresh runtime critic required",
+    "acceptance": "Actual public stdio EOF settles and closes every owned connector within a bound without restarting or replaying work; controlled harness termination is never called natural EOF cleanup."
+  },
+  {
+    "id": "router-dynamic-recovery-notices",
+    "parent": "mutation-retry-guidance",
+    "area": "Agent control",
+    "title": "Qualify dynamic continuation and restoration notices",
+    "status": "accepted \u00b74concealedpreferences+44publicreplies; verbositygap retained",
+    "builder": "Coordinator dynamic-notice repair",
+    "critic": "Different fresh critic required",
+    "acceptance": "Actual router notices require current destination observation before dependent work and accurately limit cookie, login and draft restoration, without stalling ordinary authorized work or changing routing/approval behavior."
+  },
+  {
+    "id": "connections-compact-overview",
+    "parent": "connections-guided-journey",
+    "area": "First run",
+    "title": "Scan computer, agent and desktop paths without a long default form",
+    "status": "accepted \u00b751/51 independent; complete1440/limited1120 pixels",
+    "builder": "Fresh Connections overview builder",
+    "critic": "Fresh independent Connections critic",
+    "acceptance": "Real minimum-window default overview shows all three path headings and one clear next action; advanced setup remains findable, actual readiness remains truthful, and saved/dirty/pending/context behavior is preserved."
+  },
+  {
+    "id": "chromium-public-cdp-compatibility",
+    "parent": "remote-browser",
+    "area": "Agent control",
+    "title": "Keep public Chromium commands usable in the tested browser runtime",
+    "status": "accepted \u00b759/59; all52 formerly skipped cases executed",
+    "builder": "Fresh Chromium compatibility builder",
+    "critic": "Fresh independent public-runtime critic",
+    "acceptance": "Original owned loopback probes isolate any runtime/source/environment cause; current supported configuration completes real page create/attach/read/input and all52Chrome checks without weakening controls, hidden skips or timeout inflation."
+  },
+  {
+    "id": "router-stable-read-notice-overhead",
+    "parent": "router-dynamic-recovery-notices",
+    "area": "Agent control",
+    "title": "Keep stable successful-read recovery notices concise",
+    "status": "retired \u00b7 full guidance restoration verified; byte saving forfeited",
+    "builder": "Fresh notice efficiency builder",
+    "critic": "Devin ctx_73eb132d048e \u00b7 independent wire probes; test chronology qualified",
+    "acceptance": "Actual repeated read replies use fewer notice characters and explicitly allow unchanged current-state reuse, while first/changed/uncertain/review/error contexts retain required recovery information and all business/meta/authority behavior stays intact."
+  },
+  {
+    "id": "connections-failure-overview",
+    "parent": "connections-compact-overview",
+    "area": "First run",
+    "title": "Keep computer roles and recovery visible after a connection failure",
+    "status": "accepted \u00b721/21 independent UI checks vs20/21; real SSH/native unverified",
+    "builder": "Fresh failure-overview builder",
+    "critic": "Devin SWE-2 Max \u00b7 ctx_91e4710391de",
+    "acceptance": "Actual minimum-window refused check keeps truthful failure and next action readable while all three role headings remain findable; default, draft, pending and accessibility behavior stay intact."
+  },
+  {
+    "id": "vanilla-consent-scope",
+    "parent": "approval-labels",
+    "area": "Approval",
+    "title": "Establish the actual scope of vanilla Hermes session consent",
+    "status": "reviewing \u00b7new immutable candidate; fresh public CLI proof active",
+    "builder": "Fresh public consent and queue builder",
+    "critic": "Different fresh Devin \u00b7ctx_3d09ecc91fb8",
+    "acceptance": "Normal public TUI choices are bound to actual MCP requests and observed effects; repeated consent is described honestly without changing vanilla Hermes or implying durable permission."
+  },
+  {
+    "id": "vanilla-pending-approval-order",
+    "parent": "approval-labels",
+    "area": "Approval",
+    "title": "Prove ordering and action binding for pending approvals",
+    "status": "reviewing \u00b7new immutable candidate; fresh public CLI proof active",
+    "builder": "Fresh public consent and queue builder",
+    "critic": "Different fresh Devin \u00b7ctx_3d09ecc91fb8",
+    "acceptance": "Two requested public actions either demonstrate correctly bound pending decisions and zero early effects or establish actual public serialization, with refusal, stale and timeout observations retained."
+  },
+  {
+    "id": "quality-progress-scan",
+    "area": "Quality",
+    "title": "Keep the live progress page short and evidence easy to browse",
+    "status": "accepted \u00b7compact evidence browsing+tested atomic data/count contract; minor limits retained",
+    "builder": "Devin \u00b7atomic data/count repair",
+    "critic": "Different fresh Devin \u00b7actual polling and input",
+    "acceptance": "Recent gaps, checks, screenshots and comparisons remain visible; all older evidence and the full inventory remain accessible, while filtering, focus and expanded sections survive live polling."
+  },
+  {
+    "id": "new-tab-agent-action-label",
+    "parent": "new-tab",
+    "area": "Workspace",
+    "title": "Make the Home agent action clear in visible text",
+    "status": "building \u00b7next iteration from fresh reference gap",
+    "builder": "Devin \u00b7text-label revision",
+    "critic": "Different fresh visual/runtime critic required",
+    "acceptance": "At minimum and larger windows the action visibly communicates its real page/control effect and selected target without hover. Long names fit; existing manual URL, ownership, pending/error and keyboard behavior remain intact; actual comparisons and different fresh runtime review required."
+  },
+  {
+    "id": "workspace-chat-state-cue",
+    "parent": "telegram-recovery",
+    "area": "Conversations",
+    "title": "Make the Home next-step cue reflect chat availability",
+    "status": "queued",
+    "builder": null,
+    "critic": null,
+    "acceptance": "Known unavailable/loading chat states produce a truthful actionable cue and a usable local path. Do not infer authentication or readiness merely from a saved agent. Recovery updates the cue. Actual state/failure behavior and separate fresh review required."
+  }
+]
