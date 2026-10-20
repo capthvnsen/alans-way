@@ -54,10 +54,12 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, model 
       if (command === require('../src/cloud-migrate.cjs').profilesWithTokenCommand()) {
         calls.push('tokens');
         assert.equal(options.timeoutMs, 8000);
+        if (typeof inventory === 'function') return inventory('tokens');
         return { code: 0, out: inventory };
       }
       if (command === 'ls ~/.hermes/profiles 2>/dev/null') {
         calls.push('profiles');
+        if (typeof inventory === 'function') return inventory('profiles');
         return { code: 0, out: 'personal\nwork\n' };
       }
       if (command === 'echo CONNECT_OK') {
@@ -87,8 +89,25 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, model 
     savePreferences: () => savedSteps.push(prefs.cloud.step),
   });
   return { prefs, calls, commands, savedSteps, broadcasts,
+    command: (name, value) => run(null, name, value),
     connect: () => run(null, 'cloud-connect', diy && !resume ? { host } : {}) };
 }
+
+test('DIY bot-chat discards both inventory reads when the saved host changes', async () => {
+  const pending = {};
+  const f = fixture({ resume: true, step: 'model', inventory: kind => new Promise(resolve => { pending[kind] = resolve; }) });
+  const result = f.command('cloud-goto', { step: 'bot-chat' });
+  assert.deepEqual(Object.keys(pending).sort(), ['profiles', 'tokens']);
+  f.prefs.vpsBrowser.sshHost = 'user@new.invalid';
+  pending.tokens({ code: 0, out: '/fixture/.hermes/profiles/old/.env\n' });
+  pending.profiles({ code: 0, out: 'old\n' });
+  await result;
+  assert.equal(f.prefs.cloud.botInventoryChecked, undefined);
+  assert.deepEqual(Array.from(f.prefs.cloud.tokenedProfiles), []);
+  assert.equal(f.prefs.cloud.profiles, undefined);
+  assert.equal(f.prefs.cloud.step, 'model');
+  assert.equal(f.savedSteps.length, 0);
+});
 
 test('Connect publishes the model card before returning, including a replay', async () => {
   const f = fixture();

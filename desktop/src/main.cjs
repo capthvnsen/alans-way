@@ -1539,10 +1539,17 @@ async function runSetupCheck() {
   return findings;
 }
 // Every server-address save drops evidence from the previous machine.
-function setServerConfig(config) {
-  const changed = config.sshHost !== prefs.vpsBrowser?.sshHost;
-  prefs.vpsBrowser = config;
-  if (changed) { prefs.versionCache = {}; setTimeout(checkVersionsWhenIdle, 0); }
+function setServerConfig(config, target = prefs) {
+  const changed = config.sshHost !== target.vpsBrowser?.sshHost;
+  target.vpsBrowser = config;
+  if (changed) {
+    target.versionCache = {};
+    if (target.cloud) {
+      if (target !== prefs) target.cloud = { ...target.cloud };
+      for (const field of ['botInventoryChecked', 'tokenedProfiles', 'profiles', 'existingBotId', 'existingBotProfile']) delete target.cloud[field];
+    }
+    if (target === prefs) setTimeout(checkVersionsWhenIdle, 0);
+  }
   return changed;
 }
 // Keeping a DIY model never writes credentials or restarts a running gateway.
@@ -1895,8 +1902,7 @@ function registerIpc() {
           // When the VM's SSH address moves to a different host, the noVNC
           // viewer follows unless remoteUrl was deliberately pointed elsewhere.
           followed = followVmRemoteUrl(next.vpsBrowser.sshHost, sshHost, next.remoteUrl);
-          if (sshHost !== next.vpsBrowser?.sshHost) { next.versionCache = {}; vpsChanged = true; }
-          next.vpsBrowser={sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}; if(!sshHost)next.vmUpdates={};
+          vpsChanged = setServerConfig({sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}, next); if(!sshHost)next.vmUpdates={};
           if (followed) { next.remoteUrl = followed; next.remoteControl = false; }
         }
         if (Number.isFinite(value.agentIdleMinutes)) next.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
@@ -2140,8 +2146,9 @@ function registerIpc() {
           const cloud = prefs.cloud, step = cloud?.step;
           if (cloud?.diy !== true) throw new Error('This option is only for your own server.');
           if (!cloud.botInventoryChecked) {
-            const inventory = await cloudReadBotInventory((prefs.vpsBrowser?.sshHost || '').trim());
-            if (prefs.cloud !== cloud || cloud.step !== step) return getState();
+            const host = (prefs.vpsBrowser?.sshHost || '').trim();
+            const inventory = await cloudReadBotInventory(host);
+            if (prefs.cloud !== cloud || cloud.step !== step || (prefs.vpsBrowser?.sshHost || '').trim() !== host) return getState();
             Object.assign(cloud, inventory);
           }
         }

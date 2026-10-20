@@ -58,7 +58,7 @@ for (const route of ['DIY', 'hosted', 'settings']) {
   test(`${route} server save discards old-machine evidence and schedules an immediate check`, async () => {
     const source = fs.readFileSync(require.resolve('../src/main.cjs'), 'utf8');
     const timers = [], prefs = { versionCache: { ...current }, vpsBrowser: { sshHost: 'old.invalid' },
-      cloud: { computerName: 'fixture' } };
+      cloud: { computerName: 'fixture', botInventoryChecked: true, tokenedProfiles: ['old'], profiles: ['old'], existingBotId: '101', existingBotProfile: 'old' } };
     const context = { prefs, isSshTarget: () => true, savePreferences() {}, checkVersionsWhenIdle() {},
       setTimeout: (fn, ms) => timers.push({ fn, ms }), sshRun: async () => ({ code: 1, out: '' }),
       cloudComputer: null, cloudConnect: { ...require('../src/cloud-connect.cjs'), tailscaleCli: () => 'fixture-tailscale' },
@@ -89,6 +89,9 @@ for (const route of ['DIY', 'hosted', 'settings']) {
     const $ = renderPlan(view(prefs.versionCache, { appLatest: app }));
     assert.doesNotMatch($('update-all-copy').textContent, /Everything is up to date/);
     assert.equal(Object.keys(prefs.versionCache).length, 0);
+    for (const field of ['botInventoryChecked', 'tokenedProfiles', 'profiles', 'existingBotId', 'existingBotProfile']) {
+      assert.equal(prefs.cloud[field], undefined, `${route} must discard ${field} from the old server`);
+    }
     assert.equal(timers.length, 1);
     assert.equal(timers[0].fn, context.checkVersionsWhenIdle);
     assert.equal(timers[0].ms, 0);
