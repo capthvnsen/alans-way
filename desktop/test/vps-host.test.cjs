@@ -122,6 +122,13 @@ function createStubCdp() {
     res.end();
   });
   server.calls = [];
+  server.pause = (matches) => {
+    let entered, release;
+    const gate = { matches, entered: new Promise(resolve => { entered = resolve; }), released: new Promise(resolve => { release = resolve; }), release };
+    gate.start = entered;
+    server.gate = gate;
+    return gate;
+  };
   server.viewport = { width: 900, height: 700, deviceScaleFactor: 1, pageLeft: 0, pageTop: 0 };
   server.targets = [];
   server.send = (method, params, sessionId) => active.write(wsFrame(JSON.stringify({ method, params, sessionId })));
@@ -143,7 +150,9 @@ function createStubCdp() {
         const message = JSON.parse(frame.payload.toString());
         if (message.id) {
           const reply = dispatch(message);
-          socket.write(wsFrame(JSON.stringify(reply?.__error ? { id: message.id, error: { message: reply.__error } } : { id: message.id, result: reply })));
+          const gate = server.gate?.matches(message) ? server.gate : null;
+          if (gate) { server.gate = null; gate.start(); }
+          Promise.resolve(gate?.released).then(() => socket.write(wsFrame(JSON.stringify(reply?.__error ? { id: message.id, error: { message: reply.__error } } : { id: message.id, result: reply }))));
         }
         if (message.method === 'Page.reload')
           setTimeout(() => socket.write(wsFrame(JSON.stringify({ method: 'Page.loadEventFired', sessionId: message.sessionId, params: {} }))), 300);
@@ -429,6 +438,46 @@ test('a VPS release with a reason waits for the human, then give-back or 30 minu
   host.setNow(2001 + HANDBACK_MS);
   assert.equal((await control({ controller: 'agent' })).status, 200, 'expiry reopens the tab to a claim');
 });
+
+test('malformed control requests leave a login hold untouched', async () => {
+  const { api } = await startHost();
+  const tab = (await api('/v1/tabs', 'POST', { url: 'https://login.example/' })).data;
+  const route = `/v1/tabs/${tab.id}/control`;
+  const held = (await api(route, 'POST', { controller: 'human', reason: 'login' })).data;
+  for (const body of [{}, { controller: 'unknown' }, { controller: null }]) {
+    assert.equal((await api(route, 'POST', body)).status, 400);
+    assert.deepEqual((await api(`/v1/tabs/${tab.id}`)).data, held);
+    const claim = await api(route, 'POST', { controller: 'agent' });
+    assert.equal(claim.status, 409);
+    assert.match(claim.data.error, /^awaiting_human/);
+  }
+});
+
+for (const operation of ['snapshot', 'screenshot']) {
+  test(`a new hold refuses an in-flight ${operation} and both queued reads`, async () => {
+    const { api, stub } = await startHost();
+    const tab = (await api('/v1/tabs', 'POST', { url: 'https://login.example/' })).data;
+    const gate = stub.pause(message => operation === 'snapshot'
+      ? message.method === 'Runtime.evaluate' && message.params.expression.includes('items.push')
+      : message.method === 'Page.captureScreenshot');
+    try {
+      const running = api(`/v1/tabs/${tab.id}/${operation}`);
+      await gate.entered;
+      const queued = ['snapshot', 'screenshot'].map(read => api(`/v1/tabs/${tab.id}/${read}`));
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const readsBeforeHold = stub.calls.filter(call => call.method === 'Page.captureScreenshot' || (call.method === 'Runtime.evaluate' && call.params.expression.includes('items.push'))).length;
+      await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'human', reason: 'login' });
+      gate.release();
+      for (const reply of await Promise.all([running, ...queued])) {
+        assert.equal(reply.status, 409);
+        assert.match(reply.data.error, /^awaiting_human/);
+        assert.equal(reply.data.base64, undefined);
+        assert.equal(reply.data.text, undefined);
+      }
+      assert.equal(stub.calls.filter(call => call.method === 'Page.captureScreenshot' || (call.method === 'Runtime.evaluate' && call.params.expression.includes('items.push'))).length, readsBeforeHold, 'queued reads never reach the page after the hold');
+    } finally { gate.release(); }
+  });
+}
 
 test('a second or stale give-back is a no-op', async () => {
   const host = await startHost({ now: 1000 });

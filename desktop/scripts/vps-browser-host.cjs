@@ -973,6 +973,11 @@ async function serve() {
         tab = m && tabs.get(m[1]);
       if (!tab) throw fail('VPS tab not found.', 404);
       if (!human) requireActor(tab, botId, undefined, false, overseer);
+      let control;
+      if (req.method === 'POST' && m[2] === 'control') {
+        control = await read(req);
+        if (!control || !['human', 'agent'].includes(control.controller)) throw fail('controller must be human or agent.');
+      }
       // The app touching a human-controlled tab on a person's behalf counts as
       // a human holding it, so the reaper leaves it alone; a tab released by
       // a bot or the idle clock stays reapable.
@@ -989,6 +994,7 @@ async function serve() {
           since: intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER),
         };
         const work = tab.queue.then(async () => {
+          if (!human) requireAgentRead(tab);
           const generation = ++tab.generation;
           let timer;
           const read = () => Promise.race([
@@ -1001,6 +1007,7 @@ async function serve() {
           // A Cloudflare check that clears by itself is waited out here too.
           if (!human && data?.challenge?.kind === 'cloudflare' && await passCloudflare((code) => wc.executeJavaScript(code))) data = await read();
           if (!data || !Array.isArray(data.elements)) throw fail('Snapshot returned no page data.', 503);
+          if (!human) requireAgentRead(tab);
           tab.url = data.url;
           tab.title = data.title;
           const settled = settleSnapshot(tab, data, generation, opts.since);
@@ -1016,6 +1023,7 @@ async function serve() {
         const quality = intParam(url, 'quality', 1, 100) ?? 50;
         const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 960;
         const capture = tab.queue.then(async () => {
+          if (!human) requireAgentRead(tab);
           await wc.executeJavaScript('new Promise(resolve => { const timer = setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); })); })');
           const viewport = await wc.executeJavaScript(
             '({width:globalThis.visualViewport?.width ?? innerWidth,height:globalThis.visualViewport?.height ?? innerHeight,pageLeft:globalThis.visualViewport?.pageLeft ?? scrollX,pageTop:globalThis.visualViewport?.pageTop ?? scrollY,deviceScaleFactor:devicePixelRatio})',
@@ -1026,7 +1034,9 @@ async function serve() {
           const scale = viewport.width * dsf > maxWidth ? Math.max(0.01, maxWidth / viewport.width) : dsf;
           const params = { format, fromSurface: true, clip: { x: viewport.pageLeft, y: viewport.pageTop, width: viewport.width, height: viewport.height, scale } };
           if (format !== 'png') params.quality = quality;
-          return { shot: await wc.command('Page.captureScreenshot', params), viewport };
+          const shot = await wc.command('Page.captureScreenshot', params);
+          if (!human) requireAgentRead(tab);
+          return { shot, viewport };
         });
         tab.queue = capture.catch(() => {});
         const { shot, viewport } = await capture;
@@ -1050,7 +1060,7 @@ async function serve() {
         return send(200, await action);
       }
       if ((human || overseer || botId === tab.botId) && req.method === 'POST' && m[2] === 'control') {
-        const body = await read(req);
+        const body = control;
         if (human && body.giveBack === true && (body.controller !== 'agent' || tab.controller !== 'human' || liveHandback(tab)?.state !== 'awaiting_human' || body.epoch !== tab.epoch)) return send(200, describe(tab));
         if (!human && body.controller === 'agent') { requireAgentClaim(tab); tab.handoff = reviewedHandoff(tab.handoff); }
         const handback = !human && body.controller !== 'agent' ? handbackRequest(body) : null;
