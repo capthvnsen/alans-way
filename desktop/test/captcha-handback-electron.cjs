@@ -161,7 +161,8 @@ app.whenReady().then(async () => {
   // A widget the page adds and focuses itself after the bot's last read: a
   // bare Enter must not press its Verify button.
   await evaluatePage(`(() => { const d = document.createElement('div'); d.className = 'g-recaptcha'; d.innerHTML = '<iframe width="304" height="78" src="/recaptcha/api2/anchor?k=x&size=normal"></iframe>'; document.body.append(d); })()`);
-  await waitFor(() => evaluatePage(`document.querySelector('.g-recaptcha iframe').contentDocument?.readyState === 'complete'`).catch(() => false), Boolean);
+  // The initial about:blank document is already 'complete'; wait for the anchor page itself.
+  await waitFor(() => evaluatePage(`(() => { const d = document.querySelector('.g-recaptcha iframe')?.contentDocument; return d?.readyState === 'complete' && d.location.pathname.startsWith('/recaptcha/') && !!d.body; })()`).catch(() => false), Boolean);
   await evaluatePage(`(() => { const f = document.querySelector('.g-recaptcha iframe'), b = f.contentDocument.createElement('button'); b.textContent = 'Verify'; b.onclick = () => { document.title = 'verified'; }; f.contentDocument.body.append(b); f.focus(); b.focus(); })()`);
   assert.equal(await evaluatePage(`document.activeElement === document.querySelector('.g-recaptcha iframe')`), true, 'the widget has focus');
   const enter = await act({ action: 'press', key: 'Enter' });
