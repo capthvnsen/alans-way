@@ -180,9 +180,16 @@ app.whenReady().then(async () => {
     // below proves the popup really returned focus to Telegram instead of
     // passing vacuously on an unfocused window.
     win.show();
-    win.focus();
-    await waitFor(() => win.isFocused(), Boolean);
-    await waitFor(() => webContents.getFocusedWebContents()?.id === telegram.id, Boolean);
+    try {
+      await waitFor(() => {
+        // macOS can leave a CLI-launched Electron app inactive despite win.focus().
+        if (!win.isFocused()) { app.focus({ steal: true }); win.focus(); }
+        return win.isFocused();
+      }, Boolean);
+      await waitFor(() => webContents.getFocusedWebContents()?.id === telegram.id, Boolean);
+    } catch (error) {
+      throw new Error(`Native focus acquisition failed: platform=${process.platform}, visible=${win.isVisible()}, minimized=${win.isMinimized()}, focusedWindow=${BrowserWindow.getFocusedWindow()?.id}, expectedWindow=${win.id}, focusedWebContents=${webContents.getFocusedWebContents()?.id}, expectedTelegram=${telegram.id}`, { cause: error });
+    }
   } finally { wc.send = realSend; }
   // The blocks below start from the app page holding focus, as before.
   wc.focus();
