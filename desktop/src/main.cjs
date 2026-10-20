@@ -1273,7 +1273,7 @@ function startUpdates() {
   if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
   if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
   pendingUpdateDelivery = deliverPendingUpdateReport({ prefs, version: app.getVersion(), save: saveUpdateReport,
-    send: report => vmUpdater.hermesUpdateVm(vmTargets(prefs)[0] || LOCAL_TARGET, { report }),
+    send: (report, target) => vmUpdater.hermesUpdateVm(target, { report }),
     log: text => mainLog().write('update report', text),
   }).catch(error => logError('update report', error));
   if (prefs.updateSnoozedUntil) { prefs.updateSnoozedUntil = 0; savePreferencesSoon(); }
@@ -2109,7 +2109,7 @@ function registerIpc() {
           mainLog().write('update all', runLogText(rows));
           const appStep = rows.find(row => row.id === 'app' && row.state === 'done');
           if (appStep) {
-            prefs.pendingUpdateReport = { runId: crypto.randomUUID(), targetVersion: appStep.to, rows, attempts: 0 };
+            prefs.pendingUpdateReport = { runId: crypto.randomUUID(), targetVersion: appStep.to, target: { ...target }, rows, attempts: 0 };
             saveUpdateReport();
           }
           // Wait out any probe that started before the run, then take a fresh one.

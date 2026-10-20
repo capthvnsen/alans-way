@@ -15,6 +15,7 @@ process.env.HERMES_WORKSPACE_DATA = profile;
 // resolves, so the browser host connection fails fast and quietly.
 fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false,
   pendingUpdateReport: { runId: 'previous-run', targetVersion: require('../package.json').version, attempts: 0,
+    target: { id: 'agent', label: 'VPS', sshHost: 'tester@vm.invalid', scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs', sudo: false },
     rows: [{ id: 'app', from: '0.21.0', to: require('../package.json').version, state: 'done' }] },
   bots: [{ id: '4242', isBot: true, name: 'Scout' }], selectedBotId: '4242', vpsBrowser: { sshHost: 'tester@vm.invalid', scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs' } }));
 process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
@@ -260,6 +261,7 @@ app.whenReady().then(async () => {
   const pending = JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8')).pendingUpdateReport;
   assert.ok(pending.runId);
   assert.equal(pending.targetVersion, appVersion);
+  assert.deepEqual(pending.target, { id: 'agent', label: 'VPS', sshHost: 'tester@vm.invalid', scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs', sudo: false });
   assert.equal(pending.attempts, 0);
   assert.deepEqual(pending.rows.map(row => row.state), ['done', 'done', 'done', 'done']);
   assert.match(await text('update-all-copy'), /Your bot will report the result when the app starts again\./);

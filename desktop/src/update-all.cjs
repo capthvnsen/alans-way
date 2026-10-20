@@ -5,7 +5,7 @@
 // update steps in order (Hermes, its plugin, the browser host, then this app)
 // with the first failure stopping the rest.
 const { redactReport } = require('./setup-check.cjs');
-const { vmPluginLines } = require('./vm-update.cjs');
+const { vmPluginLines, vmTargets, LOCAL_TARGET } = require('./vm-update.cjs');
 
 const PLUGIN_REPO = 'capthvnsen/alans-way-agents';
 const NAMES = { hermes: 'Hermes', plugin: 'Alan’s Way plugin', host: 'Browser host', app: 'Alan’s Workspace' };
@@ -275,11 +275,18 @@ async function deliverPendingUpdateReport({ prefs, version, send, save, log = ()
     log('failed: invalid or exhausted saved update report');
     return;
   }
+  const target = vmTargets(prefs)[0] || LOCAL_TARGET;
+  if (!pending.target || !['id', 'local', 'sshHost', 'scriptPath', 'sudo'].every(key => pending.target[key] === target[key])) {
+    delete prefs.pendingUpdateReport;
+    save();
+    log(`${pending.runId} dropped: the update report destination changed or is missing.`);
+    return;
+  }
   pending.attempts++;
   save();
   let result;
-  // shortcut: sending has no idempotency key; add receipt deduplication for crashes between send and save.
-  try { result = await send(reportText(pending.rows, { appVersion: version })); }
+  // shortcut: sending has no idempotency key, add receipt deduplication for crashes between send and save.
+  try { result = await send(reportText(pending.rows, { appVersion: version }), target); }
   catch (error) { result = { messaged: false, error: error.message || String(error) }; }
   const status = result?.messaged === true || (Array.isArray(result?.messages) && result.messages.some(message => message.sent === true)) ? 'delivered' : 'failed';
   const delivery = reportDeliveryText(result);
