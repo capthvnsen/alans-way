@@ -30,7 +30,7 @@ test('tax schedule names are descriptions, while scheduling and adjacent commit 
     assert.equal(isCommitName(name), false, name);
     assert.equal(looksLikeCommit(name), false, name);
   }
-  for (const name of ['Schedule', 'Schedule pickup', 'Schedule post', 'Schedule call', 'Schedule car', 'Schedule a meeting', 'Schedule a pickup', 'Schedule C1a', 'Schedule 12',
+  for (const name of ['Schedule', 'Schedule pickup', 'Schedule post', 'Schedule call', 'Schedule car', 'Schedule a meeting', 'Schedule a pickup', 'Schedule C1a', 'Schedule 12', 'Schedule 1:1', 'Schedule a 1:1',
     'Schedule C - Submit return', 'Schedule C and Buy', 'Schedule C and Schedule pickup', 'Buy', 'Place order', 'Submit', 'Send', 'Delete account']) {
     assert.equal(isCommitName(name), true, name);
     assert.equal(looksLikeCommit(name), true, name);
