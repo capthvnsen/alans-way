@@ -1017,14 +1017,15 @@ async function serve() {
         const quality = intParam(url, 'quality', 1, 100) ?? 50;
         const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 960;
         const capture = tab.queue.then(async () => {
+          await wc.executeJavaScript('new Promise(resolve => { const timer = setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); })); })');
           const viewport = await wc.executeJavaScript(
-            '({width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio})',
+            '({width:globalThis.visualViewport?.width ?? innerWidth,height:globalThis.visualViewport?.height ?? innerHeight,pageLeft:globalThis.visualViewport?.pageLeft ?? scrollX,pageTop:globalThis.visualViewport?.pageTop ?? scrollY,deviceScaleFactor:devicePixelRatio})',
           );
           // No resize post-capture here: clip.scale is the downscale knob,
           // keeping the emitted image at maxWidth pixels when it would exceed it.
           const dsf = viewport.deviceScaleFactor || 1;
           const scale = viewport.width * dsf > maxWidth ? Math.max(0.01, maxWidth / viewport.width) : dsf;
-          const params = { format, fromSurface: true, clip: { x: 0, y: 0, width: viewport.width, height: viewport.height, scale } };
+          const params = { format, fromSurface: true, clip: { x: viewport.pageLeft, y: viewport.pageTop, width: viewport.width, height: viewport.height, scale } };
           if (format !== 'png') params.quality = quality;
           return { shot: await wc.command('Page.captureScreenshot', params), viewport };
         });

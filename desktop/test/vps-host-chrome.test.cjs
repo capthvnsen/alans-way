@@ -118,6 +118,8 @@ before(async () => {
     '/pop-userinfo': page(`<script>setTimeout(()=>{window.open("http://u:p@127.0.0.1:${pb}/secret?popcred");fetch('/mark?pop-userinfo',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/pop-blank': page(`<script>setTimeout(()=>{var w=window.open("about:blank");if(w)w.location="${T}?popblank";fetch('${T}?popblank-fetch',{mode:'no-cors'}).catch(()=>{});fetch('/mark?pop-blank',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/ok': page('<p id=ok>ok</p>' + '<img src="/i.png?1"><img src="/i.png?2"><img src="/i.png?3">'),
+    '/white': page('<style>body{margin:0;min-height:5000px;background:white}</style>'),
+    '/stripes': page('<style>body{margin:0}div{height:100px;overflow:hidden;font:16px monospace;background:#1258ba}div:nth-child(even){background:#f3b41c}</style>' + Array.from({ length: 50 }, (_, i) => `<div>Stripe ${i + 1}: ${'Visible page content. '.repeat(40)}</div>`).join('')),
     '/link': page('<a id=go href="/slow">go</a>'),
     '/slow': (res) => setTimeout(() => page('<h1>ARRIVED</h1>')(res), 800),
     '/hang': page('<p>READY</p><img src="/never">'),
@@ -179,6 +181,30 @@ after(async () => {
   // Chrome's helper processes can outlive it on Linux; a leftover temp dir must not fail the run.
   for (const d of [dir, ...extraHosts.map((h) => h.dir)]) {
     if (d) { try { fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {} }
+  }
+});
+
+test('a screenshot after scrolling 3000px is not blank', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 30000 }, async () => {
+  const white = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/white` })).data;
+  const stripes = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/stripes` })).data;
+  try {
+    const blank = await api(`/v1/tabs/${white.id}/screenshot?format=png`);
+    assert.equal(blank.status, 200);
+    for (const y of [1500, 1500]) {
+      const scrolled = await api(`/v1/tabs/${stripes.id}/actions`, 'POST', { action: 'scroll', y, epoch: stripes.epoch });
+      assert.equal(scrolled.status, 200, JSON.stringify(scrolled.data));
+    }
+    assert.ok(await until(async () => (await api(`/v1/tabs/${stripes.id}/actions`, 'POST', { action: 'eval', code: 'scrollY', epoch: stripes.epoch })).data.value === 3000), 'the wheel scrolled 3000px');
+    const shot = await api(`/v1/tabs/${stripes.id}/screenshot?format=png`);
+    assert.equal(shot.status, 200);
+    const png = Buffer.from(shot.data.base64, 'base64');
+    const whitePng = Buffer.from(blank.data.base64, 'base64');
+    assert.deepEqual(png.subarray(16, 24), whitePng.subarray(16, 24), 'both PNGs have the same dimensions');
+    const bytes = png.length;
+    const blankBytes = whitePng.length;
+    assert.ok(bytes > 4 * blankBytes, `striped screenshot (${bytes} bytes) should exceed 4 times white (${blankBytes} bytes)`);
+  } finally {
+    for (const tab of [white, stripes]) await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch);
   }
 });
 
