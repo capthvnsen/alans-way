@@ -1607,40 +1607,52 @@ async function cloudReadBotInventory(host) {
 // for a hosted computer; DIY servers show model setup for explicit confirmation.
 let cloudConnectPending = null;
 function cloudConnectRun(diyHost) {
-  if (cloudConnectPending) return cloudConnectPending;
+  const host = diyHost || (prefs.vpsBrowser?.sshHost || '').trim();
+  if (cloudConnectPending?.host === host) return cloudConnectPending.promise;
   // A queued click from a removed card must not reset a later wizard step.
   const sameServer = !diyHost || diyHost === prefs.vpsBrowser?.sshHost;
   if (sameServer && ['model', 'telegram', 'bot-chat', 'done'].includes(prefs.cloud?.step)) {
-    return Promise.resolve({ stage: 'done', ok: true, detail: 'Already connected.' });
+    return Promise.resolve({ host, stage: 'done', ok: true, detail: 'Already connected.' });
   }
-  cloudConnectPending = cloudConnectOnce(diyHost).finally(() => { cloudConnectPending = null; });
-  return cloudConnectPending;
+  const pending = { host };
+  cloudConnectPending = pending;
+  pending.promise = cloudConnectOnce(diyHost, pending).then(result => ({ ...result, host: pending.host })).finally(() => {
+    if (cloudConnectPending === pending) cloudConnectPending = null;
+  });
+  return pending.promise;
 }
-async function cloudConnectOnce(diyHost) {
-  const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+async function cloudConnectOnce(diyHost, pending) {
+  const cloud = { ...prefs.cloud };
   if (diyHost) {
     if (!isSshTarget(diyHost)) throw new Error('Enter the server SSH address as user@host or host, with no spaces or symbols.');
     cloud.diy = true;
     cloud.step = 'connect';
-    setServerConfig({ ...(prefs.vpsBrowser || {}), sshHost: diyHost });
     prefs.cloud = cloud;
+    setServerConfig({ ...(prefs.vpsBrowser || {}), sshHost: diyHost });
     savePreferences();
   }
+  prefs.cloud = cloud;
+  const step = cloud.step;
+  let host = (prefs.vpsBrowser?.sshHost || '').trim();
+  const current = () => cloudConnectPending === pending && prefs.cloud === cloud && cloud.step === step && (prefs.vpsBrowser?.sshHost || '').trim() === host;
+  const cancelled = { stage: 'connect', ok: false, cancelled: true, detail: '' };
   if (cloud.diy === true) {
-    const sshHost = (prefs.vpsBrowser?.sshHost || '').trim();
-    const step = cloud.step;
+    const sshHost = host;
     if (!sshHost) return { stage: 'host', ok: false, detail: 'Enter the server SSH address first.' };
     const probe = await sshRun(sshHost, 'echo CONNECT_OK');
+    if (!current()) return cancelled;
     if (probe.code !== 0 || !probe.out.includes('CONNECT_OK')) return { stage: 'ssh', ok: false, detail: `Could not reach ${sshHost} over SSH. Check the address and your key, then try again.` };
     const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
+    if (!current()) return cancelled;
     if (remote?.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the server failed.' };
     const back = await authorizeComputerKey(sshHost);
+    if (!current()) return cancelled;
     if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
     if ((prefs.macSshHost || '').trim()) {
       const path = await testAgentPath();
+      if (!current()) return cancelled;
       if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
     }
-    if (prefs.cloud !== cloud || cloud.step !== step || (prefs.vpsBrowser?.sshHost || '').trim() !== sshHost) return { stage: 'done', ok: true, detail: '' };
     delete cloud.existingModel;
     delete cloud.modelDetected;
     delete cloud.modelOnly;
@@ -1650,9 +1662,8 @@ async function cloudConnectOnce(diyHost) {
     delete cloud.existingBotId;
     delete cloud.existingBotProfile;
     const model = await cloudKeepServerModel();
-    if (model.cancelled) return { stage: 'done', ok: true, detail: '' };
+    if (!current() || model.cancelled) return cancelled;
     if (cloud.model === 'existing') delete cloud.model;
-    setCloudStep(prefs, 'model');
     savePreferences();
     return { stage: 'done', ok: true, existingModel: model.existingModel, detail: `Connected to ${sshHost}. ${model.detail}` };
   }
@@ -1661,19 +1672,24 @@ async function cloudConnectOnce(diyHost) {
   const url = cloud.tailscaleUrl || cloudComputer?.tailscale_url || '';
   if (url && !cloud.pairingOpened) { shell.openExternal(url).catch(() => {}); cloud.pairingOpened = true; prefs.cloud = cloud; savePreferencesSoon(); }
   const status = await localRun(...cloudConnect.pairPollCommand(cli));
+  if (!current()) return cancelled;
   const name = cloud.computerName || cloudComputer?.computer_name || '';
   const peer = status.code === 0 ? cloudConnect.findPeer(status.out, name) : null;
   if (!peer) return { stage: 'pairing', ok: false, detail: url ? 'Waiting for the computer to join your tailnet. Finish the pairing page, then check again.' : 'Waiting for the computer to join your tailnet…' };
   const sshHost = `root@${peer.ip}`;
   if (setServerConfig({ ...(prefs.vpsBrowser || {}), sshHost })) savePreferences();
+  pending.host = host = sshHost;
   const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
+  if (!current()) return cancelled;
   if (!remote) return { stage: 'state', ok: false, detail: 'The computer joined Tailscale. Waiting for its setup to finish…' };
   if (remote.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the computer failed.' };
   if (remote.state !== 'ready' && remote.step !== 'paired') return { stage: 'state', ok: false, detail: 'The computer is still finishing its setup…' };
   const back = await authorizeComputerKey(sshHost);
+  if (!current()) return cancelled;
   if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
   if ((prefs.macSshHost || '').trim()) {
     const path = await testAgentPath();
+    if (!current()) return cancelled;
     if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
   }
   setCloudStep(prefs, 'migrate');

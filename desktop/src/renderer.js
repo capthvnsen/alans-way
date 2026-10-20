@@ -667,7 +667,7 @@ function renderOnboarding(show) {
   panel.classList.toggle('hidden', !show);
   if (!show) { onboardingSignature = ''; return; }
   const cloud = state.cloud || {};
-  const signature = JSON.stringify(cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername, cloud.model, cloud.existingModel, cloud.modelDetected,
+  const signature = JSON.stringify(cloud.step === 'connect' ? ['cloud', cloud.step, cloud.diy, cloud.error] : cloud.step ? ['cloud', cloud.step, cloud.computer?.state, cloud.computer?.step, cloud.computer?.name, cloud.error, cloud.migration, cloud.telegramFallback, cloud.diy, cloud.botUsername, cloud.model, cloud.existingModel, cloud.modelDetected,
     cloud.tokenedProfiles, cloud.existingBotId, cloud.existingBotProfile, cloud.step === 'bot-chat' ? state.bots?.map(({ id, name, username }) => [id, name, username]) : null] : onboardingStep === 1 ? [1, state.telegramStatus, state.inApplications, cloud.error] : [onboardingStep]);
   if (signature === onboardingSignature) return;
   onboardingSignature = signature;
@@ -760,16 +760,21 @@ function renderCloudOnboarding(card, actions, cloud) {
     actions.append(button('Get help', 'secondary-button', () => go('support')));
   } else if (cloud.step === 'connect') {
     const status = element('p', 'settings-note', '');
+    let input, attempt = 0;
     const check = async (extra = {}) => {
+      const request = ++attempt;
       status.textContent = 'Checking…';
-      const result = await command('cloud-connect', extra);
+      const result = await api.command('cloud-connect', extra).catch(error => ({ host: extra.host, detail: error.message }));
+      if (request !== attempt || !status.isConnected) return;
+      if (cloud.diy && result?.host !== input.value.trim()) { status.textContent = ''; return; }
       status.textContent = result?.detail || '';
       if (result?.existingModel) toast(result.detail);
+      if (cloud.diy && result?.ok && !result.cancelled) await go('model');
     };
     if (cloud.diy) {
       card.append(element('h2', '', 'Use your own server'), element('p', 'settings-note', 'Enter the SSH address of the machine that will run your agent.'));
       const field = element('div', 'field'), lab = element('label', '', 'Server SSH address'); lab.htmlFor = 'ob-diy-host';
-      const input = element('input'); input.id = 'ob-diy-host'; input.placeholder = 'you@your-server'; input.autocomplete = 'off'; input.value = state.vpsBrowser?.sshHost || '';
+      input = element('input'); input.id = 'ob-diy-host'; input.placeholder = 'you@your-server'; input.autocomplete = 'off'; input.value = state.vpsBrowser?.sshHost || '';
       field.append(lab, input); card.append(field);
       actions.append(button('Back', 'secondary-button', () => command('cloud-diy', { off: true })),
         button('Connect', 'primary-button', () => check({ host: input.value.trim() })));

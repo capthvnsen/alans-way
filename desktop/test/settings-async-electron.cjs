@@ -275,6 +275,37 @@ app.whenReady().then(async () => {
     observations[size.join('x')] = { busy, after }; await shot(`async-outline-${size.join('x')}`);
     assert.deepEqual(busy, { focused: true, outline: 2, complete: true, feedback: true }); assert.deepEqual(after, busy);
   });
+  await check('wizard ignores Connect A after editing its address to B without another click', async () => {
+    await click('#modal-close');
+    await js("workspace.command('cloud-diy')");
+    await wait(() => js('!!document.getElementById("ob-diy-host")'));
+    const address = async text => {
+      await click('#ob-diy-host'); await key('a', false, { modifiers: 4, commands: ['selectAll'] });
+      await wc.debugger.sendCommand('Input.insertText', { text }); await frame();
+    };
+    try {
+      for (const reply of [{ result: { host: 'user@server-a.invalid', stage: 'done', ok: true, detail: 'Connected to server A.' } }, { error: 'Server A failed.' }]) {
+        await address('user@server-a.invalid');
+        const gate = hold('cloud-connect');
+        await click('#onboarding .primary-button'); await wait(gate.entered);
+        await address('user@server-b.invalid');
+        await js('state = {...state, cloud: {...state.cloud, existingModel: {provider:"fixture",model:"model-a"}, modelDetected:true}}; renderOnboarding(true); true');
+        assert.equal(await js('document.getElementById("ob-diy-host")?.value'), 'user@server-b.invalid', 'model metadata must preserve the address draft');
+        const before = count('cloud-goto');
+        gate.release(reply);
+        await pause(150); await frame();
+        assert.equal(await js('document.getElementById("ob-diy-host")?.value'), 'user@server-b.invalid');
+        assert.doesNotMatch(await js('document.getElementById("onboarding").innerText'), /Connected to server A|Server A failed/);
+        assert.doesNotMatch(await js('document.getElementById("toast").innerText'), /Server A failed/);
+        assert.equal(count('cloud-goto'), before, 'an edited address cannot accept the old result');
+      }
+      seams.set('cloud-connect', async () => ({ host: 'user@server-b.invalid', stage: 'done', ok: true, detail: 'Connected to server B.' }));
+      seams.set('cloud-model-detect', async () => ({ detail: '' }));
+      await click('#onboarding .primary-button');
+      await wait(() => calls.some(call => call.name === 'cloud-goto' && call.value.step === 'model'));
+      await wait(() => js('!document.getElementById("ob-diy-host")'));
+    } finally { await js("workspace.command('onboarding-done')"); }
+  });
   observations.input = await js('round2Input');
   assert.ok(observations.input.length && observations.input.every(event => event.trusted));
   observations.native = { tested: false, reason: 'Trusted Chromium input only; zero OS focus or permission attempts.' };
