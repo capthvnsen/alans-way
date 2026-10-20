@@ -176,7 +176,7 @@ test('guest messages keep ordinary punctuation and credential-free scp remotes r
   }
 });
 
-test('guest URL remnants still lose credentials and query or fragment tails', async () => {
+test('guest URL remnants still lose credentials and query or fragment tails', async (t) => {
   for (const text of [
     'SYNTHETICuser:SYNTHETICpass@host', 'SYNTHETICtoken@host.tld',
     'SYNTHETICuser:SYNTHETICpass@host:repo', 'SYNTHETICtoken@[::1]:443/repo',
@@ -184,11 +184,14 @@ test('guest URL remnants still lose credentials and query or fragment tails', as
     'host.tld?opaque=SYNTHETICquery', 'host.tld#SYNTHETICfragment',
     'localhost?opaque=SYNTHETICquery', '/repo?opaque=SYNTHETICquery',
     'SYNTHETICtoken@host?opaque=SYNTHETICquery',
+    'oauth2:SYNTHETICpass@', 'see #SYNTHETICname=abc', '?k=SYNTHETICquery',
   ]) {
-    const { run } = fakeRun({ code: 0, out: JSON.stringify({ ok: true, findings: [{ fix: text }] }), err: '' });
-    const result = await createVmUpdater({ run, readScript }).doctorVm(vm());
-    assert.doesNotMatch(result.findings[0].fix, /SYNTHETIC/, text);
-    assert.match(result.findings[0].fix, /\[redacted\]/, text);
+    await t.test(text, async () => {
+      const { run } = fakeRun({ code: 0, out: JSON.stringify({ ok: true, findings: [{ fix: text }] }), err: '' });
+      const result = await createVmUpdater({ run, readScript }).doctorVm(vm());
+      assert.doesNotMatch(result.findings[0].fix, /SYNTHETIC/, text);
+      assert.match(result.findings[0].fix, /\[redacted\]/, text);
+    });
   }
 });
 
