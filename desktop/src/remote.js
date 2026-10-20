@@ -68,17 +68,19 @@ $('paste').onclick=async()=>{try{const text=await api.command('remote-paste');rf
 let pdrag = null, suppressScreenClick = false;
 document.addEventListener('pointerdown', (event) => {
   if (!state || state.remoteControl || state.activeTabId === 'vps' || event.target.closest('button, input, a, form')) return;
-  pdrag = { x: event.clientX, y: event.clientY, moved: false, el: event.target };
+  // The native view moves underneath the pointer, so use stable screen coordinates.
+  pdrag = { x: event.screenX, y: event.screenY, moved: false };
+  event.target.setPointerCapture(event.pointerId);
 });
 document.addEventListener('pointermove', (event) => {
   if (!pdrag) return;
-  const dx = event.clientX - pdrag.x, dy = event.clientY - pdrag.y;
+  const dx = event.screenX - pdrag.x, dy = event.screenY - pdrag.y;
   if (!pdrag.moved && Math.hypot(dx, dy) < 4) return;
-  pdrag.moved = true; pdrag.x = event.clientX; pdrag.y = event.clientY;
+  pdrag.moved = true; pdrag.x = event.screenX; pdrag.y = event.screenY;
   api.command('preview-nudge', { dx, dy }).catch(() => {});
 });
 document.addEventListener('pointerup', () => { if (pdrag?.moved) { suppressScreenClick = true; api.command('preview-drop').catch(() => {}); } pdrag = null; });
-document.addEventListener('pointercancel', () => { pdrag = null; });
+document.addEventListener('pointercancel', () => { if (pdrag?.moved) api.command('preview-drop').catch(() => {}); pdrag = null; });
 $('screen').onclick = () => { if (suppressScreenClick) { suppressScreenClick = false; return; } if (!state.remoteControl && state.activeTabId !== 'vps') api.command('activate', { id: 'vps' }); };
 $('credentials').onsubmit = (event) => { event.preventDefault(); rfb?.sendCredentials({ password: $('vnc-password').value }); $('vnc-password').value = ''; $('credentials').classList.add('hidden'); };
 $('configure').onclick = () => { if (currentUrl && $('configure').textContent === 'Reconnect') connect(currentUrl); else api.command('open-settings'); };
