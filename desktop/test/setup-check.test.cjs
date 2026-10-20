@@ -367,3 +367,10 @@ test('the update-check row shows Hermes’s reason, and falls back to GitHub onl
   assert.match(withPlugin({ reason: 'provenance drift: the dir has no .git' }).fix, /provenance drift/);
   assert.match(withPlugin({}).fix, /couldn’t reach GitHub/);
 });
+
+test('a prerelease app compares the server with the stable host target it would install', () => {
+  const rows = (version, hostTarget) => buildFindings({ appVersion: '0.21.8-rc.1', hostTarget, platform: 'linux', local: { telegram: 'connected', staleConnector: false },
+    connection: { addresses: { server: 'a', computer: 'b' } }, server: causeServer({ version, hostVersion: version }) }).filter((f) => f.group === 'server');
+  assert.equal(rows('0.21.6', '0.21.7').find((r) => /older version/.test(r.title))?.action, 'update-server');
+  assert.ok(rows('0.21.7', '0.21.7').some((r) => r.level === 'ok' && /on 0\.21\.7/.test(r.title)), 'the stable target is current, so no endless update offer');
+});

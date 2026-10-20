@@ -402,17 +402,32 @@ test('a click landing inside the delivery window still counts the work it starte
       if (r.exceptionDetails) throw new Error(`eval threw: ${JSON.stringify(r.exceptionDetails).slice(0, 500)}`);
       return r.result && r.result.value;
     });
-    await evalOnTab(followUpArmExpression());
-    const scheduled = await evalOnTab(`(() => {
+    const result = await evalOnTab(`(async () => {
+      const armed = ${followUpArmExpression()};
       const closed = ${followUpCloseExpression()};
       const s = window[Symbol.for('hw.followUp')];
-      if (!closed || !s || !s.setT) return false;
+      if (!armed || !closed || !s || !s.setT) return { scheduled: false };
       const raw = s.setT;
-      raw(() => document.getElementById('bb').dispatchEvent(new Event('click', { bubbles: true })), 320);
-      return true;
+      let deliveryOpen;
+      // Keep the deliberate input delay inside the delivery bound; a CDP
+      // roundtrip between scheduling and reading can consume that bound on CI.
+      raw(() => {
+        deliveryOpen = s.cur.open;
+        document.getElementById('bb').dispatchEvent(new Event('click', { bubbles: true }));
+      }, 100);
+      const read = ${snapshotExpression({ effect: true, settle: true })};
+      const deadline = performance.now() + 5000;
+      while (!s.cur.delivered) {
+        if (performance.now() >= deadline) throw new Error('The late click never reached the page');
+        await new Promise(resolve => raw(resolve, 10));
+      }
+      return { scheduled: true, deliveryOpen, delivered: s.cur.delivered, total: s.cur.total, data: await read };
     })()`);
-    assert.equal(scheduled, true, 'the close ran and the late click was scheduled on the raw timer');
-    const data = await evalOnTab(snapshotExpression({ effect: true, settle: true }));
+    assert.equal(result.scheduled, true, 'the close ran and the late click was scheduled on the raw timer');
+    assert.equal(result.deliveryOpen, true, 'the settle read kept the delivery window open until the click arrived');
+    assert.equal(result.delivered, true, 'the page saw the late click while the settle read was in flight');
+    assert.equal(result.total, 1, 'the late click fetch was tracked without counting the delivery timer');
+    const data = result.data;
     assert.ok(data && typeof data.text === 'string', `the settle read returned nothing: ${JSON.stringify(data)}`);
     assert.ok(data.text.includes('Fetched payload text'), `the late click's fetch escaped the settle: ${JSON.stringify(data.text).slice(0, 300)} settledMs=${data.settledMs}`);
   } finally {

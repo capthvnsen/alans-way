@@ -396,6 +396,18 @@ test('look-alike names pass: Add to cart, Send code, a Pay with picker, Purchase
   }
 });
 
+test('a tax-income accordion passes, but its label cannot hide a commit action', async () => {
+  const name = 'Business and Rental Income 1099-NEC, 1099-MISC, Schedule C, K-1s';
+  const f = fixture({ found: { look: { names: [name] } } });
+  await f.perform({ action: 'click', name });
+  assert.equal(pointer(f).filter(call => call.type === 'mousePressed').length, 1);
+  for (const name of ['Schedule pickup', 'Schedule post', 'Schedule a meeting', 'Schedule C - Submit return', 'Schedule C - Buy', 'Delete account']) {
+    const commit = fixture({ found: { look: { names: [name] } } });
+    await assert.rejects(commit.perform({ action: 'click', name }), /commit_required/, name);
+    assert.deepEqual(dispatched(commit), [], name);
+  }
+});
+
 test('Enter in a field is judged by its form\'s submit controls; a space in a field or a click into one is not', async () => {
   const field = { names: ['Email'], field: true, form: ['Place order'] };
   const f = fixture({ found: { look: field }, probe: field });

@@ -27,7 +27,7 @@ const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
-const { latestPluginTag, latestHostRelease, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
+const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createHermesHub } = require('./hermes-hub.cjs');
@@ -1534,15 +1534,22 @@ async function runSetupCheck() {
       server = report;
     }
   }
-  const findings = setupCheck.buildFindings({ appVersion: app.getVersion(), platform: process.platform, local, connection, server });
+  const findings = setupCheck.buildFindings({ appVersion: app.getVersion(), hostTarget: stableHostTarget(app.getVersion(), '', prefs.versionCache), platform: process.platform, local, connection, server });
   lastSetupCheck = { at: new Date().toISOString(), findings, server };
   return findings;
 }
 // Every server-address save drops evidence from the previous machine.
-function setServerConfig(config) {
-  const changed = config.sshHost !== prefs.vpsBrowser?.sshHost;
-  prefs.vpsBrowser = config;
-  if (changed) { prefs.versionCache = {}; setTimeout(checkVersionsWhenIdle, 0); }
+function setServerConfig(config, target = prefs) {
+  const changed = config.sshHost !== target.vpsBrowser?.sshHost;
+  target.vpsBrowser = config;
+  if (changed) {
+    target.versionCache = {};
+    if (target.cloud) {
+      if (target !== prefs) target.cloud = { ...target.cloud };
+      for (const field of ['botInventoryChecked', 'tokenedProfiles', 'profiles', 'existingBotId', 'existingBotProfile']) delete target.cloud[field];
+    }
+    if (target === prefs) setTimeout(checkVersionsWhenIdle, 0);
+  }
   return changed;
 }
 // Keeping a DIY model never writes credentials or restarts a running gateway.
@@ -1600,40 +1607,52 @@ async function cloudReadBotInventory(host) {
 // for a hosted computer; DIY servers show model setup for explicit confirmation.
 let cloudConnectPending = null;
 function cloudConnectRun(diyHost) {
-  if (cloudConnectPending) return cloudConnectPending;
+  const host = diyHost || (prefs.vpsBrowser?.sshHost || '').trim();
+  if (cloudConnectPending?.host === host) return cloudConnectPending.promise;
   // A queued click from a removed card must not reset a later wizard step.
   const sameServer = !diyHost || diyHost === prefs.vpsBrowser?.sshHost;
   if (sameServer && ['model', 'telegram', 'bot-chat', 'done'].includes(prefs.cloud?.step)) {
-    return Promise.resolve({ stage: 'done', ok: true, detail: 'Already connected.' });
+    return Promise.resolve({ host, stage: 'done', ok: true, detail: 'Already connected.' });
   }
-  cloudConnectPending = cloudConnectOnce(diyHost).finally(() => { cloudConnectPending = null; });
-  return cloudConnectPending;
+  const pending = { host };
+  cloudConnectPending = pending;
+  pending.promise = cloudConnectOnce(diyHost, pending).then(result => ({ ...result, host: pending.host })).finally(() => {
+    if (cloudConnectPending === pending) cloudConnectPending = null;
+  });
+  return pending.promise;
 }
-async function cloudConnectOnce(diyHost) {
-  const cloud = prefs.cloud && typeof prefs.cloud === 'object' ? prefs.cloud : {};
+async function cloudConnectOnce(diyHost, pending) {
+  const cloud = { ...prefs.cloud };
   if (diyHost) {
     if (!isSshTarget(diyHost)) throw new Error('Enter the server SSH address as user@host or host, with no spaces or symbols.');
     cloud.diy = true;
     cloud.step = 'connect';
-    setServerConfig({ ...(prefs.vpsBrowser || {}), sshHost: diyHost });
     prefs.cloud = cloud;
+    setServerConfig({ ...(prefs.vpsBrowser || {}), sshHost: diyHost });
     savePreferences();
   }
+  prefs.cloud = cloud;
+  const step = cloud.step;
+  let host = (prefs.vpsBrowser?.sshHost || '').trim();
+  const current = () => cloudConnectPending === pending && prefs.cloud === cloud && cloud.step === step && (prefs.vpsBrowser?.sshHost || '').trim() === host;
+  const cancelled = { stage: 'connect', ok: false, cancelled: true, detail: '' };
   if (cloud.diy === true) {
-    const sshHost = (prefs.vpsBrowser?.sshHost || '').trim();
-    const step = cloud.step;
+    const sshHost = host;
     if (!sshHost) return { stage: 'host', ok: false, detail: 'Enter the server SSH address first.' };
     const probe = await sshRun(sshHost, 'echo CONNECT_OK');
+    if (!current()) return cancelled;
     if (probe.code !== 0 || !probe.out.includes('CONNECT_OK')) return { stage: 'ssh', ok: false, detail: `Could not reach ${sshHost} over SSH. Check the address and your key, then try again.` };
     const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
+    if (!current()) return cancelled;
     if (remote?.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the server failed.' };
     const back = await authorizeComputerKey(sshHost);
+    if (!current()) return cancelled;
     if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
     if ((prefs.macSshHost || '').trim()) {
       const path = await testAgentPath();
+      if (!current()) return cancelled;
       if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
     }
-    if (prefs.cloud !== cloud || cloud.step !== step || (prefs.vpsBrowser?.sshHost || '').trim() !== sshHost) return { stage: 'done', ok: true, detail: '' };
     delete cloud.existingModel;
     delete cloud.modelDetected;
     delete cloud.modelOnly;
@@ -1643,9 +1662,8 @@ async function cloudConnectOnce(diyHost) {
     delete cloud.existingBotId;
     delete cloud.existingBotProfile;
     const model = await cloudKeepServerModel();
-    if (model.cancelled) return { stage: 'done', ok: true, detail: '' };
+    if (!current() || model.cancelled) return cancelled;
     if (cloud.model === 'existing') delete cloud.model;
-    setCloudStep(prefs, 'model');
     savePreferences();
     return { stage: 'done', ok: true, existingModel: model.existingModel, detail: `Connected to ${sshHost}. ${model.detail}` };
   }
@@ -1654,19 +1672,24 @@ async function cloudConnectOnce(diyHost) {
   const url = cloud.tailscaleUrl || cloudComputer?.tailscale_url || '';
   if (url && !cloud.pairingOpened) { shell.openExternal(url).catch(() => {}); cloud.pairingOpened = true; prefs.cloud = cloud; savePreferencesSoon(); }
   const status = await localRun(...cloudConnect.pairPollCommand(cli));
+  if (!current()) return cancelled;
   const name = cloud.computerName || cloudComputer?.computer_name || '';
   const peer = status.code === 0 ? cloudConnect.findPeer(status.out, name) : null;
   if (!peer) return { stage: 'pairing', ok: false, detail: url ? 'Waiting for the computer to join your tailnet. Finish the pairing page, then check again.' : 'Waiting for the computer to join your tailnet…' };
   const sshHost = `root@${peer.ip}`;
   if (setServerConfig({ ...(prefs.vpsBrowser || {}), sshHost })) savePreferences();
+  pending.host = host = sshHost;
   const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
+  if (!current()) return cancelled;
   if (!remote) return { stage: 'state', ok: false, detail: 'The computer joined Tailscale. Waiting for its setup to finish…' };
   if (remote.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the computer failed.' };
   if (remote.state !== 'ready' && remote.step !== 'paired') return { stage: 'state', ok: false, detail: 'The computer is still finishing its setup…' };
   const back = await authorizeComputerKey(sshHost);
+  if (!current()) return cancelled;
   if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
   if ((prefs.macSshHost || '').trim()) {
     const path = await testAgentPath();
+    if (!current()) return cancelled;
     if (!path.ok) return { stage: 'path', ok: false, detail: path.detail };
   }
   setCloudStep(prefs, 'migrate');
@@ -1895,8 +1918,7 @@ function registerIpc() {
           // When the VM's SSH address moves to a different host, the noVNC
           // viewer follows unless remoteUrl was deliberately pointed elsewhere.
           followed = followVmRemoteUrl(next.vpsBrowser.sshHost, sshHost, next.remoteUrl);
-          if (sshHost !== next.vpsBrowser?.sshHost) { next.versionCache = {}; vpsChanged = true; }
-          next.vpsBrowser={sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}; if(!sshHost)next.vmUpdates={};
+          vpsChanged = setServerConfig({sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}, next); if(!sshHost)next.vmUpdates={};
           if (followed) { next.remoteUrl = followed; next.remoteControl = false; }
         }
         if (Number.isFinite(value.agentIdleMinutes)) next.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
@@ -2025,12 +2047,14 @@ function registerIpc() {
       case 'vm-update-retry': {
         if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
         vmRetrying = true; broadcast();
-        const tag = `v${app.getVersion()}`;
         try {
           await waitForVersionCheck();
+          const version = stableHostTarget(app.getVersion(), stagedAppVersion(), prefs.versionCache);
+          if (!version) throw new Error('Check component versions first to find the latest stable browser host release.');
+          const tag = `v${version}`;
           for (const target of vmTargets(prefs)) {
             const entry = prefs.vmUpdates?.[target.id] || {};
-            if (!value.force && !entry.failed && !(entry.version && macUpdate.isNewer(app.getVersion(), entry.version))) continue;
+            if (!value.force && !entry.failed && !(entry.version && macUpdate.isNewer(version, entry.version))) continue;
             vmProgress[target.id] = { state: 'updating' }; broadcast();
             const result = await vmUpdater.updateVm(target, tag, noteVmProgress);
             vmProgress[target.id] = vmProgressResult(result);
@@ -2140,14 +2164,17 @@ function registerIpc() {
           const cloud = prefs.cloud, step = cloud?.step;
           if (cloud?.diy !== true) throw new Error('This option is only for your own server.');
           if (!cloud.botInventoryChecked) {
-            const inventory = await cloudReadBotInventory((prefs.vpsBrowser?.sshHost || '').trim());
-            if (prefs.cloud !== cloud || cloud.step !== step) return getState();
+            const host = (prefs.vpsBrowser?.sshHost || '').trim();
+            const inventory = await cloudReadBotInventory(host);
+            if (prefs.cloud !== cloud || cloud.step !== step || (prefs.vpsBrowser?.sshHost || '').trim() !== host) return getState();
             Object.assign(cloud, inventory);
           }
         }
         if (value.step === 'done' && prefs.cloud) { prefs.cloud.step = 'done'; prefs.onboarded = true; savePreferences(); break; }
+        const from = prefs.cloud?.step;
         if (!setCloudStep(prefs, String(value.step || ''))) throw new Error('Unknown setup step.');
-        if (prefs.cloud.diy === true && value.step === 'model') delete prefs.cloud.modelDetected;
+        // Connect has just read the server's model, so only a later return to the model step re-reads it.
+        if (prefs.cloud.diy === true && value.step === 'model' && from !== 'connect') delete prefs.cloud.modelDetected;
         savePreferences(); break;
       }
       case 'cloud-next': {

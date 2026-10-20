@@ -22,6 +22,21 @@ const ADVERSE_EXCEPTIONS = ['Buy it again now', 'Buy it again2', 'Buy it agains'
   'Book_a_demo_now', 'Subscribe-and-save-now', 'Buy it again / confirm payment', 'Book a demo / send',
   'Subscribe & Save and purchase', 'Send code and send', 'Purchase history and purchase'];
 
+test('tax schedule names are descriptions, while scheduling and adjacent commit actions stay gated', () => {
+  const header = 'Business and Rental Income 1099-NEC, 1099-MISC, Schedule C, K-1s';
+  const matches = COMMIT_PATTERNS.names.filter(pattern => new RegExp(`(?<![\\p{L}\\p{N}])(?:${pattern})(?![\\p{L}\\p{N}])`, 'iu').test(header));
+  assert.deepEqual(matches, ['schedule'], 'the reported false positive comes from schedule');
+  for (const name of [header, 'Schedule A', 'Schedule C', 'Schedule C1', 'Schedule K-1', 'Schedule SE', 'Schedule 1', 'Schedule 1-A', 'Schedule C.', 'Schedule C (business income)']) {
+    assert.equal(isCommitName(name), false, name);
+    assert.equal(looksLikeCommit(name), false, name);
+  }
+  for (const name of ['Schedule', 'Schedule pickup', 'Schedule post', 'Schedule call', 'Schedule car', 'Schedule a meeting', 'Schedule a pickup', 'Schedule C1a', 'Schedule 12', 'Schedule 1:1', 'Schedule a 1:1', 'Schedule 1-on-1', 'Schedule 1-1', 'Schedule 1/1', 'Schedule 1.1', 'Schedule a - pickup',
+    'Schedule C - Submit return', 'Schedule C and Buy', 'Schedule C and Schedule pickup', 'Buy', 'Place order', 'Submit', 'Send', 'Delete account']) {
+    assert.equal(isCommitName(name), true, name);
+    assert.equal(looksLikeCommit(name), true, name);
+  }
+});
+
 test('the three navigation exceptions cover complete labels, preserving consequential variants', () => {
   for (const name of EXACT_EXCEPTIONS) assert.equal(looksLikeCommit(name), false, name);
   for (const name of ADVERSE_EXCEPTIONS) assert.equal(looksLikeCommit(name), true, name);
@@ -85,7 +100,7 @@ test('the commit name list is the one the router was given', () => {
     'acheter', 'envoyer', 'supprimer', 'comprar', 'pagar', 'reservar',
     'finalizar compra', 'enviar', 'eliminar', 'realizar pedido', 'confirmar',
   ]);
-  assert.equal(COMMIT_PATTERNS.notCommit.length, 13);
+  assert.equal(COMMIT_PATTERNS.notCommit.length, 14);
   assert.deepEqual(COMMIT_PATTERNS.notCommit.slice(-3), [
     '^\\s*buy it again\\s*$', '^\\s*book a demo\\s*$', '^\\s*subscribe (?:&|and) save\\s*$',
   ]);
