@@ -180,6 +180,93 @@ test('a clean run ends with the app staged for restart and one report for the bo
   assert.equal(reportText(rows), 'Update everything finished. Now on Hermes 0.21.7, plugin 0.21.1, browser host 0.21.5. The app installs 0.21.5 when you restart it.');
 });
 
+test('an update run that ends in a restart reports once from the new version', async (t) => {
+  const { deliverPendingUpdateReport } = require('../src/update-all.cjs');
+  const rows = await runSteps(STEPS, async (step) => ({ ok: true, version: step.to }));
+  for (const version of ['0.21.5', '0.21.4']) await t.test(`launch on ${version}`, async () => {
+    // Round trips model a fresh process reading only what the previous one saved.
+    let disk = JSON.stringify({ pendingUpdateReport: { runId: 'run-1', targetVersion: '0.21.5', rows, attempts: 0 } });
+    const sends = [], events = [];
+    const launch = async (send) => {
+      const prefs = JSON.parse(disk);
+      return deliverPendingUpdateReport({ prefs, version, save: () => { disk = JSON.stringify(prefs); },
+        send: async (text) => {
+          assert.equal(JSON.parse(disk).pendingUpdateReport.attempts, sends.length + 1, 'attempt saved before sending');
+          sends.push(text);
+          return send();
+        }, log: (text) => events.push(text) });
+    };
+    const sent = () => ({ messaged: true });
+    assert.equal((await launch(sent)).status, 'delivered');
+    assert.equal(sends.length, 1);
+    assert.match(sends[0], /Now on Hermes 0\.21\.7, plugin 0\.21\.1, browser host 0\.21\.5/);
+    assert.match(sends[0], version === '0.21.5' ? /The app is now on 0\.21\.5\./ : /The app is still on 0\.21\.4 \(wanted 0\.21\.5\)\./);
+    assert.doesNotMatch(sends[0], /when you restart/);
+    assert.equal(JSON.parse(disk).pendingUpdateReport, undefined);
+    await launch(sent);
+    assert.equal(sends.length, 1, 'a second launch does not resend');
+    assert.match(events[0], /run-1 delivered/);
+  });
+  for (const retrySucceeds of [true, false]) await t.test(`one retry, success=${retrySucceeds}`, async () => {
+    let disk = JSON.stringify({ pendingUpdateReport: { runId: 'retry-1', targetVersion: '0.21.5', rows, attempts: 0 } });
+    let sends = 0;
+    const events = [];
+    const launch = async (send) => {
+      const prefs = JSON.parse(disk);
+      return deliverPendingUpdateReport({ prefs, version: '0.21.5', save: () => { disk = JSON.stringify(prefs); },
+        send: async () => { sends++; return send(); }, log: (text) => events.push(text) });
+    };
+    const failed = () => { throw Error('relay unavailable'); };
+    const result = await launch(failed);
+    assert.equal(result.status, 'failed');
+    assert.match(result.delivery, /relay unavailable/);
+    assert.equal(JSON.parse(disk).pendingUpdateReport.attempts, 1);
+    const retry = await launch(() => ({ messaged: retrySucceeds }));
+    assert.equal(retry.status, retrySucceeds ? 'delivered' : 'failed');
+    assert.equal(JSON.parse(disk).pendingUpdateReport, undefined);
+    await launch(failed);
+    assert.equal(sends, 2, 'at most two launches attempt delivery');
+    assert.match(events[0], /retry-1 failed/);
+    assert.match(events[1], new RegExp(`retry-1 ${retry.status}`));
+  });
+});
+
+test('pending reports stop before sending when the attempt cannot be saved', async () => {
+  const { deliverPendingUpdateReport } = require('../src/update-all.cjs');
+  const rows = await runSteps(STEPS, async (step) => ({ ok: true, version: step.to }));
+  let sends = 0;
+  await assert.rejects(deliverPendingUpdateReport({
+    prefs: { pendingUpdateReport: { runId: 'run-1', targetVersion: '0.21.5', rows, attempts: 0 } }, version: '0.21.5',
+    save: () => { throw Error('disk unavailable'); }, send: async () => { sends++; },
+  }), /disk unavailable/);
+  assert.equal(sends, 0);
+});
+
+test('pending reports discard malformed or exhausted records without sending', async () => {
+  const { deliverPendingUpdateReport } = require('../src/update-all.cjs');
+  const rows = await runSteps(STEPS, async (step) => ({ ok: true, version: step.to }));
+  const pending = { runId: 'run-1', targetVersion: '0.21.5', rows, attempts: 0 };
+  for (const invalid of ['broken', { ...pending, rows: [null] }, { ...pending, attempts: 2 }, { ...pending, targetVersion: '0.21.6' }]) {
+    const prefs = { pendingUpdateReport: invalid };
+    let saves = 0;
+    await deliverPendingUpdateReport({ prefs, version: '0.21.5', save: () => { saves++; },
+      send: async () => assert.fail('invalid reports must not send') });
+    assert.equal(prefs.pendingUpdateReport, undefined);
+    assert.equal(saves, 1);
+  }
+});
+
+test('partial delivery is recorded without sending a duplicate to successful profiles', async () => {
+  const { deliverPendingUpdateReport } = require('../src/update-all.cjs');
+  const rows = await runSteps(STEPS, async (step) => ({ ok: true, version: step.to }));
+  const prefs = { pendingUpdateReport: { runId: 'run-1', targetVersion: '0.21.5', rows, attempts: 0 } };
+  const result = await deliverPendingUpdateReport({ prefs, version: '0.21.5', save: () => {},
+    send: async () => ({ messages: [{ profile: 'default', sent: true }, { profile: 'coder', sent: false, error: 'unavailable' }] }) });
+  assert.equal(result.status, 'delivered');
+  assert.match(result.delivery, /Other profiles could not send: coder: unavailable/);
+  assert.equal(prefs.pendingUpdateReport, undefined);
+});
+
 test('a step that finished without moving is named as unchanged, never claimed as updated', async () => {
   // A catalog install stays on its reviewed pin even when a newer tag exists.
   const rows = await runSteps(STEPS.slice(0, 2), async (step) => ({ ok: true, version: step.id === 'plugin' ? '0.21.0' : '0.21.7' }));
