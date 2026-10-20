@@ -68,10 +68,11 @@ app.whenReady().then(async () => {
   })()`);
   win.webContents.sendInputEvent({ type: 'mouseDown', x: splitter.x, y: splitter.y, button: 'left', clickCount: 1 });
   await new Promise(resolve => setTimeout(resolve, 50));
-  win.webContents.sendInputEvent({ type: 'mouseMove', x: splitter.x - 20, y: splitter.y });
-  await new Promise(resolve => setTimeout(resolve, 50));
+  win.webContents.sendInputEvent({ type: 'mouseMove', x: splitter.x - 20, y: splitter.y, button: 'left', modifiers: ['leftbuttondown'] });
+  const paneWidth = () => win.webContents.executeJavaScript(`document.querySelector('.chat-pane').getBoundingClientRect().width`);
+  let draggedWidth = await paneWidth();
+  for (const deadline = Date.now() + 5000; draggedWidth === splitter.width && Date.now() < deadline; draggedWidth = await paneWidth()) await new Promise(resolve => setTimeout(resolve, 50));
   win.webContents.sendInputEvent({ type: 'mouseUp', x: splitter.x - 20, y: splitter.y, button: 'left', clickCount: 1 });
-  const draggedWidth = await win.webContents.executeJavaScript(`document.querySelector('.chat-pane').getBoundingClientRect().width`);
   assert.equal(draggedWidth, splitter.width - 20, 'splitter starts from the clamped width without a dead zone');
   await resizeWindow(win, effective.width, effective.height);
   await win.webContents.executeJavaScript(`
