@@ -162,6 +162,36 @@ test('ssh-level failures become per-VM errors, never a throw', async () => {
   assert.match(result.error, /timed out/);
 });
 
+test('guest messages keep ordinary punctuation and credential-free scp remotes readable', async () => {
+  for (const text of ['Update now?', '#123', 'git@github.com:team/repo', 'name@', 'Review #123', 'user@host:repo']) {
+    for (const mode of ['json', 'stderr', 'throw']) {
+      const run = () => {
+        if (mode === 'throw') throw new Error(text);
+        return mode === 'stderr' ? { code: 255, out: '', err: text }
+          : { code: 0, out: JSON.stringify({ ok: false, error: text }), err: '' };
+      };
+      const result = await createVmUpdater({ run, readScript }).updateVm(vm(), 'v0.3.2');
+      assert.equal(result.error, (mode === 'stderr' ? 'Could not reach the VM over SSH. ' : '') + text, `${mode}: ${text}`);
+    }
+  }
+});
+
+test('guest URL remnants still lose credentials and query or fragment tails', async () => {
+  for (const text of [
+    'SYNTHETICuser:SYNTHETICpass@host', 'SYNTHETICtoken@host.tld',
+    'SYNTHETICuser:SYNTHETICpass@host:repo', 'SYNTHETICtoken@[::1]:443/repo',
+    'SYNTHETICtoken@host/repo?opaque=SYNTHETICquery#SYNTHETICfragment',
+    'host.tld?opaque=SYNTHETICquery', 'host.tld#SYNTHETICfragment',
+    'localhost?opaque=SYNTHETICquery', '/repo?opaque=SYNTHETICquery',
+    'SYNTHETICtoken@host?opaque=SYNTHETICquery',
+  ]) {
+    const { run } = fakeRun({ code: 0, out: JSON.stringify({ ok: true, findings: [{ fix: text }] }), err: '' });
+    const result = await createVmUpdater({ run, readScript }).doctorVm(vm());
+    assert.doesNotMatch(result.findings[0].fix, /SYNTHETIC/, text);
+    assert.match(result.findings[0].fix, /\[redacted\]/, text);
+  }
+});
+
 test('the result line is the last JSON object line of script output', () => {
   assert.deepEqual(parseResultLine('noise\n{"ok":true,"version":"0.3.2"}\n'), { ok: true, version: '0.3.2' });
   assert.deepEqual(parseResultLine('{"ok":true}\ntrailing log'), { ok: true });

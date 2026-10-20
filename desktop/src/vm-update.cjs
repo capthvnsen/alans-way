@@ -156,7 +156,11 @@ function createVmUpdater({ run = defaultRun, readScript = defaultReadScript, log
     // Older guests may already have cut off a URL's scheme. Remove its
     // remaining userinfo and query/fragment before any app consumer sees it.
     if (typeof value === 'string') return redactReport(value)
-      .replace(/[^\s/]+@/g, '[redacted]@').replace(/[?#][^\s]*/g, '[redacted]');
+      .replace(/([^\s/]+)@([a-z\d][a-z\d.-]*|\[[\da-f:.]+\])(:[^\s/?#]*)?/gi,
+        // A username and a non-port colon suffix identify a credential-free scp remote.
+        (match, userinfo, host, port) => port && !/^:\d+$/.test(port) && !userinfo.includes(':')
+          ? match : `[redacted]@${host}${port || ''}`)
+      .replace(/([^\s?#]*\/[^\s?#]*|(?:\[[\da-f:.]+\]|(?:[a-z\d-]+\.)+[a-z\d-]+|localhost|@[a-z\d][a-z\d.-]*)(?::\d+)?)[?#][^\s]*/gi, '$1[redacted]');
     if (Array.isArray(value)) return value.map(sanitizeGuest);
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
       .map(([key, item]) => [sanitizeGuest(key), sanitizeGuest(item)]));
