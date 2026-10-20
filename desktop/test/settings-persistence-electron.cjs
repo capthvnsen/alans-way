@@ -35,6 +35,9 @@ global.fetch=deny('fetch');
 const inert='data:text/html;charset=utf-8,'+encodeURIComponent('<!doctype html><title>Owned inert page</title><main>Local fixture only</main>');
 app.on('web-contents-created',(_event,wc)=>{
  const original=wc.loadURL.bind(wc);
+ // Keep background viewer retries out of the Settings command assertions.
+ const loadFile=wc.loadFile.bind(wc);
+ wc.loadFile=(file,...args)=>{if(path.basename(file)==='remote.html'){boundary('viewer.inert');return original(inert);}return loadFile(file,...args);};
  const send=wc.send.bind(wc);wc.send=(channel,...args)=>{if(channel==='workspace:state')output.publications.push({at:Date.now(),contents:wc.id,state:args[0]});return send(channel,...args);};
  wc.loadURL=(url,...args)=>{if(/^https?:|^wss?:/i.test(url)){boundary('webContents.loadURL',url);return original(inert);}return original(url,...args);};
  wc.focus=()=>boundary('webContents.focus');
