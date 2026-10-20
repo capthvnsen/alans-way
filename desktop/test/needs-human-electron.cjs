@@ -16,6 +16,19 @@ process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10
 const shown = [];
 Notification.prototype.show = function show() { shown.push(this); };
 Notification.prototype.close = function close() { this.closed = true; };
+// Only the VM transport is faked; the window, renderer and command route are real.
+const remoteCalls = [];
+let remoteTab = { id: 'vm-sign-in', botId: '4242', host: 'vps', controller: 'human', epoch: 7,
+  url: 'https://login.example/', title: 'Sign in', handback: { state: 'awaiting_human', reason: 'login', note: 'Sign in', botId: '4242', since: Date.now() } };
+const vpsModule = require('../src/vps-browser.cjs');
+vpsModule.createVpsBrowser = () => ({ request: async (route, method, body, options) => {
+  if (route === '/v1/tabs' && method === 'POST') return remoteTab;
+  if (route.endsWith('/control')) {
+    remoteCalls.push({ body, human: options.human });
+    remoteTab = { ...remoteTab, controller: 'agent', epoch: 8, handback: { ...remoteTab.handback, state: 'human_returned' } };
+  }
+  return remoteTab;
+} });
 require('../src/main.cjs');
 const waitFor = async (read, predicate, timeout = 12000) => {
   const deadline = Date.now() + timeout;
@@ -92,7 +105,10 @@ app.whenReady().then(async () => {
   assert.equal(await evaluate('document.querySelectorAll("#tabs .needs-you-badge").length'), 0);
   const stale = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'read', epoch: releasedEpoch });
   assert.equal(stale.status, 409); assert.match(stale.data.error, /^human_returned/);
-  assert.equal((await api(`/v1/tabs/${tab.id}`)).data.handback.state, 'human_returned');
+  const returned = (await api(`/v1/tabs/${tab.id}`)).data;
+  assert.equal(returned.handback.state, 'human_returned');
+  await invoke('control', { id: tab.id, controller: 'agent', giveBack: true, epoch: releasedEpoch });
+  assert.deepEqual((await api(`/v1/tabs/${tab.id}`)).data, returned, 'a duplicate local give-back is a no-op');
   const reclaimed = await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' });
   assert.equal(reclaimed.status, 200, JSON.stringify(reclaimed.data));
   assert.ok(reclaimed.data.epoch > releasedEpoch + 1, 'the claim returns a fresh epoch');
@@ -121,6 +137,14 @@ app.whenReady().then(async () => {
   assert.equal(shown.length, 2);
   await invoke('close-tab', { id: second.id });
   assert.equal(shown[1].closed, true, 'closing the tab dismisses its notification');
+
+  const vmTab = (await api('/v1/tabs', 'POST', { host: 'vm', url: 'https://login.example/' })).data;
+  await invoke('activate', { id: vmTab.id });
+  await waitFor(() => evaluate('document.getElementById("needs-you-banner").classList.contains("hidden")'), hidden => !hidden);
+  await evaluate('document.getElementById("needs-you-give-back").click()');
+  await waitFor(() => remoteCalls.length, count => count === 1);
+  assert.deepEqual(remoteCalls[0], { body: { controller: 'agent', giveBack: true, epoch: 7 }, human: true }, 'the existing button routes the guarded give-back to the VM');
+  assert.equal((await getState()).tabs.find(item => item.id === vmTab.id).handback.state, 'human_returned');
 
   console.log('PASS: a release with a reason badges the tab, shows an escaped banner, notifies once, and holds the tab until the human gives it back.');
   server.close(); app.quit();

@@ -474,11 +474,12 @@ function render(next) {
   handoffButton.title = handedOff ? `Bring the ${remoteName()} copy of this page back to your ${thisComputer()}` : `Move ${agentName || 'the agent'}’s page to the ${remoteName()} desktop`;
   // The bot's note is plain text from the page side of the trust line: it
   // only ever reaches the DOM through textContent.
-  const needsYou = tab?.handback?.state === 'awaiting_human' ? tab.handback : null;
+  const handbackTab = remote ? state.tabs.find(item => item.id === state.activeVpsTabId) : tab;
+  const needsYou = handbackTab?.handback?.state === 'awaiting_human' ? handbackTab.handback : null;
   $('needs-you-banner').classList.toggle('hidden', !needsYou);
   if (needsYou) {
-    $('needs-you-banner').style.setProperty('--h', String(tab.agentHue ?? 168));
-    $('needs-you-text').textContent = `${agentName} needs you: ${needsYou.note || HANDBACK_TEXT[needsYou.reason] || 'take a look.'}`;
+    $('needs-you-banner').style.setProperty('--h', String(handbackTab.agentHue ?? 168));
+    $('needs-you-text').textContent = `${state.bots.find(bot => bot.id === handbackTab.botId)?.name || 'Agent'} needs you: ${needsYou.note || HANDBACK_TEXT[needsYou.reason] || 'take a look.'}`;
   }
   // Main clears the takeover notice a few seconds after a bot took the tab.
   const takeover = tab?.takeover && tab.controller === 'agent';
@@ -1995,7 +1996,7 @@ $('record-button').onclick = () => {
 $('recording-stop').onclick = () => stopRecording(true);
 $('recording-discard').onclick = () => stopRecording(false);
 $('takeover-take-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: 'human', takeBack: true }); };
-$('needs-you-give-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: 'agent' }); };
+$('needs-you-give-back').onclick = () => { const tab = state.tabs.find((item) => item.id === (state.activeTabId === 'vps' ? state.activeVpsTabId : state.activeTabId)); if (tab) command('control', { id: tab.id, controller: 'agent', giveBack: true, epoch: tab.epoch }); };
 $('handoff-button').onclick = async () => {
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
   if (!tab) return;
