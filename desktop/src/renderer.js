@@ -2035,7 +2035,7 @@ $('update-all-popup').onclick = (event) => { if (event.target === $('update-all-
 $('update-popup').onclick = (event) => { if (event.target === $('update-popup') && !state?.update?.busy) $('update-later').click(); };
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { if (modalOpen) closeModal(); else if (!$('tabs-panel').classList.contains('hidden')) { setTabsPanel(false); $('tabs-menu').focus({ preventScroll: true }); } else if (!$('status-panel').classList.contains('hidden')) { setStatusPanel(false); (canFocus($('status-more')) ? $('status-more') : $('workspace-status')).focus({ preventScroll: true }); } else closeDownloads(); } });
 $('splitter').onpointerdown = (event) => {
-  const startX = event.clientX, startWidth = state.chatWidth; $('splitter').setPointerCapture(event.pointerId); $('splitter').classList.add('active');
+  const startX = event.clientX, startWidth = document.querySelector('.chat-pane').getBoundingClientRect().width; $('splitter').setPointerCapture(event.pointerId); $('splitter').classList.add('active');
   const sidebar = document.querySelector('.sidebar');
   const handleMove = (ev) => { const max = Math.min(680, innerWidth - sidebar.getBoundingClientRect().width - 355); const width = Math.max(320, Math.min(max, startWidth + ev.clientX - startX)); document.documentElement.style.setProperty('--chat-width', `${width}px`); scheduleLayout(); };
   const end = () => { $('splitter').classList.remove('active'); $('splitter').removeEventListener('pointermove', handleMove); $('splitter').removeEventListener('pointerup', end); command('settings', { chatWidth: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--chat-width')) }); };
