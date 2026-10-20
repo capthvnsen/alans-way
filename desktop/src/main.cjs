@@ -2570,9 +2570,9 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = 
     const wc = tab.view.webContents;
     const viaDevTools = async (cdpFormat) => {
       // clip.scale downscales at capture instead of a full-size decode then resize.
-      const size = await boundedJs(wc, '({ width: innerWidth, height: innerHeight, dsf: devicePixelRatio })');
+      const size = await boundedJs(wc, '({ width: globalThis.visualViewport?.width ?? innerWidth, height: globalThis.visualViewport?.height ?? innerHeight, pageLeft: globalThis.visualViewport?.pageLeft ?? scrollX, pageTop: globalThis.visualViewport?.pageTop ?? scrollY, dsf: devicePixelRatio })');
       const scale = maxWidth && size.width * size.dsf > maxWidth ? Math.max(0.01, maxWidth / size.width) : size.dsf;
-      const shot = await browserCommand(tab, 'Page.captureScreenshot', { format: cdpFormat, ...(cdpFormat === 'png' ? {} : { quality }), fromSurface: true, clip: { x: 0, y: 0, width: size.width, height: size.height, scale } });
+      const shot = await browserCommand(tab, 'Page.captureScreenshot', { format: cdpFormat, ...(cdpFormat === 'png' ? {} : { quality }), fromSurface: true, clip: { x: size.pageLeft, y: size.pageTop, width: size.width, height: size.height, scale } });
       return shot.data;
     };
     const encode = async () => {
