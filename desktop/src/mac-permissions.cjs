@@ -2,6 +2,9 @@
 
 const APP = 'alans-way-localapp';
 const VERBS = ['apps', 'snapshot', 'screenshot', 'menu', 'action'];
+// Reads: 35+2*20=75<80 s; batches: 4+45+.15+2*20=89.15<90/100 s.
+const READ_WAIT_MS = 35000;
+const ACTION_WAIT_MS = 4000;
 
 // macOS credits Accessibility and Screen Recording to this app, never to the SSH
 // session that relays the agent's request, so a failure here is always fixable
@@ -32,8 +35,7 @@ function createMacPermissionHelp({ systemPreferences, platform = process.platfor
       return service[verb](...args).catch(async (error) => {
         const explained = explain(error);
         if (error?.code === 'permission' && /Accessibility/i.test(error.message || '')) {
-          // Reserve 20 s for a read retry or 65 s for a batch, plus 5 s before the 90 s caller abort.
-          const deadline = Math.min(Date.now() + waitMs, started + (verb === 'action' ? 20000 : 65000));
+          const deadline = Math.min(Date.now() + waitMs, started + (verb === 'action' ? ACTION_WAIT_MS : READ_WAIT_MS));
           while (Date.now() < deadline) {
             await sleep(Math.min(pollMs, deadline - Date.now()));
             try {

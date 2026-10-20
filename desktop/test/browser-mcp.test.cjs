@@ -17,12 +17,13 @@ function connectorRequest(fetch) {
   });
 }
 
-for (const [verb, firstMs, grantedAt, retryMs, completedAt] of [
-  ['snapshot', 1000, 59000, 20000, 79000],
-  ['snapshot', 19000, 64000, 20000, 84000],
-  ['action', 1000, 19000, 65000, 84000],
-  ['action', 19000, 20000, 65000, 85000],
-]) test(`a late grant returns the ${verb} retry before the caller abort (${firstMs} ms first refusal)`, async (t) => {
+for (const [verb, firstMs, grantedAt, retryMs, completedAt, batch = true] of [
+  ['snapshot', 1000, 34000, 40000, 74000],
+  ['snapshot', 19000, 34999, 40000, 75000],
+  ['action', 1000, 3000, 85150, 88150],
+  ['action', 3000, 3999, 85150, 89150],
+  ['action', 1000, 3999, 55150, 59150, false],
+]) test(`a late grant returns the ${verb === 'action' && batch ? 'batch' : verb} retry before the caller abort (${firstMs} ms first refusal)`, async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
   let calls = 0;
   let callerDeadline;
@@ -40,7 +41,7 @@ for (const [verb, firstMs, grantedAt, retryMs, completedAt] of [
   } });
   const request = connectorRequest(async (_url, { signal }) => {
     callerDeadline = signal.deadline;
-    const reply = await service[verb]('bot', 7, { action: 'batch', steps: [] });
+    const reply = await service[verb]('bot', 7, batch ? { action: 'batch', steps: [] } : { action: 'wait', text: 'Done' });
     if (Date.now() >= callerDeadline) throw new Error('caller timed out');
     return { ok: true, status: 200, text: async () => JSON.stringify(reply) };
   });
@@ -48,8 +49,9 @@ for (const [verb, firstMs, grantedAt, retryMs, completedAt] of [
   assert.equal(JSON.stringify(reply), JSON.stringify(result));
   assert.equal(calls, 2);
   assert.equal(Date.now(), completedAt);
-  assert.equal(callerDeadline, 90000);
-  assert.ok(Date.now() < callerDeadline && Date.now() < 100000);
+  assert.equal(callerDeadline, verb === 'action' ? 90000 : 80000);
+  assert.ok(Date.now() < callerDeadline);
+  assert.ok(Date.now() < (verb === 'action' && batch ? 100000 : 80000), 'the router must receive the result before its ordinary/batch deadline');
 });
 
 test('only computer reads gain a longer abort; browser tab deadlines stay the same', async (t) => {
@@ -62,7 +64,7 @@ test('only computer reads gain a longer abort; browser tab deadlines stay the sa
   for (const endpoint of ['/v1/computer/apps', '/v1/computer/7/snapshot?since=1', '/v1/computer/7/screenshot', '/v1/computer/7/menu', '/v1/computer/7/action', '/v1/tabs', '/v1/tabs/7/snapshot', '/v1/tabs/7/actions']) {
     await request(endpoint, /\/actions?$/.test(endpoint) ? 'POST' : 'GET');
   }
-  assert.deepEqual(deadlines, [90000, 90000, 90000, 90000, 90000, 25000, 25000, 90000]);
+  assert.deepEqual(deadlines, [80000, 80000, 80000, 80000, 90000, 25000, 25000, 90000]);
 });
 
 test('public recovery guidance limits retries to reads and preserves uncertain mutation review', { timeout: 8000 }, async (t) => {

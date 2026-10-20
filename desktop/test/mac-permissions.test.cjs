@@ -147,11 +147,11 @@ test('an action returns the explanation before its caller deadline when access a
   const wrapped = help.wrap({ action: async () => {
     calls++;
     if (calls === 1) throw failure('Accessibility is off.', 'permission');
-    t.mock.timers.tick(65000);
+    t.mock.timers.tick(85000);
     return { results: [{ ok: true }] };
   } });
   await assert.rejects(wrapped.action('bot', 1, { action: 'batch', steps: [] }), /Accessibility is off for alans-way-localapp/);
-  assert.equal(Date.now(), 20000);
+  assert.equal(Date.now(), 4000);
   assert.equal(calls, 1);
 });
 
@@ -165,11 +165,11 @@ test('an action does not wait or retry if its first refusal used the permission 
   });
   const wrapped = help.wrap({ action: async () => {
     calls++;
-    t.mock.timers.tick(20000);
+    t.mock.timers.tick(4000);
     throw failure('Accessibility is off.', 'permission');
   } });
   await assert.rejects(wrapped.action('bot', 1, { action: 'batch', steps: [] }), /Accessibility is off for alans-way-localapp/);
-  assert.equal(Date.now(), 20000);
+  assert.equal(Date.now(), 4000);
   assert.equal(calls, 1);
 });
 
@@ -179,13 +179,13 @@ test('a delayed permission poll never starts a retry after its budget', async (t
   const help = createMacPermissionHelp({
     platform: 'darwin',
     systemPreferences: { isTrustedAccessibilityClient: () => true },
-    sleep: async () => t.mock.timers.tick(21000),
+    sleep: async () => t.mock.timers.tick(5000),
   });
   const wrapped = help.wrap({ action: async () => {
     calls++;
     throw failure('Accessibility is off.', 'permission');
   } });
   await assert.rejects(wrapped.action('bot', 1, { action: 'batch', steps: [] }), /Accessibility is off for alans-way-localapp/);
-  assert.equal(Date.now(), 21000);
+  assert.equal(Date.now(), 5000);
   assert.equal(calls, 1);
 });
