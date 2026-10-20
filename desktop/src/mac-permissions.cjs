@@ -6,7 +6,7 @@ const VERBS = ['apps', 'snapshot', 'screenshot', 'menu', 'action'];
 // macOS credits Accessibility and Screen Recording to this app, never to the SSH
 // session that relays the agent's request, so a failure here is always fixable
 // at the Mac. Say exactly where, and ask macOS to show its own prompt once.
-function createMacPermissionHelp({ systemPreferences, platform = process.platform }) {
+function createMacPermissionHelp({ systemPreferences, platform = process.platform, waitMs = 60000, pollMs = 1000, sleep = require('node:timers/promises').setTimeout }) {
   let prompted = false;
 
   function explain(error) {
@@ -27,7 +27,21 @@ function createMacPermissionHelp({ systemPreferences, platform = process.platfor
 
   const wrap = (service) => platform !== 'darwin' ? service : {
     ...service,
-    ...Object.fromEntries(VERBS.map((verb) => [verb, (...args) => service[verb](...args).catch((error) => { throw explain(error); })])),
+    ...Object.fromEntries(VERBS.map((verb) => [verb, (...args) => service[verb](...args).catch(async (error) => {
+      const explained = explain(error);
+      if (error?.code === 'permission' && /Accessibility/i.test(error.message || '')) {
+        for (let waited = 0; waited < waitMs;) {
+          const delay = Math.min(pollMs, waitMs - waited);
+          await sleep(delay);
+          waited += delay;
+          try {
+            if (!systemPreferences.isTrustedAccessibilityClient(false)) continue;
+          } catch { break; }
+          return service[verb](...args).catch((error) => { throw explain(error); });
+        }
+      }
+      throw explained;
+    })])),
   };
 
   return { explain, wrap };
