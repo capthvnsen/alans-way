@@ -11,8 +11,8 @@ const SHA = /^[a-f0-9]{40}$/;
 const VALUES = {
   '--bot-id': /^\d+$/, '--bot-name': /^[^\x00-\x1f]{1,100}$/,
   '--mac-ssh': /^[^\x00-\x20]{1,253}$/, '--host-os': /^(mac|windows|linux)$/,
-  '--timezone': /^[A-Za-z_+-]+(?:\/[A-Za-z0-9_+-]+)+$/, '--proactive': /^(yes|no)$/,
-  '--tone': /^(texting|default)$/, '--profile': /^[a-z0-9][a-z0-9_-]{0,62}$/,
+  '--timezone': /^[A-Za-z0-9_+-]+(?:\/[A-Za-z0-9_+-]+)*$/, '--proactive': /^(yes|no)$/,
+  '--tone': /^(texting|default)$/, '--profile': /^[a-z0-9][a-z0-9_-]{0,63}$/,
   '--mac-key': /^ssh-(?:ed25519|rsa) [A-Za-z0-9+/=]+(?: [^\r\n]+)?$/,
   '--mac-host-key': /^ssh-(?:ed25519|rsa) [A-Za-z0-9+/=]+(?: [^\r\n]+)?$/,
 };
@@ -32,7 +32,8 @@ function parseSetupPlan(text) {
     seen.add(name);
     if (FLAGS.has(name)) continue;
     const pattern = VALUES[name], value = plan.args[++i];
-    if (!pattern || typeof value !== 'string' || value.length > 4096 || !pattern.test(value))
+    // Match the entire value: $ alone also matches before a trailing newline.
+    if (!pattern || typeof value !== 'string' || value.length > 4096 || pattern.exec(value)?.[0] !== value)
       throw new Error('The setup plan contains an unsupported option or value. Ask your bot to correct it.');
   }
   for (const key of ['--bot-id', '--mac-ssh', '--host-os', '--timezone', '--proactive'])

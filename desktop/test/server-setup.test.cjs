@@ -87,3 +87,43 @@ test('the actual setup payload enforces the pin and preserves literal user input
   assert.notEqual(invoke(fixture).status, 0, 'modified checkout never executes setup');
   assert.equal(fs.existsSync(path.join(home, 'called')), false);
 });
+
+
+test('IANA single-component aliases and Etc zones reach mocked SSH intact', async () => {
+  const calls = [];
+  const setup = createServerSetup({ run: async (...args) => { calls.push(args); return { code: 0, out: 'fixture passed', err: '' }; } });
+  for (const timezone of ['UTC', 'Etc/UTC', 'Etc/GMT+12', 'Etc/GMT-14', 'America/Argentina/Buenos_Aires', 'GMT0', 'CST6CDT']) {
+    const args = [...plan.args]; args[args.indexOf('--timezone') + 1] = timezone;
+    assert.equal((await setup('you@server.example', JSON.stringify({ ...plan, args }))).ok, true, timezone);
+    assert.ok(calls.at(-1)[2].input.includes(`'--timezone' '${timezone}'`));
+  }
+  assert.equal(calls.length, 7);
+});
+
+test('Hermes profile IDs accept the full 1 to 64 character boundary', async () => {
+  const calls = [];
+  const setup = createServerSetup({ run: async (...args) => { calls.push(args); return { code: 0, out: 'fixture passed', err: '' }; } });
+  for (const profile of ['a', '0', 'work_1-test', 'default', 'a'.repeat(63), 'a'.repeat(64)]) {
+    const input = { ...plan, args: [...plan.args, '--profile', profile] };
+    assert.equal((await setup('you@server.example', JSON.stringify(input))).ok, true, profile);
+    assert.ok(calls.at(-1)[2].input.includes(`'--profile' '${profile}'`));
+  }
+  assert.equal(calls.length, 6);
+});
+
+test('timezone and profile formats reject invalid boundaries and shell metacharacters before SSH', async () => {
+  let calls = 0;
+  const setup = createServerSetup({ run: async () => { calls++; throw Error('must not run'); } });
+  for (const [option, invalid] of [
+    ['--profile', ['', 'a'.repeat(65), '-work', '_work', 'Work', 'work.name', '../work']],
+    ['--timezone', ['', '/UTC', 'Etc/', 'Etc//UTC', '../UTC']],
+  ]) {
+    for (const value of [...invalid, 'UTC;id', '$(id)', '`id`', 'UTC|id', 'UTC&id', 'UTC>file', "UTC'", 'UTC"', 'UTC\\id', 'UTC id', 'UTC\n', 'UTC\r', 'work\n', 'work\r']) {
+      const args = [...plan.args];
+      if (option === '--timezone') args[args.indexOf(option) + 1] = value;
+      else args.push(option, value);
+      assert.equal((await setup('you@server.example', JSON.stringify({ ...plan, args }))).ok, false, `${option}: ${JSON.stringify(value)}`);
+    }
+  }
+  assert.equal(calls, 0);
+});
