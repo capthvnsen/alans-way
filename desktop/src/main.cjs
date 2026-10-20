@@ -27,7 +27,7 @@ const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
-const { latestPluginTag, latestHostRelease, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
+const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createHermesHub } = require('./hermes-hub.cjs');
@@ -2031,12 +2031,14 @@ function registerIpc() {
       case 'vm-update-retry': {
         if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
         vmRetrying = true; broadcast();
-        const tag = `v${app.getVersion()}`;
         try {
           await waitForVersionCheck();
+          const version = stableHostTarget(app.getVersion(), stagedAppVersion(), prefs.versionCache);
+          if (!version) throw new Error('Check component versions first to find the latest stable browser host release.');
+          const tag = `v${version}`;
           for (const target of vmTargets(prefs)) {
             const entry = prefs.vmUpdates?.[target.id] || {};
-            if (!value.force && !entry.failed && !(entry.version && macUpdate.isNewer(app.getVersion(), entry.version))) continue;
+            if (!value.force && !entry.failed && !(entry.version && macUpdate.isNewer(version, entry.version))) continue;
             vmProgress[target.id] = { state: 'updating' }; broadcast();
             const result = await vmUpdater.updateVm(target, tag, noteVmProgress);
             vmProgress[target.id] = vmProgressResult(result);
