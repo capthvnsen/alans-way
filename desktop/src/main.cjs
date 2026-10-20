@@ -1534,7 +1534,7 @@ async function runSetupCheck() {
       server = report;
     }
   }
-  const findings = setupCheck.buildFindings({ appVersion: app.getVersion(), platform: process.platform, local, connection, server });
+  const findings = setupCheck.buildFindings({ appVersion: app.getVersion(), hostTarget: stableHostTarget(app.getVersion(), '', prefs.versionCache), platform: process.platform, local, connection, server });
   lastSetupCheck = { at: new Date().toISOString(), findings, server };
   return findings;
 }
