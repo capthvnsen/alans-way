@@ -6,6 +6,64 @@ const path = require('node:path');
 const http = require('node:http');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
+const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
+
+function connectorRequest(fetch) {
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/browser-mcp.cjs'), 'utf8');
+  return require('node:vm').runInNewContext(source.slice(source.indexOf('const connectionKey ='), source.indexOf('let hostCaps =')) + '\nrequestOnce;', {
+    fs: { readFileSync: () => JSON.stringify({ url: 'http://127.0.0.1:9', token: 'fixture' }) },
+    file: 'fixture', botId: 'fixture', botName: '', URL, fetch,
+    AbortSignal: { timeout: (ms) => ({ deadline: Date.now() + ms }) },
+  });
+}
+
+for (const [verb, firstMs, grantedAt, retryMs, completedAt] of [
+  ['snapshot', 1000, 59000, 20000, 79000],
+  ['snapshot', 19000, 64000, 20000, 84000],
+  ['action', 1000, 19000, 65000, 84000],
+  ['action', 19000, 20000, 65000, 85000],
+]) test(`a late grant returns the ${verb} retry before the caller abort (${firstMs} ms first refusal)`, async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  let calls = 0;
+  let callerDeadline;
+  const result = verb === 'action' ? { results: [{ ok: true }] } : { generation: 1, elements: [] };
+  const help = createMacPermissionHelp({
+    platform: 'darwin',
+    systemPreferences: { isTrustedAccessibilityClient: () => Date.now() >= grantedAt },
+    sleep: async (ms) => t.mock.timers.tick(ms),
+  });
+  const service = help.wrap({ [verb]: async () => {
+    calls++;
+    t.mock.timers.tick(calls === 1 ? firstMs : retryMs);
+    if (calls === 1) throw Object.assign(new Error('Accessibility is off.'), { code: 'permission' });
+    return result;
+  } });
+  const request = connectorRequest(async (_url, { signal }) => {
+    callerDeadline = signal.deadline;
+    const reply = await service[verb]('bot', 7, { action: 'batch', steps: [] });
+    if (Date.now() >= callerDeadline) throw new Error('caller timed out');
+    return { ok: true, status: 200, text: async () => JSON.stringify(reply) };
+  });
+  const reply = await request(`/v1/computer/7/${verb}`, verb === 'action' ? 'POST' : 'GET');
+  assert.equal(JSON.stringify(reply), JSON.stringify(result));
+  assert.equal(calls, 2);
+  assert.equal(Date.now(), completedAt);
+  assert.equal(callerDeadline, 90000);
+  assert.ok(Date.now() < callerDeadline && Date.now() < 100000);
+});
+
+test('only computer reads gain a longer abort; browser tab deadlines stay the same', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  const deadlines = [];
+  const request = connectorRequest(async (_url, { signal }) => {
+    deadlines.push(signal.deadline - Date.now());
+    return { ok: true, status: 200, text: async () => '{"dispatched":true}' };
+  });
+  for (const endpoint of ['/v1/computer/apps', '/v1/computer/7/snapshot?since=1', '/v1/computer/7/screenshot', '/v1/computer/7/menu', '/v1/computer/7/action', '/v1/tabs', '/v1/tabs/7/snapshot', '/v1/tabs/7/actions']) {
+    await request(endpoint, /\/actions?$/.test(endpoint) ? 'POST' : 'GET');
+  }
+  assert.deepEqual(deadlines, [90000, 90000, 90000, 90000, 90000, 25000, 25000, 90000]);
+});
 
 test('public recovery guidance limits retries to reads and preserves uncertain mutation review', { timeout: 8000 }, async (t) => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-recovery-guidance-'));

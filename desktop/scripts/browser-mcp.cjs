@@ -192,7 +192,7 @@ async function requestOnce(endpoint, method = 'GET', body, epoch, approvedConnec
   let response, raw;
   try {
     response = await fetch(new URL(endpoint, url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': botId, ...(botName ? { 'X-Hermes-Bot-Name': botName } : {}), ...(Number.isInteger(epoch) ? { 'X-Control-Epoch': String(epoch) } : {}), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(/\/(actions|action)$/.test(endpoint) ? 90000 : 25000) });
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(endpoint.startsWith('/v1/computer/') || /\/(actions|action)$/.test(endpoint) ? 90000 : 25000) });
     // Headers can arrive before the service disconnects or its body stalls.
     // Either failure leaves an action's outcome uncertain; never replay it.
     raw = await response.text();

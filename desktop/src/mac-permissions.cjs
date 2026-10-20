@@ -27,21 +27,25 @@ function createMacPermissionHelp({ systemPreferences, platform = process.platfor
 
   const wrap = (service) => platform !== 'darwin' ? service : {
     ...service,
-    ...Object.fromEntries(VERBS.map((verb) => [verb, (...args) => service[verb](...args).catch(async (error) => {
-      const explained = explain(error);
-      if (error?.code === 'permission' && /Accessibility/i.test(error.message || '')) {
-        for (let waited = 0; waited < waitMs;) {
-          const delay = Math.min(pollMs, waitMs - waited);
-          await sleep(delay);
-          waited += delay;
-          try {
-            if (!systemPreferences.isTrustedAccessibilityClient(false)) continue;
-          } catch { break; }
-          return service[verb](...args).catch((error) => { throw explain(error); });
+    ...Object.fromEntries(VERBS.map((verb) => [verb, (...args) => {
+      const started = Date.now();
+      return service[verb](...args).catch(async (error) => {
+        const explained = explain(error);
+        if (error?.code === 'permission' && /Accessibility/i.test(error.message || '')) {
+          // Reserve 20 s for a read retry or 65 s for a batch, plus 5 s before the 90 s caller abort.
+          const deadline = Math.min(Date.now() + waitMs, started + (verb === 'action' ? 20000 : 65000));
+          while (Date.now() < deadline) {
+            await sleep(Math.min(pollMs, deadline - Date.now()));
+            try {
+              if (!systemPreferences.isTrustedAccessibilityClient(false)) continue;
+            } catch { break; }
+            if (Date.now() > deadline) break;
+            return service[verb](...args).catch((error) => { throw explain(error); });
+          }
         }
-      }
-      throw explained;
-    })])),
+        throw explained;
+      });
+    }])),
   };
 
   return { explain, wrap };
