@@ -76,7 +76,7 @@
     "post code",
     "remove from (?:cart|basket|bag)",
     "use this payment method",
-    "(?<![\\p{L}\\p{N}])schedule (?:se|k-1|[a-z][0-9]?|[0-9])(?=\\s*(?:$|[,;()./…-]|:(?!\\s*\\d)))",
+    "(?<![\\p{L}\\p{N}])schedule (?:se|k-1|[a-z][0-9]?|[0-9](?:-[a-z])?)(?=\\s*(?:$|[,;()…]|:(?!\\s*\\d))|[./-](?![\\p{L}\\p{N}]))",
     "^\\s*buy it again\\s*$",
     "^\\s*book a demo\\s*$",
     "^\\s*subscribe (?:&|and) save\\s*$"

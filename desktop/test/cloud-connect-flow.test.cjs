@@ -181,6 +181,7 @@ for (const resume of [false, true]) {
     assert.equal(cloudStep(f.prefs), 'model', 'reopening the wizard must not show migration');
     assert.equal(f.savedSteps.at(-1), 'model');
     assert.equal(f.prefs.onboarded, false, 'model and bot setup still remain');
+    assert.equal(f.prefs.cloud.modelDetected, true, 'the model card must not read the server model again');
     assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model', 'tokens', 'profiles']);
   });
 }

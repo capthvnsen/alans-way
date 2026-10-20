@@ -2171,8 +2171,10 @@ function registerIpc() {
           }
         }
         if (value.step === 'done' && prefs.cloud) { prefs.cloud.step = 'done'; prefs.onboarded = true; savePreferences(); break; }
+        const from = prefs.cloud?.step;
         if (!setCloudStep(prefs, String(value.step || ''))) throw new Error('Unknown setup step.');
-        if (prefs.cloud.diy === true && value.step === 'model') delete prefs.cloud.modelDetected;
+        // Connect has just read the server's model, so only a later return to the model step re-reads it.
+        if (prefs.cloud.diy === true && value.step === 'model' && from !== 'connect') delete prefs.cloud.modelDetected;
         savePreferences(); break;
       }
       case 'cloud-next': {

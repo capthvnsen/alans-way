@@ -26,11 +26,11 @@ test('tax schedule names are descriptions, while scheduling and adjacent commit 
   const header = 'Business and Rental Income 1099-NEC, 1099-MISC, Schedule C, K-1s';
   const matches = COMMIT_PATTERNS.names.filter(pattern => new RegExp(`(?<![\\p{L}\\p{N}])(?:${pattern})(?![\\p{L}\\p{N}])`, 'iu').test(header));
   assert.deepEqual(matches, ['schedule'], 'the reported false positive comes from schedule');
-  for (const name of [header, 'Schedule A', 'Schedule C', 'Schedule C1', 'Schedule K-1', 'Schedule SE', 'Schedule 1', 'Schedule C (business income)']) {
+  for (const name of [header, 'Schedule A', 'Schedule C', 'Schedule C1', 'Schedule K-1', 'Schedule SE', 'Schedule 1', 'Schedule 1-A', 'Schedule C.', 'Schedule C (business income)']) {
     assert.equal(isCommitName(name), false, name);
     assert.equal(looksLikeCommit(name), false, name);
   }
-  for (const name of ['Schedule', 'Schedule pickup', 'Schedule post', 'Schedule call', 'Schedule car', 'Schedule a meeting', 'Schedule a pickup', 'Schedule C1a', 'Schedule 12', 'Schedule 1:1', 'Schedule a 1:1',
+  for (const name of ['Schedule', 'Schedule pickup', 'Schedule post', 'Schedule call', 'Schedule car', 'Schedule a meeting', 'Schedule a pickup', 'Schedule C1a', 'Schedule 12', 'Schedule 1:1', 'Schedule a 1:1', 'Schedule 1-on-1', 'Schedule 1-1', 'Schedule 1/1', 'Schedule 1.1', 'Schedule a - pickup',
     'Schedule C - Submit return', 'Schedule C and Buy', 'Schedule C and Schedule pickup', 'Buy', 'Place order', 'Submit', 'Send', 'Delete account']) {
     assert.equal(isCommitName(name), true, name);
     assert.equal(looksLikeCommit(name), true, name);
