@@ -65,7 +65,8 @@ test('a page resolution error reaches the caller', async () => {
 });
 
 const renderer = fs.readFileSync(path.join(__dirname, '../src/renderer.js'), 'utf8');
-const modal = renderer.slice(renderer.indexOf('function showAddBot()'), renderer.indexOf("$('search-toggle').onclick"));
+const modalStart = renderer.indexOf('function showAddBot()');
+const modal = renderer.slice(modalStart, renderer.indexOf('\nfunction ', modalStart));
 function modalFixture(command) {
   const nodes = [];
   let closes = 0;
@@ -91,7 +92,7 @@ test('modal stays open with an inline error and can retry after failure', async 
   await f.form.onsubmit({ preventDefault() {} });
   assert.equal(f.closes(), 1);
 });
-test('modal waits for explicit success and suppresses duplicate submissions', async () => {
+test('modal waits for explicit success and suppresses duplicate submissions', { timeout: 1000 }, async () => {
   let finish, calls = 0;
   const f = modalFixture(() => { calls++; return new Promise(resolve => { finish = resolve; }); });
   const pending = f.form.onsubmit({ preventDefault() {} });

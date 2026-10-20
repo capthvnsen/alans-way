@@ -157,6 +157,8 @@ before(async () => {
   // Every host resolves to this machine, so the widgets' real frame addresses
   // fail fast instead of reaching Google or Cloudflare.
   browser = spawn(chrome, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${dir}`, '--no-first-run', '--no-sandbox',
+    // A fresh macOS headless profile must not wait for the login keychain.
+    ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
     '--host-resolver-rules=MAP * 127.0.0.1', 'about:blank'], { stdio: 'ignore' });
   const portFile = path.join(dir, 'DevToolsActivePort');
   for (const deadline = Date.now() + 60000; !fs.existsSync(portFile);) {

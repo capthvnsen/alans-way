@@ -136,6 +136,7 @@ app.whenReady().then(async () => {
   assert.deepEqual((await api('/v1/recordings', '5151')).data.recordings, []);
   assert.equal((await api(`/v1/recordings/${id}`, '5151')).status, 404);
   await evaluate('document.getElementById("settings-fallback").click()');
+  await evaluate('document.getElementById("settings-category-recordings").click()');
   await waitFor(() => evaluate('document.querySelectorAll("#recordings-list input[type=checkbox]").length'), count => count === 2);
   assert.ok(await evaluate('document.querySelector(\'#recordings-list input[data-bot-id="4242"]\').checked'));
   await evaluate('document.querySelector(\'#recordings-list input[data-bot-id="4242"]\').click()');

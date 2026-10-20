@@ -411,8 +411,9 @@ test('opening a tab passes a normalized host to the app', () => {
   assert.match(mcp, /400ms grace/);
   assert.match(mcp, /args\.quality : 50/);
   assert.match(mcp, /args\.maxWidth : 960/);
-  assert.match(mcp, /reopen the same URL and continue/);
-  assert.match(mcp, /names a tab, keep working in that tab/);
+  assert.match(mcp, /if only a URL is supplied, open it and inspect before proceeding/);
+  assert.match(mcp, /confirmed pre-dispatch missing tab; approval-bearing calls need fresh review/);
+  assert.match(mcp, /When continuation is reported, use the named tab/);
   assert.match(mcp, /The Mac tab is gone\. Keep working in tab/);
   assert.match(mcp, /continuedTab/);
   assert.match(mcp, /continuedEpoch/);

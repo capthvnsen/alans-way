@@ -1,3 +1,4 @@
+const { resizeWindow } = require('./window-fixture.cjs');
 // Run: npx electron test/workspace-integration.cjs
 // Uses an isolated profile and localhost pages. No Telegram messages are sent.
 const assert = require('node:assert/strict');
@@ -10,7 +11,7 @@ const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 // Test harness scripts that use timers or event handlers carry an approval, as
 // a router-approved call would (see the app's commit check).
-const harnessApproval = (tabId, epoch) => ({ nonce: crypto.randomUUID(), kind: 'submit', summary: 'test harness script', issuedAt: Date.now(), tabId, epoch });
+const { harnessApproval, bindHarnessApproval } = require('./approval-fixture.cjs');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-integration-'));
 process.env.HERMES_WORKSPACE_DATA = profile;
 process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
@@ -68,6 +69,64 @@ app.whenReady().then(async () => {
   await evaluate('document.getElementById("modal-close").click()');
   console.log('PASS: real app avatar gallery, image decode, selection, native import, removal, persistence; screenshot ' + shot);
 
+  // Real stylesheet + grid/flex ancestors: a long reply must scroll inside
+  // the transcript without pushing the composer/sidebar below the viewport.
+  const originalSize = win.getContentSize();
+  const layoutSend = wc.send.bind(wc);
+  wc.send = (channel, ...args) => { if (!['workspace:state', 'hermes:state'].includes(channel)) layoutSend(channel, ...args); };
+  try {
+    for (const [width, height] of [[1550, 980], [1024, 700]]) {
+      const size = await resizeWindow(win, width, height);
+      const layout = await evaluate(`(async () => {
+        const chat = document.querySelector('.chat-pane');
+        const siblings = [...chat.children].filter(n => !n.classList.contains('chat-header'));
+        const classes = siblings.map(n => n.className);
+        const pane = document.createElement('div'); pane.className = 'hermes-pane';
+        const root = document.createElement('div'); root.className = 'hermes-convo';
+        pane.append(root);
+        const h = { status: 'ready', generation: 1,
+          target: { url: 'https://gw.example', label: 'gw.example', profile: '' },
+          selected: { sessionId: 'layout', sessionKey: 'layout-key' }, sessions: [],
+          conversation: { phase: 'bound', transcript: [], pendingRequests: [], requestOutcomes: [], stats: {},
+            turn: { streaming: true, text: ('A long lighthouse story.\\n').repeat(300), tools: [] } } };
+        let view;
+        try {
+          siblings.forEach(n => n.classList.add('hidden')); chat.append(pane);
+          view = window.HermesView.createHermesView({ root, api: {
+            getState: async () => h, onState: () => () => {}, command: async () => ({ ok: true }) } });
+          const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const measure = async () => {
+            await frame();
+            const transcript = root.querySelector('.hermes-transcript');
+            const composer = root.querySelector('.hermes-composer').getBoundingClientRect();
+            const overflowing = transcript.scrollHeight > transcript.clientHeight;
+            transcript.scrollTop = transcript.scrollHeight;
+            const bottom = transcript.scrollTop;
+            transcript.scrollTop = 0;
+            return { height: innerHeight, body: document.body.scrollHeight,
+              composerTop: composer.top, composerBottom: composer.bottom,
+              transcriptHeight: transcript.clientHeight, overflowing, bottom, top: transcript.scrollTop,
+              sidebarBottom: document.querySelector('.sidebar').getBoundingClientRect().bottom };
+          };
+          const streaming = await measure();
+          view.setState({ ...h, conversation: { ...h.conversation, turn: null,
+            transcript: [{ role: 'assistant', text: h.conversation.turn.text, status: 'complete' }] } });
+          return { streaming, complete: await measure() };
+        } finally {
+          view?.dispose(); pane.remove();
+          siblings.forEach((n, i) => { n.className = classes[i]; });
+        }
+      })()`);
+      for (const [phase, measured] of Object.entries(layout)) {
+        const context = `${size.width}x${size.height} ${phase}: ${JSON.stringify(measured)}`;
+        assert.ok(measured.composerTop >= 0 && measured.composerBottom <= measured.height + 1, context);
+        assert.ok(measured.body <= measured.height + 1 && measured.sidebarBottom <= measured.height + 1, context);
+        assert.ok(measured.transcriptHeight > 0 && measured.overflowing && measured.bottom > 0 && measured.top === 0, context);
+      }
+    }
+  } finally { wc.send = layoutSend; await resizeWindow(win, ...originalSize); }
+  console.log('PASS: long streamed and completed Hermes replies scroll inside the transcript with composer and sidebar pinned at both effective sizes.');
+
   // Fixture-only activity exercises the actual renderer without claiming any
   // real Telegram bot is working or writing fabricated activity to app state.
   const originalSend = wc.send.bind(wc);
@@ -121,9 +180,16 @@ app.whenReady().then(async () => {
     // below proves the popup really returned focus to Telegram instead of
     // passing vacuously on an unfocused window.
     win.show();
-    win.focus();
-    await waitFor(() => win.isFocused(), Boolean);
-    await waitFor(() => webContents.getFocusedWebContents()?.id === telegram.id, Boolean);
+    try {
+      await waitFor(() => {
+        // macOS can leave a CLI-launched Electron app inactive despite win.focus().
+        if (!win.isFocused()) { app.focus({ steal: true }); win.focus(); }
+        return win.isFocused();
+      }, Boolean);
+      await waitFor(() => webContents.getFocusedWebContents()?.id === telegram.id, Boolean);
+    } catch (error) {
+      throw new Error(`Native focus acquisition failed: platform=${process.platform}, visible=${win.isVisible()}, minimized=${win.isMinimized()}, focusedWindow=${BrowserWindow.getFocusedWindow()?.id}, expectedWindow=${win.id}, focusedWebContents=${webContents.getFocusedWebContents()?.id}, expectedTelegram=${telegram.id}`, { cause: error });
+    }
   } finally { wc.send = realSend; }
   // The blocks below start from the app page holding focus, as before.
   wc.focus();
@@ -171,6 +237,7 @@ app.whenReady().then(async () => {
   assert.notEqual(new URL(connection.url).port, process.env.HERMES_WORKSPACE_PORT, 'The API retried onto a free port after EADDRINUSE.');
   console.log('PASS: API port collision falls back to an ephemeral port and connection.json carries the real one.');
   const apiRaw = async (route, method = 'GET', body, actor = 'capture-regression') => {
+    await bindHarnessApproval(body, async () => (await apiRaw(route.replace(/\/actions$/, '/snapshot'), 'GET', undefined, actor)).data);
     const response = await fetch(new URL(route, connection.url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': actor, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
     return { status: response.status, data: await response.json() };
   };

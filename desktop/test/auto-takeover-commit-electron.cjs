@@ -1,3 +1,5 @@
+require('./window-fixture.cjs');
+const { bindApproval } = require('./approval-fixture.cjs');
 // Run: npx electron test/auto-takeover-commit-electron.cjs
 // Uses an isolated profile and a localhost page. No Telegram sign-in required.
 const assert = require('node:assert/strict');
@@ -90,18 +92,18 @@ app.whenReady().then(async () => {
     for(const extra of [{tabId:'wrong-tab'},{epoch:before.epoch+1},{issuedAt:Date.now()-120001}])
       await refuse({action:'click',selector:'#order',approval:receipt(extra)},/approval_invalid/);
     const approval=receipt();
-    const body={action:'press',selector:'#order',key:'Space',epoch:before.epoch,approval};
+    const body=bindApproval({action:'press',name:'Place order',key:'Space',epoch:before.epoch,approval},snapshot);
     r=await api(`/v1/tabs/${tab.id}/actions`,'POST',body);
     assert.equal(r.status,200,JSON.stringify(r));await waitFor(page,p=>p.orders===1);cases++;
     await refuse({...body,epoch:(await state()).epoch},/approval_invalid/);
     assert.equal((await page()).orders,1);
     await hold();before=await state();
-    const click={action:'click',selector:'#order',epoch:before.epoch,approval:receipt()};
+    const click=bindApproval({action:'click',name:'Place order',epoch:before.epoch,approval:receipt()},snapshot);
     r=await api(`/v1/tabs/${tab.id}/actions`,'POST',click);
     assert.equal(r.status,200,JSON.stringify(r));await waitFor(page,p=>p.orders===2);cases++;
     await refuse({...click,epoch:(await state()).epoch},/approval_invalid/);
     await hold();before=await state();
-    const batch={action:'batch',steps:[{action:'click',selector:'#order'}],epoch:before.epoch,approval:receipt()};
+    const batch=bindApproval({action:'batch',steps:[{action:'click',name:'Place order'}],epoch:before.epoch,approval:receipt()},snapshot);
     r=await api(`/v1/tabs/${tab.id}/actions`,'POST',batch);
     assert.equal(r.status,200,JSON.stringify(r));assert.equal(r.data.results[0].ok,true,JSON.stringify(r));
     await waitFor(page,p=>p.orders===3);cases++;
@@ -110,7 +112,8 @@ app.whenReady().then(async () => {
     await invoke('navigate',{id:tab.id,url:base+'/captcha'});
     await waitFor(()=>pageWc.executeJavaScript('location.pathname==="/captcha" && document.readyState==="complete"').catch(()=>false),Boolean);
     before=await state();
-    await refuse({action:'press',selector:'iframe',key:'Space',approval:receipt()},/challenge_present|awaiting_human/,409);
+    const captchaSnapshot=await pageWc.executeJavaScript(require('../src/browser-page.cjs').snapshotExpression());
+    await refuse(bindApproval({action:'eval',code:'1',approval:receipt()},captchaSnapshot),/challenge_present|awaiting_human/,409);
     console.log(`PASS: ${cases} combined commit preflight cases (Space/Enter, fallback focus, approval/batch single use, tab/epoch/expiry, CAPTCHA precedence).`);
     await invoke('navigate',{id:tab.id,url:base+'/form'});
     await waitFor(()=>pageWc.executeJavaScript('location.pathname==="/form" && document.readyState==="complete"').catch(()=>false),Boolean);

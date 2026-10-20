@@ -17,7 +17,7 @@ const end = source.indexOf('\nasync function claimWithToken(', start);
 assert.ok(end > start);
 const connectSource = source.slice(start, end);
 
-function fixture({ diy = true, resume = false, step = 'connect', failure, model = null, tokenedProfiles = [],
+function fixture({ diy = true, resume = false, step = 'connect', failure, probe, model = null, tokenedProfiles = [],
   inventory = tokenedProfiles.map(name => name === '*' ? '/fixture/.hermes/.env' : `/fixture/.hermes/profiles/${name}/.env`).join('\n') } = {}) {
   const host = diy ? 'user@server.example' : 'root@192.0.2.7';
   const prefs = {
@@ -50,18 +50,21 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, model 
     },
     sshRun: async (target, command, options) => {
       commands.push(command);
-      assert.equal(target, host);
+      assert.ok([host, 'user@new.invalid'].includes(target));
       if (command === require('../src/cloud-migrate.cjs').profilesWithTokenCommand()) {
         calls.push('tokens');
         assert.equal(options.timeoutMs, 8000);
+        if (typeof inventory === 'function') return inventory('tokens');
         return { code: 0, out: inventory };
       }
       if (command === 'ls ~/.hermes/profiles 2>/dev/null') {
         calls.push('profiles');
+        if (typeof inventory === 'function') return inventory('profiles');
         return { code: 0, out: 'personal\nwork\n' };
       }
       if (command === 'echo CONNECT_OK') {
         calls.push('ssh');
+        if (probe) return probe(target);
         if (failure === 'throw') throw new Error('fixture connection failure');
         return failure === 'ssh' ? { code: 1, out: '' } : { code: 0, out: 'CONNECT_OK\n' };
       }
@@ -76,7 +79,7 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, model 
       return { code: 0, out: JSON.stringify({ state: failure === 'failed' ? 'failed' : 'ready', step: 'paired' }) };
     },
     authorizeComputerKey: async (target) => {
-      assert.equal(target, host);
+      assert.ok([host, 'user@new.invalid'].includes(target));
       calls.push('authorize');
       return { ok: failure !== 'authorize', detail: 'fixture authorization failure' };
     },
@@ -86,16 +89,71 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, model 
     },
     savePreferences: () => savedSteps.push(prefs.cloud.step),
   });
-  return { prefs, calls, commands, savedSteps, broadcasts,
-    connect: () => run(null, 'cloud-connect', diy && !resume ? { host } : {}) };
+  const requestConnect = (target = diy && !resume ? host : '') => run(null, 'cloud-connect', { host: target });
+  return { prefs, calls, commands, savedSteps, broadcasts, requestConnect,
+    command: (name, value) => run(null, name, value),
+    connect: async () => {
+      const result = await requestConnect();
+      if (diy && result.ok && !result.cancelled && ['connect', 'migrate'].includes(prefs.cloud.step)) await run(null, 'cloud-goto', { step: 'model' });
+      return result;
+    } };
 }
 
-test('Connect publishes the model card before returning, including a replay', async () => {
+test('Connect B starts its own request while A is pending and discards A even on failure', async () => {
+  let release;
+  const f = fixture({ probe: target => target === 'user@new.invalid'
+    ? { code: 0, out: 'CONNECT_OK\n' } : new Promise(resolve => { release = resolve; }) });
+  const first = f.requestConnect();
+  const next = f.requestConnect('user@new.invalid');
+  await new Promise(setImmediate);
+  assert.equal(f.calls.filter(call => call === 'ssh').length, 2, 'different addresses cannot share a pending connection');
+  const second = await next;
+  assert.equal(second.host, 'user@new.invalid');
+  assert.equal(second.ok, true);
+  assert.equal(f.prefs.cloud.step, 'connect', 'the renderer must accept the address before advancing');
+  release({ code: 1, out: '' });
+  const stale = await first;
+  assert.equal(stale.host, 'user@server.example');
+  assert.equal(stale.cancelled, true);
+  assert.equal(stale.detail, '');
+  assert.equal(f.prefs.vpsBrowser.sshHost, 'user@new.invalid');
+  assert.equal(f.calls.filter(call => call === 'authorize').length, 1);
+});
+
+test('changing the saved address cancels Connect before interpreting an old SSH failure', async () => {
+  let release;
+  const f = fixture({ probe: () => new Promise(resolve => { release = resolve; }) });
+  const first = f.requestConnect();
+  f.prefs.vpsBrowser.sshHost = 'user@new.invalid';
+  release({ code: 1, out: '' });
+  const result = await first;
+  assert.equal(result.cancelled, true);
+  assert.equal(result.detail, '');
+  assert.deepEqual(f.calls, ['ssh']);
+});
+
+test('DIY bot-chat discards both inventory reads when the saved host changes', async () => {
+  const pending = {};
+  const f = fixture({ resume: true, step: 'model', inventory: kind => new Promise(resolve => { pending[kind] = resolve; }) });
+  const result = f.command('cloud-goto', { step: 'bot-chat' });
+  assert.deepEqual(Object.keys(pending).sort(), ['profiles', 'tokens']);
+  f.prefs.vpsBrowser.sshHost = 'user@new.invalid';
+  pending.tokens({ code: 0, out: '/fixture/.hermes/profiles/old/.env\n' });
+  pending.profiles({ code: 0, out: 'old\n' });
+  await result;
+  assert.equal(f.prefs.cloud.botInventoryChecked, undefined);
+  assert.deepEqual(Array.from(f.prefs.cloud.tokenedProfiles), []);
+  assert.equal(f.prefs.cloud.profiles, undefined);
+  assert.equal(f.prefs.cloud.step, 'model');
+  assert.equal(f.savedSteps.length, 0);
+});
+
+test('Connect lets the renderer accept the model card, including a replay', async () => {
   const f = fixture();
   assert.equal((await f.connect()).ok, true);
   assert.equal(f.broadcasts.at(-1), 'model', 'the open renderer must leave Connect without reopening');
   await f.connect();
-  assert.equal(f.broadcasts.length, 2);
+  assert.equal(f.broadcasts.length, 3);
 });
 
 test('the shared command boundary publishes partial state even when Connect rejects', async () => {
@@ -123,6 +181,7 @@ for (const resume of [false, true]) {
     assert.equal(cloudStep(f.prefs), 'model', 'reopening the wizard must not show migration');
     assert.equal(f.savedSteps.at(-1), 'model');
     assert.equal(f.prefs.onboarded, false, 'model and bot setup still remain');
+    assert.equal(f.prefs.cloud.modelDetected, true, 'the model card must not read the server model again');
     assert.deepEqual(f.calls, ['ssh', 'state', 'authorize', 'path', 'model', 'tokens', 'profiles']);
   });
 }

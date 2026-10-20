@@ -1,3 +1,4 @@
+require('./window-fixture.cjs');
 // Run: npx electron test/update-all-electron.cjs
 // The bottom bar's versions and the "Update everything" dialog, end to end in
 // the real window with every machine-touching step stubbed: no ssh, no hermes,

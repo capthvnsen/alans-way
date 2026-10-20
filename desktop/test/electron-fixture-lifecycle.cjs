@@ -24,7 +24,7 @@ test('fixture quit destroys debugger views even when a page refuses unload', { t
   `);
   try {
     const result = await new Promise((resolve, reject) => {
-      const child = spawn(require('electron'), [script], { stdio: ['ignore', 'ignore', 'pipe'] });
+      const child = spawn(require('electron'), [script], { stdio: ['ignore', 'inherit', 'pipe'] });
       let stderr = '';
       const timer = setTimeout(() => child.kill('SIGKILL'), 70000);
       child.stderr.on('data', chunk => { stderr += chunk; });

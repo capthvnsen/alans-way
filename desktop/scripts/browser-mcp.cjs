@@ -13,7 +13,7 @@ const localDriver = process.platform === 'darwin' ? '../src/computer.cjs'
   : '../src/vps-computer.cjs';
 const { connectorReplaced } = require('../src/connector-reload.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
-const { retargetMissingTab, needsContinuedEpoch, normalizeHost } = require('../src/core.cjs');
+const { retargetMissingTab, normalizeHost } = require('../src/core.cjs');
 const watched = [
   __filename,
   path.join(__dirname, '..', 'src', 'omit-icons.cjs'),
@@ -76,9 +76,9 @@ function continuedFromArgv(argv) {
   const single = singleContinuedFromArgv(argv), map = tabMapFromArgv(argv);
   return single || Object.keys(map).length ? { ...single, map } : null;
 }
-function withContinuedTab(message, page) {
-  const text = String(message || '');
-  if (!page || !/tab not found/i.test(text)) return text;
+function withContinuedTab(error, page) {
+  const text = String(error.message || '');
+  if (!page || !error.missingTab || error.uncertainOutcome) return text;
   if (!page.tabId) return text + ' The Mac tab is gone. Continued tabs (old id to new id): ' + JSON.stringify(page.map) + '.';
   return text + ' The Mac tab is gone. Keep working in tab ' + page.tabId + ' at ' + page.url + '.';
 }
@@ -87,10 +87,10 @@ const continuedNote = !continued ? ''
   : continued.tabId ? ' The Mac page was continued in this browser as tab ' + continued.tabId + ' at ' + continued.url + '. Keep working in that tab.'
   : ' The Mac pages were continued in this browser. Continued tabs (old id to new id): ' + JSON.stringify(continued.map) + '. Use the new ids.';
 const tools = [
-  { name: 'cua_alans_way_status', description: 'Check the configured browser host and available hosts. Inspect host before acting; an unavailable computer is never replaced implicitly by another. Host selection is decided by the connector at spawn and re-converges on its own when Mac availability flips; on a tool error just retry once, and if it still fails report it; never restart, kill, or edit connector processes to steer the host. If the Mac goes offline mid-task, the connector continues the last https page in the VPS browser. If the [workspace] line names a tab, keep working in that tab. If it only names a URL, reopen the same URL and continue. Calls that do not run on the Mac keep going.' + continuedNote, inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
+  { name: 'cua_alans_way_status', description: 'Check the configured browser host and available hosts. Inspect host before acting; an unavailable computer is never replaced implicitly by another. Host selection is decided by the connector at spawn and re-converges when Mac availability flips. Retry a read-only call once; report a persistent failure. For an uncertain action or control change, do not repeat it: use cua_alans_way_tabs to inspect the controller and epoch, take a fresh snapshot, and follow the error’s recovery instructions. Never restart, kill, or edit connector processes to steer the host. Ordinary calls can continue the last HTTPS page in the VPS browser only after a confirmed pre-dispatch missing tab; approval-bearing calls need fresh review in the destination tab. When continuation is reported, use the named tab; if only a URL is supplied, open it and inspect before proceeding. Calls that do not run on the Mac keep going.' + continuedNote, inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
   { name: 'cua_alans_way_tabs', description: 'List this bot’s owned Chromium tabs with execution host and current control epochs. Mac and VPS logins are separate; bots on a host share sign-ins.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
   { name: 'cua_alans_way_open', description: 'Open a tab in this connector browser. host accepts "computer" for the user’s machine or "vm" for the always-on browser; omit it for the default, which is the user’s computer when reachable and the VM when it is not. No human handoff, assignment, grant, or approval is ever needed. Shared sign-ins within a host, separate tab ownership and input. Opens in the background.', inputSchema: objectSchema({ url: string, host: { type: 'string', description: 'Which machine opens the tab: "computer" or "vm". Omit for the default.' }, background: { type: 'boolean', default: true } }, ['url']), annotations: { readOnlyHint: false, openWorldHint: true } },
-  { name: 'cua_alans_way_snapshot', description: 'Use only to start, or when you have no current state: action replies already carry the new page state in effect and elements. Reads a tab: bounded page text plus interactive elements in elements[] ({ref, role, name, ...}); role is usually the lowercase tag (a, input, button, div) or an ARIA role, and a pressed toggle ends in on or off. Repeated names carry row, the text of the item each sits in. A ref lasts while its control is on the page, re-renders included. overlays names a dialog or banner covering the page, with close: the ref that dismisses it. Menu items, options, tree items, sliders, and clickable divs are included by name; open shadow roots are read, closed ones are not. loading:true means the document was still parsing after a 400ms grace, or a same-origin frame had not finished loading after a short wait (its controls may be missing; read again). Same-origin frames are included; a cross-origin frame is not readable, screenshot that frame only. Pass since=<last generation> for a cheap {unchanged:true}.', inputSchema: objectSchema({ tabId: string, maxChars: { type: 'integer', description: 'Cap on returned page text. Default 2000. Raise it up to 20000 when you need more of the page.' }, maxElements: { type: 'integer', description: 'Cap on interactive element refs, default 150, max 300.' }, since: { type: 'integer', description: 'Generation from the previous snapshot; returns {unchanged:true} when content is identical.' } }, ['tabId']), annotations: { readOnlyHint: true } },
+  { name: 'cua_alans_way_snapshot', description: 'Read to start, or when current state is missing. Successful same-tab action replies can supply the current effect and elements. Recovery after uncertain outcomes, stale state or a changed/continued destination requires a fresh snapshot before deciding on more input. Reads a tab: bounded page text plus interactive elements in elements[] ({ref, role, name, ...}); role is usually the lowercase tag (a, input, button, div) or an ARIA role, and a pressed toggle ends in on or off. Repeated names carry row, the text of the item each sits in. A ref lasts while its control is on the page, re-renders included. overlays names a dialog or banner covering the page, with close: the ref that dismisses it. Menu items, options, tree items, sliders, and clickable divs are included by name; open shadow roots are read, closed ones are not. loading:true means the document was still parsing after a 400ms grace, or a same-origin frame had not finished loading after a short wait (its controls may be missing; read again). Same-origin frames are included; a cross-origin frame is not readable, screenshot that frame only. Pass since=<last generation> for a cheap {unchanged:true}.', inputSchema: objectSchema({ tabId: string, maxChars: { type: 'integer', description: 'Cap on returned page text. Default 2000. Raise it up to 20000 when you need more of the page.' }, maxElements: { type: 'integer', description: 'Cap on interactive element refs, default 150, max 300.' }, since: { type: 'integer', description: 'Generation from the previous snapshot; returns {unchanged:true} when content is identical.' } }, ['tabId']), annotations: { readOnlyHint: true } },
   { name: 'cua_alans_way_screenshot', description: 'Capture the tab viewport as an image file. Hermes delivers it as MEDIA:<path>; run a vision step on that path to see pixels. Defaults to compact jpeg; png keeps alpha.', inputSchema: objectSchema({ tabId: string, format: { type: 'string', enum: ['jpeg', 'png', 'webp'], description: 'Image format, default jpeg.' }, quality: { type: 'integer', description: 'jpeg/webp quality 1-100, default 50.' }, maxWidth: { type: 'integer', description: 'Downscale cap on image width in px, default 960.' } }, ['tabId']), annotations: { readOnlyHint: true } },
   { name: 'cua_alans_way_close', description: 'Close a tab this bot owns. Pass the current epoch. Required to free VPS tabs (global cap 40).', inputSchema: objectSchema({ tabId: string, epoch: { type: 'integer' } }, ['tabId', 'epoch']), annotations: { readOnlyHint: false, openWorldHint: true } },
   { name: 'workspace_computer_apps', description: 'List the desktop apps you can drive. They run on the same machine as the browser, named by host: mac, windows or linux is the user’s computer, vps is the VM desktop used while that computer is offline. Web pages are cua_alans_way_* work, not desktop work. Apps are driven in the background: the pointer never moves and focus never changes, so the app in front (frontmost:true) is the user’s and is refused, except on the VM desktop. Keychains, password managers, this workspace app, Windows UAC and lock screens, and password fields are off limits and not listed. If a call says Accessibility or Screen Recording is off, ask the user to turn it on for alans-way-localapp in System Settings > Privacy & Security, then retry.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
@@ -102,7 +102,7 @@ const tools = [
 - press presses a control and selects a row. type replaces a field's text. click, double_click and right_click take a ref or x,y. drag goes from x,y to x2,y2 and sets sliders directly. scroll takes direction and amount in pages, on a ref, at x,y or in the main window. key and hotkey send a key or a combo such as cmd+s (Windows: unmodified keys only). menu presses a path such as ["File","Save"].
 - wait waits until any element's name or value contains text, or with gone:true none does. Waits and steps in one call share 45s; once it is spent no further step starts, and that step's result says so. On Windows a ref after a wait that changed the app is refused with stale_ref.
 - batch runs up to 25 steps in one call and stops at the first failure. Confirm an action in the same call: [{action:"press",ref:"c4"},{action:"wait",text:"Saved"}].
-- Pass the generation you last received with every action. The reply is the new state, so do not snapshot after acting: unchanged:true, or changed[] (new or updated elements) and removed[] (refs gone) since that generation, or the whole elements[].
+- Pass the generation you last received with every action. Successful replies supply current state: unchanged:true, or changed[] (new or updated elements) and removed[] (refs gone) since that generation, or the whole elements[]. Reuse it when sufficient. Recovery after an uncertain result or missing current state needs a fresh snapshot before deciding on more input; inspect completed batch results first.
 - unsupported_action means the OS cannot do it in the background. The front app, keychains, password managers, Windows secure desktop and password fields are refused. On the VM desktop, click, drag and scroll at x,y and type without a ref are real input in the app's raised window.`, inputSchema: objectSchema({
     pid: { type: 'integer' },
     action: { type: 'string', enum: ['press', 'click', 'double_click', 'right_click', 'drag', 'type', 'scroll', 'key', 'hotkey', 'menu', 'wait', 'batch'] },
@@ -123,14 +123,15 @@ const tools = [
   }, ['pid', 'action']), annotations: { readOnlyHint: false } },
   { name: 'cua_alans_way_action', description: `Act in the bot's own Chromium tab; pass the current epoch.
 - To act and see what comes next in one call, use a batch: steps [<your action>, {action:"wait", text:"<a phrase from the current prompt>", gone:true}, {action:"read"}]. The reply then holds the next state: the read text and fresh element refs.
-- Every reply carries effect ({navigated, url, title, changed, text}, plus value and focused when an element took input) and the controls when they changed, so do not snapshot after acting. It reflects the page after the updates the action started (short timers, requests), so a separate read is rarely needed.
+- Successful replies carry effect ({navigated, url, title, changed, text}, plus value and focused when an element took input) and changed controls. Reuse that current observation for ordinary same-tab work. Recovery after uncertain outcomes, stale state, a changed/continued destination or required new approval takes priority and needs a fresh snapshot before deciding on more input; inspect completed batch results first.
 - Pass generation from your last reply to get controls as changed[] and removed[] refs; after a navigation, or without it, elements[] lists the first 40 (unlisted counts the rest).
 - click, type, select and friends take a ref, an exact name as a snapshot lists it ({action:"click",name:"Next"}, no snapshot needed; role and row narrow it), a selector, or x,y. drag ends at toRef, toSelector, or toX,toY; press sends a key.
+- Consequential approval requires a fresh observed ref or unique exact name. If approval_invalid or page_changed reports a changed document/target, take a fresh snapshot, review it, and request a new approval; an old approval cannot move to a continued tab. approval_binding_unavailable requires updating the browser host/connector before approving again.
 - select takes the option by any of value, label, option, text or choice and answers matched; a miss lists the options.
 - wait takes a selector, text or url, and gone:true waits until it disappears. read returns {text} capped by maxChars (default 600). batch runs up to 25 steps; its reply has results[] per step plus one final effect.
 - opened[] lists tabs the action opened; dialogs[] says how JS dialogs were answered (a confirm or prompt is dismissed unless the action passed dialog:{accept:true, text}).
 - navigate, back, forward and reload move between pages. claim and release change control; claim returns a fresh epoch.
-- If the human took over a tab on their computer, just act or claim: the app hands it back to you (waiting up to 10s while they type) and shows them a Take back button. Do not ask first. An action is checked before it takes the tab, so a malformed one, an epoch or generation from before their takeover or page change (stale_control_epoch: claim, read, then act) or one the page refuses (a missing control, a CAPTCHA) leaves the tab with them. human_took_tab means they grabbed it during your call: check the effect, then call again. Only awaiting_human (you handed it over), recording_in_progress (they are recording a task), human_took_back (they pressed Take back; leave it for a minute) or human_has_control (automatic takeover is off, or a VM tab) keep it theirs: open your own tab or tell them what you need. Never ask the user to hand a tab back unless a call answered human_has_control.
+- When automatic takeover is enabled and the human took over a tab on their computer, act or claim: the app hands it back to you (waiting up to 10s while they type) and shows them a Take back button. Do not ask first. An action is checked before it takes the tab, so a malformed one, an epoch or generation from before their takeover or page change (stale_control_epoch: inspect current control and epoch, then follow the current control policy) or one the page refuses (a missing control, a CAPTCHA) leaves the tab with them. human_took_tab means they grabbed it during your call: inspect completed effects and current control before deciding on another action; uncertain input is not permission to repeat it. Only awaiting_human (you handed it over), recording_in_progress (they are recording a task), human_took_back (they pressed Take back; leave it for a minute) or human_has_control (automatic takeover is off, or a VM tab) keep it theirs: open your own tab or tell them what you need. Never ask the user to hand a tab back unless a call answered human_has_control.
 - When only the human can continue (a CAPTCHA, a login, a 2FA code, card details, or a page they must review), release with a reason and a short note saying what to do. On the user's computer the app shows them a banner and a notification, and the tab stays theirs until they give it back or 30 minutes pass. Until then calls answer awaiting_human, and after the give-back human_returned: read the tab for the fresh epoch. On the VM the reason is only recorded and the tab is not held. Either way, also tell the user in Telegram what you need.
 - Rarely needed: eval runs JS (keep results small), viewport sets layout size, cdp sends an allowlisted DevTools command.
 - Never moves the human's pointer or types into another tab; background tabs are fine. Stops if the human takes the tab mid-action. Three identical failing calls pause this connector ~60s, so change approach instead of retrying; on an uncertain submission read the effect first.`, inputSchema: objectSchema({
@@ -165,44 +166,103 @@ const tools = [
 - When the user asks you to learn a recording, turn it into a Hermes skill with your core skill tools: get it, then call skill_manage with one create operation whose SKILL.md has frontmatter (a short lowercase-hyphenated name and a description of when to use it) and a body that replays the task with cua_alans_way_action. Open the start url, then do each click, type or select by finding the control with that role and name in the current elements (the selector is a fallback), and confirm each page change before going on. Make every redacted or task-specific value an input the skill asks the user for, and where a password, card or code was entered, release the tab with a reason instead of typing it. Tell the user the skill's name; skill_view shows it.`,
     inputSchema: objectSchema({ action: { type: 'string', enum: ['list', 'get'] }, id: { type: 'string', description: 'For get: the recording id from list.' } }, ['action']), annotations: { readOnlyHint: true } },
 ];
-async function requestOnce(endpoint, method = 'GET', body, epoch) {
+// Keep the two request strings separate even when either contains a delimiter.
+const connectionKey = connection => JSON.stringify([String(connection.url), String(connection.token)]);
+async function requestOnce(endpoint, method = 'GET', body, epoch, approvedConnection) {
   let connection;
   try { connection = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw new Error('Configured browser unavailable: start its app or browser host first.'); }
   const url = new URL(connection.url);
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !connection.token) throw new Error('Invalid local browser connection file.');
-  let response;
+  if (approvedConnection && approvedConnection !== connectionKey(connection))
+    throw new Error('approval_invalid: the browser connection changed after review. Take a fresh snapshot, review the target, and request a new approval. No action was sent.');
+  const actionTab = method === 'POST' && /^\/v1\/tabs\/([^/?]+)\/actions$/.exec(endpoint);
+  const controlTab = method === 'POST' && /^\/v1\/tabs\/([^/?]+)\/control$/.exec(endpoint);
+  const failure = (message, provenance, status, data) => Object.assign(new Error(message), {
+    browserRequest: { endpoint, method, provenance, ...(status !== undefined ? { status } : {}),
+      ...(typeof data?.code === 'string' ? { code: data.code } : {}) },
+  });
+  const uncertainAction = (error) => {
+    error.message += controlTab
+      ? ` The control change may have executed. Do not repeat it until checking cua_alans_way_tabs and inspecting the controller and epoch for tab ${JSON.stringify(decodeURIComponent(controlTab[1]))}.`
+      : ` The action may have executed. Do not repeat it until checking the current tab with cua_alans_way_snapshot ${JSON.stringify({ tabId: decodeURIComponent(actionTab[1]) })}.`;
+    error.uncertainOutcome = true;
+    error.browserRequest.uncertainOutcome = true;
+    return error;
+  };
+  let response, raw;
   try {
     response = await fetch(new URL(endpoint, url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': botId, ...(botName ? { 'X-Hermes-Bot-Name': botName } : {}), ...(Number.isInteger(epoch) ? { 'X-Control-Epoch': String(epoch) } : {}), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(/\/(actions|action)$/.test(endpoint) ? 90000 : 25000) });
-  } catch { throw new Error('Configured browser unavailable or timed out. Inspect existing task state before retrying an action.'); }
-  let data;
-  const raw = await response.text();
-  try { data = raw ? JSON.parse(raw) : {}; } catch {
-    const excerpt = raw.replace(/\s+/g, ' ').trim().slice(0, 120);
-    throw new Error(`Browser request failed (${response.status})${excerpt ? `: ${excerpt}` : ''}`);
+    // Headers can arrive before the service disconnects or its body stalls.
+    // Either failure leaves an action's outcome uncertain; never replay it.
+    raw = await response.text();
+  } catch {
+    const error = failure(`Browser ${controlTab ? 'control' : 'action'} response unavailable or timed out.`, 'transport', response?.status);
+    if (actionTab || controlTab) throw uncertainAction(error);
+    error.message = 'Configured browser unavailable or timed out. Inspect existing task state before retrying an action.';
+    throw error;
   }
-  if (!response.ok) throw new Error(data.error || `Browser request failed (${response.status}).`);
+  let data;
+  try { data = raw ? JSON.parse(raw) : {}; } catch {
+    if (actionTab || controlTab) throw uncertainAction(failure(`Invalid browser ${controlTab ? 'control' : 'action'} receipt (${response.status}).`, 'http-invalid-json', response.status));
+    const excerpt = raw.replace(/\s+/g, ' ').trim().slice(0, 120);
+    throw failure(`Browser request failed (${response.status})${excerpt ? `: ${excerpt}` : ''}`, 'http-invalid-json', response.status);
+  }
+  if (!response.ok) {
+    const message = typeof data?.error === 'string' && data.error.trim() ? data.error : `Browser request failed (${response.status}).`;
+    const error = failure(message, 'http-json', response.status, data);
+    // Desktop and VPS hosts (including v0.21.0) return these exact 404
+    // envelopes before reading/queuing an action. No other legacy error
+    // proves non-dispatch: even a stale epoch can follow input or eval.
+    // Reject extra fields/codes rather than trusting a contradictory receipt.
+    error.missingTab = response.status === 404 && data && typeof data === 'object' && !Array.isArray(data)
+      && Object.keys(data).length === 1 && ['Tab not found.', 'VPS tab not found.'].includes(data.error);
+    if ((actionTab || controlTab) && !error.missingTab) {
+      error.message = `Browser ${controlTab ? 'control' : 'action'} request failed (${response.status})${error.browserRequest.code ? ` [${error.browserRequest.code}]` : ''}: ${message}`;
+      throw uncertainAction(error);
+    }
+    throw error;
+  }
+  // Both desktop and VPS action endpoints mark every completed action,
+  // including read/eval with no value and batches, with dispatched:true.
+  // Keep their payloads intact; an arbitrary JSON value is not a receipt.
+  if (actionTab && (!data || typeof data !== 'object' || Array.isArray(data) || data.dispatched !== true))
+    throw uncertainAction(failure(`Missing or invalid browser action receipt (${response.status}).`, 'http-json', response.status, data));
+  if (controlTab && (!data || typeof data !== 'object' || Array.isArray(data)
+      || data.id !== decodeURIComponent(controlTab[1]) || data.controller !== body?.controller
+      || !Number.isSafeInteger(data.epoch) || data.epoch < 0
+      || data.dispatched === false || data.ok === false || data.success === false || data.isError === true
+      || (data.code !== undefined && data.code !== null && data.code !== '')))
+    throw uncertainAction(failure(`Missing or invalid browser control receipt (${response.status}).`, 'http-json', response.status, data));
   return data;
 }
 let hostCaps = { key: '', list: null };
 // name targets arrived after the loopback API, so ask the host once per
 // connection. A host without the capability silently ignores name on press
 // and scroll, which must be a clear error, not a dropped target.
-async function nameTargets() {
+async function hostCapability(capability, refreshMissing = false) {
   let key = '';
-  try { const connection = JSON.parse(fs.readFileSync(file, 'utf8')); key = `${connection.url}|${connection.token}`; } catch { /* requestOnce reports it */ }
-  if (!key || hostCaps.key !== key) {
+  try { const connection = JSON.parse(fs.readFileSync(file, 'utf8')); key = connectionKey(connection); } catch { /* requestOnce reports it */ }
+  if (!key || hostCaps.key !== key || (refreshMissing && !hostCaps.list?.includes(capability))) {
     const status = await requestOnce('/v1/status');
     hostCaps = { key, list: Array.isArray(status && status.capabilities) ? status.capabilities : [] };
   }
-  return hostCaps.list.includes('name-targets');
+  return hostCaps.list.includes(capability);
+}
+// Approval proof is never served from the ordinary feature cache. Keep its
+// connection identity local to this call so parallel requests cannot replace it.
+async function approvalHostConnection() {
+  const connection = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const key = connectionKey(connection);
+  const status = await requestOnce('/v1/status', 'GET', undefined, undefined, key);
+  return Array.isArray(status?.capabilities) && status.capabilities.includes('approval-binding-v1') ? key : null;
 }
 let hostChoice = { key: '', app: false };
 // null means use the app's API; otherwise the in-process driver. Decided per
 // connection (url + token), so an app restart or a host switch is re-checked.
 async function computerService() {
   let key = '';
-  try { const connection = JSON.parse(fs.readFileSync(file, 'utf8')); key = `${connection.url}|${connection.token}`; } catch { /* requestOnce reports it */ }
+  try { const connection = JSON.parse(fs.readFileSync(file, 'utf8')); key = connectionKey(connection); } catch { /* requestOnce reports it */ }
   if (!key || hostChoice.key !== key) {
     const status = await requestOnce('/v1/status');
     const capabilities = Array.isArray(status && status.capabilities) ? status.capabilities : [];
@@ -216,30 +276,38 @@ async function computerService() {
   }
   return hostChoice.app || !localDriver ? null : require(localDriver).service;
 }
-async function request(endpoint, method = 'GET', body, epoch) {
+async function request(endpoint, method = 'GET', body, epoch, approvedConnection) {
   try {
-    return await requestOnce(endpoint, method, body, epoch);
+    return await requestOnce(endpoint, method, body, epoch, approvedConnection);
   } catch (error) {
-    const next = /tab not found/i.test(error.message) ? retargetMissingTab(endpoint, method, continued) : null;
+    if (error.uncertainOutcome) throw error;
+    // Control bodies omit the receipt; the checked connection still marks a
+    // reviewed call whose authority cannot move into another tab.
+    if ((approvedConnection || body?.approval !== undefined) && error.missingTab)
+      throw new Error('approval_invalid: the reviewed tab is gone. Approved actions cannot continue into another tab. Take a fresh snapshot of the continued tab, review the target, and request a new approval. Nothing ran.');
+    const next = error.missingTab ? retargetMissingTab(endpoint, method, continued) : null;
     if (!next) throw error;
     const continuedTab = decodeURIComponent(/^\/v1\/tabs\/([^/?]+)/.exec(next)[1]);
     try {
-      try {
-        const data = await requestOnce(next, method, body, epoch);
-        if (data && typeof data === 'object') data.continuedTab = continuedTab;
-        return data;
-      } catch (retryError) {
-        if (!needsContinuedEpoch(retryError.message, method)) throw retryError;
+      let continuedEpoch;
+      if (method === 'POST' && next.endsWith('/actions')) {
+        // Read BEFORE the one allowed continuation dispatch. A stale-epoch
+        // error after dispatch cannot prove that no input ran, especially for
+        // batches/eval, so it must never trigger another POST.
         const tab = await requestOnce('/v1/tabs/' + encodeURIComponent(continuedTab), 'GET');
-        if (!Number.isInteger(tab && tab.epoch)) throw retryError;
-        const data = await requestOnce(next, method, body, tab.epoch);
-        if (data && typeof data === 'object') {
-          data.continuedTab = continuedTab;
-          data.continuedEpoch = tab.epoch;
-        }
-        return data;
+        if (!Number.isInteger(tab && tab.epoch))
+          throw new Error(`Cannot establish the continued tab's control epoch. Inspect cua_alans_way_snapshot ${JSON.stringify({ tabId: continuedTab })} before acting.`);
+        continuedEpoch = tab.epoch;
+        body = { ...body, epoch: continuedEpoch };
       }
+      const data = await requestOnce(next, method, body, continuedEpoch ?? epoch, approvedConnection);
+      if (data && typeof data === 'object') {
+        data.continuedTab = continuedTab;
+        if (continuedEpoch !== undefined) data.continuedEpoch = continuedEpoch;
+      }
+      return data;
     } catch (finalError) {
+      if (finalError.uncertainOutcome) throw finalError;
       const message = String(finalError.message || '');
       if (message.includes('Keep working in tab')) throw finalError;
       let controls = '';
@@ -250,7 +318,8 @@ async function request(endpoint, method = 'GET', body, epoch) {
           controls = ' ' + JSON.stringify({ continuedTab, generation: snap && snap.generation, elements });
         } catch { /* the tab id in the error is still enough to continue */ }
       }
-      throw new Error(message + ' The Mac tab is gone. Keep working in tab ' + continuedTab + (continued.url && continued.tabId === continuedTab ? ' at ' + continued.url : '') + '.' + controls);
+      finalError.message = message + ' The Mac tab is gone. Keep working in tab ' + continuedTab + (continued.url && continued.tabId === continuedTab ? ' at ' + continued.url : '') + '.' + controls;
+      throw finalError;
     }
   }
 }
@@ -259,6 +328,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
   try {
     const args = params.arguments || {}; let result;
+    if (['cua_alans_way_action', 'cua_alans_way_snapshot', 'cua_alans_way_screenshot', 'cua_alans_way_close'].includes(params.name)
+        && (typeof args.tabId !== 'string' || !args.tabId.trim()))
+      throw new Error('Pass a nonempty tabId from cua_alans_way_tabs before using this tool. No request was sent.');
     const computer = params.name.startsWith('workspace_computer_') ? await computerService() : null;
     const tabPath = `/v1/tabs/${encodeURIComponent(args.tabId || '')}`;
     switch (params.name) {
@@ -276,7 +348,15 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
         const q = new URLSearchParams();
         q.set('maxChars', String(Number.isInteger(args.maxChars) ? args.maxChars : 2000));
         for (const key of ['maxElements', 'since']) if (Number.isInteger(args[key])) q.set(key, args[key]);
-        result = await request(`${tabPath}/snapshot${q.size ? '?' + q : ''}`); break;
+        result = await request(`${tabPath}/snapshot${q.size ? '?' + q : ''}`);
+        // A proof-bearing snapshot can follow a host upgrade at the same
+        // address. Recheck an earlier missing capability, without adding a
+        // status round trip to every already-supported ordinary read.
+        if (result?.approvalContext && !await hostCapability('approval-binding-v1', true).catch(() => false)) {
+          delete result.approvalContext;
+          for (const item of result.elements || []) delete item.approvalTarget;
+        }
+        break;
       }
       case 'cua_alans_way_screenshot': {
         const q = new URLSearchParams();
@@ -328,19 +408,24 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
       }
       case 'cua_alans_way_action': {
         const { tabId, ...body } = args;
+        // Old hosts silently ignore unknown receipt fields. Positive capability
+        // is required before any approved POST, even for ref-only requests.
+        const approvedConnection = body.approval !== undefined ? await approvalHostConnection().catch(() => null) : undefined;
+        if (body.approval !== undefined && !approvedConnection)
+          throw new Error('approval_binding_unavailable: update the browser host and connector to approval-binding-v1, take a fresh snapshot, and request approval again. No action was sent.');
         if (body.action === 'claim' || body.action === 'release') {
-          result = await request(`${tabPath}/control`, 'POST', body.action === 'claim' ? { controller: 'agent' } : { controller: 'human', reason: body.reason, note: body.note });
+          result = await request(`${tabPath}/control`, 'POST', body.action === 'claim' ? { controller: 'agent' } : { controller: 'human', reason: body.reason, note: body.note }, undefined, approvedConnection);
           break;
         }
         // A host from before name targets (one not yet updated) rejects a named step as untargeted.
         const named = body.name !== undefined || (Array.isArray(body.steps) && body.steps.some((step) => step && step.name !== undefined));
         // A failed status read is optimistic: the action still goes, and a
         // rejection below still explains the missing capability.
-        if (named && !await nameTargets().catch(() => true))
+        if (named && !await hostCapability('name-targets').catch(() => true))
           throw new Error('This browser host does not take name targets yet (it does not list name-targets in cua_alans_way_status). Act by ref from a snapshot until it is updated.');
-        result = await request(`${tabPath}/actions`, 'POST', body).catch((error) => {
+        result = await request(`${tabPath}/actions`, 'POST', body, undefined, approvedConnection).catch((error) => {
           if (named && /element reference or selector|fresh element reference, selector/i.test(error.message))
-            throw new Error(`${error.message} This browser host does not take name targets yet (it does not list name-targets in cua_alans_way_status). Act by ref from a snapshot until it is updated.`);
+            error.message += ' This browser host does not take name targets yet (it does not list name-targets in cua_alans_way_status). Act by ref from a snapshot until it is updated.';
           throw error;
         });
         break;
@@ -352,7 +437,8 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
       default: throw new Error('Unknown browser tool.');
     }
     return { content: [{ type: 'text', text: JSON.stringify(omitIcons(result)) }] };
-  } catch (error) { return { isError: true, content: [{ type: 'text', text: withContinuedTab(error.message, continued) }] }; }
+  } catch (error) { return { isError: true, content: [{ type: 'text', text: withContinuedTab(error, continued) }],
+    ...(error.browserRequest ? { _meta: { browserRequest: error.browserRequest } } : {}) }; }
   finally { reloadIfReplaced(); }
 });
 server.connect(new StdioServerTransport()).catch(() => { process.stderr.write('Browser MCP connection failed.\n'); process.exit(1); });

@@ -2293,15 +2293,30 @@ test('valid YAML scalars normalize in the actual plugin manifest reader', async 
   }
 });
 
-test('hanging host git fetch and its child are killed within the VM budget with JSON', async () => {
+test('host git timeout before a helper starts returns bounded JSON', async () => {
   const checkout = makeCheckout(remote), data = makeDataDir(9), { bin } = makeBin();
   const fakeGit = path.join(bin, 'git-hang'), childPid = path.join(bin, 'child.pid');
-  fs.writeFileSync(fakeGit, `#!/bin/sh\ncase "$*" in *fetch*) sleep 30 &\necho $! > "${childPid}"\nwait;; *) exec "${REAL_GIT}" "$@";; esac\n`, { mode: 0o755 });
+  fs.writeFileSync(fakeGit, `#!/bin/sh\ncase "$*" in *fetch*) sleep 30\nsleep 30 &\necho $! > "${childPid}"\nwait;; *) exec "${REAL_GIT}" "$@";; esac\n`, { mode: 0o755 });
   const started = Date.now();
   const result = lastJson(await runScript(['v0.3.2'], envFor(checkout, data, bin, { ALANS_WAY_VM_GIT: fakeGit, ALANS_WAY_VM_BUDGET: '4', ALANS_WAY_VM_GIT_TIMEOUT: '1' })));
   assert.equal(result.ok, false);
   assert.match(result.error, /git.*timed out|time budget/);
-  assert.ok(Date.now() - started < 4000, 'the guest returns JSON within its budget');
+  assert.ok(Date.now() - started < 4000, 'a pre-helper timeout still returns within its budget');
+  assert.equal(fs.existsSync(childPid), false, 'the helper phase was never reached');
+});
+
+test('hanging host git fetch and its child are killed within the VM budget with JSON', async () => {
+  const checkout = makeCheckout(remote), data = makeDataDir(9), { bin } = makeBin();
+  const fakeGit = path.join(bin, 'git-hang'), childPid = path.join(bin, 'child.pid');
+  fs.writeFileSync(fakeGit, `#!/bin/sh\ncase "$*" in *fetch*) sleep 1.2\nsleep 30 &\necho $! > "${childPid}"\nwait;; *) exec "${REAL_GIT}" "$@";; esac\n`, { mode: 0o755 });
+  const started = Date.now();
+  // Give the deliberately delayed helper time to start before testing its
+  // cleanup. A timeout before this phase cannot prove descendant cleanup.
+  const result = lastJson(await runScript(['v0.3.2'], envFor(checkout, data, bin, { ALANS_WAY_VM_GIT: fakeGit, ALANS_WAY_VM_BUDGET: '8', ALANS_WAY_VM_GIT_TIMEOUT: '3' })));
+  assert.equal(result.ok, false);
+  assert.match(result.error, /git.*timed out|time budget/);
+  assert.ok(Date.now() - started < 8000, 'the guest returns JSON within its budget');
+  assert.ok(fs.existsSync(childPid), 'the helper must have started for this cleanup case to count');
   const pid = Number(fs.readFileSync(childPid, 'utf8').trim());
   // A killed child may briefly remain a zombie until its reaper runs.
   const status = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
