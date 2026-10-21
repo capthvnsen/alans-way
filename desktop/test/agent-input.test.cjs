@@ -574,3 +574,16 @@ test('a receipt expiring after dry validation is still refused at takeover', () 
   clock += 120001;
   assert.throws(() => f.agent.carryApproval(f.tab, { approval }, 1), /expired/);
 });
+
+test('certain locator failures offer bounded candidates without dispatching input', async () => {
+  const f = fixture({ found: { fail: 'missing or disabled', candidates: Array.from({ length: 20 }, (_, i) => ({ ref: `e${i + 10}`, name: 'Candidate '.repeat(50), row: 'row '.repeat(100) })) } });
+  await assert.rejects(f.perform({ action: 'click', selector: '#old-control' }), error => {
+    assert.match(error.message, /Candidates: e10/);
+    assert.ok(error.message.length < 1800);
+    assert.doesNotMatch(error.message, /e15 /);
+    return true;
+  });
+  assert.equal(pointer(f).length, 0);
+  assert.ok(f.tab.refs.has('e10'));
+  assert.equal(f.tab.refs.has('e15'), false);
+});

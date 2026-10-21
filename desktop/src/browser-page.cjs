@@ -314,7 +314,7 @@ function refsSource(seed = 0) {
         && (!wantRow || norm(x.row || S.rowOf(x.el, x.d.base)).includes(wantRow)));
       const listed = (hits) => {
         S.assign(hits, 0, false);
-        return hits.slice(0, 8).map((x) => ({ ref: x.ref, name: x.d.name, ...(x.row ? { row: x.row } : {}) }));
+        return hits.slice(0, 5).map((x) => ({ ref: x.ref, name: x.d.name.slice(0, 120), ...(x.row ? { row: x.row.slice(0, 120) } : {}) }));
       };
       const exact = pool.filter((x) => norm(x.d.base) === want || norm(x.d.name) === want);
       if (exact.length === 1) { S.assign(exact, 0, false); return { el: exact[0].el, ref: exact[0].ref, name: exact[0].d.name, cut }; }
@@ -461,7 +461,7 @@ function challengeProbeExpression() {
   })()`;
 }
 
-function snapshotExpression(opts = {}) {
+function snapshotOptions(opts = {}) {
   const int = (value, min, max, fallback) => Number.isInteger(value) ? Math.max(min, Math.min(max, value)) : fallback;
   const maxChars = int(opts.maxChars, 0, 20000, 6000);
   const maxElements = int(opts.maxElements, 0, 300, 150);
@@ -480,8 +480,16 @@ function snapshotExpression(opts = {}) {
   // element the action just touched (a ref token or a selector).
   const valueRef = opts.valueFor && typeof opts.valueFor.ref === 'string' ? opts.valueFor.ref : null;
   const valueSel = opts.valueFor && typeof opts.valueFor.selector === 'string' ? opts.valueFor.selector : null;
+  return { maxChars, maxElements, maxScan, textMs, elementMs, seed, held, parseWaitMs, frameWaitMs,
+    wantEffect: opts.effect === true, wantSettle: opts.effect === true && opts.settle === true,
+    mark: opts.mark !== false, valueRef, valueSel };
+}
+function snapshotExpression(opts = {}, parameterized = false) {
+  const values = snapshotOptions(opts);
+  const { maxChars, maxElements, seed } = values;
+  const p = (key) => parameterized ? `opts.${key}` : JSON.stringify(values[key]);
   return `(async () => {
-    const wantEffect = ${opts.effect === true}, wantSettle = ${opts.effect === true && opts.settle === true}, valueRef = ${JSON.stringify(valueRef)}, valueSel = ${JSON.stringify(valueSel)};
+    const wantEffect = ${p('wantEffect')}, wantSettle = ${p('wantSettle')}, valueRef = ${p('valueRef')}, valueSel = ${p('valueSel')};
     let focused = null, acted = null, settledMs;
     // The tracker's raw timers keep this read's own scheduling out of the
     // count: the settle lands inside the arm grace and must not track itself.
@@ -489,7 +497,7 @@ function snapshotExpression(opts = {}) {
     const setT = followUp && followUp.setT || setTimeout, clearT = followUp && followUp.clearT || clearTimeout;
     // The parser yields between chunks, so a snapshot can land mid-document;
     // give a still-parsing page a moment and report it if it is not done.
-    if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setT(done, ${parseWaitMs}); });
+    if (document.readyState === 'loading') await new Promise(done => { document.addEventListener('DOMContentLoaded', done, { once: true }); setT(done, ${p('parseWaitMs')}); });
     // A same-origin iframe is readable as an empty about:blank document until
     // its navigation commits, and the top document says nothing about it, so
     // the controls inside would be missing from a read that looks complete.
@@ -506,13 +514,13 @@ function snapshotExpression(opts = {}) {
       }
       return false;
     };
-    for (const end = performance.now() + ${frameWaitMs}; document.readyState !== 'loading' && performance.now() < end && framesPending(document, 0);) await new Promise(done => setT(done, 25));
+    for (const end = performance.now() + ${p('frameWaitMs')}; document.readyState !== 'loading' && performance.now() < end && framesPending(document, 0);) await new Promise(done => setT(done, 25));
     // Marks the document: a cross-document navigation swaps the window and
     // drops the marker, which is how a read tells it from a same-document one.
     // Kept under a symbol and non-enumerable so window scans do not see it.
     const docKey = Symbol.for(${JSON.stringify(FOLLOW_UP_DOC_KEY)});
     const sameDoc = window[docKey] === 1;
-    if (${opts.mark !== false}) { try { Object.defineProperty(window, docKey, { value: 1, configurable: true }); } catch { try { window[docKey] = 1; } catch {} } }
+    if (${p('mark')}) { try { Object.defineProperty(window, docKey, { value: 1, configurable: true }); } catch { try { window[docKey] = 1; } catch {} } }
     // An action's effect often lands a beat after it (XHR, setTimeout ~150ms
     // is common), so an action read first gives late reactions a moment to
     // land, then settles once the DOM has stayed quiet, bounded so a busy
@@ -583,13 +591,13 @@ function snapshotExpression(opts = {}) {
       settledMs = Math.round(performance.now() - settleStart);
     }
     const shortHref = ${SHORT_HREF};
-    const items = [], R = ${maxElements > 0 ? refsSource(seed) : 'null'};
+    const items = [], R = ${parameterized ? `(opts.maxElements > 0 ? ${refsSource()} : null)` : maxElements > 0 ? refsSource(seed) : 'null'};
     let gone = [], more = false;
     if (R) {
-      const found = R.collect(performance.now() + ${elementMs}, ${maxScan}, ${maxElements});
+      const found = R.collect(performance.now() + ${p('elementMs')}, ${p('maxScan')}, ${p('maxElements')});
       more = found.more;
       const entries = found.list.map((el) => ({ el, d: R.describe(el) }));
-      R.assign(entries, ${seed}, !found.more);
+      R.assign(entries, ${p('seed')}, !found.more);
       const listed = new Set();
       for (const x of entries) {
         const { el, d } = x;
@@ -618,7 +626,7 @@ function snapshotExpression(opts = {}) {
       }
       // Refs the caller held that are no longer on the page or no longer
       // shown, so a reply can drop them even when the scan was cut short.
-      gone = ${JSON.stringify(held)}.filter((ref) => {
+      gone = ${p('held')}.filter((ref) => {
         if (listed.has(ref)) return false;
         const node = R.live(ref);
         return !node || (node.checkVisibility ? !node.checkVisibility({ checkVisibilityCSS: true }) : false) || !node.getClientRects().length;
@@ -642,8 +650,8 @@ function snapshotExpression(opts = {}) {
     // walk keeps going past the cap to hash every visible text node, so a
     // change beyond the window still shows up in textSig.
     let text = '', textCut = false, textSig = '';
-    if (${maxChars} > 0 && document.body) {
-      const textDeadline = performance.now() + ${textMs};
+    if (${p('maxChars')} > 0 && document.body) {
+      const textDeadline = performance.now() + ${p('textMs')};
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
       // Password managers and other extensions inject their own UI into the
       // page; none of it is page content. Noise signals, cheapest first: the
@@ -695,15 +703,31 @@ function snapshotExpression(opts = {}) {
           lastBlock = parentBlock;
           // The time budget never cuts the first screenful: a slow renderer
           // must still return enough text for the agent to orient itself.
-          if (text.length >= ${maxChars} || (text.length >= ${Math.min(1000, maxChars)} && performance.now() > textDeadline)) textCut = true;
+          if (text.length >= ${p('maxChars')} || (text.length >= ${parameterized ? 'Math.min(1000, opts.maxChars)' : Math.min(1000, maxChars)} && performance.now() > textDeadline)) textCut = true;
         }
       }
-      text = text.slice(0, ${maxChars});
+      text = text.slice(0, ${p('maxChars')});
       textSig = sigNodes + ':' + (sigHash >>> 0).toString(36);
-    } else textCut = ${maxChars} <= 0 && !!document.body?.textContent?.trim();
+    } else textCut = ${p('maxChars')} <= 0 && !!document.body?.textContent?.trim();
     const challenge = ${challengeExpression()};
     return {title:document.title,url:location.href,...(R ? { approvalContext: R.approvalContext() } : {}),sameDoc,challenge,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,elements:items,seq:R ? R.n : 0,gone,overlays,truncated:{text:textCut,elements:more},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
   })()`;
+}
+
+// Only the first read in a document sends the reader source across the wire.
+let snapshotReaderSource;
+async function cachedSnapshot(execute, opts = {}) {
+  const options = JSON.stringify(snapshotOptions(opts));
+  const key = 'Symbol.for("hw.snapshotReader")';
+  const invoke = `(opts => { const s = window[${key}]; return s && s.doc === document ? s.read(opts) : { readerMissing: true }; })(${options})`;
+  const result = await execute(invoke);
+  if (!result?.readerMissing) return result;
+  snapshotReaderSource ||= `async (opts) => ${snapshotExpression({}, true)}`;
+  return execute(`(opts => {
+    const read = ${snapshotReaderSource};
+    try { Object.defineProperty(window, ${key}, { value: { doc: document, read }, configurable: true }); } catch {}
+    return read(opts);
+  })(${options})`);
 }
 
 // webContents and frame execution hand back the same object with its keys in
@@ -974,7 +998,7 @@ async function readEffectOnce(execute, tab, { parseWaitMs, navigated, target, se
   const generation = Math.max(previous && Number.isInteger(previous.generation) ? previous.generation : 0, Number.isInteger(tab.generation) ? tab.generation : 0) + 1;
   let timer;
   const result = await Promise.race([
-    Promise.resolve(execute(snapshotExpression({ maxChars: 8000, maxElements: 150, parseWaitMs, seed: tab.refSeed, held: scan ? [...scan.byRef.keys()] : [], effect: true, settle, valueFor: target }))),
+    Promise.resolve(cachedSnapshot(execute, { maxChars: 8000, maxElements: 150, parseWaitMs, seed: tab.refSeed, held: scan ? [...scan.byRef.keys()] : [], effect: true, settle, valueFor: target })),
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('controls')), 8000 + (parseWaitMs || 0)); }),
   ]).finally(() => clearTimeout(timer));
   if (!result || !Array.isArray(result.elements)) return null;
@@ -1071,4 +1095,4 @@ function restoreExpression(checkpoint) {
     return {verification:restored === c.drafts.length ? 'ready' : 'review_required',restored,skipped:c.drafts.length-restored};
   })()`;
 }
-module.exports = { refsSource, REFS_KEY, PICK, CHALLENGE_HIT_SOURCE, passCloudflare, challengeExpression, challengeHitExpression, challengeProbeExpression, snapshotExpression, settleSnapshot, readEffect, controlsDelta, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, followUpInstallExpression, lastReadOf, FOLLOW_UP_KEY };
+module.exports = { cachedSnapshot, refsSource, REFS_KEY, PICK, CHALLENGE_HIT_SOURCE, passCloudflare, challengeExpression, challengeHitExpression, challengeProbeExpression, snapshotExpression, settleSnapshot, readEffect, controlsDelta, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, followUpInstallExpression, lastReadOf, FOLLOW_UP_KEY };

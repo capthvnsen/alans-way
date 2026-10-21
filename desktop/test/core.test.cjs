@@ -260,8 +260,8 @@ test('an action read returns the new state and fresh controls', async () => {
     code = expression;
     return { url: 'https://a.example/', title: 'A', text: 'Task 2: click Go', elements: [{ ref: 'e5', role: 'button', name: 'Go' }], truncated: { text: false } };
   }, tab);
-  assert.match(code, /text\.slice\(0, 8000\)/, 'the effect read walks bounded page text');
-  assert.match(code, /R\.collect\(performance\.now\(\) \+ 200, 2000, 150\)/);
+  assert.match(code, /"maxChars":8000/, 'the effect read walks bounded page text');
+  assert.match(code, /"maxElements":150,"maxScan":2000,"textMs":60,"elementMs":200/);
   assert.deepEqual(reply.elements, [{ ref: 'e5', role: 'button', name: 'Go' }]);
   assert.equal(reply.generation, 5);
   assert.ok(tab.refs.has('e5'));
@@ -305,8 +305,8 @@ test('an action read keeps the snapshot baseline when controls match', async () 
     code = expression;
     return { url: page.url, title: page.title, text: page.text, elements: [{ ref: 'e2', role: 'button', name: 'Go' }], truncated: { text: false } };
   }, tab);
-  assert.match(code, /const wantEffect = true/, 'effect reads collect focus and value');
-  assert.match(code, /\["e2"\]\.filter/, 'the read asks which held refs are gone');
+  assert.match(code, /"wantEffect":true/, 'effect reads collect focus and value');
+  assert.match(code, /"held":\["e2"\]/, 'the read asks which held refs are gone');
   assert.equal(reply.generation, settled.generation);
   assert.equal(reply.elements, undefined);
   assert.equal(reply.effect.changed, false);
