@@ -9,11 +9,14 @@ const url = 'https://192.0.2.1/viewer/';
 
 function viewer() {
   const clients = [], calls = [], timers = new Map(), elements = new Map();
+  let pixels = [0, 0, 0, 255];
+  const canvas = { width: 1, height: 1, getContext: () => ({ getImageData: () => ({ data: pixels }) }) };
   let timerId = 0;
   const element = id => {
     if (!elements.has(id)) elements.set(id, {
       textContent: '', classList: { add() {}, remove() {}, toggle() {} },
       focus() {}, setAttribute() {},
+      querySelector: () => canvas,
     });
     return elements.get(id);
   };
@@ -32,7 +35,8 @@ function viewer() {
   };
   vm.runInNewContext(source.slice(source.indexOf('const api ='), source.indexOf("$('control').onclick")), context);
   return {
-    clients, calls, timers, element, connect: context.connect,
+    clients, calls, timers, element, connect: context.connect, render: context.render,
+    paint: data => { pixels = data; },
     current: () => clients.at(-1),
     status: () => calls.filter(call => call.name === 'remote-status').at(-1)?.status,
     retry: delay => {
@@ -135,6 +139,65 @@ test('a successful connection cancels a pending retry', () => {
   view.connect(url); view.current().emit('disconnect', { clean: false });
   assert.equal(view.timers.size, 1);
   view.current().emit('connect');
+  assert.equal(view.status(), 'connected');
+  view.retry(2000);
   assert.equal(view.timers.size, 0);
   assert.equal(view.status(), 'connected');
+});
+
+test('a connected viewer without a painted frame reconnects once, without replay or control changes', () => {
+  const view = viewer();
+  view.paint([0, 0, 0, 0]);
+  view.render({ remoteUrl: url, remoteControl: true });
+  view.current().emit('connect');
+  view.retry(2000);
+  assert.equal(view.clients.length, 2, 'a blank connection gets a fresh viewer');
+  assert.equal(view.current().viewOnly, false, 'the control setting is preserved');
+  assert.equal(view.calls.filter(call => call.name !== 'remote-status').length, 0, 'no input or ownership commands');
+  view.current().emit('connect');
+  view.retry(2000);
+  assert.equal(view.clients.length, 2, 'a second blank connection never loops');
+  assert.equal(view.timers.size, 0);
+  assert.equal(view.element('configure').textContent, 'Reconnect');
+  assert.equal(view.element('remote-title').textContent, 'Desktop has no picture');
+});
+
+test('a painted frame, including solid black or a late frame, needs no reconnect', () => {
+  for (const pixels of [[0, 0, 0, 255], [10, 20, 30, 255]]) {
+    const view = viewer();
+    view.paint([0, 0, 0, 0]);
+    view.connect(url); view.current().emit('connect');
+    view.paint(pixels); view.retry(2000);
+    assert.equal(view.clients.length, 1);
+    assert.equal(view.timers.size, 0);
+    assert.equal(view.status(), 'connected');
+  }
+});
+
+test('disconnects, URL changes and authentication requests cancel first-frame recovery', () => {
+  for (const action of ['disconnect', 'change-url', 'clear-url', 'securityfailure', 'credentialsrequired']) {
+    const view = viewer();
+    view.paint([0, 0, 0, 0]);
+    view.connect(url); view.current().emit('connect');
+    assert.equal(view.timers.size, 1);
+    const pending = [...view.timers.values()][0];
+    if (action === 'change-url' || action === 'clear-url') view.connect(action === 'clear-url' ? '' : 'https://203.0.113.1/viewer/');
+    else view.current().emit(action, { clean: true });
+    const count = view.clients.length;
+    assert.equal(view.timers.size, 0);
+    pending.callback();
+    assert.equal(view.clients.length, count, action);
+    assert.equal(view.timers.size, 0);
+  }
+});
+
+test('a network retry after blank recovery cannot reset its first-frame retry budget', () => {
+  const view = viewer();
+  view.paint([0, 0, 0, 0]);
+  view.connect(url); view.current().emit('connect'); view.retry(2000);
+  view.current().emit('disconnect', { clean: false }); view.retry(2000);
+  view.current().emit('connect'); view.retry(2000);
+  assert.equal(view.clients.length, 3);
+  assert.equal(view.timers.size, 0);
+  assert.equal(view.element('remote-title').textContent, 'Desktop has no picture');
 });
