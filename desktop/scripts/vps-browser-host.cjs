@@ -211,7 +211,7 @@ async function serve() {
   }
   async function attach(data) {
     const wc = await cdp.page(data.targetId);
-    const t = { ...data, view: { webContents: wc }, refs: new Set(), generation: 0, queue: Promise.resolve(), sessions: new Set([wc.sessionId]), lastUsedAt: Number(data.lastUsedAt) || Date.now() };
+    const t = { ...data, agentSince: data.agentSince ?? (data.controller === 'agent' ? Date.now() : undefined), view: { webContents: wc }, refs: new Set(), generation: 0, queue: Promise.resolve(), sessions: new Set([wc.sessionId]), lastUsedAt: Number(data.lastUsedAt) || Date.now() };
     tabs.set(t.id, t);
     sessionOwner.set(wc.sessionId, { tab: t, targetId: data.targetId });
     // Dialog and navigation events need Page enabled, including on a tab
@@ -897,7 +897,12 @@ async function serve() {
             controller: parent.controller,
             epoch: 1,
           })
-            .then((t) => {
+            .then(async (t) => {
+              // Let the popup load without cancelling the opener's in-flight click.
+              if (parent.focusEmulation) {
+                await parent.view.webContents.command('Emulation.setFocusEmulationEnabled', { enabled: false });
+                parent.focusEmulation = false;
+              }
               // The next reply to the bot that opened it names it.
               if (parent.controller === 'agent') parent.opened = [...(parent.opened || []), { tabId: t.id, url: info.url }].slice(-10);
               return persist();

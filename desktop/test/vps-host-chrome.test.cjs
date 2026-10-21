@@ -118,6 +118,8 @@ before(async () => {
     '/pop': page(`<script>setTimeout(()=>{window.open("${T}?pop");fetch('/mark?pop',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/pop-userinfo': page(`<script>setTimeout(()=>{window.open("http://u:p@127.0.0.1:${pb}/secret?popcred");fetch('/mark?pop-userinfo',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/reader': page('<button type="button" onclick="document.getElementById(\'result\').textContent=\'Details ready\'">Open details</button><p id="result"></p>'),
+    '/popup-reader': page('<main><h1>Vault</h1><button id=g>Reveal code</button><p>Codes open in a separate window.</p><label>Access code <input id=code></label> <button id=v>Verify</button><p id=o></p></main><script>g.onclick=()=>window.open(\'/popup-code\', \'_blank\');v.onclick=()=>o.textContent=code.value</script>'),
+    '/popup-code': page('<main><h1>Your access code</h1><p>Code: <b>K123456</b></p></main>'),
     '/dropdown': page(`<title>fixture</title><form><label>Delivery <select multiple><option value="std" label="Standard delivery">Internal text</option><optgroup label="Priority" disabled><option value="exp" selected>Express</option></optgroup><option value="pickup" selected>Collect</option></select></label><button>Submit</button></form><label>Empty <select></select></label><label>Many <select>${Array.from({ length: 305 }, (_, i) => `<option value="${i}">${i === 0 ? 'x'.repeat(250) : 'Choice ' + i}</option>`).join('')}</select></label><script>document.querySelector('form').onsubmit=e=>{e.preventDefault();document.title='submitted'};document.addEventListener('change',()=>document.title='changed')</script>`),
     '/pop-blank': page(`<script>setTimeout(()=>{var w=window.open("about:blank");if(w)w.location="${T}?popblank";fetch('${T}?popblank-fetch',{mode:'no-cors'}).catch(()=>{});fetch('/mark?pop-blank',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/ok': page('<p id=ok>ok</p>' + '<img src="/i.png?1"><img src="/i.png?2"><img src="/i.png?3">'),
@@ -215,6 +217,28 @@ test('read a form dropdown without selecting, submitting, or using eval', { skip
     const denied = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: 'document.querySelector("select").options.length', epoch: tab.epoch });
     assert.equal(denied.status, 403); assert.match(denied.data.error, /commit_required/);
   } finally { await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch); }
+});
+
+for (let attempt = 0; attempt < 5; attempt++) test(`real Chromium: read a code from an agent-opened popup ${attempt}`, { skip: !chrome, timeout: 45000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/popup-reader` })).data;
+  let popup;
+  try {
+    await api(`/v1/tabs/${tab.id}/snapshot`);
+    const clicked = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', name: 'Reveal code', epoch: tab.epoch });
+    assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
+    popup = clicked.data.opened?.[0];
+    assert.ok(popup, JSON.stringify(clicked.data));
+    popup.id = popup.tabId;
+    const code = await api(`/v1/tabs/${popup.id}/snapshot?maxElements=0`);
+    assert.equal(code.status, 200, JSON.stringify(code.data) + '\n' + stderr);
+    assert.match(code.data.text, /Code: K123456/);
+  } finally {
+    const cleanup = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+    try {
+      const owned = (await api('/v1/tabs')).data.tabs.filter(t => t.id === tab.id || t.id === popup?.id);
+      for (const t of owned) await cleanup.send('Target.closeTarget', { targetId: t.targetId });
+    } finally { cleanup.socket.close(); }
+  }
 });
 
 test('a screenshot after scrolling 3000px is not blank', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 30000 }, async () => {
