@@ -116,6 +116,8 @@ test('packaged Linux Check now reads app releases without staging an automatic i
   const update = {}, context = { app: { isPackaged: true, getVersion: () => app }, prefs: { lastVersion: app }, update,
     process: { platform: 'linux', execPath: '/fixture/alans-way' }, path: require('node:path'), macUpdate: module.exports,
     mainLog: () => ({ write() {} }), savePreferences() {}, savePreferencesSoon() {}, broadcast() {},
+    pendingUpdateDelivery: null, deliverPendingUpdateReport: require('../src/update-all.cjs').deliverPendingUpdateReport,
+    saveUpdateReport() { assert.fail('there is no saved report to write'); },
     checkVersionsWhenIdle() {}, VERSIONS_EVERY_MS: 1800000, setInterval: (fn) => intervals.push(fn) };
   vm.createContext(context);
   await vm.runInContext(source.slice(start, end) + '\nstartUpdates(); checkAppVersions();', context);

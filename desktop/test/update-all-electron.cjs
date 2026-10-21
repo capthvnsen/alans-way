@@ -14,6 +14,9 @@ process.env.HERMES_WORKSPACE_DATA = profile;
 // A saved server address makes the probe target the server; .invalid never
 // resolves, so the browser host connection fails fast and quietly.
 fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false,
+  pendingUpdateReport: { runId: 'previous-run', targetVersion: require('../package.json').version, attempts: 0,
+    target: { id: 'agent', label: 'VPS', sshHost: 'tester@vm.invalid', scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs', sudo: false },
+    rows: [{ id: 'app', from: '0.21.0', to: require('../package.json').version, state: 'done' }] },
   bots: [{ id: '4242', isBot: true, name: 'Scout' }], selectedBotId: '4242', vpsBrowser: { sshHost: 'tester@vm.invalid', scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs' } }));
 process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
 
@@ -27,7 +30,7 @@ require('../src/server-setup.cjs').createServerSetup = () => async (host, plan) 
   await new Promise((resolve) => { releaseSetup = resolve; });
   return { ok: false, detail: 'FAIL fixture check: restart skipped' };
 };
-let hermesNow = '0.21.6', releaseHermes, checkGate = null, failReport = false, pluginOk = false;
+let hermesNow = '0.21.6', releaseHermes, checkGate = null, failReport = false, noHomeReport = false, pluginOk = false;
 const hermesGate = new Promise((resolve) => { releaseHermes = resolve; });
 const gate = () => {
   let release;
@@ -50,7 +53,9 @@ require('../src/vm-update.cjs').createVmUpdater = () => ({
     if (opts.report && failReport) throw new Error('relay down');
     if (opts.report) {
       calls.push(`report ${opts.report}`);
-      if (successGates) await successGates.report.promise;
+      if (noHomeReport) return { ok: true, messaged: false, messages: [
+        { profile: 'main', sent: false, error: 'No home channel set for telegram to determine where to send the message.' },
+      ] };
       return { ok: true, messaged: true, messages: [{ profile: 'default', sent: true }] };
     }
     calls.push(`hermes ${target.id} quiet=${opts.quiet === true}`);
@@ -120,6 +125,10 @@ app.whenReady().then(async () => {
   assert.match(tooltip, new RegExp(`Browser host 0\\.21\\.3 on the server · ${version.replace(/\./g, '\\.')} goes with this app`));
   assert.match(tooltip, /Checked /);
   assert.equal(await text('update-all'), '↑ Update');
+  await waitFor(() => JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8')).pendingUpdateReport,
+    value => value === undefined, 5000, 'the previous run to be delivered and cleared');
+  assert.deepEqual(calls.filter(c => c.startsWith('report ')), [`report Update everything finished. The app is now on ${version}.`]);
+  calls.splice(calls.findIndex(c => c.startsWith('report ')), 1);
   assert.deepEqual(calls, ['check agent'], 'the startup probe ran once and nothing else');
 
   // The confirmation lists exactly what changes and warns about the restart;
@@ -191,6 +200,19 @@ app.whenReady().then(async () => {
   await updating;
   assert.ok(calls.indexOf('hermes agent quiet=false') > calls.lastIndexOf('check agent'), 'and runs once it finished');
 
+  // A paired bot can chat without a home channel: the final dialog must
+  // retain the delivery reason and tell the user where to set the target.
+  noHomeReport = true;
+  await click('update-all');
+  await waitFor(lines, (l) => l.length > 0, 3000, 'the plan without a Telegram home');
+  await click('update-all-go');
+  await waitFor(() => evaluate('document.getElementById("update-all-cancel").disabled'), d => d === false, 8000, 'the report failure');
+  assert.match(await text('update-all-copy'), /The bot could not message you on Telegram\. main: No home channel set for telegram/);
+  assert.match(await text('update-all-copy'), /Send \/sethome in the affected bot’s Telegram chat to enable future update reports/);
+  assert.deepEqual((await lines()).map(l => l.split('|')[0]), ['warn', 'done'], 'delivery does not change component outcomes');
+  await click('update-all-cancel');
+  noHomeReport = false;
+
   // An error that escapes the steps lands in the dialog, never a blank run.
   failReport = true;
   await click('update-all');
@@ -202,9 +224,9 @@ app.whenReady().then(async () => {
   await click('update-all-cancel');
 
   // A fully successful run: Hermes, plugin, host and the staged app all finish.
-  // Hold each server step and the report so restart timing is observable.
+  // Hold each server step so restart timing and report persistence are observable.
   failReport = false; pluginOk = true; hermesNow = '0.21.6';
-  successGates = { hermes: gate(), plugin: gate(), host: gate(), report: gate() };
+  successGates = { hermes: gate(), plugin: gate(), host: gate() };
   const appVersion = version.replace(/\d+$/, (patch) => String(Number(patch) + 1));
   stagedUpdater.emit('update-downloaded', { version: appVersion });
   await waitFor(() => hidden('update-all-popup'), Boolean);
@@ -236,20 +258,22 @@ app.whenReady().then(async () => {
   await assertHeld(['done', 'done', 'running', 'pending']);
   assert.deepEqual(successWork(), ['hermes agent quiet=true', 'plugin agent', `host agent v${appVersion}`]);
   successGates.host.release();
-  await waitFor(successWork, (c) => c.some((s) => s.startsWith('report ')), 5000, 'the final report');
   await waitFor(lines, (l) => l.length === 4 && l.every((r) => r.startsWith('done|')), 5000, 'all four completion rows');
   assert.deepEqual(await lines(), ['done|✓ Hermes: 0.21.6 → 0.21.7 · Updated to 0.21.7',
     'done|✓ Alan’s Way plugin: 0.21.0 → 0.21.1 · Plugin alans-way (default) updated (v0.21.0 to v0.21.1)',
     `done|✓ Browser host: 0.21.3 → ${appVersion} · Running ${appVersion}`,
     `done|✓ Alan’s Workspace: ${version} → ${appVersion} · Downloaded. Restart to finish.`]);
-  assert.equal(stagedUpdater.autoInstallOnAppQuit, false, 'installation is held until the final report finishes too');
-  assert.equal(await hidden('update-all-go'), true, 'restart waits for the final report');
-  successGates.report.release();
   await waitFor(() => evaluate('document.getElementById("update-all-cancel").disabled'), (d) => d === false, 8000, 'the run to end');
   assert.deepEqual((await lines()).map((l) => l.split('|')[0]), ['done', 'done', 'done', 'done']);
-  assert.deepEqual(successWork(), ['hermes agent quiet=true', 'plugin agent', `host agent v${appVersion}`,
-    `report Update everything finished. Now on Hermes 0.21.7, plugin 0.21.1, browser host ${appVersion}. The app installs ${appVersion} when you restart it.`]);
-  assert.equal(successWork().filter((c) => c.startsWith('report ')).length, 1, 'exactly one final report');
+  assert.deepEqual(successWork(), ['hermes agent quiet=true', 'plugin agent', `host agent v${appVersion}`]);
+  assert.equal(successWork().filter((c) => c.startsWith('report ')).length, 0, 'the final report waits for launch');
+  const pending = JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8')).pendingUpdateReport;
+  assert.ok(pending.runId);
+  assert.equal(pending.targetVersion, appVersion);
+  assert.deepEqual(pending.target, { id: 'agent', label: 'VPS', sshHost: 'tester@vm.invalid', scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs', sudo: false });
+  assert.equal(pending.attempts, 0);
+  assert.deepEqual(pending.rows.map(row => row.state), ['done', 'done', 'done', 'done']);
+  assert.match(await text('update-all-copy'), /Your bot will report the result when the app starts again\./);
   assert.match(await text('update-all-copy'), /^Everything is updated\./);
   assert.equal(await text('update-all-go'), 'Restart to finish');
   assert.equal(await hidden('update-all-go'), false, 'restart is offered once the run finishes');

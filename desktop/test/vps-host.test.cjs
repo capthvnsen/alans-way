@@ -10,6 +10,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const vm = require('node:vm');
 const { spawn } = require('node:child_process');
+const { HANDBACK_MS } = require('../src/core.cjs');
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
@@ -121,6 +122,13 @@ function createStubCdp() {
     res.end();
   });
   server.calls = [];
+  server.pause = (matches) => {
+    let entered, release;
+    const gate = { matches, entered: new Promise(resolve => { entered = resolve; }), released: new Promise(resolve => { release = resolve; }), release };
+    gate.start = entered;
+    server.gate = gate;
+    return gate;
+  };
   server.viewport = { width: 900, height: 700, deviceScaleFactor: 1, pageLeft: 0, pageTop: 0 };
   server.targets = [];
   server.send = (method, params, sessionId) => active.write(wsFrame(JSON.stringify({ method, params, sessionId })));
@@ -142,7 +150,9 @@ function createStubCdp() {
         const message = JSON.parse(frame.payload.toString());
         if (message.id) {
           const reply = dispatch(message);
-          socket.write(wsFrame(JSON.stringify(reply?.__error ? { id: message.id, error: { message: reply.__error } } : { id: message.id, result: reply })));
+          const gate = server.gate?.matches(message) ? server.gate : null;
+          if (gate) { server.gate = null; gate.start(); }
+          Promise.resolve(gate?.released).then(() => socket.write(wsFrame(JSON.stringify(reply?.__error ? { id: message.id, error: { message: reply.__error } } : { id: message.id, result: reply }))));
         }
         if (message.method === 'Page.reload')
           setTimeout(() => socket.write(wsFrame(JSON.stringify({ method: 'Page.loadEventFired', sessionId: message.sessionId, params: {} }))), 300);
@@ -153,7 +163,7 @@ function createStubCdp() {
 }
 
 const hosts = [];
-async function startHost({ env = {}, config = {}, tabs, targets, mirror } = {}) {
+async function startHost({ env = {}, config = {}, tabs, targets, mirror, now } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vps-host-'));
   const stub = createStubCdp();
   if (targets) stub.targets = targets;
@@ -165,11 +175,17 @@ async function startHost({ env = {}, config = {}, tabs, targets, mirror } = {}) 
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ cdpUrl: `http://127.0.0.1:${stub.address().port}`, port, ...config }));
   if (tabs) fs.writeFileSync(path.join(dir, 'tabs.json'), JSON.stringify(tabs));
   if (mirror) fs.writeFileSync(path.join(dir, 'mirror.json'), JSON.stringify({ bots: mirror }));
-  const child = spawn(process.execPath, [path.join(__dirname, '../scripts/vps-browser-host.cjs'), 'serve'], {
+  const clockFile = path.join(dir, 'clock');
+  const clockScript = path.join(dir, 'clock.cjs');
+  if (now !== undefined) {
+    fs.writeFileSync(clockFile, String(now));
+    fs.writeFileSync(clockScript, `Date.now = () => Number(require('node:fs').readFileSync(${JSON.stringify(clockFile)}, 'utf8'));`);
+  }
+  const child = spawn(process.execPath, [...(now !== undefined ? ['--require', clockScript] : []), path.join(__dirname, '../scripts/vps-browser-host.cjs'), 'serve'], {
     env: { ...process.env, HERMES_VPS_BROWSER_DATA: dir, ...env },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
-  const host = { dir, stub, child, stderr: '' };
+  const host = { dir, stub, child, stderr: '', setNow: value => fs.writeFileSync(clockFile, String(value)) };
   child.stderr.on('data', (chunk) => { host.stderr += chunk; });
   hosts.push(host);
   const connectionFile = path.join(dir, 'connection.json');
@@ -369,13 +385,6 @@ test('handed-off tabs refuse agent claims until the human gives them over', asyn
   await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'human' });
   assert.equal((await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'agent' })).status, 200,
     'a bot release stays retakeable');
-  const asked = await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'human', reason: 'captcha', note: 'Solve the puzzle' });
-  assert.equal(asked.status, 200);
-  assert.deepEqual([asked.data.handback.reason, asked.data.handback.note], ['captcha', 'Solve the puzzle'], 'the VPS reports why the bot released');
-  assert.equal((await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'human', reason: 'nope' })).status, 400);
-  const reclaimed = await api(`/v1/tabs/${source.id}/control`, 'POST', { controller: 'agent' });
-  assert.equal(reclaimed.status, 200, 'with no give-back control for VPS tabs, the reason does not hold the tab');
-  assert.equal(reclaimed.data.handback, null);
 
   const restore = async (url) => {
     const tab = (await api('/v1/tabs', 'POST', { url }, { human: true })).data;
@@ -391,6 +400,115 @@ test('handed-off tabs refuse agent claims until the human gives them over', asyn
   const verified = await restore('http://destination.example/');
   assert.equal((await api(`/v1/tabs/${verified.id}/control`, 'POST', { controller: 'agent' })).status, 200,
     'a verified destination continues without a human step');
+});
+
+test('a VPS release with a reason waits for the human, then give-back or 30 minutes reopens it', async () => {
+  const host = await startHost({ now: 1000, config: { viewerUrl: 'http://192.0.2.1:6080/vnc.html' }, env: { HERMES_OVERSEER_BOT_IDS: 'overseer-1' } });
+  const api = host.api;
+  const tab = (await api('/v1/tabs', 'POST', { url: 'https://login.example/' })).data;
+  const control = (body, human = false) => api(`/v1/tabs/${tab.id}/control`, 'POST', body, { human });
+  const asked = await control({ controller: 'human', reason: 'captcha', note: 'Solve the puzzle' });
+  assert.equal(asked.status, 200);
+  assert.deepEqual(asked.data.handback, { state: 'awaiting_human', reason: 'captcha', note: 'Solve the puzzle', botId: 'bot-a', since: 1000, viewerUrl: 'http://192.0.2.1:6080/vnc.html' });
+  assert.equal((await control({ controller: 'human', reason: 'nope' })).status, 400);
+  for (const body of [{ controller: 'human' }, { controller: 'human', reason: 'login' }]) {
+    host.setNow(2000);
+    assert.equal((await control(body)).data.handback.since, 1000, 'a repeated release preserves the hold');
+  }
+  assert.equal((await control({ controller: 'human' }, true)).data.handback.state, 'awaiting_human');
+  for (const bot of ['bot-a', 'overseer-1']) {
+    for (const operation of ['snapshot', 'screenshot', 'control', 'actions']) {
+      const body = operation === 'control' ? { controller: 'agent' } : operation === 'actions' ? { action: 'read', epoch: asked.data.epoch } : undefined;
+      const blocked = await api(`/v1/tabs/${tab.id}/${operation}`, body ? 'POST' : 'GET', body, { bot });
+      assert.equal(blocked.status, 409, `${bot} ${operation}`);
+      assert.match(blocked.data.error, /^awaiting_human/);
+    }
+  }
+  const held = (await api(`/v1/tabs/${tab.id}`)).data;
+  const given = await control({ controller: 'agent', giveBack: true, epoch: held.epoch }, true);
+  assert.equal(given.data.handback.state, 'human_returned');
+  assert.ok(given.data.epoch > held.epoch);
+  assert.equal((await api(`/v1/tabs/${tab.id}/snapshot`)).status, 200);
+  const reclaimed = await control({ controller: 'agent' });
+  assert.equal(reclaimed.status, 200);
+  assert.equal(reclaimed.data.handback, null);
+  await control({ controller: 'human', reason: 'login' });
+  host.setNow(2000 + HANDBACK_MS);
+  assert.match((await control({ controller: 'agent' })).data.error, /^awaiting_human/);
+  host.setNow(2001 + HANDBACK_MS);
+  assert.equal((await control({ controller: 'agent' })).status, 200, 'expiry reopens the tab to a claim');
+});
+
+test('malformed control requests leave a login hold untouched', async () => {
+  const { api } = await startHost();
+  const tab = (await api('/v1/tabs', 'POST', { url: 'https://login.example/' })).data;
+  const route = `/v1/tabs/${tab.id}/control`;
+  const held = (await api(route, 'POST', { controller: 'human', reason: 'login' })).data;
+  for (const body of [{}, { controller: 'unknown' }, { controller: null }]) {
+    assert.equal((await api(route, 'POST', body)).status, 400);
+    assert.deepEqual((await api(`/v1/tabs/${tab.id}`)).data, held);
+    const claim = await api(route, 'POST', { controller: 'agent' });
+    assert.equal(claim.status, 409);
+    assert.match(claim.data.error, /^awaiting_human/);
+  }
+});
+
+for (const operation of ['snapshot', 'screenshot']) {
+  test(`a new hold refuses an in-flight ${operation} and both queued reads`, async () => {
+    const { api, stub } = await startHost();
+    const tab = (await api('/v1/tabs', 'POST', { url: 'https://login.example/' })).data;
+    const gate = stub.pause(message => operation === 'snapshot'
+      ? message.method === 'Runtime.evaluate' && message.params.expression.includes('items.push')
+      : message.method === 'Page.captureScreenshot');
+    try {
+      const running = api(`/v1/tabs/${tab.id}/${operation}`);
+      await gate.entered;
+      const queued = ['snapshot', 'screenshot'].map(read => api(`/v1/tabs/${tab.id}/${read}`));
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const readsBeforeHold = stub.calls.filter(call => call.method === 'Page.captureScreenshot' || (call.method === 'Runtime.evaluate' && call.params.expression.includes('items.push'))).length;
+      await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'human', reason: 'login' });
+      gate.release();
+      for (const reply of await Promise.all([running, ...queued])) {
+        assert.equal(reply.status, 409);
+        assert.match(reply.data.error, /^awaiting_human/);
+        assert.equal(reply.data.base64, undefined);
+        assert.equal(reply.data.text, undefined);
+      }
+      assert.equal(stub.calls.filter(call => call.method === 'Page.captureScreenshot' || (call.method === 'Runtime.evaluate' && call.params.expression.includes('items.push'))).length, readsBeforeHold, 'queued reads never reach the page after the hold');
+    } finally { gate.release(); }
+  });
+}
+
+test('a second or stale give-back is a no-op', async () => {
+  const host = await startHost({ now: 1000 });
+  const api = host.api;
+  const tab = (await api('/v1/tabs', 'POST', { url: 'https://login.example/' })).data;
+  const control = (body, human = false) => api(`/v1/tabs/${tab.id}/control`, 'POST', body, { human });
+  const held = (await control({ controller: 'human', reason: 'login' })).data;
+  const giveBack = { controller: 'agent', giveBack: true, epoch: held.epoch };
+  const returned = (await control(giveBack, true)).data;
+  assert.equal(returned.handback.state, 'human_returned');
+  assert.deepEqual((await control(giveBack, true)).data, returned, 'a duplicate preserves the epoch and return marker');
+  const reclaimed = (await control({ controller: 'agent' })).data;
+  assert.deepEqual((await control(giveBack, true)).data, reclaimed, 'a delayed click cannot change a reclaimed tab');
+  const next = (await control({ controller: 'human', reason: 'two_factor' })).data;
+  assert.deepEqual((await control(giveBack, true)).data, next, 'an earlier give-back cannot release a new hold');
+  host.setNow(1001 + HANDBACK_MS);
+  const expired = (await api(`/v1/tabs/${tab.id}`)).data;
+  assert.equal(expired.handback, null);
+  assert.deepEqual((await control({ ...giveBack, epoch: next.epoch }, true)).data, expired, 'expiry cannot be turned into a human return');
+});
+
+test('a bot release cannot weaken a human takeover hold', async () => {
+  const { api } = await startHost({ env: { ALANS_WAY_VM_MAX_TABS: '1' } });
+  const tab = (await api('/v1/tabs', 'POST', { url: 'https://login.example/' })).data;
+  await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'human' }, { human: true });
+  const release = await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'human', reason: 'login' });
+  assert.equal(release.data.handback, null, 'the existing human takeover needs no new hold');
+  assert.match((await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' })).data.error, /^human_has_control/);
+  const opened = await api('/v1/tabs', 'POST', { url: 'https://other.example/' });
+  assert.deepEqual(opened.data.closedTabs || [], [], 'a repeated bot release cannot make the human tab reapable');
+  assert.equal((await api(`/v1/tabs/${tab.id}`)).status, 200);
 });
 
 test('the cdp action refuses cookie, storage, fetch and script-injection methods', async () => {
