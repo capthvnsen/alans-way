@@ -24,6 +24,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { isDeepStrictEqual } = require('node:util');
 
 // Under Electron this file is the app launcher for the `app` engine: a fresh
 // profile, loopback fixtures allowed, the window kept out of the way.
@@ -196,7 +197,7 @@ function merge(known, reply) {
   return out;
 }
 class Agent {
-  constructor(client, opts) { Object.assign(this, { client, opts, known: [], seen: '', tab: null, stats: { calls: 0, ms: 0, chars: 0, imageBytes: 0, imageTokens: 0, errors: 0, snapshots: 0 }, log: [] }); }
+  constructor(client, opts) { Object.assign(this, { client, opts, known: [], seen: '', tab: null, stats: { calls: 0, ms: 0, chars: 0, bytes: 0, imageBytes: 0, imageTokens: 0, errors: 0, snapshots: 0 }, log: [] }); }
   async call(name, args) {
     if (this.stats.calls) await sleep(think);
     this.stats.calls++;
@@ -212,6 +213,7 @@ class Agent {
       }
     }
     this.stats.chars += text.length;
+    this.stats.bytes += Buffer.byteLength(text);
     let data; try { data = JSON.parse(text); } catch { data = text; }
     if (name === 'cua_alans_way_screenshot' && data && data.viewport) {
       const w = Math.min(960, data.viewport.width), h = Math.round(data.viewport.height * w / data.viewport.width);
@@ -362,7 +364,11 @@ const tasks = [
       const reply = await a.act({ action: 'read', maxChars: 20000 });
       return JSON.stringify([...reply.text.matchAll(/Product (\d{2})\s*\$(\d+\.\d{2})/g)].map(m => ({ title: 'Product ' + m[1], price: '$' + m[2] })));
     },
-    check: (fx, ans) => !fx.reports.products && ans === JSON.stringify(Array.from({ length: 20 }, (_, i) => ({ title: 'Product ' + String(i + 1).padStart(2, '0'), price: '$' + (12 + i * 0.75).toFixed(2) }))) },
+    check(fx, ans) {
+      try {
+        return !fx.reports.products && isDeepStrictEqual(JSON.parse(ans), Array.from({ length: 20 }, (_, i) => ({ title: 'Product ' + String(i + 1).padStart(2, '0'), price: '$' + (12 + i * 0.75).toFixed(2) })));
+      } catch { return false; }
+    } },
   { id: 'list-results', what: 'list the top 10 results and their links', fixture: true,
     async run(a, fx) {
       await a.open(fx.url('/results'));
@@ -581,7 +587,7 @@ async function runAgentSuite() {
           const tabs = await raw('/v1/tabs');
           fx.lastUrl = ((Array.isArray(tabs) ? tabs : tabs.tabs || [])[0] || {}).url;
           const ok = !err && !!(await task.check(fx, ans));
-          rows.push({ engine: label, task: task.id, run, ok, calls: a.stats.calls, snapshots: a.stats.snapshots, errors: a.stats.errors, chars: a.stats.chars, imageBytes: a.stats.imageBytes, tokens: Math.round(a.stats.chars / 4) + a.stats.imageTokens, imageTokens: a.stats.imageTokens, toolMs: a.stats.ms, wallMs: wall, answer: ans.slice(0, 80), err: err.slice(0, 300), log: a.log });
+          rows.push({ engine: label, task: task.id, run, ok, calls: a.stats.calls, snapshots: a.stats.snapshots, errors: a.stats.errors, chars: a.stats.chars, bytes: a.stats.bytes, imageBytes: a.stats.imageBytes, tokens: Math.round(a.stats.chars / 4) + a.stats.imageTokens, imageTokens: a.stats.imageTokens, toolMs: a.stats.ms, wallMs: wall, answer: ans.slice(0, 80), err: err.slice(0, 300), log: a.log });
           const r = rows.at(-1);
           console.log(`${label.padEnd(8)} ${task.id.padEnd(18)} ${ok ? 'PASS' : 'FAIL'} calls=${r.calls} snap=${r.snapshots} err=${r.errors} tok=${r.tokens} toolMs=${r.toolMs}${ok ? '' : ' :: ' + (err || ans)}`);
         }
