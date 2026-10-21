@@ -134,10 +134,13 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
       try { return await persistent(request, tracking); }
       catch (error) {
         if (!error.helperDied) throw error;
+        if (error.neverAnswered) {
+          onceUntil = Date.now() + ONCE_RETRY_MS;
+          tracking.dispatched = false;
+        }
         checkCall();
-        if (!READ_ONLY.has(request.cmd)) throw new Error(`Computer helper stopped mid-action; the action may have executed. Check the app before retrying. ${error.message}`.slice(0, 300));
-        if (error.neverAnswered) onceUntil = Date.now() + ONCE_RETRY_MS;
-        // Reads can retry after a crash; a lost action receipt is never replayed.
+        if (!error.neverAnswered && !READ_ONLY.has(request.cmd)) throw new Error(`Computer helper stopped mid-action; the action may have executed. Check the app before retrying. ${error.message}`.slice(0, 300));
+        // A failed init can use one-shot mode; an answered helper's lost action is never replayed.
       }
       if (Date.now() >= onceUntil) return persistent(request, tracking);
     }

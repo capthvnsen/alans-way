@@ -9,7 +9,7 @@ const { createHelper, createComputer, createComputerService, normalizeStep, norm
 const { pickHelper, makeCompile } = require('../src/computer.cjs');
 const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
 
-function permissionComputer(t, handle, fakeTimers = false) {
+function permissionComputer(t, handle, fakeTimers = false, answerInit = true) {
   t.mock.method(performance, 'now', () => Date.now());
   const { EventEmitter } = require('node:events');
   const { PassThrough } = require('node:stream');
@@ -21,7 +21,7 @@ function permissionComputer(t, handle, fakeTimers = false) {
     });
     proc.stdin.on('data', (chunk) => queueMicrotask(() => {
       const request = JSON.parse(chunk);
-      const reply = request.cmd === 'init' ? { ok: true } : handle(request, proc);
+      const reply = request.cmd === 'init' ? (answerInit ? { ok: true } : null) : handle(request, proc);
       if (reply) proc.stdout.write(JSON.stringify({ id: request.id, ...reply }) + '\n');
     }));
     children.push(proc);
@@ -184,10 +184,12 @@ test('a helper that cannot start falls back to one process per request', async (
 });
 
 test('an action is never replayed when the helper dies mid-action', async (t) => {
-  const helper = fakeHelper('crash-mid-act');
+  const modes = [];
+  const helper = fakeHelper('crash-mid-act', { command: async kind => { modes.push(kind); return [process.execPath, fake, kind]; } });
   t.after(() => helper.close());
   await helper.request({ cmd: 'snapshot', pid: 5 });
-  await assert.rejects(helper.request({ cmd: 'act', pid: 5, steps: [{ action: 'click', x: 1, y: 2 }] }), /stopped mid-action/);
+  await assert.rejects(helper.request({ cmd: 'act', pid: 5, steps: [{ action: 'click', x: 1, y: 2 }] }), /stopped mid-action.*may have executed/);
+  assert.deepEqual(modes, ['serve'], 'an uncertain action never starts another helper');
 });
 
 test('helper failures carry their code', async (t) => {
@@ -530,8 +532,32 @@ test('a queued cancelled request never runs or kills another call', async (t) =>
   await first;
 });
 
-test('an action lost before the init receipt is never retried in one-shot mode', async (t) => {
-  const helper = fakeHelper('crash-on-serve');
+test('an action falls back once before any init answer and later actions stay in one-shot mode', async (t) => {
+  const modes = [];
+  const helper = fakeHelper('crash-on-serve', { command: async kind => { modes.push(kind); return [process.execPath, fake, kind]; } });
   t.after(() => helper.close());
-  await assert.rejects(helper.request({ cmd: 'act', pid: 5, steps: [{ action: 'click', x: 1, y: 2 }] }), /may have executed/);
+  const steps = [{ action: 'click', x: 1, y: 2 }];
+  await calls.run(context(10000), async () => {
+    for (let i = 0; i < 2; i++) {
+      const reply = await helper.request({ cmd: 'act', pid: 5, steps });
+      assert.deepEqual(reply.steps, steps);
+      assert.equal(reply.results.length, 1);
+      assert.equal(reply.results[0].ok, true);
+    }
+  });
+  assert.deepEqual(modes, ['serve', 'once', 'once']);
+});
+
+test('a pre-init action crash with no remaining budget fails as not run', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  let requests = 0;
+  const computer = permissionComputer(t, (_request, proc) => {
+    requests++;
+    t.mock.timers.tick(100);
+    proc.emit('close', 1);
+  }, false, false);
+  const result = calls.run(context(100), () => computer.service.action('bot', 7, { action: 'click', x: 1, y: 2 }));
+  await assert.rejects(result, error => error.code === 'timeout' && !/may have executed/.test(error.message));
+  assert.equal(requests, 1);
+  assert.equal(computer.children.length, 1);
 });
