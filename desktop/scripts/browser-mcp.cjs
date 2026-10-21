@@ -140,7 +140,6 @@ const tools = [
 - Consequential approval requires a fresh observed ref or unique exact name. If approval_invalid or page_changed reports a changed document/target, take a fresh snapshot, review it, and request a new approval; an old approval cannot move to a continued tab. approval_binding_unavailable requires updating the browser host/connector before approving again.
 - select takes the option by any of value, label, option, text or choice and answers matched; a miss lists the options.
 - wait takes a selector, text or url, and gone:true waits until it disappears. read returns {text} capped by maxChars (default 600). read with list:{selector,fields:{name:{type:"text"|"href",selector?}}} returns up to 100 items. batch runs up to 25 steps; its reply has results[] per step plus one final effect.
-- read list:{selector:".quote",fields:{author:{type:"text",selector:".author"}}}
 - Observed search ref: batch[type(ref,"query"),press(Enter)].
 - opened[] lists tabs the action opened; dialogs[] says how JS dialogs were answered (a confirm or prompt is dismissed unless the action passed dialog:{accept:true, text}).
 - navigate, back, forward and reload move between pages. claim and release change control; claim returns a fresh epoch.
