@@ -16,6 +16,27 @@ process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10
 const shown = [];
 Notification.prototype.show = function show() { shown.push(this); };
 Notification.prototype.close = function close() { this.closed = true; };
+// Only the VM transport is faked; the window, renderer and command route are real.
+const remoteCalls = [];
+let remoteTab = { id: 'vm-sign-in', botId: '4242', host: 'vps', controller: 'human', epoch: 7,
+  url: 'https://login.example/', title: 'Sign in', handback: { state: 'awaiting_human', reason: 'login', note: 'Sign in', botId: '4242', since: Date.now() } };
+const remoteTabs = new Map([[remoteTab.id, remoteTab]]), activationGates = new Map();
+const vpsModule = require('../src/vps-browser.cjs');
+vpsModule.createVpsBrowser = () => ({ request: async (route, method, body, options) => {
+  if (route === '/v1/tabs' && method === 'POST') return remoteTabs.get(body.fixtureId || remoteTab.id);
+  const id = route.split('/')[3];
+  let tab = remoteTabs.get(id);
+  if (route.endsWith('/activate')) {
+    const gate = activationGates.get(id);
+    if (gate) { gate.enter(); await gate.wait; }
+  }
+  if (route.endsWith('/control')) {
+    remoteCalls.push({ id, body, human: options.human });
+    tab = { ...tab, controller: 'agent', epoch: tab.epoch + 1, handback: { ...tab.handback, state: 'human_returned' } };
+    remoteTabs.set(id, tab);
+  }
+  return tab;
+} });
 require('../src/main.cjs');
 const waitFor = async (read, predicate, timeout = 12000) => {
   const deadline = Date.now() + timeout;
@@ -92,7 +113,10 @@ app.whenReady().then(async () => {
   assert.equal(await evaluate('document.querySelectorAll("#tabs .needs-you-badge").length'), 0);
   const stale = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'read', epoch: releasedEpoch });
   assert.equal(stale.status, 409); assert.match(stale.data.error, /^human_returned/);
-  assert.equal((await api(`/v1/tabs/${tab.id}`)).data.handback.state, 'human_returned');
+  const returned = (await api(`/v1/tabs/${tab.id}`)).data;
+  assert.equal(returned.handback.state, 'human_returned');
+  await invoke('control', { id: tab.id, controller: 'agent', giveBack: true, epoch: releasedEpoch });
+  assert.deepEqual((await api(`/v1/tabs/${tab.id}`)).data, returned, 'a duplicate local give-back is a no-op');
   const reclaimed = await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' });
   assert.equal(reclaimed.status, 200, JSON.stringify(reclaimed.data));
   assert.ok(reclaimed.data.epoch > releasedEpoch + 1, 'the claim returns a fresh epoch');
@@ -121,6 +145,61 @@ app.whenReady().then(async () => {
   assert.equal(shown.length, 2);
   await invoke('close-tab', { id: second.id });
   assert.equal(shown[1].closed, true, 'closing the tab dismisses its notification');
+
+  const vmTab = (await api('/v1/tabs', 'POST', { host: 'vm', url: 'https://login.example/' })).data;
+  await invoke('activate', { id: vmTab.id });
+  await waitFor(() => evaluate('document.getElementById("needs-you-banner").classList.contains("hidden")'), hidden => !hidden);
+  await evaluate('document.getElementById("needs-you-give-back").click()');
+  await waitFor(() => remoteCalls.length, count => count === 1);
+  assert.deepEqual(remoteCalls[0], { id: vmTab.id, body: { controller: 'agent', giveBack: true, epoch: 7 }, human: true }, 'the existing button routes the guarded give-back to the VM');
+  assert.equal((await getState()).tabs.find(item => item.id === vmTab.id).handback.state, 'human_returned');
+
+  const failures = [];
+  const check = async (name, run) => { try { await run(); console.log('PASS:', name); } catch (error) { failures.push(error); console.error('FAIL:', name, error.message); } };
+  await check('superseded VM activation cannot retarget Give back', async () => {
+    for (const [id, note] of [['vm-a', 'VM A sign-in'], ['vm-b', 'VM B sign-in']]) {
+      remoteTabs.set(id, { ...remoteTab, id, epoch: 20, handback: { ...remoteTab.handback, note } });
+      await api('/v1/tabs', 'POST', { host: 'vm', fixtureId: id });
+    }
+    let enter, release;
+    const entered = new Promise(resolve => { enter = resolve; });
+    activationGates.set('vm-a', { enter, wait: new Promise(resolve => { release = resolve; }) });
+    const first = invoke('activate', { id: 'vm-a', host: 'vps' });
+    await entered;
+    await invoke('activate', { id: 'vm-b', host: 'vps' });
+    release(); await first;
+    assert.equal((await getState()).activeVpsTabId, 'vm-b', 'a delayed response cannot replace the newer selection');
+    await waitFor(() => evaluate('document.getElementById("needs-you-text").textContent'), text => text.includes('VM B sign-in'));
+    await evaluate('document.getElementById("needs-you-give-back").click()');
+    await waitFor(() => remoteCalls.length, count => count === 2);
+    assert.deepEqual(remoteCalls[1], { id: 'vm-b', body: { controller: 'agent', giveBack: true, epoch: 20 }, human: true });
+    assert.equal(remoteTabs.get('vm-a').controller, 'human');
+  });
+  await check('same-id local and VM handbacks keep their host and epoch', async () => {
+    const local = await invoke('create-tab');
+    await invoke('control', { id: local.id, controller: 'agent' });
+    const held = (await api(`/v1/tabs/${local.id}/control`, 'POST', { controller: 'human', reason: 'login', note: 'Local sign-in' })).data;
+    remoteTabs.set(local.id, { ...remoteTab, id: local.id, epoch: 100, handback: { ...remoteTab.handback, note: 'VM collision sign-in' } });
+    await api('/v1/tabs', 'POST', { host: 'vm', fixtureId: local.id });
+    await waitFor(() => evaluate(`!!document.querySelector('.tab[data-tab-id="${local.id}"][data-host="vps"] .tab-select')`), Boolean);
+    await evaluate(`document.querySelector('.tab[data-tab-id="${local.id}"][data-host="vps"] .tab-select').click()`);
+    await waitFor(() => evaluate('document.getElementById("needs-you-text").textContent'), text => text.includes('VM collision sign-in'));
+    const before = remoteCalls.length;
+    assert.match(await evaluate(`window.workspace.command('control', ${JSON.stringify({ id: local.id, controller: 'agent', giveBack: true, epoch: 100 })}).then(() => '', error => error.message)`), /Choose the tab and its computer/);
+    assert.match(await evaluate(`window.workspace.command('control', ${JSON.stringify({ id: local.id, host: 'unknown', controller: 'agent', giveBack: true, epoch: 100 })}).then(() => '', error => error.message)`), /Unknown tab computer/);
+    assert.equal(remoteCalls.length, before);
+    await evaluate('document.getElementById("needs-you-give-back").click()');
+    await waitFor(() => remoteCalls.length, count => count === before + 1);
+    assert.deepEqual(remoteCalls.at(-1), { id: local.id, body: { controller: 'agent', giveBack: true, epoch: 100 }, human: true });
+    assert.equal((await api(`/v1/tabs/${local.id}`)).data.handback.state, 'awaiting_human');
+    await evaluate(`document.querySelector('.tab[data-tab-id="${local.id}"][data-host="${local.host}"] .tab-select').click()`);
+    await waitFor(() => evaluate('document.getElementById("needs-you-text").textContent'), text => text.includes('Local sign-in'));
+    await evaluate('document.getElementById("needs-you-give-back").click()');
+    await waitFor(async () => (await api(`/v1/tabs/${local.id}`)).data, tab => tab.handback.state === 'human_returned');
+    assert.equal(remoteCalls.length, before + 1, 'a local give-back never routes to the same-id VM');
+    assert.ok((await api(`/v1/tabs/${local.id}`)).data.epoch > held.epoch);
+  });
+  assert.equal(failures.length, 0, failures.map(error => error.stack).join('\n'));
 
   console.log('PASS: a release with a reason badges the tab, shows an escaped banner, notifies once, and holds the tab until the human gives it back.');
   server.close(); app.quit();

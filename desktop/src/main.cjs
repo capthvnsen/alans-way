@@ -114,7 +114,8 @@ let updatingAll = false;
 let pendingUpdateDelivery = null;
 let updateRun = { steps: [], summary: '', restart: false };
 let lastSetupCheck = null;
-let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
+let tabActivationSequence = 0;
+let activeTabId = 'home', activeVpsTabId = '', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 // Native Hermes chat: 'telegram' shows the Telegram WebContentsView; 'hermes'
 // shows the DOM surface (the Telegram view then measures to zero and hides).
 let hermesHub = null, chatTarget = 'telegram';
@@ -243,6 +244,13 @@ function actionReply(tab, payload = {}) {
   return { ...pageState(tab), ...payload, tab: compactTab(describeTab(tab, true)) };
 }
 function isVpsTab(id) { return vpsTabs.has(id); }
+function isVpsTarget(id, host) {
+  if (host !== undefined && host !== HOST_LABEL && host !== 'vps') throw new Error('Unknown tab computer.');
+  if (host === undefined && tabs.has(id) && isVpsTab(id)) throw new Error('Choose the tab and its computer.');
+  const remote = host === 'vps' || (host === undefined && isVpsTab(id));
+  if (host !== undefined && !(remote ? vpsTabs : tabs).has(id)) throw new Error('Tab not found on that computer.');
+  return remote;
+}
 async function refreshVpsTabs() {
   if (!prefs?.vpsBrowser?.sshHost || vpsRefreshBusy) return;
   vpsRefreshBusy = true;
@@ -397,7 +405,7 @@ function settingsWriteReceipt(entry) {
 function getState() {
   const state = { name: app.getName(), version: app.getVersion(), build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
-    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)), cloud: cloudView(),
+    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)).concat([...vpsTabs.values()]), cloud: cloudView(),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
     update: { available: update.available, ready: update.ready, busy: update.busy, error: update.error, justUpdatedFrom: update.justUpdatedFrom,
@@ -412,7 +420,7 @@ function getState() {
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
     autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false,
-    activeTabId, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
+    activeTabId, activeVpsTabId, browserTabHost: activeTabId === 'vps' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (vpsTabs.has(activeVpsTabId) ? activeVpsTabId : tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     chatTarget, hermes: hermesSummary(),
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
@@ -1013,17 +1021,23 @@ function notifyHandback(info) {
     if (!tabs.has(info.id)) return;
     // A collapsed browser pane would hide the badge and the banner.
     if (prefs.showBrowser === false) { prefs.showBrowser = true; savePreferencesSoon(); }
-    activateTab(info.id).then(broadcast, () => {});
+    activateTab(info.id, info.host).then(broadcast, () => {});
   });
   handbackNotices.set(info.id, notice);
   notice.show();
 }
-async function activateTab(tabId) {
-  const id=isVpsTab(tabId)?'vps':tabId;
+async function activateTab(tabId, host) {
+  const remote = isVpsTarget(tabId, host), sequence = ++tabActivationSequence;
+  const id = remote ? 'vps' : tabId;
   if(id==='vps'&&activeTabId!=='vps')browserReturnTabId=activeTabId;
   if(activeTabId!==id)prefs.remoteControl=false;
   activeTabId=tabs.has(id)||['home','vps'].includes(id)?id:'home';
-  if(isVpsTab(tabId))await remoteRequest(tabId,'activate',{});
+  if (remote) {
+    activeVpsTabId = '';
+    await remoteRequest(tabId, 'activate', {});
+    if (sequence !== tabActivationSequence) return;
+    activeVpsTabId = tabId;
+  }
   applyLayout();
 }
 // One recording at a time, on a tab the human controls. The page script runs
@@ -1780,8 +1794,8 @@ function registerIpc() {
       case 'settings-write-status': return settingsWriteReceipt(settingsWriteEntry(event, value, true));
       case 'create-tab': return describeTab(createTab({ url: value.url || 'about:blank' }));
       case 'close-tab':
-        if (isVpsTab(value.id)) { if(activeTabId===value.id)prefs.remoteControl=false; await vpsBrowser.request(`/v1/tabs/${value.id}`,'DELETE',undefined,{human:true}); vpsTabs.delete(value.id); if(activeTabId===value.id)activeTabId='home'; applyLayout(); } else closeTab(value.id); break;
-      case 'activate': await activateTab(value.id); break;
+        if (isVpsTarget(value.id, value.host)) { if(activeTabId===value.id)prefs.remoteControl=false; await vpsBrowser.request(`/v1/tabs/${value.id}`,'DELETE',undefined,{human:true}); vpsTabs.delete(value.id); if(activeTabId===value.id)activeTabId='home'; applyLayout(); } else closeTab(value.id); break;
+      case 'activate': await activateTab(value.id, value.host); break;
       case 'toggle-vps-view': {
         if(activeTabId==='vps')activeTabId=tabs.has(browserReturnTabId)?browserReturnTabId:'home';
         else {browserReturnTabId=activeTabId;activeTabId='vps';}
@@ -1801,8 +1815,9 @@ function registerIpc() {
         break;
       }
       case 'control': {
-        if(isVpsTab(value.id)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller});}
+        if(isVpsTarget(value.id, value.host)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller,...(value.giveBack === true ? { giveBack: true, epoch: value.epoch } : {})});}
         const tab = tabs.get(value.id);
+        if (tab && value.giveBack === true && (value.controller !== 'agent' || tab.controller !== 'human' || liveHandback(tab)?.state !== 'awaiting_human' || value.epoch !== tab.epoch)) return describeTab(tab);
         // Give to agent also ends a Take back cooldown.
         if (tab && value.controller === 'agent') { tab.handoff = reviewedHandoff(tab.handoff); tab.tookBackUntil = 0; }
         if (tab && value.controller !== 'agent') tab.lastHumanInput = Date.now();
