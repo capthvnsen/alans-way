@@ -125,6 +125,7 @@ const tabs = new Map();
 const vpsTabs = new Map();
 const recentLinkTabs = new Map();
 let vpsBrowserStatus = 'unconfigured', vpsBrowserError = '', vpsRefreshBusy = false, vpsFailures = 0, vpsTimer, vpsMirrorTimer, vpsMirrorDebounce;
+let waitingVpsTabs = new Set();
 const vpsBrowser = createVpsBrowser({ getConfig: () => prefs?.vpsBrowser });
 const configuredSessions = new WeakSet();
 const API_TOKEN = crypto.randomBytes(32).toString('hex');
@@ -255,7 +256,24 @@ function isVpsTarget(id, host) {
 async function refreshVpsTabs() {
   if (!prefs?.vpsBrowser?.sshHost || vpsRefreshBusy) return;
   vpsRefreshBusy = true;
-  try { const wasVps=vpsTabs.has(activeTabId); const data = await vpsBrowser.request('/v1/tabs', 'GET', undefined, { human: true }); vpsTabs.clear(); data.tabs.forEach(tab => { vpsTabs.set(tab.id, tab); resolveFavicon(tab, [tab.favicon]).catch(() => {}); }); if(wasVps&&!vpsTabs.has(activeTabId)){prefs.remoteControl=false;activeTabId='home';applyLayout();} vpsBrowserStatus = 'connected'; vpsBrowserError = ''; vpsFailures = 0; }
+  try {
+    const wasVps = vpsTabs.has(activeTabId);
+    const data = await vpsBrowser.request('/v1/tabs', 'GET', undefined, { human: true });
+    // API replies can warm vpsTabs before polling sees a new hold.
+    const waiting = new Set(data.tabs.filter(tab => tab.handback?.state === 'awaiting_human').map(tab => tab.id));
+    vpsTabs.clear();
+    data.tabs.forEach(tab => {
+      vpsTabs.set(tab.id, tab);
+      resolveFavicon(tab, [tab.favicon]).catch(() => {});
+      if (waiting.has(tab.id) && !waitingVpsTabs.has(tab.id)) {
+        notifiedHandbacks.delete(`vps:${tab.id}:${tab.handback.since}`);
+        notifyHandback(tab);
+      }
+    });
+    waitingVpsTabs = waiting;
+    if(wasVps&&!vpsTabs.has(activeTabId)){prefs.remoteControl=false;activeTabId='home';applyLayout();}
+    vpsBrowserStatus = 'connected'; vpsBrowserError = ''; vpsFailures = 0;
+  }
   catch (error) { vpsBrowserStatus = 'disconnected'; vpsBrowserError = /^Invalid VPS browser/.test(error.message) ? error.message : ''; vpsFailures++; }
   finally { vpsRefreshBusy = false; broadcast(); }
 }
@@ -773,9 +791,9 @@ function closeTab(id) {
   if (!tab) return;
   if (recording?.tabId === id) { try { stopRecording(); } catch (error) { logError('recording', error); } }
   tabs.delete(id);
-  handbackNotices.get(id)?.close();
-  handbackNotices.delete(id);
-  for (const key of notifiedHandbacks) if (key.startsWith(`${id}:`)) notifiedHandbacks.delete(key);
+  handbackNotices.get(`${HOST_LABEL}:${id}`)?.close();
+  handbackNotices.delete(`${HOST_LABEL}:${id}`);
+  for (const key of notifiedHandbacks) if (key.startsWith(`${HOST_LABEL}:${id}:`)) notifiedHandbacks.delete(key);
   if (tab.view.webContents) extensionHost?.removeTab(tab.view.webContents);
   if (browserReturnTabId === id) browserReturnTabId = [...tabs.keys()].at(-1) || 'home';
   tab.host?.contentView.removeChildView(tab.view);
@@ -1011,7 +1029,7 @@ const handbackNotices = new Map(), notifiedHandbacks = new Set();
 function notifyHandback(info) {
   const h = info && info.handback;
   if (!h || h.state !== 'awaiting_human' || !Notification.isSupported()) return;
-  const key = `${info.id}:${h.since}`;
+  const key = `${info.host}:${info.id}:${h.since}`;
   if (notifiedHandbacks.has(key)) return;
   notifiedHandbacks.add(key);
   const notice = new Notification({ title: `${nameForBot(info.botId) || 'Your agent'} needs you`, body: h.note || HANDBACK_TEXT[h.reason] || '' });
@@ -1019,12 +1037,12 @@ function notifyHandback(info) {
     if (!win || win.isDestroyed()) return;
     if (win.isMinimized()) win.restore();
     win.show(); win.focus();
-    if (!tabs.has(info.id)) return;
+    if (!(info.host === 'vps' ? vpsTabs : tabs).has(info.id)) return;
     // A collapsed browser pane would hide the badge and the banner.
     if (prefs.showBrowser === false) { prefs.showBrowser = true; savePreferencesSoon(); }
     activateTab(info.id, info.host).then(broadcast, () => {});
   });
-  handbackNotices.set(info.id, notice);
+  handbackNotices.set(`${info.host}:${info.id}`, notice);
   notice.show();
 }
 async function activateTab(tabId, host) {
@@ -1799,7 +1817,13 @@ function registerIpc() {
       case 'activate': await activateTab(value.id, value.host); break;
       case 'toggle-vps-view': {
         if(activeTabId==='vps')activeTabId=tabs.has(browserReturnTabId)?browserReturnTabId:'home';
-        else {browserReturnTabId=activeTabId;activeTabId='vps';}
+        else {
+          browserReturnTabId=activeTabId;activeTabId='vps';
+          if (!vpsTabs.has(activeVpsTabId)) {
+            const waiting = [...vpsTabs.values()].find(tab => tab.handback?.state === 'awaiting_human');
+            if (waiting) await activateTab(waiting.id, 'vps');
+          }
+        }
         prefs.remoteControl=false;applyLayout();break;
       }
       case 'navigate': {
@@ -1818,7 +1842,7 @@ function registerIpc() {
       case 'control': {
         if(isVpsTarget(value.id, value.host)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller,...(value.giveBack === true ? { giveBack: true, epoch: value.epoch } : {})});}
         const tab = tabs.get(value.id);
-        if (tab && value.giveBack === true && (value.controller !== 'agent' || tab.controller !== 'human' || liveHandback(tab)?.state !== 'awaiting_human' || value.epoch !== tab.epoch)) return describeTab(tab);
+        if (tab && value.giveBack === true && (value.controller !== 'agent' || tab.controller !== 'human' || liveHandback(tab)?.state !== 'awaiting_human' || value.epoch !== tab.epoch)) return { ...describeTab(tab), ...(value.epoch !== tab.epoch && tab.controller === 'human' && liveHandback(tab)?.state === 'awaiting_human' ? { refused: 'stale' } : {}) };
         // Give to agent also ends a Take back cooldown.
         if (tab && value.controller === 'agent') { tab.handoff = reviewedHandoff(tab.handoff); tab.tookBackUntil = 0; }
         if (tab && value.controller !== 'agent') tab.lastHumanInput = Date.now();
