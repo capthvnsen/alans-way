@@ -276,7 +276,7 @@ async function deliverPendingUpdateReport({ prefs, version, send, save, log = ()
     return;
   }
   const target = vmTargets(prefs)[0] || LOCAL_TARGET;
-  if (!pending.target || !['id', 'local', 'sshHost', 'scriptPath', 'sudo'].every(key => pending.target[key] === target[key])) {
+  if (!prefs.versionCache?.hermes || !pending.target || !['id', 'local', 'sshHost', 'scriptPath', 'sudo'].every(key => pending.target[key] === target[key])) {
     delete prefs.pendingUpdateReport;
     save();
     log(`${pending.runId} dropped: the update report destination changed or is missing.`);

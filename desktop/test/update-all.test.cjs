@@ -181,12 +181,54 @@ test('a clean run ends with the app staged for restart and one report for the bo
   assert.equal(reportText(rows), 'Update everything finished. Now on Hermes 0.21.7, plugin 0.21.1, browser host 0.21.5. The app installs 0.21.5 when you restart it.');
 });
 
+test('staging an app update reports server results now and saves only the app for launch', async (t) => {
+  const fs = require('node:fs'), vm = require('node:vm');
+  const { vmTargets } = require('../src/vm-update.cjs');
+  const source = fs.readFileSync(require.resolve('../src/main.cjs'), 'utf8');
+  const command = source.slice(source.indexOf("case 'update-all': {"), source.indexOf("case 'update-all-restart': {"));
+  for (const hermes of [true, false]) await t.test(`Hermes configured=${hermes}`, async () => {
+    const prefs = { versionCache: hermes ? { hermes: '0.21.6' } : {} };
+    const sends = [], saved = [];
+    const steps = hermes ? STEPS : STEPS.filter(row => row.id === 'app');
+    const context = { prefs, vmTargets, LOCAL_TARGET, pendingUpdateDelivery: null,
+      updateLocked: () => false, update: {}, vmRetrying: false, hermesUpdating: false, updatingAll: false,
+      describeVersions: () => ({ steps }), stagedAppVersion() {}, appLatest: '',
+      app: { getVersion: () => '0.21.4' }, holdAppInstall() {}, broadcast() {},
+      waitForVersionCheck: async () => {}, checkVmVersions: async () => {},
+      mainLog: () => ({ write() {} }), logError() {}, runLogText,
+      runSteps, runUpdateStep: async step => ({ ok: true, version: step.to }),
+      summarizeRun, reportText, reportDeliveryText: require('../src/update-all.cjs').reportDeliveryText,
+      crypto: { randomUUID: () => 'fixture-run' },
+      saveUpdateReport: () => saved.push(JSON.parse(JSON.stringify(prefs.pendingUpdateReport))),
+      vmUpdater: { hermesUpdateVm: async (target, opts) => { sends.push({ target, ...opts }); return { messaged: true }; } },
+    };
+    await vm.runInNewContext(`(async () => { switch ('update-all') { ${command} } })()`, context);
+    assert.equal(sends.length, hermes ? 1 : 0);
+    if (hermes) {
+      assert.match(sends[0].report, /Now on Hermes 0\.21\.7, plugin 0\.21\.1, browser host 0\.21\.5/);
+      assert.doesNotMatch(sends[0].report, /The app/);
+      assert.deepEqual(sends[0].target, LOCAL_TARGET);
+      assert.equal(saved.length, 1);
+      assert.deepEqual(saved[0].rows.map(row => row.id), ['app']);
+      assert.deepEqual(saved[0].target, LOCAL_TARGET);
+      assert.equal(saved[0].attempts, 0);
+      const delivered = [];
+      await require('../src/update-all.cjs').deliverPendingUpdateReport({ prefs, version: '0.21.5',
+        save() {}, send: async text => { delivered.push(text); return { messaged: true }; } });
+      assert.deepEqual(delivered, ['Update everything finished. The app is now on 0.21.5.']);
+    } else {
+      assert.equal(prefs.pendingUpdateReport, undefined);
+      assert.equal(saved.length, 0);
+    }
+  });
+});
+
 test('an update run that ends in a restart reports once from the new version', async (t) => {
   const { deliverPendingUpdateReport } = require('../src/update-all.cjs');
   const rows = await runSteps(STEPS, async (step) => ({ ok: true, version: step.to }));
   for (const version of ['0.21.5', '0.21.4']) await t.test(`launch on ${version}`, async () => {
     // Round trips model a fresh process reading only what the previous one saved.
-    let disk = JSON.stringify({ pendingUpdateReport: { runId: 'run-1', targetVersion: '0.21.5', target: LOCAL_TARGET, rows, attempts: 0 } });
+    let disk = JSON.stringify({ versionCache: { hermes: '0.21.7' }, pendingUpdateReport: { runId: 'run-1', targetVersion: '0.21.5', target: LOCAL_TARGET, rows, attempts: 0 } });
     const sends = [], events = [];
     const launch = async (send) => {
       const prefs = JSON.parse(disk);
@@ -209,7 +251,7 @@ test('an update run that ends in a restart reports once from the new version', a
     assert.match(events[0], /run-1 delivered/);
   });
   for (const retrySucceeds of [true, false]) await t.test(`one retry, success=${retrySucceeds}`, async () => {
-    let disk = JSON.stringify({ pendingUpdateReport: { runId: 'retry-1', targetVersion: '0.21.5', target: LOCAL_TARGET, rows, attempts: 0 } });
+    let disk = JSON.stringify({ versionCache: { hermes: '0.21.7' }, pendingUpdateReport: { runId: 'retry-1', targetVersion: '0.21.5', target: LOCAL_TARGET, rows, attempts: 0 } });
     let sends = 0;
     const events = [];
     const launch = async (send) => {
@@ -232,12 +274,23 @@ test('an update run that ends in a restart reports once from the new version', a
   });
 });
 
+test('pending reports are discarded without sending when Hermes is no longer configured', async () => {
+  const rows = await runSteps(STEPS, async step => ({ ok: true, version: step.to }));
+  const prefs = { pendingUpdateReport: { runId: 'no-target', targetVersion: '0.21.5', target: LOCAL_TARGET, rows, attempts: 0 } };
+  let saves = 0, sends = 0;
+  await require('../src/update-all.cjs').deliverPendingUpdateReport({ prefs, version: '0.21.5',
+    save: () => saves++, send: async () => { sends++; return { messaged: true }; } });
+  assert.equal(sends, 0);
+  assert.equal(prefs.pendingUpdateReport, undefined);
+  assert.equal(saves, 1);
+});
+
 test('pending reports stop before sending when the attempt cannot be saved', async () => {
   const { deliverPendingUpdateReport } = require('../src/update-all.cjs');
   const rows = await runSteps(STEPS, async (step) => ({ ok: true, version: step.to }));
   let sends = 0;
   await assert.rejects(deliverPendingUpdateReport({
-    prefs: { pendingUpdateReport: { runId: 'run-1', targetVersion: '0.21.5', target: LOCAL_TARGET, rows, attempts: 0 } }, version: '0.21.5',
+    prefs: { versionCache: { hermes: '0.21.7' }, pendingUpdateReport: { runId: 'run-1', targetVersion: '0.21.5', target: LOCAL_TARGET, rows, attempts: 0 } }, version: '0.21.5',
     save: () => { throw Error('disk unavailable'); }, send: async () => { sends++; },
   }), /disk unavailable/);
   assert.equal(sends, 0);
@@ -264,7 +317,7 @@ test('a mocked launch only sends a pending report to its original destination', 
   ];
   for (const item of cases) await t.test(item.name, async () => {
     const target = item.local ? LOCAL_TARGET : vmTargets({ vpsBrowser: original })[0];
-    const prefs = { lastVersion: '0.21.5', vpsBrowser: item.current,
+    const prefs = { versionCache: { hermes: '0.21.7' }, lastVersion: '0.21.5', vpsBrowser: item.current,
       pendingUpdateReport: { runId: 'destination-run', targetVersion: '0.21.5', rows, attempts: 0,
         ...(!item.legacy ? { target } : {}) } };
     const sent = [], logs = [];
@@ -302,7 +355,7 @@ test('pending reports discard malformed or exhausted records without sending', a
 test('partial delivery is recorded without sending a duplicate to successful profiles', async () => {
   const { deliverPendingUpdateReport } = require('../src/update-all.cjs');
   const rows = await runSteps(STEPS, async (step) => ({ ok: true, version: step.to }));
-  const prefs = { pendingUpdateReport: { runId: 'run-1', targetVersion: '0.21.5', target: LOCAL_TARGET, rows, attempts: 0 } };
+  const prefs = { versionCache: { hermes: '0.21.7' }, pendingUpdateReport: { runId: 'run-1', targetVersion: '0.21.5', target: LOCAL_TARGET, rows, attempts: 0 } };
   const result = await deliverPendingUpdateReport({ prefs, version: '0.21.5', save: () => {},
     send: async () => ({ messages: [{ profile: 'default', sent: true }, { profile: 'coder', sent: false, error: 'unavailable' }] }) });
   assert.equal(result.status, 'delivered');
