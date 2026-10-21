@@ -55,3 +55,14 @@ test('a refused batch reviews only the unexecuted step', async () => {
   assert.equal(batches, 1);
   assert.equal(reviews, 1);
 });
+
+test('the article-link benchmark requires a navigation to the actual requested destination', async () => {
+  const tasks = vm.runInNewContext(source.slice(source.indexOf('const tasks ='), source.indexOf('// ---------------------------------------------------------------- run')) + '\ntasks', { RESULTS: [] });
+  const task = tasks.find(t => t.id === 'pub-wiki-link');
+  const url = 'https://en.wikipedia.org/wiki/Charles_Babbage';
+  const a = { open: async () => {}, need: async () => 'e1', act: async () => ({ effect: { navigated: true, url } }) };
+  assert.equal(task.check({ lastUrl: url }, await task.run(a)), true);
+  assert.equal(task.check({ lastUrl: 'https://en.wikipedia.org/wiki/Ada_Lovelace' }, url), false);
+  a.act = async () => ({ effect: { navigated: false, url } });
+  assert.equal(task.check({ lastUrl: url }, await task.run(a)), false);
+});
