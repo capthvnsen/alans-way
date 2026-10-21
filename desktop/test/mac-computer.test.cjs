@@ -45,7 +45,7 @@ test('the Mac helper answers requests in order over one process and rejects bad 
     helper.stdin.end();
   }
   assert.equal(lines.length, 4);
-  assert.deepEqual(lines[0], { id: 1, ok: true, protocol: 2 });
+  assert.deepEqual(lines[0], { id: 1, ok: true, protocol: 2, windowBinding: true });
   assert.equal(lines[1].id, 'two');
   assert.equal(lines[1].code, 'bad_request');
   assert.equal(lines[2].code, 'bad_request');
