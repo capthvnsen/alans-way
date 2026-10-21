@@ -4,6 +4,28 @@ const assert = require('node:assert/strict');
 const { createServerSetup, parseSetupPlan, setupCommand } = require('../src/server-setup.cjs');
 const plan = { repoRef: 'a'.repeat(40), desktopRef: 'b'.repeat(40), args: ['--bot-id', '123456789', '--mac-ssh', 'you@computer.example', '--host-os', 'mac', '--timezone', 'America/Denver', '--bind', '--proactive', 'yes'] };
 
+test('setup accepts every supported public key type and keeps comments on user keys only', () => {
+  const blob = 'A'.repeat(20);
+  const parseKey = (option, value) => parseSetupPlan(JSON.stringify({ ...plan, args: [...plan.args, option, value] }));
+  for (const type of ['ssh-ed25519', 'ssh-rsa', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384',
+    'ecdsa-sha2-nistp521', 'sk-ssh-ed25519@openssh.com', 'sk-ecdsa-sha2-nistp256@openssh.com']) {
+    for (const option of ['--mac-key', '--mac-host-key']) assert.doesNotThrow(() => parseKey(option, `${type} ${blob}==`));
+    assert.doesNotThrow(() => parseKey('--mac-key', `${type} ${blob} user key comment`));
+    assert.throws(() => parseKey('--mac-host-key', `${type} ${blob} host key comment`), /unsupported option or value/);
+  }
+});
+
+test('setup rejects malformed key blobs, options, control characters and extra lines', () => {
+  const key = `ssh-ed25519 ${'A'.repeat(20)}`;
+  for (const option of ['--mac-key', '--mac-host-key']) {
+    for (const value of ['ssh-dss ' + 'A'.repeat(20), 'ssh-ed25519 short', `${key}====`,
+      `ssh-ed25519 ${'A'.repeat(20)}=A`, `command="id" ${key}`, `${key}\n`, `${key}\r`,
+      `${key}\n${key}`, `${key} comment\tmore`, `${key} comment\x7f`]) {
+      assert.throws(() => parseSetupPlan(JSON.stringify({ ...plan, args: [...plan.args, option, value] })), /unsupported option or value/);
+    }
+  }
+});
+
 test('a reviewed setup plan runs over pinned SSH outside the gateway', async () => {
   const calls = [];
   const setup = createServerSetup({ run: async (...args) => { calls.push(args); return { code: 0, out: 'setup: fixture passed\nRestarting the gateway in 10s, detached', err: '' }; } });

@@ -2145,7 +2145,7 @@ function registerIpc() {
       // confirmed the plan in the popover. Server first (Hermes, then the
       // plugin that must match it), then the browser host, then this app,
       // which only stages: the restart waits for "Restart to finish". Then
-      // the versions refresh. A staged app's report waits until the next launch.
+      // the versions refresh. Only the app-version report waits for the next launch.
       case 'update-all': {
         if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) return { refused: 'Another update is already running. Try again when it finishes.' };
         const { steps, upToDate } = describeVersions({ app: app.getVersion(), appUpdate: stagedAppVersion(), appLatest, cache: prefs.versionCache });
@@ -2161,8 +2161,8 @@ function registerIpc() {
           const rows = await runSteps(steps, (step) => runUpdateStep(step, target), (next) => { updateRun.steps = next; broadcast(); });
           mainLog().write('update all', runLogText(rows));
           const appStep = rows.find(row => row.id === 'app' && row.state === 'done');
-          if (appStep) {
-            prefs.pendingUpdateReport = { runId: crypto.randomUUID(), targetVersion: appStep.to, target: { ...target }, rows, attempts: 0 };
+          if (appStep && prefs.versionCache?.hermes) {
+            prefs.pendingUpdateReport = { runId: crypto.randomUUID(), targetVersion: appStep.to, target: { ...target }, rows: [appStep], attempts: 0 };
             saveUpdateReport();
           }
           // Wait out any probe that started before the run, then take a fresh one.
@@ -2172,14 +2172,15 @@ function registerIpc() {
           updateRun = { steps: rows, restart: rows.some((row) => row.id === 'app' && row.state === 'done'),
             summary: summarizeRun(rows, { gatewayRunning: prefs.versionCache?.gatewayRunning ?? null, where }) };
           broadcast();
-          if (appStep) {
-            updateRun.summary += ' Your bot will report the result when the app starts again.';
-          } else if (prefs.versionCache?.hermes) {
-            const sent = await vmUpdater.hermesUpdateVm(target, { report: reportText(rows) });
+          const serverRows = rows.filter(row => row.id !== 'app');
+          if (prefs.versionCache?.hermes && serverRows.some(row => row.state === 'warn' || row.state === 'failed'
+            || (row.state === 'done' && row.to !== row.from))) {
+            const sent = await vmUpdater.hermesUpdateVm(target, { report: reportText(appStep ? serverRows : rows) });
             const delivery = reportDeliveryText(sent);
             mainLog().write('update report', delivery);
             updateRun = { ...updateRun, summary: `${updateRun.summary} ${delivery}` };
           }
+          if (appStep && prefs.versionCache?.hermes) updateRun.summary += ' Your bot will report the app version when the app starts again.';
         } catch (error) {
           // The dialog shows why the run stopped instead of an empty summary.
           updateRun = { ...updateRun, summary: `Update everything stopped: ${setupCheck.redactReport(error.message)}` };
