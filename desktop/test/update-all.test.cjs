@@ -186,10 +186,14 @@ test('staging an app update reports server results now and saves only the app fo
   const { vmTargets } = require('../src/vm-update.cjs');
   const source = fs.readFileSync(require.resolve('../src/main.cjs'), 'utf8');
   const command = source.slice(source.indexOf("case 'update-all': {"), source.indexOf("case 'update-all-restart': {"));
-  for (const hermes of [true, false]) await t.test(`Hermes configured=${hermes}`, async () => {
+  for (const [name, hermes, steps, immediate] of [
+    ['server updates', true, STEPS, true],
+    ['app only', true, STEPS.slice(-1), false],
+    ['server already current', true, STEPS.map(step => step.id === 'app' ? step : { ...step, to: step.from }), false],
+    ['no Hermes target', false, STEPS.slice(-1), false],
+  ]) await t.test(name, async () => {
     const prefs = { versionCache: hermes ? { hermes: '0.21.6' } : {} };
     const sends = [], saved = [];
-    const steps = hermes ? STEPS : STEPS.filter(row => row.id === 'app');
     const context = { prefs, vmTargets, LOCAL_TARGET, pendingUpdateDelivery: null,
       updateLocked: () => false, update: {}, vmRetrying: false, hermesUpdating: false, updatingAll: false,
       describeVersions: () => ({ steps }), stagedAppVersion() {}, appLatest: '',
@@ -203,11 +207,13 @@ test('staging an app update reports server results now and saves only the app fo
       vmUpdater: { hermesUpdateVm: async (target, opts) => { sends.push({ target, ...opts }); return { messaged: true }; } },
     };
     await vm.runInNewContext(`(async () => { switch ('update-all') { ${command} } })()`, context);
-    assert.equal(sends.length, hermes ? 1 : 0);
-    if (hermes) {
+    assert.equal(sends.length, immediate ? 1 : 0, 'only changed server results send immediately');
+    if (immediate) {
       assert.match(sends[0].report, /Now on Hermes 0\.21\.7, plugin 0\.21\.1, browser host 0\.21\.5/);
       assert.doesNotMatch(sends[0].report, /The app/);
       assert.deepEqual(sends[0].target, LOCAL_TARGET);
+    }
+    if (hermes) {
       assert.equal(saved.length, 1);
       assert.deepEqual(saved[0].rows.map(row => row.id), ['app']);
       assert.deepEqual(saved[0].target, LOCAL_TARGET);
@@ -216,6 +222,10 @@ test('staging an app update reports server results now and saves only the app fo
       await require('../src/update-all.cjs').deliverPendingUpdateReport({ prefs, version: '0.21.5',
         save() {}, send: async text => { delivered.push(text); return { messaged: true }; } });
       assert.deepEqual(delivered, ['Update everything finished. The app is now on 0.21.5.']);
+      assert.equal(prefs.pendingUpdateReport, undefined);
+      await require('../src/update-all.cjs').deliverPendingUpdateReport({ prefs, version: '0.21.5',
+        save() {}, send: async text => { delivered.push(text); return { messaged: true }; } });
+      assert.equal(delivered.length, 1, 'the app result sends once across launches');
     } else {
       assert.equal(prefs.pendingUpdateReport, undefined);
       assert.equal(saved.length, 0);

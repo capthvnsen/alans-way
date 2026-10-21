@@ -2172,13 +2172,15 @@ function registerIpc() {
           updateRun = { steps: rows, restart: rows.some((row) => row.id === 'app' && row.state === 'done'),
             summary: summarizeRun(rows, { gatewayRunning: prefs.versionCache?.gatewayRunning ?? null, where }) };
           broadcast();
-          if (prefs.versionCache?.hermes) {
-            const sent = await vmUpdater.hermesUpdateVm(target, { report: reportText(appStep ? rows.filter(row => row.id !== 'app') : rows) });
+          const serverRows = rows.filter(row => row.id !== 'app');
+          if (prefs.versionCache?.hermes && serverRows.some(row => row.state === 'warn' || row.state === 'failed'
+            || (row.state === 'done' && row.to !== row.from))) {
+            const sent = await vmUpdater.hermesUpdateVm(target, { report: reportText(appStep ? serverRows : rows) });
             const delivery = reportDeliveryText(sent);
             mainLog().write('update report', delivery);
             updateRun = { ...updateRun, summary: `${updateRun.summary} ${delivery}` };
-            if (appStep) updateRun.summary += ' Your bot will report the app version when the app starts again.';
           }
+          if (appStep && prefs.versionCache?.hermes) updateRun.summary += ' Your bot will report the app version when the app starts again.';
         } catch (error) {
           // The dialog shows why the run stopped instead of an empty summary.
           updateRun = { ...updateRun, summary: `Update everything stopped: ${setupCheck.redactReport(error.message)}` };
