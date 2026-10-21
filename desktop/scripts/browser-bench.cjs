@@ -68,12 +68,15 @@ function pages(s) {
   `const q=document.querySelector('[name=q]');q.oninput=()=>{sug.hidden=!q.value;sug.innerHTML=['lovelace','lovelace notes','lovelace bridge'].map(x=>'<li role=option>'+x+'</li>').join('')}`);
   p['/results'] = page('Results', `<main><h1>Results</h1><ol>${RESULTS.map(([t, d], i) => `<li><a href="/doc/${i}">${t}</a><p>${d}</p><a href="/doc/${i}/cite">Cite</a></li>`).join('')}</ol></main>`);
   for (let i = 0; i < RESULTS.length; i++) p['/doc/' + i] = page(RESULTS[i][0], `<main><h1>${RESULTS[i][0]}</h1>${i === 5 ? '<table><tr><th>Born</th><td>10 December 1815, London</td></tr><tr><th>Died</th><td>27 November 1852</td></tr></table>' : ''}<p>${'Archive text. '.repeat(120)}</p></main>`);
+  p['/products'] = page('Products', `<main><h1>Compare notebooks</h1><section id=products>${Array.from({ length: 20 }, (_, i) => `<article><h2>Product ${String(i + 1).padStart(2, '0')}</h2><span class=price>$${(12 + i * 0.75).toFixed(2)}</span><p>${'Recycled paper, stitched binding, delivery within five business days. '.repeat(8)}</p></article>`).join('')}</section><button onclick="report('products','ordered')">Place order</button></main>`);
   p['/form'] = page('Contact sales', `<main><h1>Contact sales</h1><form id=f novalidate>
 <label>Full name <input name=name required></label><br><label>Work email <input name=email type=email required></label><br><label>Phone <input name=phone type=tel></label><br>
 <label>Country <select name=country><option value="">Choose…</option>${['Canada', 'France', 'Germany', 'Japan', 'Portugal', 'United Kingdom', 'United States'].map((c) => `<option>${c}</option>`).join('')}</select></label>
 <fieldset><legend>Plan</legend>${['Starter', 'Team', 'Enterprise'].map((x) => `<label><input type=radio name=plan value=${x.toLowerCase()}> ${x}</label>`).join('')}</fieldset>
 <label><input type=checkbox name=news> Send me product news</label><br><label>Message <textarea name=msg rows=3></textarea></label><p id=err style="color:#b00"></p><button>Send request</button></form></main>`,
   `f.onsubmit=e=>{e.preventDefault();const d=Object.fromEntries(new FormData(f));d.news=!!f.news.checked;if(!/@/.test(d.email))return err.textContent='Enter a valid email';report('form',d);f.outerHTML='<h2>Thanks, '+d.name+'</h2><p>We will reply to '+d.email+' within a day.</p>'}`);
+  p['/dropdown'] = page('Delivery form', `<form id=f><label>Delivery <select name=delivery><option value="std" label="Standard delivery">Internal text</option><option value="exp" selected>Express delivery</option><option value="pickup" disabled>Collect in person</option></select></label><button>Submit</button></form>`,
+    `f.onsubmit=e=>{e.preventDefault();report('dropdown','submitted')};f.delivery.onchange=()=>report('dropdown','changed')`);
   p['/feed'] = page('Orders', `<main><h1>Orders</h1><ul id=l style="list-style:none;padding:0"></ul><div id=more>Loading more…</div><p id=out></p></main>`,
   `let n=0;const add=()=>{for(let i=0;i<20&&n<120;i++){n++;const k=n,li=document.createElement('li');li.style.height='44px';li.innerHTML='Order #'+k+' · $'+(17+k*3)+'.00 <button>Open</button>';li.querySelector('button').onclick=()=>{out.textContent='Opened order #'+k;report('feed',k)};l.append(li)}if(n>=120)more.remove()};
 new IntersectionObserver(e=>{if(e[0].isIntersecting)setTimeout(add,150)}).observe(more);add();`);
@@ -84,7 +87,7 @@ document.querySelectorAll('#cookies button').forEach(b=>b.onclick=()=>cookies.re
 setTimeout(()=>{const m=document.createElement('div');m.id='modal';m.style.cssText='position:fixed;inset:0;background:#0008;display:flex;align-items:center;justify-content:center';
 m.innerHTML='<div role=dialog aria-modal=true aria-labelledby=mt style="background:#fff;padding:24px"><h2 id=mt>Join our newsletter</h2><input aria-label="Email address"><button>Subscribe</button><button>No thanks</button></div>';
 m.querySelectorAll('button')[1].onclick=()=>m.remove();document.body.append(m)},400);`);
-  p['/todos'] = page('Todos', `<main><h1>Todos</h1><p id=saved>Saved just now</p><input id=new aria-label="New todo" placeholder="What needs doing?"><ul id=l></ul></main>`,
+  p['/todos'] = page('Todos', `<main><h1>Todos</h1><p id=saved>Saved just now</p><label>Add a task <input id=new aria-label="New todo" placeholder="What needs doing?"></label><ul id=l></ul></main>`,
   `let t=[['Walk dog',0],['Pay rent',0],['Old task',0],['Call mom',0]],s=0;setInterval(()=>{saved.textContent='Saved '+(++s)+'s ago'},300);
 const R=()=>{l.innerHTML=t.map(([x,d],i)=>'<li><label><input type=checkbox data-i='+i+(d?' checked':'')+'> '+x+'</label> <button data-d='+i+'>Delete</button></li>').join('');
 l.querySelectorAll('input').forEach(c=>c.onchange=()=>{t[c.dataset.i][1]=c.checked?1:0;R()});l.querySelectorAll('button').forEach(b=>b.onclick=()=>{t.splice(b.dataset.d,1);R()});report('todos',t.map(([x,d])=>x+(d?'+':'')).join(','))};
@@ -193,7 +196,7 @@ function merge(known, reply) {
   return out;
 }
 class Agent {
-  constructor(client, opts) { Object.assign(this, { client, opts, known: [], seen: '', tab: null, stats: { calls: 0, ms: 0, chars: 0, imageTokens: 0, errors: 0, snapshots: 0 }, log: [] }); }
+  constructor(client, opts) { Object.assign(this, { client, opts, known: [], seen: '', tab: null, stats: { calls: 0, ms: 0, chars: 0, imageBytes: 0, imageTokens: 0, errors: 0, snapshots: 0 }, log: [] }); }
   async call(name, args) {
     if (this.stats.calls) await sleep(think);
     this.stats.calls++;
@@ -203,7 +206,10 @@ class Agent {
     let text = '';
     for (const c of r.content || []) {
       if (c.type === 'text') text += c.text;
-      else if (c.type === 'image') this.stats.imageTokens += 1000; // corrected below from the viewport note
+      else if (c.type === 'image') {
+        this.stats.imageBytes += Buffer.from(c.data, 'base64').length;
+        this.stats.imageTokens += 1000; // corrected below from the viewport note
+      }
     }
     this.stats.chars += text.length;
     let data; try { data = JSON.parse(text); } catch { data = text; }
@@ -211,9 +217,11 @@ class Agent {
       const w = Math.min(960, data.viewport.width), h = Math.round(data.viewport.height * w / data.viewport.width);
       this.stats.imageTokens += Math.round(w * h / 750) - 1000;
     }
-    this.log.push({ name, action: args.action, ms: Date.now() - t0, chars: text.length, error: r.isError ? String(text).slice(0, 160) : undefined });
-    if (r.isError) { this.stats.errors++; return { error: String(text) }; }
-    this.absorb(data);
+    const error = r.isError ? String(text) : Array.isArray(data?.results) ? data.results.find(x => !x.ok)?.error : undefined;
+    if (error) this.stats.errors++;
+    this.log.push({ name, action: args.action, ms: Date.now() - t0, chars: text.length, error: error?.slice(0, 160) });
+    if (r.isError) return { error: String(text) };
+    if (!this.tab || !args.tabId || args.tabId === this.tab.id) this.absorb(data);
     return data;
   }
   absorb(data) {
@@ -226,9 +234,10 @@ class Agent {
     for (const t of [data.text, data.effect && data.effect.text, ...(Array.isArray(data.results) ? data.results.map((x) => x && x.text) : [])]) if (typeof t === 'string' && t) this.seen += '\n' + t;
     if (data.continuedEpoch) this.tab.epoch = data.continuedEpoch;
     if (Number.isInteger(data.epoch) && this.tab && data.id === this.tab.id) this.tab.epoch = data.epoch;
+    if (data.observation) this.absorb(data.observation);
   }
   async open(url) {
-    const r = await this.call('cua_alans_way_open', { url, ...(this.opts.host ? { host: this.opts.host } : {}) });
+    const r = await this.call('cua_alans_way_open', { url, ...(this.opts.host ? { host: this.opts.host } : {}), ...(this.opts.openSnapshot ? { snapshot: true } : {}) });
     if (r.error) throw new Error(r.error);
     this.tab = { id: r.id, epoch: r.epoch };
     return r;
@@ -241,6 +250,15 @@ class Agent {
   }
   // A model passes what the schema asks for: the generation it holds, where the tool takes one.
   act(body) { return this.call('cua_alans_way_action', { tabId: this.tab.id, epoch: this.tab.epoch, ...(this.opts.generation && Number.isInteger(this.generation) ? { generation: this.generation } : {}), ...body }); }
+  async review(body) {
+    if (!this.opts.fixtureApproval) throw new Error('Approval simulation is limited to a disposable fixture.');
+    const snapshot = await this.snapshot();
+    if (new URL(snapshot.url).origin !== this.opts.fixtureApproval) throw new Error('Approval simulation left the disposable fixture.');
+    const { harnessApproval, bindApproval } = require('../test/approval-fixture.cjs');
+    const reviewed = { ...body, approval: harnessApproval(this.tab) };
+    bindApproval(reviewed, snapshot);
+    return this.act(reviewed);
+  }
   find(rx, role) { return this.known.find((e) => rx.test([e.name, e.row].filter(Boolean).join(' ')) && (!role || role.test(e.role) || role.test(e.type || ''))); }
   // The model looks in what it holds, then reads the page, then reads more of it.
   async need(rx, role) {
@@ -295,7 +313,12 @@ class Agent {
         const why = r.error || (r.results.find((x) => !x.ok) || {}).error || '';
         this.lastError = why;
         // A covering dialog or banner is closed first, the way a person would.
-        if (/covered by/.test(why)) await this.dismissBlocker(why);
+        if (/commit_required/.test(why) && this.opts.fixtureApproval) {
+          const approved = await this.review(batch[Math.max(0, done) + closes.length]);
+          if (approved.error || approved.results?.some(x => !x.ok)) throw new Error(approved.error || 'Approved fixture action failed.');
+          i++;
+        }
+        else if (/covered by/.test(why)) await this.dismissBlocker(why);
         else if (/No visible control is named|controls match/.test(why)) {
           this.namesFailed = true;
           // A single close match is the one the model meant: it acts on that ref next.
@@ -331,6 +354,45 @@ class Agent {
 
 // ---------------------------------------------------------------- tasks
 const tasks = [
+  { id: 'product-prices', what: 'compare prices of the items in a product grid', fixture: true,
+    async run(a, fx) {
+      await a.open(fx.url('/products'));
+      if (a.opts.listRead) return JSON.stringify((await a.act({ action: 'read', selector: '#products', maxChars: 20000,
+        list: { selector: 'article', fields: { title: { type: 'text', selector: 'h2' }, price: { type: 'text', selector: '.price' } } } })).items);
+      const reply = await a.act({ action: 'read', maxChars: 20000 });
+      return JSON.stringify([...reply.text.matchAll(/Product (\d{2})\s*\$(\d+\.\d{2})/g)].map(m => ({ title: 'Product ' + m[1], price: '$' + m[2] })));
+    },
+    check: (fx, ans) => !fx.reports.products && ans === JSON.stringify(Array.from({ length: 20 }, (_, i) => ({ title: 'Product ' + String(i + 1).padStart(2, '0'), price: '$' + (12 + i * 0.75).toFixed(2) }))) },
+  { id: 'list-results', what: 'list the top 10 results and their links', fixture: true,
+    async run(a, fx) {
+      await a.open(fx.url('/results'));
+      return JSON.stringify((await a.act({ action: 'read', selector: 'main ol', list: { selector: 'li', maxItems: 10,
+        fields: { title: { type: 'text', selector: 'a' }, url: { type: 'href', selector: 'a' } } } })).items);
+    },
+    check: (fx, ans) => ans === JSON.stringify(RESULTS.map(([title], i) => ({ title, url: fx.url('/doc/' + i) }))) },
+  { id: 'pub-list-results', what: 'list the top 10 book results and their links', public: true,
+    async run(a) {
+      await a.open('https://books.toscrape.com/');
+      return JSON.stringify((await a.act({ action: 'read', maxChars: 6000, list: { selector: '.product_pod', maxItems: 10,
+        fields: { title: { type: 'text', selector: 'h3 a' }, url: { type: 'href', selector: 'h3 a' } } } })).items);
+    },
+    check: async (fx, ans) => {
+      const html = await (await fetch('https://books.toscrape.com/')).text();
+      const decode = text => text.replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"');
+      const expected = [...html.matchAll(/<h3><a href="([^"]+)"[^>]*>([^<]+)<\/a><\/h3>/g)].slice(0, 10).map(m => ({ title: decode(m[2]), url: new URL(decode(m[1]), 'https://books.toscrape.com/').href }));
+      return expected.length === 10 && ans === JSON.stringify(expected);
+    } },
+  { id: 'dropdown-options', what: 'find a form dropdown and report its labels, values and selected state without changing it', fixture: true,
+    async run(a, fx) {
+      await a.open(fx.url('/dropdown'));
+      if (!a.find(/^Delivery/)) await a.snapshot();
+      return JSON.stringify(a.find(/^Delivery/)?.options || []);
+    },
+    check: (fx, ans) => !fx.reports.dropdown && ans === JSON.stringify([
+      { label: 'Standard delivery', value: 'std', selected: false },
+      { label: 'Express delivery', value: 'exp', selected: true },
+      { label: 'Collect in person', value: 'pickup', selected: false, disabled: true },
+    ]) },
   { id: 'search-open', what: 'search, open the 6th result, read a fact', fixture: true,
     async run(a, fx) {
       await a.open(fx.url('/search'));
@@ -352,7 +414,7 @@ const tasks = [
   { id: 'infinite-list', what: 'scroll a lazy list to order #87 and open it', fixture: true,
     async run(a, fx) {
       await a.open(fx.url('/feed'));
-      await a.snapshot();
+      if (!a.lastControls) await a.snapshot();
       for (let i = 0; i < 12; i++) {
         const row = a.find(/order #87\b/i, /button/);
         if (row) { await a.act({ action: 'click', ref: row.ref }); break; }
@@ -380,7 +442,7 @@ const tasks = [
       await a.open(fx.url('/todos'));
       // Every Delete reads the same; the model takes the one after "Old task" in page order.
       const del = (name) => ({ action: 'click', target: [/^Delete/, /button/], after: new RegExp('^' + name) });
-      await a.run([{ action: 'type', target: [/new todo/i], named: ['new todo'], text: 'Buy milk' }, { action: 'press', key: 'Enter' },
+      await a.run([{ action: 'type', target: [/new todo/i], named: ['new todo'], text: 'Buy milk' }, { action: 'press', target: [/new todo/i], key: 'Enter' },
         { action: 'click', target: [/^walk dog/i, /input|checkbox/], named: ['walk dog', 'checkbox'] }, { action: 'click', target: [/^pay rent/i, /input|checkbox/], named: ['pay rent', 'checkbox'] },
         { ...del('Old task'), named: ['delete', 'button', 'old task'] }], 6);
       return 'done';
@@ -404,7 +466,11 @@ const tasks = [
   { id: 'confirm-dialog', what: 'delete a draft behind a confirm dialog', fixture: true,
     async run(a, fx) {
       await a.open(fx.url('/drafts'));
-      const click = async (extra = {}) => a.act({ action: 'click', ...(a.opts.names ? { name: 'Delete draft' } : { ref: await a.need(/^delete draft/i) }), ...extra });
+      const click = async (extra = {}) => {
+        const body = { action: 'click', ...(a.opts.names ? { name: 'Delete draft' } : { ref: await a.need(/^delete draft/i) }), ...extra };
+        const reply = await a.act(body);
+        return /commit_required/.test(reply.error || '') ? a.review(body) : reply;
+      };
       const r = await click();
       const note = (r.dialogs || []).map((d) => d.note || '').join(' ');
       // The reply says how to accept: repeat with dialog, or override confirm by eval first.
@@ -433,7 +499,9 @@ const tasks = [
         // The frame cannot be read: look at it and click by coordinates (the
         // widget's layout is fixed, standing in for what a vision step reads).
         await a.call('cua_alans_way_screenshot', { tabId: a.tab.id });
-        const box = (await a.act({ action: 'eval', code: '(()=>{const f=document.querySelector("iframe[title=\\"Delivery options\\"]");f.scrollIntoView({block:"center"});const r=f.getBoundingClientRect();return {x:r.x,y:r.y}})()' })).value;
+        const located = await a.act({ action: 'eval', code: '(()=>{const f=document.querySelector("iframe[title=\\"Delivery options\\"]");f.scrollIntoView({block:"center"});const r=f.getBoundingClientRect();return {x:r.x,y:r.y}})()' });
+        if (located.error) throw new Error(located.error);
+        const box = located.value;
         await a.act({ action: 'click', x: box.x + 21, y: box.y + 56 });
         await a.act({ action: 'click', x: box.x + 60, y: box.y + 95 });
       }
@@ -496,13 +564,15 @@ async function runAgentSuite() {
     const browserTools = (await client.listTools()).tools.filter((t) => t.name.startsWith('cua_'));
     const toolsSize = JSON.stringify(browserTools).length;
     const actionProps = browserTools.find((t) => t.name === 'cua_alans_way_action')?.inputSchema?.properties || {};
+    const openSnapshot = !!browserTools.find((t) => t.name === 'cua_alans_way_open')?.inputSchema?.properties?.snapshot;
     const label = engine.length > 12 ? 'live' + (eng.host ? ':' + eng.host : '') : engine;
     try {
       for (const task of picked) {
         if (task.fixture && !eng.main) continue;
         for (let run = 0; run < runs; run++) {
           fixtures.reset(); await closeAll();
-          const a = new Agent(client, { host: eng.host, generation: !!actionProps.generation, names: !!actionProps.name });
+          const a = new Agent(client, { host: eng.host, generation: !!actionProps.generation, names: !!actionProps.name, listRead: !!actionProps.list, openSnapshot,
+            fixtureApproval: task.fixture && !eng.live ? new URL(fx.main).origin : null });
           const t0 = Date.now();
           let ans = '', err = '';
           try { ans = String(await task.run(a, fx) || ''); } catch (e) { err = e.message; }
@@ -511,7 +581,7 @@ async function runAgentSuite() {
           const tabs = await raw('/v1/tabs');
           fx.lastUrl = ((Array.isArray(tabs) ? tabs : tabs.tabs || [])[0] || {}).url;
           const ok = !err && !!(await task.check(fx, ans));
-          rows.push({ engine: label, task: task.id, run, ok, calls: a.stats.calls, snapshots: a.stats.snapshots, errors: a.stats.errors, tokens: Math.round(a.stats.chars / 4) + a.stats.imageTokens, imageTokens: a.stats.imageTokens, toolMs: a.stats.ms, wallMs: wall, answer: ans.slice(0, 80), err: err.slice(0, 300), log: a.log });
+          rows.push({ engine: label, task: task.id, run, ok, calls: a.stats.calls, snapshots: a.stats.snapshots, errors: a.stats.errors, chars: a.stats.chars, imageBytes: a.stats.imageBytes, tokens: Math.round(a.stats.chars / 4) + a.stats.imageTokens, imageTokens: a.stats.imageTokens, toolMs: a.stats.ms, wallMs: wall, answer: ans.slice(0, 80), err: err.slice(0, 300), log: a.log });
           const r = rows.at(-1);
           console.log(`${label.padEnd(8)} ${task.id.padEnd(18)} ${ok ? 'PASS' : 'FAIL'} calls=${r.calls} snap=${r.snapshots} err=${r.errors} tok=${r.tokens} toolMs=${r.toolMs}${ok ? '' : ' :: ' + (err || ans)}`);
         }

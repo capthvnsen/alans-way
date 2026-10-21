@@ -11,6 +11,7 @@ const crypto = require('node:crypto');
 const vm = require('node:vm');
 const { spawn } = require('node:child_process');
 const { HANDBACK_MS } = require('../src/core.cjs');
+const { screenshotClip } = require('../src/cdp.cjs');
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
@@ -67,8 +68,10 @@ function wsParse(buffer) {
 function stubEvaluate(pages, sessionId, expression, viewport) {
   const page = pages.get(sessionId) || { url: 'about:blank', title: 'Stub page' };
   // Like a page, a document numbers its control after the tab's seed and keeps that ref.
-  const seed = Number((/R\.assign\(entries, (\d+),/.exec(expression) || [])[1] || 0);
-  if (expression.includes('items.push')) {
+  const seed = Number((/"seed":(\d+)/.exec(expression) || [])[1] || 0);
+  if (expression.includes('hw.snapshotReader')) {
+    if (!expression.includes('items.push') && !page.reader) return { readerMissing: true };
+    page.reader = true;
     page.ref ||= `e${seed + 1}`;
     return { title: page.title, url: page.url, text: 'stub page text',
       elements: [{ ref: page.ref, role: 'button', name: 'Stub button', type: '', value: '', href: '', disabled: false }], seq: Number(page.ref.slice(1)),
@@ -105,7 +108,7 @@ function createStubCdp() {
       }
       case 'Page.navigate':
         if (String(params.url).includes('fail.example')) return { __error: 'net::ERR_FAILED' };
-        if (page) { page.url = String(params.url).includes('redirect.example') ? 'https://login.example/' : params.url; page.ref = undefined; }
+        if (page) { page.url = String(params.url).includes('redirect.example') ? 'https://login.example/' : params.url; page.ref = undefined; page.reader = false; }
         return {};
       case 'Network.setCookies':
         return params.cookies.some((c) => c.name === 'bad') ? { __error: 'Invalid cookie fields' } : {};
@@ -343,7 +346,7 @@ test('desktop screenshot fallback uses the visual viewport and supports pages wi
     const page = { innerWidth: 900, innerHeight: 700, scrollX: 10, scrollY: 2400, devicePixelRatio: 1, visualViewport };
     let clip;
     const capture = vm.runInNewContext(`${captureSource}; captureTab`, {
-      backgroundCaptureQueue: Promise.resolve(), win: 'visible-host',
+      backgroundCaptureQueue: Promise.resolve(), win: 'visible-host', screenshotClip,
       boundedJs: async (_wc, code) => vm.runInNewContext(code, page),
       browserCommand: async (_tab, method, params) => { assert.equal(method, 'Page.captureScreenshot'); clip = params.clip; return { data: PNG }; },
     });
@@ -507,14 +510,14 @@ for (const operation of ['snapshot', 'screenshot']) {
     const { api, stub } = await startHost();
     const tab = (await api('/v1/tabs', 'POST', { url: 'https://login.example/' })).data;
     const gate = stub.pause(message => operation === 'snapshot'
-      ? message.method === 'Runtime.evaluate' && message.params.expression.includes('items.push')
+      ? message.method === 'Runtime.evaluate' && message.params.expression.includes('hw.snapshotReader')
       : message.method === 'Page.captureScreenshot');
     try {
       const running = api(`/v1/tabs/${tab.id}/${operation}`);
       await gate.entered;
       const queued = ['snapshot', 'screenshot'].map(read => api(`/v1/tabs/${tab.id}/${read}`));
       await new Promise(resolve => setTimeout(resolve, 50));
-      const readsBeforeHold = stub.calls.filter(call => call.method === 'Page.captureScreenshot' || (call.method === 'Runtime.evaluate' && call.params.expression.includes('items.push'))).length;
+      const readsBeforeHold = stub.calls.filter(call => call.method === 'Page.captureScreenshot' || (call.method === 'Runtime.evaluate' && call.params.expression.includes('hw.snapshotReader'))).length;
       await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'human', reason: 'login' });
       gate.release();
       for (const reply of await Promise.all([running, ...queued])) {
@@ -523,7 +526,7 @@ for (const operation of ['snapshot', 'screenshot']) {
         assert.equal(reply.data.base64, undefined);
         assert.equal(reply.data.text, undefined);
       }
-      assert.equal(stub.calls.filter(call => call.method === 'Page.captureScreenshot' || (call.method === 'Runtime.evaluate' && call.params.expression.includes('items.push'))).length, readsBeforeHold, 'queued reads never reach the page after the hold');
+      assert.equal(stub.calls.filter(call => call.method === 'Page.captureScreenshot' || (call.method === 'Runtime.evaluate' && call.params.expression.includes('hw.snapshotReader'))).length, readsBeforeHold, 'queued reads never reach the page after the hold');
     } finally { gate.release(); }
   });
 }
@@ -666,11 +669,11 @@ test('a repeat snapshot numbers new refs after the ones the tab issued', async (
   const tab = (await api('/v1/tabs', 'POST', { url: 'http://restamp.example/' })).data;
   const first = main.stub.calls.length;
   await api(`/v1/tabs/${tab.id}/snapshot`);
-  const read = (from) => main.stub.calls.slice(from).find((c) => c.method === 'Runtime.evaluate' && c.params.expression.includes('R.assign(entries,'));
-  assert.match(read(first).params.expression, /R\.assign\(entries, 0,/);
+  const read = (from) => main.stub.calls.slice(from).find((c) => c.method === 'Runtime.evaluate' && c.params.expression.includes('hw.snapshotReader'));
+  assert.match(read(first).params.expression, /"seed":0/);
   const before = main.stub.calls.length;
   await api(`/v1/tabs/${tab.id}/snapshot`);
-  assert.match(read(before).params.expression, /R\.assign\(entries, 1,/, 'the seed is the highest ref the page reported');
+  assert.match(read(before).params.expression, /"seed":1/, 'the seed is the highest ref the page reported');
 });
 
 test('a failed navigation closes the tab it opened instead of leaking it', async () => {
@@ -850,6 +853,18 @@ test('every request an agent tab makes is checked before it leaves, redirects, u
   assert.ok(host.stub.calls.some((c) => /^Page\.remove(All)?ScriptsToEvaluateOnNewDocument$/.test(c.method) && c.sessionId === sessionOf(mine)), 'and lifts the seed');
   const refused = await host.api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'cdp', method: 'Fetch.disable', epoch: tab.epoch });
   assert.equal(refused.status, 400, 'the agent cannot switch the filter off');
+});
+
+test('attaching an agent popup starts its idle clock', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/vps-browser-host.cjs'), 'utf8');
+  const attach = vm.runInNewContext(source.slice(source.indexOf('async function attach('), source.indexOf('  const newTarget =')) + '\nattach', {
+    Date: { now: () => 1000000 }, tabs: new Map(), sessionOwner: new Map(), AUTO_ATTACH: {},
+    cdp: { page: async () => ({ sessionId: 's', command: async () => ({}) }) },
+    syncFetch: async () => {}, syncTrack: async () => {},
+  });
+  assert.equal((await attach({ id: 'popup', targetId: 'target', controller: 'agent' })).agentSince, 1000000);
+  assert.equal((await attach({ id: 'old', targetId: 'target', controller: 'agent', agentSince: 900000 })).agentSince, 900000);
+  assert.equal((await attach({ id: 'human', targetId: 'target', controller: 'human' })).agentSince, undefined);
 });
 
 test('popups and frames are guarded from their first request, before the page resumes', async () => {

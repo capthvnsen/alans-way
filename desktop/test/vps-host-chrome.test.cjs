@@ -9,6 +9,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
+const { cachedSnapshot, snapshotExpression } = require('../src/browser-page.cjs');
 const crypto = require('node:crypto');
 // Test harness scripts that use timers or requests carry an approval, as a
 // router-approved call would (see the app's commit check).
@@ -116,6 +117,11 @@ before(async () => {
     '/worker': page(`<script>new Worker('/worker.js')</script>worker`),
     '/pop': page(`<script>setTimeout(()=>{window.open("${T}?pop");fetch('/mark?pop',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/pop-userinfo': page(`<script>setTimeout(()=>{window.open("http://u:p@127.0.0.1:${pb}/secret?popcred");fetch('/mark?pop-userinfo',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
+    '/reader': page('<button type="button" onclick="document.getElementById(\'result\').textContent=\'Details ready\'">Open details</button><p id="result"></p>'),
+    '/list': page(`<title>Product grid</title><section id=grid tabindex=0>${Array.from({ length: 120 }, (_, i) => `<article><a href="/book/${i}"><span class=title>Book ${i}</span></a><span class=price>$${10 + i}</span></article>`).join('')}</section><button onclick="document.title='donated'">Donate</button><script>document.addEventListener('click',()=>document.title='clicked');document.addEventListener('input',()=>document.title='typed')</script>`),
+    '/popup-reader': page('<main><h1>Vault</h1><button id=g>Reveal code</button><p>Codes open in a separate window.</p><label>Access code <input id=code></label> <button id=v>Verify</button><p id=o></p></main><script>g.onclick=()=>window.open(\'/popup-code\', \'_blank\');v.onclick=()=>o.textContent=code.value</script>'),
+    '/popup-code': page('<main><h1>Your access code</h1><p>Code: <b>K123456</b></p></main>'),
+    '/dropdown': page(`<title>fixture</title><form><label>Delivery <select multiple><option value="std" label="Standard delivery">Internal text</option><optgroup label="Priority" disabled><option value="exp" selected>Express</option></optgroup><option value="pickup" selected>Collect</option></select></label><button>Submit</button></form><label>Empty <select></select></label><label>Many <select>${Array.from({ length: 305 }, (_, i) => `<option value="${i}">${i === 0 ? 'x'.repeat(250) : 'Choice ' + i}</option>`).join('')}</select></label><script>document.querySelector('form').onsubmit=e=>{e.preventDefault();document.title='submitted'};document.addEventListener('change',()=>document.title='changed')</script>`),
     '/pop-blank': page(`<script>setTimeout(()=>{var w=window.open("about:blank");if(w)w.location="${T}?popblank";fetch('${T}?popblank-fetch',{mode:'no-cors'}).catch(()=>{});fetch('/mark?pop-blank',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/ok': page('<p id=ok>ok</p>' + '<img src="/i.png?1"><img src="/i.png?2"><img src="/i.png?3">'),
     '/white': page('<style>body{margin:0;min-height:5000px;background:white}</style>'),
@@ -184,6 +190,86 @@ after(async () => {
   }
 });
 
+test('read top ten product links and prices on a page with a commit control', { skip: !chrome, timeout: 30000 }, async () => {
+  const { data: tab } = await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/list` });
+  try {
+    const route = `/v1/tabs/${tab.id}/actions`;
+    const list = { selector: 'article', maxItems: 10, fields: { title: { type: 'text', selector: 'a' }, url: { type: 'href', selector: 'a' }, price: { type: 'text', selector: '.price' } } };
+    const denied = await api(route, 'POST', { action: 'eval', code: 'document.title', epoch: tab.epoch });
+    assert.equal(denied.status, 403); assert.match(denied.data.error, /commit_required/);
+    const first = await api(route, 'POST', { action: 'read', selector: '#grid', list, epoch: tab.epoch });
+    assert.equal(first.status, 200);
+    assert.equal(first.data.items?.length, 10);
+    assert.deepEqual(first.data.items[9], { title: 'Book 9', url: `http://test.example:${pa}/book/9`, price: '$19' });
+    assert.equal(first.data.truncated, true);
+    const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+    assert.equal(snap.title, 'Product grid');
+    const ref = snap.elements.find(el => el.name === 'Book 0').ref;
+    const batch = await api(route, 'POST', { action: 'batch', epoch: tab.epoch, steps: [{ action: 'read', ref, list: { selector: '.title', fields: { title: { type: 'text' } } } }] });
+    assert.deepEqual(batch.data.results[0].items, [{ title: first.data.items[0].title }]);
+    for (const selector of ['[', '.missing', 'article']) {
+      const bad = await api(route, 'POST', { action: 'read', selector, list, epoch: tab.epoch });
+      assert.ok(bad.status >= 400, `invalid or ambiguous container ${selector} must fail`);
+    }
+    const stale = await api(route, 'POST', { action: 'read', ref: 'e99999', list, epoch: tab.epoch });
+    assert.ok(stale.status >= 400);
+    const unchanged = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+    assert.equal(unchanged.title, 'Product grid');
+  } finally { await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch); }
+});
+
+test('read a form dropdown without selecting, submitting, or using eval', { skip: !chrome, timeout: 30000 }, async () => {
+  const { data: tab } = await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/dropdown` });
+  try {
+    const first = await api(`/v1/tabs/${tab.id}/snapshot`);
+    assert.equal(first.status, 200);
+    const select = first.data.elements.find(el => el.role === 'select' && /^Delivery/.test(el.name));
+    assert.deepEqual(select.options, [
+      { label: 'Standard delivery', value: 'std', selected: false },
+      { label: 'Express', value: 'exp', selected: true, disabled: true },
+      { label: 'Collect', value: 'pickup', selected: true },
+    ]);
+    assert.deepEqual(first.data.elements.find(el => /^Empty/.test(el.name)).options, []);
+    const many = first.data.elements.find(el => /^Many/.test(el.name));
+    assert.equal(many.options.length, 297); assert.equal(many.optionsTruncated, 8);
+    assert.equal(many.options[0].label.length, 200);
+    assert.equal(first.data.title, 'fixture', 'observation did not fire input or submit handlers');
+    const cdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+    try {
+      const { targetInfos } = await cdp.send('Target.getTargets');
+      const wc = await cdp.page(targetInfos.find(t => t.url.endsWith('/dropdown')).targetId);
+      await wc.executeJavaScript(`document.querySelector('option').label = 'Economy delivery'`);
+    } finally { cdp.socket.close(); }
+    const next = await api(`/v1/tabs/${tab.id}/snapshot?since=${first.data.generation}`);
+    assert.equal(next.data.unchanged, undefined, 'an option-only edit invalidates the snapshot fingerprint');
+    assert.equal(next.data.elements.find(el => el.ref === select.ref).options[0].label, 'Economy delivery');
+    const denied = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: 'document.querySelector("select").options.length', epoch: tab.epoch });
+    assert.equal(denied.status, 403); assert.match(denied.data.error, /commit_required/);
+  } finally { await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch); }
+});
+
+for (let attempt = 0; attempt < 5; attempt++) test(`real Chromium: read a code from an agent-opened popup ${attempt}`, { skip: !chrome, timeout: 45000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/popup-reader` })).data;
+  let popup;
+  try {
+    await api(`/v1/tabs/${tab.id}/snapshot`);
+    const clicked = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', name: 'Reveal code', epoch: tab.epoch });
+    assert.equal(clicked.status, 200, JSON.stringify(clicked.data));
+    popup = clicked.data.opened?.[0];
+    assert.ok(popup, JSON.stringify(clicked.data));
+    popup.id = popup.tabId;
+    const code = await api(`/v1/tabs/${popup.id}/snapshot?maxElements=0`);
+    assert.equal(code.status, 200, JSON.stringify(code.data) + '\n' + stderr);
+    assert.match(code.data.text, /Code: K123456/);
+  } finally {
+    const cleanup = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+    try {
+      const owned = (await api('/v1/tabs')).data.tabs.filter(t => t.id === tab.id || t.id === popup?.id);
+      for (const t of owned) await cleanup.send('Target.closeTarget', { targetId: t.targetId });
+    } finally { cleanup.socket.close(); }
+  }
+});
+
 test('a screenshot after scrolling 3000px is not blank', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 30000 }, async () => {
   const white = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/white` })).data;
   const stripes = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/stripes` })).data;
@@ -206,6 +292,95 @@ test('a screenshot after scrolling 3000px is not blank', { skip: !chrome && 'no 
   } finally {
     for (const tab of [white, stripes]) await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch);
   }
+});
+
+test('real Chromium: recover a missed target, read its effect, and keep the reader across same-document reads', { skip: !chrome, timeout: 30000 }, async () => {
+  const opened = await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/reader` });
+  const tab = opened.data;
+  try {
+    const missed = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#old-control', epoch: tab.epoch });
+    assert.equal(missed.status, 400);
+    assert.match(missed.data.error, /Candidates: e\d+ "Open details"/);
+    const ref = /Candidates: (e\d+)/.exec(missed.data.error)[1];
+    const acted = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', ref, epoch: tab.epoch });
+    assert.equal(acted.status, 200, JSON.stringify(acted.data));
+    assert.match(acted.data.effect.text, /Details ready/);
+    const reader = 'window[Symbol.for("hw.snapshotReader")]';
+    const installed = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: `Object.getOwnPropertyDescriptor(window, Symbol.for("hw.snapshotReader")).enumerable`, epoch: tab.epoch });
+    assert.equal(installed.data.value, false);
+    const snap = await api(`/v1/tabs/${tab.id}/snapshot`);
+    assert.match(snap.data.text, /Details ready/);
+    // Lose the cached context, then verify the next ordinary read refills it.
+    const cdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+    try {
+      const { targetInfos } = await cdp.send('Target.getTargets');
+      const target = targetInfos.find(t => t.url === `http://test.example:${pa}/reader`);
+      const wc = await cdp.page(target.targetId);
+      await wc.executeJavaScript(`delete ${reader}`);
+      assert.match((await api(`/v1/tabs/${tab.id}/snapshot`)).data.text, /Details ready/);
+      assert.equal(await wc.executeJavaScript(`typeof ${reader}.read`), 'function');
+      const priorRef = Number(ref.slice(1));
+      await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'navigate', url: `http://test.example:${pa}/reader?next`, epoch: tab.epoch });
+      const next = await api(`/v1/tabs/${tab.id}/snapshot`);
+      assert.ok(next.data.elements.every(el => Number(el.ref.slice(1)) > priorRef));
+    } finally { cdp.socket.close(); }
+  } finally { await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch); }
+});
+
+test('real Chromium: warm reads send less source and return the same page', { skip: !chrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/reader?measure` })).data;
+  const cdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+  try {
+    const { targetInfos } = await cdp.send('Target.getTargets');
+    const wc = await cdp.page(targetInfos.find(t => t.url.endsWith('/reader?measure')).targetId);
+    const opts = { maxChars: 2000, seed: 100 };
+    await wc.executeJavaScript(snapshotExpression(opts));
+    const baseline = [], cached = [];
+    let baselineBytes = 0, cachedBytes = 0;
+    for (let i = 0; i < 20; i++) {
+      const code = snapshotExpression(opts), start = performance.now();
+      const old = await wc.executeJavaScript(code);
+      baseline.push(performance.now() - start); baselineBytes += Buffer.byteLength(code);
+      const nextStart = performance.now();
+      const current = await cachedSnapshot(code => { cachedBytes += Buffer.byteLength(code); return wc.executeJavaScript(code); }, opts);
+      cached.push(performance.now() - nextStart);
+      assert.deepEqual(current, old);
+    }
+    assert.ok(cachedBytes < baselineBytes / 10);
+    const quantile = (list, q) => [...list].sort((a, b) => a - b)[Math.ceil(list.length * q) - 1];
+    console.log(JSON.stringify({ readerMeasurement: { reads: 20, baselineBytes, cachedBytes, baselineMs: { p50: quantile(baseline, .5), p95: quantile(baseline, .95) }, cachedMs: { p50: quantile(cached, .5), p95: quantile(cached, .95) } } }));
+  } finally { cdp.socket.close(); await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch); }
+});
+
+test('real Chromium: crop a scrolled page and preserve the image coordinate origin', { skip: !chrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/stripes` })).data;
+  try {
+    await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'scroll', y: 1500, epoch: tab.epoch });
+    const full = await api(`/v1/tabs/${tab.id}/screenshot?format=png`);
+    const crop = { x: 20, y: 30, width: 200, height: 120 };
+    const shot = await api(`/v1/tabs/${tab.id}/screenshot?format=png&maxWidth=100&crop=${encodeURIComponent(JSON.stringify(crop))}`);
+    assert.equal(shot.status, 200, JSON.stringify(shot.data));
+    assert.deepEqual(shot.data.crop, crop);
+    assert.deepEqual(shot.data.viewport, full.data.viewport);
+    const png = Buffer.from(shot.data.base64, 'base64');
+    assert.equal(png.readUInt32BE(16), 100);
+    assert.equal(png.readUInt32BE(20), 60);
+    assert.ok(png.length < Buffer.from(full.data.base64, 'base64').length);
+    console.log(JSON.stringify({ screenshotMeasurement: { fullBytes: Buffer.from(full.data.base64, 'base64').length, croppedBytes: png.length, crop, imageWidth: 100, imageHeight: 60 } }));
+    const cdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+    try {
+      const { targetInfos } = await cdp.send('Target.getTargets');
+      const wc = await cdp.page(targetInfos.find(t => t.url.endsWith('/stripes')).targetId);
+      await wc.command('Emulation.setDeviceMetricsOverride', { width: 756, height: 413, deviceScaleFactor: 2, mobile: false });
+      const retina = await api(`/v1/tabs/${tab.id}/screenshot?format=png&maxWidth=100&crop=${encodeURIComponent(JSON.stringify(crop))}`);
+      const retinaPng = Buffer.from(retina.data.base64, 'base64');
+      assert.equal(retinaPng.readUInt32BE(16), 100);
+      assert.equal(retinaPng.readUInt32BE(20), 60);
+      assert.deepEqual(retina.data.crop, crop);
+    } finally { cdp.socket.close(); }
+    const invalid = await api(`/v1/tabs/${tab.id}/screenshot?crop=${encodeURIComponent('{"x":0,"y":0,"width":99999,"height":1}')}`);
+    assert.equal(invalid.status, 400);
+  } finally { await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch); }
 });
 
 test('real Chromium: an agent page cannot reach loopback or metadata by redirect, pop-up, frame, form, worker or subresource', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {

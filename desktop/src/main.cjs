@@ -33,7 +33,8 @@ const { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript
 const { createHermesHub } = require('./hermes-hub.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
-const { snapshotExpression, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
+const { screenshotClip } = require('./cdp.cjs');
+const { listReadExpression, cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
 const { createVpsBrowser, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
@@ -2548,7 +2549,7 @@ async function snapshot(tab, opts = {}) {
     // A wedged renderer leaves executeJavaScript pending forever; bound it so
     // a snapshot can never outlive the connector's own timeout.
     const read = () => Promise.race([
-      readJs(tab.view.webContents, snapshotExpression({ parseWaitMs: SNAPSHOT_PARSE_MS, ...opts, seed: tab.refSeed }), 20000),
+      cachedSnapshot(code => { requireAgentRead(tab); return readJs(tab.view.webContents, code, 20000); }, { parseWaitMs: SNAPSHOT_PARSE_MS, ...opts, seed: tab.refSeed }),
       new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000); }),
     ]).finally(() => clearTimeout(timer));
     let result = await read();
@@ -2639,19 +2640,19 @@ function browserCommand(tab, method, params) {
   if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
   return wc.debugger.sendCommand(method, params);
 }
-async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = {}) {
+async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0, crop = null } = {}) {
   const capture = backgroundCaptureQueue.then(async () => {
     const wc = tab.view.webContents;
+    const viewport = await boundedJs(wc, '({ width: globalThis.visualViewport?.width ?? innerWidth, height: globalThis.visualViewport?.height ?? innerHeight, pageLeft: globalThis.visualViewport?.pageLeft ?? scrollX, pageTop: globalThis.visualViewport?.pageTop ?? scrollY, deviceScaleFactor: devicePixelRatio })');
+    const { clip, crop: region } = screenshotClip(viewport, crop, maxWidth);
     const viaDevTools = async (cdpFormat) => {
       // clip.scale downscales at capture instead of a full-size decode then resize.
-      const size = await boundedJs(wc, '({ width: globalThis.visualViewport?.width ?? innerWidth, height: globalThis.visualViewport?.height ?? innerHeight, pageLeft: globalThis.visualViewport?.pageLeft ?? scrollX, pageTop: globalThis.visualViewport?.pageTop ?? scrollY, dsf: devicePixelRatio })');
-      const scale = maxWidth && size.width * size.dsf > maxWidth ? Math.max(0.01, maxWidth / size.width) : size.dsf;
-      const shot = await browserCommand(tab, 'Page.captureScreenshot', { format: cdpFormat, ...(cdpFormat === 'png' ? {} : { quality }), fromSurface: true, clip: { x: size.pageLeft, y: size.pageTop, width: size.width, height: size.height, scale } });
+      const shot = await browserCommand(tab, 'Page.captureScreenshot', { format: cdpFormat, ...(cdpFormat === 'png' ? {} : { quality }), fromSurface: true, clip });
       return shot.data;
     };
     const encode = async () => {
       // nativeImage has no webp encoder; the compositor does.
-      if (format === 'webp') return viaDevTools('webp');
+      if (crop !== null || format === 'webp') return viaDevTools(format);
       // capturePage copies the last composited frame and fails (UnknownVizError)
       // when a just-opened surface has not produced one; DevTools renders one.
       let image = await wc.capturePage(undefined, { stayHidden: true }).catch(() => null);
@@ -2659,7 +2660,8 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = 
       if (maxWidth && image.getSize().width > maxWidth) image = image.resize({ width: maxWidth });
       return (format === 'jpeg' ? image.toJPEG(quality) : image.toPNG()).toString('base64');
     };
-    if (tab.host === win) return encode();
+    const result = async () => ({ base64: await encode(), viewport, ...(crop === null ? {} : { crop: region }) });
+    if (tab.host === win) return result();
     // Hidden tabs share one host. Bring only this surface to its top while
     // capturing; never reparent it into the human's window or change selection.
     if (tab.host.contentView.children.at(-1) !== tab.view) tab.host.contentView.addChildView(tab.view);
@@ -2668,7 +2670,7 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = 
     if (!heldFocus) await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: true });
     try {
       await boundedJs(wc, 'new Promise(resolve => { const timer = setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); })); })');
-      return await encode();
+      return await result();
     }
     finally { if (!heldFocus && !wc.isDestroyed()) await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {}); }
   });
@@ -2679,7 +2681,7 @@ const EMPTY_EFFECT = { navigated: false, changed: false, text: '' };
 async function actionEffect(tab, opts) {
   try {
     requireAgentRead(tab);
-    const effect = await readEffect((code) => readJs(tab.view.webContents, code, 12000), tab, opts);
+    const effect = await readEffect((code) => { requireAgentRead(tab); return readJs(tab.view.webContents, code, 12000); }, tab, opts);
     requireAgentRead(tab);
     if (effect) return { ...effect, ...handleChallenge(tab, effect.challenge), ...takeDialogs(tab), ...takeOpened(tab), ...(await takeDownloads(tab)) };
     return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.', ...takeDialogs(tab), ...takeOpened(tab), ...(await takeDownloads(tab)) };
@@ -2738,10 +2740,16 @@ async function performStep(tab, body, botId, depth, isAborted) {
     const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
     dryRun(tab);
     requireAgentRead(tab);
+    if (body.list !== undefined) {
+      const code = listReadExpression(body);
+      const data = await readJs(wc, code, 12000).catch(error => { error.status ||= 400; throw error; });
+      requireActor(tab, botId, body.epoch, true, overseer);
+      return finish({ ...data, dispatched: true });
+    }
     // A read step is the model's own baseline, so it must not plant the doc
     // marker: on a fresh document the missing marker is what lets the final
     // effect report the navigation it observed.
-    const data = await readJs(wc, snapshotExpression({ maxChars, maxElements: 0, elementMs: 5, mark: false }), 12000).catch(() => null);
+    const data = await cachedSnapshot(code => { requireActor(tab, botId, body.epoch, true, overseer); return readJs(wc, code, 12000); }, { maxChars, maxElements: 0, elementMs: 5, mark: false }).catch(() => null);
     requireActor(tab, botId, body.epoch, true, overseer);
     if (data) { tab.lastRead = data.sameDoc === false ? null : lastReadOf(data); tab.docMarked = tab.docMarked || data.sameDoc === true; }
     return finish({ text: (data && typeof data.text === 'string' ? data.text : ''), dispatched: true });
@@ -2823,7 +2831,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     requireActor(tab, botId, body.epoch, true, overseer);
     // A successful wait observed the page, so it becomes the read baseline:
     // the final effect must not re-report what the wait already confirmed.
-    const waited = await readJs(wc, snapshotExpression({ maxChars: 8000, maxElements: 0, elementMs: 5, mark: false }), 12000).catch(() => null);
+    const waited = await cachedSnapshot(code => { requireActor(tab, botId, body.epoch, true, overseer); return readJs(wc, code, 12000); }, { maxChars: 8000, maxElements: 0, elementMs: 5, mark: false }).catch(() => null);
     if (waited) { tab.lastRead = waited.sameDoc === false ? null : lastReadOf(waited); tab.docMarked = tab.docMarked || waited.sameDoc === true; }
     return finish({ waited: value.waited, dispatched: true });
   }
@@ -2942,7 +2950,7 @@ function startApi() {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
       const overseer = isOverseer(botId);
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets', 'commit-check', ...(require('./agent-input.cjs').APPROVAL_BINDING_VERSION === 1 ? ['approval-binding-v1'] : [])], tabCount: tabs.size+vpsTabs.size });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), ...(hostComputer && process.platform === 'darwin' ? ['computer-window-v1'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets', 'commit-check', ...(require('./agent-input.cjs').APPROVAL_BINDING_VERSION === 1 ? ['approval-binding-v1'] : [])], tabCount: tabs.size+vpsTabs.size });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await Promise.race([
           telegramView.webContents.executeJavaScript(`(() => ({
@@ -3015,9 +3023,9 @@ function startApi() {
           const pid = Number(computerMatch[1]);
           if (!Number.isInteger(pid) || pid < 0) return send(400, { error: 'App pid must be a non-negative integer.' });
           if (req.method === 'GET' && computerMatch[2] === 'snapshot')
-            return send(200, await hostComputer.snapshot(botId, pid, { since: intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER), menubar: url.searchParams.get('menubar') === '1' }));
+            return send(200, await hostComputer.snapshot(botId, pid, { since: intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER), delta: url.searchParams.get('delta') === '1', menubar: url.searchParams.get('menubar') === '1', windowId: intParam(url, 'windowId', 1, 0xffffffff) }));
           if (req.method === 'GET' && computerMatch[2] === 'screenshot')
-            return send(200, await hostComputer.screenshot(pid, intParam(url, 'maxWidth', 1, 10000)));
+            return send(200, await hostComputer.screenshot(pid, intParam(url, 'maxWidth', 1, 10000), { windowId: intParam(url, 'windowId', 1, 0xffffffff), bot: botId }));
           if (req.method === 'GET' && computerMatch[2] === 'menu') {
             let menuPath; try { menuPath = JSON.parse(url.searchParams.get('path') || '[]'); } catch { throw Object.assign(new Error('path must be a JSON array of menu titles.'), { status: 400 }); }
             return send(200, await hostComputer.menu(pid, menuPath));
@@ -3065,18 +3073,18 @@ function startApi() {
         if (!['jpeg', 'png', 'webp'].includes(format)) throw Object.assign(new Error('format must be jpeg, png, or webp.'), { status: 400 });
         const quality = intParam(url, 'quality', 1, 100) ?? 50;
         const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 960;
+        const rawCrop = url.searchParams.get('crop');
         const capture = tab.queue.then(async () => {
           // Reads are gated again inside the queue so a takeover while this
           // capture waited comes back 409, not a last page peek.
           requireAgentRead(tab);
-          const base64 = await captureTab(tab, { format, quality, maxWidth });
-          const viewport = await boundedJs(tab.view.webContents, '({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })');
+          const shot = await captureTab(tab, { format, quality, maxWidth, crop: rawCrop });
           requireAgentRead(tab);
-          return { base64, viewport };
+          return shot;
         });
         tab.queue = capture.catch(() => {});
-        const { base64, viewport } = await capture;
-        return send(200, { mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], base64, viewport, tab: describeTab(tab, true) });
+        const { base64, viewport, crop } = await capture;
+        return send(200, { mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], base64, viewport, ...(crop ? { crop } : {}), tab: describeTab(tab, true) });
       }
       } finally { if (req.method === 'GET' && (match[2] === 'snapshot' || match[2] === 'screenshot')) tab.pendingReads--; }
       if (req.method === 'POST' && match[2] === 'actions') {

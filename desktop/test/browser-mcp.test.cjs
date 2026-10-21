@@ -19,6 +19,61 @@ function connectorRequest(fetch) {
   });
 }
 
+test('open optionally includes a bounded snapshot and keeps its tab receipt when the read fails', { timeout: 10000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-open-observation-'));
+  const seen = [];
+  let failRead = false, proofSupported = true;
+  const observation = { generation: 2, loading: true, text: 'Choose a country', elements: [{ ref: 'e1', role: 'select', name: 'Country', approvalTarget: { nodeId: 'fixture' } }], approvalContext: { version: 1, documentId: 'fixture' } };
+  const host = http.createServer(async (req, res) => {
+    for await (const _ of req) { /* consume the fixture open */ }
+    seen.push(req.method + ' ' + req.url);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/v1/status') return res.end(JSON.stringify({ capabilities: proofSupported ? ['approval-binding-v1'] : [] }));
+    if (req.method === 'POST') return res.end(JSON.stringify({ id: 'fixture', epoch: 7, controller: 'agent', host: 'vm' }));
+    if (failRead) { res.statusCode = 409; return res.end(JSON.stringify({ error: 'awaiting_human: inspect current control' })); }
+    res.end(JSON.stringify(observation));
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  const connection = path.join(profile, 'connection.json');
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture' }));
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection] });
+  const client = new Client({ name: 'open-observation-regression', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {}); await transport.close().catch(() => {});
+    await new Promise(resolve => host.close(resolve)); fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const open = async snapshot => {
+    const reply = await client.callTool({ name: 'cua_alans_way_open', arguments: { url: 'https://example.com', ...(snapshot === undefined ? {} : { snapshot }) } });
+    assert.ok(!reply.isError, JSON.stringify(reply));
+    return JSON.parse(reply.content[0].text);
+  };
+  assert.equal((await open()).observation, undefined);
+  assert.equal(seen.filter(x => x.includes('/snapshot')).length, 0);
+  const reply = await open(true);
+  assert.equal(reply.id, 'fixture'); assert.equal(reply.epoch, 7); assert.equal(reply.host, 'vm');
+  assert.deepEqual(reply.observation, observation);
+  assert.ok(seen.includes('GET /v1/tabs/fixture/snapshot?maxChars=2000'));
+  failRead = true;
+  const failed = await open(true);
+  assert.equal(failed.id, 'fixture'); assert.equal(failed.epoch, 7);
+  assert.equal(failed.observation, undefined);
+  assert.match(failed.observationError, /awaiting_human/);
+  assert.equal(seen.filter(x => x === 'POST /v1/tabs').length, 3, 'a failed observation never opens another tab');
+  proofSupported = false; failRead = false;
+  // A fresh connector must apply the same old-host proof filtering to open as to snapshot.
+  await client.close(); await transport.close();
+  const oldTransport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection] });
+  const oldClient = new Client({ name: 'old-host-observation-regression', version: '1' });
+  t.after(async () => { await oldClient.close().catch(() => {}); await oldTransport.close().catch(() => {}); });
+  await oldClient.connect(oldTransport);
+  const oldReply = JSON.parse((await oldClient.callTool({ name: 'cua_alans_way_open', arguments: { url: 'https://example.com', snapshot: true } })).content[0].text);
+  assert.equal(oldReply.observation.approvalContext, undefined);
+  assert.equal(oldReply.observation.elements[0].approvalTarget, undefined);
+});
+
 for (const [verb, firstMs, grantedAt, retryMs, completedAt, batch = true] of [
   ['snapshot', 1000, 34000, 40000, 74000],
   ['snapshot', 19000, 34999, 39998, 74998],
@@ -157,6 +212,19 @@ test('public recovery guidance limits retries to reads and preserves uncertain m
   assert.match(status.description, /uncertain action or control change.*do not repeat/i);
   assert.match(status.description, /cua_alans_way_tabs.*controller and epoch.*fresh snapshot/i);
   assert.match(status.description, /confirmed pre-dispatch missing tab.*approval-bearing calls.*fresh review/i);
+  const open = tools.find(tool => tool.name === 'cua_alans_way_open');
+  assert.equal(open.inputSchema.properties.snapshot.type, 'boolean');
+  for (const { description } of [status, open]) {
+    assert.match(description, /Omit host for normal work, including work while the user is away/);
+    assert.match(description, /user’s computer first; the router falls back to the VM when it is not reachable/);
+    assert.match(description, /host:"vm" only when the user explicitly requests the VM or the router reports the user’s computer unreachable/);
+    assert.doesNotMatch(description, /never replaced implicitly/);
+  }
+  assert.match(status.description, /VM status alone does not prove the user’s computer is unreachable/);
+  assert.match(status.description, /An already-running VM task stays on the VM when the user’s computer returns/);
+  assert.match(status.description, /Login, CAPTCHA, approval and uncertain-action errors are not outages and must not switch browsers/);
+  assert.ok(status.description.endsWith('Retry a read-only call once; report a persistent failure. For an uncertain action or control change, do not repeat it: use cua_alans_way_tabs to inspect the controller and epoch, take a fresh snapshot, and follow the error’s recovery instructions. Never restart, kill, or edit connector processes to steer the host. Ordinary calls can continue the last HTTPS page in the VPS browser only after a confirmed pre-dispatch missing tab; approval-bearing calls need fresh review in the destination tab. When continuation is reported, use the named tab; if only a URL is supplied, open it and inspect before proceeding. Calls that do not run on the Mac keep going.'));
+  assert.ok(open.description.endsWith('No human handoff, assignment, grant, or approval is ever needed. Shared sign-ins within a host, separate tab ownership and input. Opens in the background.'));
   for (const name of ['cua_alans_way_action', 'workspace_computer_action', 'cua_alans_way_snapshot']) {
     const description = tools.find(tool => tool.name === name).description;
     assert.match(description, /successful/i, `${name}: reuse applies to successful current state`);
@@ -166,8 +234,15 @@ test('public recovery guidance limits retries to reads and preserves uncertain m
   assert.doesNotMatch(tools.find(tool => tool.name === 'cua_alans_way_action').description,
     /human_took_tab means[^\n]*then call again/i, 'interrupted input cannot be blindly repeated');
   const actionDescription = tools.find(tool => tool.name === 'cua_alans_way_action').description;
+  assert.match(actionDescription, /latest observation.*ref or exact name/);
+  assert.doesNotMatch(actionDescription, /no snapshot needed/);
   assert.doesNotMatch(actionDescription, /not held/i);
   assert.match(actionDescription, /on the user's computer and on the VM alike/);
+  for (const sentence of [
+    '- Consequential approval requires a fresh observed ref or unique exact name. If approval_invalid or page_changed reports a changed document/target, take a fresh snapshot, review it, and request a new approval; an old approval cannot move to a continued tab. approval_binding_unavailable requires updating the browser host/connector before approving again.',
+    '- When automatic takeover is enabled and the human took over a tab on their computer, act or claim: the app hands it back to you (waiting up to 10s while they type) and shows them a Take back button. Do not ask first. An action is checked before it takes the tab, so a malformed one, an epoch or generation from before their takeover or page change (stale_control_epoch: inspect current control and epoch, then follow the current control policy) or one the page refuses (a missing control, a CAPTCHA) leaves the tab with them. human_took_tab means they grabbed it during your call: inspect completed effects and current control before deciding on another action; uncertain input is not permission to repeat it. Only awaiting_human (you handed it over), recording_in_progress (they are recording a task), human_took_back (they pressed Take back; leave it for a minute) or human_has_control (automatic takeover is off, or a VM tab) keep it theirs: open your own tab or tell them what you need. Never ask the user to hand a tab back unless a call answered human_has_control.',
+    "- When only the human can continue (a CAPTCHA, a login, a 2FA code, card details, or a page they must review), release with a reason and a short note saying what to do. The app shows them a banner and a notification, and the tab stays theirs until they press Give back in Alan's Workspace or 30 minutes pass, on the user's computer and on the VM alike. Until then calls answer awaiting_human, and after the give-back human_returned: read the tab for the fresh epoch. Also tell the user in Telegram what you need.",
+  ]) assert.ok(actionDescription.split('\n').includes(sentence), 'approval, takeover and handback wording stays intact');
 });
 
 test('control changes require a controller and epoch receipt and never replay uncertain replies', { timeout: 10000 }, async (t) => {
@@ -899,4 +974,119 @@ test('a named step sent to a host from before name targets says to act by ref', 
   assert.match(inBatch.content[0].text, /does not take name targets yet/);
   const plain = await act({ action: 'click', x: 5, y: 5 });
   assert.doesNotMatch(plain.content[0].text, /name targets/, 'an unnamed failure keeps its own message');
+});
+
+test('a cropped browser screenshot reaches the host and returns its coordinate mapping', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-crop-'));
+  const viewport = { width: 1000, height: 800, pageLeft: 0, pageTop: 3000, deviceScaleFactor: 2 };
+  const crop = { x: 40, y: 60, width: 200, height: 120 };
+  const seen = [];
+  const host = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://fixture.example');
+    const region = url.searchParams.has('crop') ? JSON.parse(url.searchParams.get('crop')) : undefined;
+    seen.push({ path: url.pathname, crop: region, format: url.searchParams.get('format'), maxWidth: url.searchParams.get('maxWidth'), quality: url.searchParams.get('quality') });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ base64: 'AQID', mimeType: 'image/png', viewport, ...(region ? { crop: region } : {}) }));
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  const connection = path.join(profile, 'connection.json');
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'crop-test', '--connection', connection] });
+  const client = new Client({ name: 'browser-crop-test', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {});
+    await transport.close().catch(() => {});
+    host.closeAllConnections();
+    await new Promise(resolve => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const result = await client.callTool({ name: 'cua_alans_way_screenshot', arguments: { tabId: 't1', format: 'png', maxWidth: 100, crop } });
+  assert.deepEqual(seen, [{ path: '/v1/tabs/t1/screenshot', crop, format: 'png', maxWidth: '100', quality: '50' }]);
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.content[0], { type: 'image', data: 'AQID', mimeType: 'image/png' });
+  const mapping = JSON.parse(result.content[1].text);
+  assert.deepEqual(mapping.viewport, viewport);
+  assert.deepEqual(mapping.crop, crop);
+  assert.match(mapping.note, /x = crop\.x \+ px \* crop\.width \/ image width/);
+  assert.match(mapping.note, /y = crop\.y \+ py \* crop\.height \/ image height/);
+  const tool = (await client.listTools()).tools.find(tool => tool.name === 'cua_alans_way_screenshot');
+  assert.match(tool.description, /MEDIA:<path>/);
+  assert.match(tool.description, /vision step/);
+  assert.match(tool.description, /Defaults to compact jpeg; png keeps alpha/);
+  assert.deepEqual(tool.inputSchema.properties.crop.required, ['x', 'y', 'width', 'height']);
+  assert.equal(tool.inputSchema.properties.crop.additionalProperties, false);
+  const full = await client.callTool({ name: 'cua_alans_way_screenshot', arguments: { tabId: 't1' } });
+  const fullMapping = JSON.parse(full.content[1].text);
+  assert.deepEqual(fullMapping.viewport, viewport);
+  assert.equal(fullMapping.crop, undefined);
+  assert.match(fullMapping.note, /viewport.width \/ image width/);
+  assert.deepEqual(seen[1], { path: '/v1/tabs/t1/screenshot', crop: undefined, format: null, maxWidth: '960', quality: '50' });
+});
+
+test('window selection reaches every computer API and old hosts refuse it', { timeout: 8000 }, async (t) => {
+  const { client, seen } = await computerHost(t, ['computer', 'computer-window-v1']);
+  for (const [name, args] of [
+    ['workspace_computer_snapshot', { pid: 7, windowId: 42 }],
+    ['workspace_computer_screenshot', { pid: 7, windowId: 42 }],
+    ['workspace_computer_action', { pid: 7, windowId: 42, action: 'click', x: 1, y: 2 }],
+  ]) assert.equal((await client.callTool({ name, arguments: args })).isError, undefined);
+  assert.ok(seen.some((entry) => entry.line === 'GET /v1/computer/7/snapshot?windowId=42'));
+  assert.ok(seen.some((entry) => entry.line === 'GET /v1/computer/7/screenshot?windowId=42'));
+  assert.equal(seen.find((entry) => entry.line.endsWith('/action')).body.windowId, 42);
+  const old = await computerHost(t, ['computer']);
+  const reply = await old.client.callTool({ name: 'workspace_computer_action', arguments: { pid: 7, windowId: 42, action: 'click', x: 1, y: 2 } });
+  assert.equal(reply.isError, true);
+  assert.deepEqual(old.seen.map((entry) => entry.line), ['GET /v1/status']);
+});
+
+test('list reads add at most 120 estimated schema tokens and keep typed field guidance', { timeout: 8000 }, async (t) => {
+  const { client } = await computerHost(t, ['tabs']);
+  const action = (await client.listTools()).tools.find(tool => tool.name === 'cua_alans_way_action');
+  const baseline = structuredClone(action);
+  delete baseline.inputSchema.properties.list;
+  delete baseline.inputSchema.properties.steps.items.properties.list;
+  baseline.description = baseline.description.replace(/ read with list:[^\n]*? items\./, '');
+  baseline.inputSchema.properties.maxChars.description = 'For read: cap on returned page text, default 600, max 20000.';
+  const addedChars = JSON.stringify(action).length - JSON.stringify(baseline).length;
+  assert.ok(addedChars <= 480, `${addedChars} added characters exceed 120 estimated tokens`);
+  assert.match(action.description, /read with list:.*fields:.*type:.*text.*href.*items/);
+  assert.deepEqual(Object.keys(action.inputSchema.properties.list.properties), ['selector', 'fields']);
+});
+
+test('snapshot delta opt-in is documented and forwarded only when enabled', { timeout: 8000 }, async (t) => {
+  const { client, seen } = await computerHost(t, ['computer']);
+  const tool = (await client.listTools()).tools.find((tool) => tool.name === 'workspace_computer_snapshot');
+  assert.equal(tool.inputSchema.properties.delta.type, 'boolean');
+  assert.match(tool.description, /delta:true/);
+  assert.match(tool.description, /changed.*removed/);
+  for (const delta of [undefined, false, true]) {
+    const reply = await client.callTool({ name: 'workspace_computer_snapshot', arguments: { pid: 7, since: 3, ...(delta === undefined ? {} : { delta }) } });
+    assert.equal(reply.isError, undefined);
+  }
+  assert.deepEqual(seen.filter((item) => item.line.includes('/snapshot')).map((item) => item.line), [
+    'GET /v1/computer/7/snapshot?since=3',
+    'GET /v1/computer/7/snapshot?since=3',
+    'GET /v1/computer/7/snapshot?since=3&delta=1',
+  ]);
+});
+
+
+test('Mac text selection and advertised actions have schemas and reach the computer API', { timeout: 8000 }, async (t) => {
+  const { client, seen } = await computerHost(t, ['computer', 'computer-window-v1']);
+  const tool = (await client.listTools()).tools.find((tool) => tool.name === 'workspace_computer_action');
+  assert.ok(tool.inputSchema.properties.action.enum.includes('select_text'));
+  assert.ok(tool.inputSchema.properties.action.enum.includes('secondary_action'));
+  assert.deepEqual(tool.inputSchema.properties.selection.enum, ['text', 'cursor_before', 'cursor_after']);
+  assert.ok(tool.inputSchema.properties.secondaryAction.enum.includes('AXShowMenu'));
+  for (const step of [
+    { action: 'select_text', ref: 'c1', text: 'word', prefix: 'second ', suffix: '.', selection: 'text' },
+    { action: 'secondary_action', ref: 'c2', secondaryAction: 'AXShowMenu' },
+  ]) {
+    const body = { pid: 7, windowId: 42, generation: 3, ...step };
+    assert.equal((await client.callTool({ name: 'workspace_computer_action', arguments: body })).isError, undefined);
+    const { pid, ...forwarded } = body;
+    assert.deepEqual(seen.filter((entry) => entry.line.endsWith('/action')).at(-1).body, forwarded);
+  }
 });
