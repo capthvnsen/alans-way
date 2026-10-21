@@ -50,6 +50,16 @@ const appData = process.platform === 'win32' ? (process.env.APPDATA || path.join
 const file = (connectionIndex>=0?process.argv[connectionIndex+1]:undefined) || process.env.HERMES_WORKSPACE_CONNECTION || path.join(appData, 'Hermes Workspace', 'connection.json');
 const objectSchema = (properties = {}, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = { type: 'string' };
+const listRead = {
+  type: 'object', description: 'Read items of text and links without changing the page; truncated means a limit was reached.', additionalProperties: false,
+  properties: {
+    selector: { type: 'string', maxLength: 1000, description: 'Item selector inside the container ref or selector, or the document when neither is given.' },
+    fields: { type: 'object', minProperties: 1, maxProperties: 10, propertyNames: { pattern: '^[a-zA-Z][a-zA-Z0-9_]{0,39}$' },
+      additionalProperties: { type: 'object', properties: { type: { type: 'string', enum: ['text', 'href'] }, selector: { type: 'string', maxLength: 1000, description: 'Child selector; omit for the item itself.' } }, required: ['type'], additionalProperties: false } },
+    maxItems: { type: 'integer', minimum: 1, maximum: 100, description: 'Item limit, default 50.' },
+    maxFieldChars: { type: 'integer', minimum: 1, maximum: 2000, description: 'Characters per field, default 300.' },
+  }, required: ['selector', 'fields'],
+};
 const computerWindowId = { type: 'integer', minimum: 1, maximum: 4294967295 };
 function singleContinuedFromArgv(argv) {
   const tabAt = argv.indexOf('--continued-tab');
@@ -147,13 +157,14 @@ const tools = [
     value: { type: 'string', description: 'For select: the option value to choose.' }, label: { type: 'string', description: 'For select: the visible option label to choose (used when value is not given).' },
     option: { type: 'string', description: 'For select: another way to name the option; matched by value, then label.' },
     choice: { type: 'string', description: 'For select: another way to name the option; matched by value, then label.' },
-    maxChars: { type: 'integer', description: 'For read: cap on returned page text, default 600, max 20000.' },
+    list: listRead,
+    maxChars: { type: 'integer', description: 'For read: text cap, default 600; with list: serialized items cap, default 6000; max 20000.' },
     gone: { type: 'boolean', description: 'For wait: wait until the selector, text or url is gone instead of present.' },
     steps: { type: 'array', items: { type: 'object', additionalProperties: true, properties: {
       action: string, ref: string, name: string, role: string, row: string, dialog: { type: 'object' }, selector: string, text: string, value: string, label: string, option: string, choice: string,
       url: string, key: string, code: string, method: string, params: { type: 'object' }, steps: { type: 'array' },
       x: { type: 'number' }, y: { type: 'number' }, toRef: string, toSelector: string, toX: { type: 'number' }, toY: { type: 'number' },
-      modifiers: { type: 'array' }, timeout: { type: 'number' }, visible: { type: 'boolean' }, gone: { type: 'boolean' }, maxChars: { type: 'integer' },
+      modifiers: { type: 'array' }, timeout: { type: 'number' }, visible: { type: 'boolean' }, gone: { type: 'boolean' }, maxChars: { type: 'integer' }, list: listRead,
       width: { type: 'number' }, height: { type: 'number' }, scale: { type: 'number' },
     } }, description: 'For batch: up to 25 action objects run sequentially; execution stops at the first error. read and wait steps are allowed.' },
     code: { type: 'string', description: 'For eval: JS expression evaluated in the page, returning a JSON-serializable value (wrap statements in an IIFE; max 16KB source, 15s timeout, ~48KB result cap).' },

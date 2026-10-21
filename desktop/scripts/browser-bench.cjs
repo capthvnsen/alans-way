@@ -68,6 +68,7 @@ function pages(s) {
   `const q=document.querySelector('[name=q]');q.oninput=()=>{sug.hidden=!q.value;sug.innerHTML=['lovelace','lovelace notes','lovelace bridge'].map(x=>'<li role=option>'+x+'</li>').join('')}`);
   p['/results'] = page('Results', `<main><h1>Results</h1><ol>${RESULTS.map(([t, d], i) => `<li><a href="/doc/${i}">${t}</a><p>${d}</p><a href="/doc/${i}/cite">Cite</a></li>`).join('')}</ol></main>`);
   for (let i = 0; i < RESULTS.length; i++) p['/doc/' + i] = page(RESULTS[i][0], `<main><h1>${RESULTS[i][0]}</h1>${i === 5 ? '<table><tr><th>Born</th><td>10 December 1815, London</td></tr><tr><th>Died</th><td>27 November 1852</td></tr></table>' : ''}<p>${'Archive text. '.repeat(120)}</p></main>`);
+  p['/products'] = page('Products', `<main><h1>Compare notebooks</h1><section id=products>${Array.from({ length: 20 }, (_, i) => `<article><h2>Product ${String(i + 1).padStart(2, '0')}</h2><span class=price>$${(12 + i * 0.75).toFixed(2)}</span><p>${'Recycled paper, stitched binding, delivery within five business days. '.repeat(8)}</p></article>`).join('')}</section><button onclick="report('products','ordered')">Place order</button></main>`);
   p['/form'] = page('Contact sales', `<main><h1>Contact sales</h1><form id=f novalidate>
 <label>Full name <input name=name required></label><br><label>Work email <input name=email type=email required></label><br><label>Phone <input name=phone type=tel></label><br>
 <label>Country <select name=country><option value="">Choose…</option>${['Canada', 'France', 'Germany', 'Japan', 'Portugal', 'United Kingdom', 'United States'].map((c) => `<option>${c}</option>`).join('')}</select></label>
@@ -353,6 +354,34 @@ class Agent {
 
 // ---------------------------------------------------------------- tasks
 const tasks = [
+  { id: 'product-prices', what: 'compare prices of the items in a product grid', fixture: true,
+    async run(a, fx) {
+      await a.open(fx.url('/products'));
+      if (a.opts.listRead) return JSON.stringify((await a.act({ action: 'read', selector: '#products', maxChars: 20000,
+        list: { selector: 'article', fields: { title: { type: 'text', selector: 'h2' }, price: { type: 'text', selector: '.price' } } } })).items);
+      const reply = await a.act({ action: 'read', maxChars: 20000 });
+      return JSON.stringify([...reply.text.matchAll(/Product (\d{2})\s*\$(\d+\.\d{2})/g)].map(m => ({ title: 'Product ' + m[1], price: '$' + m[2] })));
+    },
+    check: (fx, ans) => !fx.reports.products && ans === JSON.stringify(Array.from({ length: 20 }, (_, i) => ({ title: 'Product ' + String(i + 1).padStart(2, '0'), price: '$' + (12 + i * 0.75).toFixed(2) }))) },
+  { id: 'list-results', what: 'list the top 10 results and their links', fixture: true,
+    async run(a, fx) {
+      await a.open(fx.url('/results'));
+      return JSON.stringify((await a.act({ action: 'read', selector: 'main ol', list: { selector: 'li', maxItems: 10,
+        fields: { title: { type: 'text', selector: 'a' }, url: { type: 'href', selector: 'a' } } } })).items);
+    },
+    check: (fx, ans) => ans === JSON.stringify(RESULTS.map(([title], i) => ({ title, url: fx.url('/doc/' + i) }))) },
+  { id: 'pub-list-results', what: 'list the top 10 book results and their links', public: true,
+    async run(a) {
+      await a.open('https://books.toscrape.com/');
+      return JSON.stringify((await a.act({ action: 'read', maxChars: 6000, list: { selector: '.product_pod', maxItems: 10,
+        fields: { title: { type: 'text', selector: 'h3 a' }, url: { type: 'href', selector: 'h3 a' } } } })).items);
+    },
+    check: async (fx, ans) => {
+      const html = await (await fetch('https://books.toscrape.com/')).text();
+      const decode = text => text.replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"');
+      const expected = [...html.matchAll(/<h3><a href="([^"]+)"[^>]*>([^<]+)<\/a><\/h3>/g)].slice(0, 10).map(m => ({ title: decode(m[2]), url: new URL(decode(m[1]), 'https://books.toscrape.com/').href }));
+      return expected.length === 10 && ans === JSON.stringify(expected);
+    } },
   { id: 'dropdown-options', what: 'find a form dropdown and report its labels, values and selected state without changing it', fixture: true,
     async run(a, fx) {
       await a.open(fx.url('/dropdown'));
@@ -542,7 +571,7 @@ async function runAgentSuite() {
         if (task.fixture && !eng.main) continue;
         for (let run = 0; run < runs; run++) {
           fixtures.reset(); await closeAll();
-          const a = new Agent(client, { host: eng.host, generation: !!actionProps.generation, names: !!actionProps.name, openSnapshot,
+          const a = new Agent(client, { host: eng.host, generation: !!actionProps.generation, names: !!actionProps.name, listRead: !!actionProps.list, openSnapshot,
             fixtureApproval: task.fixture && !eng.live ? new URL(fx.main).origin : null });
           const t0 = Date.now();
           let ans = '', err = '';

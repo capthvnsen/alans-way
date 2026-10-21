@@ -13,7 +13,7 @@ const agentInputModule = require('../src/agent-input.cjs');
 const { createAgentInput, APPROVED, refuseChallenge, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
 const INPUT_ACTIONS = agentInputModule.INPUT_ACTIONS || new Set(['click', 'type', 'press', 'move', 'scroll']);
-const { cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('../src/browser-page.cjs');
+const { listReadExpression, cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('../src/browser-page.cjs');
 const root =
   process.env.HERMES_VPS_BROWSER_DATA ||
   (process.platform === 'darwin'
@@ -529,6 +529,12 @@ async function serve() {
     if (body.action === 'read') {
       const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
       requireAgentRead(tab);
+      if (body.list !== undefined) {
+        const code = listReadExpression(body);
+        const data = await wc.executeJavaScript(code).catch(error => { error.status ||= 400; throw error; });
+        requireActor(tab, botId, body.epoch, true, overseer);
+        return finish({ ...data, dispatched: true });
+      }
       // A read step is the model's own baseline, so it must not plant the doc
       // marker: on a fresh document the missing marker is what lets the final
       // effect report the navigation it observed.

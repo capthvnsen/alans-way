@@ -118,6 +118,7 @@ before(async () => {
     '/pop': page(`<script>setTimeout(()=>{window.open("${T}?pop");fetch('/mark?pop',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/pop-userinfo': page(`<script>setTimeout(()=>{window.open("http://u:p@127.0.0.1:${pb}/secret?popcred");fetch('/mark?pop-userinfo',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/reader': page('<button type="button" onclick="document.getElementById(\'result\').textContent=\'Details ready\'">Open details</button><p id="result"></p>'),
+    '/list': page(`<title>Product grid</title><section id=grid tabindex=0>${Array.from({ length: 120 }, (_, i) => `<article><a href="/book/${i}"><span class=title>Book ${i}</span></a><span class=price>$${10 + i}</span></article>`).join('')}</section><button onclick="document.title='donated'">Donate</button><script>document.addEventListener('click',()=>document.title='clicked');document.addEventListener('input',()=>document.title='typed')</script>`),
     '/popup-reader': page('<main><h1>Vault</h1><button id=g>Reveal code</button><p>Codes open in a separate window.</p><label>Access code <input id=code></label> <button id=v>Verify</button><p id=o></p></main><script>g.onclick=()=>window.open(\'/popup-code\', \'_blank\');v.onclick=()=>o.textContent=code.value</script>'),
     '/popup-code': page('<main><h1>Your access code</h1><p>Code: <b>K123456</b></p></main>'),
     '/dropdown': page(`<title>fixture</title><form><label>Delivery <select multiple><option value="std" label="Standard delivery">Internal text</option><optgroup label="Priority" disabled><option value="exp" selected>Express</option></optgroup><option value="pickup" selected>Collect</option></select></label><button>Submit</button></form><label>Empty <select></select></label><label>Many <select>${Array.from({ length: 305 }, (_, i) => `<option value="${i}">${i === 0 ? 'x'.repeat(250) : 'Choice ' + i}</option>`).join('')}</select></label><script>document.querySelector('form').onsubmit=e=>{e.preventDefault();document.title='submitted'};document.addEventListener('change',()=>document.title='changed')</script>`),
@@ -187,6 +188,34 @@ after(async () => {
   for (const d of [dir, ...extraHosts.map((h) => h.dir)]) {
     if (d) { try { fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {} }
   }
+});
+
+test('read top ten product links and prices on a page with a commit control', { skip: !chrome, timeout: 30000 }, async () => {
+  const { data: tab } = await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/list` });
+  try {
+    const route = `/v1/tabs/${tab.id}/actions`;
+    const list = { selector: 'article', maxItems: 10, fields: { title: { type: 'text', selector: 'a' }, url: { type: 'href', selector: 'a' }, price: { type: 'text', selector: '.price' } } };
+    const denied = await api(route, 'POST', { action: 'eval', code: 'document.title', epoch: tab.epoch });
+    assert.equal(denied.status, 403); assert.match(denied.data.error, /commit_required/);
+    const first = await api(route, 'POST', { action: 'read', selector: '#grid', list, epoch: tab.epoch });
+    assert.equal(first.status, 200);
+    assert.equal(first.data.items?.length, 10);
+    assert.deepEqual(first.data.items[9], { title: 'Book 9', url: `http://test.example:${pa}/book/9`, price: '$19' });
+    assert.equal(first.data.truncated, true);
+    const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+    assert.equal(snap.title, 'Product grid');
+    const ref = snap.elements.find(el => el.name === 'Book 0').ref;
+    const batch = await api(route, 'POST', { action: 'batch', epoch: tab.epoch, steps: [{ action: 'read', ref, list: { selector: '.title', fields: { title: { type: 'text' } } } }] });
+    assert.deepEqual(batch.data.results[0].items, [{ title: first.data.items[0].title }]);
+    for (const selector of ['[', '.missing', 'article']) {
+      const bad = await api(route, 'POST', { action: 'read', selector, list, epoch: tab.epoch });
+      assert.ok(bad.status >= 400, `invalid or ambiguous container ${selector} must fail`);
+    }
+    const stale = await api(route, 'POST', { action: 'read', ref: 'e99999', list, epoch: tab.epoch });
+    assert.ok(stale.status >= 400);
+    const unchanged = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+    assert.equal(unchanged.title, 'Product grid');
+  } finally { await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch); }
 });
 
 test('read a form dropdown without selecting, submitting, or using eval', { skip: !chrome, timeout: 30000 }, async () => {

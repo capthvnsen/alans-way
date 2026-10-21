@@ -34,7 +34,7 @@ const { createHermesHub } = require('./hermes-hub.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { screenshotClip } = require('./cdp.cjs');
-const { cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
+const { listReadExpression, cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
 const { createVpsBrowser, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
@@ -2740,6 +2740,12 @@ async function performStep(tab, body, botId, depth, isAborted) {
     const maxChars = Number.isInteger(body.maxChars) ? Math.min(Math.max(body.maxChars, 0), 20000) : 600;
     dryRun(tab);
     requireAgentRead(tab);
+    if (body.list !== undefined) {
+      const code = listReadExpression(body);
+      const data = await readJs(wc, code, 12000).catch(error => { error.status ||= 400; throw error; });
+      requireActor(tab, botId, body.epoch, true, overseer);
+      return finish({ ...data, dispatched: true });
+    }
     // A read step is the model's own baseline, so it must not plant the doc
     // marker: on a fresh document the missing marker is what lets the final
     // effect report the navigation it observed.
