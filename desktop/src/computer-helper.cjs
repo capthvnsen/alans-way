@@ -286,8 +286,8 @@ function windowOptions(windowId) {
 function createComputerService(driver) {
   const seen = createComputerSnapshots();
 
-  async function snapshot(bot, pid, { since, menubar, windowId } = {}) {
-    return seen.snapshot(bot, pid, await driver.snapshot(pid, { menubar: menubar === true, ...windowOptions(windowId) }), since);
+  async function snapshot(bot, pid, { since, menubar, windowId, delta } = {}) {
+    return seen.snapshot(bot, pid, await driver.snapshot(pid, { menubar: menubar === true, ...windowOptions(windowId) }), since, delta);
   }
 
   // Polls the tree until an element's name or value contains the text (or no

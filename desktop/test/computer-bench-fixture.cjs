@@ -8,6 +8,7 @@ const arg = (name, fallback) => { const i = process.argv.indexOf(name); return i
 async function run() {
   const root = path.resolve(arg('--root', path.join(__dirname, '..')));
   const { createComputerService } = require(path.join(root, 'src/computer-helper.cjs'));
+  const delta = process.argv.includes('--delta');
   const rows = [];
   for (let run = 0; run < Number(arg('--runs', 20)); run++) {
     for (const task of ['type + submit + read', 'read changing count', 'switch window']) {
@@ -48,14 +49,14 @@ async function run() {
         return reply;
       };
       const start = performance.now();
-      let held = await call(() => service.snapshot('bench', 7, { windowId: 41 }));
+      let held = await call(() => service.snapshot('bench', 7, { windowId: 41, delta }));
       if (task !== 'switch window') {
         const steps = task === 'type + submit + read'
           ? [{ action: 'type', ref: 'c2', text: 'Ada' }, { action: 'press', ref: 'c3' }]
           : Array.from({ length: 3 }, () => ({ action: 'press', ref: 'c4' }));
         await call(() => service.action('bench', 7, { action: 'batch', generation: held.generation, steps }));
       }
-      const reply = await call(() => service.snapshot('bench', 7, { since: held.generation, windowId: task === 'switch window' ? 42 : 41 }));
+      const reply = await call(() => service.snapshot('bench', 7, { since: held.generation, delta, windowId: task === 'switch window' ? 42 : 41 }));
       if (reply.elements) held = reply;
       else {
         const elements = new Map(held.elements.map((element) => [element.ref, element]));
@@ -65,15 +66,15 @@ async function run() {
       }
       const expected = task === 'type + submit + read' ? 'Result: Ada' : task === 'read changing count' ? 'Count: 3' : 'Copied: Ada';
       const ok = held.elements[0].name === expected && held.windowId === (task === 'switch window' ? 42 : 41);
-      rows.push({ run, mode: 'fixture', task, ok, calls, textChars, textTokens: Math.round(textChars / 4), imageBytes: 0, toolMs, wallMs: performance.now() - start });
+      rows.push({ run, mode: 'fixture', delta, task, ok, calls, textChars, textTokens: Math.round(textChars / 4), imageBytes: 0, toolMs, wallMs: performance.now() - start });
     }
   }
   const quantile = (key, q) => rows.map((row) => row[key]).sort((a, b) => a - b)[Math.ceil(rows.length * q) - 1];
   const sum = (key) => rows.reduce((total, row) => total + row[key], 0);
-  console.log(JSON.stringify({ mode: 'fixture (mock driver, no native timing)', success: `${rows.filter((row) => row.ok).length}/${rows.length}`, callsPerTask: sum('calls') / rows.length,
+  console.log(JSON.stringify({ mode: 'fixture (mock driver, no native timing)', delta, success: `${rows.filter((row) => row.ok).length}/${rows.length}`, callsPerTask: sum('calls') / rows.length,
     charsPerTask: sum('textChars') / rows.length, tokensPerTask: sum('textTokens') / rows.length, imageBytes: sum('imageBytes'),
     toolMs: { p50: quantile('toolMs', .5), p95: quantile('toolMs', .95) }, wallMs: { p50: quantile('wallMs', .5), p95: quantile('wallMs', .95) } }, null, 2));
-  if (arg('--json')) fs.writeFileSync(arg('--json'), JSON.stringify({ root, rows }, null, 2));
+  if (arg('--json')) fs.writeFileSync(arg('--json'), JSON.stringify({ root, delta, rows }, null, 2));
   assert.ok(rows.every((row) => row.ok), 'every fixture task must succeed');
 }
 module.exports = { run };

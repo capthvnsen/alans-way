@@ -23,15 +23,16 @@ function createComputerSnapshots() {
     if (sent.size > MAX_TRACKED) sent.delete(sent.keys().next().value);
     return before;
   };
-  function snapshot(bot, pid, tree, since) {
-    return action(bot, pid, tree, since);
+  function snapshot(bot, pid, tree, since, delta = false) {
+    return action(bot, pid, tree, since, delta === true);
   }
-  function action(bot, pid, result, held) {
+  function action(bot, pid, result, held, delta = true) {
     if (!Number.isInteger(result.generation) || !Array.isArray(result.elements)) return result;
     const before = remember(bot, pid, result);
     if (!before || held !== before.generation || before.windowId !== result.windowId) return result;
     const { elements, ...rest } = result;
     if (before.generation === result.generation) return { ...rest, unchanged: true };
+    if (!delta) return result;
     const changed = elements.filter((element) => before.elements.get(element.ref) !== canonical(element));
     const now = new Set(elements.map((element) => element.ref));
     const removed = [...before.elements.keys()].filter((ref) => !now.has(ref));

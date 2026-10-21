@@ -602,3 +602,36 @@ test('actions inherit the observing bot window and waits keep that window', asyn
   assert.equal((await service.screenshot(7, 640, { bot: 'b' })).windowId, 42);
   await assert.rejects(service.action('a', 7, { action: 'click', windowId: 42, x: 1, y: 2 }), { code: 'stale_window' });
 });
+
+test('a shipped plugin-shaped capture still reads full snapshots or unchanged replies', async () => {
+  let generation = 1;
+  let value = '';
+  const service = createComputerService({ snapshot: async () => ({ generation, elements: Array.from({ length: 20 }, (_, i) => ({ ref: `c${i}`, role: 'AXTextField', name: `Field ${i}`, value: i === 0 ? value : '' })) }) });
+  let held;
+  async function capture() {
+    const body = await service.snapshot('plugin', 7, { since: held?.generation });
+    // Mirrors the shipped provider's elements-or-unchanged contract.
+    if (!body.unchanged) held = { generation: body.generation, elements: body.elements || [] };
+    return held;
+  }
+  assert.equal((await capture()).elements.length, 20);
+  generation++;
+  value = 'Ada';
+  assert.equal((await capture()).elements.length, 20);
+  assert.equal(held.elements[0].value, 'Ada');
+  assert.equal((await capture()).elements[0].value, 'Ada');
+});
+
+test('the snapshot service enables deltas only on explicit request', async () => {
+  let generation = 1;
+  const service = createComputerService({ snapshot: async (_pid, options) => {
+    assert.equal('delta' in options, false);
+    return { generation, elements: Array.from({ length: 20 }, (_, i) => ({ ref: `c${i}`, role: 'AXStaticText', name: i === 0 ? `Count: ${generation}` : `Row ${i}` })) };
+  } });
+  await service.snapshot('bot', 7);
+  generation++;
+  const reply = await service.snapshot('bot', 7, { since: 1, delta: true });
+  assert.equal(reply.elements, undefined);
+  assert.equal(reply.changed.length, 1);
+  assert.deepEqual(reply.removed, []);
+});

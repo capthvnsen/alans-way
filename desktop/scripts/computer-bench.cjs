@@ -7,6 +7,7 @@
 //
 // Usage: node scripts/computer-bench.cjs [--root DIR] [--mode mcp,batch,plugin]
 //        [--think MS] [--runs N] [--json FILE] [--visible]
+// --delta opts in to compact changed snapshots; omit to test the default contract.
 // --fixture runs mock form/count/window captures without GUI access.
 // --root loads src/computer.cjs from another checkout, to bench a baseline.
 // --think is the pause between reading a reply and acting on it, standing in
@@ -27,6 +28,7 @@ const modes = arg('--mode', 'mcp,batch,plugin').split(',');
 const think = Number(arg('--think', 600));
 const runs = Number(arg('--runs', 1));
 const jsonOut = arg('--json');
+const delta = process.argv.includes('--delta');
 // The fixture sits off-screen unless --visible, where a checkout that only
 // captures on-screen windows (the baseline) can screenshot it.
 const visible = process.argv.includes('--visible');
@@ -138,7 +140,7 @@ async function launch() {
 //      action replies update the held tree; a final capture verifies the result.
 
 async function snapshotTree(tree) {
-  const reply = await call(() => service.snapshot(BOT, pid, { ...selected(), ...(tree ? { since: tree.generation } : {}) }));
+  const reply = await call(() => service.snapshot(BOT, pid, { ...selected(), delta, ...(tree ? { since: tree.generation } : {}) }));
   return merge(tree, reply);
 }
 
@@ -243,7 +245,7 @@ async function main() {
       if (pid) { quit(); await sleep(300); }
       reset();
       const launchMs = await launch();
-      rows.push({ run, mode, task: 'open + first snapshot', ok: true, calls: 1, ms: launchMs, textTokens: 0, imageTokens: 0, imageBytes: 0, stale: 0 });
+      rows.push({ run, mode, delta, task: 'open + first snapshot', ok: true, calls: 1, ms: launchMs, textTokens: 0, imageTokens: 0, imageBytes: 0, stale: 0 });
       for (const task of tasks) {
         windowId = task.window === 'notes' ? windowIds.notes : windowIds.form;
         for (const name of task.setup || []) await pressOnce(name);
@@ -254,7 +256,7 @@ async function main() {
         catch (error) { err = String(error.message).slice(0, 140); }
         const wallMs = Date.now() - started;
         for (const name of task.teardown || []) await pressOnce(name).catch(() => {});
-        rows.push({ run, mode, task: task.name, ok, err, calls: stats.calls, ms: stats.ms, toolMs: stats.ms, wallMs, textChars: stats.textChars, textTokens: Math.round(stats.textChars / 4),
+        rows.push({ run, mode, delta, task: task.name, ok, err, calls: stats.calls, ms: stats.ms, toolMs: stats.ms, wallMs, textChars: stats.textChars, textTokens: Math.round(stats.textChars / 4),
           imageTokens: stats.imageTokens, imageBytes: stats.imageBytes, stale: stats.stale });
       }
     }
@@ -262,7 +264,7 @@ async function main() {
   quit();
   close();
   fs.rmSync(path.dirname(windowFile), { recursive: true, force: true });
-  console.log(`\n  root: ${root}  think: ${think}ms  runs: ${runs}`);
+  console.log(`\n  root: ${root}  think: ${think}ms  runs: ${runs}  snapshot delta: ${delta}`);
   console.log('  mode    task                       ok    calls  stale   tool ms  text tok  img tok');
   console.log('  ' + '─'.repeat(86));
   for (const r of rows) {

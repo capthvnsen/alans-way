@@ -99,15 +99,15 @@ test('snapshot deltas use the held tree, preserve metadata, and resync lost repl
   const seen = createComputerSnapshots();
   seen.snapshot('a', 7, { ...big(1, 20), windowId: 42 });
   const after = { ...big(2, 19, { 3: 'Count: 1' }), truncated: true, windowId: 42, window: { x: 10, y: 20, width: 420, height: 520 } };
-  const reply = seen.snapshot('a', 7, after, 1);
+  const reply = seen.snapshot('a', 7, after, 1, true);
   assert.equal(reply.elements, undefined);
   assert.deepEqual(reply.changed, [after.elements[2]]);
   assert.deepEqual(reply.removed, ['c20']);
   assert.equal(reply.truncated, true);
   assert.deepEqual(reply.window, after.window);
   assert.equal(reply.windowId, 42);
-  assert.equal(seen.snapshot('a', 7, big(3, 20), 1).elements.length, 20);
-  assert.equal(seen.snapshot('b', 7, big(3, 20), 2).elements.length, 20);
+  assert.equal(seen.snapshot('a', 7, big(3, 20), 1, true).elements.length, 20);
+  assert.equal(seen.snapshot('b', 7, big(3, 20), 2, true).elements.length, 20);
 });
 
 test('unchanged replies require a held baseline and retain current truncation and geometry', () => {
@@ -126,4 +126,18 @@ test('switching windows always returns a full tree even with an identical genera
   seen.snapshot('a', 7, { ...big(1, 20), windowId: 41 });
   const reply = seen.snapshot('a', 7, { ...big(1, 20), windowId: 42 }, 1);
   assert.equal(reply.elements.length, 20);
+  assert.equal(seen.snapshot('a', 7, { ...big(1, 20), windowId: 41 }, 1, true).elements.length, 20);
+});
+
+test('changed snapshots stay full unless the caller explicitly enables deltas', () => {
+  for (const delta of [undefined, false, 'true', 1]) {
+    const seen = createComputerSnapshots();
+    seen.snapshot('a', 7, big(1, 20));
+    const after = big(2, 20, { 3: 'Saved' });
+    const reply = seen.snapshot('a', 7, after, 1, delta);
+    assert.deepEqual(reply.elements, after.elements);
+    assert.equal(reply.changed, undefined);
+    assert.equal(reply.removed, undefined);
+    assert.equal(seen.snapshot('a', 7, after, 2, delta).unchanged, true);
+  }
 });
