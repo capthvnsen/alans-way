@@ -182,7 +182,7 @@ function commitSource(seed) {
     };
     C.look = (el) => el === 'frame' || C.opaque(el) ? { frame: true } : el ? { names: C.at(el), field: C.field(el), form: C.form(el), href: C.href(el), approvalContext: S.approvalContext(), approvalTarget: S.approvalTarget(el) } : null;
     // The element at a viewport point, through open shadow roots and
-    // same-origin frames; 'frame' for a cross-origin frame, which cannot be read.
+    // same-origin frames; an opaque frame stays a frame for C.look.
     C.hit = (x, y) => {
       let doc = document;
       for (let depth = 0; depth < 10; depth++) {
@@ -191,11 +191,21 @@ function commitSource(seed) {
         if (!el || (el.tagName !== 'IFRAME' && el.tagName !== 'FRAME')) return el;
         let inner = null;
         try { inner = el.contentDocument; } catch {}
-        if (!inner) return 'frame';
+        if (!inner) return el;
         const r = el.getBoundingClientRect();
         x -= r.left + el.clientLeft; y -= r.top + el.clientTop; doc = inner;
       }
       return null;
+    };
+    C.matches = (el, hit) => {
+      if (!el || !hit || hit === 'frame') return false;
+      const label = hit.closest('label');
+      if (label && label.control === el) return true;
+      for (let n = hit; n;) {
+        if (n === el) return true;
+        n = n.parentElement || n.getRootNode?.().host || n.ownerDocument?.defaultView?.frameElement;
+      }
+      return false;
     };
     C.focus = () => {
       let a = document.activeElement;
@@ -500,7 +510,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
     const link = !!el.closest('a[href]') && !/^#/.test(el.closest('a[href]').getAttribute('href') || '');
     ${look ? `// What the press will reach, followed through frames and shadow roots
     // from the point it lands on: a frame or host target hides its inside.
-    const C = ${commitSource(seed)}, deep = C.hit(point.x, point.y), look = C.look(deep === 'frame' || C.opaque(at) ? 'frame' : el);
+    const C = ${commitSource(seed)}, deep = C.hit(point.x, point.y), look = C.look(deep === 'frame' || C.opaque(deep) || C.opaque(at) ? 'frame' : el);
     if (look.names) look.names = [...new Set([...look.names, ...C.at(at), ...(deep === 'frame' ? [] : C.at(deep))])];` : 'const look = undefined;'}
     return { ...point, ref, resolved, partial, submit, nav: submit || link, look, hl: { x: Math.round(r.left + ox), y: Math.round(r.top + oy), width: Math.round(r.width), height: Math.round(r.height) } };
   })()`;
@@ -905,7 +915,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         // says which, by its full name (a near match is visible).
         if (ref) { target = { ref }; extra.ref = ref; extra.resolved = resolved; if (partial) extra.partial = true; }
       } else if (POINTER_ACTIONS.has(action)) point = await viewportPoint(body.x, body.y);
-      const hl = found.hl || null;
+      let hl = found.hl || null;
       // The commit check comes after every challenge check: input aimed at a
       // CAPTCHA is the person's (challenge_present), never an approval's.
       if (gated) {
@@ -921,21 +931,29 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         await moveCursor(point, hl);
         if (CLICKS[action]) {
           const kind = CLICKS[action];
-          // Pointer movement can run page handlers after the target resolved.
-          // Recheck the actual hit on the tracker-arm round trip immediately
-          // before its first press; an unreadable result sends no input.
-          if (gated || body[APPROVED]) {
-            dry();
-            const armed = await boundedJs(wc, `(() => { ${followUpArmExpression()}; const C = ${commitSource(tab.refSeed)}; return { look: C.look(C.hit(${Number(point.x)}, ${Number(point.y)})) }; })()`, 3000).catch(() => null);
-            check();
-            if (body[APPROVED]) checkLiveBinding(body, armed?.look);
-            else {
-              if (!armed || !armed.look) throw commitRequired('the resolved link destination could not be checked before input');
-              await judge(armed.look);
-            }
-          } else await armFollowUp();
+          // Hover can move or cover the target. Verify identity on the existing
+          // tracker round trip, then resolve once more before refusing the click.
+          const verifyHit = () => boundedJs(wc, `(() => { ${followUpArmExpression()}; const C = ${commitSource(tab.refSeed)}, hit = C.hit(${Number(point.x)}, ${Number(point.y)}); return { look: C.look(hit), matches: ${targeted ? `C.matches(${locateElement(target)}, hit)` : 'true'} }; })()`, 3000).catch(() => null);
           for (let count = 1; count <= kind.count; count++) {
-            if (count > 1 && body[APPROVED]) checkLiveBinding(body, await probe(`C.look(C.hit(${Number(point.x)}, ${Number(point.y)}))`));
+            for (let attempt = 0; attempt < 2; attempt++) {
+              dry();
+              const armed = await verifyHit();
+              check();
+              if (targeted && armed?.matches !== true) {
+                if (attempt || count > 1) throw fail('Element could not be verified at the pointer. Request a fresh snapshot before retrying.', 409);
+                found = await resolve(target, { probe: action === 'click', look: gated || !!body[APPROVED] });
+                point = { x: found.x, y: found.y }; hl = found.hl || null;
+                if (gated) await judge(found.look);
+                await moveCursor(point, hl);
+                continue;
+              }
+              if (body[APPROVED]) checkLiveBinding(body, armed?.look);
+              else {
+                if (!armed?.look) throw commitRequired('the resolved link destination could not be checked before input');
+                await judge(armed.look);
+              }
+              break;
+            }
             mouseDown = { point, button: kind.button };
             await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: kind.button, buttons: kind.buttons, clickCount: count });
             await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: kind.button, buttons: 0, clickCount: count });

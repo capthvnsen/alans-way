@@ -509,6 +509,15 @@ const tasks = [
       return 'done';
     },
     check: (fx) => fx.reports.delivery === 'express' && fx.reports.placed === true && fx.reports.address?.city === 'Bristol' },
+  { id: 'pub-wiki-link', what: 'Wikipedia: follow the Charles Babbage link from Ada Lovelace', public: true,
+    async run(a) {
+      await a.open('https://en.wikipedia.org/wiki/Ada_Lovelace');
+      const ref = await a.need(/^Charles Babbage$/, /^a$|link/);
+      const reply = await a.act({ action: 'click', ref });
+      if (reply.error) throw new Error(reply.error);
+      return reply.effect?.navigated === true ? reply.effect.url : '';
+    },
+    check: (fx, ans) => ans === 'https://en.wikipedia.org/wiki/Charles_Babbage' && fx.lastUrl === ans },
   { id: 'pub-wiki-search', what: 'Wikipedia: search, open a result, read a date', public: true,
     async run(a) {
       await a.open('https://en.wikipedia.org/w/index.php?title=Special:Search&fulltext=1&search=');

@@ -210,7 +210,13 @@ const embedPage = `<!doctype html><title>embed</title><button onclick="out.textC
 // A chat box that sends on Enter, outside any form, with an unlabeled send icon.
 const chatPage = `<!doctype html><title>chat</title><textarea aria-label="Message" onkeydown="if(event.key==='Enter'){event.preventDefault();out.textContent='did:sent'}"></textarea><button><svg width="16" height="16"><path d="M0 0l16 8-16 8z"/></svg></button><button onclick="out.textContent='did:deleted'">Delete conversation</button><p id="out">none</p>`;
 const quietChatPage = `<!doctype html><title>notes</title><textarea aria-label="Note" onkeydown="if(event.key==='Enter'){event.preventDefault();out.textContent='did:noted'}"></textarea><p id="out">none</p>`;
-const routes = { '/hop-a': hopA, '/hop-b': hopB, '/crowd': crowdPage, '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage, '/checkout': checkoutPage, '/embed': embedPage, '/chat': chatPage, '/notes': quietChatPage };
+// Hover moves the requested link after locate has accepted its original point.
+const shiftingLinkPage = `<!doctype html><title>Moving article link</title>
+<style>a,button{position:fixed;left:100px;top:100px;width:180px;height:40px}button{display:none}</style>
+<a id="article" href="/nav-b"><span>Charles Babbage</span></a><button id="appearance" onclick="out.textContent='wrong control'">Appearance</button><p id="out">untouched</p>
+<script>article.onpointermove=()=>{article.style.top='240px';appearance.style.display='block'};</script>`;
+const coveredLinkPage = shiftingLinkPage.replace("article.style.top='240px'", "appearance.style.zIndex='2'");
+const routes = { '/shifting-link': shiftingLinkPage, '/covered-link': coveredLinkPage, '/hop-a': hopA, '/hop-b': hopB, '/crowd': crowdPage, '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage, '/checkout': checkoutPage, '/embed': embedPage, '/chat': chatPage, '/notes': quietChatPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
 const api = async (route, method = 'GET', body, epoch) => {
@@ -974,4 +980,26 @@ test('Enter in a field outside a form is refused while the page shows a commit c
   const passed = await act(notes, { action: 'press', name: 'Note', key: 'Enter' });
   assert.equal(passed.status, 200, JSON.stringify(passed.data));
   assert.equal(await pageText(notes, '#out'), 'did:noted');
+});
+
+test('a link moved by hover is re-resolved before the click lands', live, async () => {
+  for (const mode of ['ref', 'name', 'selector']) {
+    const tab = await openTab('/shifting-link');
+    const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+    const ref = pick(snap.elements, e => e.name === 'Charles Babbage', 'article link');
+    const target = mode === 'ref' ? { ref } : mode === 'name' ? { name: 'Charles Babbage' } : { selector: '#article' };
+    const reply = await act(tab, { action: 'click', ...target });
+    assert.equal(reply.status, 200, JSON.stringify(reply.data));
+    assert.equal(reply.data.effect.navigated, true, 'the requested link must navigate, not toggle Appearance');
+    assert.equal(reply.data.effect.url, `http://bench.example:${port}/nav-b`);
+  }
+});
+
+test('an overlay appearing on hover receives no click intended for the link', live, async () => {
+  const tab = await openTab('/covered-link');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const ref = pick(snap.elements, e => e.name === 'Charles Babbage', 'article link');
+  const reply = await act(tab, { action: 'click', ref });
+  assert.equal(reply.status, 400, JSON.stringify(reply.data));
+  assert.equal(await pageText(tab, '#out'), 'untouched', 'the unverified overlay must never be pressed');
 });
