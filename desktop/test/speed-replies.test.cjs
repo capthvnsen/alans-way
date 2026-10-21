@@ -217,7 +217,10 @@ const shiftingLinkPage = `<!doctype html><title>Moving article link</title>
 <script>article.onpointermove=()=>{article.style.top='240px';appearance.style.display='block'};</script>`;
 const coveredLinkPage = shiftingLinkPage.replace("article.style.top='240px'", "appearance.style.zIndex='2'");
 const doubleFollowPage = `<!doctype html><title>Double click follow-up</title><button id=target>Open details</button><p id=out>Waiting</p><script>let clicks=0;target.onclick=()=>{if(++clicks===1)setTimeout(()=>out.textContent='First click finished',350)};</script>`;
-const routes = { '/double-follow': doubleFollowPage, '/shifting-link': shiftingLinkPage, '/covered-link': coveredLinkPage, '/hop-a': hopA, '/hop-b': hopB, '/crowd': crowdPage, '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage, '/checkout': checkoutPage, '/embed': embedPage, '/chat': chatPage, '/notes': quietChatPage };
+const contentNav = '<nav>' + Array.from({ length: 55 }, (_, i) => `<a href="/nav-a">Category ${i}</a>`).join(' ') + '</nav>';
+const contentStart = `<!doctype html><title>Library</title>${contentNav}<main><a href="/content-result">Travel</a></main>`;
+const contentResult = `<!doctype html><title>Travel</title>${contentNav}<section><h1>Travel books</h1><p>The first book is Mountain journeys.</p><a href="/nav-b">Mountain journeys</a></section>`;
+const routes = { '/content-start': contentStart, '/content-result': contentResult, '/double-follow': doubleFollowPage, '/shifting-link': shiftingLinkPage, '/covered-link': coveredLinkPage, '/hop-a': hopA, '/hop-b': hopB, '/crowd': crowdPage, '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage, '/checkout': checkoutPage, '/embed': embedPage, '/chat': chatPage, '/notes': quietChatPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
 const api = async (route, method = 'GET', body, epoch) => {
@@ -1005,7 +1008,6 @@ test('an overlay appearing on hover receives no click intended for the link', li
   assert.equal(await pageText(tab, '#out'), 'untouched', 'the unverified overlay must never be pressed');
 });
 
-
 test('a double-click reply waits for work started by its first click', live, async () => {
   const tab = await openTab('/double-follow');
   const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
@@ -1013,4 +1015,50 @@ test('a double-click reply waits for work started by its first click', live, asy
   const reply = await act(tab, { action: 'double_click', ref });
   assert.equal(reply.status, 200, JSON.stringify(reply.data));
   assert.match(reply.data.effect.text, /First click finished/);
+});
+
+test('navigation replies lead with the new content within the existing limits', live, async () => {
+  const tab = await openTab('/content-start');
+  const snapshot = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const travel = pick(snapshot.elements, e => e.name === 'Travel', 'Travel category');
+  const reply = await act(tab, { action: 'click', ref: travel });
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.equal(reply.data.effect.navigated, true);
+  assert.equal(reply.data.elements[0].name, 'Mountain journeys');
+  assert.match(reply.data.effect.text, /^Travel books\nThe first book is Mountain journeys/);
+  assert.ok(reply.data.elements.length <= 40);
+  assert.equal(reply.data.unlisted, 56 - reply.data.elements.length);
+  assert.ok(reply.data.effect.text.length <= 600);
+  const follow = await act(tab, { action: 'click', ref: reply.data.elements[0].ref });
+  assert.equal(follow.data.effect.url, `http://bench.example:${port}/nav-b`);
+});
+
+test('Search moving after the policy hit focuses Search first try, never Appearance', live, async () => {
+  const { createAgentInput } = require('../src/agent-input.cjs');
+  const { requireActor } = require('../src/core.cjs');
+  const { settleSnapshot } = require('../src/browser-page.cjs');
+  const cdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+  try {
+    for (let run = 0; run < 3; run++) {
+      const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+      try {
+        const wc = await cdp.page(targetId);
+        await wc.executeJavaScript(`document.body.innerHTML = '<style>button{position:fixed;left:100px;top:100px;width:180px;height:40px}#appearance{display:none}</style><button id="search" onclick="box.focus()">Search</button><button id="appearance" onclick="out.textContent=String(Number(out.textContent)+1)">Appearance</button><input id="box" aria-label="Search query"><p id="out">0</p>'`);
+        const tab = { id: targetId, botId: 'bench-bot', controller: 'agent', epoch: 1, refs: new Set(), view: { webContents: wc } };
+        const snapshot = settleSnapshot(tab, await wc.executeJavaScript(snapshotExpression()), 1);
+        const ref = pick(snapshot.elements, e => e.name === 'Search', 'Search');
+        const evaluate = wc.executeJavaScript;
+        let checks = 0;
+        wc.executeJavaScript = async code => {
+          const result = await evaluate(code);
+          if (code.includes('matches:') && ++checks === 1)
+            await evaluate("search.style.top='240px';appearance.style.display='block'");
+          return result;
+        };
+        const input = createAgentInput({ requireActor, isVisible: () => false, command: (_tab, method, params) => wc.command(method, params) });
+        await input.perform(tab, { action: 'click', ref, epoch: 1 }, 'bench-bot');
+        assert.deepEqual(await evaluate('({focused:document.activeElement.id,appearance:out.textContent})'), { focused: 'box', appearance: '0' });
+      } finally { await cdp.send('Target.closeTarget', { targetId }); }
+    }
+  } finally { cdp.socket.close(); }
 });

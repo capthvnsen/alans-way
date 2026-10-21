@@ -76,7 +76,7 @@ test('a tab the human is not watching skips the glide and its pacing', async () 
   assert.equal(f.scripts.filter(code => code.includes('"path":[')).length, 0, 'no tween for a hidden tab');
   assert.equal(pointer(f).filter(call => call.type === 'mouseMoved').length, 1);
   assert.equal(f.scripts.filter(code => code.includes('requestSubmit')).length, 0, 'a plain click needs no submit probe');
-  assert.ok(f.scripts.length <= 5, 'one locate plus fire-and-forget overlay and tracker updates');
+  assert.ok(f.scripts.length <= 6, 'one locate, two hit checks, and fire-and-forget overlay and tracker updates');
 });
 
 test('the locate script scrolls only when out of view and never waits on rAF alone', async () => {
@@ -531,7 +531,6 @@ test('Enter in a field outside a form, or in a form with no named submit, is jud
   }
 });
 
-
 test('dry approval checks preserve the receipt for one real dispatch', async () => {
   const f = fixture();
   const approval = approvalFor(f);
@@ -617,6 +616,46 @@ test('double-click verification preserves the first click follow-up tracker', as
   const f = fixture();
   await f.perform({ action: 'double_click', ref: 'e1' });
   const probes = f.scripts.filter(code => code.includes('matches:'));
-  assert.equal(probes.length, 2, 'both presses are verified');
+  assert.equal(probes.length, 4, 'both presses are verified before and after policy checks');
   assert.equal(probes.filter(code => code.includes('S.cur = { open: true')).length, 1, 'the second probe must not replace pending work from the first click');
+});
+
+test('a target moving during the final policy await is rechecked before pressing', async () => {
+  const f = fixture({ visible: false });
+  const evaluate = f.tab.view.webContents.executeJavaScript;
+  let checks = 0, verifiedLast = false;
+  f.tab.view.webContents.executeJavaScript = async code => {
+    const result = await evaluate(code);
+    if (code.includes('matches:')) {
+      checks++;
+      // The first hit was Search; a layout update now puts Appearance there.
+      verifiedLast = checks > 1;
+      if (checks === 2) return { ...result, matches: false };
+    }
+    return result;
+  };
+  f.hook(async (method, params) => {
+    if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed')
+      assert.equal(verifiedLast, true, 'Search must be checked again after the policy await');
+  });
+  await f.perform({ action: 'click', ref: 'e1' });
+  assert.equal(pointer(f).filter(call => call.type === 'mousePressed').length, 1);
+  assert.ok(checks >= 4, 'the moved target is resolved and verified again');
+});
+
+test('a changed policy meaning or approval target at the final hit receives no press', async () => {
+  for (const useApproval of [false, true]) {
+    const f = fixture();
+    const evaluate = f.tab.view.webContents.executeJavaScript;
+    let checks = 0;
+    f.tab.view.webContents.executeJavaScript = async code => {
+      const result = await evaluate(code);
+      if (code.includes('matches:') && ++checks >= 2)
+        return { ...result, look: { ...result.look, names: ['Donate'], approvalTarget: 'c'.repeat(32) } };
+      return result;
+    };
+    const click = { action: 'click', ref: 'e1' };
+    await assert.rejects(useApproval ? approved(f, click) : f.perform(click), /commit_required|approval_invalid/);
+    assert.equal(pointer(f).some(call => call.type === 'mousePressed'), false);
+  }
 });

@@ -550,3 +550,21 @@ test('an agent tab dismisses a confirm or prompt unless the action said how to a
   assert.deepEqual(dialogAnswer({ accept: true, text: 'x' }), { accept: true, text: 'x' });
   for (const bad of [null, true, {}, { accept: 'yes' }, { accept: true, text: 5 }, { accept: true, text: 'x'.repeat(1001) }]) assert.throws(() => dialogAnswer(bad), /dialog must be/);
 });
+
+test('main content priority keeps the original byte budget and snapshot bookkeeping', async () => {
+  const tab = { refs: new Set(), generation: 1, docMarked: true };
+  const elements = Array.from({ length: 55 }, (_, i) => ({ ref: `e${i + 1}`, role: 'link', name: `Category ${i}` }));
+  const book = { ref: 'e56', role: 'link', name: 'A long new book title '.repeat(10) };
+  elements.push(book);
+  const data = { sameDoc: false, url: 'https://books.example/travel', title: 'Travel', text: 'Category 0\nTravel books', elements, contentRefs: [book.ref], contentText: 'Travel books' };
+  const reply = await readEffect(() => data, tab, { navigated: true });
+  assert.equal(reply.elements[0], book);
+  assert.ok(Buffer.byteLength(JSON.stringify(reply.elements)) <= Buffer.byteLength(JSON.stringify(elements.slice(0, 40))));
+  assert.equal(reply.unlisted, elements.length - reply.elements.length);
+  assert.equal(tab.scan.byRef.size, elements.length, 'ranking must not change the scan or ref store');
+  assert.equal(reply.contentRefs, undefined);
+  assert.equal(reply.contentText, undefined);
+  assert.equal(reply.effect.text, 'Travel books');
+  const same = await readEffect(() => ({ ...data, sameDoc: true, contentRefs: undefined, contentText: undefined }), tab);
+  assert.equal(same.effect.changed, false, 'ranking must not manufacture a later control change');
+});
