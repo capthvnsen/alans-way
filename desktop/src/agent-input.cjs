@@ -939,19 +939,27 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
               dry();
               const armed = await verifyHit(count === 1);
               check();
-              if (targeted && armed?.matches !== true) {
+              let finalHit = armed;
+              if (!targeted || armed?.matches === true) {
+                if (body[APPROVED]) checkLiveBinding(body, armed?.look);
+                else {
+                  if (!armed?.look) throw commitRequired('the resolved link destination could not be checked before input');
+                  await judge(armed.look);
+                }
+                // Policy checks can yield to a layout update. Recheck last.
+                finalHit = await verifyHit(false);
+                check();
+              }
+              if ((targeted && finalHit?.matches !== true) || JSON.stringify(finalHit?.look) !== JSON.stringify(armed?.look)) {
                 if (attempt || count > 1) throw fail('Element could not be verified at the pointer. Request a fresh snapshot before retrying.', 409);
+                if (!targeted) throw fail('The control at the pointer changed. Request a fresh snapshot before retrying.', 409);
                 found = await resolve(target, { probe: action === 'click', look: gated || !!body[APPROVED] });
                 point = { x: found.x, y: found.y }; hl = found.hl || null;
                 if (gated) await judge(found.look);
                 await moveCursor(point, hl);
                 continue;
               }
-              if (body[APPROVED]) checkLiveBinding(body, armed?.look);
-              else {
-                if (!armed?.look) throw commitRequired('the resolved link destination could not be checked before input');
-                await judge(armed.look);
-              }
+              if (body[APPROVED]) checkLiveBinding(body, finalHit?.look);
               break;
             }
             mouseDown = { point, button: kind.button };

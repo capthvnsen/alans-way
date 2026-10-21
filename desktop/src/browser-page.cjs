@@ -649,6 +649,9 @@ function snapshotExpression(opts = {}, parameterized = false) {
       });
       settledMs = Math.round(performance.now() - settleStart);
     }
+    // Prefer a declared main region, then a content section on older pages.
+    const contentRoot = wantEffect && !sameDoc ? document.querySelector('main,[role="main"]') || [...document.querySelectorAll('article,section')].find(el => !el.closest('nav,header,footer,aside,[role="navigation"]')) : null;
+    const contentRefs = [];
     const shortHref = ${SHORT_HREF};
     const items = [], R = ${parameterized ? `(opts.maxElements > 0 ? ${refsSource()} : null)` : maxElements > 0 ? refsSource(seed) : 'null'};
     let gone = [], more = false;
@@ -682,6 +685,7 @@ function snapshotExpression(opts = {}, parameterized = false) {
           if (count < el.options.length) item.optionsTruncated = el.options.length - count;
         }
         items.push(item);
+        if (contentRoot?.contains(el)) contentRefs.push(x.ref);
         if (wantEffect && !focused && el.getRootNode && el.getRootNode().activeElement === el) focused = { ref: x.ref, name: d.name };
         if (wantEffect && !acted && (valueRef !== null || valueSel !== null)) {
           let hit = valueRef !== null && x.ref === valueRef;
@@ -719,7 +723,7 @@ function snapshotExpression(opts = {}, parameterized = false) {
     // a bounded walker stops at the char cap or the time budget instead. The
     // walk keeps going past the cap to hash every visible text node, so a
     // change beyond the window still shows up in textSig.
-    let text = '', textCut = false, textSig = '';
+    let text = '', textCut = false, textSig = '', contentText = '', contentBlock = null;
     if (${p('maxChars')} > 0 && document.body) {
       const textDeadline = performance.now() + ${p('textMs')};
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -769,6 +773,10 @@ function snapshotExpression(opts = {}, parameterized = false) {
         for (let i = 0; i < chunk.length; i++) { sigHash ^= chunk.charCodeAt(i); sigHash = Math.imul(sigHash, 0x01000193); }
         sigHash ^= 0x9d; sigHash = Math.imul(sigHash, 0x01000193);
         sigNodes++;
+        if (contentRoot?.contains(p) && contentText.length < ${EFFECT_TEXT_CHARS}) {
+          contentText += (contentText ? (contentBlock === parentBlock ? ' ' : '\\n') : '') + chunk;
+          contentBlock = parentBlock;
+        }
         if (!textCut) {
           // shortcut: fold exact long chunks only in control observations; revisit if split-node repeats dominate.
           if (R && chunk.length >= 60) {
@@ -786,7 +794,7 @@ function snapshotExpression(opts = {}, parameterized = false) {
       textSig = sigNodes + ':' + (sigHash >>> 0).toString(36);
     } else textCut = ${p('maxChars')} <= 0 && !!document.body?.textContent?.trim();
     const challenge = ${challengeExpression()};
-    return {title:document.title,url:location.href,...(R ? { approvalContext: R.approvalContext() } : {}),sameDoc,challenge,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,elements:items,seq:R ? R.n : 0,gone,overlays,truncated:{text:textCut,elements:more},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
+    return {title:document.title,url:location.href,...(R ? { approvalContext: R.approvalContext() } : {}),sameDoc,challenge,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,...(contentRoot ? {contentRefs,contentText:contentText.slice(0,${EFFECT_TEXT_CHARS})} : {}),elements:items,seq:R ? R.n : 0,gone,overlays,truncated:{text:textCut,elements:more},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
   })()`;
 }
 
@@ -1026,7 +1034,7 @@ function settleSnapshot(tab, data, generation, since) {
   noteScan(tab, data, generation);
   // sameDoc, textSig, seq and gone feed the host's bookkeeping, not the reply.
   // A challenge rides even on an unchanged read: its frames sit outside the text.
-  const { sameDoc, textSig, seq, gone, overlays, challenge, ...page } = data;
+  const { sameDoc, textSig, seq, gone, contentRefs, contentText, overlays, challenge, ...page } = data;
   const flagged = challenge ? { challenge } : {};
   return unchanged ? { unchanged: true, generation, ...(data.approvalContext ? { approvalContext: data.approvalContext } : {}), ...flagged } : { ...page, ...(overlays && overlays.length ? { overlays } : {}), ...flagged, generation };
 }
@@ -1108,7 +1116,7 @@ async function readEffectOnce(execute, tab, { parseWaitMs, navigated, target, se
   const changed = !controlsSame || nav || added.length > 0 || removed || deepChange;
   tab.docMarked = true;
   tab.lastRead = lastReadOf(result);
-  const effect = { navigated: nav, url: result.url, title: result.title, changed, text: added.join('\n').slice(0, EFFECT_TEXT_CHARS) };
+  const effect = { navigated: nav, url: result.url, title: result.title, changed, text: (nav && result.contentText ? result.contentText : added.join('\n')).slice(0, EFFECT_TEXT_CHARS) };
   if (typeof result.settledMs === 'number') effect.settledMs = result.settledMs;
   if (result.acted !== undefined && result.acted !== null) effect.value = result.acted;
   if (result.focused) {
@@ -1129,8 +1137,15 @@ async function readEffectOnce(execute, tab, { parseWaitMs, navigated, target, se
     const delta = controlsDelta(scan, result);
     if (delta.changed.length + delta.removed.length <= Math.max(8, result.elements.length * DELTA_SHARE)) return { ...delta, generation, effect, ...overlays, ...truncated };
   }
-  const reply = { elements: settled.elements.slice(0, EFFECT_ELEMENTS), generation: settled.generation, effect, ...overlays, ...truncated };
-  if (settled.elements.length > EFFECT_ELEMENTS) reply.unlisted = settled.elements.length - EFFECT_ELEMENTS;
+  const content = new Set(nav ? result.contentRefs : []);
+  const elements = content.size ? [...settled.elements.filter(item => content.has(item.ref)), ...settled.elements.filter(item => !content.has(item.ref))] : settled.elements;
+  const listed = elements.slice(0, EFFECT_ELEMENTS);
+  if (content.size) {
+    const budget = Buffer.byteLength(JSON.stringify(settled.elements.slice(0, EFFECT_ELEMENTS)));
+    while (Buffer.byteLength(JSON.stringify(listed)) > budget) listed.pop();
+  }
+  const reply = { elements: listed, generation: settled.generation, effect, ...overlays, ...truncated };
+  if (settled.elements.length > listed.length) reply.unlisted = settled.elements.length - listed.length;
   return reply;
 }
 
