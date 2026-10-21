@@ -478,7 +478,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
       // Name the dialog or banner in the way, and what closes it.
       const store = window[Symbol.for(${JSON.stringify(REFS_KEY)})], found = store && store.layer ? store.layer(coveredBy) : null;
       if (found) return { fail: 'covered', layer: found.out };
-      return { fail: 'covered by ' + coveredBy.tagName.toLowerCase() };
+      return { fail: 'covered by ' + coveredBy.tagName.toLowerCase() + (coveredBy.id ? '#' + coveredBy.id.slice(0, 120) : typeof coveredBy.className === 'string' && coveredBy.className.trim() ? '.' + coveredBy.className.trim().split(/\\s+/)[0].slice(0, 120) : '') };
     }
     if (!point) return { fail: 'no clickable point' };
     if (${focus}) {
