@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Add-on browser host. Stock Hermes connects through MCP; its runtime is unchanged.
+const { calls, context, remainingMs, checkCall } = require('../src/call-budget.cjs');
 const fs = require('node:fs'),
   path = require('node:path'),
   os = require('node:os'),
@@ -510,6 +511,8 @@ async function serve() {
       for (const step of steps) {
         if (!step || typeof step !== 'object') { results.push({ ok: false, error: 'Invalid step.' }); break; }
         if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ ok: false, error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
+        try { checkCall(); }
+        catch (error) { results.push({ ok: false, code: error.code, error: error.message }); break; }
         try { results.push({ ok: true, ...(await vpsPerform(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, overseer, 1)) }); }
         catch (error) { results.push({ ok: false, error: errorMessage(error) }); break; }
         // A step aimed by name reports the ref it resolved to.
@@ -556,7 +559,7 @@ async function serve() {
       const urlPart = String(body.url || '').slice(0, 2000);
       const visible = body.visible === true;
       const gone = body.gone === true;
-      const timeout = Math.min(Math.max(Number(body.timeout) || 10000, 100), 30000);
+      const timeout = Math.min(Math.max(Number(body.timeout) || 10000, 100), depth > 0 ? remainingMs(30000) : 30000);
       if (!selector && !text && !urlPart) throw fail('wait needs a selector, text, or url to wait for.');
       const waitCode = (ms) => `new Promise((resolve) => {
         const sel = ${JSON.stringify(selector)}, txt = ${JSON.stringify(text)}, urlP = ${JSON.stringify(urlPart)}, vis = ${visible}, gone = ${gone};
@@ -1043,6 +1046,9 @@ async function serve() {
         return send(200, { base64: shot.data, mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], viewport, tab: describe(tab) });
       }
       if (req.method === 'POST' && m[2] === 'actions') {
+        const controller = new AbortController();
+        res.on('close', () => { if (!res.writableFinished) controller.abort(); });
+        const call = context(req.headers['x-alans-way-remaining-ms'] === undefined ? undefined : Number(req.headers['x-alans-way-remaining-ms']), controller.signal);
         const body = await read(req);
         tab.lastUsedAt = Date.now();
         tab.pendingActions = (tab.pendingActions || 0) + 1;
@@ -1050,7 +1056,7 @@ async function serve() {
         res.on('close', () => { if (!res.writableFinished) closed = true; });
         const action = tab.queue.then(async () => {
           if (closed) throw fail('The request was closed before this action started.', 499);
-          const result = await vpsPerform(tab, body, botId, overseer);
+          const result = await calls.run(call, () => vpsPerform(tab, body, botId, overseer));
           // The bot is acting on the tab again; human_returned has done its job.
           if (tab.handback?.state === 'human_returned') tab.handback = null;
           await persist();

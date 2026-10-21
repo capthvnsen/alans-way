@@ -1,5 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { performance } = require('node:perf_hooks');
+const { calls, context } = require('../src/call-budget.cjs');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -7,7 +9,8 @@ const { createHelper, createComputer, createComputerService, normalizeStep, norm
 const { pickHelper, makeCompile } = require('../src/computer.cjs');
 const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
 
-function permissionComputer(t, handle) {
+function permissionComputer(t, handle, fakeTimers = false) {
+  t.mock.method(performance, 'now', () => Date.now());
   const { EventEmitter } = require('node:events');
   const { PassThrough } = require('node:stream');
   const children = [];
@@ -25,7 +28,7 @@ function permissionComputer(t, handle) {
     return proc;
   });
   const setTimer = global.setTimeout;
-  t.mock.method(global, 'setTimeout', (callback, ms, ...args) => ms === 150
+  if (!fakeTimers) t.mock.method(global, 'setTimeout', (callback, ms, ...args) => ms === 150
     ? setTimer(() => { t.mock.timers.tick(ms); callback(...args); }, 0)
     : setTimer(callback, ms, ...args));
   // Reload to capture only the fake process transport; all helper logic stays real.
@@ -42,6 +45,7 @@ function permissionComputer(t, handle) {
 
 for (const grantedAt of [34999, 35001, 59000]) test(`read permission budget survives a real helper crash-retry or explains a late grant (${grantedAt} ms)`, async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  t.mock.method(performance, 'now', () => Date.now());
   let requests = 0;
   const computer = permissionComputer(t, (_request, proc) => {
     requests++;
@@ -68,8 +72,35 @@ for (const grantedAt of [34999, 35001, 59000]) test(`read permission budget surv
   assert.ok(Date.now() < 80000, 'ordinary calls must finish before the router deadline');
 });
 
+test('a no-budget read bounds nested crash and missing-app retries below 76 seconds', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
+  let requests = 0;
+  const computer = permissionComputer(t, (request, proc) => {
+    requests++;
+    if (requests === 1) return { ok: false, code: 'permission', error: 'Accessibility is off.' };
+    setTimeout(() => {
+      if (requests === 2 || requests === 4) proc.emit('close', 1);
+      else proc.stdout.write(JSON.stringify({ id: request.id, ok: false, code: 'not_found', error: 'App not found.' }) + '\n');
+    }, 19999);
+  }, true);
+  const service = createMacPermissionHelp({
+    platform: 'darwin', systemPreferences: { isTrustedAccessibilityClient: () => Date.now() >= 35000 },
+    sleep: async (ms) => t.mock.timers.tick(ms),
+  }).wrap(computer.service);
+  let settled = false;
+  const result = service.snapshot('bot', 7).catch(error => error).finally(() => { settled = true; });
+  for (let i = 0; i < 1600 && !settled; i++) {
+    await new Promise(setImmediate);
+    t.mock.timers.tick(50);
+  }
+  assert.equal(settled, true);
+  assert.ok(Date.now() < 76000, `read took ${Date.now()}ms`);
+  assert.ok((await result) instanceof Error);
+});
+
 test('action permission recovery leaves room for the real batch budget and a final wait crash-retry', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  t.mock.method(performance, 'now', () => Date.now());
   let requests = 0;
   const computer = permissionComputer(t, (request, proc) => {
     requests++;
@@ -444,4 +475,63 @@ test('a failed compile is not retried on every action', async () => {
 test('a working compiler still rebuilds', async () => {
   const compile = makeCompile({ hasDevTools: async () => true, build: async () => {} });
   assert.equal(await compile(), true);
+});
+
+for (const budget of [30000, 70000]) test(`one ${budget}ms budget includes permission waiting and every helper retry`, async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
+  let requests = 0;
+  const computer = permissionComputer(t, (request, proc) => {
+    requests++;
+    if (requests === 1) return { ok: false, code: 'permission', error: 'Accessibility is off.' };
+    const attempt = requests;
+    setTimeout(() => {
+      if (attempt === 2 || attempt === 4) proc.emit('close', 1);
+      else proc.stdout.write(JSON.stringify({ id: request.id, ok: false, code: 'not_found', error: 'App not found.' }) + '\n');
+    }, 19999);
+  }, true);
+  const service = createMacPermissionHelp({ platform: 'darwin',
+    systemPreferences: { isTrustedAccessibilityClient: () => Date.now() >= 5000 },
+    sleep: async ms => t.mock.timers.tick(ms),
+  }).wrap(computer.service);
+  let settled = false;
+  const result = calls.run(context(budget), () => service.snapshot('bot', 7)).catch(error => error).finally(() => { settled = true; });
+  for (let i = 0; i < budget / 50 + 1 && !settled; i++) {
+    await new Promise(setImmediate);
+    t.mock.timers.tick(50);
+  }
+  assert.equal(settled, true);
+  assert.ok(Date.now() <= budget + 50, `call used ${Date.now()}ms`);
+  assert.match((await result).message, /timed out/);
+  assert.equal(requests, budget === 30000 ? 3 : 5);
+});
+
+test('cancelling an in-flight helper from outside its context kills only that request', async (t) => {
+  let entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const computer = permissionComputer(t, () => { entered(); });
+  const controller = new AbortController();
+  const result = calls.run(context(undefined, controller.signal), () => computer.service.action('bot', 7, { action: 'click', x: 1, y: 2 }));
+  const rejected = assert.rejects(result, error => error.code === 'cancelled' && /may have executed/.test(error.message));
+  await started;
+  controller.abort();
+  await rejected;
+  assert.equal(computer.children.length, 1);
+});
+
+test('a queued cancelled request never runs or kills another call', async (t) => {
+  const helper = fakeHelper('hang', { timeoutMs: 300 });
+  t.after(() => helper.close());
+  const first = assert.rejects(helper.request({ cmd: 'apps' }), /timed out/);
+  const controller = new AbortController();
+  const second = calls.run(context(undefined, controller.signal), () => helper.request({ cmd: 'act', steps: [{ action: 'click', x: 1, y: 2 }] }));
+  const rejected = assert.rejects(second, error => error.code === 'cancelled' && !/may have executed/.test(error.message));
+  controller.abort();
+  await rejected;
+  await first;
+});
+
+test('an action lost before the init receipt is never retried in one-shot mode', async (t) => {
+  const helper = fakeHelper('crash-on-serve');
+  t.after(() => helper.close());
+  await assert.rejects(helper.request({ cmd: 'act', pid: 5, steps: [{ action: 'click', x: 1, y: 2 }] }), /may have executed/);
 });

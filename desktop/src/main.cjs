@@ -44,6 +44,7 @@ const { ElectronChromeExtensions } = require('electron-chrome-extensions');
 // The host computer driver runs in the app's own session — the only place it
 // works on Windows, where SSH-spawned processes sit in Session 0 and cannot
 // see the desktop. Linux hosts drive the desktop through AT-SPI like the guest.
+const { calls, context, READ_BUDGET_MS } = require('./call-budget.cjs');
 const macPermissions = require('./mac-permissions.cjs').createMacPermissionHelp({ systemPreferences });
 const hostComputer = process.platform === 'darwin' ? macPermissions.wrap(require('./computer.cjs').service)
   : process.platform === 'win32' ? require('./win-computer.cjs').service
@@ -3002,24 +3003,28 @@ function startApi() {
       // Session 0 and see no windows. Same verbs the MCP connector wraps.
       const computerMatch = /^\/v1\/computer\/(apps|\d{1,10})(?:\/(snapshot|screenshot|action|menu))?$/.exec(url.pathname);
       if (computerMatch) {
-        if (!hostComputer) return send(400, { error: 'Computer use is not available on this host.' });
-        if (computerMatch[1] === 'apps') {
-          if (computerMatch[2] || req.method !== 'GET') return send(405, { error: 'Use GET /v1/computer/apps.' });
-          return send(200, { apps: await hostComputer.apps() });
-        }
-        const pid = Number(computerMatch[1]);
-        if (!Number.isInteger(pid) || pid < 0) return send(400, { error: 'App pid must be a non-negative integer.' });
-        if (req.method === 'GET' && computerMatch[2] === 'snapshot')
-          return send(200, await hostComputer.snapshot(botId, pid, { since: intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER), menubar: url.searchParams.get('menubar') === '1' }));
-        if (req.method === 'GET' && computerMatch[2] === 'screenshot')
-          return send(200, await hostComputer.screenshot(pid, intParam(url, 'maxWidth', 1, 10000)));
-        if (req.method === 'GET' && computerMatch[2] === 'menu') {
-          let menuPath; try { menuPath = JSON.parse(url.searchParams.get('path') || '[]'); } catch { throw Object.assign(new Error('path must be a JSON array of menu titles.'), { status: 400 }); }
-          return send(200, await hostComputer.menu(pid, menuPath));
-        }
-        if (req.method === 'POST' && computerMatch[2] === 'action')
-          return send(200, await hostComputer.action(botId, pid, await readJson(req)));
-        return send(405, { error: 'Method not supported.' });
+        const controller = new AbortController();
+        res.on('close', () => { if (!res.writableFinished) controller.abort(); });
+        return await calls.run(context(req.headers['x-alans-way-remaining-ms'] === undefined ? undefined : Number(req.headers['x-alans-way-remaining-ms']), controller.signal, req.method === 'GET' ? READ_BUDGET_MS : Infinity), async () => {
+          if (!hostComputer) return send(400, { error: 'Computer use is not available on this host.' });
+          if (computerMatch[1] === 'apps') {
+            if (computerMatch[2] || req.method !== 'GET') return send(405, { error: 'Use GET /v1/computer/apps.' });
+            return send(200, { apps: await hostComputer.apps() });
+          }
+          const pid = Number(computerMatch[1]);
+          if (!Number.isInteger(pid) || pid < 0) return send(400, { error: 'App pid must be a non-negative integer.' });
+          if (req.method === 'GET' && computerMatch[2] === 'snapshot')
+            return send(200, await hostComputer.snapshot(botId, pid, { since: intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER), menubar: url.searchParams.get('menubar') === '1' }));
+          if (req.method === 'GET' && computerMatch[2] === 'screenshot')
+            return send(200, await hostComputer.screenshot(pid, intParam(url, 'maxWidth', 1, 10000)));
+          if (req.method === 'GET' && computerMatch[2] === 'menu') {
+            let menuPath; try { menuPath = JSON.parse(url.searchParams.get('path') || '[]'); } catch { throw Object.assign(new Error('path must be a JSON array of menu titles.'), { status: 400 }); }
+            return send(200, await hostComputer.menu(pid, menuPath));
+          }
+          if (req.method === 'POST' && computerMatch[2] === 'action')
+            return send(200, await hostComputer.action(botId, pid, await readJson(req)));
+          return send(405, { error: 'Method not supported.' });
+        });
       }
       const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions|control))?$/.exec(url.pathname);
       const tab = match && tabs.get(match[1]);
