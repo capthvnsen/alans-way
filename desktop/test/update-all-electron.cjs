@@ -23,6 +23,13 @@ process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10
 // main.cjs destructures these at load, so patching the exports first swaps
 // the real ssh-driven updater and the GitHub read for recorders.
 const calls = [];
+const setupCalls = [];
+let releaseSetup;
+require('../src/server-setup.cjs').createServerSetup = () => async (host, plan) => {
+  setupCalls.push({ host, plan });
+  await new Promise((resolve) => { releaseSetup = resolve; });
+  return { ok: false, detail: 'FAIL fixture check: restart skipped' };
+};
 let hermesNow = '0.21.6', releaseHermes, checkGate = null, failReport = false, noHomeReport = false, pluginOk = false;
 const hermesGate = new Promise((resolve) => { releaseHermes = resolve; });
 const gate = () => {
@@ -147,6 +154,8 @@ app.whenReady().then(async () => {
   assert.equal(await text('update-all'), 'Updating…');
 
   // One lock: every other update entry point refuses while this runs.
+  assert.equal((await invoke('server-setup', { plan: '{}' })).ok, false);
+  assert.equal(setupCalls.length, 0, 'setup shares the server update lock');
   const before = work().length;
   await invoke('hermes-update');
   await invoke('vm-update-retry', { force: true });
@@ -303,6 +312,30 @@ app.whenReady().then(async () => {
   await waitFor(() => evaluate('document.getElementById("update-all-cancel").disabled'), d => d === false, 8000, 'the RC run to finish');
   assert.ok(calls.slice(rcStart).includes('host agent v0.21.6'));
   assert.ok(!calls.slice(rcStart).some(c => c.startsWith('host ') && c.includes('-rc.')));
+
+  // The Settings handoff reaches the app process, preserves the plan and
+  // displays a failed check without claiming the gateway restarted.
+  await click('update-all-cancel');
+  await click('settings-button');
+  await evaluate("document.querySelector('[data-category=connections]').click()");
+  assert.equal(await evaluate(`!!document.querySelector('[aria-label="Server setup plan"]')`), true,
+    'Agent machine settings must mount the external setup handoff');
+  const setupPlan = JSON.stringify({ repoRef: 'a'.repeat(40), desktopRef: 'b'.repeat(40), args: [] });
+  await evaluate(`document.querySelector('[aria-label="Server setup plan"]').value = ${JSON.stringify(setupPlan)}`);
+  const setupButton = '[...document.querySelectorAll("button")].find(b => b.textContent === "Finish setup and restart my bot")';
+  await evaluate(`document.getElementById('vps-ssh-host').value = 'tester@unsaved.invalid'; ${setupButton}.click()`);
+  await waitFor(() => evaluate('document.getElementById("modal-body").textContent'), text => text.includes('Save address changes before running setup.'));
+  assert.equal(setupCalls.length, 0, 'unsaved addresses cannot run setup against the previous host');
+  await evaluate(`document.getElementById('vps-ssh-host').value = 'tester@vm.invalid'; ${setupButton}.click()`);
+  await waitFor(() => setupCalls.length, n => n === 1, 5000, 'the SSH setup handoff');
+  assert.deepEqual(setupCalls[0], { host: 'tester@vm.invalid', plan: setupPlan });
+  assert.equal(await evaluate(`${setupButton}.disabled`), true);
+  assert.equal((await invoke('server-setup', { plan: setupPlan })).ok, false, 'setup cannot overlap itself');
+  assert.equal(setupCalls.length, 1);
+  releaseSetup();
+  await waitFor(() => evaluate('document.getElementById("modal-body").textContent'), text => text.includes('FAIL fixture check: restart skipped'), 5000, 'the setup report');
+  assert.equal(await evaluate(`${setupButton}.disabled`), false);
+  await click('modal-close');
 
   console.log('PASS: the bottom bar shows versions with details on hover; Update everything confirms first, runs in order under one lock, warns when a plugin stays behind, finishes a clean run, and reports once.');
   app.quit();

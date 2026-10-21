@@ -736,6 +736,7 @@ function renderOnboarding(show) {
       if (!await command('settings', { macSshHost: mine.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } })) return;
       await runSetupCheck(checkButton, results);
     });
+    appendServerSetup(card, () => command('settings', { macSshHost: mine.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } }));
     card.append(checkButton, button('Copy report', 'secondary-button', copyReport), results);
     actions.append(button('Back', 'secondary-button', () => go(2)), button('Done', 'primary-button', finish));
   }
@@ -1302,6 +1303,29 @@ async function runSetupCheck(trigger, container) {
 async function copyReport() {
   if (await command('copy-report')) toast('Report copied. Paste it in Discord so we can take a look.');
 }
+// The bot prepares public setup inputs. The user's click runs the reviewed
+// script from the app's SSH process, outside the gateway lifecycle boundary.
+function appendServerSetup(container, beforeRun) {
+  container.append(element('p', 'settings-note', 'When your bot gives you a setup plan, paste it here. Finish setup runs it over SSH and lets setup restart your bot after its checks pass. Wait about a minute, then message your bot and run Check setup.'));
+  const plan = element('textarea', 'onboarding-prompt');
+  plan.rows = 4; plan.placeholder = 'Paste the JSON setup plan from your bot';
+  plan.setAttribute('aria-label', 'Server setup plan');
+  const result = element('pre', 'settings-note'); result.style.whiteSpace = 'pre-wrap';
+  const run = element('button', 'secondary-button', 'Finish setup and restart my bot');
+  run.onclick = async () => {
+    run.disabled = true;
+    result.textContent = 'Running setup over SSH. This can take several minutes. Keep the app open.';
+    try {
+      if (beforeRun && !await beforeRun()) return;
+      const reply = await command('server-setup', { plan: plan.value });
+      result.textContent = reply && typeof reply.ok === 'boolean'
+        ? `${reply.ok ? '✓' : '✗'} ${reply.detail}${reply.note ? `\n\n${reply.note}` : ''}`
+        : 'Setup did not return a report. Check the connection and retry.';
+    } catch (error) { result.textContent = error.message || 'Setup could not start. Check the connection and retry.'; }
+    finally { run.disabled = false; }
+  };
+  container.append(plan, run, result);
+}
 // A section owns its mounted controls and may return a refresh function. Search
 // uses this public copy only; field contents, URLs and credentials never enter it.
 let settingsSession = null;
@@ -1750,6 +1774,11 @@ function mountAgentSetup(body) {
   const local = settingsField(advanced.content, 'mac-ssh-host', 'This computer’s SSH address', state.macSshHost, 'you@your-computer');
   advanced.content.append(element('p', 'settings-note', 'Use this computer’s address as reached from the agent machine. These addresses are shared by your bots; setup instructions are specific to the bot selected above.'));
   const save = settingsSaveFields(advanced.content, 'Save addresses', [local, vps], () => ({ macSshHost: local.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } }), { success: 'Addresses saved. Check the saved path next.', draftScope: () => ['agent', reviewedBotId, state.hostLabel], saved: () => [state.macSshHost || '', state.vpsBrowser?.sshHost || ''] }); save.id = 'settings-save-addresses';
+  appendServerSetup(advanced.content, () => {
+    if (local.value.trim() !== (state.macSshHost || '') || vps.value.trim() !== (state.vpsBrowser?.sshHost || ''))
+      throw Error('Save address changes before running setup.');
+    return true;
+  });
   const test = element('button', 'primary-button', 'Check saved path'); test.id = 'settings-test-path'; actions.prepend(test); const result = settingsStatus(actions); result.classList.add('connection-check-status');
   const invalidate = () => {
     epoch++; checked = false;

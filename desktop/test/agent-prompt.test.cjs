@@ -24,20 +24,16 @@ test('setup prompt and computer facts fit in one Telegram message', () => {
   const text = buildAgentPrompt({ ...base, hostLabel: 'linux', botId: '1234567890', sshHost: 'macuser@computer.tailnet-example.ts.net' });
   assert.ok(text.length <= 4096, `setup prompt is ${text.length} characters`);
 });
-test('copied setup prompt requires the bot to run setup and stop on guide gaps', () => {
+test('copied setup prompt respects lifecycle ownership and stops on guide gaps', () => {
   const text = buildAgentPrompt(base).replace(/\s+/g, ' ');
   for (const instruction of [
-    "Run the skill's pinned server setup command yourself through your terminal tool",
-    'gateway restart is detached and delayed by design',
-    'running setup from inside this gateway is supported',
-    'Do not hand the server setup command to me or ask me to run it in an SSH shell',
-    'Before running the command that schedules the restart',
-    'back in about a minute',
-    'start no further tool calls in that turn',
-    'On my next message, follow its post-restart audit',
+    'Never bypass the lifecycle guard',
+    'outside the gateway',
+    'post-restart audit',
     'If web extraction of a guide fails, has gaps or is incomplete, stop and report it',
     'Do not continue setup or fill in missing instructions',
   ]) assert.ok(text.includes(instruction), `missing instruction: ${instruction}`);
+  assert.ok(!text.includes('running setup from inside this gateway is supported'));
 });
 test('known values are included only when given', () => {
   const text = buildAgentPrompt({ ...base, hostLabel: 'windows', botId: '123', sshHost: 'me@pc' });
