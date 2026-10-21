@@ -132,12 +132,13 @@ function tabIcon(tab) {
   if (!tab.favicon) icon.textContent = tab.symbol;
   return icon;
 }
+function tabStripEntries() { return state.tabs.filter(tab => tab.host !== 'vps' || tab.handback?.state === 'awaiting_human'); }
 function renderTabs() {
   const container = $('tabs'), focused = document.activeElement.closest('.tab');
   const focusedId = focused?.dataset.tabId, focusedHost = focused?.dataset.host, focusedClose = document.activeElement.classList.contains('tab-close');
   const focusedIndex = focused ? [...container.children].indexOf(focused) : -1;
   container.replaceChildren();
-  const entries = state.tabs.map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : '◈' }));
+  const entries = tabStripEntries().map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : '◈' }));
   entries.forEach((tab, index) => {
     const selected = state.browserTabId === tab.id && state.browserTabHost === tab.host;
     const node = element('div', `tab${selected ? ' active' : ''}`); node.setAttribute('role', 'presentation'); node.dataset.tabId = tab.id; node.dataset.host = tab.host;
@@ -151,13 +152,15 @@ function renderTabs() {
     if(tab.host)node.title=`${hostName(tab.host)} · ${state.bots.find(bot=>bot.id===tab.botId)?.name || tab.botId}${tab.controller === 'agent' ? ' · agent-controlled' : ''}`;
     node.onclick = () => command('activate', { id: tab.id, host: tab.host });
     select.onkeydown = (event) => {
-      if (event.key === 'Delete') { event.preventDefault(); command('close-tab', { id: tab.id, host: tab.host }); return; }
+      if (event.key === 'Delete') { event.preventDefault(); if (tab.host !== 'vps') command('close-tab', { id: tab.id, host: tab.host }); return; }
       const target = moveNavigationFocus(event, [...container.querySelectorAll('.tab:not(.tab-off) [role=tab]')], 'horizontal');
       if (target) command('activate', { id: target.closest('.tab').dataset.tabId, host: target.closest('.tab').dataset.host });
     };
-    const close = element('button', 'tab-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
-    close.tabIndex = selected ? 0 : -1;
-    close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id, host: tab.host }); }; node.append(close);
+    if (tab.host !== 'vps') {
+      const close = element('button', 'tab-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
+      close.tabIndex = selected ? 0 : -1;
+      close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id, host: tab.host }); }; node.append(close);
+    }
     container.append(node);
   });
   fitTabs();
@@ -208,7 +211,7 @@ function setTabsPanel(open) {
 function renderTabsPanel() {
   const panel = $('tabs-panel'), focusedRow = document.activeElement?.closest('.tabs-panel-row'), focusedTab = focusedRow?.dataset.tabId, focusedHost = focusedRow?.dataset.host;
   panel.replaceChildren();
-  for (const tab of state.tabs) {
+  for (const tab of tabStripEntries()) {
     const selected = state.browserTabId === tab.id && state.browserTabHost === tab.host;
     const row = element('div', `tabs-panel-row${selected ? ' active' : ''}`); row.dataset.tabId = tab.id; row.dataset.host = tab.host;
     const pick = element('button', 'tabs-panel-select'); pick.setAttribute('role', 'menuitemradio'); pick.setAttribute('aria-checked', String(selected));
@@ -217,9 +220,13 @@ function renderTabsPanel() {
     pick.title = `${tab.title || 'New tab'}${owner ? ` · ${owner}` : ''}`;
     pick.append(tabIcon(tab), element('span', 'tab-title', tab.title || 'New tab'), element('span', 'tabs-panel-owner', owner));
     pick.onclick = () => { command('activate', { id: tab.id, host: tab.host }); setTabsPanel(false); };
-    const close = element('button', 'tabs-panel-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
-    close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id, host: tab.host }); };
-    row.append(pick, close); panel.append(row);
+    row.append(pick);
+    if (tab.host !== 'vps') {
+      const close = element('button', 'tabs-panel-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
+      close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id, host: tab.host }); };
+      row.append(close);
+    }
+    panel.append(row);
   }
   if (focusedTab) panel.querySelector(`.tabs-panel-row[data-tab-id="${CSS.escape(focusedTab)}"][data-host="${CSS.escape(focusedHost)}"] .tabs-panel-select`)?.focus({ preventScroll: true });
 }
@@ -2025,7 +2032,13 @@ $('record-button').onclick = () => {
 $('recording-stop').onclick = () => stopRecording(true);
 $('recording-discard').onclick = () => stopRecording(false);
 $('takeover-take-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, host: tab.host, controller: 'human', takeBack: true }); };
-$('needs-you-give-back').onclick = () => { const tab = state.tabs.find((item) => item.id === (state.activeTabId === 'vps' ? state.activeVpsTabId : state.activeTabId) && item.host === (state.activeTabId === 'vps' ? 'vps' : state.hostLabel)); if (tab) command('control', { id: tab.id, host: tab.host, controller: 'agent', giveBack: true, epoch: tab.epoch }); };
+$('needs-you-give-back').onclick = async () => {
+  const tab = state.tabs.find((item) => item.id === (state.activeTabId === 'vps' ? state.activeVpsTabId : state.activeTabId) && item.host === (state.activeTabId === 'vps' ? 'vps' : state.hostLabel));
+  if (tab) {
+    const reply = await command('control', { id: tab.id, host: tab.host, controller: 'agent', giveBack: true, epoch: tab.epoch });
+    if (reply?.refused === 'stale') toast('That changed while you were looking. Press Give back again.');
+  }
+};
 $('handoff-button').onclick = async () => {
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
   if (!tab) return;

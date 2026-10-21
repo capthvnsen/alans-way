@@ -16,15 +16,18 @@ process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10
 const shown = [];
 Notification.prototype.show = function show() { shown.push(this); };
 Notification.prototype.close = function close() { this.closed = true; };
-// Only the VM transport is faked; the window, renderer and command route are real.
-const remoteCalls = [];
+// VM transport and version probes are fixtures; the window, renderer and command route are real.
+require('../src/vm-update.cjs').createVmUpdater = () => ({ checkVm: async () => ({ ok: false, error: 'Fixture has no update target.' }) });
+const remoteCalls = [], remoteDeletes = [];
 let remoteTab = { id: 'vm-sign-in', botId: '4242', host: 'vps', controller: 'human', epoch: 7,
   url: 'https://login.example/', title: 'Sign in', handback: { state: 'awaiting_human', reason: 'login', note: 'Sign in', botId: '4242', since: Date.now() } };
 const remoteTabs = new Map([[remoteTab.id, remoteTab]]), activationGates = new Map();
 const vpsModule = require('../src/vps-browser.cjs');
 vpsModule.createVpsBrowser = () => ({ request: async (route, method, body, options) => {
+  if (route === '/v1/tabs' && method === 'GET') return { tabs: [...remoteTabs.values()] };
   if (route === '/v1/tabs' && method === 'POST') return remoteTabs.get(body.fixtureId || remoteTab.id);
   const id = route.split('/')[3];
+  if (method === 'DELETE') { remoteDeletes.push(id); remoteTabs.delete(id); return { ok: true }; }
   let tab = remoteTabs.get(id);
   if (route.endsWith('/activate')) {
     const gate = activationGates.get(id);
@@ -32,6 +35,7 @@ vpsModule.createVpsBrowser = () => ({ request: async (route, method, body, optio
   }
   if (route.endsWith('/control')) {
     remoteCalls.push({ id, body, human: options.human });
+    if (body.giveBack && body.epoch !== tab.epoch) return { ...tab, refused: 'stale' };
     tab = { ...tab, controller: 'agent', epoch: tab.epoch + 1, handback: { ...tab.handback, state: 'human_returned' } };
     remoteTabs.set(id, tab);
   }
@@ -106,6 +110,13 @@ app.whenReady().then(async () => {
   assert.equal(await pageWc.executeJavaScript('document.body.innerText.includes("needs you")'), false, 'nothing is injected into the page');
   assert.equal(await evaluate('document.getElementById("needs-you-give-back").textContent'), 'Give back to agent');
 
+  const heldBeforeStale = (await api(`/v1/tabs/${tab.id}`)).data;
+  const refusedLocal = await invoke('control', { id: tab.id, host: tab.host, controller: 'agent', giveBack: true, epoch: releasedEpoch - 1 });
+  assert.equal(refusedLocal.refused, 'stale', 'a stale local click signals refusal while the human has the tab');
+  assert.equal(refusedLocal.epoch, heldBeforeStale.epoch);
+  assert.deepEqual(refusedLocal.handback, heldBeforeStale.handback);
+  assert.deepEqual((await api(`/v1/tabs/${tab.id}`)).data, heldBeforeStale, 'a stale local click preserves the hold and epoch');
+
   // Give back: the bot hears human_returned, then claims with a fresh epoch.
   await evaluate('document.getElementById("needs-you-give-back").click()');
   await waitFor(getState, state => state.tabs.find(item => item.id === tab.id).controller === 'agent');
@@ -115,7 +126,8 @@ app.whenReady().then(async () => {
   assert.equal(stale.status, 409); assert.match(stale.data.error, /^human_returned/);
   const returned = (await api(`/v1/tabs/${tab.id}`)).data;
   assert.equal(returned.handback.state, 'human_returned');
-  await invoke('control', { id: tab.id, controller: 'agent', giveBack: true, epoch: releasedEpoch });
+  const duplicate = await invoke('control', { id: tab.id, controller: 'agent', giveBack: true, epoch: releasedEpoch });
+  assert.deepEqual(duplicate, { ...returned, refused: 'stale' }, 'a stale local Give back explains the refusal');
   assert.deepEqual((await api(`/v1/tabs/${tab.id}`)).data, returned, 'a duplicate local give-back is a no-op');
   const reclaimed = await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' });
   assert.equal(reclaimed.status, 200, JSON.stringify(reclaimed.data));
@@ -146,12 +158,82 @@ app.whenReady().then(async () => {
   await invoke('close-tab', { id: second.id });
   assert.equal(shown[1].closed, true, 'closing the tab dismisses its notification');
 
+  const refreshVm = async () => {
+    await invoke('settings', { vpsBrowser: { sshHost: 'fixture@192.0.2.1' } });
+    return getState();
+  };
+  remoteTabs.set(remoteTab.id, { ...remoteTab, handback: null, controller: 'agent' });
+  await refreshVm();
+  assert.equal(shown.length, 2, 'an idle VM tab does not notify');
+  remoteTabs.set(remoteTab.id, remoteTab);
+  await api('/v1/tabs', 'POST', { host: 'vm', fixtureId: remoteTab.id });
+  await refreshVm();
+  assert.equal(shown.length, 3, 'a VM tab entering awaiting_human notifies once even when an API reply warmed the cache');
+  await refreshVm();
+  assert.equal(shown.length, 3, 'a second refresh of the same hold does not notify');
+  remoteTabs.set(remoteTab.id, { ...remoteTab, handback: null, controller: 'agent' });
+  await refreshVm();
+  remoteTabs.set(remoteTab.id, remoteTab);
+  await refreshVm();
+  assert.equal(shown.length, 4, 'leaving and re-entering awaiting_human notifies again');
+  assert.equal((await getState()).activeVpsTabId, '');
+  await invoke('toggle-vps-view');
+  assert.equal((await getState()).activeVpsTabId, remoteTab.id, 'opening the VM selects the waiting tab');
+  await waitFor(() => evaluate('!!document.getElementById("needs-you-banner").offsetParent && !!document.getElementById("needs-you-give-back").offsetParent'), Boolean);
+  await invoke('activate', { id: tab.id, host: tab.host });
+  await invoke('settings', { showBrowser: false });
+  shown.at(-1).emit('click');
+  await waitFor(getState, state => state.activeTabId === 'vps' && state.activeVpsTabId === remoteTab.id && state.showBrowser === true);
+  await waitFor(() => evaluate('!document.getElementById("needs-you-banner").classList.contains("hidden")'), Boolean);
+
+  const idleVm = { ...remoteTab, id: 'vm-idle', botId: 'other-bot', handback: null, controller: 'agent' };
+  remoteTabs.set(idleVm.id, idleVm);
+  await refreshVm();
+  await invoke('activate', { id: tab.id, host: tab.host });
+  assert.equal(await evaluate('document.querySelectorAll("#tabs .tab[data-tab-id=vm-idle]").length'), 0, 'idle VM tabs stay out of the Mac strip');
+  assert.equal(await evaluate('document.querySelectorAll("#tabs .tab[data-tab-id=vm-sign-in][data-host=vps]").length'), 1, 'waiting VM tabs stay findable in the Mac strip');
+  assert.equal(await evaluate('document.querySelectorAll("#tabs .tab[data-host=vps] .tab-close").length'), 0, 'VM strip entries have no close button');
+  assert.ok((await api('/v1/tabs')).data.tabs.some(item => item.id === remoteTab.id), 'the bot-facing list still includes VM tabs');
+  assert.ok((await getState()).tabs.some(item => item.id === idleVm.id), 'idle VM tabs remain in state for the VM UI');
+  await evaluate(`(() => {
+    const select = document.querySelector('#tabs .tab[data-tab-id=vm-sign-in][data-host=vps] .tab-select');
+    select.focus(); select.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+  })()`);
+  assert.ok((await getState()).tabs.some(item => item.id === remoteTab.id), 'Delete preserves the waiting VM tab');
+  assert.deepEqual(remoteDeletes, [], 'Delete sends no VM close request');
+  const panel = await evaluate(`(() => {
+    document.getElementById('tabs-menu').click();
+    return { idle: document.querySelectorAll('#tabs-panel .tabs-panel-row[data-tab-id=vm-idle]').length,
+      waiting: document.querySelectorAll('#tabs-panel .tabs-panel-row[data-tab-id=vm-sign-in]').length,
+      close: document.querySelectorAll('#tabs-panel .tabs-panel-row[data-host=vps] .tabs-panel-close').length };
+  })()`);
+  assert.deepEqual(panel, { idle: 0, waiting: 1, close: 0 }, 'the strip overflow menu has the same VM protections');
+  await evaluate('document.getElementById("tabs-menu").click(); document.querySelector("#tabs .tab[data-tab-id=vm-sign-in][data-host=vps] .tab-select").click()');
+  await waitFor(getState, state => state.activeTabId === 'vps' && state.activeVpsTabId === remoteTab.id);
+  await waitFor(() => evaluate('!!document.getElementById("needs-you-give-back").offsetParent'), Boolean);
+  await invoke('activate', { id: idleVm.id, host: 'vps' });
+  await invoke('toggle-vps-view');
+  await invoke('toggle-vps-view');
+  assert.equal((await getState()).activeVpsTabId, idleVm.id, 'a valid VM selection is preserved');
+  remoteTabs.delete(idleVm.id);
+  await refreshVm();
+  await invoke('toggle-vps-view');
+  await invoke('toggle-vps-view');
+  assert.equal((await getState()).activeVpsTabId, remoteTab.id, 'a gone VM selection falls back to the waiting tab');
+
   const vmTab = (await api('/v1/tabs', 'POST', { host: 'vm', url: 'https://login.example/' })).data;
   await invoke('activate', { id: vmTab.id });
   await waitFor(() => evaluate('document.getElementById("needs-you-banner").classList.contains("hidden")'), hidden => !hidden);
+  remoteTabs.set(vmTab.id, { ...remoteTabs.get(vmTab.id), epoch: 8 });
+  await evaluate('document.getElementById("needs-you-give-back").click()');
+  await waitFor(() => evaluate('document.getElementById("toast").textContent'), text => text === 'That changed while you were looking. Press Give back again.');
+  assert.equal(await evaluate('document.getElementById("toast").classList.contains("hidden")'), false);
+  assert.equal(remoteTabs.get(vmTab.id).handback.state, 'awaiting_human', 'a stale VM Give back preserves the hold');
+  assert.equal(remoteTabs.get(vmTab.id).epoch, 8, 'a stale VM Give back preserves the epoch');
+  remoteCalls.length = 0;
   await evaluate('document.getElementById("needs-you-give-back").click()');
   await waitFor(() => remoteCalls.length, count => count === 1);
-  assert.deepEqual(remoteCalls[0], { id: vmTab.id, body: { controller: 'agent', giveBack: true, epoch: 7 }, human: true }, 'the existing button routes the guarded give-back to the VM');
+  assert.deepEqual(remoteCalls[0], { id: vmTab.id, body: { controller: 'agent', giveBack: true, epoch: 8 }, human: true }, 'the second click routes the fresh guarded give-back to the VM');
   assert.equal((await getState()).tabs.find(item => item.id === vmTab.id).handback.state, 'human_returned');
 
   const failures = [];
@@ -176,11 +258,16 @@ app.whenReady().then(async () => {
     assert.equal(remoteTabs.get('vm-a').controller, 'human');
   });
   await check('same-id local and VM handbacks keep their host and epoch', async () => {
+    await refreshVm();
     const local = await invoke('create-tab');
     await invoke('control', { id: local.id, controller: 'agent' });
     const held = (await api(`/v1/tabs/${local.id}/control`, 'POST', { controller: 'human', reason: 'login', note: 'Local sign-in' })).data;
-    remoteTabs.set(local.id, { ...remoteTab, id: local.id, epoch: 100, handback: { ...remoteTab.handback, note: 'VM collision sign-in' } });
+    remoteTabs.set(local.id, { ...remoteTab, id: local.id, epoch: 100, handback: { ...remoteTab.handback, since: held.handback.since, note: 'VM collision sign-in' } });
     await api('/v1/tabs', 'POST', { host: 'vm', fixtureId: local.id });
+    const noticesBeforeVm = shown.length;
+    await refreshVm();
+    assert.equal(shown.length, noticesBeforeVm + 1, 'same-id, same-time handbacks notify separately for each computer');
+    const vmNotice = shown.at(-1);
     await waitFor(() => evaluate(`!!document.querySelector('.tab[data-tab-id="${local.id}"][data-host="vps"] .tab-select')`), Boolean);
     await evaluate(`document.querySelector('.tab[data-tab-id="${local.id}"][data-host="vps"] .tab-select').click()`);
     await waitFor(() => evaluate('document.getElementById("needs-you-text").textContent'), text => text.includes('VM collision sign-in'));
@@ -198,6 +285,8 @@ app.whenReady().then(async () => {
     await waitFor(async () => (await api(`/v1/tabs/${local.id}`)).data, tab => tab.handback.state === 'human_returned');
     assert.equal(remoteCalls.length, before + 1, 'a local give-back never routes to the same-id VM');
     assert.ok((await api(`/v1/tabs/${local.id}`)).data.epoch > held.epoch);
+    await invoke('close-tab', { id: local.id, host: local.host });
+    assert.notEqual(vmNotice.closed, true, 'closing a local tab cannot dismiss the same-id VM notification');
   });
   assert.equal(failures.length, 0, failures.map(error => error.stack).join('\n'));
 

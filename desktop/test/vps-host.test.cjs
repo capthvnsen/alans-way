@@ -537,11 +537,14 @@ test('a second or stale give-back is a no-op', async () => {
   const giveBack = { controller: 'agent', giveBack: true, epoch: held.epoch };
   const returned = (await control(giveBack, true)).data;
   assert.equal(returned.handback.state, 'human_returned');
-  assert.deepEqual((await control(giveBack, true)).data, returned, 'a duplicate preserves the epoch and return marker');
+  assert.deepEqual((await control(giveBack, true)).data, { ...returned, refused: 'stale' }, 'a duplicate signals the stale epoch');
+  assert.deepEqual((await api(`/v1/tabs/${tab.id}`)).data, returned, 'a duplicate preserves the epoch and return marker');
   const reclaimed = (await control({ controller: 'agent' })).data;
-  assert.deepEqual((await control(giveBack, true)).data, reclaimed, 'a delayed click cannot change a reclaimed tab');
+  assert.deepEqual((await control(giveBack, true)).data, { ...reclaimed, refused: 'stale' }, 'a delayed click signals the stale epoch');
+  assert.deepEqual((await api(`/v1/tabs/${tab.id}`)).data, reclaimed, 'a delayed click cannot change a reclaimed tab');
   const next = (await control({ controller: 'human', reason: 'two_factor' })).data;
-  assert.deepEqual((await control(giveBack, true)).data, next, 'an earlier give-back cannot release a new hold');
+  assert.deepEqual((await control(giveBack, true)).data, { ...next, refused: 'stale' }, 'an earlier give-back signals the stale epoch');
+  assert.deepEqual((await api(`/v1/tabs/${tab.id}`)).data, next, 'an earlier give-back cannot release a new hold');
   host.setNow(1001 + HANDBACK_MS);
   const expired = (await api(`/v1/tabs/${tab.id}`)).data;
   assert.equal(expired.handback, null);

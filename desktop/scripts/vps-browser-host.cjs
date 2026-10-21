@@ -1064,7 +1064,7 @@ async function serve() {
       }
       if ((human || overseer || botId === tab.botId) && req.method === 'POST' && m[2] === 'control') {
         const body = control;
-        if (human && body.giveBack === true && (body.controller !== 'agent' || tab.controller !== 'human' || liveHandback(tab)?.state !== 'awaiting_human' || body.epoch !== tab.epoch)) return send(200, describe(tab));
+        if (human && body.giveBack === true && (body.controller !== 'agent' || tab.controller !== 'human' || liveHandback(tab)?.state !== 'awaiting_human' || body.epoch !== tab.epoch)) return send(200, { ...describe(tab), ...(body.epoch !== tab.epoch ? { refused: 'stale' } : {}) });
         if (!human && body.controller === 'agent') { requireAgentClaim(tab); tab.handoff = reviewedHandoff(tab.handoff); }
         const handback = !human && body.controller !== 'agent' ? handbackRequest(body) : null;
         if (human && body.handoff?.phase === 'handed_off')
