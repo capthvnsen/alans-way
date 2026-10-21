@@ -113,7 +113,7 @@ test('a Cloudflare interstitial that clears by itself is waited out, so the repl
   const page = (challenge) => ({ title: challenge ? 'Just a moment...' : 'Results', url: challenge ? 'https://x.example/' : 'https://x.example/results', sameDoc: false, challenge,
     loading: false, text: challenge ? 'Verify you are human' : 'Ten results', textSig: '', elements: [], seq: 0, gone: [], overlays: [], truncated: { text: false, elements: false } });
   const execute = async (code) => {
-    if (code.startsWith('(async')) return page(cleared ? null : { kind: 'cloudflare', blocking: true });
+    if (code.includes('hw.snapshotReader')) return page(cleared ? null : { kind: 'cloudflare', blocking: true });
     challengeReads++;
     if (challengeReads === 2) { cleared = true; throw new Error('Execution context was destroyed.'); }
     return cleared ? null : { kind: 'cloudflare', blocking: true };
@@ -124,7 +124,7 @@ test('a Cloudflare interstitial that clears by itself is waited out, so the repl
   assert.equal(reply.effect.url, 'https://x.example/results');
   assert.equal(reply.effect.navigated, true);
   // One that stays is reported once the wait runs out.
-  const stuck = await readEffect(async (code) => code.startsWith('(async') ? page({ kind: 'cloudflare', blocking: true }) : { kind: 'cloudflare', blocking: true }, { refs: new Set() }, { navigated: true, cloudflareWaitMs: 600 });
+  const stuck = await readEffect(async (code) => code.includes('hw.snapshotReader') ? page({ kind: 'cloudflare', blocking: true }) : { kind: 'cloudflare', blocking: true }, { refs: new Set() }, { navigated: true, cloudflareWaitMs: 600 });
   assert.deepEqual(stuck.challenge, { kind: 'cloudflare', blocking: true });
 });
 

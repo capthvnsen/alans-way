@@ -478,7 +478,7 @@ function resolveScript(target, { focus = false, type = false, select = false, pr
       // Name the dialog or banner in the way, and what closes it.
       const store = window[Symbol.for(${JSON.stringify(REFS_KEY)})], found = store && store.layer ? store.layer(coveredBy) : null;
       if (found) return { fail: 'covered', layer: found.out };
-      return { fail: 'covered by ' + coveredBy.tagName.toLowerCase() + (coveredBy.id ? '#' + coveredBy.id : typeof coveredBy.className === 'string' && coveredBy.className.trim() ? '.' + coveredBy.className.trim().split(/\\s+/)[0] : '') };
+      return { fail: 'covered by ' + coveredBy.tagName.toLowerCase() + (coveredBy.id ? '#' + coveredBy.id.slice(0, 120) : typeof coveredBy.className === 'string' && coveredBy.className.trim() ? '.' + coveredBy.className.trim().split(/\\s+/)[0].slice(0, 120) : '') };
     }
     if (!point) return { fail: 'no clickable point' };
     if (${focus}) {
@@ -795,16 +795,31 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
       const found = await boundedJs(wc, resolveScript(target, { ...options, dry: !!tab.preflight, seed: tab.refSeed }));
       check();
       if (found && found.deferred) dry();
-      if (found && found.fail === 'stale') throw staleRef(target.ref);
       if (found && found.fail === 'challenge') throw challengePresent(found.challenge);
-      const listed = (items) => items.map((item) => `${item.ref} ${JSON.stringify(item.name || '')}${item.row ? ` (row ${JSON.stringify(item.row)})` : ''}`).join(', ');
+      if (found?.fail && !found.candidates && (/^(stale|missing or disabled|no visible area|no clickable point)$/.test(found.fail) || found.fail.startsWith('covered by '))) {
+        found.candidates = await boundedJs(wc, `(() => {
+          const S = ${refsSource(tab.refSeed)};
+          const entries = S.collect(performance.now() + 50, 200, 5).list.map(el => ({ el, d: S.describe(el) }));
+          S.assign(entries, ${tab.refSeed || 0}, false);
+          return entries.map(x => ({ ref: x.ref, name: x.d.name.slice(0, 120), ...(x.row ? { row: x.row.slice(0, 120) } : {}) }));
+        })()`, 1000).catch(() => []);
+        check();
+      }
+      const bounded = items => (Array.isArray(items) ? items : []).filter(item => /^e\d+$/.test(item.ref)).slice(0, 5);
+      const listed = items => bounded(items).map(item => `${item.ref} ${JSON.stringify((item.name || '').slice(0, 120))}${item.row ? ` (row ${JSON.stringify(item.row.slice(0, 120))})` : ''}`).join(', ');
+      function candidates(items) {
+        const shown = bounded(items);
+        for (const item of shown) issueRef(tab, item.ref);
+        return shown.length ? ` Candidates: ${listed(shown)}. Choose a ref only if it is the control you mean.` : '';
+      }
+      if (found && found.fail === 'stale') { const error = staleRef(target.ref); error.message += candidates(found.candidates); throw error; }
       const unread = found && found.cut ? ' The page has more controls than a name lookup reads; snapshot or scroll for the rest.' : '';
       if (found && found.fail === 'unnamed') {
-        for (const item of found.near) issueRef(tab, item.ref);
+        for (const item of bounded(found.near)) issueRef(tab, item.ref);
         throw fail(`No visible control is named exactly ${JSON.stringify(target.name)}${target.role ? ` with role ${target.role}` : ''}${target.row ? ` in a row with ${JSON.stringify(target.row)}` : ''}.${found.near.length ? ` Close matches: ${listed(found.near)}. Act on one by ref if it is the one you mean.` : ' Snapshot to see the controls on the page.'}${unread}`);
       }
       if (found && found.fail === 'ambiguous') {
-        for (const item of found.many) issueRef(tab, item.ref);
+        for (const item of bounded(found.many)) issueRef(tab, item.ref);
         throw fail(`${found.count} controls match ${JSON.stringify(target.name)}: ${listed(found.many)}${found.count > found.many.length ? ', ...' : ''}. Act on one by ref, or narrow with role or row.${unread}`);
       }
       if (found && found.partial) {
@@ -819,7 +834,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         if (close) issueRef(tab, close);
         throw fail(`Element is covered by ${JSON.stringify(name || 'an overlay')}. ${close ? `Close it first: click ${close} (${JSON.stringify(closeName)}), then retry.` : 'Close it first (press Escape or click its close control), then retry.'}`);
       }
-      if (!found || found.fail) throw fail(`Element is ${found ? found.fail : 'unavailable'}. Request a fresh snapshot or use a different selector.`);
+      if (!found || found.fail) throw fail(`Element is ${found ? found.fail : 'unavailable'}.${candidates(found?.candidates)} Request a fresh snapshot or use a different selector.`);
       return found;
     }
     const probe = async (expression) => { const look = await boundedJs(wc, `(() => { const C = ${commitSource(tab.refSeed)}; return ${expression}; })()`).catch(() => null); check(); return look && typeof look === 'object' ? look : null; };

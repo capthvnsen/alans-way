@@ -7,13 +7,13 @@ const fs = require('node:fs'),
   http = require('node:http'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
-const { CDP, AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
+const { CDP, AGENT_BROWSER_FLAGS, screenshotClip } = require('../src/cdp.cjs');
 const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe, viewerUrl } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
 const { createAgentInput, APPROVED, refuseChallenge, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
 const INPUT_ACTIONS = agentInputModule.INPUT_ACTIONS || new Set(['click', 'type', 'press', 'move', 'scroll']);
-const { snapshotExpression, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('../src/browser-page.cjs');
+const { cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('../src/browser-page.cjs');
 const root =
   process.env.HERMES_VPS_BROWSER_DATA ||
   (process.platform === 'darwin'
@@ -473,7 +473,7 @@ async function serve() {
   async function actionEffect(tab, opts) {
     try {
       requireAgentRead(tab);
-      const effect = await readEffect((code) => tab.view.webContents.executeJavaScript(code), tab, opts);
+      const effect = await readEffect((code) => { requireAgentRead(tab); return tab.view.webContents.executeJavaScript(code); }, tab, opts);
       requireAgentRead(tab);
       if (effect) return { ...effect, ...(await handleChallenge(tab, effect.effect?.url || tab.url, effect.challenge)), ...takePageEvents(tab) };
       return { effect: { ...EMPTY_EFFECT }, error: 'The page returned no state.', ...takePageEvents(tab) };
@@ -532,7 +532,7 @@ async function serve() {
       // A read step is the model's own baseline, so it must not plant the doc
       // marker: on a fresh document the missing marker is what lets the final
       // effect report the navigation it observed.
-      const data = await wc.executeJavaScript(snapshotExpression({ maxChars, maxElements: 0, elementMs: 5, mark: false })).catch(() => null);
+      const data = await cachedSnapshot(code => { requireActor(tab, botId, body.epoch, true, overseer); return wc.executeJavaScript(code); }, { maxChars, maxElements: 0, elementMs: 5, mark: false }).catch(() => null);
       requireActor(tab, botId, body.epoch, true, overseer);
       if (data) { tab.lastRead = data.sameDoc === false ? null : lastReadOf(data); tab.docMarked = tab.docMarked || data.sameDoc === true; }
       return finish({ text: (data && typeof data.text === 'string' ? data.text : ''), dispatched: true });
@@ -603,7 +603,7 @@ async function serve() {
       if (!value || !value.found) throw fail(`wait timed out after ${value ? value.waited : Date.now() - hostStart}ms for ${gone ? 'absence of ' : ''}${[selector && `selector ${JSON.stringify(selector)}`, text && `text ${JSON.stringify(text.slice(0, 80))}`, urlPart && `url containing ${JSON.stringify(urlPart.slice(0, 80))}`].filter(Boolean).join(' and ')}. Snapshot the page to see its current state.`, 408);
       // A successful wait observed the page, so it becomes the read baseline:
       // the final effect must not re-report what the wait already confirmed.
-      const waited = await wc.executeJavaScript(snapshotExpression({ maxChars: 8000, maxElements: 0, elementMs: 5, mark: false })).catch(() => null);
+      const waited = await cachedSnapshot(code => { requireActor(tab, botId, body.epoch, true, overseer); return wc.executeJavaScript(code); }, { maxChars: 8000, maxElements: 0, elementMs: 5, mark: false }).catch(() => null);
       if (waited) { tab.lastRead = waited.sameDoc === false ? null : lastReadOf(waited); tab.docMarked = tab.docMarked || waited.sameDoc === true; }
       return finish({ waited: value.waited, dispatched: true });
     }
@@ -1001,7 +1001,7 @@ async function serve() {
           const generation = ++tab.generation;
           let timer;
           const read = () => Promise.race([
-            wc.executeJavaScript(snapshotExpression({ ...opts, seed: tab.refSeed })),
+            cachedSnapshot(code => { if (!human) requireAgentRead(tab); return wc.executeJavaScript(code); }, { ...opts, seed: tab.refSeed }),
             new Promise((_, reject) => {
               timer = setTimeout(() => reject(fail('Snapshot timed out after 10s. The page may be unresponsive.', 503)), 10000);
             }),
@@ -1025,6 +1025,7 @@ async function serve() {
         if (!['jpeg', 'png', 'webp'].includes(format)) throw fail('format must be jpeg, png, or webp.');
         const quality = intParam(url, 'quality', 1, 100) ?? 50;
         const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 960;
+        const rawCrop = url.searchParams.get('crop');
         const capture = tab.queue.then(async () => {
           if (!human) requireAgentRead(tab);
           await wc.executeJavaScript('new Promise(resolve => { const timer = setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); })); })');
@@ -1033,17 +1034,16 @@ async function serve() {
           );
           // No resize post-capture here: clip.scale is the downscale knob,
           // keeping the emitted image at maxWidth pixels when it would exceed it.
-          const dsf = viewport.deviceScaleFactor || 1;
-          const scale = viewport.width * dsf > maxWidth ? Math.max(0.01, maxWidth / viewport.width) : dsf;
-          const params = { format, fromSurface: true, clip: { x: viewport.pageLeft, y: viewport.pageTop, width: viewport.width, height: viewport.height, scale } };
+          const { clip, crop } = screenshotClip(viewport, rawCrop, maxWidth);
+          const params = { format, fromSurface: true, clip };
           if (format !== 'png') params.quality = quality;
           const shot = await wc.command('Page.captureScreenshot', params);
           if (!human) requireAgentRead(tab);
-          return { shot, viewport };
+          return { shot, viewport, crop };
         });
         tab.queue = capture.catch(() => {});
-        const { shot, viewport } = await capture;
-        return send(200, { base64: shot.data, mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], viewport, tab: describe(tab) });
+        const { shot, viewport, crop } = await capture;
+        return send(200, { base64: shot.data, mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], viewport, ...(rawCrop === null ? {} : { crop }), tab: describe(tab) });
       }
       if (req.method === 'POST' && m[2] === 'actions') {
         const controller = new AbortController();

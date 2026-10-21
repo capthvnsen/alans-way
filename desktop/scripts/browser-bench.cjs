@@ -193,7 +193,7 @@ function merge(known, reply) {
   return out;
 }
 class Agent {
-  constructor(client, opts) { Object.assign(this, { client, opts, known: [], seen: '', tab: null, stats: { calls: 0, ms: 0, chars: 0, imageTokens: 0, errors: 0, snapshots: 0 }, log: [] }); }
+  constructor(client, opts) { Object.assign(this, { client, opts, known: [], seen: '', tab: null, stats: { calls: 0, ms: 0, chars: 0, imageBytes: 0, imageTokens: 0, errors: 0, snapshots: 0 }, log: [] }); }
   async call(name, args) {
     if (this.stats.calls) await sleep(think);
     this.stats.calls++;
@@ -203,7 +203,10 @@ class Agent {
     let text = '';
     for (const c of r.content || []) {
       if (c.type === 'text') text += c.text;
-      else if (c.type === 'image') this.stats.imageTokens += 1000; // corrected below from the viewport note
+      else if (c.type === 'image') {
+        this.stats.imageBytes += Buffer.from(c.data, 'base64').length;
+        this.stats.imageTokens += 1000; // corrected below from the viewport note
+      }
     }
     this.stats.chars += text.length;
     let data; try { data = JSON.parse(text); } catch { data = text; }
@@ -511,7 +514,7 @@ async function runAgentSuite() {
           const tabs = await raw('/v1/tabs');
           fx.lastUrl = ((Array.isArray(tabs) ? tabs : tabs.tabs || [])[0] || {}).url;
           const ok = !err && !!(await task.check(fx, ans));
-          rows.push({ engine: label, task: task.id, run, ok, calls: a.stats.calls, snapshots: a.stats.snapshots, errors: a.stats.errors, tokens: Math.round(a.stats.chars / 4) + a.stats.imageTokens, imageTokens: a.stats.imageTokens, toolMs: a.stats.ms, wallMs: wall, answer: ans.slice(0, 80), err: err.slice(0, 300), log: a.log });
+          rows.push({ engine: label, task: task.id, run, ok, calls: a.stats.calls, snapshots: a.stats.snapshots, errors: a.stats.errors, chars: a.stats.chars, imageBytes: a.stats.imageBytes, tokens: Math.round(a.stats.chars / 4) + a.stats.imageTokens, imageTokens: a.stats.imageTokens, toolMs: a.stats.ms, wallMs: wall, answer: ans.slice(0, 80), err: err.slice(0, 300), log: a.log });
           const r = rows.at(-1);
           console.log(`${label.padEnd(8)} ${task.id.padEnd(18)} ${ok ? 'PASS' : 'FAIL'} calls=${r.calls} snap=${r.snapshots} err=${r.errors} tok=${r.tokens} toolMs=${r.toolMs}${ok ? '' : ' :: ' + (err || ans)}`);
         }

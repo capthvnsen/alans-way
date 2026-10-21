@@ -109,8 +109,23 @@ class CDP {
     };
   }
 }
+// Crop coordinates are CSS pixels relative to the visible viewport.
+function screenshotClip(viewport, rawCrop, maxWidth) {
+  let crop = { x: 0, y: 0, width: viewport.width, height: viewport.height };
+  if (rawCrop !== null && rawCrop !== undefined) {
+    try { crop = JSON.parse(rawCrop); } catch { crop = null; }
+    if (!crop || !['x', 'y', 'width', 'height'].every(key => Number.isFinite(crop[key]))
+      || crop.x < 0 || crop.y < 0 || crop.width <= 0 || crop.height <= 0
+      || crop.x + crop.width > viewport.width || crop.y + crop.height > viewport.height)
+      throw Object.assign(new Error('crop must be a rectangle {x, y, width, height} inside the viewport, in CSS pixels.'), { status: 400 });
+    crop = { x: crop.x, y: crop.y, width: crop.width, height: crop.height };
+  }
+  const dsf = viewport.deviceScaleFactor || 1;
+  const scale = maxWidth && crop.width * dsf > maxWidth ? Math.max(0.01, maxWidth / crop.width) : dsf;
+  return { crop, clip: { x: (viewport.pageLeft || 0) + crop.x, y: (viewport.pageTop || 0) + crop.y, width: crop.width, height: crop.height, scale } };
+}
 // Agent tabs open as background windows; a hidden page clamps its timers and
 // stops rAF, which stalls every settle wait. Appended to the configured args so
 // an app update applies them on the next Chromium start (the last copy wins).
 const AGENT_BROWSER_FLAGS = ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'];
-module.exports = { CDP, AGENT_BROWSER_FLAGS };
+module.exports = { screenshotClip, CDP, AGENT_BROWSER_FLAGS };

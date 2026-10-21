@@ -9,6 +9,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { CDP } = require('../src/cdp.cjs');
+const { cachedSnapshot, snapshotExpression } = require('../src/browser-page.cjs');
 const crypto = require('node:crypto');
 // Test harness scripts that use timers or requests carry an approval, as a
 // router-approved call would (see the app's commit check).
@@ -116,6 +117,7 @@ before(async () => {
     '/worker': page(`<script>new Worker('/worker.js')</script>worker`),
     '/pop': page(`<script>setTimeout(()=>{window.open("${T}?pop");fetch('/mark?pop',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/pop-userinfo': page(`<script>setTimeout(()=>{window.open("http://u:p@127.0.0.1:${pb}/secret?popcred");fetch('/mark?pop-userinfo',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
+    '/reader': page('<button type="button" onclick="document.getElementById(\'result\').textContent=\'Details ready\'">Open details</button><p id="result"></p>'),
     '/pop-blank': page(`<script>setTimeout(()=>{var w=window.open("about:blank");if(w)w.location="${T}?popblank";fetch('${T}?popblank-fetch',{mode:'no-cors'}).catch(()=>{});fetch('/mark?pop-blank',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/ok': page('<p id=ok>ok</p>' + '<img src="/i.png?1"><img src="/i.png?2"><img src="/i.png?3">'),
     '/white': page('<style>body{margin:0;min-height:5000px;background:white}</style>'),
@@ -206,6 +208,95 @@ test('a screenshot after scrolling 3000px is not blank', { skip: !chrome && 'no 
   } finally {
     for (const tab of [white, stripes]) await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch);
   }
+});
+
+test('real Chromium: recover a missed target, read its effect, and keep the reader across same-document reads', { skip: !chrome, timeout: 30000 }, async () => {
+  const opened = await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/reader` });
+  const tab = opened.data;
+  try {
+    const missed = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', selector: '#old-control', epoch: tab.epoch });
+    assert.equal(missed.status, 400);
+    assert.match(missed.data.error, /Candidates: e\d+ "Open details"/);
+    const ref = /Candidates: (e\d+)/.exec(missed.data.error)[1];
+    const acted = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'click', ref, epoch: tab.epoch });
+    assert.equal(acted.status, 200, JSON.stringify(acted.data));
+    assert.match(acted.data.effect.text, /Details ready/);
+    const reader = 'window[Symbol.for("hw.snapshotReader")]';
+    const installed = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: `Object.getOwnPropertyDescriptor(window, Symbol.for("hw.snapshotReader")).enumerable`, epoch: tab.epoch });
+    assert.equal(installed.data.value, false);
+    const snap = await api(`/v1/tabs/${tab.id}/snapshot`);
+    assert.match(snap.data.text, /Details ready/);
+    // Lose the cached context, then verify the next ordinary read refills it.
+    const cdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+    try {
+      const { targetInfos } = await cdp.send('Target.getTargets');
+      const target = targetInfos.find(t => t.url === `http://test.example:${pa}/reader`);
+      const wc = await cdp.page(target.targetId);
+      await wc.executeJavaScript(`delete ${reader}`);
+      assert.match((await api(`/v1/tabs/${tab.id}/snapshot`)).data.text, /Details ready/);
+      assert.equal(await wc.executeJavaScript(`typeof ${reader}.read`), 'function');
+      const priorRef = Number(ref.slice(1));
+      await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'navigate', url: `http://test.example:${pa}/reader?next`, epoch: tab.epoch });
+      const next = await api(`/v1/tabs/${tab.id}/snapshot`);
+      assert.ok(next.data.elements.every(el => Number(el.ref.slice(1)) > priorRef));
+    } finally { cdp.socket.close(); }
+  } finally { await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch); }
+});
+
+test('real Chromium: warm reads send less source and return the same page', { skip: !chrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/reader?measure` })).data;
+  const cdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+  try {
+    const { targetInfos } = await cdp.send('Target.getTargets');
+    const wc = await cdp.page(targetInfos.find(t => t.url.endsWith('/reader?measure')).targetId);
+    const opts = { maxChars: 2000, seed: 100 };
+    await wc.executeJavaScript(snapshotExpression(opts));
+    const baseline = [], cached = [];
+    let baselineBytes = 0, cachedBytes = 0;
+    for (let i = 0; i < 20; i++) {
+      const code = snapshotExpression(opts), start = performance.now();
+      const old = await wc.executeJavaScript(code);
+      baseline.push(performance.now() - start); baselineBytes += Buffer.byteLength(code);
+      const nextStart = performance.now();
+      const current = await cachedSnapshot(code => { cachedBytes += Buffer.byteLength(code); return wc.executeJavaScript(code); }, opts);
+      cached.push(performance.now() - nextStart);
+      assert.deepEqual(current, old);
+    }
+    assert.ok(cachedBytes < baselineBytes / 10);
+    const quantile = (list, q) => [...list].sort((a, b) => a - b)[Math.ceil(list.length * q) - 1];
+    console.log(JSON.stringify({ readerMeasurement: { reads: 20, baselineBytes, cachedBytes, baselineMs: { p50: quantile(baseline, .5), p95: quantile(baseline, .95) }, cachedMs: { p50: quantile(cached, .5), p95: quantile(cached, .95) } } }));
+  } finally { cdp.socket.close(); await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch); }
+});
+
+test('real Chromium: crop a scrolled page and preserve the image coordinate origin', { skip: !chrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/stripes` })).data;
+  try {
+    await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'scroll', y: 1500, epoch: tab.epoch });
+    const full = await api(`/v1/tabs/${tab.id}/screenshot?format=png`);
+    const crop = { x: 20, y: 30, width: 200, height: 120 };
+    const shot = await api(`/v1/tabs/${tab.id}/screenshot?format=png&maxWidth=100&crop=${encodeURIComponent(JSON.stringify(crop))}`);
+    assert.equal(shot.status, 200, JSON.stringify(shot.data));
+    assert.deepEqual(shot.data.crop, crop);
+    assert.deepEqual(shot.data.viewport, full.data.viewport);
+    const png = Buffer.from(shot.data.base64, 'base64');
+    assert.equal(png.readUInt32BE(16), 100);
+    assert.equal(png.readUInt32BE(20), 60);
+    assert.ok(png.length < Buffer.from(full.data.base64, 'base64').length);
+    console.log(JSON.stringify({ screenshotMeasurement: { fullBytes: Buffer.from(full.data.base64, 'base64').length, croppedBytes: png.length, crop, imageWidth: 100, imageHeight: 60 } }));
+    const cdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+    try {
+      const { targetInfos } = await cdp.send('Target.getTargets');
+      const wc = await cdp.page(targetInfos.find(t => t.url.endsWith('/stripes')).targetId);
+      await wc.command('Emulation.setDeviceMetricsOverride', { width: 756, height: 413, deviceScaleFactor: 2, mobile: false });
+      const retina = await api(`/v1/tabs/${tab.id}/screenshot?format=png&maxWidth=100&crop=${encodeURIComponent(JSON.stringify(crop))}`);
+      const retinaPng = Buffer.from(retina.data.base64, 'base64');
+      assert.equal(retinaPng.readUInt32BE(16), 100);
+      assert.equal(retinaPng.readUInt32BE(20), 60);
+      assert.deepEqual(retina.data.crop, crop);
+    } finally { cdp.socket.close(); }
+    const invalid = await api(`/v1/tabs/${tab.id}/screenshot?crop=${encodeURIComponent('{"x":0,"y":0,"width":99999,"height":1}')}`);
+    assert.equal(invalid.status, 400);
+  } finally { await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch); }
 });
 
 test('real Chromium: an agent page cannot reach loopback or metadata by redirect, pop-up, frame, form, worker or subresource', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
