@@ -917,3 +917,49 @@ test('a named step sent to a host from before name targets says to act by ref', 
   const plain = await act({ action: 'click', x: 5, y: 5 });
   assert.doesNotMatch(plain.content[0].text, /name targets/, 'an unnamed failure keeps its own message');
 });
+
+test('a cropped browser screenshot reaches the host and returns its coordinate mapping', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-crop-'));
+  const viewport = { width: 1000, height: 800, pageLeft: 0, pageTop: 3000, deviceScaleFactor: 2 };
+  const crop = { x: 40, y: 60, width: 200, height: 120 };
+  const seen = [];
+  const host = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://fixture.example');
+    const region = url.searchParams.has('crop') ? JSON.parse(url.searchParams.get('crop')) : undefined;
+    seen.push({ path: url.pathname, crop: region, format: url.searchParams.get('format'), maxWidth: url.searchParams.get('maxWidth'), quality: url.searchParams.get('quality') });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ base64: 'AQID', mimeType: 'image/png', viewport, ...(region ? { crop: region } : {}) }));
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  const connection = path.join(profile, 'connection.json');
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'crop-test', '--connection', connection] });
+  const client = new Client({ name: 'browser-crop-test', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {});
+    await transport.close().catch(() => {});
+    host.closeAllConnections();
+    await new Promise(resolve => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const result = await client.callTool({ name: 'cua_alans_way_screenshot', arguments: { tabId: 't1', format: 'png', maxWidth: 100, crop } });
+  assert.deepEqual(seen, [{ path: '/v1/tabs/t1/screenshot', crop, format: 'png', maxWidth: '100', quality: '50' }]);
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.content[0], { type: 'image', data: 'AQID', mimeType: 'image/png' });
+  const mapping = JSON.parse(result.content[1].text);
+  assert.deepEqual(mapping.viewport, viewport);
+  assert.deepEqual(mapping.crop, crop);
+  assert.match(mapping.note, /x = crop\.x \+ px \* crop\.width \/ image width/);
+  assert.match(mapping.note, /y = crop\.y \+ py \* crop\.height \/ image height/);
+  const tool = (await client.listTools()).tools.find(tool => tool.name === 'cua_alans_way_screenshot');
+  assert.deepEqual(tool.inputSchema.properties.crop.required, ['x', 'y', 'width', 'height']);
+  assert.equal(tool.inputSchema.properties.crop.additionalProperties, false);
+  const full = await client.callTool({ name: 'cua_alans_way_screenshot', arguments: { tabId: 't1' } });
+  const fullMapping = JSON.parse(full.content[1].text);
+  assert.deepEqual(fullMapping.viewport, viewport);
+  assert.equal(fullMapping.crop, undefined);
+  assert.match(fullMapping.note, /viewport.width \/ image width/);
+  assert.deepEqual(seen[1], { path: '/v1/tabs/t1/screenshot', crop: undefined, format: null, maxWidth: '960', quality: '50' });
+});
