@@ -61,6 +61,12 @@ const healthy = (over = {}) => ({
 });
 const byTitle = (findings, pattern) => findings.find((f) => pattern.test(f.title));
 
+test('unavailable permission probes never claim a permission is off', () => {
+  const findings = buildFindings(healthy({ local: { permissions: { accessibility: null, screen: 'unknown' } } }));
+  assert.match(byTitle(findings, /Accessibility/).title, /could not be checked/);
+  assert.match(byTitle(findings, /Screen Recording/).title, /could not be checked/);
+});
+
 test('a healthy Mac setup is all ok and offers no actions', () => {
   const findings = buildFindings(healthy());
   assert.ok(findings.length >= 10);

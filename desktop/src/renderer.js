@@ -1266,7 +1266,10 @@ function showMacPermissions(body) {
   const retry = element('button', 'secondary-button', 'Refresh permission status'); body.append(retry); const message = settingsStatus(body);
   const refresh = async () => {
     const reply = await runSettingsAction(retry, message, () => api.command('mac-permissions'), 'Checking permission status…');
-    for (const { pane, label, status } of rows) status.textContent = `${label}: ${reply.ok && reply.result ? (reply.result[pane] === true || reply.result[pane] === 'granted' ? 'on' : 'off') : 'unavailable'}`;
+    for (const { pane, label, status } of rows) {
+      const value = reply.ok && reply.result ? reply.result[pane] : null;
+      status.textContent = `${label}: ${value === true || value === 'granted' ? 'on' : value === false || value === 'denied' ? 'off' : 'unavailable'}`;
+    }
   };
   retry.onclick = refresh; refresh();
 }

@@ -8,6 +8,51 @@ const mac = require('../src/computer.cjs');
 
 const skip = process.platform !== 'darwin' && 'the Swift helper only builds on macOS';
 
+// Compile the real helper with only OS boundaries replaced. No apps are opened,
+// activated, read or driven, and no TCC grant is needed.
+let nativeFixture;
+function fixtureBinary(t) {
+  if (nativeFixture) return nativeFixture;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-fixture-'));
+  let source = fs.readFileSync(path.join(__dirname, '../scripts/mac-computer.swift'), 'utf8').split('// MARK: entry')[0];
+  for (const [from, to] of [
+    ['AXUIElementCopyAttributeValue(', 'fixtureAttribute('],
+    ['AXUIElementCopyMultipleAttributeValues(', 'fixtureAttributes('],
+    ['AXUIElementPerformAction(', 'fixturePerform('],
+    ['AXUIElementSetAttributeValue(', 'fixtureSet('],
+    ['CGWindowListCopyWindowInfo(', 'fixtureWindows('],
+    ['AXIsProcessTrusted()', 'fixtureTrusted'],
+    ['CGPreflightScreenCaptureAccess()', 'fixtureScreen'],
+    ['NSRunningApplication(processIdentifier: pid)', 'Optional(NSRunningApplication.current)'],
+    ['app.activationPolicy == .regular', 'true'],
+    ['!app.isTerminated', 'true'],
+    ['app.bundleIdentifier ?? ""', 'fixtureBundleId'],
+    ['NSWorkspace.shared.frontmostApplication?.processIdentifier', 'fixtureFront'],
+    ['(CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true', 'fixtureLocked'],
+    ['CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: kCGAnyInputEventType)', 'fixtureIdle'],
+    ['NSWorkspace.shared.urlForApplication(', 'fixtureURL('],
+    ['NSWorkspace.shared.fullPath(', 'fixturePath('],
+    ['NSWorkspace.shared.openApplication(', 'fixtureOpen('],
+    ['app.activate(options:', 'fixtureActivate(app, options:'],
+  ]) source = source.split(from).join(to);
+  const file = path.join(dir, 'fixture.swift');
+  fs.writeFileSync(file, source + '\n' + fs.readFileSync(path.join(__dirname, 'mac-native-fixture.swift'), 'utf8'));
+  const binary = path.join(dir, 'fixture');
+  const built = spawnSync('swiftc', ['-o', binary, file], { encoding: 'utf8', timeout: 120000 });
+  assert.equal(built.status, 0, built.stderr);
+  nativeFixture = binary;
+  process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
+  return binary;
+}
+
+for (const scenario of ['front-read', 'front-action', 'menu-retry', 'launch', 'window-focus', 'window-ref', 'permissions', 'activate']) {
+  test(`native fixture: ${scenario}`, { skip, timeout: 120000 }, (t) => {
+    const result = spawnSync(fixtureBinary(t), [scenario], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+  });
+}
+
 test('the Mac helper builds and its self test passes', { skip, timeout: 120000 }, async () => {
   const binary = await mac.ensureBinary();
   const result = spawnSync(binary, ['selftest'], { encoding: 'utf8' });
@@ -111,4 +156,3 @@ test('the Mac helper checks focus before pressing or clicking menu items', () =>
   assert.ok((run.match(/rejectSecureFocusForMenu\(pid, /g) || []).length >= 4, 'press, click, double_click and right_click');
   assert.match(swift, /Fail\("focus_unverified", "Could not verify which field has focus; retry or snapshot first\."\)/);
 });
-

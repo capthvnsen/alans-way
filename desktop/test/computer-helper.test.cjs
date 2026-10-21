@@ -9,7 +9,24 @@ const { createHelper, createComputer, createComputerService, normalizeStep, norm
 const { pickHelper, makeCompile } = require('../src/computer.cjs');
 const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
 
-function permissionComputer(t, handle, fakeTimers = false, answerInit = true) {
+test('Mac launch and permission reads reach the helper, while other hosts keep their verbs', async (t) => {
+  const calls = [];
+  const mac = permissionComputer(t, (request) => {
+    calls.push(request);
+    return request.cmd === 'launch' ? { ok: true, pid: 7, bundleId: 'com.example.calculator' }
+      : { ok: true, accessibility: false, screenRecording: true };
+  }, false, true, true);
+  assert.deepEqual(await mac.service.launch('Calculator'), { pid: 7, bundleId: 'com.example.calculator' });
+  assert.deepEqual(await mac.service.permissions(), { accessibility: false, screenRecording: true });
+  assert.deepEqual(calls.map(item => item.cmd), ['launch', 'permissions']);
+  await assert.rejects(mac.service.launch('/Applications/Calculator.app'), { code: 'bad_request' });
+  const other = createComputer({ command: async () => ['fixture'] });
+  assert.equal(other.service.launch, undefined);
+  assert.equal(other.service.permissions, undefined);
+  assert.deepEqual(normalizeStep({ action: 'activate' }), { action: 'activate' });
+});
+
+function permissionComputer(t, handle, fakeTimers = false, answerInit = true, nativeMac = false) {
   t.mock.method(performance, 'now', () => Date.now());
   const { EventEmitter } = require('node:events');
   const { PassThrough } = require('node:stream');
@@ -37,7 +54,7 @@ function permissionComputer(t, handle, fakeTimers = false, answerInit = true) {
   let computer;
   try {
     delete require.cache[filename];
-    computer = require(filename).createComputer({ command: async () => ['fixture'] });
+    computer = require(filename).createComputer({ command: async () => ['fixture'], nativeMac });
   } finally { require.cache[filename] = cached; }
   t.after(() => computer.close());
   return { ...computer, children };

@@ -4,6 +4,16 @@ const { performance } = require('node:perf_hooks');
 const { calls, context } = require('../src/call-budget.cjs');
 const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
 
+test('permission status uses helper preflight and preserves unknown on failure', async () => {
+  const { readMacPermissions } = require('../src/mac-permissions.cjs');
+  assert.deepEqual(await readMacPermissions({ permissions: async () => ({ accessibility: true, screenRecording: false }) }),
+    { accessibility: true, screen: 'denied' });
+  assert.deepEqual(await readMacPermissions({ permissions: async () => ({ accessibility: false, screenRecording: true }) }),
+    { accessibility: false, screen: 'granted' });
+  assert.deepEqual(await readMacPermissions({ permissions: async () => { throw new Error('Unavailable'); } }),
+    { accessibility: null, screen: 'unknown' });
+});
+
 function fixture(t, { platform = 'darwin', screen = 'denied', grantOnPoll = Infinity, waitMs = 30, pollMs = 10 } = {}) {
   let now = 0;
   t.mock.method(Date, 'now', () => now);

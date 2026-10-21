@@ -86,9 +86,11 @@ function computerRows({ platform, local }) {
     if (local.permissions) {
       rows.push(local.permissions.accessibility === true
         ? row('computer', 'ok', 'Accessibility is on')
+        : local.permissions.accessibility !== false ? row('computer', 'warn', 'Accessibility could not be checked', 'Retry the permission check.')
         : row('computer', 'warn', 'Accessibility is off', 'Your agent can use browser tabs, but it can’t click or type in other apps until this is on.', 'open-accessibility'));
       rows.push(local.permissions.screen === 'granted'
         ? row('computer', 'ok', 'Screen Recording is on')
+        : local.permissions.screen !== 'denied' ? row('computer', 'warn', 'Screen Recording could not be checked', 'Retry the permission check.')
         : row('computer', 'warn', 'Screen Recording is off', 'Your agent can’t see other apps’ windows until this is on.', 'open-screen'));
     }
   }

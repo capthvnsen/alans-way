@@ -47,6 +47,7 @@ const { ElectronChromeExtensions } = require('electron-chrome-extensions');
 // see the desktop. Linux hosts drive the desktop through AT-SPI like the guest.
 const { calls, context, READ_BUDGET_MS } = require('./call-budget.cjs');
 const macPermissions = require('./mac-permissions.cjs').createMacPermissionHelp({ systemPreferences });
+const { readMacPermissions } = require('./mac-permissions.cjs');
 const hostComputer = process.platform === 'darwin' ? macPermissions.wrap(require('./computer.cjs').service)
   : process.platform === 'win32' ? require('./win-computer.cjs').service
   : process.platform === 'linux' ? require('./vps-computer.cjs').service
@@ -1558,7 +1559,7 @@ async function runSetupCheck() {
     telegram: telegramStatus,
     inApplications: mac && app.isPackaged ? setupCheck.inRouterApplications(process.execPath) : null,
     bundle: runningBundle(), productName: app.getName(),
-    permissions: mac ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null,
+    permissions: mac ? await readMacPermissions(hostComputer) : null,
     staleConnector: staleConnector(),
   };
   const connection = { addresses: { server: serverHost, computer: computerHost }, reach: null, back: null };
@@ -2080,7 +2081,7 @@ function registerIpc() {
       }
       case 'open-support': shell.openExternal('https://discord.gg/jBQCPUsVE'); break;
       case 'show-data': shell.openPath(app.getPath('userData')); break;
-      case 'mac-permissions': return process.platform === 'darwin' ? { accessibility: systemPreferences.isTrustedAccessibilityClient(false), screen: systemPreferences.getMediaAccessStatus('screen') } : null;
+      case 'mac-permissions': return process.platform === 'darwin' ? readMacPermissions(hostComputer) : null;
       case 'open-mac-privacy': if (process.platform === 'darwin') shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${value.pane === 'screen' ? 'Privacy_ScreenCapture' : 'Privacy_Accessibility'}`); break;
       case 'update-now': {
         if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
@@ -2950,7 +2951,7 @@ function startApi() {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
       const overseer = isOverseer(botId);
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), ...(hostComputer && process.platform === 'darwin' ? ['computer-window-v1'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets', 'commit-check', ...(require('./agent-input.cjs').APPROVAL_BINDING_VERSION === 1 ? ['approval-binding-v1'] : [])], tabCount: tabs.size+vpsTabs.size });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), ...(hostComputer && process.platform === 'darwin' ? ['computer-window-v1', 'computer-launch-v1'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets', 'commit-check', ...(require('./agent-input.cjs').APPROVAL_BINDING_VERSION === 1 ? ['approval-binding-v1'] : [])], tabCount: tabs.size+vpsTabs.size, ...(process.platform === 'darwin' ? { computerPermissions: await readMacPermissions(hostComputer) } : {}) });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await Promise.race([
           telegramView.webContents.executeJavaScript(`(() => ({
@@ -3010,7 +3011,7 @@ function startApi() {
       // Host computer use is served here so an SSH-spawned connector never
       // drives the desktop itself — on Windows that process would sit in
       // Session 0 and see no windows. Same verbs the MCP connector wraps.
-      const computerMatch = /^\/v1\/computer\/(apps|\d{1,10})(?:\/(snapshot|screenshot|action|menu))?$/.exec(url.pathname);
+      const computerMatch = /^\/v1\/computer\/(apps|launch|\d{1,10})(?:\/(snapshot|screenshot|action|menu))?$/.exec(url.pathname);
       if (computerMatch) {
         const controller = new AbortController();
         res.on('close', () => { if (!res.writableFinished) controller.abort(); });
@@ -3019,6 +3020,11 @@ function startApi() {
           if (computerMatch[1] === 'apps') {
             if (computerMatch[2] || req.method !== 'GET') return send(405, { error: 'Use GET /v1/computer/apps.' });
             return send(200, { apps: await hostComputer.apps() });
+          }
+          if (computerMatch[1] === 'launch') {
+            if (computerMatch[2] || req.method !== 'POST') return send(405, { error: 'Use POST /v1/computer/launch.' });
+            if (!hostComputer.launch) return send(400, { error: 'Opening an app by name is only supported on Mac.' });
+            return send(200, await hostComputer.launch((await readJson(req)).app));
           }
           const pid = Number(computerMatch[1]);
           if (!Number.isInteger(pid) || pid < 0) return send(400, { error: 'App pid must be a non-negative integer.' });

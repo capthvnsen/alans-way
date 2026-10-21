@@ -15,7 +15,7 @@ const WAIT_POLL_MS = 150;
 // just before it ends can still take REQUEST_TIMEOUT_MS (20 s), keeping the call
 // well under the connector's 90 s abort.
 const CALL_BUDGET_MS = 45000;
-const READ_ONLY = new Set(['init', 'apps', 'snapshot', 'shot', 'menu']);
+const READ_ONLY = new Set(['init', 'apps', 'snapshot', 'shot', 'menu', 'permissions']);
 
 function helperError(response) {
   const code = response.code || 'failed';
@@ -274,8 +274,8 @@ function normalizeStep(item) {
     throw fail('bad_request', 'menu needs a path such as ["File","Save"].');
   if (action === 'scroll' && !['up', 'down', 'left', 'right'].includes(step.direction))
     throw fail('bad_request', 'scroll needs a direction: up, down, left, or right.');
-  if (!REF_ACTIONS.has(action) && !POINT_OR_REF.has(action) && !['click', 'drag', 'menu'].includes(action))
-    throw fail('bad_request', 'Computer action must be press, type, select_text, secondary_action, click, double_click, right_click, drag, scroll, key, hotkey, menu, wait, or batch.');
+  if (!REF_ACTIONS.has(action) && !POINT_OR_REF.has(action) && !['click', 'drag', 'menu', 'activate'].includes(action))
+    throw fail('bad_request', 'Computer action must be press, type, select_text, secondary_action, click, double_click, right_click, drag, scroll, key, hotkey, menu, activate, wait, or batch.');
   return step;
 }
 
@@ -379,6 +379,8 @@ function createComputerService(driver) {
   }
 
   return {
+    ...(driver.launch ? { launch: (app) => driver.launch(app) } : {}),
+    ...(driver.permissions ? { permissions: () => driver.permissions() } : {}),
     // Off-limits apps would only be refused, so they are not offered.
     apps: async () => (await driver.apps())
       .filter((app) => !(app.pid < 0) && !isBlocked(app.bundleId))
@@ -392,7 +394,7 @@ function createComputerService(driver) {
 }
 
 // platform.command(mode) -> [file, ...args]; shared by mac, Windows, and Linux.
-function createComputer({ command, env }) {
+function createComputer({ command, env, nativeMac = false }) {
   const helper = createHelper({ command, env });
   let windowSupport;
   async function requireWindowSupport(windowId) {
@@ -401,6 +403,18 @@ function createComputer({ command, env }) {
     if (!await windowSupport) throw fail('unsupported_window', 'This helper cannot select a window. Update it before retrying.');
   }
   const driver = {
+    ...(nativeMac ? {
+      launch: async (app) => {
+        if (typeof app !== 'string' || !app.trim() || app.length > 200 || /[/:\n]/.test(app))
+          throw fail('bad_request', 'Choose an app by its name or bundle identifier.');
+        const { ok, id, ...reply } = await helper.request({ cmd: 'launch', app });
+        return reply;
+      },
+      permissions: async () => {
+        const { ok, id, ...reply } = await helper.request({ cmd: 'permissions' });
+        return reply;
+      },
+    } : {}),
     apps: async () => (await helper.request({ cmd: 'apps' })).apps || [],
     snapshot: async (pid, { menubar, pin, windowId } = {}) => {
       await requireWindowSupport(windowId);

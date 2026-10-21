@@ -4,8 +4,8 @@ import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
-// Reads and drives a Mac app through Accessibility without moving the pointer
-// or taking focus. Protocol v2: newline-delimited JSON, see `serve` below.
+// Reads and drives a Mac app through Accessibility without moving the pointer.
+// Explicit activation requires idle input. Protocol v2: JSON lines, see `serve`.
 
 typealias JSON = [String: Any]
 
@@ -29,7 +29,9 @@ let textEntry: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox"]
 // Close, minimize and zoom never need the agent, and every window has them.
 let windowChrome: Set<String> = ["AXCloseButton", "AXMinimizeButton", "AXZoomButton", "AXFullScreenButton"]
 let rowRoles: Set<String> = ["AXRow", "AXOutlineRow"]
-let inFrontMessage = "That app is the one in front. Leave it in the background; the real cursor stays yours."
+// The C macro for any input event is not imported by Swift.
+let kCGAnyInputEventType = CGEventType(rawValue: UInt32.max)!
+let inFrontMessage = "You are using that app right now. Retry in a few seconds after you stop using the keyboard and mouse."
 
 // MARK: policy
 
@@ -53,13 +55,16 @@ func screenLocked() -> Bool {
 }
 
 @discardableResult
-func checkApp(_ pid: pid_t) throws -> NSRunningApplication {
+func checkApp(_ pid: pid_t, action: Bool = false, activating: Bool = false) throws -> NSRunningApplication {
     guard let app = NSRunningApplication(processIdentifier: pid), app.activationPolicy == .regular, !app.isTerminated else {
         throw Fail("not_found", "App not found.")
     }
     if isBlocked(app.bundleIdentifier ?? "") { throw Fail("off_limits", "That app is off limits.") }
     if screenLocked() { throw Fail("locked", "The screen is locked, so apps cannot be read or driven. Ask the user to unlock it, then retry.") }
-    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { throw Fail("in_front", inFrontMessage) }
+    if action && (activating || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid),
+       CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: kCGAnyInputEventType) < 2 {
+        throw Fail("in_front", inFrontMessage)
+    }
     return app
 }
 
@@ -437,8 +442,8 @@ func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
         roots.append(Node(matches[0], depth: 0, limit: depthCap))
     }
     let note = roots.isEmpty ? (hasOffscreenWindow(pid) ? otherSpaceNote : CGPreflightScreenCaptureAccess() ? noWindowNote : unsureWindowNote) : nil
-    if menubar, let bar = axValue(app, "AXMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID() {
-        roots.append(Node(bar as! AXUIElement, depth: 0, limit: 1))
+    if menubar {
+        roots.append(Node(try menuBar(pid), depth: 0, limit: 1))
     }
     var queue = roots
     var head = 0
@@ -849,10 +854,21 @@ func normalizedTitle(_ text: String) -> String {
 }
 
 func menuBar(_ pid: pid_t) throws -> AXUIElement {
-    guard let bar = axValue(appElement(pid), "AXMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID() else {
-        throw Fail("unsupported_action", "That app exposes no menu bar.")
+    let app = appElement(pid)
+    for attempt in 0...1 {
+        var bar: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(app, "AXMenuBar" as CFString, &bar)
+        if result == .success, let bar, CFGetTypeID(bar) == AXUIElementGetTypeID() { return bar as! AXUIElement }
+        if result == .cannotComplete || result == .noValue {
+            if attempt == 0 {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+                continue
+            }
+            throw Fail("unresponsive", "The app's menu bar is not ready (\(result.rawValue)). Wait a moment and retry.")
+        }
+        throw Fail("unsupported_action", "That app exposes no menu bar (\(result.rawValue)).")
     }
-    return bar as! AXUIElement
+    throw Fail("unresponsive", "The app's menu bar is not ready. Wait a moment and retry.")
 }
 
 func menuChildren(_ container: AXUIElement) -> [AXUIElement] {
@@ -1109,6 +1125,25 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
     postedMouse = false
     var out: JSON = [:]
     switch step["action"] as? String ?? "" {
+    case "activate":
+        let app = try checkApp(pid, action: true, activating: true)
+        try rejectSecureFocus(pid)
+        guard let selected = try selectedWindow(pid, windowId), selected.onScreen,
+              let windows = axValue(appElement(pid), "AXWindows") as? [AXUIElement] else {
+            throw Fail("window_unverified", "Take a snapshot of the window before bringing it forward.")
+        }
+        let matches = windows.filter { matchesWindow($0, selected) }
+        guard matches.count == 1 else { throw Fail("window_unverified", "Could not verify the selected window. Take a fresh snapshot.") }
+        try checkApp(pid, action: true, activating: true)
+        guard AXUIElementPerformAction(matches[0], "AXRaise" as CFString) == .success,
+              app.activate(options: [.activateIgnoringOtherApps]) else {
+            throw Fail("failed", "Could not bring the selected window forward. Take a fresh snapshot.")
+        }
+        guard waitFor({
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                  let focused = axValue(appElement(pid), "AXFocusedWindow"), CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
+            return belongsToWindow(focused as! AXUIElement, selected)
+        }, timeout: 1) else { throw Fail("window_unverified", "Could not confirm keyboard focus in the selected window. Take a fresh snapshot.") }
     case "press":
         let node = try resolve(pid, step["ref"] as? String ?? "")
         try rejectSecure(node)
@@ -1269,9 +1304,18 @@ final class AXSettler {
 }
 
 func belongsToWindow(_ element: AXUIElement, _ selected: SelectedWindow) -> Bool {
-    if axString(element, "AXRole") == "AXWindow" { return matchesWindow(element, selected) }
-    guard let window = axValue(element, "AXWindow"), CFGetTypeID(window) == AXUIElementGetTypeID() else { return false }
-    return matchesWindow(window as! AXUIElement, selected)
+    var current: AXUIElement? = element
+    var seen = Set<AXKey>()
+    // SwiftUI controls can omit AXWindow; sheets still belong to their parent window.
+    for _ in 0..<32 {
+        guard let candidate = current, seen.insert(AXKey(element: candidate)).inserted else { return false }
+        if axString(candidate, "AXRole") == "AXWindow" { return matchesWindow(candidate, selected) }
+        if let window = axValue(candidate, "AXWindow"), CFGetTypeID(window) == AXUIElementGetTypeID() {
+            return matchesWindow(window as! AXUIElement, selected)
+        }
+        current = axParent(candidate)
+    }
+    return false
 }
 
 func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?) throws {
@@ -1296,8 +1340,8 @@ func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?)
         throw Fail("stale_ref", "That control is no longer in the selected window. Take a fresh snapshot.")
     }
     if action == "key" || action == "menu" || menuRef {
-        guard let focused = axValue(appElement(pid), "AXFocusedWindow"), CFGetTypeID(focused) == AXUIElementGetTypeID(), matchesWindow(focused as! AXUIElement, selected) else {
-            throw Fail("window_unverified", "The selected window does not have keyboard focus. Take a fresh snapshot.")
+        guard let focused = axValue(appElement(pid), "AXFocusedWindow"), CFGetTypeID(focused) == AXUIElementGetTypeID(), belongsToWindow(focused as! AXUIElement, selected) else {
+            throw Fail("window_unverified", "The selected window does not have keyboard focus. Bring that window forward when you are idle, then take a fresh snapshot.")
         }
     }
 }
@@ -1305,7 +1349,7 @@ func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?)
 func act(_ request: JSON) throws -> JSON {
     let pid = try pidOf(request)
     try requireAccessibility()
-    try checkApp(pid)
+    try checkApp(pid, action: true)
     let steps = request["steps"] as? [JSON] ?? []
     let menubar = request["menubar"] as? Bool ?? caches[pid]?.menubar ?? false
     let expected = (request["generation"] as? NSNumber)?.intValue
@@ -1323,7 +1367,7 @@ func act(_ request: JSON) throws -> JSON {
     var succeeded = false
     for step in steps {
         do {
-            try checkApp(pid)
+            try checkApp(pid, action: true)
             try validateWindowStep(pid, step, try selectedWindow(pid, selected?.id))
             results.append(try runStep(pid, step, windowId: selected?.id))
             succeeded = true
@@ -1342,6 +1386,26 @@ func act(_ request: JSON) throws -> JSON {
     return reply
 }
 
+func launchApp(_ request: JSON) throws -> JSON {
+    guard let name = request["app"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          name.count <= 200, !name.contains("/"), !name.contains(":"), !name.contains("\n") else {
+        throw Fail("bad_request", "Choose an app by its name or bundle identifier.")
+    }
+    if isBlocked(name) { throw Fail("off_limits", "That app is off limits.") }
+    let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: name)
+        ?? NSWorkspace.shared.fullPath(forApplication: name).map { URL(fileURLWithPath: $0) }
+    guard let url, let id = Bundle(url: url)?.bundleIdentifier else { throw Fail("not_found", "App not found.") }
+    if isBlocked(id) { throw Fail("off_limits", "That app is off limits.") }
+    if screenLocked() { throw Fail("locked", "The screen is locked. Ask the user to unlock it, then retry.") }
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.activates = false
+    var finished = false
+    var launched: NSRunningApplication?
+    NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, _ in launched = app; finished = true }
+    guard waitFor({ finished }), let launched else { throw Fail("failed", "Could not open that app. Check whether it opened before retrying.") }
+    return ["pid": Int(launched.processIdentifier), "bundleId": id]
+}
+
 func dispatch(_ request: JSON) throws -> JSON {
     if let policy = request["policy"] as? JSON { setPolicy(policy) }
     switch request["cmd"] as? String ?? "" {
@@ -1349,6 +1413,10 @@ func dispatch(_ request: JSON) throws -> JSON {
         return ["protocol": 2, "windowBinding": true]
     case "selftest":
         return try selftest()
+    case "permissions":
+        return ["accessibility": AXIsProcessTrusted(), "screenRecording": CGPreflightScreenCaptureAccess()]
+    case "launch":
+        return try launchApp(request)
     case "apps":
         try requireAccessibility()
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier

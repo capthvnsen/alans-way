@@ -64,4 +64,12 @@ function createMacPermissionHelp({ systemPreferences, platform = process.platfor
   return { explain, wrap };
 }
 
-module.exports = { createMacPermissionHelp };
+async function readMacPermissions(service) {
+  try {
+    const { accessibility, screenRecording } = await service.permissions();
+    return { accessibility: typeof accessibility === 'boolean' ? accessibility : null,
+      screen: screenRecording === true ? 'granted' : screenRecording === false ? 'denied' : 'unknown' };
+  } catch { return { accessibility: null, screen: 'unknown' }; }
+}
+
+module.exports = { createMacPermissionHelp, readMacPermissions };
