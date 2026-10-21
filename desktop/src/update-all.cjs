@@ -5,7 +5,7 @@
 // update steps in order (Hermes, its plugin, the browser host, then this app)
 // with the first failure stopping the rest.
 const { redactReport } = require('./setup-check.cjs');
-const { vmPluginLines } = require('./vm-update.cjs');
+const { vmPluginLines, vmTargets, LOCAL_TARGET } = require('./vm-update.cjs');
 
 const PLUGIN_REPO = 'capthvnsen/alans-way-agents';
 const NAMES = { hermes: 'Hermes', plugin: 'Alan’s Way plugin', host: 'Browser host', app: 'Alan’s Workspace' };
@@ -15,6 +15,23 @@ const SHORT = { hermes: 'Hermes', plugin: 'plugin', host: 'browser host', app: '
 
 const { normalizeVersion, compareVersions, validVersionToken } = require('./update-version.cjs');
 const isNewer = (a, b) => compareVersions(a, b) === 1;
+
+// A proactivity binding and an ordinary bot conversation do not configure
+// Hermes' home channel. Older setup scripts left it unset. Preserve the CLI's
+// reason and let the user choose the destination with /sethome in that bot's
+// chat; discovering an arbitrary recent chat would risk sending to a stranger.
+function reportDeliveryText(result) {
+  const messages = Array.isArray(result?.messages) ? result.messages : [];
+  const sent = result?.messaged === true || messages.some((m) => m.sent === true);
+  const failed = messages.filter((m) => m.sent !== true);
+  const reasons = failed.map((m) => `${m.profile || 'default'}: ${m.error || 'delivery failed'}`).join('; ')
+    || (!sent ? String(result?.error || '') : '');
+  const status = sent ? 'Your bot messaged you on Telegram.' : 'The bot could not message you on Telegram.';
+  const detail = reasons ? ` ${sent ? 'Other profiles could not send: ' : ''}${reasons}` : '';
+  const recovery = /no (?:chat specified and no )?home channel|home channel.*(?:not set|not configured)/i.test(reasons)
+    ? ' Send /sethome in the affected bot’s Telegram chat to enable future update reports.' : '';
+  return redactReport(`${status}${detail}${recovery}`);
+}
 
 // "Hermes Agent v0.21.6+763.g1fd1827 (2026.9.24) · stable" -> "0.21.6".
 function probeVersion(token) {
@@ -227,16 +244,55 @@ function summarizeRun(rows, { gatewayRunning = null, where = 'server' } = {}) {
   return parts.join(' ');
 }
 
-function reportText(rows) {
+function reportText(rows, { appVersion = '' } = {}) {
   const failed = rows.find((row) => row.state === 'failed');
   const warnings = rows.filter((row) => row.state === 'warn');
   const done = rows.filter((row) => row.state === 'done' && row.id !== 'app' && row.to !== row.from).map((row) => `${SHORT[row.id]} ${row.to}`);
   const app = rows.find((row) => row.id === 'app' && row.state === 'done');
+  const missedApp = app && appVersion && appVersion !== app.to;
+  let appResult = '';
+  if (app) {
+    appResult = appVersion ? `The app is now on ${appVersion}.` : `The app installs ${app.to} when you restart it.`;
+    if (missedApp) appResult = `The app is still on ${appVersion} (wanted ${app.to}).`;
+  }
   const head = failed ? `Update everything stopped at the ${SHORT[failed.id]}: ${failed.error}.`
-    : warnings.length ? 'Update everything finished with warnings.' : 'Update everything finished.';
+    : warnings.length || missedApp ? 'Update everything finished with warnings.' : 'Update everything finished.';
   const skipped = rows.filter((row) => row.state === 'skipped').map((row) => SHORT[row.id]);
   return [head, ...warnings.map((row) => `${warningText(row, SHORT[row.id])}.`), done.length ? `Now on ${done.join(', ')}.` : '', skipped.length ? `Not started: ${skipped.join(', ')}.` : '',
-    app ? `The app installs ${app.to} when you restart it.` : ''].filter(Boolean).join(' ');
+    appResult].filter(Boolean).join(' ');
+}
+
+async function deliverPendingUpdateReport({ prefs, version, send, save, log = () => {} }) {
+  const pending = prefs.pendingUpdateReport;
+  if (!pending) return;
+  if (typeof pending.runId !== 'string' || !validVersionToken(pending.targetVersion) || !Array.isArray(pending.rows)
+    || !pending.rows.every(row => row && Object.hasOwn(SHORT, row.id) && typeof row.state === 'string'
+      && typeof row.from === 'string' && typeof row.to === 'string' && (!row.error || typeof row.error === 'string'))
+    || !pending.rows.some(row => row.id === 'app' && row.state === 'done' && row.to === pending.targetVersion)
+    || !Number.isInteger(pending.attempts) || pending.attempts < 0 || pending.attempts >= 2) {
+    delete prefs.pendingUpdateReport;
+    save();
+    log('failed: invalid or exhausted saved update report');
+    return;
+  }
+  const target = vmTargets(prefs)[0] || LOCAL_TARGET;
+  if (!pending.target || !['id', 'local', 'sshHost', 'scriptPath', 'sudo'].every(key => pending.target[key] === target[key])) {
+    delete prefs.pendingUpdateReport;
+    save();
+    log(`${pending.runId} dropped: the update report destination changed or is missing.`);
+    return;
+  }
+  pending.attempts++;
+  save();
+  let result;
+  // shortcut: sending has no idempotency key, add receipt deduplication for crashes between send and save.
+  try { result = await send(reportText(pending.rows, { appVersion: version }), target); }
+  catch (error) { result = { messaged: false, error: error.message || String(error) }; }
+  const status = result?.messaged === true || (Array.isArray(result?.messages) && result.messages.some(message => message.sent === true)) ? 'delivered' : 'failed';
+  const delivery = reportDeliveryText(result);
+  if (status === 'delivered' || pending.attempts === 2) { delete prefs.pendingUpdateReport; save(); }
+  log(`${pending.runId} ${status}: ${delivery}`);
+  return { status, delivery };
 }
 
 // The question asked before "Restart to finish" when bots are mid-task in a
@@ -248,4 +304,4 @@ function restartWarning(names) {
   return { message: `${who} working in a tab right now.`, detail: 'Restarting interrupts that task. The update installs whenever you restart, so you can wait until they finish.' };
 }
 
-module.exports = { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText, pluginStepResult, runLogText, warningText };
+module.exports = { restartWarning, compareVersions, parseHermesVersion, parseHermesCheck, newestTag, latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, planSteps, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, deliverPendingUpdateReport, pluginStepResult, runLogText, warningText };

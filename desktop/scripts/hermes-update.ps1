@@ -240,13 +240,17 @@ if ($quiet) {
     foreach ($prof in (Get-Profiles $hhome)) {
         if ((BudgetLeft) -le 12) { Say 'ran out of the time budget; remaining profiles were not messaged'; break }
         $quoted = '"' + $msg + '"'
-        if ($prof.name -eq 'default') { $sendArgs = @('send', '-q', '-t', 'telegram', $quoted) }
-        else { $sendArgs = @('-p', $prof.name, 'send', '-q', '-t', 'telegram', $quoted) }
+        # -q also hides failure output in Hermes 0.22; capture it instead.
+        if ($prof.name -eq 'default') { $sendArgs = @('send', '-t', 'telegram', $quoted) }
+        else { $sendArgs = @('-p', $prof.name, 'send', '-t', 'telegram', $quoted) }
         $s = Invoke-Hermes (EnvInt 'ALANS_WAY_HERMES_SEND_TIMEOUT' 30) $sendArgs
         $e = @{ profile = $prof.name; sent = ($s.code -eq 0); error = '' }
         if ($s.code -eq 0) { $script:Messaged = $true }
         else {
-            $e['error'] = Safe-Reason (Tail-Text $s.out 200)
+            # Keep the diagnostic prefix: the missing-home error ends with
+            # CLI setup instructions, which otherwise displace its cause.
+            $e['error'] = ((Safe-Reason $s.out) -replace '\s+', ' ').Trim()
+            if ($e['error'].Length -gt 200) { $e['error'] = $e['error'].Substring(0, 200) }
             if (-not $e['error']) { $e['error'] = "send exited $($s.code)" }
         }
         if ($s.code -eq 0) { Say "message $($prof.name): sent" } else { Say "message $($prof.name): failed" }

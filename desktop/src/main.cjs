@@ -27,7 +27,7 @@ const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
-const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
+const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, deliverPendingUpdateReport, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createHermesHub } = require('./hermes-hub.cjs');
@@ -111,6 +111,7 @@ let hermesUpdating = false;
 // "Update everything" from the bottom bar: its lock flag and the last run's
 // step rows, closing summary and whether a staged app update awaits a restart.
 let updatingAll = false;
+let pendingUpdateDelivery = null;
 let updateRun = { steps: [], summary: '', restart: false };
 let lastSetupCheck = null;
 let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
@@ -205,6 +206,10 @@ const prefsSaver = createSaver({
 });
 function savePreferences() { prefsSaver.flush(); }
 function savePreferencesSoon() { prefsSaver.schedule(); }
+// Delivery must not start, or a restart be offered, before its record is durable.
+function saveUpdateReport() {
+  if (!prefsSaver.flush()) throw new Error('The update report could not be saved. Check that app data is writable before restarting.');
+}
 // Onboarding and the path check need this computer's SSH address as the agent
 // machine reaches it; derive it from Tailscale while the field was never set
 // so a fresh install starts with a working answer. A saved value is never
@@ -1267,6 +1272,10 @@ function startUpdates() {
   mainLog().write('app', `v${app.getVersion()} started from ${path.resolve(process.execPath, '../../..')}`);
   if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
   if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
+  pendingUpdateDelivery = deliverPendingUpdateReport({ prefs, version: app.getVersion(), save: saveUpdateReport,
+    send: (report, target) => vmUpdater.hermesUpdateVm(target, { report }),
+    log: text => mainLog().write('update report', text),
+  }).catch(error => logError('update report', error));
   if (prefs.updateSnoozedUntil) { prefs.updateSnoozedUntil = 0; savePreferencesSoon(); }
   checkVersionsWhenIdle(); setInterval(checkVersionsWhenIdle, VERSIONS_EVERY_MS);
   if (!app.isPackaged) return;
@@ -2083,7 +2092,7 @@ function registerIpc() {
       // confirmed the plan in the popover. Server first (Hermes, then the
       // plugin that must match it), then the browser host, then this app,
       // which only stages: the restart waits for "Restart to finish". Then
-      // the versions refresh and the bot reports once in Telegram.
+      // the versions refresh. A staged app's report waits until the next launch.
       case 'update-all': {
         if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) return { refused: 'Another update is already running. Try again when it finishes.' };
         const { steps, upToDate } = describeVersions({ app: app.getVersion(), appUpdate: stagedAppVersion(), appLatest, cache: prefs.versionCache });
@@ -2091,12 +2100,18 @@ function registerIpc() {
         const target = vmTargets(prefs)[0] || LOCAL_TARGET;
         updatingAll = true; updateRun = { steps: [], summary: '', restart: false }; holdAppInstall(true); broadcast();
         try {
+          await pendingUpdateDelivery;
           // A probe already in flight finishes first: its `hermes update
           // --check` fetches into the checkout `hermes update` moves.
           await waitForVersionCheck();
           mainLog().write('update all', `start ${steps.map((step) => `${step.id} ${step.from}->${step.to}`).join(', ')}`);
           const rows = await runSteps(steps, (step) => runUpdateStep(step, target), (next) => { updateRun.steps = next; broadcast(); });
           mainLog().write('update all', runLogText(rows));
+          const appStep = rows.find(row => row.id === 'app' && row.state === 'done');
+          if (appStep) {
+            prefs.pendingUpdateReport = { runId: crypto.randomUUID(), targetVersion: appStep.to, target: { ...target }, rows, attempts: 0 };
+            saveUpdateReport();
+          }
           // Wait out any probe that started before the run, then take a fresh one.
           await waitForVersionCheck();
           await checkVmVersions().catch((error) => logError('vm-check', error));
@@ -2104,9 +2119,13 @@ function registerIpc() {
           updateRun = { steps: rows, restart: rows.some((row) => row.id === 'app' && row.state === 'done'),
             summary: summarizeRun(rows, { gatewayRunning: prefs.versionCache?.gatewayRunning ?? null, where }) };
           broadcast();
-          if (prefs.versionCache?.hermes) {
+          if (appStep) {
+            updateRun.summary += ' Your bot will report the result when the app starts again.';
+          } else if (prefs.versionCache?.hermes) {
             const sent = await vmUpdater.hermesUpdateVm(target, { report: reportText(rows) });
-            updateRun = { ...updateRun, summary: `${updateRun.summary} ${sent.messaged ? 'Your bot messaged you on Telegram.' : 'The bot could not message you on Telegram.'}` };
+            const delivery = reportDeliveryText(sent);
+            mainLog().write('update report', delivery);
+            updateRun = { ...updateRun, summary: `${updateRun.summary} ${delivery}` };
           }
         } catch (error) {
           // The dialog shows why the run stopped instead of an empty summary.
