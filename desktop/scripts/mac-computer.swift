@@ -130,58 +130,6 @@ func readAttributes(_ element: AXUIElement) -> [String: CFTypeRef]? {
     return read
 }
 
-// Cached reads are optional: incomplete notification support always reads again.
-final class AXReadCache {
-    var observer: AXObserver?
-    var watched: [AXKey: Bool] = [:]
-    var values: [AXKey: (time: Double, attributes: [String: CFTypeRef])] = [:]
-    let notifications = ["AXValueChanged", "AXTitleChanged", "AXUIElementDestroyed", "AXLayoutChanged", "AXMoved", "AXResized", "AXSelectedChildrenChanged"]
-    init(_ pid: pid_t) {
-        guard pid > 0 else { return }
-        var created: AXObserver?
-        guard AXObserverCreate(pid, { _, _, _, context in
-            guard let context else { return }
-            Unmanaged<AXReadCache>.fromOpaque(context).takeUnretainedValue().invalidate()
-        }, &created) == .success, let created else { return }
-        observer = created
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(created), .defaultMode)
-    }
-    func watch(_ element: AXUIElement) -> Bool {
-        let key = AXKey(element: element)
-        if let supported = watched[key] { return supported }
-        if watched.count >= visitCap { close(); return false }
-        guard let observer else { return false }
-        let context = Unmanaged.passUnretained(self).toOpaque()
-        var supported = true
-        for notification in notifications {
-            let result = AXObserverAddNotification(observer, element, notification as CFString, context)
-            if result != .success && result != .notificationAlreadyRegistered { supported = false }
-        }
-        if !supported { close(); return false }
-        watched[key] = true
-        return true
-    }
-    func read(_ element: AXUIElement, now: Double = ProcessInfo.processInfo.systemUptime, covered: Bool? = nil,
-              loader: (AXUIElement) -> [String: CFTypeRef]? = readAttributes) -> [String: CFTypeRef]? {
-        let supported = covered ?? watch(element)
-        let key = AXKey(element: element)
-        if supported, let saved = values[key], now >= saved.time, now - saved.time < 0.250 { return saved.attributes }
-        values[key] = nil
-        guard let attributes = loader(element) else { invalidate(); return nil }
-        if supported { values[key] = (now, attributes) }
-        return attributes
-    }
-    func invalidate() { values.removeAll() }
-    func close() {
-        if let observer { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode) }
-        observer = nil
-        watched.removeAll()
-        invalidate()
-    }
-    deinit { close() }
-}
-var attributeReads: [pid_t: AXReadCache] = [:]
-
 // MARK: tree walk
 
 final class Node {
@@ -492,10 +440,6 @@ func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
     if menubar, let bar = axValue(app, "AXMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID() {
         roots.append(Node(bar as! AXUIElement, depth: 0, limit: 1))
     }
-    let reads = attributeReads[pid] ?? AXReadCache(pid)
-    attributeReads[pid] = reads
-    // Deliver queued invalidations before consulting attributes from a previous walk.
-    if reads.observer != nil { CFRunLoopRunInMode(.defaultMode, 0, false) }
     var queue = roots
     var head = 0
     var readable = 0
@@ -512,7 +456,7 @@ func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
         let node = queue[head]
         head += 1
         visits += 1
-        guard let attributes = reads.read(node.element) else {
+        guard let attributes = readAttributes(node.element) else {
             dropped = true
             continue
         }
@@ -556,7 +500,6 @@ func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
     for root in roots { emit(root, "") }
     let book = refBooks[pid] ?? RefBook()
     refBooks[pid] = book
-    if truncated { reads.invalidate() }
     return record(found, book, truncated: truncated, hidden: hidden, note: note, windowId: selected?.id, windowFrame: selected?.frame)
 }
 
@@ -615,7 +558,6 @@ func refresh(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
     while cacheOrder.count > 16 { cacheOrder.removeFirst() }
     for key in Array(caches.keys) where !cacheOrder.contains(key) { caches[key] = nil }
     for key in Array(refBooks.keys) where !cacheOrder.contains(key) { refBooks[key] = nil }
-    for key in Array(attributeReads.keys) where !cacheOrder.contains(key) { attributeReads[key]?.close(); attributeReads[key] = nil }
     return walk
 }
 
@@ -639,7 +581,6 @@ func ensureCache(_ pid: pid_t, _ expected: Int?, refs: [String], menubar: Bool, 
         throw Fail("stale_ref", "stale_ref: The app changed since your snapshot. Take a fresh snapshot.")
     }
     let previousWindow = (refBooks[pid].map { $0.history + $0.pinned })?.last(where: { $0.generation == expected })?.windowId
-    attributeReads[pid]?.invalidate()
     let walk = try walker(pid, menubar)
     guard previousWindow == walk.windowId else { throw Fail("stale_ref", "The selected window changed. Take a fresh snapshot.") }
     for ref in refs {
@@ -1375,7 +1316,6 @@ func act(_ request: JSON) throws -> JSON {
     }
     let selected = try selectedWindow(pid, windowId)
     let refs = steps.compactMap { $0["ref"] as? String }
-    attributeReads[pid]?.invalidate()
     try ensureCache(pid, expected, refs: refs, menubar: menubar) { try refresh($0, menubar: $1, windowId: selected?.id) }
     let settling = AXSettler(pid, refs: refs)
     defer { settling.close() }
@@ -1395,7 +1335,6 @@ func act(_ request: JSON) throws -> JSON {
     var reply: JSON = ["results": results]
     if succeeded, request["snapshot"] as? Bool ?? true {
         settling.wait(timeoutMs: max(0, min(1000, (request["settleMs"] as? NSNumber)?.intValue ?? 250)))
-        attributeReads[pid]?.invalidate()
         // The steps already ran; a tree that cannot be read afterwards must not hide their results.
         if let walk = try? refresh(pid, menubar: menubar, windowId: selected?.id) { for (key, value) in snapshotFields(walk) { reply[key] = value } }
         else { reply["note"] = "unresponsive: the steps ran but the app stopped responding, so there is no tree. Do not repeat them; take a fresh snapshot." }
@@ -1495,19 +1434,7 @@ func selftest() throws -> JSON {
     alternate.actions = ["AXShowMenu"]
     try expect(generation(of: [plain]) != generation(of: [alternate]), "advertised actions change the generation")
     try expect(alternate.json["actions"] as? [String] == ["AXShowMenu"], "advertised actions reach snapshots")
-    let reads = AXReadCache(0)
     let fakeElement = AXUIElementCreateApplication(123456)
-    var requests = 0
-    let load: (AXUIElement) -> [String: CFTypeRef]? = { _ in requests += 1; return ["AXRole": "AXButton" as CFString] }
-    _ = reads.read(fakeElement, now: 1, covered: true, loader: load)
-    _ = reads.read(fakeElement, now: 1.1, covered: true, loader: load)
-    try expect(requests == 1, "valid bulk attributes reused")
-    reads.invalidate()
-    _ = reads.read(fakeElement, now: 1.1, covered: true, loader: load)
-    _ = reads.read(fakeElement, now: 2, covered: true, loader: load)
-    _ = reads.read(fakeElement, now: 2.01, covered: false, loader: load)
-    try expect(requests == 4, "notifications, expiry and unsupported observers force reads")
-    reads.close()
     let securePid: pid_t = 123456
     let secure = Node(fakeElement, depth: 0, limit: 0)
     secure.role = "AXTextField"
@@ -1518,14 +1445,6 @@ func selftest() throws -> JSON {
         catch let error as Fail { try expect(error.code == "off_limits", "secure fields refused by new actions") }
     }
     caches[securePid] = nil
-    let before = requests
-    _ = reads.read(fakeElement, now: 3, covered: true, loader: load)
-    reads.invalidate() // A scroll or recycled row notification invalidates the whole app.
-    let changed = reads.read(fakeElement, now: 3.01, covered: true, loader: { _ in requests += 1; return ["AXTitle": "Row 9" as CFString] })
-    try expect(requests == before + 2 && changed?["AXTitle"] as? String == "Row 9", "scrolling and recycled rows read new attributes")
-    _ = reads.read(fakeElement, now: 4, covered: false, loader: load)
-    _ = reads.read(fakeElement, now: 4.01, covered: false, loader: load)
-    try expect(requests == before + 4, "silent apps never reuse attributes")
     for frame in [CGRect(x: 100, y: 80, width: 300, height: 200), CGRect(x: -1920, y: -300, width: 640, height: 480), CGRect(x: 2560, y: 40, width: 100, height: 100)] {
         let center = CGPoint(x: frame.midX, y: frame.midY)
         try expect(axToQuartz(center) == center, "axToQuartz must not flip \(center)")
