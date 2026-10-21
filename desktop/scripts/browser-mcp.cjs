@@ -103,16 +103,21 @@ const tools = [
   { name: 'workspace_computer_action', description: `Act in a background desktop app; the pointer never moves and focus never changes.
 - press and type take a ref plus the generation you last received. A ref keeps working while its control keeps its role and name; stale_ref means that control changed, so snapshot again.
 - press presses a control and selects a row. type replaces a field's text. click, double_click and right_click take a ref or x,y. drag goes from x,y to x2,y2 and sets sliders directly. scroll takes direction and amount in pages, on a ref, at x,y or in the main window. key and hotkey send a key or a combo such as cmd+s (Windows: unmodified keys only). menu presses a path such as ["File","Save"].
+- select_text selects a unique text match in a Mac field by ref, with optional adjacent prefix and suffix. secondary_action performs one of the Mac control’s advertised actions.
 - wait waits until any element's name or value contains text, or with gone:true none does. Waits and steps in one call share 45s; once it is spent no further step starts, and that step's result says so. On Windows a ref after a wait that changed the app is refused with stale_ref.
 - batch runs up to 25 steps in one call and stops at the first failure. Confirm an action in the same call: [{action:"press",ref:"c4"},{action:"wait",text:"Saved"}].
 - Pass the generation you last received with every action. Successful replies supply current state: unchanged:true, or changed[] (new or updated elements) and removed[] (refs gone) since that generation, or the whole elements[]. Reuse it when sufficient. Recovery after an uncertain result or missing current state needs a fresh snapshot before deciding on more input; inspect completed batch results first.
 - unsupported_action means the OS cannot do it in the background. The front app, keychains, password managers, Windows secure desktop and password fields are refused. On the VM desktop, click, drag and scroll at x,y and type without a ref are real input in the app's raised window.`, inputSchema: objectSchema({
     pid: { type: 'integer' },
     windowId: computerWindowId,
-    action: { type: 'string', enum: ['press', 'click', 'double_click', 'right_click', 'drag', 'type', 'scroll', 'key', 'hotkey', 'menu', 'wait', 'batch'] },
+    action: { type: 'string', enum: ['select_text', 'secondary_action', 'press', 'click', 'double_click', 'right_click', 'drag', 'type', 'scroll', 'key', 'hotkey', 'menu', 'wait', 'batch'] },
     generation: { type: 'integer', description: 'Generation from your latest snapshot or reply. Required whenever the action or a batch step uses a ref.' },
     ref: string,
-    text: { type: 'string', description: 'For type: the replacement text, at most 2000 characters. For wait: words of the element name or value to wait for.' },
+    text: { type: 'string', description: 'For type: replacement text. For select_text: the text to match. Both allow at most 2000 characters. For wait: words of the element name or value to wait for.' },
+    prefix: { type: 'string', maxLength: 2000, description: 'For select_text: text immediately before the match.' },
+    suffix: { type: 'string', maxLength: 2000, description: 'For select_text: text immediately after the match.' },
+    selection: { type: 'string', enum: ['text', 'cursor_before', 'cursor_after'], description: 'For select_text: select the match or place the cursor, default text. Ambiguous matches are refused.' },
+    secondaryAction: { type: 'string', enum: ['AXShowMenu', 'AXIncrement', 'AXDecrement', 'AXConfirm', 'AXPick'], description: 'For secondary_action: an action listed in the control’s actions array. Mac only.' },
     gone: { type: 'boolean', description: 'For wait: wait until the text is gone instead.' },
     timeout: { type: 'number', description: 'For wait: milliseconds, default 5000, max 15000.' },
     x: { type: 'number' }, y: { type: 'number' }, x2: { type: 'number' }, y2: { type: 'number' },

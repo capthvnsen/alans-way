@@ -1057,3 +1057,22 @@ test('snapshot delta opt-in is documented and forwarded only when enabled', { ti
     'GET /v1/computer/7/snapshot?since=3&delta=1',
   ]);
 });
+
+
+test('Mac text selection and advertised actions have schemas and reach the computer API', { timeout: 8000 }, async (t) => {
+  const { client, seen } = await computerHost(t, ['computer', 'computer-window-v1']);
+  const tool = (await client.listTools()).tools.find((tool) => tool.name === 'workspace_computer_action');
+  assert.ok(tool.inputSchema.properties.action.enum.includes('select_text'));
+  assert.ok(tool.inputSchema.properties.action.enum.includes('secondary_action'));
+  assert.deepEqual(tool.inputSchema.properties.selection.enum, ['text', 'cursor_before', 'cursor_after']);
+  assert.ok(tool.inputSchema.properties.secondaryAction.enum.includes('AXShowMenu'));
+  for (const step of [
+    { action: 'select_text', ref: 'c1', text: 'word', prefix: 'second ', suffix: '.', selection: 'text' },
+    { action: 'secondary_action', ref: 'c2', secondaryAction: 'AXShowMenu' },
+  ]) {
+    const body = { pid: 7, windowId: 42, generation: 3, ...step };
+    assert.equal((await client.callTool({ name: 'workspace_computer_action', arguments: body })).isError, undefined);
+    const { pid, ...forwarded } = body;
+    assert.deepEqual(seen.filter((entry) => entry.line.endsWith('/action')).at(-1).body, forwarded);
+  }
+});
