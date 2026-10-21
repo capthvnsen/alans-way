@@ -971,3 +971,34 @@ test('a restore never takes a tab back from the human or overwrites agent work',
   assert.equal(navs(), beforeWork, 'a tab the agent has moved on with is left alone');
   assert.ok(epoch >= 1);
 });
+
+for (const stop of ['cancel', 'deadline']) test(`a VM batch ${stop} preserves finished steps and skips the remaining input`, { timeout: 10000 }, async () => {
+  const host = await startHost({ auditActions: true });
+  const tab = (await host.api('/v1/tabs', 'POST', { url: 'https://batch.example/' })).data;
+  const gate = host.stub.pause(call => call.method === 'Emulation.setTouchEmulationEnabled');
+  const controller = new AbortController();
+  const response = fetch(host.connection.url + `/v1/tabs/${tab.id}/actions`, {
+    method: 'POST', signal: controller.signal,
+    headers: { Authorization: `Bearer ${host.connection.token}`, 'X-Hermes-Bot': 'bot-a', 'Content-Type': 'application/json',
+      ...(stop === 'deadline' ? { 'X-Alans-Way-Remaining-Ms': '100' } : {}) },
+    body: JSON.stringify({ action: 'batch', epoch: tab.epoch, steps: [
+      { action: 'cdp', method: 'Emulation.setTouchEmulationEnabled', params: { enabled: true } },
+      { action: 'cdp', method: 'Emulation.setTouchEmulationEnabled', params: { enabled: false } },
+    ] }),
+  }).catch(error => error);
+  try {
+    await gate.entered;
+    if (stop === 'cancel') controller.abort();
+    for (let i = 0; i < 100 && stop === 'cancel' && !host.actions().some(row => row.event === 'closed'); i++) await new Promise(resolve => setTimeout(resolve, 10));
+    if (stop === 'deadline') await new Promise(resolve => setTimeout(resolve, 150));
+  } finally { gate.release(); }
+  await response;
+  for (let i = 0; i < 100 && !host.actions().some(row => row.event === 'response'); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  const reply = host.actions().find(row => row.event === 'response')?.body;
+  assert.ok(reply, 'host records the partial reply even after disconnect');
+  assert.equal(reply.results[0].ok, true);
+  assert.equal(reply.results[1].ok, false);
+  assert.equal(reply.results[1].code, stop === 'cancel' ? 'cancelled' : 'timeout');
+  assert.match(reply.results[1].error, /remaining steps did not run/);
+  assert.equal(host.stub.calls.filter(call => call.method === 'Emulation.setTouchEmulationEnabled').length, 1);
+});

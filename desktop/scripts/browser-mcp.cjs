@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { calls, context, remainingMs, checkCall, READ_BUDGET_MS } = require('../src/call-budget.cjs');
 // Computer drivers are per-OS. An SSH-spawned process cannot drive the
 // desktop: on Windows it sits in Session 0, and on macOS TCC credits
 // Accessibility and Screen Recording to the SSH session, not the app. So when
@@ -19,6 +20,7 @@ const watched = [
   path.join(__dirname, '..', 'src', 'omit-icons.cjs'),
   path.join(__dirname, '..', 'src', 'computer-snapshot.cjs'),
   path.join(__dirname, '..', 'src', 'computer-helper.cjs'),
+  path.join(__dirname, '..', 'src', 'call-budget.cjs'),
   path.join(__dirname, '..', 'src', 'computer-policy.cjs'),
 ];
 if (process.platform !== 'win32')
@@ -169,6 +171,7 @@ const tools = [
 // Keep the two request strings separate even when either contains a delimiter.
 const connectionKey = connection => JSON.stringify([String(connection.url), String(connection.token)]);
 async function requestOnce(endpoint, method = 'GET', body, epoch, approvedConnection) {
+  checkCall();
   let connection;
   try { connection = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw new Error('Configured browser unavailable: start its app or browser host first.'); }
   const url = new URL(connection.url);
@@ -177,6 +180,7 @@ async function requestOnce(endpoint, method = 'GET', body, epoch, approvedConnec
     throw new Error('approval_invalid: the browser connection changed after review. Take a fresh snapshot, review the target, and request a new approval. No action was sent.');
   const actionTab = method === 'POST' && /^\/v1\/tabs\/([^/?]+)\/actions$/.exec(endpoint);
   const controlTab = method === 'POST' && /^\/v1\/tabs\/([^/?]+)\/control$/.exec(endpoint);
+  const computerAction = method === 'POST' && /^\/v1\/computer\/\d+\/action$/.test(endpoint);
   const failure = (message, provenance, status, data) => Object.assign(new Error(message), {
     browserRequest: { endpoint, method, provenance, ...(status !== undefined ? { status } : {}),
       ...(typeof data?.code === 'string' ? { code: data.code } : {}) },
@@ -184,27 +188,32 @@ async function requestOnce(endpoint, method = 'GET', body, epoch, approvedConnec
   const uncertainAction = (error) => {
     error.message += controlTab
       ? ` The control change may have executed. Do not repeat it until checking cua_alans_way_tabs and inspecting the controller and epoch for tab ${JSON.stringify(decodeURIComponent(controlTab[1]))}.`
+      : computerAction ? ' The action may have executed. Check the app state before retrying.'
       : ` The action may have executed. Do not repeat it until checking the current tab with cua_alans_way_snapshot ${JSON.stringify({ tabId: decodeURIComponent(actionTab[1]) })}.`;
     error.uncertainOutcome = true;
     error.browserRequest.uncertainOutcome = true;
     return error;
   };
+  const timeout = Math.ceil(remainingMs(/\/(actions|action)$/.test(endpoint) ? 90000 : endpoint.startsWith('/v1/computer/') ? READ_BUDGET_MS : 25000));
+  const signal = AbortSignal.timeout(timeout);
+  const callerSignal = calls.getStore()?.signal;
+  checkCall();
   let response, raw;
   try {
-    response = await fetch(new URL(endpoint, url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': botId, ...(botName ? { 'X-Hermes-Bot-Name': botName } : {}), ...(Number.isInteger(epoch) ? { 'X-Control-Epoch': String(epoch) } : {}), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(/\/(actions|action)$/.test(endpoint) ? 90000 : endpoint.startsWith('/v1/computer/') ? 80000 : 25000) });
+    response = await fetch(new URL(endpoint, url), { method, headers: { Authorization: `Bearer ${connection.token}`, 'X-Hermes-Bot': botId, ...(botName ? { 'X-Hermes-Bot-Name': botName } : {}), ...(Number.isInteger(epoch) ? { 'X-Control-Epoch': String(epoch) } : {}), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(Number.isFinite(remainingMs()) ? { 'X-Alans-Way-Remaining-Ms': String(Math.floor(remainingMs())) } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: callerSignal ? AbortSignal.any([signal, callerSignal]) : signal });
     // Headers can arrive before the service disconnects or its body stalls.
     // Either failure leaves an action's outcome uncertain; never replay it.
     raw = await response.text();
   } catch {
     const error = failure(`Browser ${controlTab ? 'control' : 'action'} response unavailable or timed out.`, 'transport', response?.status);
-    if (actionTab || controlTab) throw uncertainAction(error);
+    if (actionTab || controlTab || computerAction) throw uncertainAction(error);
     error.message = 'Configured browser unavailable or timed out. Inspect existing task state before retrying an action.';
     throw error;
   }
   let data;
   try { data = raw ? JSON.parse(raw) : {}; } catch {
-    if (actionTab || controlTab) throw uncertainAction(failure(`Invalid browser ${controlTab ? 'control' : 'action'} receipt (${response.status}).`, 'http-invalid-json', response.status));
+    if (actionTab || controlTab || computerAction) throw uncertainAction(failure(`Invalid browser ${controlTab ? 'control' : 'action'} receipt (${response.status}).`, 'http-invalid-json', response.status));
     const excerpt = raw.replace(/\s+/g, ' ').trim().slice(0, 120);
     throw failure(`Browser request failed (${response.status})${excerpt ? `: ${excerpt}` : ''}`, 'http-invalid-json', response.status);
   }
@@ -325,8 +334,10 @@ async function request(endpoint, method = 'GET', body, epoch, approvedConnection
 }
 const server = new Server({ name: 'hermes-cua-alans-way', version: '0.1.0' }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
-server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
+server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => calls.run(
+  context(params._meta?.['alans-way/remainingMs'], extra.signal, params.name.startsWith('workspace_computer_') && params.name !== 'workspace_computer_action' ? READ_BUDGET_MS : Infinity), async () => {
   try {
+    checkCall();
     const args = params.arguments || {}; let result;
     if (['cua_alans_way_action', 'cua_alans_way_snapshot', 'cua_alans_way_screenshot', 'cua_alans_way_close'].includes(params.name)
         && (typeof args.tabId !== 'string' || !args.tabId.trim()))
@@ -440,5 +451,5 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
   } catch (error) { return { isError: true, content: [{ type: 'text', text: withContinuedTab(error, continued) }],
     ...(error.browserRequest ? { _meta: { browserRequest: error.browserRequest } } : {}) }; }
   finally { reloadIfReplaced(); }
-});
+}));
 server.connect(new StdioServerTransport()).catch(() => { process.stderr.write('Browser MCP connection failed.\n'); process.exit(1); });

@@ -1,5 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { performance } = require('node:perf_hooks');
+const { calls, context } = require('../src/call-budget.cjs');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -7,7 +9,8 @@ const { createHelper, createComputer, createComputerService, normalizeStep, norm
 const { pickHelper, makeCompile } = require('../src/computer.cjs');
 const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
 
-function permissionComputer(t, handle) {
+function permissionComputer(t, handle, fakeTimers = false, answerInit = true) {
+  t.mock.method(performance, 'now', () => Date.now());
   const { EventEmitter } = require('node:events');
   const { PassThrough } = require('node:stream');
   const children = [];
@@ -18,14 +21,14 @@ function permissionComputer(t, handle) {
     });
     proc.stdin.on('data', (chunk) => queueMicrotask(() => {
       const request = JSON.parse(chunk);
-      const reply = request.cmd === 'init' ? { ok: true } : handle(request, proc);
+      const reply = request.cmd === 'init' ? (answerInit ? { ok: true } : null) : handle(request, proc);
       if (reply) proc.stdout.write(JSON.stringify({ id: request.id, ...reply }) + '\n');
     }));
     children.push(proc);
     return proc;
   });
   const setTimer = global.setTimeout;
-  t.mock.method(global, 'setTimeout', (callback, ms, ...args) => ms === 150
+  if (!fakeTimers) t.mock.method(global, 'setTimeout', (callback, ms, ...args) => ms === 150
     ? setTimer(() => { t.mock.timers.tick(ms); callback(...args); }, 0)
     : setTimer(callback, ms, ...args));
   // Reload to capture only the fake process transport; all helper logic stays real.
@@ -42,6 +45,7 @@ function permissionComputer(t, handle) {
 
 for (const grantedAt of [34999, 35001, 59000]) test(`read permission budget survives a real helper crash-retry or explains a late grant (${grantedAt} ms)`, async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  t.mock.method(performance, 'now', () => Date.now());
   let requests = 0;
   const computer = permissionComputer(t, (_request, proc) => {
     requests++;
@@ -68,8 +72,35 @@ for (const grantedAt of [34999, 35001, 59000]) test(`read permission budget surv
   assert.ok(Date.now() < 80000, 'ordinary calls must finish before the router deadline');
 });
 
+test('a no-budget read bounds nested crash and missing-app retries below 76 seconds', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
+  let requests = 0;
+  const computer = permissionComputer(t, (request, proc) => {
+    requests++;
+    if (requests === 1) return { ok: false, code: 'permission', error: 'Accessibility is off.' };
+    setTimeout(() => {
+      if (requests === 2 || requests === 4) proc.emit('close', 1);
+      else proc.stdout.write(JSON.stringify({ id: request.id, ok: false, code: 'not_found', error: 'App not found.' }) + '\n');
+    }, 19999);
+  }, true);
+  const service = createMacPermissionHelp({
+    platform: 'darwin', systemPreferences: { isTrustedAccessibilityClient: () => Date.now() >= 35000 },
+    sleep: async (ms) => t.mock.timers.tick(ms),
+  }).wrap(computer.service);
+  let settled = false;
+  const result = service.snapshot('bot', 7).catch(error => error).finally(() => { settled = true; });
+  for (let i = 0; i < 1600 && !settled; i++) {
+    await new Promise(setImmediate);
+    t.mock.timers.tick(50);
+  }
+  assert.equal(settled, true);
+  assert.ok(Date.now() < 76000, `read took ${Date.now()}ms`);
+  assert.ok((await result) instanceof Error);
+});
+
 test('action permission recovery leaves room for the real batch budget and a final wait crash-retry', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  t.mock.method(performance, 'now', () => Date.now());
   let requests = 0;
   const computer = permissionComputer(t, (request, proc) => {
     requests++;
@@ -153,10 +184,12 @@ test('a helper that cannot start falls back to one process per request', async (
 });
 
 test('an action is never replayed when the helper dies mid-action', async (t) => {
-  const helper = fakeHelper('crash-mid-act');
+  const modes = [];
+  const helper = fakeHelper('crash-mid-act', { command: async kind => { modes.push(kind); return [process.execPath, fake, kind]; } });
   t.after(() => helper.close());
   await helper.request({ cmd: 'snapshot', pid: 5 });
-  await assert.rejects(helper.request({ cmd: 'act', pid: 5, steps: [{ action: 'click', x: 1, y: 2 }] }), /stopped mid-action/);
+  await assert.rejects(helper.request({ cmd: 'act', pid: 5, steps: [{ action: 'click', x: 1, y: 2 }] }), /stopped mid-action.*may have executed/);
+  assert.deepEqual(modes, ['serve'], 'an uncertain action never starts another helper');
 });
 
 test('helper failures carry their code', async (t) => {
@@ -444,4 +477,87 @@ test('a failed compile is not retried on every action', async () => {
 test('a working compiler still rebuilds', async () => {
   const compile = makeCompile({ hasDevTools: async () => true, build: async () => {} });
   assert.equal(await compile(), true);
+});
+
+for (const budget of [30000, 70000]) test(`one ${budget}ms budget includes permission waiting and every helper retry`, async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
+  let requests = 0;
+  const computer = permissionComputer(t, (request, proc) => {
+    requests++;
+    if (requests === 1) return { ok: false, code: 'permission', error: 'Accessibility is off.' };
+    const attempt = requests;
+    setTimeout(() => {
+      if (attempt === 2 || attempt === 4) proc.emit('close', 1);
+      else proc.stdout.write(JSON.stringify({ id: request.id, ok: false, code: 'not_found', error: 'App not found.' }) + '\n');
+    }, 19999);
+  }, true);
+  const service = createMacPermissionHelp({ platform: 'darwin',
+    systemPreferences: { isTrustedAccessibilityClient: () => Date.now() >= 5000 },
+    sleep: async ms => t.mock.timers.tick(ms),
+  }).wrap(computer.service);
+  let settled = false;
+  const result = calls.run(context(budget), () => service.snapshot('bot', 7)).catch(error => error).finally(() => { settled = true; });
+  for (let i = 0; i < budget / 50 + 1 && !settled; i++) {
+    await new Promise(setImmediate);
+    t.mock.timers.tick(50);
+  }
+  assert.equal(settled, true);
+  assert.ok(Date.now() <= budget + 50, `call used ${Date.now()}ms`);
+  assert.match((await result).message, /timed out/);
+  assert.equal(requests, budget === 30000 ? 3 : 5);
+});
+
+test('cancelling an in-flight helper from outside its context kills only that request', async (t) => {
+  let entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const computer = permissionComputer(t, () => { entered(); });
+  const controller = new AbortController();
+  const result = calls.run(context(undefined, controller.signal), () => computer.service.action('bot', 7, { action: 'click', x: 1, y: 2 }));
+  const rejected = assert.rejects(result, error => error.code === 'cancelled' && /may have executed/.test(error.message));
+  await started;
+  controller.abort();
+  await rejected;
+  assert.equal(computer.children.length, 1);
+});
+
+test('a queued cancelled request never runs or kills another call', async (t) => {
+  const helper = fakeHelper('hang', { timeoutMs: 300 });
+  t.after(() => helper.close());
+  const first = assert.rejects(helper.request({ cmd: 'apps' }), /timed out/);
+  const controller = new AbortController();
+  const second = calls.run(context(undefined, controller.signal), () => helper.request({ cmd: 'act', steps: [{ action: 'click', x: 1, y: 2 }] }));
+  const rejected = assert.rejects(second, error => error.code === 'cancelled' && !/may have executed/.test(error.message));
+  controller.abort();
+  await rejected;
+  await first;
+});
+
+test('an action falls back once before any init answer and later actions stay in one-shot mode', async (t) => {
+  const modes = [];
+  const helper = fakeHelper('crash-on-serve', { command: async kind => { modes.push(kind); return [process.execPath, fake, kind]; } });
+  t.after(() => helper.close());
+  const steps = [{ action: 'click', x: 1, y: 2 }];
+  await calls.run(context(10000), async () => {
+    for (let i = 0; i < 2; i++) {
+      const reply = await helper.request({ cmd: 'act', pid: 5, steps });
+      assert.deepEqual(reply.steps, steps);
+      assert.equal(reply.results.length, 1);
+      assert.equal(reply.results[0].ok, true);
+    }
+  });
+  assert.deepEqual(modes, ['serve', 'once', 'once']);
+});
+
+test('a pre-init action crash with no remaining budget fails as not run', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  let requests = 0;
+  const computer = permissionComputer(t, (_request, proc) => {
+    requests++;
+    t.mock.timers.tick(100);
+    proc.emit('close', 1);
+  }, false, false);
+  const result = calls.run(context(100), () => computer.service.action('bot', 7, { action: 'click', x: 1, y: 2 }));
+  await assert.rejects(result, error => error.code === 'timeout' && !/may have executed/.test(error.message));
+  assert.equal(requests, 1);
+  assert.equal(computer.children.length, 1);
 });
