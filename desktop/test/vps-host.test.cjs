@@ -163,7 +163,7 @@ function createStubCdp() {
 }
 
 const hosts = [];
-async function startHost({ env = {}, config = {}, tabs, targets, mirror, now } = {}) {
+async function startHost({ env = {}, config = {}, tabs, targets, mirror, now, auditActions = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vps-host-'));
   const stub = createStubCdp();
   if (targets) stub.targets = targets;
@@ -181,11 +181,31 @@ async function startHost({ env = {}, config = {}, tabs, targets, mirror, now } =
     fs.writeFileSync(clockFile, String(now));
     fs.writeFileSync(clockScript, `Date.now = () => Number(require('node:fs').readFileSync(${JSON.stringify(clockFile)}, 'utf8'));`);
   }
-  const child = spawn(process.execPath, [...(now !== undefined ? ['--require', clockScript] : []), path.join(__dirname, '../scripts/vps-browser-host.cjs'), 'serve'], {
+  const auditFile = path.join(dir, 'actions.jsonl'), auditScript = path.join(dir, 'audit.cjs');
+  // Observe the server's response after the client socket is gone.
+  if (auditActions) fs.writeFileSync(auditScript, `
+    const http = require('node:http'), fs = require('node:fs');
+    const emit = http.Server.prototype.emit;
+    http.Server.prototype.emit = function(event, ...args) {
+      if (event === 'request' && args[0].url.endsWith('/actions')) {
+        const [req, res] = args, end = res.end;
+        const log = row => fs.appendFileSync(${JSON.stringify(auditFile)}, JSON.stringify(row) + '\\n');
+        req.on('end', () => log({ event: 'received' }));
+        res.on('close', () => log({ event: 'closed' }));
+        res.end = function(body, ...rest) {
+          log({ event: 'response', status: res.statusCode, body: JSON.parse(body) });
+          return end.call(this, body, ...rest);
+        };
+      }
+      return emit.call(this, event, ...args);
+    };
+  `);
+  const child = spawn(process.execPath, [...(now !== undefined ? ['--require', clockScript] : []), ...(auditActions ? ['--require', auditScript] : []), path.join(__dirname, '../scripts/vps-browser-host.cjs'), 'serve'], {
     env: { ...process.env, HERMES_VPS_BROWSER_DATA: dir, ...env },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
-  const host = { dir, stub, child, stderr: '', setNow: value => fs.writeFileSync(clockFile, String(value)) };
+  const host = { dir, stub, child, stderr: '', setNow: value => fs.writeFileSync(clockFile, String(value)),
+    actions: () => fs.existsSync(auditFile) ? fs.readFileSync(auditFile, 'utf8').trim().split('\n').map(JSON.parse) : [] };
   child.stderr.on('data', (chunk) => { host.stderr += chunk; });
   hosts.push(host);
   const connectionFile = path.join(dir, 'connection.json');
@@ -451,6 +471,35 @@ test('malformed control requests leave a login hold untouched', async () => {
     assert.equal(claim.status, 409);
     assert.match(claim.data.error, /^awaiting_human/);
   }
+});
+
+test('a client closing before its queued action starts gets 499 without sending input', async () => {
+  const host = await startHost({ auditActions: true });
+  const { api, stub } = host;
+  const tab = (await api('/v1/tabs', 'POST', { url: 'https://queue.example/' })).data;
+  const gate = stub.pause(message => message.method === 'Page.captureScreenshot');
+  const running = api(`/v1/tabs/${tab.id}/screenshot`);
+  await gate.entered;
+  const req = http.request(host.connection.url + `/v1/tabs/${tab.id}/actions`, { method: 'POST', headers: {
+    Authorization: `Bearer ${host.connection.token}`, 'X-Hermes-Bot': 'bot-a', 'Content-Type': 'application/json',
+  } });
+  req.on('error', () => {});
+  try {
+    req.end(JSON.stringify({ action: 'press', key: 'a', epoch: tab.epoch }));
+    assert.ok(await until(() => host.actions().some(row => row.event === 'received')));
+    req.destroy();
+    assert.ok(await until(() => host.actions().some(row => row.event === 'closed')));
+    gate.release();
+    await running;
+    assert.ok(await until(() => host.actions().some(row => row.event === 'response')));
+    const reply = host.actions().find(row => row.event === 'response');
+    assert.equal(reply.status, 499);
+    assert.deepEqual(reply.body, { error: 'The request was closed before this action started.' });
+    assert.equal(stub.calls.filter(call => call.method.startsWith('Input.')).length, 0);
+    const next = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'press', key: 'a', epoch: tab.epoch });
+    assert.equal(next.status, 200, 'the queue still accepts a live client');
+    assert.ok(stub.calls.some(call => call.method.startsWith('Input.')));
+  } finally { req.destroy(); gate.release(); await running; }
 });
 
 for (const operation of ['snapshot', 'screenshot']) {

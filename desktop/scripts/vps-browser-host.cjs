@@ -1046,7 +1046,10 @@ async function serve() {
         const body = await read(req);
         tab.lastUsedAt = Date.now();
         tab.pendingActions = (tab.pendingActions || 0) + 1;
+        let closed = false;
+        res.on('close', () => { if (!res.writableFinished) closed = true; });
         const action = tab.queue.then(async () => {
+          if (closed) throw fail('The request was closed before this action started.', 499);
           const result = await vpsPerform(tab, body, botId, overseer);
           // The bot is acting on the tab again; human_returned has done its job.
           if (tab.handback?.state === 'human_returned') tab.handback = null;
