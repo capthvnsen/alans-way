@@ -612,3 +612,11 @@ test('a double click verifies the target again before its second press', async (
   await assert.rejects(f.perform({ action: 'double_click', ref: 'e1' }), /could not be verified/);
   assert.equal(pointer(f).filter(e => e.type === 'mousePressed').length, 1);
 });
+
+test('double-click verification preserves the first click follow-up tracker', async () => {
+  const f = fixture();
+  await f.perform({ action: 'double_click', ref: 'e1' });
+  const probes = f.scripts.filter(code => code.includes('matches:'));
+  assert.equal(probes.length, 2, 'both presses are verified');
+  assert.equal(probes.filter(code => code.includes('S.cur = { open: true')).length, 1, 'the second probe must not replace pending work from the first click');
+});

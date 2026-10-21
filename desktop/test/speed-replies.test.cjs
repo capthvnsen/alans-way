@@ -216,7 +216,8 @@ const shiftingLinkPage = `<!doctype html><title>Moving article link</title>
 <a id="article" href="/nav-b"><span>Charles Babbage</span></a><button id="appearance" onclick="out.textContent='wrong control'">Appearance</button><p id="out">untouched</p>
 <script>article.onpointermove=()=>{article.style.top='240px';appearance.style.display='block'};</script>`;
 const coveredLinkPage = shiftingLinkPage.replace("article.style.top='240px'", "appearance.style.zIndex='2'");
-const routes = { '/shifting-link': shiftingLinkPage, '/covered-link': coveredLinkPage, '/hop-a': hopA, '/hop-b': hopB, '/crowd': crowdPage, '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage, '/checkout': checkoutPage, '/embed': embedPage, '/chat': chatPage, '/notes': quietChatPage };
+const doubleFollowPage = `<!doctype html><title>Double click follow-up</title><button id=target>Open details</button><p id=out>Waiting</p><script>let clicks=0;target.onclick=()=>{if(++clicks===1)setTimeout(()=>out.textContent='First click finished',350)};</script>`;
+const routes = { '/double-follow': doubleFollowPage, '/shifting-link': shiftingLinkPage, '/covered-link': coveredLinkPage, '/hop-a': hopA, '/hop-b': hopB, '/crowd': crowdPage, '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage, '/checkout': checkoutPage, '/embed': embedPage, '/chat': chatPage, '/notes': quietChatPage };
 
 let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
 const api = async (route, method = 'GET', body, epoch) => {
@@ -1002,4 +1003,14 @@ test('an overlay appearing on hover receives no click intended for the link', li
   const reply = await act(tab, { action: 'click', ref });
   assert.equal(reply.status, 400, JSON.stringify(reply.data));
   assert.equal(await pageText(tab, '#out'), 'untouched', 'the unverified overlay must never be pressed');
+});
+
+
+test('a double-click reply waits for work started by its first click', live, async () => {
+  const tab = await openTab('/double-follow');
+  const snap = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+  const ref = pick(snap.elements, e => e.name === 'Open details', 'details button');
+  const reply = await act(tab, { action: 'double_click', ref });
+  assert.equal(reply.status, 200, JSON.stringify(reply.data));
+  assert.match(reply.data.effect.text, /First click finished/);
 });

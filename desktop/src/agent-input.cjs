@@ -933,11 +933,11 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
           const kind = CLICKS[action];
           // Hover can move or cover the target. Verify identity on the existing
           // tracker round trip, then resolve once more before refusing the click.
-          const verifyHit = () => boundedJs(wc, `(() => { ${followUpArmExpression()}; const C = ${commitSource(tab.refSeed)}, hit = C.hit(${Number(point.x)}, ${Number(point.y)}); return { look: C.look(hit), matches: ${targeted ? `C.matches(${locateElement(target)}, hit)` : 'true'} }; })()`, 3000).catch(() => null);
+          const verifyHit = (arm) => boundedJs(wc, `(() => { ${arm ? followUpArmExpression() : ''}; const C = ${commitSource(tab.refSeed)}, hit = C.hit(${Number(point.x)}, ${Number(point.y)}); return { look: C.look(hit), matches: ${targeted ? `C.matches(${locateElement(target)}, hit)` : 'true'} }; })()`, 3000).catch(() => null);
           for (let count = 1; count <= kind.count; count++) {
             for (let attempt = 0; attempt < 2; attempt++) {
               dry();
-              const armed = await verifyHit();
+              const armed = await verifyHit(count === 1);
               check();
               if (targeted && armed?.matches !== true) {
                 if (attempt || count > 1) throw fail('Element could not be verified at the pointer. Request a fresh snapshot before retrying.', 409);
