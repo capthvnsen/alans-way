@@ -1255,6 +1255,7 @@ function showCookieSettings(body) {
   body.append(list, retry, clearAll); refresh();
 }
 function showMacPermissions(body) {
+  command('request-screen-permission');
   body.append(element('p', 'settings-note', 'In System Settings, the app is listed as alans-way-localapp.'));
   const rows = [['accessibility', 'Accessibility'], ['screen', 'Screen Recording']].map(([pane, label]) => {
     const row = element('div', 'setting-row'), status = element('span', '', `${label}: checking…`), open = element('button', 'secondary-button', 'Open settings');
@@ -1264,12 +1265,18 @@ function showMacPermissions(body) {
     return { pane, label, status };
   });
   const retry = element('button', 'secondary-button', 'Refresh permission status'); body.append(retry); const message = settingsStatus(body);
+  const restartNote = element('p', 'settings-note', "After enabling Screen Recording, quit and reopen Alan's Workspace to apply it. You can keep using available app controls and menus before then.");
+  const restart = element('button', 'secondary-button', "Quit and reopen Alan's Workspace");
+  restartNote.hidden = restart.hidden = true;
+  restart.onclick = () => runSettingsAction(restart, message, () => api.command('relaunch-for-permissions'), 'Reopening…');
+  body.append(restartNote, restart);
   const refresh = async () => {
     const reply = await runSettingsAction(retry, message, () => api.command('mac-permissions'), 'Checking permission status…');
     for (const { pane, label, status } of rows) {
       const value = reply.ok && reply.result ? reply.result[pane] : null;
       status.textContent = `${label}: ${value === true || value === 'granted' ? 'on' : value === false || value === 'denied' ? 'off' : 'unavailable'}`;
     }
+    restartNote.hidden = restart.hidden = !reply.ok || !(reply.result?.restartRequired || reply.result?.screen === 'denied');
   };
   retry.onclick = refresh; refresh();
 }
@@ -1279,6 +1286,7 @@ const CHECK_ACTIONS = {
   'move-to-applications': ['Move to Applications', () => command('move-to-applications')],
   'open-accessibility': ['Open settings', () => command('open-mac-privacy', { pane: 'accessibility' })],
   'open-screen': ['Open settings', () => command('open-mac-privacy', { pane: 'screen' })],
+  'relaunch-for-permissions': ["Quit and reopen Alan's Workspace", () => command('relaunch-for-permissions')],
   'remove-old-connector': ['Remove old copy', async () => { if (await command('remove-old-connector')) toast('Old connector copy removed.'); }],
   'update-server': ['Update server', async () => { toast('Updating the server…'); await command('vm-update-retry', { force: true }); }],
 };

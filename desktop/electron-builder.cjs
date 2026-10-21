@@ -67,6 +67,7 @@ function createConfig(env) {
         CFBundleDocumentTypes: [{ CFBundleTypeName: 'PDF document', CFBundleTypeExtensions: ['pdf'], CFBundleTypeRole: 'Viewer', LSHandlerRank: 'Alternate', LSItemContentTypes: ['com.adobe.pdf'] }],
         NSCameraUsageDescription: 'A web page in this workspace can use the camera after you allow it.',
         NSMicrophoneUsageDescription: 'A web page in this workspace can use the microphone after you allow it.',
+        NSScreenCaptureUsageDescription: 'Read app windows and take window screenshots for the tasks you request.',
       },
       ...(signed
         ? { hardenedRuntime: true, entitlements: ENTITLEMENTS, entitlementsInherit: ENTITLEMENTS, notarize }

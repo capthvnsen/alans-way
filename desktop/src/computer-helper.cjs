@@ -381,6 +381,7 @@ function createComputerService(driver) {
   return {
     ...(driver.launch ? { launch: (app) => driver.launch(app) } : {}),
     ...(driver.permissions ? { permissions: () => driver.permissions() } : {}),
+    ...(driver.requestScreenAccess ? { requestScreenAccess: () => driver.requestScreenAccess() } : {}),
     // Off-limits apps would only be refused, so they are not offered.
     apps: async () => (await driver.apps())
       .filter((app) => !(app.pid < 0) && !isBlocked(app.bundleId))
@@ -396,6 +397,8 @@ function createComputerService(driver) {
 // platform.command(mode) -> [file, ...args]; shared by mac, Windows, and Linux.
 function createComputer({ command, env, nativeMac = false }) {
   const helper = createHelper({ command, env });
+  // A permission dialog must never occupy the app's AX request queue.
+  const permissionHelper = nativeMac ? createHelper({ command, env }) : null;
   let windowSupport;
   async function requireWindowSupport(windowId) {
     if (windowId === undefined) return;
@@ -404,6 +407,10 @@ function createComputer({ command, env, nativeMac = false }) {
   }
   const driver = {
     ...(nativeMac ? {
+      requestScreenAccess: async () => {
+        try { return await permissionHelper.request({ cmd: 'request_screen' }); }
+        finally { permissionHelper.close(); }
+      },
       launch: async (app) => {
         if (typeof app !== 'string' || !app.trim() || app.length > 200 || /[/:\n]/.test(app))
           throw fail('bad_request', 'Choose an app by its name or bundle identifier.');
@@ -440,9 +447,9 @@ function createComputer({ command, env, nativeMac = false }) {
         ...(shot.note ? { note: shot.note } : {}),
       };
     },
-    close: () => helper.close(),
+    close: () => { helper.close(); permissionHelper?.close(); },
   };
-  return { driver, service: createComputerService(driver), close: () => helper.close() };
+  return { driver, service: createComputerService(driver), close: () => driver.close() };
 }
 
 module.exports = { createHelper, createComputer, createComputerService, normalizeStep, normalizeKey, binaryCurrent, recordBuild };

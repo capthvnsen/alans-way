@@ -61,6 +61,12 @@ const healthy = (over = {}) => ({
 });
 const byTitle = (findings, pattern) => findings.find((f) => pattern.test(f.title));
 
+test('a Screen Recording grant made in this session offers quit and reopen', () => {
+  const findings = buildFindings(healthy({ local: { permissions: { accessibility: true, screen: 'granted', restartRequired: true } } }));
+  const restart = byTitle(findings, /Quit and reopen/);
+  assert.equal(restart?.action, 'relaunch-for-permissions');
+});
+
 test('unavailable permission probes never claim a permission is off', () => {
   const findings = buildFindings(healthy({ local: { permissions: { accessibility: null, screen: 'unknown' } } }));
   assert.match(byTitle(findings, /Accessibility/).title, /could not be checked/);

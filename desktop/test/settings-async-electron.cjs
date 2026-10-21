@@ -16,6 +16,7 @@ const seams = new Map(), calls = [];
 const handle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, handler) => handle(channel, channel === 'workspace:command' ? async (event, name, value) => {
   calls.push({ name, value });
+  if (name === 'request-screen-permission') return {};
   if (seams.has(name)) return seams.get(name)(() => handler(event, name, value));
   return handler(event, name, value);
 } : handler);

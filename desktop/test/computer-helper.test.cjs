@@ -9,6 +9,21 @@ const { createHelper, createComputer, createComputerService, normalizeStep, norm
 const { pickHelper, makeCompile } = require('../src/computer.cjs');
 const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
 
+test('the permission prompt runs in a separate child so AX reads can continue', async (t) => {
+  let request;
+  const computer = permissionComputer(t, (message, proc) => {
+    if (message.cmd === 'request_screen') { request = { message, proc }; return; }
+    return { ok: true, generation: 1, elements: [] };
+  }, false, true, true);
+  const prompting = computer.service.requestScreenAccess();
+  for (let i = 0; !request && i < 20; i++) await new Promise(setImmediate);
+  assert.ok(request);
+  assert.equal((await computer.service.snapshot('bot', 7)).generation, 1);
+  assert.equal(computer.children.length, 2);
+  request.proc.stdout.write(JSON.stringify({ id: request.message.id, ok: true, screenRecording: false }) + '\n');
+  await prompting;
+});
+
 test('Mac launch and permission reads reach the helper, while other hosts keep their verbs', async (t) => {
   const calls = [];
   const mac = permissionComputer(t, (request) => {

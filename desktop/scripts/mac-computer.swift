@@ -422,7 +422,7 @@ func hasOffscreenWindow(_ pid: pid_t) -> Bool {
 
 let otherSpaceNote = "No window of this app is readable: its windows are on another Space, minimized or hidden (a full-screen app in front puts them on another Space). Its menus and a screenshot still work. To use its controls, ask the user to bring it onto the current Space."
 let noWindowNote = "This app has no open windows. Its menus still work (menubar:true), for example File > New."
-let unsureWindowNote = "No window of this app is readable: it has none open, or they are on another Space, minimized or hidden (Screen Recording is off, so which is unknown). Its menus still work (menubar:true)."
+let unsureWindowNote = "Window titles are unavailable. This does not mean the app is closed. Continue with its available controls and menus; if it has no task window, open one."
 
 func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws -> Walk {
     let app = appElement(pid)
@@ -1415,6 +1415,8 @@ func dispatch(_ request: JSON) throws -> JSON {
         return try selftest()
     case "permissions":
         return ["accessibility": AXIsProcessTrusted(), "screenRecording": CGPreflightScreenCaptureAccess()]
+    case "request_screen":
+        return ["screenRecording": CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()]
     case "launch":
         return try launchApp(request)
     case "apps":

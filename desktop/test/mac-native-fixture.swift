@@ -1,6 +1,8 @@
 // OS responses only; all policy, menu, binding and dispatch code is production.
 var fixtureTrusted = true
 var fixtureScreen = false
+var screenRequests = 0
+func fixtureRequestScreen() -> Bool { screenRequests += 1; return fixtureScreen }
 var fixtureLocked = false
 var fixtureIdle = 0.0
 var fixtureFront: pid_t? = 7
@@ -142,6 +144,15 @@ func fixture() throws {
             let reply = try dispatch(["cmd": "permissions"])
             try expectFixture(reply["accessibility"] as? Bool == trusted && reply["screenRecording"] as? Bool == screen, "permissions must be measured")
         } }
+    case "screen-request":
+        fixtureTrusted = false
+        for granted in [false, true] {
+            fixtureScreen = granted
+            let reply = try dispatch(["cmd": "request_screen"])
+            try expectFixture(reply["screenRecording"] as? Bool == granted, "screen request reports its actual result")
+        }
+        try expectFixture(screenRequests == 1 && performed.isEmpty, "only missing access is requested; no input is sent")
+        try expectFixture(!unsureWindowNote.contains("no open") && unsureWindowNote.contains("Continue"), "unknown titles must not end the task")
     case "activate":
         fixtureFront = 99; fixtureIdle = 1
         try refuses("in_front") { _ = try runStep(7, ["action": "activate"], windowId: 41) }

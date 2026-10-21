@@ -132,8 +132,9 @@ ipcMain.handle = (channel, handler) => {
   handlers.set(channel, handler);
   return originalHandle(channel, channel !== 'workspace:command' ? handler : async (event, name, value) => {
     const record = { name, value, at: Date.now() }; journal.commands.push(record);
-    if (!['settings','settings-write-status','remote-status','update-status','mac-permissions','select-agent'].includes(name)) throw block('command', name);
+    if (!['settings','settings-write-status','remote-status','update-status','mac-permissions','request-screen-permission','select-agent'].includes(name)) throw block('command', name);
     if (name === 'update-status') return {};
+    if (name === 'request-screen-permission') return {};
     if (name === 'mac-permissions') return {accessibility:false,screen:'not-determined'};
     const mine = gate && name === gate.name && (!gate.key || Object.hasOwn(value || {}, gate.key)) ? gate : null;
     if (mine) { gate = null; mine.record = record; held.set(mine.id, mine); }

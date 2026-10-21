@@ -91,7 +91,8 @@ function computerRows({ platform, local }) {
       rows.push(local.permissions.screen === 'granted'
         ? row('computer', 'ok', 'Screen Recording is on')
         : local.permissions.screen !== 'denied' ? row('computer', 'warn', 'Screen Recording could not be checked', 'Retry the permission check.')
-        : row('computer', 'warn', 'Screen Recording is off', 'Your agent can’t see other apps’ windows until this is on.', 'open-screen'));
+        : row('computer', 'warn', 'Screen Recording is off', 'Enable alans-way-localapp in System Settings > Privacy & Security > Screen & System Audio Recording (Screen Recording on older macOS). Available app controls and menus still work.', 'open-screen'));
+      if (local.permissions.restartRequired) rows.push(row('computer', 'warn', "Quit and reopen Alan's Workspace", 'After enabling Screen Recording, quit and reopen to apply the grant. Available app controls and menus still work.', 'relaunch-for-permissions'));
     }
   }
   rows.push(local.staleConnector
