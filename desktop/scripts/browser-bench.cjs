@@ -86,7 +86,7 @@ document.querySelectorAll('#cookies button').forEach(b=>b.onclick=()=>cookies.re
 setTimeout(()=>{const m=document.createElement('div');m.id='modal';m.style.cssText='position:fixed;inset:0;background:#0008;display:flex;align-items:center;justify-content:center';
 m.innerHTML='<div role=dialog aria-modal=true aria-labelledby=mt style="background:#fff;padding:24px"><h2 id=mt>Join our newsletter</h2><input aria-label="Email address"><button>Subscribe</button><button>No thanks</button></div>';
 m.querySelectorAll('button')[1].onclick=()=>m.remove();document.body.append(m)},400);`);
-  p['/todos'] = page('Todos', `<main><h1>Todos</h1><p id=saved>Saved just now</p><input id=new aria-label="New todo" placeholder="What needs doing?"><ul id=l></ul></main>`,
+  p['/todos'] = page('Todos', `<main><h1>Todos</h1><p id=saved>Saved just now</p><label>Add a task <input id=new aria-label="New todo" placeholder="What needs doing?"></label><ul id=l></ul></main>`,
   `let t=[['Walk dog',0],['Pay rent',0],['Old task',0],['Call mom',0]],s=0;setInterval(()=>{saved.textContent='Saved '+(++s)+'s ago'},300);
 const R=()=>{l.innerHTML=t.map(([x,d],i)=>'<li><label><input type=checkbox data-i='+i+(d?' checked':'')+'> '+x+'</label> <button data-d='+i+'>Delete</button></li>').join('');
 l.querySelectorAll('input').forEach(c=>c.onchange=()=>{t[c.dataset.i][1]=c.checked?1:0;R()});l.querySelectorAll('button').forEach(b=>b.onclick=()=>{t.splice(b.dataset.d,1);R()});report('todos',t.map(([x,d])=>x+(d?'+':'')).join(','))};
@@ -216,9 +216,11 @@ class Agent {
       const w = Math.min(960, data.viewport.width), h = Math.round(data.viewport.height * w / data.viewport.width);
       this.stats.imageTokens += Math.round(w * h / 750) - 1000;
     }
-    this.log.push({ name, action: args.action, ms: Date.now() - t0, chars: text.length, error: r.isError ? String(text).slice(0, 160) : undefined });
-    if (r.isError) { this.stats.errors++; return { error: String(text) }; }
-    this.absorb(data);
+    const error = r.isError ? String(text) : Array.isArray(data?.results) ? data.results.find(x => !x.ok)?.error : undefined;
+    if (error) this.stats.errors++;
+    this.log.push({ name, action: args.action, ms: Date.now() - t0, chars: text.length, error: error?.slice(0, 160) });
+    if (r.isError) return { error: String(text) };
+    if (!this.tab || !args.tabId || args.tabId === this.tab.id) this.absorb(data);
     return data;
   }
   absorb(data) {
@@ -247,6 +249,15 @@ class Agent {
   }
   // A model passes what the schema asks for: the generation it holds, where the tool takes one.
   act(body) { return this.call('cua_alans_way_action', { tabId: this.tab.id, epoch: this.tab.epoch, ...(this.opts.generation && Number.isInteger(this.generation) ? { generation: this.generation } : {}), ...body }); }
+  async review(body) {
+    if (!this.opts.fixtureApproval) throw new Error('Approval simulation is limited to a disposable fixture.');
+    const snapshot = await this.snapshot();
+    if (new URL(snapshot.url).origin !== this.opts.fixtureApproval) throw new Error('Approval simulation left the disposable fixture.');
+    const { harnessApproval, bindApproval } = require('../test/approval-fixture.cjs');
+    const reviewed = { ...body, approval: harnessApproval(this.tab) };
+    bindApproval(reviewed, snapshot);
+    return this.act(reviewed);
+  }
   find(rx, role) { return this.known.find((e) => rx.test([e.name, e.row].filter(Boolean).join(' ')) && (!role || role.test(e.role) || role.test(e.type || ''))); }
   // The model looks in what it holds, then reads the page, then reads more of it.
   async need(rx, role) {
@@ -301,7 +312,12 @@ class Agent {
         const why = r.error || (r.results.find((x) => !x.ok) || {}).error || '';
         this.lastError = why;
         // A covering dialog or banner is closed first, the way a person would.
-        if (/covered by/.test(why)) await this.dismissBlocker(why);
+        if (/commit_required/.test(why) && this.opts.fixtureApproval) {
+          const approved = await this.review(batch[Math.max(0, done) + closes.length]);
+          if (approved.error || approved.results?.some(x => !x.ok)) throw new Error(approved.error || 'Approved fixture action failed.');
+          i++;
+        }
+        else if (/covered by/.test(why)) await this.dismissBlocker(why);
         else if (/No visible control is named|controls match/.test(why)) {
           this.namesFailed = true;
           // A single close match is the one the model meant: it acts on that ref next.
@@ -397,7 +413,7 @@ const tasks = [
       await a.open(fx.url('/todos'));
       // Every Delete reads the same; the model takes the one after "Old task" in page order.
       const del = (name) => ({ action: 'click', target: [/^Delete/, /button/], after: new RegExp('^' + name) });
-      await a.run([{ action: 'type', target: [/new todo/i], named: ['new todo'], text: 'Buy milk' }, { action: 'press', key: 'Enter' },
+      await a.run([{ action: 'type', target: [/new todo/i], named: ['new todo'], text: 'Buy milk' }, { action: 'press', target: [/new todo/i], key: 'Enter' },
         { action: 'click', target: [/^walk dog/i, /input|checkbox/], named: ['walk dog', 'checkbox'] }, { action: 'click', target: [/^pay rent/i, /input|checkbox/], named: ['pay rent', 'checkbox'] },
         { ...del('Old task'), named: ['delete', 'button', 'old task'] }], 6);
       return 'done';
@@ -421,7 +437,11 @@ const tasks = [
   { id: 'confirm-dialog', what: 'delete a draft behind a confirm dialog', fixture: true,
     async run(a, fx) {
       await a.open(fx.url('/drafts'));
-      const click = async (extra = {}) => a.act({ action: 'click', ...(a.opts.names ? { name: 'Delete draft' } : { ref: await a.need(/^delete draft/i) }), ...extra });
+      const click = async (extra = {}) => {
+        const body = { action: 'click', ...(a.opts.names ? { name: 'Delete draft' } : { ref: await a.need(/^delete draft/i) }), ...extra };
+        const reply = await a.act(body);
+        return /commit_required/.test(reply.error || '') ? a.review(body) : reply;
+      };
       const r = await click();
       const note = (r.dialogs || []).map((d) => d.note || '').join(' ');
       // The reply says how to accept: repeat with dialog, or override confirm by eval first.
@@ -450,7 +470,9 @@ const tasks = [
         // The frame cannot be read: look at it and click by coordinates (the
         // widget's layout is fixed, standing in for what a vision step reads).
         await a.call('cua_alans_way_screenshot', { tabId: a.tab.id });
-        const box = (await a.act({ action: 'eval', code: '(()=>{const f=document.querySelector("iframe[title=\\"Delivery options\\"]");f.scrollIntoView({block:"center"});const r=f.getBoundingClientRect();return {x:r.x,y:r.y}})()' })).value;
+        const located = await a.act({ action: 'eval', code: '(()=>{const f=document.querySelector("iframe[title=\\"Delivery options\\"]");f.scrollIntoView({block:"center"});const r=f.getBoundingClientRect();return {x:r.x,y:r.y}})()' });
+        if (located.error) throw new Error(located.error);
+        const box = located.value;
         await a.act({ action: 'click', x: box.x + 21, y: box.y + 56 });
         await a.act({ action: 'click', x: box.x + 60, y: box.y + 95 });
       }
@@ -520,7 +542,8 @@ async function runAgentSuite() {
         if (task.fixture && !eng.main) continue;
         for (let run = 0; run < runs; run++) {
           fixtures.reset(); await closeAll();
-          const a = new Agent(client, { host: eng.host, generation: !!actionProps.generation, names: !!actionProps.name, openSnapshot });
+          const a = new Agent(client, { host: eng.host, generation: !!actionProps.generation, names: !!actionProps.name, openSnapshot,
+            fixtureApproval: task.fixture && !eng.live ? new URL(fx.main).origin : null });
           const t0 = Date.now();
           let ans = '', err = '';
           try { ans = String(await task.run(a, fx) || ''); } catch (e) { err = e.message; }

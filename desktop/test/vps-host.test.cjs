@@ -855,6 +855,18 @@ test('every request an agent tab makes is checked before it leaves, redirects, u
   assert.equal(refused.status, 400, 'the agent cannot switch the filter off');
 });
 
+test('attaching an agent popup starts its idle clock', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/vps-browser-host.cjs'), 'utf8');
+  const attach = vm.runInNewContext(source.slice(source.indexOf('async function attach('), source.indexOf('  const newTarget =')) + '\nattach', {
+    Date: { now: () => 1000000 }, tabs: new Map(), sessionOwner: new Map(), AUTO_ATTACH: {},
+    cdp: { page: async () => ({ sessionId: 's', command: async () => ({}) }) },
+    syncFetch: async () => {}, syncTrack: async () => {},
+  });
+  assert.equal((await attach({ id: 'popup', targetId: 'target', controller: 'agent' })).agentSince, 1000000);
+  assert.equal((await attach({ id: 'old', targetId: 'target', controller: 'agent', agentSince: 900000 })).agentSince, 900000);
+  assert.equal((await attach({ id: 'human', targetId: 'target', controller: 'human' })).agentSince, undefined);
+});
+
 test('popups and frames are guarded from their first request, before the page resumes', async () => {
   const host = await startHost();
   const tab = (await host.api('/v1/tabs', 'POST', { url: 'http://opener.example/' })).data;
