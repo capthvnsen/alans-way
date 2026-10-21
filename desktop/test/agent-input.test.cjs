@@ -14,7 +14,7 @@ function fixture(options = {}) {
   const tab = { id: 'tab-1', botId: 'bot', controller: 'agent', epoch: 1, refs: new Set(['e1', 'e2']), view: { webContents: Object.assign(new EventEmitter(), {
     isDestroyed: () => false,
     setIgnoreMenuShortcuts: value => shortcuts.push(value),
-    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.includes('targets: [') && code.includes('S.approvalTarget(S.find(ref))') ? { approvalContext: options.approvalContext || TEST_CONTEXT, targets: [options.approvalTarget || TEST_TARGET, options.approvalTarget || TEST_TARGET] } : code.endsWith('([], true)') ? (options.challenge ?? null) : code.includes('.page()') ? (options.page ?? { origin: 'https://shop.example', names: [] }) : code.includes('return C.look(C.') ? (options.probe ?? null) : code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : code.includes('elementFromPoint') ? found : code.includes('hw.submit') ? (options.submitted ?? null) : found; },
+    executeJavaScript: async code => { scripts.push(code); await hook('evaluate', code); return code.includes('matches:') ? { ...found, matches: options.matches ?? true } : code.includes('targets: [') && code.includes('S.approvalTarget(S.find(ref))') ? { approvalContext: options.approvalContext || TEST_CONTEXT, targets: [options.approvalTarget || TEST_TARGET, options.approvalTarget || TEST_TARGET] } : code.endsWith('([], true)') ? (options.challenge ?? null) : code.includes('.page()') ? (options.page ?? { origin: 'https://shop.example', names: [] }) : code.includes('return C.look(C.') ? (options.probe ?? null) : code.includes('innerWidth, height: innerHeight') ? { width: 800, height: 600 } : code.includes('has no option matching') ? (options.select || { matched: { by: 'label', value: 'b', label: 'Beta' } }) : code.includes('elementFromPoint') ? found : code.includes('hw.submit') ? (options.submitted ?? null) : found; },
     focus: () => { throw new Error('Native focus must never be used.'); },
     sendInputEvent: () => { throw new Error('Native input must never be used.'); },
   }) } };
@@ -586,4 +586,37 @@ test('certain locator failures offer bounded candidates without dispatching inpu
   assert.equal(pointer(f).length, 0);
   assert.ok(f.tab.refs.has('e10'));
   assert.equal(f.tab.refs.has('e15'), false);
+});
+
+test('a target still mismatched after one re-resolution receives no press', async () => {
+  const f = fixture({ matches: false });
+  await assert.rejects(f.perform({ action: 'click', ref: 'e1' }), /could not be verified/);
+  assert.equal(pointer(f).filter(e => e.type === 'mouseMoved').length, 2, 'only one retry');
+  assert.equal(pointer(f).some(e => e.type === 'mousePressed'), false);
+});
+
+test('an unreadable post-hover hit receives no press', async () => {
+  const f = fixture();
+  f.hook(async (method, code) => { if (method === 'evaluate' && code.includes('matches:')) throw new Error('renderer unavailable'); });
+  await assert.rejects(f.perform({ action: 'click', ref: 'e1' }), /could not be verified/);
+  assert.equal(pointer(f).some(e => e.type === 'mousePressed'), false);
+});
+
+test('a double click verifies the target again before its second press', async () => {
+  const f = fixture();
+  let pressed = false;
+  f.hook(async (method, params) => {
+    if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') pressed = true;
+    if (method === 'evaluate' && params.includes('matches:') && pressed) throw new Error('target changed');
+  });
+  await assert.rejects(f.perform({ action: 'double_click', ref: 'e1' }), /could not be verified/);
+  assert.equal(pointer(f).filter(e => e.type === 'mousePressed').length, 1);
+});
+
+test('double-click verification preserves the first click follow-up tracker', async () => {
+  const f = fixture();
+  await f.perform({ action: 'double_click', ref: 'e1' });
+  const probes = f.scripts.filter(code => code.includes('matches:'));
+  assert.equal(probes.length, 2, 'both presses are verified');
+  assert.equal(probes.filter(code => code.includes('S.cur = { open: true')).length, 1, 'the second probe must not replace pending work from the first click');
 });

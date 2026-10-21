@@ -137,6 +137,7 @@ before(async () => {
     '/captcha-form': page(`<form><div class="g-recaptcha"><iframe title="reCAPTCHA" width="304" height="78" src="/recaptcha/api2/anchor?k=x&size=normal"></iframe><textarea name="g-recaptcha-response" style="display:none"></textarea></div><button id=b type=button onclick="document.title='other'">Other</button></form>`),
     '/sorry/index': page(`<title>unusual traffic</title><form id="captcha-form" action="index" method="post"><div class="g-recaptcha"><iframe width="304" height="78" src="/recaptcha/api2/anchor?k=x&size=normal"></iframe></div></form><p>Our systems have detected unusual traffic from your computer network.</p>`),
     '/readonly': page(`<input id=d readonly value=x><script>d.addEventListener('keydown', (e) => { if (e.key === 'Enter') document.title = 'entered'; });</script>`),
+    '/compact-rows': page(`<h1>Compare archive editions</h1>${Array.from({ length: 12 }, (_, i) => `<article><h2>Edition ${i + 1}</h2><p>$${12 + i}.00</p><p>Printed on recycled paper with a stitched binding and delivery within five business days.</p><button>Open edition</button></article>`).join('')}<nav><a href=/compact-rows>Browse archive editions, prices, binding details and delivery information</a></nav><nav><a href=/compact-rows>Browse archive editions, prices, binding details and delivery information</a></nav>`),
     '/i.png': (res) => { res.setHeader('content-type', 'image/png'); res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')); },
   };
   marks = new Set();
@@ -350,6 +351,26 @@ test('real Chromium: warm reads send less source and return the same page', { sk
     const quantile = (list, q) => [...list].sort((a, b) => a - b)[Math.ceil(list.length * q) - 1];
     console.log(JSON.stringify({ readerMeasurement: { reads: 20, baselineBytes, cachedBytes, baselineMs: { p50: quantile(baseline, .5), p95: quantile(baseline, .95) }, cachedMs: { p50: quantile(cached, .5), p95: quantile(cached, .95) } } }));
   } finally { cdp.socket.close(); await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch); }
+});
+
+test('real Chromium: compact repeated prose while preserving every control and price', { skip: !chrome, timeout: 30000 }, async () => {
+  const tab = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/compact-rows` })).data;
+  try {
+    const controls = (await api(`/v1/tabs/${tab.id}/snapshot?maxChars=0`)).data;
+    const snapshot = (await api(`/v1/tabs/${tab.id}/snapshot?maxChars=20000`)).data;
+    assert.equal(snapshot.text.split('Printed on recycled paper').length - 1, 1);
+    assert.equal(snapshot.text.split('Browse archive editions, prices').length - 1, 1);
+    assert.equal(snapshot.text.split('Open edition').length - 1, 12, 'short repeated labels keep their row placement');
+    assert.deepEqual(snapshot.elements, controls.elements, 'names, refs, row context and approval targets survive compaction');
+    assert.equal(snapshot.elements.length, 14);
+    for (let i = 0; i < 12; i++) {
+      assert.match(snapshot.text, new RegExp('Edition ' + (i + 1) + '\\n\\$' + (12 + i) + '\\.00'));
+      assert.ok(snapshot.elements[i].approvalTarget);
+      assert.ok(snapshot.elements[i].row.startsWith('Edition ' + (i + 1) + '$'));
+    }
+    const read = (await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'read', maxChars: 20000, epoch: tab.epoch })).data;
+    assert.equal(read.text.split('Printed on recycled paper').length - 1, 12, 'explicit text reads preserve multiplicity');
+  } finally { await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch); }
 });
 
 test('real Chromium: crop a scrolled page and preserve the image coordinate origin', { skip: !chrome, timeout: 30000 }, async () => {

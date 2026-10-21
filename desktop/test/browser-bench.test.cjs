@@ -7,6 +7,20 @@ const source = fs.readFileSync(require.resolve('../scripts/browser-bench.cjs'), 
 const Agent = vm.runInNewContext(source.slice(source.indexOf('const isRef ='), source.indexOf('// ---------------------------------------------------------------- tasks')) + '\nAgent', {
   require, Buffer, URL, sleep: async () => {}, think: 0,
 });
+const tasks = vm.runInNewContext(source.slice(source.indexOf('const tasks ='), source.indexOf('// ---------------------------------------------------------------- run')) + '\ntasks', { isDeepStrictEqual: require('node:util').isDeepStrictEqual });
+
+test('product prices ignore object key order but preserve ordered exact values', () => {
+  const check = tasks.find(t => t.id === 'product-prices').check;
+  const items = Array.from({ length: 20 }, (_, i) => ({ price: '$' + (12 + i * 0.75).toFixed(2), title: 'Product ' + String(i + 1).padStart(2, '0') }));
+  const fx = { reports: {} };
+  assert.equal(check(fx, JSON.stringify(items)), true);
+  assert.equal(check(fx, JSON.stringify(items.toReversed())), false);
+  assert.equal(check(fx, JSON.stringify(items.slice(1))), false);
+  assert.equal(check(fx, JSON.stringify(items.map((item, i) => i ? item : { ...item, price: '$0.01' }))), false);
+  assert.equal(check(fx, JSON.stringify(items.map(item => ({ ...item, price: Number(item.price.slice(1)) })))), false);
+  assert.equal(check({ reports: { products: 'ordered' } }, JSON.stringify(items)), false);
+  assert.equal(check(fx, 'not json'), false);
+});
 
 test('reading a popup preserves the original tab controls and generation', async () => {
   const a = new Agent({ callTool: async () => ({ content: [{ type: 'text', text: JSON.stringify({ elements: [], generation: 1, text: 'Code: K123456' }) }] }) }, {});
@@ -37,6 +51,14 @@ test('a refused batch step counts in the reported errors', async () => {
   assert.match(a.log[0].error, /commit_required/);
 });
 
+test('observation bytes count UTF-8 separately from character token estimates', async () => {
+  const text = JSON.stringify({ text: 'Price: €12' });
+  const a = new Agent({ callTool: async () => ({ content: [{ type: 'text', text }] }) }, {});
+  await a.call('cua_alans_way_snapshot', {});
+  assert.equal(a.stats.bytes, Buffer.byteLength(text));
+  assert.equal(a.stats.chars, text.length);
+});
+
 test('a refused batch reviews only the unexecuted step', async () => {
   const a = new Agent({}, { fixtureApproval: 'http://fixture.example' });
   a.known = [{ ref: 'e1', name: 'Name' }, { ref: 'e2', name: 'Send request' }];
@@ -54,4 +76,15 @@ test('a refused batch reviews only the unexecuted step', async () => {
   await a.run([{ action: 'type', target: [/^Name$/], text: 'Ada' }, { action: 'click', target: [/^Send request$/] }]);
   assert.equal(batches, 1);
   assert.equal(reviews, 1);
+});
+
+test('the article-link benchmark requires a navigation to the actual requested destination', async () => {
+  const tasks = vm.runInNewContext(source.slice(source.indexOf('const tasks ='), source.indexOf('// ---------------------------------------------------------------- run')) + '\ntasks', { RESULTS: [] });
+  const task = tasks.find(t => t.id === 'pub-wiki-link');
+  const url = 'https://en.wikipedia.org/wiki/Charles_Babbage';
+  const a = { open: async () => {}, need: async () => 'e1', act: async () => ({ effect: { navigated: true, url } }) };
+  assert.equal(task.check({ lastUrl: url }, await task.run(a)), true);
+  assert.equal(task.check({ lastUrl: 'https://en.wikipedia.org/wiki/Ada_Lovelace' }, url), false);
+  a.act = async () => ({ effect: { navigated: false, url } });
+  assert.equal(task.check({ lastUrl: url }, await task.run(a)), false);
 });
