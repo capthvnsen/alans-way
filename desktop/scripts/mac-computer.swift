@@ -130,6 +130,58 @@ func readAttributes(_ element: AXUIElement) -> [String: CFTypeRef]? {
     return read
 }
 
+// Cached reads are optional: incomplete notification support always reads again.
+final class AXReadCache {
+    var observer: AXObserver?
+    var watched: [AXKey: Bool] = [:]
+    var values: [AXKey: (time: Double, attributes: [String: CFTypeRef])] = [:]
+    let notifications = ["AXValueChanged", "AXTitleChanged", "AXUIElementDestroyed", "AXLayoutChanged", "AXMoved", "AXResized", "AXSelectedChildrenChanged"]
+    init(_ pid: pid_t) {
+        guard pid > 0 else { return }
+        var created: AXObserver?
+        guard AXObserverCreate(pid, { _, _, _, context in
+            guard let context else { return }
+            Unmanaged<AXReadCache>.fromOpaque(context).takeUnretainedValue().invalidate()
+        }, &created) == .success, let created else { return }
+        observer = created
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(created), .defaultMode)
+    }
+    func watch(_ element: AXUIElement) -> Bool {
+        let key = AXKey(element: element)
+        if let supported = watched[key] { return supported }
+        if watched.count >= visitCap { close(); return false }
+        guard let observer else { return false }
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        var supported = true
+        for notification in notifications {
+            let result = AXObserverAddNotification(observer, element, notification as CFString, context)
+            if result != .success && result != .notificationAlreadyRegistered { supported = false }
+        }
+        if !supported { close(); return false }
+        watched[key] = true
+        return true
+    }
+    func read(_ element: AXUIElement, now: Double = ProcessInfo.processInfo.systemUptime, covered: Bool? = nil,
+              loader: (AXUIElement) -> [String: CFTypeRef]? = readAttributes) -> [String: CFTypeRef]? {
+        let supported = covered ?? watch(element)
+        let key = AXKey(element: element)
+        if supported, let saved = values[key], now >= saved.time, now - saved.time < 0.250 { return saved.attributes }
+        values[key] = nil
+        guard let attributes = loader(element) else { invalidate(); return nil }
+        if supported { values[key] = (now, attributes) }
+        return attributes
+    }
+    func invalidate() { values.removeAll() }
+    func close() {
+        if let observer { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode) }
+        observer = nil
+        watched.removeAll()
+        invalidate()
+    }
+    deinit { close() }
+}
+var attributeReads: [pid_t: AXReadCache] = [:]
+
 // MARK: tree walk
 
 final class Node {
@@ -176,10 +228,12 @@ struct Elem {
     var name: String
     var value: String
     var frame: CGRect?
+    var actions: [String] = []
 
     var json: JSON {
         var out: JSON = ["ref": ref, "role": role, "name": name]
         if !value.isEmpty { out["value"] = value }
+        if !actions.isEmpty { out["actions"] = actions }
         if let frame {
             out["x"] = whole(frame.origin.x)
             out["y"] = whole(frame.origin.y)
@@ -209,7 +263,7 @@ func whole(_ number: Double) -> Int { Int(rounded(number)) ?? 0 }
 func generation(of elements: [Elem]) -> Int {
     fnv(elements.map { item in
         let box = item.frame.map { [rounded($0.origin.x), rounded($0.origin.y), rounded($0.width), rounded($0.height)] } ?? ["", "", "", ""]
-        return ([item.ref, item.role, item.name, item.value] + box).joined(separator: "|")
+        return ([item.ref, item.role, item.name, item.value] + box + item.actions).joined(separator: "|")
     }.joined(separator: "\n"))
 }
 
@@ -438,6 +492,10 @@ func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
     if menubar, let bar = axValue(app, "AXMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID() {
         roots.append(Node(bar as! AXUIElement, depth: 0, limit: 1))
     }
+    let reads = attributeReads[pid] ?? AXReadCache(pid)
+    attributeReads[pid] = reads
+    // Deliver queued invalidations before consulting attributes from a previous walk.
+    if reads.observer != nil { CFRunLoopRunInMode(.defaultMode, 0, false) }
     var queue = roots
     var head = 0
     var readable = 0
@@ -454,7 +512,7 @@ func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
         let node = queue[head]
         head += 1
         visits += 1
-        guard let attributes = readAttributes(node.element) else {
+        guard let attributes = reads.read(node.element) else {
             dropped = true
             continue
         }
@@ -498,6 +556,7 @@ func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
     for root in roots { emit(root, "") }
     let book = refBooks[pid] ?? RefBook()
     refBooks[pid] = book
+    if truncated { reads.invalidate() }
     return record(found, book, truncated: truncated, hidden: hidden, note: note, windowId: selected?.id, windowFrame: selected?.frame)
 }
 
@@ -514,7 +573,7 @@ func record(_ found: [Node], _ book: RefBook, truncated: Bool = false, hidden: I
     for (node, ref) in zip(found, assignRefs(items, book)) {
         node.ref = ref
         nodes[ref] = node
-        elements.append(Elem(ref: ref, role: node.role, name: node.name, value: node.shownValue, frame: node.frame))
+        elements.append(Elem(ref: ref, role: node.role, name: node.name, value: node.shownValue, frame: node.frame, actions: node.secure || !interactive.contains(node.role) ? [] : actionNames(node.element).filter { secondaryActions.contains($0) }))
     }
     var walk = Walk(elements: elements, nodes: nodes, truncated: truncated, generation: windowId.map { fnv("\($0)|\(generation(of: elements))") } ?? generation(of: elements), hidden: hidden, note: note, windowId: windowId, windowFrame: windowFrame)
     // A changed identity or state behind an identical fingerprint takes its own
@@ -556,6 +615,7 @@ func refresh(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
     while cacheOrder.count > 16 { cacheOrder.removeFirst() }
     for key in Array(caches.keys) where !cacheOrder.contains(key) { caches[key] = nil }
     for key in Array(refBooks.keys) where !cacheOrder.contains(key) { refBooks[key] = nil }
+    for key in Array(attributeReads.keys) where !cacheOrder.contains(key) { attributeReads[key]?.close(); attributeReads[key] = nil }
     return walk
 }
 
@@ -579,6 +639,7 @@ func ensureCache(_ pid: pid_t, _ expected: Int?, refs: [String], menubar: Bool, 
         throw Fail("stale_ref", "stale_ref: The app changed since your snapshot. Take a fresh snapshot.")
     }
     let previousWindow = (refBooks[pid].map { $0.history + $0.pinned })?.last(where: { $0.generation == expected })?.windowId
+    attributeReads[pid]?.invalidate()
     let walk = try walker(pid, menubar)
     guard previousWindow == walk.windowId else { throw Fail("stale_ref", "The selected window changed. Take a fresh snapshot.") }
     for ref in refs {
@@ -1082,6 +1143,26 @@ func pointOrRef(_ pid: pid_t, _ step: JSON) throws -> (point: CGPoint, element: 
     return (point, hit, nil)
 }
 
+let secondaryActions: Set<String> = ["AXShowMenu", "AXIncrement", "AXDecrement", "AXConfirm", "AXPick"]
+
+func selectionRange(_ value: String, text: String, prefix: String, suffix: String, selection: String) throws -> CFRange {
+    guard !text.isEmpty, text.utf16.count <= 2000, prefix.utf16.count <= 2000, suffix.utf16.count <= 2000,
+          ["text", "cursor_before", "cursor_after"].contains(selection) else { throw Fail("bad_request", "Invalid text selection.") }
+    let source = value as NSString
+    let needle = prefix + text + suffix
+    var offset = 0
+    var matches: [NSRange] = []
+    while offset < source.length {
+        let found = source.range(of: needle, options: .literal, range: NSRange(location: offset, length: source.length - offset))
+        if found.location == NSNotFound { break }
+        matches.append(NSRange(location: found.location + prefix.utf16.count, length: text.utf16.count))
+        if matches.count > 1 { throw Fail("ambiguous_text", "That text appears more than once. Supply adjacent prefix or suffix text.") }
+        offset = found.location + 1
+    }
+    guard let match = matches.first else { throw Fail("text_not_found", "That text was not found with the supplied context.") }
+    return CFRange(location: selection == "cursor_after" ? NSMaxRange(match) : match.location, length: selection == "text" ? match.length : 0)
+}
+
 func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
     let before = cursor()
     postedMouse = false
@@ -1092,6 +1173,29 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
         try rejectSecure(node)
         try rejectSecureFocusForMenu(pid, node.element)
         out["via"] = try pressElement(pid, node.element, role: node.role)
+    case "select_text":
+        let node = try resolve(pid, step["ref"] as? String ?? "")
+        try rejectSecure(node)
+        guard !isSecure(node.element) else { throw Fail("off_limits", "Password fields are off limits.") }
+        guard textEntry.contains(node.role), let text = step["text"] as? String,
+              let value = axValue(node.element, "AXValue") as? String else { throw Fail("unsupported_action", "That control does not expose selectable text.") }
+        for key in ["prefix", "suffix", "selection"] where step[key] != nil && !(step[key] is String) { throw Fail("bad_request", "Invalid text selection.") }
+        var range = try selectionRange(value, text: text, prefix: step["prefix"] as? String ?? "", suffix: step["suffix"] as? String ?? "", selection: step["selection"] as? String ?? "text")
+        guard let selected = AXValueCreate(.cfRange, &range),
+              AXUIElementSetAttributeValue(node.element, "AXSelectedTextRange" as CFString, selected) == .success else {
+            throw Fail("unsupported_action", "That app could not select the text.")
+        }
+    case "secondary_action":
+        let node = try resolve(pid, step["ref"] as? String ?? "")
+        try rejectSecure(node)
+        guard !isSecure(node.element) else { throw Fail("off_limits", "Password fields are off limits.") }
+        try rejectSecureFocus(pid)
+        guard let action = step["secondaryAction"] as? String, secondaryActions.contains(action), actionNames(node.element).contains(action) else {
+            throw Fail("unsupported_action", "That control does not advertise that action.")
+        }
+        let result = AXUIElementPerformAction(node.element, action as CFString)
+        guard result == .success else { throw Fail("failed", "The app could not perform that action (\(result.rawValue)).") }
+        out["via"] = "ax"
     case "type":
         let node = try resolve(pid, step["ref"] as? String ?? "")
         try rejectSecure(node)
@@ -1271,6 +1375,7 @@ func act(_ request: JSON) throws -> JSON {
     }
     let selected = try selectedWindow(pid, windowId)
     let refs = steps.compactMap { $0["ref"] as? String }
+    attributeReads[pid]?.invalidate()
     try ensureCache(pid, expected, refs: refs, menubar: menubar) { try refresh($0, menubar: $1, windowId: selected?.id) }
     let settling = AXSettler(pid, refs: refs)
     defer { settling.close() }
@@ -1290,6 +1395,7 @@ func act(_ request: JSON) throws -> JSON {
     var reply: JSON = ["results": results]
     if succeeded, request["snapshot"] as? Bool ?? true {
         settling.wait(timeoutMs: max(0, min(1000, (request["settleMs"] as? NSNumber)?.intValue ?? 250)))
+        attributeReads[pid]?.invalidate()
         // The steps already ran; a tree that cannot be read afterwards must not hide their results.
         if let walk = try? refresh(pid, menubar: menubar, windowId: selected?.id) { for (key, value) in snapshotFields(walk) { reply[key] = value } }
         else { reply["note"] = "unresponsive: the steps ran but the app stopped responding, so there is no tree. Do not repeat them; take a fresh snapshot." }
@@ -1366,6 +1472,60 @@ func selftest() throws -> JSON {
         checks += 1
         if !condition { throw Fail("failed", "selftest: \(message)") }
     }
+    let repeated = try selectionRange("😀 first word; second word.", text: "word", prefix: "second ", suffix: ".", selection: "text")
+    try expect(repeated.location == 22 && repeated.length == 4, "context selects repeated text in UTF16")
+    let overlap = try selectionRange("aaa", text: "aa", prefix: "a", suffix: "", selection: "cursor_after")
+    try expect(overlap.location == 3 && overlap.length == 0, "overlapping match and cursor after")
+    for mode in ["text", "cursor_before", "cursor_after"] {
+        let range = try selectionRange("abc", text: "b", prefix: "", suffix: "", selection: mode)
+        try expect(range.location == (mode == "cursor_after" ? 2 : 1) && range.length == (mode == "text" ? 1 : 0), "selection modes")
+    }
+    for text in ["word word", "missing"] {
+        do { _ = try selectionRange(text, text: "word", prefix: "", suffix: "", selection: "text"); throw Fail("selftest", "ambiguous or absent match accepted") }
+        catch let error as Fail { try expect(["ambiguous_text", "text_not_found"].contains(error.code), "refuse ambiguous or absent text") }
+    }
+    let afterPreview = try selectionRange(String(repeating: "x", count: 250) + " target", text: "target", prefix: " ", suffix: "", selection: "text")
+    try expect(afterPreview.location == 251, "selection reads beyond the short snapshot preview")
+    for input in [("", "text"), ("word", "all")] {
+        do { _ = try selectionRange("word", text: input.0, prefix: "", suffix: "", selection: input.1); throw Fail("selftest", "invalid selection accepted") }
+        catch let error as Fail { try expect(error.code == "bad_request", "invalid selections refused") }
+    }
+    let plain = Elem(ref: "c1", role: "AXPopUpButton", name: "Size", value: "", frame: nil)
+    var alternate = plain
+    alternate.actions = ["AXShowMenu"]
+    try expect(generation(of: [plain]) != generation(of: [alternate]), "advertised actions change the generation")
+    try expect(alternate.json["actions"] as? [String] == ["AXShowMenu"], "advertised actions reach snapshots")
+    let reads = AXReadCache(0)
+    let fakeElement = AXUIElementCreateApplication(123456)
+    var requests = 0
+    let load: (AXUIElement) -> [String: CFTypeRef]? = { _ in requests += 1; return ["AXRole": "AXButton" as CFString] }
+    _ = reads.read(fakeElement, now: 1, covered: true, loader: load)
+    _ = reads.read(fakeElement, now: 1.1, covered: true, loader: load)
+    try expect(requests == 1, "valid bulk attributes reused")
+    reads.invalidate()
+    _ = reads.read(fakeElement, now: 1.1, covered: true, loader: load)
+    _ = reads.read(fakeElement, now: 2, covered: true, loader: load)
+    _ = reads.read(fakeElement, now: 2.01, covered: false, loader: load)
+    try expect(requests == 4, "notifications, expiry and unsupported observers force reads")
+    reads.close()
+    let securePid: pid_t = 123456
+    let secure = Node(fakeElement, depth: 0, limit: 0)
+    secure.role = "AXTextField"
+    secure.subrole = "AXSecureTextField"
+    caches[securePid] = Cache(generation: 1, nodes: ["secure": secure], menubar: false)
+    for action in ["select_text", "secondary_action"] {
+        do { _ = try runStep(securePid, ["action": action, "ref": "secure", "text": "word", "secondaryAction": "AXShowMenu"], windowId: nil); throw Fail("selftest", "secure action accepted") }
+        catch let error as Fail { try expect(error.code == "off_limits", "secure fields refused by new actions") }
+    }
+    caches[securePid] = nil
+    let before = requests
+    _ = reads.read(fakeElement, now: 3, covered: true, loader: load)
+    reads.invalidate() // A scroll or recycled row notification invalidates the whole app.
+    let changed = reads.read(fakeElement, now: 3.01, covered: true, loader: { _ in requests += 1; return ["AXTitle": "Row 9" as CFString] })
+    try expect(requests == before + 2 && changed?["AXTitle"] as? String == "Row 9", "scrolling and recycled rows read new attributes")
+    _ = reads.read(fakeElement, now: 4, covered: false, loader: load)
+    _ = reads.read(fakeElement, now: 4.01, covered: false, loader: load)
+    try expect(requests == before + 4, "silent apps never reuse attributes")
     for frame in [CGRect(x: 100, y: 80, width: 300, height: 200), CGRect(x: -1920, y: -300, width: 640, height: 480), CGRect(x: 2560, y: 40, width: 100, height: 100)] {
         let center = CGPoint(x: frame.midX, y: frame.midY)
         try expect(axToQuartz(center) == center, "axToQuartz must not flip \(center)")

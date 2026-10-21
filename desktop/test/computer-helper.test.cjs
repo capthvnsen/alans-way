@@ -635,3 +635,19 @@ test('the snapshot service enables deltas only on explicit request', async () =>
   assert.equal(reply.changed.length, 1);
   assert.deepEqual(reply.removed, []);
 });
+
+
+test('text selection and app actions validate before dispatch', async () => {
+  const select = { action: 'select_text', ref: 'c1', text: 'word', prefix: 'second ', suffix: '.', selection: 'cursor_after' };
+  assert.deepEqual(normalizeStep(select), select);
+  assert.deepEqual(normalizeStep({ action: 'secondary_action', ref: 'c2', secondaryAction: 'AXShowMenu' }), { action: 'secondary_action', ref: 'c2', secondaryAction: 'AXShowMenu' });
+  for (const patch of [{ text: '' }, { prefix: 1 }, { suffix: [] }, { selection: 'all' }])
+    assert.throws(() => normalizeStep({ ...select, ...patch }), /select_text/);
+  assert.throws(() => normalizeStep({ action: 'select_text', text: 'word' }), /needs a ref/);
+  assert.throws(() => normalizeStep({ action: 'secondary_action', ref: 'c2', secondaryAction: 'AXDelete' }), /secondary_action/);
+  const received = [];
+  const service = createComputerService({ act: async (pid, body) => { received.push(body); return { results: body.steps.map(() => ({ ok: true })) }; } });
+  await assert.rejects(service.action('fixture', 7, select), /generation/);
+  await service.action('fixture', 7, { action: 'batch', generation: 3, steps: [select, { action: 'secondary_action', ref: 'c2', secondaryAction: 'AXShowMenu' }] });
+  assert.deepEqual(received[0].steps, [select, { action: 'secondary_action', ref: 'c2', secondaryAction: 'AXShowMenu' }]);
+});

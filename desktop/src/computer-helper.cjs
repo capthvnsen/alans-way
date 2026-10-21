@@ -246,7 +246,7 @@ function normalizeKey(step) {
   return { action: 'key', key: name, modifiers: MODIFIER_ORDER.filter((modifier) => modifiers.has(modifier)) };
 }
 
-const REF_ACTIONS = new Set(['press', 'type']);
+const REF_ACTIONS = new Set(['press', 'type', 'select_text', 'secondary_action']);
 const POINT_OR_REF = new Set(['double_click', 'right_click', 'scroll']);
 
 function normalizeStep(item) {
@@ -264,12 +264,18 @@ function normalizeStep(item) {
   // Only a desktop the agent owns types at the focused window; elsewhere apps never take focus.
   const focusType = action === 'type' && step.ref === undefined && process.env.ALANS_WAY_AGENT_DESKTOP === '1';
   if (REF_ACTIONS.has(action) && !focusType && typeof step.ref !== 'string') throw fail('bad_request', `${action} needs a ref.`);
+  if (action === 'select_text' && (typeof step.text !== 'string' || !step.text || step.text.length > 2000 ||
+      ['prefix', 'suffix'].some((key) => step[key] !== undefined && (typeof step[key] !== 'string' || step[key].length > 2000)) ||
+      (step.selection !== undefined && !['text', 'cursor_before', 'cursor_after'].includes(step.selection))))
+    throw fail('bad_request', 'select_text needs text and optional prefix, suffix and selection (text, cursor_before or cursor_after).');
+  if (action === 'secondary_action' && !['AXShowMenu', 'AXIncrement', 'AXDecrement', 'AXConfirm', 'AXPick'].includes(step.secondaryAction))
+    throw fail('bad_request', 'secondary_action needs an advertised secondaryAction: AXShowMenu, AXIncrement, AXDecrement, AXConfirm or AXPick.');
   if (action === 'menu' && !(Array.isArray(step.path) && step.path.length && step.path.every((part) => typeof part === 'string')))
     throw fail('bad_request', 'menu needs a path such as ["File","Save"].');
   if (action === 'scroll' && !['up', 'down', 'left', 'right'].includes(step.direction))
     throw fail('bad_request', 'scroll needs a direction: up, down, left, or right.');
   if (!REF_ACTIONS.has(action) && !POINT_OR_REF.has(action) && !['click', 'drag', 'menu'].includes(action))
-    throw fail('bad_request', 'Computer action must be press, type, click, double_click, right_click, drag, scroll, key, hotkey, menu, wait, or batch.');
+    throw fail('bad_request', 'Computer action must be press, type, select_text, secondary_action, click, double_click, right_click, drag, scroll, key, hotkey, menu, wait, or batch.');
   return step;
 }
 
