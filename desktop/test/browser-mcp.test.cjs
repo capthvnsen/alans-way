@@ -954,6 +954,9 @@ test('a cropped browser screenshot reaches the host and returns its coordinate m
   assert.match(mapping.note, /x = crop\.x \+ px \* crop\.width \/ image width/);
   assert.match(mapping.note, /y = crop\.y \+ py \* crop\.height \/ image height/);
   const tool = (await client.listTools()).tools.find(tool => tool.name === 'cua_alans_way_screenshot');
+  assert.match(tool.description, /MEDIA:<path>/);
+  assert.match(tool.description, /vision step/);
+  assert.match(tool.description, /Defaults to compact jpeg; png keeps alpha/);
   assert.deepEqual(tool.inputSchema.properties.crop.required, ['x', 'y', 'width', 'height']);
   assert.equal(tool.inputSchema.properties.crop.additionalProperties, false);
   const full = await client.callTool({ name: 'cua_alans_way_screenshot', arguments: { tabId: 't1' } });
