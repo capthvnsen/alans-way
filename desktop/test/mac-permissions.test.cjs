@@ -1,10 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { performance } = require('node:perf_hooks');
+const { calls, context } = require('../src/call-budget.cjs');
 const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
 
 function fixture(t, { platform = 'darwin', screen = 'denied', grantOnPoll = Infinity, waitMs = 30, pollMs = 10 } = {}) {
   let now = 0;
   t.mock.method(Date, 'now', () => now);
+  t.mock.method(performance, 'now', () => Date.now());
   const prompts = [];
   const polls = [];
   const sleeps = [];
@@ -138,6 +141,7 @@ test('wrap explains a second refusal and never retries it again', async (t) => {
 
 test('an action returns the explanation before its caller deadline when access arrives too late', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  t.mock.method(performance, 'now', () => Date.now());
   let calls = 0;
   const help = createMacPermissionHelp({
     platform: 'darwin',
@@ -157,6 +161,7 @@ test('an action returns the explanation before its caller deadline when access a
 
 test('an action does not wait or retry if its first refusal used the permission budget', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  t.mock.method(performance, 'now', () => Date.now());
   let calls = 0;
   const help = createMacPermissionHelp({
     platform: 'darwin',
@@ -175,6 +180,7 @@ test('an action does not wait or retry if its first refusal used the permission 
 
 test('a delayed permission poll never starts a retry after its budget', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  t.mock.method(performance, 'now', () => Date.now());
   let calls = 0;
   const help = createMacPermissionHelp({
     platform: 'darwin',
@@ -188,4 +194,28 @@ test('a delayed permission poll never starts a retry after its budget', async (t
   await assert.rejects(wrapped.action('bot', 1, { action: 'batch', steps: [] }), /Accessibility is off for alans-way-localapp/);
   assert.equal(Date.now(), 5000);
   assert.equal(calls, 1);
+});
+
+for (const [action, budget, grantAt, expectedWait, attempts] of [
+  ['click', 50000, 12000, 12000, 2],
+  ['batch', 77000, 12000, 12000, 2],
+  ['click', 25000, 6000, 5000, 1],
+  ['batch', 70000, 6000, 5000, 1],
+]) test(`budgeted ${action} reserves input time (${budget}ms budget, grant at ${grantAt}ms)`, async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  t.mock.method(performance, 'now', () => Date.now());
+  let callsMade = 0;
+  const service = createMacPermissionHelp({ platform: 'darwin',
+    systemPreferences: { isTrustedAccessibilityClient: () => Date.now() >= grantAt },
+    sleep: async ms => t.mock.timers.tick(ms),
+  }).wrap({ action: async () => {
+    callsMade++;
+    if (callsMade === 1) throw failure('Accessibility is off.', 'permission');
+    return { ok: true };
+  } });
+  const result = calls.run(context(budget), () => service.action('bot', 7, { action }));
+  if (attempts === 2) assert.deepEqual(await result, { ok: true });
+  else await assert.rejects(result, { code: 'permission' });
+  assert.equal(callsMade, attempts);
+  assert.equal(Date.now(), expectedWait);
 });

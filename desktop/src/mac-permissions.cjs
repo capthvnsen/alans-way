@@ -1,8 +1,11 @@
 'use strict';
 
+const { performance } = require('node:perf_hooks');
+const { calls, context, remainingMs, checkCall, waitInCall, READ_BUDGET_MS } = require('./call-budget.cjs');
+
 const APP = 'alans-way-localapp';
 const VERBS = ['apps', 'snapshot', 'screenshot', 'menu', 'action'];
-// Reads: 35+2*20=75<80 s; batches: 4+45+.15+2*20=89.15<90/100 s.
+// Older callers keep the permission caps; one shared deadline bounds nested read retries.
 const READ_WAIT_MS = 35000;
 const ACTION_WAIT_MS = 4000;
 
@@ -30,24 +33,32 @@ function createMacPermissionHelp({ systemPreferences, platform = process.platfor
 
   const wrap = (service) => platform !== 'darwin' ? service : {
     ...service,
-    ...Object.fromEntries(VERBS.map((verb) => [verb, (...args) => {
-      const started = Date.now();
+    ...Object.fromEntries(VERBS.map((verb) => [verb, (...args) => calls.run(calls.getStore() || context(undefined, undefined, verb === 'action' ? Infinity : READ_BUDGET_MS), async () => {
+      const started = performance.now();
+      checkCall();
       return service[verb](...args).catch(async (error) => {
         const explained = explain(error);
         if (error?.code === 'permission' && /Accessibility/i.test(error.message || '')) {
-          const deadline = Math.min(Date.now() + waitMs, started + (verb === 'action' ? ACTION_WAIT_MS : READ_WAIT_MS));
-          while (Date.now() < deadline) {
-            await sleep(Math.min(pollMs, deadline - Date.now()));
+          // Budgeted actions reserve 20s for input, or 65s for a batch/wait, leaving input time intact.
+          const reserve = ['batch', 'wait'].includes(args[2]?.action) ? 65000 : 20000;
+          const waitUntil = verb === 'action' && calls.getStore()?.budgeted
+            ? performance.now() + Math.max(0, remainingMs() - reserve)
+            : started + (verb === 'action' ? ACTION_WAIT_MS : READ_WAIT_MS);
+          const deadline = Math.min(performance.now() + waitMs, waitUntil, performance.now() + remainingMs());
+          while (performance.now() < deadline) {
+            checkCall();
+            await waitInCall(sleep(Math.min(pollMs, deadline - performance.now())));
             try {
               if (!systemPreferences.isTrustedAccessibilityClient(false)) continue;
             } catch { break; }
-            if (Date.now() > deadline) break;
+            if (performance.now() > deadline) break;
+            checkCall();
             return service[verb](...args).catch((error) => { throw explain(error); });
           }
         }
         throw explained;
       });
-    }])),
+    })])),
   };
 
   return { explain, wrap };

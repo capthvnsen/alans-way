@@ -16,7 +16,17 @@ function status(message) { api.command('remote-status', { status: message }).cat
 function showEmpty(title, message, action = 'Reconnect') {
   $('remote-title').textContent = title; $('remote-message').textContent = message; $('configure').textContent = action; $('remote-empty').classList.remove('hidden');
 }
-function connect(value, retryAttempt = 0) {
+function hasFrame() {
+  const canvas = $('screen').querySelector('canvas');
+  if (!canvas?.width || !canvas.height) return false;
+  try {
+    // shortcut: opaque pixels mark first paint; use a frame event if the viewer adds one.
+    const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let i = 3; i < pixels.length; i += 4) if (pixels[i]) return true;
+  } catch {}
+  return false;
+}
+function connect(value, retryAttempt = 0, frameRetried = false) {
   const version = ++connectionVersion;
   let retryAllowed = true;
   clearTimeout(reconnectTimer);
@@ -31,15 +41,22 @@ function connect(value, retryAttempt = 0) {
       if (version !== connectionVersion) return;
       retryAttempt = 0; clearTimeout(reconnectTimer);
       connected = true; $('remote-empty').classList.add('hidden'); $('connection-dot').classList.add('connected'); status('connected'); render(state);
+      if (retryAllowed) reconnectTimer = setTimeout(() => {
+        if (version !== connectionVersion || !retryAllowed || !connected || hasFrame()) return;
+        if (!frameRetried) connect(currentUrl, 0, true);
+        else {
+          showEmpty('Desktop has no picture', 'The desktop connected without a picture. Try reconnecting.'); status('no picture');
+        }
+      }, 2000);
     });
     rfb.addEventListener('disconnect', (event) => {
       if (version !== connectionVersion) return;
+      clearTimeout(reconnectTimer);
       connected = false; api.command('remote-control',{enabled:false}).catch(()=>{}); $('connection-dot').classList.remove('connected');
       if (event.detail.clean === false && retryAllowed && retryAttempt < 3) {
         showEmpty('Reconnecting…', 'The desktop connection dropped. Trying again shortly.'); status('reconnecting');
-        clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
-          if (version === connectionVersion && retryAllowed && !connected) connect(currentUrl, retryAttempt + 1);
+          if (version === connectionVersion && retryAllowed && !connected) connect(currentUrl, retryAttempt + 1, frameRetried);
         }, 2000 * 2 ** retryAttempt);
         return;
       }

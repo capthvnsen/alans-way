@@ -3,6 +3,7 @@
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const { calls, context, remainingMs, checkCall, waitInCall, READ_BUDGET_MS } = require('./call-budget.cjs');
 const { helperPolicy, isBlocked } = require('./computer-policy.cjs');
 const { createComputerSnapshots } = require('./computer-snapshot.cjs');
 
@@ -36,11 +37,14 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
   let nextId = 1;
 
   async function spawnHelper(mode) {
+    checkCall();
     const [file, ...args] = await command(mode);
+    checkCall();
     return spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'], env: env || process.env });
   }
 
-  async function persistent(request) {
+  async function persistent(request, tracking) {
+    checkCall();
     if (!child || child.dead) {
       const proc = await spawnHelper('serve');
       const state = { proc, dead: false, answered: false, buffer: '', stderr: '', waiter: null };
@@ -83,6 +87,8 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
       proc.stdin.write(JSON.stringify({ id: 0, cmd: 'init', policy }) + '\n');
     }
     const state = child;
+    tracking.proc = state.proc;
+    checkCall();
     return new Promise((resolve, reject) => {
       const id = nextId++;
       const timer = setTimeout(() => {
@@ -90,18 +96,21 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
         try { state.proc.kill('SIGKILL'); } catch { /* already gone */ }
         state.die('Computer helper timed out.');
         reject(Object.assign(new Error('Computer helper timed out.'), { timedOut: true }));
-      }, request.timeoutMs || timeoutMs);
+      }, Math.ceil(remainingMs(request.timeoutMs || timeoutMs)));
       state.waiter = { id, resolve, reject, timer };
       const { timeoutMs: _ignored, ...wire } = request;
+      tracking.dispatched = true;
       state.proc.stdin.write(JSON.stringify({ ...wire, id }) + '\n');
     });
   }
 
-  async function once(request) {
+  async function once(request, tracking) {
     const proc = await spawnHelper('once');
+    tracking.proc = proc;
+    checkCall();
     return new Promise((resolve, reject) => {
       let out = '', err = '';
-      const timer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* gone */ } reject(new Error('Computer helper timed out.')); }, request.timeoutMs || timeoutMs);
+      const timer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* gone */ } reject(new Error('Computer helper timed out.')); }, Math.ceil(remainingMs(request.timeoutMs || timeoutMs)));
       proc.stdout.setEncoding('utf8');
       proc.stderr.setEncoding('utf8');
       proc.stdout.on('data', (chunk) => { out += chunk; });
@@ -114,33 +123,40 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
       });
       proc.stdin.on('error', () => {});
       const { timeoutMs: _ignored, ...wire } = request;
+      tracking.dispatched = true;
       proc.stdin.end(JSON.stringify({ ...wire, id: 1, policy }) + '\n');
     });
   }
 
-  async function run(request) {
+  async function run(request, tracking) {
+    checkCall();
     if (Date.now() >= onceUntil) {
-      try { return await persistent(request); }
+      try { return await persistent(request, tracking); }
       catch (error) {
         if (!error.helperDied) throw error;
-        if (error.neverAnswered) onceUntil = Date.now() + ONCE_RETRY_MS;
-        else if (!READ_ONLY.has(request.cmd)) throw new Error(`Computer helper stopped mid-action; check the app before retrying. ${error.message}`.slice(0, 300));
-        // A read, or a helper that never started: nothing was half-done, so run it again.
+        if (error.neverAnswered) {
+          onceUntil = Date.now() + ONCE_RETRY_MS;
+          tracking.dispatched = false;
+        }
+        checkCall();
+        if (!error.neverAnswered && !READ_ONLY.has(request.cmd)) throw new Error(`Computer helper stopped mid-action; the action may have executed. Check the app before retrying. ${error.message}`.slice(0, 300));
+        // A failed init can use one-shot mode; an answered helper's lost action is never replayed.
       }
-      if (Date.now() >= onceUntil) return persistent(request);
+      if (Date.now() >= onceUntil) return persistent(request, tracking);
     }
-    return once(request);
+    return once(request, tracking);
   }
 
   // An app that was only just opened or activated can be missing from the
   // process list for a moment, so one retry before saying so.
-  async function runWithRetry(body) {
-    let response = await run(body);
+  async function runWithRetry(body, tracking) {
+    let response = await run(body, tracking);
     // The app-not-found text alone decides: a menu path or point that is missing says something else.
     const appMissing = (item) => item && item.ok === false && item.code === 'not_found' && /^App not found/.test(item.error || '');
     if (appMissing(response)) {
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      response = await run(body);
+      checkCall();
+      await waitInCall(new Promise((resolve) => setTimeout(resolve, Math.ceil(remainingMs(150)))));
+      response = await run(body, tracking);
       if (appMissing(response))
         response = { ...response, error: 'App not found. If it was just opened or activated, wait a moment and retry.' };
     }
@@ -148,11 +164,33 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
   }
 
   async function request(body) {
-    const next = chain.then(() => runWithRetry(body));
-    chain = next.catch(() => {});
-    const response = await next;
-    if (!response || response.ok === false) throw helperError(response || {});
-    return response;
+    const call = calls.getStore() || context(undefined, undefined, READ_ONLY.has(body.cmd) ? READ_BUDGET_MS : Infinity);
+    return calls.run(call, async () => {
+      checkCall();
+      let active = false;
+      const tracking = { dispatched: false };
+      const next = chain.then(async () => {
+        checkCall();
+        active = true;
+        try { return await runWithRetry(body, tracking); }
+        finally { active = false; }
+      });
+      chain = next.catch(() => {});
+      let response;
+      try {
+        response = await waitInCall(next, () => {
+          if (!active || !tracking.proc) return;
+          try { tracking.proc.kill('SIGKILL'); } catch { /* already gone */ }
+          if (child?.proc === tracking.proc) { child.die('Computer call stopped.'); child = null; }
+        });
+      } catch (error) {
+        if (!READ_ONLY.has(body.cmd) && tracking.dispatched)
+          error.message += ' The action may have executed. Check the app before retrying.';
+        throw error;
+      }
+      if (!response || response.ok === false) throw helperError(response || {});
+      return response;
+    });
   }
 
   function close() {
@@ -257,8 +295,10 @@ function createComputerService(driver) {
       if (Date.now() >= until) {
         return { tree, result: { ok: false, code: 'timeout', error: `"${step.text}" did not ${step.gone ? 'go away' : 'appear'} within ${Date.now() - started}ms; the tree in this reply is the latest.` } };
       }
-      if (tree) await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS));
       try {
+        checkCall();
+        if (tree) await waitInCall(new Promise((resolve) => setTimeout(resolve, Math.ceil(remainingMs(WAIT_POLL_MS)))));
+        checkCall();
         const { ok, ...latest } = await driver.snapshot(pid, { menubar, pin });
         tree = latest;
       } catch (error) {
@@ -283,6 +323,8 @@ function createComputerService(driver) {
     // Steps run in runs between waits. Every run carries the caller's own
     // generation, so a ref is always checked against the tree the caller saw.
     for (let at = 0; at < steps.length;) {
+      try { checkCall(); }
+      catch (error) { results.push({ ok: false, code: error.code, error: error.message }); break; }
       if (steps[at].action === 'wait') {
         const waited = await waitFor(pid, steps[at++], tree, menubar, body.generation, deadline);
         tree = waited.tree;

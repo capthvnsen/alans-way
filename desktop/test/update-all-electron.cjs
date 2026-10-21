@@ -13,7 +13,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-update-a
 process.env.HERMES_WORKSPACE_DATA = profile;
 // A saved server address makes the probe target the server; .invalid never
 // resolves, so the browser host connection fails fast and quietly.
-fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false,
+fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, versionCache: { hermes: '0.21.6' },
   pendingUpdateReport: { runId: 'previous-run', targetVersion: require('../package.json').version, attempts: 0,
     target: { id: 'agent', label: 'VPS', sshHost: 'tester@vm.invalid', scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs', sudo: false },
     rows: [{ id: 'app', from: '0.21.0', to: require('../package.json').version, state: 'done' }] },
@@ -265,15 +265,16 @@ app.whenReady().then(async () => {
     `done|✓ Alan’s Workspace: ${version} → ${appVersion} · Downloaded. Restart to finish.`]);
   await waitFor(() => evaluate('document.getElementById("update-all-cancel").disabled'), (d) => d === false, 8000, 'the run to end');
   assert.deepEqual((await lines()).map((l) => l.split('|')[0]), ['done', 'done', 'done', 'done']);
-  assert.deepEqual(successWork(), ['hermes agent quiet=true', 'plugin agent', `host agent v${appVersion}`]);
-  assert.equal(successWork().filter((c) => c.startsWith('report ')).length, 0, 'the final report waits for launch');
+  assert.deepEqual(successWork(), ['hermes agent quiet=true', 'plugin agent', `host agent v${appVersion}`,
+    `report Update everything finished. Now on Hermes 0.21.7, plugin 0.21.1, browser host ${appVersion}.`]);
+  assert.equal(successWork().filter((c) => c.startsWith('report ')).length, 1, 'server results report before restart');
   const pending = JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8')).pendingUpdateReport;
   assert.ok(pending.runId);
   assert.equal(pending.targetVersion, appVersion);
   assert.deepEqual(pending.target, { id: 'agent', label: 'VPS', sshHost: 'tester@vm.invalid', scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs', sudo: false });
   assert.equal(pending.attempts, 0);
-  assert.deepEqual(pending.rows.map(row => row.state), ['done', 'done', 'done', 'done']);
-  assert.match(await text('update-all-copy'), /Your bot will report the result when the app starts again\./);
+  assert.deepEqual(pending.rows.map(row => [row.id, row.state]), [['app', 'done']]);
+  assert.match(await text('update-all-copy'), /Your bot messaged you on Telegram\. Your bot will report the app version when the app starts again\./);
   assert.match(await text('update-all-copy'), /^Everything is updated\./);
   assert.equal(await text('update-all-go'), 'Restart to finish');
   assert.equal(await hidden('update-all-go'), false, 'restart is offered once the run finishes');

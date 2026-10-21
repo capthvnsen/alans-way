@@ -6,25 +6,28 @@ const path = require('node:path');
 const http = require('node:http');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
+const { calls, context, remainingMs, checkCall, READ_BUDGET_MS } = require('../src/call-budget.cjs');
+const { performance } = require('node:perf_hooks');
 const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
 
 function connectorRequest(fetch) {
   const source = fs.readFileSync(path.join(__dirname, '../scripts/browser-mcp.cjs'), 'utf8');
   return require('node:vm').runInNewContext(source.slice(source.indexOf('const connectionKey ='), source.indexOf('let hostCaps =')) + '\nrequestOnce;', {
     fs: { readFileSync: () => JSON.stringify({ url: 'http://127.0.0.1:9', token: 'fixture' }) },
-    file: 'fixture', botId: 'fixture', botName: '', URL, fetch,
+    file: 'fixture', botId: 'fixture', botName: '', URL, fetch, calls, remainingMs, checkCall, READ_BUDGET_MS,
     AbortSignal: { timeout: (ms) => ({ deadline: Date.now() + ms }) },
   });
 }
 
 for (const [verb, firstMs, grantedAt, retryMs, completedAt, batch = true] of [
   ['snapshot', 1000, 34000, 40000, 74000],
-  ['snapshot', 19000, 34999, 40000, 75000],
+  ['snapshot', 19000, 34999, 39998, 74998],
   ['action', 1000, 3000, 85150, 88150],
   ['action', 3000, 3999, 85150, 89150],
   ['action', 1000, 3999, 55150, 59150, false],
 ]) test(`a late grant returns the ${verb === 'action' && batch ? 'batch' : verb} retry before the caller abort (${firstMs} ms first refusal)`, async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  t.mock.method(performance, 'now', () => Date.now());
   let calls = 0;
   let callerDeadline;
   const result = verb === 'action' ? { results: [{ ok: true }] } : { generation: 1, elements: [] };
@@ -49,13 +52,14 @@ for (const [verb, firstMs, grantedAt, retryMs, completedAt, batch = true] of [
   assert.equal(JSON.stringify(reply), JSON.stringify(result));
   assert.equal(calls, 2);
   assert.equal(Date.now(), completedAt);
-  assert.equal(callerDeadline, verb === 'action' ? 90000 : 80000);
+  assert.equal(callerDeadline, verb === 'action' ? 90000 : 75000);
   assert.ok(Date.now() < callerDeadline);
   assert.ok(Date.now() < (verb === 'action' && batch ? 100000 : 80000), 'the router must receive the result before its ordinary/batch deadline');
 });
 
 test('only computer reads gain a longer abort; browser tab deadlines stay the same', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  t.mock.method(performance, 'now', () => Date.now());
   const deadlines = [];
   const request = connectorRequest(async (_url, { signal }) => {
     deadlines.push(signal.deadline - Date.now());
@@ -64,7 +68,71 @@ test('only computer reads gain a longer abort; browser tab deadlines stay the sa
   for (const endpoint of ['/v1/computer/apps', '/v1/computer/7/snapshot?since=1', '/v1/computer/7/screenshot', '/v1/computer/7/menu', '/v1/computer/7/action', '/v1/tabs', '/v1/tabs/7/snapshot', '/v1/tabs/7/actions']) {
     await request(endpoint, /\/actions?$/.test(endpoint) ? 'POST' : 'GET');
   }
-  assert.deepEqual(deadlines, [80000, 80000, 80000, 80000, 90000, 25000, 25000, 90000]);
+  assert.deepEqual(deadlines, [75000, 75000, 75000, 75000, 90000, 25000, 25000, 90000]);
+});
+
+test('capability reads and later fetches consume one budget, and expired actions never dispatch', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  t.mock.method(performance, 'now', () => Date.now());
+  const deadlines = [], budgets = [];
+  const request = connectorRequest(async (_url, { signal, headers }) => {
+    deadlines.push(signal.deadline);
+    budgets.push(Number(headers['X-Alans-Way-Remaining-Ms']));
+    t.mock.timers.tick(deadlines.length === 1 ? 30 : 70);
+    return { ok: true, status: 200, text: async () => '{}' };
+  });
+  await calls.run(context(100), async () => {
+    await request('/v1/status');
+    await request('/v1/computer/7/snapshot');
+    await assert.rejects(request('/v1/computer/7/action', 'POST', { action: 'click' }), /timed out/);
+  });
+  assert.deepEqual(deadlines, [100, 100]);
+  assert.deepEqual(budgets, [100, 70]);
+});
+
+for (const computer of [false, true]) for (const stop of ['deadline', 'cancel']) test(`MCP ${stop} aborts an in-flight ${computer ? 'computer' : 'browser'} fetch without replaying an action`, { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-call-budget-'));
+  const connection = path.join(profile, 'connection.json');
+  const seen = [];
+  let entered, disconnected;
+  const started = new Promise(resolve => { entered = resolve; });
+  const closed = new Promise(resolve => { disconnected = resolve; });
+  const host = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* consume fixture input */ }
+    if (req.url === '/v1/status') return res.end(JSON.stringify({ capabilities: ['computer'] }));
+    seen.push({ path: req.url, budget: Number(req.headers['x-alans-way-remaining-ms']) });
+    res.on('close', disconnected);
+    entered();
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture' }));
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection] });
+  const client = new Client({ name: 'call-budget-test', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {}); await transport.close().catch(() => {});
+    host.closeAllConnections(); await new Promise(resolve => host.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const controller = new AbortController();
+  const result = client.callTool({ name: computer ? 'workspace_computer_action' : 'cua_alans_way_action',
+    arguments: computer ? { pid: 7, action: 'click', x: 1, y: 2 } : { tabId: 'fixture', epoch: 1, action: 'read' },
+    _meta: { 'alans-way/remainingMs': stop === 'deadline' ? 500 : 5000, 'future/ignored': true } }, undefined, { signal: controller.signal }).catch(error => error);
+  await started;
+  if (stop === 'cancel') controller.abort();
+  await Promise.race([closed, new Promise((_, reject) => {
+    const timer = setTimeout(() => reject(new Error('fetch was not aborted')), 2000);
+    closed.finally(() => clearTimeout(timer));
+  })]);
+  const reply = await result;
+  if (stop === 'deadline') {
+    assert.equal(reply.isError, true);
+    assert.match(reply.content[0].text, /may have executed.*(?:do not repeat|check the app state)/i);
+    assert.equal(reply._meta.browserRequest.uncertainOutcome, true);
+  }
+  assert.equal(seen.length, 1);
+  assert.ok(seen[0].budget > 0 && seen[0].budget <= (stop === 'deadline' ? 500 : 5000));
 });
 
 test('public recovery guidance limits retries to reads and preserves uncertain mutation review', { timeout: 8000 }, async (t) => {
@@ -97,6 +165,9 @@ test('public recovery guidance limits retries to reads and preserves uncertain m
   }
   assert.doesNotMatch(tools.find(tool => tool.name === 'cua_alans_way_action').description,
     /human_took_tab means[^\n]*then call again/i, 'interrupted input cannot be blindly repeated');
+  const actionDescription = tools.find(tool => tool.name === 'cua_alans_way_action').description;
+  assert.doesNotMatch(actionDescription, /not held/i);
+  assert.match(actionDescription, /on the user's computer and on the VM alike/);
 });
 
 test('control changes require a controller and epoch receipt and never replay uncertain replies', { timeout: 10000 }, async (t) => {
