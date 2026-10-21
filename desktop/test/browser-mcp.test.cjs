@@ -1041,6 +1041,20 @@ test('window selection reaches every computer API and old hosts refuse it', { ti
   assert.deepEqual(old.seen.map((entry) => entry.line), ['GET /v1/status']);
 });
 
+test('list reads add at most 120 estimated schema tokens and keep typed field guidance', { timeout: 8000 }, async (t) => {
+  const { client } = await computerHost(t, ['tabs']);
+  const action = (await client.listTools()).tools.find(tool => tool.name === 'cua_alans_way_action');
+  const baseline = structuredClone(action);
+  delete baseline.inputSchema.properties.list;
+  delete baseline.inputSchema.properties.steps.items.properties.list;
+  baseline.description = baseline.description.replace(/ read with list:[^\n]*? items\./, '');
+  baseline.inputSchema.properties.maxChars.description = 'For read: cap on returned page text, default 600, max 20000.';
+  const addedChars = JSON.stringify(action).length - JSON.stringify(baseline).length;
+  assert.ok(addedChars <= 480, `${addedChars} added characters exceed 120 estimated tokens`);
+  assert.match(action.description, /read with list:.*fields:.*type:.*text.*href.*items/);
+  assert.deepEqual(Object.keys(action.inputSchema.properties.list.properties), ['selector', 'fields']);
+});
+
 test('snapshot delta opt-in is documented and forwarded only when enabled', { timeout: 8000 }, async (t) => {
   const { client, seen } = await computerHost(t, ['computer']);
   const tool = (await client.listTools()).tools.find((tool) => tool.name === 'workspace_computer_snapshot');

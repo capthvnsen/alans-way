@@ -50,16 +50,7 @@ const appData = process.platform === 'win32' ? (process.env.APPDATA || path.join
 const file = (connectionIndex>=0?process.argv[connectionIndex+1]:undefined) || process.env.HERMES_WORKSPACE_CONNECTION || path.join(appData, 'Hermes Workspace', 'connection.json');
 const objectSchema = (properties = {}, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = { type: 'string' };
-const listRead = {
-  type: 'object', description: 'Read items of text and links without changing the page; truncated means a limit was reached.', additionalProperties: false,
-  properties: {
-    selector: { type: 'string', maxLength: 1000, description: 'Item selector inside the container ref or selector, or the document when neither is given.' },
-    fields: { type: 'object', minProperties: 1, maxProperties: 10, propertyNames: { pattern: '^[a-zA-Z][a-zA-Z0-9_]{0,39}$' },
-      additionalProperties: { type: 'object', properties: { type: { type: 'string', enum: ['text', 'href'] }, selector: { type: 'string', maxLength: 1000, description: 'Child selector; omit for the item itself.' } }, required: ['type'], additionalProperties: false } },
-    maxItems: { type: 'integer', minimum: 1, maximum: 100, description: 'Item limit, default 50.' },
-    maxFieldChars: { type: 'integer', minimum: 1, maximum: 2000, description: 'Characters per field, default 300.' },
-  }, required: ['selector', 'fields'],
-};
+const listRead = { type: 'object', properties: { selector: string, fields: { type: 'object' } }, required: ['selector', 'fields'] };
 const computerWindowId = { type: 'integer', minimum: 1, maximum: 4294967295 };
 function singleContinuedFromArgv(argv) {
   const tabAt = argv.indexOf('--continued-tab');
@@ -143,7 +134,7 @@ const tools = [
 - click, type, select and friends take a ref, an exact name ({action:"click",name:"Next"}; role and row narrow it), a selector, or x,y. drag ends at toRef, toSelector, or toX,toY; press sends a key.
 - Consequential approval requires a fresh observed ref or unique exact name. If approval_invalid or page_changed reports a changed document/target, take a fresh snapshot, review it, and request a new approval; an old approval cannot move to a continued tab. approval_binding_unavailable requires updating the browser host/connector before approving again.
 - select takes the option by any of value, label, option, text or choice and answers matched; a miss lists the options.
-- wait takes a selector, text or url, and gone:true waits until it disappears. read returns {text} capped by maxChars (default 600). batch runs up to 25 steps; its reply has results[] per step plus one final effect.
+- wait takes a selector, text or url, and gone:true waits until it disappears. read returns {text} capped by maxChars (default 600). read with list:{selector,fields:{name:{type:"text"|"href",selector?}}} returns up to 100 items. batch runs up to 25 steps; its reply has results[] per step plus one final effect.
 - opened[] lists tabs the action opened; dialogs[] says how JS dialogs were answered (a confirm or prompt is dismissed unless the action passed dialog:{accept:true, text}).
 - navigate, back, forward and reload move between pages. claim and release change control; claim returns a fresh epoch.
 - When automatic takeover is enabled and the human took over a tab on their computer, act or claim: the app hands it back to you (waiting up to 10s while they type) and shows them a Take back button. Do not ask first. An action is checked before it takes the tab, so a malformed one, an epoch or generation from before their takeover or page change (stale_control_epoch: inspect current control and epoch, then follow the current control policy) or one the page refuses (a missing control, a CAPTCHA) leaves the tab with them. human_took_tab means they grabbed it during your call: inspect completed effects and current control before deciding on another action; uncertain input is not permission to repeat it. Only awaiting_human (you handed it over), recording_in_progress (they are recording a task), human_took_back (they pressed Take back; leave it for a minute) or human_has_control (automatic takeover is off, or a VM tab) keep it theirs: open your own tab or tell them what you need. Never ask the user to hand a tab back unless a call answered human_has_control.
@@ -158,7 +149,7 @@ const tools = [
     option: { type: 'string', description: 'For select: another way to name the option; matched by value, then label.' },
     choice: { type: 'string', description: 'For select: another way to name the option; matched by value, then label.' },
     list: listRead,
-    maxChars: { type: 'integer', description: 'For read: text cap, default 600; with list: serialized items cap, default 6000; max 20000.' },
+    maxChars: { type: 'integer', description: 'For read: cap on returned page text, default 600, max 20000.' },
     gone: { type: 'boolean', description: 'For wait: wait until the selector, text or url is gone instead of present.' },
     steps: { type: 'array', items: { type: 'object', additionalProperties: true, properties: {
       action: string, ref: string, name: string, role: string, row: string, dialog: { type: 'object' }, selector: string, text: string, value: string, label: string, option: string, choice: string,
