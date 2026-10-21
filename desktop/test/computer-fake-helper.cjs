@@ -8,7 +8,7 @@ let misses = 0;
 const reply = (value) => process.stdout.write(JSON.stringify(value) + '\n');
 const handle = (request) => {
   if (request.policy) policy = request.policy;
-  if (request.cmd === 'init') return reply({ id: request.id, ok: true, protocol: 2, pid: process.pid });
+  if (request.cmd === 'init') return reply({ id: request.id, ok: true, protocol: 2, ...(mode === 'old-helper' ? {} : { windowBinding: true }), pid: process.pid });
   if (mode === 'hang') return;
   if (mode === 'always-not-found' || (mode === 'flaky-not-found' && misses++ < 1)) return reply({ id: request.id, ok: false, code: 'not_found', error: 'App not found.' });
   if (mode === 'bad-menu' && request.cmd === 'menu') return reply({ id: request.id, ok: false, code: 'not_found', error: 'No such menu item.' });
@@ -19,15 +19,15 @@ const handle = (request) => {
   ], policy });
   if (mode === 'snapshot-in-front' && request.cmd === 'snapshot') return reply({ id: request.id, ok: false, code: 'in_front', error: 'That app is the one in front.' });
   if (mode === 'snapshot-not-found' && request.cmd === 'snapshot') return reply({ id: request.id, ok: false, code: 'not_found', error: 'App not found.' });
-  if (request.cmd === 'snapshot') return reply({ id: request.id, ok: true, generation: 7, elements: [{ ref: 'c1', role: 'AXButton', name: 'Go' }], helper: process.pid, policy, pin: request.pin });
+  if (request.cmd === 'snapshot') return reply({ id: request.id, ok: true, windowId: request.windowId, generation: 7, elements: [{ ref: 'c1', role: 'AXButton', name: 'Go' }], helper: process.pid, policy, pin: request.pin });
   if (request.cmd === 'shot') return reply({
-    id: request.id, ok: true, image: 'x', imageWidth: 1, imageHeight: 1, windowX: 0, windowY: 0, windowWidth: 1, windowHeight: 1,
+    id: request.id, ok: true, windowId: request.windowId, image: 'x', imageWidth: 1, imageHeight: 1, windowX: 0, windowY: 0, windowWidth: 1, windowHeight: 1,
     ...(mode === 'shot-elsewhere' ? { note: 'Read only: elsewhere.' } : {}),
   });
   if (request.cmd === 'act') {
-    if ((request.generation !== undefined && request.generation !== 7) || request.steps.some((step) => step.ref === 'gone')) return reply({ id: request.id, ok: false, code: 'stale_ref', error: 'The app changed since your snapshot. Take a fresh snapshot.' });
+    if ((request.steps.some((step) => typeof step.ref === 'string') && request.generation !== undefined && request.generation !== 7) || request.steps.some((step) => step.ref === 'gone')) return reply({ id: request.id, ok: false, code: 'stale_ref', error: 'The app changed since your snapshot. Take a fresh snapshot.' });
     const results = request.steps.map((step) => (step.action === 'scroll' ? { ok: false, code: 'unsupported_action', error: 'No scroll here.' } : { ok: true, cursorMoved: false }));
-    return reply({ id: request.id, ok: true, results: results.slice(0, results.findIndex((r) => !r.ok) + 1 || results.length), generation: 8, elements: [{ ref: 'c1', role: 'AXButton', name: 'Done' }], steps: request.steps });
+    return reply({ id: request.id, ok: true, windowId: request.windowId, results: results.slice(0, results.findIndex((r) => !r.ok) + 1 || results.length), generation: 8, elements: [{ ref: 'c1', role: 'AXButton', name: 'Done' }], steps: request.steps });
   }
   return reply({ id: request.id, ok: false, code: 'bad_request', error: `unknown command ${request.cmd}` });
 };

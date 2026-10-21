@@ -285,6 +285,8 @@ struct Walk {
     var generation: Int
     var hidden = 0
     var note: String?
+    var windowId: CGWindowID?
+    var windowFrame: CGRect?
 }
 
 // MARK: stable refs
@@ -304,10 +306,10 @@ final class RefBook {
     var byLabel: [String: String] = [:]
     var next = 1
     // What each ref named in the last few trees handed out.
-    var history: [(generation: Int, seen: [String: Seen])] = []
+    var history: [(generation: Int, windowId: CGWindowID?, seen: [String: Seen])] = []
     // A caller still acting from a tree: a batch that waits walks every 150 ms
     // and would push it out of history before its later steps run.
-    var pinned: [(generation: Int, seen: [String: Seen])] = []
+    var pinned: [(generation: Int, windowId: CGWindowID?, seen: [String: Seen])] = []
 }
 
 struct Seen {
@@ -366,7 +368,7 @@ func remember(_ book: RefBook, _ walk: Walk) {
     // the next free one first (see conflicts), so the record a generation first
     // named always stands.
     if book.history.last?.generation == walk.generation { return }
-    book.history.append((walk.generation, seenMap(walk)))
+    book.history.append((walk.generation, walk.windowId, seenMap(walk)))
     if book.history.count > 8 { book.history.removeFirst() }
 }
 
@@ -388,8 +390,9 @@ func conflicts(_ book: RefBook, _ generation: Int, _ seen: [String: Seen]) -> Bo
 
 func pin(_ book: RefBook, _ generation: Int) {
     guard let seen = seenAt(book, generation) else { return }
+    let windowId = (book.history + book.pinned).last(where: { $0.generation == generation })?.windowId
     book.pinned.removeAll { $0.generation == generation }
-    book.pinned.append((generation, seen))
+    book.pinned.append((generation, windowId, seen))
     if book.pinned.count > 4 { book.pinned.removeFirst() }
 }
 
@@ -414,7 +417,7 @@ let otherSpaceNote = "No window of this app is readable: its windows are on anot
 let noWindowNote = "This app has no open windows. Its menus still work (menubar:true), for example File > New."
 let unsureWindowNote = "No window of this app is readable: it has none open, or they are on another Space, minimized or hidden (Screen Recording is off, so which is unknown). Its menus still work (menubar:true)."
 
-func walkApp(_ pid: pid_t, menubar: Bool) throws -> Walk {
+func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws -> Walk {
     let app = appElement(pid)
     var roots: [Node] = []
     // An app with no windows answers with an empty list or "no value"; one that
@@ -424,7 +427,13 @@ func walkApp(_ pid: pid_t, menubar: Bool) throws -> Walk {
     if listed != .success && listed != .noValue && listed != .attributeUnsupported {
         throw Fail("unresponsive", "That app is not responding.")
     }
-    for window in windows as? [AXUIElement] ?? [] { roots.append(Node(window, depth: 0, limit: depthCap)) }
+    let selected = try selectedWindow(pid, windowId)
+    if let selected, selected.onScreen {
+        let readableWindows = windows as? [AXUIElement] ?? []
+        let matches = readableWindows.filter { matchesWindow($0, selected) }
+        guard matches.count == 1 else { throw Fail("window_unverified", "Could not match that window to its controls. Take a fresh snapshot.") }
+        roots.append(Node(matches[0], depth: 0, limit: depthCap))
+    }
     let note = roots.isEmpty ? (hasOffscreenWindow(pid) ? otherSpaceNote : CGPreflightScreenCaptureAccess() ? noWindowNote : unsureWindowNote) : nil
     if menubar, let bar = axValue(app, "AXMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID() {
         roots.append(Node(bar as! AXUIElement, depth: 0, limit: 1))
@@ -489,10 +498,10 @@ func walkApp(_ pid: pid_t, menubar: Bool) throws -> Walk {
     for root in roots { emit(root, "") }
     let book = refBooks[pid] ?? RefBook()
     refBooks[pid] = book
-    return record(found, book, truncated: truncated, hidden: hidden, note: note)
+    return record(found, book, truncated: truncated, hidden: hidden, note: note, windowId: selected?.id, windowFrame: selected?.frame)
 }
 
-func record(_ found: [Node], _ book: RefBook, truncated: Bool = false, hidden: Int = 0, note: String? = nil) -> Walk {
+func record(_ found: [Node], _ book: RefBook, truncated: Bool = false, hidden: Int = 0, note: String? = nil, windowId: CGWindowID? = nil, windowFrame: CGRect? = nil) -> Walk {
     var namesakes: [String: Int] = [:]
     let items = found.map { node -> (key: AXKey, label: String) in
         let label = "\(node.role)|\(node.name)"
@@ -507,12 +516,12 @@ func record(_ found: [Node], _ book: RefBook, truncated: Bool = false, hidden: I
         nodes[ref] = node
         elements.append(Elem(ref: ref, role: node.role, name: node.name, value: node.shownValue, frame: node.frame))
     }
-    var walk = Walk(elements: elements, nodes: nodes, truncated: truncated, generation: generation(of: elements), hidden: hidden, note: note)
+    var walk = Walk(elements: elements, nodes: nodes, truncated: truncated, generation: windowId.map { fnv("\($0)|\(generation(of: elements))") } ?? generation(of: elements), hidden: hidden, note: note, windowId: windowId, windowFrame: windowFrame)
     // A changed identity or state behind an identical fingerprint takes its own
     // generation: the record callers still cite keeps its generation, so a
     // stale request stays rejected until they take a fresh snapshot.
     let seen = seenMap(walk)
-    while conflicts(book, walk.generation, seen) { walk.generation += 1 }
+    while conflicts(book, walk.generation, seen) || (book.history + book.pinned).contains(where: { $0.generation == walk.generation && $0.windowId != windowId }) { walk.generation += 1 }
     remember(book, walk)
     return walk
 }
@@ -521,13 +530,17 @@ struct Cache {
     var generation: Int
     var nodes: [String: Node]
     var menubar: Bool
+    var windowId: CGWindowID?
 }
 
 var caches: [pid_t: Cache] = [:]
 
 func snapshotFields(_ walk: Walk) -> JSON {
     var out: JSON = ["generation": walk.generation, "elements": walk.elements.map { $0.json }]
-    if walk.truncated { out["truncated"] = true }
+    // Compact replies must also say when this walk stopped early.
+    out["truncated"] = walk.truncated
+    if let id = walk.windowId { out["windowId"] = id }
+    if let frame = walk.windowFrame { out["window"] = ["x": frame.origin.x, "y": frame.origin.y, "width": frame.width, "height": frame.height] }
     if walk.hidden > 0 { out["hidden"] = walk.hidden }
     if let note = walk.note { out["note"] = note }
     return out
@@ -535,9 +548,9 @@ func snapshotFields(_ walk: Walk) -> JSON {
 
 var cacheOrder: [pid_t] = []
 
-func refresh(_ pid: pid_t, menubar: Bool) throws -> Walk {
-    let walk = try walkApp(pid, menubar: menubar)
-    caches[pid] = Cache(generation: walk.generation, nodes: walk.nodes, menubar: menubar)
+func refresh(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws -> Walk {
+    let walk = try walkApp(pid, menubar: menubar, windowId: windowId)
+    caches[pid] = Cache(generation: walk.generation, nodes: walk.nodes, menubar: menubar, windowId: walk.windowId)
     cacheOrder.removeAll { $0 == pid || NSRunningApplication(processIdentifier: $0) == nil }
     cacheOrder.append(pid)
     while cacheOrder.count > 16 { cacheOrder.removeFirst() }
@@ -565,7 +578,9 @@ func ensureCache(_ pid: pid_t, _ expected: Int?, refs: [String], menubar: Bool, 
     guard let seen = (refBooks[pid].flatMap { seenAt($0, expected) }) else {
         throw Fail("stale_ref", "stale_ref: The app changed since your snapshot. Take a fresh snapshot.")
     }
+    let previousWindow = (refBooks[pid].map { $0.history + $0.pinned })?.last(where: { $0.generation == expected })?.windowId
     let walk = try walker(pid, menubar)
+    guard previousWindow == walk.windowId else { throw Fail("stale_ref", "The selected window changed. Take a fresh snapshot.") }
     for ref in refs {
         guard let then = seen[ref], let node = walk.nodes[ref], stillSame(then, node) else {
             throw Fail("stale_ref", "stale_ref: \(ref) is gone or changed since your snapshot. Take a fresh snapshot.")
@@ -928,11 +943,56 @@ func pickWindow(_ windows: [WindowCandidate]) -> (index: Int, elsewhere: Bool)? 
     return (best, here.isEmpty)
 }
 
+struct SelectedWindow {
+    let id: CGWindowID
+    let frame: CGRect
+    let onScreen: Bool
+    let titled: Bool
+}
+
+func chooseWindow(_ windows: [SelectedWindow], _ id: CGWindowID?) throws -> SelectedWindow? {
+    if let id {
+        guard let window = windows.first(where: { $0.id == id }) else { throw Fail("stale_window", "That window is gone or belongs to another app. Take a fresh snapshot.") }
+        return window
+    }
+    let candidates = windows.map { WindowCandidate(onScreen: $0.onScreen, titled: $0.titled, frame: $0.frame) }
+    return pickWindow(candidates).map { windows[$0.index] }
+}
+
+func selectedWindow(_ pid: pid_t, _ id: CGWindowID?) throws -> SelectedWindow? {
+    let info = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    let windows = info.compactMap { item -> SelectedWindow? in
+        guard (item[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
+              (item[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+              let number = item[kCGWindowNumber as String] as? NSNumber,
+              let bounds = item[kCGWindowBounds as String] as? [String: Any] else { return nil }
+        func part(_ name: String) -> Double { (bounds[name] as? NSNumber)?.doubleValue ?? 0 }
+        let frame = CGRect(x: part("X"), y: part("Y"), width: part("Width"), height: part("Height"))
+        guard frame.width >= 40, frame.height >= 40 else { return nil }
+        return SelectedWindow(id: number.uint32Value, frame: frame, onScreen: (item[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true, titled: !(item[kCGWindowName as String] as? String ?? "").isEmpty)
+    }
+    return try chooseWindow(windows, id)
+}
+
+func matchesWindow(_ element: AXUIElement, _ selected: SelectedWindow) -> Bool {
+    if let id = numberAttr(element, "AXWindowNumber") { return id == Double(selected.id) }
+    guard let frame = axFrame(element) else { return false }
+    return abs(frame.minX - selected.frame.minX) <= 1 && abs(frame.minY - selected.frame.minY) <= 1 && abs(frame.width - selected.frame.width) <= 1 && abs(frame.height - selected.frame.height) <= 1
+}
+
+func windowIdOf(_ request: JSON) throws -> CGWindowID? {
+    guard let raw = request["windowId"] else { return nil }
+    guard let value = raw as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue >= 1, value.doubleValue <= Double(UInt32.max), value.doubleValue.rounded() == value.doubleValue else {
+        throw Fail("bad_request", "windowId must be a positive window number.")
+    }
+    return value.uint32Value
+}
+
 let elsewhereShotNote = "Read only: this window is on another Space, minimized or hidden, where Accessibility cannot reach it and clicks at these coordinates may not land. To act on it, ask the user to bring it onto the current Space."
 
 // ScreenCaptureKit's screenshot call needs macOS 14; the app supports 13.
 @available(macOS 14, *)
-func captureWithScreenCaptureKit(_ pid: pid_t, maxWidth: Int) throws -> JSON {
+func captureWithScreenCaptureKit(_ pid: pid_t, maxWidth: Int, selected: SelectedWindow) throws -> JSON {
     _ = NSApplication.shared
     var content: SCShareableContent?
     var finished = false
@@ -940,10 +1000,7 @@ func captureWithScreenCaptureKit(_ pid: pid_t, maxWidth: Int) throws -> JSON {
     // titled window available as a read-only fallback.
     SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: false) { found, _ in content = found; finished = true }
     guard waitFor({ finished }), let windows = content?.windows else { throw Fail("failed", "Could not list windows to capture.") }
-    let appWindows = windows.filter { $0.owningApplication?.processID == pid && $0.windowLayer == 0 }
-    let candidates = appWindows.map { WindowCandidate(onScreen: $0.isOnScreen, titled: !($0.title ?? "").isEmpty, frame: $0.frame) }
-    guard let picked = pickWindow(candidates) else { throw Fail("no_window", "That app has no window to capture.") }
-    let window = appWindows[picked.index]
+    guard let window = windows.first(where: { $0.windowID == selected.id && $0.owningApplication?.processID == pid && $0.windowLayer == 0 }) else { throw Fail("stale_window", "That window is no longer available. Take a fresh snapshot.") }
     let size = targetSize(window.frame, maxWidth)
     let configuration = SCStreamConfiguration()
     configuration.width = size.width
@@ -957,23 +1014,15 @@ func captureWithScreenCaptureKit(_ pid: pid_t, maxWidth: Int) throws -> JSON {
     }
     guard waitFor({ finished }), let image else { throw Fail("failed", "Could not capture that window.") }
     var reply = try jpegReply(image, window.frame)
-    if picked.elsewhere { reply["note"] = elsewhereShotNote }
+    reply["windowId"] = selected.id
+    if !selected.onScreen { reply["note"] = elsewhereShotNote }
     return reply
 }
 
-func captureWithScreencapture(_ pid: pid_t, maxWidth: Int) throws -> JSON {
-    var bestId: CGWindowID = 0
-    var bestBounds = CGRect.zero
-    let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-    for item in info where (item[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid && (item[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 {
-        guard let bounds = item[kCGWindowBounds as String] as? [String: Any] else { continue }
-        func part(_ name: String) -> Double { (bounds[name] as? NSNumber)?.doubleValue ?? 0 }
-        let frame = CGRect(x: part("X"), y: part("Y"), width: part("Width"), height: part("Height"))
-        if frame.width < 40 || frame.height < 40 || frame.width * frame.height <= bestBounds.width * bestBounds.height { continue }
-        bestId = (item[kCGWindowNumber as String] as? NSNumber)?.uint32Value ?? 0
-        bestBounds = frame
-    }
-    guard bestId != 0 else { throw Fail("no_window", "That app has no window to capture.") }
+func captureWithScreencapture(_ pid: pid_t, maxWidth: Int, selected: SelectedWindow) throws -> JSON {
+    guard selected.onScreen else { throw Fail("no_window", "That window is not on the current screen.") }
+    let bestId = selected.id
+    let bestBounds = selected.frame
     let file = FileManager.default.temporaryDirectory.appendingPathComponent("alans-way-\(bestId).png")
     defer { try? FileManager.default.removeItem(at: file) }
     let process = Process()
@@ -992,20 +1041,23 @@ func captureWithScreencapture(_ pid: pid_t, maxWidth: Int) throws -> JSON {
     source.draw(in: NSRect(x: 0, y: 0, width: size.width, height: size.height))
     NSGraphicsContext.restoreGraphicsState()
     guard let image = rep.cgImage else { throw Fail("failed", "Could not encode the window.") }
-    return try jpegReply(image, bestBounds)
+    var reply = try jpegReply(image, bestBounds)
+    reply["windowId"] = selected.id
+    return reply
 }
 
-func captureWindow(_ pid: pid_t, maxWidth: Int) throws -> JSON {
+func captureWindow(_ pid: pid_t, maxWidth: Int, windowId: CGWindowID? = nil) throws -> JSON {
     guard CGPreflightScreenCaptureAccess() else {
         throw Fail("permission", "Screen Recording is off for this program. Turn it on in System Settings → Privacy & Security → Screen Recording, then retry.")
     }
+    guard let selected = try selectedWindow(pid, windowId) else { throw Fail("no_window", "That app has no window to capture.") }
     // HERMES_COMPUTER_SCREENCAPTURE=1 forces the older path, which is what macOS 13 runs.
     if #available(macOS 14, *), ProcessInfo.processInfo.environment["HERMES_COMPUTER_SCREENCAPTURE"] != "1" {
-        do { return try captureWithScreenCaptureKit(pid, maxWidth: maxWidth) }
+        do { return try captureWithScreenCaptureKit(pid, maxWidth: maxWidth, selected: selected) }
         catch let failure as Fail where failure.code != "failed" { throw failure }
         catch { /* fall through to screencapture */ }
     }
-    return try captureWithScreencapture(pid, maxWidth: maxWidth)
+    return try captureWithScreencapture(pid, maxWidth: maxWidth, selected: selected)
 }
 
 // MARK: requests
@@ -1030,7 +1082,7 @@ func pointOrRef(_ pid: pid_t, _ step: JSON) throws -> (point: CGPoint, element: 
     return (point, hit, nil)
 }
 
-func runStep(_ pid: pid_t, _ step: JSON) throws -> JSON {
+func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
     let before = cursor()
     postedMouse = false
     var out: JSON = [:]
@@ -1095,9 +1147,9 @@ func runStep(_ pid: pid_t, _ step: JSON) throws -> JSON {
         let amount = number(step["amount"]) ?? 1
         var anchor: (point: CGPoint, element: AXUIElement?, node: Node?)?
         if step["ref"] != nil || step["x"] != nil { anchor = try pointOrRef(pid, step) }
-        if anchor == nil, let window = (axValue(appElement(pid), "AXFocusedWindow") ?? (axValue(appElement(pid), "AXWindows") as? [AXUIElement])?.first),
-           CFGetTypeID(window) == AXUIElementGetTypeID(), let frame = axFrame(window as! AXUIElement) {
-            anchor = (CGPoint(x: frame.midX, y: frame.midY), elementAt(pid, CGPoint(x: frame.midX, y: frame.midY)), nil)
+        if anchor == nil, let selected = try selectedWindow(pid, windowId) {
+            let point = CGPoint(x: selected.frame.midX, y: selected.frame.midY)
+            anchor = (point, elementAt(pid, point), nil)
         }
         guard let anchor else { throw Fail("no_window", "That app has no window to scroll.") }
         var scrolled: Bool?
@@ -1123,19 +1175,112 @@ func runStep(_ pid: pid_t, _ step: JSON) throws -> JSON {
     return out
 }
 
+// Notifications only shorten the wait after an event. Silent/unsupported apps
+// retain the conservative fallback; semantic completion still uses wait steps.
+struct SettleClock {
+    var lastEvent: Double?
+    func done(_ now: Double, started: Double, deadline: Double) -> Bool {
+        now >= deadline || (lastEvent.map { now - $0 >= 0.020 } ?? (now - started >= 0.060))
+    }
+}
+
+final class AXSettler {
+    var observer: AXObserver?
+    var clock = SettleClock()
+    let notifications = ["AXValueChanged", "AXUIElementDestroyed", "AXWindowCreated", "AXFocusedUIElementChanged", "AXLayoutChanged", "AXSelectedChildrenChanged", "AXMoved", "AXResized", "AXTitleChanged", "AXRowCountChanged"]
+    init(_ pid: pid_t, refs: [String]) {
+        var created: AXObserver?
+        guard AXObserverCreate(pid, { _, _, _, context in
+            guard let context else { return }
+            Unmanaged<AXSettler>.fromOpaque(context).takeUnretainedValue().clock.lastEvent = ProcessInfo.processInfo.systemUptime
+        }, &created) == .success, let created else { return }
+        observer = created
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        let app = appElement(pid)
+        var elements = [app] + refs.compactMap { caches[pid]?.nodes[$0]?.element }
+        if let id = caches[pid]?.windowId, let selected = try? selectedWindow(pid, id),
+           let windows = axValue(app, "AXWindows") as? [AXUIElement] {
+            elements += windows.filter { matchesWindow($0, selected) }
+        }
+        for element in elements {
+            for notification in notifications { AXObserverAddNotification(created, element, notification as CFString, context) }
+        }
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(created), .defaultMode)
+    }
+    func wait(timeoutMs: Int) {
+        let started = ProcessInfo.processInfo.systemUptime
+        // An event delivered during the actions still needs a quiet interval
+        // after the final action, rather than after an earlier batch step.
+        if clock.lastEvent != nil { clock.lastEvent = started }
+        let deadline = started + Double(timeoutMs) / 1000
+        while !clock.done(ProcessInfo.processInfo.systemUptime, started: started, deadline: deadline) {
+            CFRunLoopRunInMode(.defaultMode, 0.005, false)
+        }
+    }
+    func close() {
+        if let observer { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode) }
+        observer = nil
+    }
+}
+
+func belongsToWindow(_ element: AXUIElement, _ selected: SelectedWindow) -> Bool {
+    if axString(element, "AXRole") == "AXWindow" { return matchesWindow(element, selected) }
+    guard let window = axValue(element, "AXWindow"), CFGetTypeID(window) == AXUIElementGetTypeID() else { return false }
+    return matchesWindow(window as! AXUIElement, selected)
+}
+
+func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?) throws {
+    let action = step["action"] as? String ?? ""
+    let node = (step["ref"] as? String).flatMap { caches[pid]?.nodes[$0] }
+    let menuRef = node.map { inMenu($0.element) } ?? false
+    guard let selected else {
+        if action == "menu" || menuRef { return }
+        throw Fail("no_window", "Take a window snapshot before acting.")
+    }
+    guard selected.onScreen else { throw Fail("stale_window", "That window is not on the current screen. Ask the user to bring it back.") }
+    for (x, y) in [("x", "y"), ("x2", "y2")] {
+        if let px = number(step[x]), let py = number(step[y]) {
+            let point = CGPoint(x: px, y: py)
+            guard selected.frame.contains(point), let hit = elementAt(pid, point),
+                  belongsToWindow(hit, selected) else {
+                throw Fail("stale_window", "Those coordinates do not reach the selected window.")
+            }
+        }
+    }
+    if let node, !menuRef, !belongsToWindow(node.element, selected) {
+        throw Fail("stale_ref", "That control is no longer in the selected window. Take a fresh snapshot.")
+    }
+    if action == "key" || action == "menu" || menuRef {
+        guard let focused = axValue(appElement(pid), "AXFocusedWindow"), CFGetTypeID(focused) == AXUIElementGetTypeID(), matchesWindow(focused as! AXUIElement, selected) else {
+            throw Fail("window_unverified", "The selected window does not have keyboard focus. Take a fresh snapshot.")
+        }
+    }
+}
+
 func act(_ request: JSON) throws -> JSON {
     let pid = try pidOf(request)
     try requireAccessibility()
     try checkApp(pid)
     let steps = request["steps"] as? [JSON] ?? []
     let menubar = request["menubar"] as? Bool ?? caches[pid]?.menubar ?? false
+    let expected = (request["generation"] as? NSNumber)?.intValue
+    let held = refBooks[pid].flatMap { book in (book.history + book.pinned).last(where: { $0.generation == expected }) }
+    let windowId = try windowIdOf(request) ?? held?.windowId ?? caches[pid]?.windowId
+    if expected != nil && (held == nil || held?.windowId != windowId) {
+        throw Fail("stale_ref", "The selected window changed. Take a fresh snapshot.")
+    }
+    let selected = try selectedWindow(pid, windowId)
     let refs = steps.compactMap { $0["ref"] as? String }
-    try ensureCache(pid, (request["generation"] as? NSNumber)?.intValue, refs: refs, menubar: menubar)
+    try ensureCache(pid, expected, refs: refs, menubar: menubar) { try refresh($0, menubar: $1, windowId: selected?.id) }
+    let settling = AXSettler(pid, refs: refs)
+    defer { settling.close() }
     var results: [JSON] = []
     var succeeded = false
     for step in steps {
         do {
-            results.append(try runStep(pid, step))
+            try checkApp(pid)
+            try validateWindowStep(pid, step, try selectedWindow(pid, selected?.id))
+            results.append(try runStep(pid, step, windowId: selected?.id))
             succeeded = true
         } catch let failure as Fail {
             results.append(["ok": false, "error": failure.message, "code": failure.code])
@@ -1144,9 +1289,9 @@ func act(_ request: JSON) throws -> JSON {
     }
     var reply: JSON = ["results": results]
     if succeeded, request["snapshot"] as? Bool ?? true {
-        usleep(UInt32(max(0, min(1000, (request["settleMs"] as? NSNumber)?.intValue ?? 60))) * 1000)
+        settling.wait(timeoutMs: max(0, min(1000, (request["settleMs"] as? NSNumber)?.intValue ?? 250)))
         // The steps already ran; a tree that cannot be read afterwards must not hide their results.
-        if let walk = try? refresh(pid, menubar: menubar) { for (key, value) in snapshotFields(walk) { reply[key] = value } }
+        if let walk = try? refresh(pid, menubar: menubar, windowId: selected?.id) { for (key, value) in snapshotFields(walk) { reply[key] = value } }
         else { reply["note"] = "unresponsive: the steps ran but the app stopped responding, so there is no tree. Do not repeat them; take a fresh snapshot." }
     }
     return reply
@@ -1156,7 +1301,7 @@ func dispatch(_ request: JSON) throws -> JSON {
     if let policy = request["policy"] as? JSON { setPolicy(policy) }
     switch request["cmd"] as? String ?? "" {
     case "init":
-        return ["protocol": 2]
+        return ["protocol": 2, "windowBinding": true]
     case "selftest":
         return try selftest()
     case "apps":
@@ -1171,7 +1316,7 @@ func dispatch(_ request: JSON) throws -> JSON {
         try requireAccessibility()
         try checkApp(pid)
         if let generation = (request["pin"] as? NSNumber)?.intValue, let book = refBooks[pid] { pin(book, generation) }
-        return snapshotFields(try refresh(pid, menubar: request["menubar"] as? Bool ?? false))
+        return snapshotFields(try refresh(pid, menubar: request["menubar"] as? Bool ?? false, windowId: try windowIdOf(request)))
     case "act":
         return try act(request)
     case "menu":
@@ -1182,7 +1327,7 @@ func dispatch(_ request: JSON) throws -> JSON {
     case "shot":
         let pid = try pidOf(request)
         try checkApp(pid)
-        return try captureWindow(pid, maxWidth: (request["maxWidth"] as? NSNumber)?.intValue ?? 960)
+        return try captureWindow(pid, maxWidth: (request["maxWidth"] as? NSNumber)?.intValue ?? 960, windowId: try windowIdOf(request))
     default:
         throw Fail("bad_request", "unknown command \(request["cmd"] as? String ?? "")")
     }
@@ -1377,6 +1522,36 @@ func selftest() throws -> JSON {
     try expect(stale(sameGeneration) { record([newGo], rebuiltBook) }, "rebuilt control refused behind an unchanged generation")
     try expect(stale(sameGeneration) { record([newGo], rebuiltBook) }, "stale request stays refused on retry")
     try expect(!stale(rebuiltGeneration) { record([newGo], rebuiltBook) }, "fresh snapshot accepted")
+    let firstWindow = SelectedWindow(id: 41, frame: CGRect(x: 0, y: 0, width: 420, height: 520), onScreen: true, titled: true)
+    let secondWindow = SelectedWindow(id: 42, frame: CGRect(x: 500, y: 0, width: 360, height: 240), onScreen: true, titled: true)
+    try expect((try chooseWindow([firstWindow, secondWindow], nil)?.id == 41), "default window")
+    try expect((try chooseWindow([firstWindow, secondWindow], 42)?.id == 42), "explicit smaller window")
+    do { _ = try chooseWindow([firstWindow], 42); throw Fail("selftest", "foreign window accepted") }
+    catch let failure as Fail { try expect(failure.code == "stale_window", "foreign or closed window refused") }
+    for raw: Any in [0, -1, 1.5, "42", true, 4294967296.0] {
+        do { _ = try windowIdOf(["windowId": raw]); throw Fail("selftest", "invalid window id accepted") }
+        catch let failure as Fail { try expect(failure.code == "bad_request", "invalid window id refused") }
+    }
+    try expect((try windowIdOf(["windowId": 42])) == 42, "valid window id")
+    let sameText = record([go], RefBook(), windowId: 41)
+    let otherWindow = record([go], RefBook(), windowId: 42)
+    try expect(sameText.generation != otherWindow.generation, "window identity participates in generation")
+    let windowBook = RefBook()
+    refBooks[fakePid] = windowBook
+    let windowGeneration = record([go], windowBook, windowId: 41).generation
+    try expect(stale(windowGeneration) { record([go], windowBook, windowId: 42) }, "same control in another window refused")
+    pin(windowBook, windowGeneration)
+    windowBook.history.removeAll()
+    pin(windowBook, windowGeneration)
+    try expect(windowBook.pinned.last?.windowId == 41, "repinning preserves the held window after history expires")
+    let fields = snapshotFields(record([go], RefBook(), truncated: true, windowId: 42, windowFrame: secondWindow.frame))
+    try expect(fields["windowId"] as? UInt32 == 42 && fields["window"] is [String: CGFloat] && fields["truncated"] as? Bool == true, "window geometry and truncation")
+    let quiet = SettleClock(lastEvent: 0.010)
+    try expect(!quiet.done(0.015, started: 0, deadline: 0.250), "event not yet quiet")
+    try expect(quiet.done(0.031, started: 0, deadline: 0.250), "event quiet before fixed pause")
+    try expect(!SettleClock().done(0.030, started: 0, deadline: 0.250), "silent app retains fallback")
+    try expect(SettleClock().done(0.061, started: 0, deadline: 0.250), "silent app fallback bounded")
+    try expect(SettleClock(lastEvent: 0.249).done(0.250, started: 0, deadline: 0.250), "continuous events bounded")
     return ["checks": checks]
 }
 

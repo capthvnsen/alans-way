@@ -30,7 +30,7 @@ test('an action reply is unchanged only against what this bot last saw', () => {
   assert.equal(forA.unchanged, undefined);
   assert.equal(forA.elements[0].name, '2');
   // The same tree again for bot a is now known.
-  const again = seen.action('a', 7, { ok: true, ...tree(12, '2') });
+  const again = seen.action('a', 7, { ok: true, ...tree(12, '2') }, 12);
   assert.deepEqual(again, { ok: true, unchanged: true, generation: 12 });
 });
 
@@ -93,4 +93,37 @@ test('a caller that does not hold the last tree it was sent gets the whole tree'
   assert.equal(reply.elements.length, 20);
   // No generation at all says nothing about what the caller holds.
   assert.equal(seen.action('a', 7, { ok: true, ...big(4, 20, { 3: 'Count: 3' }) }).elements.length, 20);
+});
+
+test('snapshot deltas use the held tree, preserve metadata, and resync lost replies', () => {
+  const seen = createComputerSnapshots();
+  seen.snapshot('a', 7, { ...big(1, 20), windowId: 42 });
+  const after = { ...big(2, 19, { 3: 'Count: 1' }), truncated: true, windowId: 42, window: { x: 10, y: 20, width: 420, height: 520 } };
+  const reply = seen.snapshot('a', 7, after, 1);
+  assert.equal(reply.elements, undefined);
+  assert.deepEqual(reply.changed, [after.elements[2]]);
+  assert.deepEqual(reply.removed, ['c20']);
+  assert.equal(reply.truncated, true);
+  assert.deepEqual(reply.window, after.window);
+  assert.equal(reply.windowId, 42);
+  assert.equal(seen.snapshot('a', 7, big(3, 20), 1).elements.length, 20);
+  assert.equal(seen.snapshot('b', 7, big(3, 20), 2).elements.length, 20);
+});
+
+test('unchanged replies require a held baseline and retain current truncation and geometry', () => {
+  const seen = createComputerSnapshots();
+  const current = { ...big(1, 20), truncated: true, windowId: 42, window: { x: 0, y: 0, width: 420, height: 520 } };
+  assert.equal(seen.snapshot('a', 7, current, 1).elements.length, 20);
+  const reply = seen.snapshot('a', 7, current, 1);
+  assert.equal(reply.unchanged, true);
+  assert.equal(reply.truncated, true);
+  assert.deepEqual(reply.window, current.window);
+  assert.equal(seen.action('a', 7, { ok: true, ...current }, 99).elements.length, 20);
+});
+
+test('switching windows always returns a full tree even with an identical generation', () => {
+  const seen = createComputerSnapshots();
+  seen.snapshot('a', 7, { ...big(1, 20), windowId: 41 });
+  const reply = seen.snapshot('a', 7, { ...big(1, 20), windowId: 42 }, 1);
+  assert.equal(reply.elements.length, 20);
 });

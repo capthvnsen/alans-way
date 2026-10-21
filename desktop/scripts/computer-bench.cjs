@@ -7,10 +7,15 @@
 //
 // Usage: node scripts/computer-bench.cjs [--root DIR] [--mode mcp,batch,plugin]
 //        [--think MS] [--runs N] [--json FILE] [--visible]
+// --fixture runs mock form/count/window captures without GUI access.
 // --root loads src/computer.cjs from another checkout, to bench a baseline.
 // --think is the pause between reading a reply and acting on it, standing in
 // for model latency (default 600ms; the fixture clock ticks every 250ms).
 // Tokens are estimates: text is chars/4, an image is width*height/750.
+if (process.argv.includes('--fixture')) {
+  require('../test/computer-bench-fixture.cjs').run().catch((error) => { console.error(error); process.exitCode = 1; });
+} else {
+
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -59,7 +64,7 @@ async function call(fn, image = false) {
 
 // What the model holds after each reply: a full tree, a delta, or "unchanged".
 function merge(tree, reply) {
-  if (Array.isArray(reply.elements)) return { generation: reply.generation, elements: reply.elements };
+  if (Array.isArray(reply.elements)) return reply;
   if (!tree) return tree;
   let elements = tree.elements;
   if (Array.isArray(reply.removed)) elements = elements.filter((e) => !reply.removed.includes(e.ref));
@@ -69,12 +74,17 @@ function merge(tree, reply) {
     const known = new Set(elements.map((e) => e.ref));
     elements = elements.concat(reply.changed.filter((e) => !known.has(e.ref)));
   }
-  return { generation: Number.isInteger(reply.generation) ? reply.generation : tree.generation, elements };
+  return { ...tree, ...reply, generation: Number.isInteger(reply.generation) ? reply.generation : tree.generation, elements };
 }
 const find = (tree, test) => tree && tree.elements.find((e) => typeof test === 'string' ? e.name === test : test(e));
 const has = (tree, name) => Boolean(find(tree, name));
 
 let pid = 0;
+let windowId;
+let windowIds = {};
+const windowFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'computer-bench-')), 'windows.json');
+const canSelectWindow = typeof require(path.join(root, 'src', 'computer-snapshot.cjs')).createComputerSnapshots().windowId === 'function';
+const selected = () => canSelectWindow ? { windowId } : {};
 const bundle = path.join(os.tmpdir(), 'alans-way-computer-bench.app');
 const BUNDLE_ID = 'app.alans-way.computer-bench';
 
@@ -98,14 +108,20 @@ function quit() {
   pid = 0;
 }
 
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGALRM']) process.once(signal, () => {
+  quit(); close(); fs.rmSync(path.dirname(windowFile), { recursive: true, force: true }); process.exit(1);
+});
+
 async function launch() {
   buildApp();
   const t0 = Date.now();
-  spawnSync('open', ['-g', '-n', bundle, ...(visible ? ['--args', '--visible'] : [])]);
+  fs.rmSync(windowFile, { force: true });
+  spawnSync('open', ['-g', '-n', bundle, '--args', '--window-ids', windowFile, ...(visible ? ['--visible'] : [])]);
   for (;;) {
     const app = (await service.apps()).find((a) => a.bundleId === BUNDLE_ID);
     if (app) {
-      const tree = await service.snapshot(BOT, app.pid).catch(() => null);
+      try { windowIds = JSON.parse(fs.readFileSync(windowFile, 'utf8')); windowId = windowIds.form; } catch { /* fixture still starting */ }
+      const tree = await service.snapshot(BOT, app.pid, selected()).catch(() => null);
       if (tree && tree.elements && tree.elements.length) { pid = app.pid; return Date.now() - t0; }
     }
     if (Date.now() - t0 > 15000) throw new Error('bench app did not appear');
@@ -119,17 +135,16 @@ async function launch() {
 //      state from each action reply. A stale_ref costs a snapshot and a retry.
 // batch: one snapshot, then the whole plan in one batch call.
 // plugin: the alans-way-computer provider. Captures are snapshot + screenshot;
-//      action replies carry no state, so the model captures again to read the
-//      result, and a ref action reuses the generation of the last capture.
+//      action replies update the held tree; a final capture verifies the result.
 
 async function snapshotTree(tree) {
-  const reply = await call(() => service.snapshot(BOT, pid, tree ? { since: tree.generation } : {}));
-  return reply.unchanged ? tree : merge(tree, reply);
+  const reply = await call(() => service.snapshot(BOT, pid, { ...selected(), ...(tree ? { since: tree.generation } : {}) }));
+  return merge(tree, reply);
 }
 
 async function act(tree, body) {
   await sleep(think);
-  return call(() => service.action(BOT, pid, { ...body, generation: tree.generation }));
+  return call(() => service.action(BOT, pid, { ...body, generation: tree.generation, ...selected() }));
 }
 
 async function runMcp(plan, check) {
@@ -167,7 +182,7 @@ async function runBatch(plan, check) {
 }
 
 async function capture(tree) {
-  const [next] = await Promise.all([snapshotTree(tree), call(() => service.screenshot(pid), true)]);
+  const [next] = await Promise.all([snapshotTree(tree), call(() => service.screenshot(pid, undefined, selected()), true)]);
   return next;
 }
 
@@ -176,7 +191,7 @@ async function runPlugin(plan, check) {
   for (const step of plan) {
     if (step.wait) continue;
     for (let attempt = 0; ; attempt++) {
-      try { await act(tree, step.do(tree)); break; }
+      try { tree = merge(tree, await act(tree, step.do(tree))); break; }
       catch (error) {
         if (attempt || !/stale_ref/.test(error.message)) throw error;
         tree = await capture(tree);
@@ -203,7 +218,7 @@ const tasks = [
     check: (t) => has(t, 'Count: 3') },
   { name: 'type + submit + read', plan: [{ do: (t) => ({ action: 'type', ref: field(t), text: 'Ada' }) }, press('Submit'), waitFor('Result: Ada')],
     check: (t) => has(t, 'Result: Ada') },
-  { name: 'switch window', plan: [press('Copy name'), waitFor('Copied: Ada')],
+  { name: 'switch window', window: 'notes', plan: [press('Copy name'), waitFor('Copied: Ada')],
     check: (t) => Boolean(find(t, (e) => e.role === 'AXTextArea' && e.value === 'Copied: Ada')) },
   { name: 'read list + select', plan: [press((e) => e.role === 'AXRow' && /\bRow 3\b/.test(e.name))],
     check: (t) => has(t, 'Count: 3') && Boolean(find(t, (e) => /\bRow 3\b/.test(e.name))) },
@@ -215,9 +230,9 @@ const tasks = [
 ];
 
 async function pressOnce(name) {
-  const tree = await service.snapshot(BOT, pid);
+  const tree = await service.snapshot(BOT, pid, selected());
   const hit = tree.elements.find((e) => e.name === name);
-  if (hit) await service.action(BOT, pid, { action: 'press', ref: hit.ref, generation: tree.generation });
+  if (hit) await service.action(BOT, pid, { action: 'press', ref: hit.ref, generation: tree.generation, ...selected() });
 }
 
 async function main() {
@@ -230,19 +245,23 @@ async function main() {
       const launchMs = await launch();
       rows.push({ run, mode, task: 'open + first snapshot', ok: true, calls: 1, ms: launchMs, textTokens: 0, imageTokens: 0, imageBytes: 0, stale: 0 });
       for (const task of tasks) {
+        windowId = task.window === 'notes' ? windowIds.notes : windowIds.form;
         for (const name of task.setup || []) await pressOnce(name);
         reset();
+        const started = Date.now();
         let ok = false, err;
         try { ok = Boolean(await runners[mode](task.plan, task.check)); }
         catch (error) { err = String(error.message).slice(0, 140); }
+        const wallMs = Date.now() - started;
         for (const name of task.teardown || []) await pressOnce(name).catch(() => {});
-        rows.push({ run, mode, task: task.name, ok, err, calls: stats.calls, ms: stats.ms, textTokens: Math.round(stats.textChars / 4),
+        rows.push({ run, mode, task: task.name, ok, err, calls: stats.calls, ms: stats.ms, toolMs: stats.ms, wallMs, textChars: stats.textChars, textTokens: Math.round(stats.textChars / 4),
           imageTokens: stats.imageTokens, imageBytes: stats.imageBytes, stale: stats.stale });
       }
     }
   }
   quit();
   close();
+  fs.rmSync(path.dirname(windowFile), { recursive: true, force: true });
   console.log(`\n  root: ${root}  think: ${think}ms  runs: ${runs}`);
   console.log('  mode    task                       ok    calls  stale   tool ms  text tok  img tok');
   console.log('  ' + '─'.repeat(86));
@@ -251,10 +270,15 @@ async function main() {
   }
   for (const mode of modes) {
     const mine = rows.filter((r) => r.mode === mode && r.task !== 'open + first snapshot');
+    const percentile = (key, q) => mine.map((row) => row[key]).sort((a, b) => a - b)[Math.ceil(mine.length * q) - 1];
+    console.log(`  ${mode} toolMs p50/p95 ${percentile('toolMs', .5)}/${percentile('toolMs', .95)}, wallMs ${percentile('wallMs', .5)}/${percentile('wallMs', .95)}`);
     const sum = (key) => mine.reduce((total, r) => total + r[key], 0);
     console.log(`  ${mode.padEnd(7)} TOTAL ${String(mine.filter((r) => r.ok).length).padStart(2)}/${mine.length} pass  calls ${sum('calls')}  stale ${sum('stale')}  tool ${sum('ms')}ms  text ${sum('textTokens')} tok  image ${sum('imageTokens')} tok (${Math.round(sum('imageBytes') / 1024)} KB)`);
   }
   if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify(rows, null, 2));
+  if (rows.some((row) => !row.ok)) process.exitCode = 1;
 }
 
-main().catch((error) => { quit(); close(); console.error('bench failed:', error.stack || error.message); process.exit(1); });
+main().catch((error) => { quit(); close(); fs.rmSync(path.dirname(windowFile), { recursive: true, force: true }); console.error('bench failed:', error.stack || error.message); process.exit(1); });
+
+}

@@ -397,7 +397,7 @@ test('a second bot is sent the tree even when the first bot already saw it', asy
   t.after(close);
   const a = await service.action('a', 5, { action: 'click', x: 1, y: 2 });
   assert.ok(a.elements);
-  const again = await service.action('a', 5, { action: 'click', x: 1, y: 2 });
+  const again = await service.action('a', 5, { action: 'click', x: 1, y: 2, generation: a.generation });
   assert.equal(again.unchanged, true);
   const b = await service.action('b', 5, { action: 'click', x: 1, y: 2 });
   assert.ok(b.elements, 'bot b has never seen generation 8');
@@ -560,4 +560,45 @@ test('a pre-init action crash with no remaining budget fails as not run', async 
   await assert.rejects(result, error => error.code === 'timeout' && !/may have executed/.test(error.message));
   assert.equal(requests, 1);
   assert.equal(computer.children.length, 1);
+});
+
+test('selected window travels through snapshots, actions, waits and screenshots', async (t) => {
+  const computer = createComputer({ command: async (mode) => [process.execPath, path.join(__dirname, 'computer-fake-helper.cjs'), mode] });
+  t.after(() => computer.close());
+  const tree = await computer.service.snapshot('bot', 7, { windowId: 42 });
+  assert.equal(tree.windowId, 42);
+  const reply = await computer.service.action('bot', 7, { action: 'batch', windowId: 42, generation: 7, steps: [
+    { action: 'press', ref: 'c1' }, { action: 'wait', text: 'Go' },
+  ] });
+  assert.equal(reply.windowId, 42);
+  assert.equal(reply.results.length, 2);
+  assert.equal((await computer.service.screenshot(7, 640, { windowId: 42 })).windowId, 42);
+  for (const windowId of [null, 0, -1, 1.5, '42', 4294967296]) {
+    await assert.rejects(computer.service.snapshot('bot', 7, { windowId }), { code: 'bad_request' });
+    await assert.rejects(computer.service.action('bot', 7, { action: 'click', x: 1, y: 2, windowId }), { code: 'bad_request' });
+    await assert.rejects(computer.service.screenshot(7, 640, { windowId }), { code: 'bad_request' });
+  }
+});
+
+test('an older helper refuses explicit window actions before dispatch', async (t) => {
+  const computer = createComputer({ command: async (mode) => [process.execPath, path.join(__dirname, 'computer-fake-helper.cjs'), mode], env: { ...process.env, FAKE_MODE: 'old-helper' } });
+  t.after(() => computer.close());
+  await assert.rejects(computer.service.action('bot', 7, { action: 'click', x: 1, y: 2, windowId: 42 }), { code: 'unsupported_window' });
+  assert.equal((await computer.service.snapshot('bot', 7)).generation, 7);
+});
+
+test('actions inherit the observing bot window and waits keep that window', async () => {
+  const calls = [];
+  const service = createComputerService({
+    snapshot: async (_pid, options) => { calls.push(options); return { generation: 7, windowId: options.windowId, elements: [{ ref: 'c1', name: 'Saved' }] }; },
+    act: async (_pid, options) => { calls.push(options); return { results: [{ ok: true }], generation: 8, windowId: options.windowId, elements: [] }; },
+    screenshot: async (_pid, _width, options) => options,
+  });
+  await service.snapshot('a', 7, { windowId: 41 });
+  await service.snapshot('b', 7, { windowId: 42 });
+  await service.action('a', 7, { action: 'batch', generation: 7, steps: [{ action: 'press', ref: 'c1' }, { action: 'wait', text: 'Saved' }] });
+  assert.deepEqual(calls.map((item) => item.windowId), [41, 42, 41, 41]);
+  assert.equal((await service.screenshot(7, 640, { bot: 'a' })).windowId, 41);
+  assert.equal((await service.screenshot(7, 640, { bot: 'b' })).windowId, 42);
+  await assert.rejects(service.action('a', 7, { action: 'click', windowId: 42, x: 1, y: 2 }), { code: 'stale_window' });
 });

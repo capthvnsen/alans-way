@@ -97,6 +97,12 @@ final class Bench: NSObject {
             window.orderFrontRegardless()
             window.setFrameOrigin(NSPoint(x: x, y: screen.minY + 40))
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--window-ids"), index + 1 < CommandLine.arguments.count {
+            let ids = ["form": form.windowNumber, "notes": notes.windowNumber]
+            if let data = try? JSONSerialization.data(withJSONObject: ids) {
+                try? data.write(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]), options: .atomic)
+            }
+        }
     }
 
     @objc func submit() { result.stringValue = "Result: \(name.stringValue)" }

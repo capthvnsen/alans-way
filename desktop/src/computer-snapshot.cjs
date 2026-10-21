@@ -1,7 +1,7 @@
 'use strict';
 
 const MAX_TRACKED = 500;
-// An action reply lists only what changed when that is clearly smaller than
+// A reply lists only what changed when that is clearly smaller than
 // the whole tree; refs that all shift at once (the Linux helper numbers them
 // in tree order) make a delta as big as the tree, so those replies stay whole.
 const DELTA_SHARE = 0.6;
@@ -19,28 +19,26 @@ function createComputerSnapshots() {
     const key = `${bot}\u0000${pid}`;
     const before = sent.get(key);
     sent.delete(key);
-    sent.set(key, { generation: tree.generation, elements: new Map(tree.elements.map((element) => [element.ref, canonical(element)])) });
+    sent.set(key, { windowId: tree.windowId, generation: tree.generation, elements: new Map(tree.elements.map((element) => [element.ref, canonical(element)])) });
     if (sent.size > MAX_TRACKED) sent.delete(sent.keys().next().value);
     return before;
   };
   function snapshot(bot, pid, tree, since) {
-    if (Array.isArray(tree.elements)) remember(bot, pid, tree);
-    if (Number.isInteger(since) && since === tree.generation) return { unchanged: true, generation: tree.generation };
-    return tree;
+    return action(bot, pid, tree, since);
   }
   function action(bot, pid, result, held) {
     if (!Number.isInteger(result.generation) || !Array.isArray(result.elements)) return result;
     const before = remember(bot, pid, result);
-    const { elements, truncated, ...rest } = result;
-    if (before && before.generation === result.generation) return { ...rest, unchanged: true, generation: result.generation };
-    if (!before || held !== before.generation) return result;
+    if (!before || held !== before.generation || before.windowId !== result.windowId) return result;
+    const { elements, ...rest } = result;
+    if (before.generation === result.generation) return { ...rest, unchanged: true };
     const changed = elements.filter((element) => before.elements.get(element.ref) !== canonical(element));
     const now = new Set(elements.map((element) => element.ref));
     const removed = [...before.elements.keys()].filter((ref) => !now.has(ref));
     if (JSON.stringify(changed).length + JSON.stringify(removed).length >= DELTA_SHARE * JSON.stringify(elements).length) return result;
-    return { ...rest, ...(truncated ? { truncated } : {}), changed, removed };
+    return { ...rest, changed, removed };
   }
-  return { snapshot, action };
+  return { snapshot, action, windowId: (bot, pid) => sent.get(`${bot}\u0000${pid}`)?.windowId };
 }
 
 module.exports = { createComputerSnapshots };

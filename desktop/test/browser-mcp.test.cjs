@@ -900,3 +900,20 @@ test('a named step sent to a host from before name targets says to act by ref', 
   const plain = await act({ action: 'click', x: 5, y: 5 });
   assert.doesNotMatch(plain.content[0].text, /name targets/, 'an unnamed failure keeps its own message');
 });
+
+
+test('window selection reaches every computer API and old hosts refuse it', { timeout: 8000 }, async (t) => {
+  const { client, seen } = await computerHost(t, ['computer', 'computer-window-v1']);
+  for (const [name, args] of [
+    ['workspace_computer_snapshot', { pid: 7, windowId: 42 }],
+    ['workspace_computer_screenshot', { pid: 7, windowId: 42 }],
+    ['workspace_computer_action', { pid: 7, windowId: 42, action: 'click', x: 1, y: 2 }],
+  ]) assert.equal((await client.callTool({ name, arguments: args })).isError, undefined);
+  assert.ok(seen.some((entry) => entry.line === 'GET /v1/computer/7/snapshot?windowId=42'));
+  assert.ok(seen.some((entry) => entry.line === 'GET /v1/computer/7/screenshot?windowId=42'));
+  assert.equal(seen.find((entry) => entry.line.endsWith('/action')).body.windowId, 42);
+  const old = await computerHost(t, ['computer']);
+  const reply = await old.client.callTool({ name: 'workspace_computer_action', arguments: { pid: 7, windowId: 42, action: 'click', x: 1, y: 2 } });
+  assert.equal(reply.isError, true);
+  assert.deepEqual(old.seen.map((entry) => entry.line), ['GET /v1/status']);
+});
