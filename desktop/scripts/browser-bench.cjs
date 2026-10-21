@@ -515,6 +515,29 @@ const tasks = [
       return 'done';
     },
     check: (fx) => fx.reports.delivery === 'express' && fx.reports.placed === true && fx.reports.address?.city === 'Bristol' },
+  { id: 'pub-wiki-search-focus', what: 'Wikipedia: focus Search on the first click, search for Grace Hopper and read her birth date', public: true,
+    async run(a) {
+      await a.open('https://en.wikipedia.org/wiki/Main_Page');
+      const ref = await a.need(/^Search Wikipedia/);
+      const reply = await a.act({ action: 'click', ref });
+      if (reply.error || !/^Search/.test(reply.effect?.focused?.name || '')) throw new Error('First click did not focus Search');
+      await a.run([{ action: 'type', target: [/^search wikipedia|^search$/i, /input|searchbox|combobox/], text: 'Grace Hopper' }, { action: 'press', key: 'Enter' }]);
+      const result = a.find(/^Grace Hopper(?:\n|$)/, /^a$|link/);
+      if (result) await a.act({ action: 'click', ref: result.ref });
+      return a.answer(/(December 9, 1906|9 December 1906)/, 4000);
+    },
+    check: (fx, ans) => /1906/.test(ans) && fx.lastUrl === 'https://en.wikipedia.org/wiki/Grace_Hopper' },
+  { id: 'pub-books-travel', what: 'open Travel and report the full title of its first book from the action reply', public: true,
+    async run(a) {
+      await a.open('https://books.toscrape.com/');
+      const ref = await a.need(/^Travel$/, /^a$|link/);
+      const reply = await a.act({ action: 'click', ref });
+      if (reply.error) throw new Error(reply.error);
+      let book = a.known.find(e => /catalogue\/[^/]+\/index\.html$/.test(e.href || '') && e.name);
+      if (!book) { await a.snapshot(); book = a.known.find(e => /catalogue\/[^/]+\/index\.html$/.test(e.href || '') && e.name); }
+      return book?.name || '';
+    },
+    check: (fx, ans) => ans === "It's Only the Himalayas" && /category\/books\/travel_2\/index\.html$/.test(fx.lastUrl) },
   { id: 'pub-wiki-link', what: 'Wikipedia: follow the Charles Babbage link from Ada Lovelace', public: true,
     async run(a) {
       await a.open('https://en.wikipedia.org/wiki/Ada_Lovelace');
@@ -524,6 +547,15 @@ const tasks = [
       return reply.effect?.navigated === true ? reply.effect.url : '';
     },
     check: (fx, ans) => ans === 'https://en.wikipedia.org/wiki/Charles_Babbage' && fx.lastUrl === ans },
+  { id: 'pub-wiki-birth', what: 'Wikipedia: follow Charles Babbage from Ada Lovelace and read his birth year', public: true,
+    async run(a) {
+      await a.open('https://en.wikipedia.org/wiki/Ada_Lovelace');
+      const ref = await a.need(/^Charles Babbage$/, /^a$|link/);
+      const reply = await a.act({ action: 'click', ref });
+      if (reply.error || reply.effect?.url !== 'https://en.wikipedia.org/wiki/Charles_Babbage') throw new Error('The article link did not reach Charles Babbage');
+      return a.answer(/(?:26 December 1791|December 26, 1791)/, 4000);
+    },
+    check: (fx, ans) => /1791/.test(ans) && fx.lastUrl === 'https://en.wikipedia.org/wiki/Charles_Babbage' },
   { id: 'pub-wiki-search', what: 'Wikipedia: search, open a result, read a date', public: true,
     async run(a) {
       await a.open('https://en.wikipedia.org/w/index.php?title=Special:Search&fulltext=1&search=');
