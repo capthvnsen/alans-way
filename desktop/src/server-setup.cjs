@@ -6,6 +6,8 @@ const { posixCommand } = require('./remote-shell.cjs');
 const { redactReport } = require('./setup-check.cjs');
 
 const SHA = /^[a-f0-9]{40}$/;
+const KEY_TYPES = '(ssh-ed25519|sk-ssh-ed25519@openssh[.]com|ecdsa-sha2-nistp(256|384|521)|sk-ecdsa-sha2-nistp256@openssh[.]com|ssh-rsa)';
+const KEY_BLOB = '[A-Za-z0-9+/]{20,}={0,3}';
 // This is a setup plan, not a shell command. Only setup's public, user-chosen
 // inputs travel through it. The app supplies the pins and lifecycle flags.
 const VALUES = {
@@ -13,8 +15,8 @@ const VALUES = {
   '--mac-ssh': /^[^\x00-\x20]{1,253}$/, '--host-os': /^(mac|windows|linux)$/,
   '--timezone': /^[A-Za-z0-9_+-]+(?:\/[A-Za-z0-9_+-]+)*$/, '--proactive': /^(yes|no)$/,
   '--tone': /^(texting|default)$/, '--profile': /^[a-z0-9][a-z0-9_-]{0,63}$/,
-  '--mac-key': /^ssh-(?:ed25519|rsa) [A-Za-z0-9+/=]+(?: [^\r\n]+)?$/,
-  '--mac-host-key': /^ssh-(?:ed25519|rsa) [A-Za-z0-9+/=]+(?: [^\r\n]+)?$/,
+  '--mac-key': new RegExp(`^${KEY_TYPES} ${KEY_BLOB}( [^\x00-\x1f\x7f]*)?$`),
+  '--mac-host-key': new RegExp(`^${KEY_TYPES} ${KEY_BLOB}$`),
 };
 const FLAGS = new Set(['--bind', '--allow-desktop-actions', '--keep-browser', '--keep-computer-use']);
 function parseSetupPlan(text) {
