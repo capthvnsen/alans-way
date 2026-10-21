@@ -535,12 +535,14 @@ test('a second or stale give-back is a no-op', async () => {
   const control = (body, human = false) => api(`/v1/tabs/${tab.id}/control`, 'POST', body, { human });
   const held = (await control({ controller: 'human', reason: 'login' })).data;
   const giveBack = { controller: 'agent', giveBack: true, epoch: held.epoch };
+  assert.deepEqual((await control({ ...giveBack, epoch: held.epoch - 1 }, true)).data, { ...held, refused: 'stale' }, 'a stale click signals refusal while the human has the tab');
+  assert.deepEqual((await api(`/v1/tabs/${tab.id}`)).data, held, 'a stale click preserves the hold and epoch');
   const returned = (await control(giveBack, true)).data;
   assert.equal(returned.handback.state, 'human_returned');
-  assert.deepEqual((await control(giveBack, true)).data, { ...returned, refused: 'stale' }, 'a duplicate signals the stale epoch');
+  assert.deepEqual((await control(giveBack, true)).data, returned, 'a completed Give back does not ask the person to retry');
   assert.deepEqual((await api(`/v1/tabs/${tab.id}`)).data, returned, 'a duplicate preserves the epoch and return marker');
   const reclaimed = (await control({ controller: 'agent' })).data;
-  assert.deepEqual((await control(giveBack, true)).data, { ...reclaimed, refused: 'stale' }, 'a delayed click signals the stale epoch');
+  assert.deepEqual((await control(giveBack, true)).data, reclaimed, 'a reclaimed tab does not ask the person to retry');
   assert.deepEqual((await api(`/v1/tabs/${tab.id}`)).data, reclaimed, 'a delayed click cannot change a reclaimed tab');
   const next = (await control({ controller: 'human', reason: 'two_factor' })).data;
   assert.deepEqual((await control(giveBack, true)).data, { ...next, refused: 'stale' }, 'an earlier give-back signals the stale epoch');
@@ -548,6 +550,7 @@ test('a second or stale give-back is a no-op', async () => {
   host.setNow(1001 + HANDBACK_MS);
   const expired = (await api(`/v1/tabs/${tab.id}`)).data;
   assert.equal(expired.handback, null);
+  assert.deepEqual((await control(giveBack, true)).data, expired, 'an expired hold does not ask the person to retry');
   assert.deepEqual((await control({ ...giveBack, epoch: next.epoch }, true)).data, expired, 'expiry cannot be turned into a human return');
 });
 

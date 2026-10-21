@@ -1842,7 +1842,7 @@ function registerIpc() {
       case 'control': {
         if(isVpsTarget(value.id, value.host)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller,...(value.giveBack === true ? { giveBack: true, epoch: value.epoch } : {})});}
         const tab = tabs.get(value.id);
-        if (tab && value.giveBack === true && (value.controller !== 'agent' || tab.controller !== 'human' || liveHandback(tab)?.state !== 'awaiting_human' || value.epoch !== tab.epoch)) return { ...describeTab(tab), ...(value.epoch !== tab.epoch ? { refused: 'stale' } : {}) };
+        if (tab && value.giveBack === true && (value.controller !== 'agent' || tab.controller !== 'human' || liveHandback(tab)?.state !== 'awaiting_human' || value.epoch !== tab.epoch)) return { ...describeTab(tab), ...(value.epoch !== tab.epoch && tab.controller === 'human' && liveHandback(tab)?.state === 'awaiting_human' ? { refused: 'stale' } : {}) };
         // Give to agent also ends a Take back cooldown.
         if (tab && value.controller === 'agent') { tab.handoff = reviewedHandoff(tab.handoff); tab.tookBackUntil = 0; }
         if (tab && value.controller !== 'agent') tab.lastHumanInput = Date.now();

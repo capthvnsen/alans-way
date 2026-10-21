@@ -35,7 +35,7 @@ vpsModule.createVpsBrowser = () => ({ request: async (route, method, body, optio
   }
   if (route.endsWith('/control')) {
     remoteCalls.push({ id, body, human: options.human });
-    if (body.giveBack && body.epoch !== tab.epoch) return { ...tab, refused: 'stale' };
+    if (body.giveBack && body.epoch !== tab.epoch) return { ...tab, ...(tab.controller === 'human' && tab.handback?.state === 'awaiting_human' ? { refused: 'stale' } : {}) };
     tab = { ...tab, controller: 'agent', epoch: tab.epoch + 1, handback: { ...tab.handback, state: 'human_returned' } };
     remoteTabs.set(id, tab);
   }
@@ -127,7 +127,7 @@ app.whenReady().then(async () => {
   const returned = (await api(`/v1/tabs/${tab.id}`)).data;
   assert.equal(returned.handback.state, 'human_returned');
   const duplicate = await invoke('control', { id: tab.id, controller: 'agent', giveBack: true, epoch: releasedEpoch });
-  assert.deepEqual(duplicate, { ...returned, refused: 'stale' }, 'a stale local Give back explains the refusal');
+  assert.deepEqual(duplicate, returned, 'a completed local Give back does not ask the person to retry');
   assert.deepEqual((await api(`/v1/tabs/${tab.id}`)).data, returned, 'a duplicate local give-back is a no-op');
   const reclaimed = await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' });
   assert.equal(reclaimed.status, 200, JSON.stringify(reclaimed.data));
