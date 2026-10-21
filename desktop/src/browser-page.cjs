@@ -16,6 +16,65 @@ const SHORT_HREF = `(raw) => {
   } catch { return ''; }
 }`;
 const REFS_KEY = 'hw.refs';
+// Only selectors and typed fields enter this fixed reader; callers cannot supply code.
+function listReadExpression(body) {
+  const invalid = message => { throw Object.assign(new Error(message), { status: 400 }); };
+  const list = body.list;
+  const selector = value => typeof value === 'string' && value.trim() && value.length <= 1000;
+  if (!list || typeof list !== 'object' || Array.isArray(list) || !selector(list.selector) ||
+      Object.keys(list).some(key => !['selector', 'fields', 'maxItems', 'maxFieldChars'].includes(key))) invalid('list needs an item selector and typed fields.');
+  if (body.ref !== undefined && (typeof body.ref !== 'string' || !/^e\d+$/.test(body.ref)) ||
+      body.selector !== undefined && !selector(body.selector) || body.ref !== undefined && body.selector !== undefined) invalid('Choose one container ref or selector.');
+  if (!list.fields || typeof list.fields !== 'object' || Array.isArray(list.fields)) invalid('list needs 1 to 10 fields.');
+  const fields = Object.entries(list.fields);
+  if (!fields.length || fields.length > 10) invalid('list needs 1 to 10 fields.');
+  for (const [name, field] of fields) {
+    if (!/^[a-zA-Z][a-zA-Z0-9_]{0,39}$/.test(name) || !field || typeof field !== 'object' ||
+        !['text', 'href'].includes(field.type) || field.selector !== undefined && !selector(field.selector) ||
+        Object.keys(field).some(key => !['type', 'selector'].includes(key))) invalid('Each list field needs type text or href and an optional child selector.');
+  }
+  const bound = (value, fallback, max, min) => {
+    if (value === undefined) return fallback;
+    if (!Number.isInteger(value) || value < min) invalid('Invalid list limit.');
+    return Math.min(value, max);
+  };
+  const opts = { ref: body.ref, container: body.selector, selector: list.selector, fields,
+    maxItems: bound(list.maxItems, 50, 100, 1), maxFieldChars: bound(list.maxFieldChars, 300, 2000, 1), maxChars: bound(body.maxChars, 6000, 20000, 0) };
+  return `(() => {
+    const o = ${JSON.stringify(opts)};
+    let root = document;
+    if (o.ref) {
+      root = window[Symbol.for(${JSON.stringify(REFS_KEY)})]?.live(o.ref);
+      if (!root) throw new Error('The container ref is stale. Read the page again.');
+    } else if (o.container) {
+      const containers = document.querySelectorAll(o.container);
+      if (containers.length !== 1) throw new Error('The container selector must match exactly one element.');
+      root = containers[0];
+    }
+    // Validate child selectors even on an empty list.
+    for (const [, field] of o.fields) if (field.selector) root.querySelector(field.selector);
+    const rows = root.querySelectorAll(o.selector), items = [];
+    let used = 2, truncated = rows.length > o.maxItems;
+    for (let i = 0; i < Math.min(rows.length, o.maxItems); i++) {
+      const item = {};
+      for (const [name, field] of o.fields) {
+        const el = field.selector ? rows[i].querySelector(field.selector) : rows[i];
+        let value = '';
+        if (el && field.type === 'text') value = (el.innerText ?? el.textContent ?? '').replace(/\\s+/g, ' ').trim();
+        if (el && field.type === 'href') {
+          const raw = el.getAttribute('href');
+          if (raw) { try { const url = new URL(raw, el.baseURI); if (['http:', 'https:', 'mailto:'].includes(url.protocol) && !url.username && !url.password) value = url.href; } catch {} }
+        }
+        if (value.length > o.maxFieldChars) truncated = true;
+        item[name] = value.slice(0, o.maxFieldChars);
+      }
+      const size = JSON.stringify(item).length + (items.length ? 1 : 0);
+      if (used + size > o.maxChars) { truncated = true; break; }
+      items.push(item); used += size;
+    }
+    return { items, truncated };
+  })()`;
+}
 const PICK = 'a[href],button,summary,input:not([type="hidden"]),textarea,select,[onclick],[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="treeitem"],[role="slider"],[role="combobox"],[role="textbox"],[role="searchbox"],[role="spinbutton"],[contenteditable="true"]';
 // The page-side ref store, kept on the document's window under a registered
 // symbol. A ref names one control for the life of the document: it follows
@@ -1106,4 +1165,4 @@ function restoreExpression(checkpoint) {
     return {verification:restored === c.drafts.length ? 'ready' : 'review_required',restored,skipped:c.drafts.length-restored};
   })()`;
 }
-module.exports = { cachedSnapshot, refsSource, REFS_KEY, PICK, CHALLENGE_HIT_SOURCE, passCloudflare, challengeExpression, challengeHitExpression, challengeProbeExpression, snapshotExpression, settleSnapshot, readEffect, controlsDelta, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, followUpInstallExpression, lastReadOf, FOLLOW_UP_KEY };
+module.exports = { listReadExpression, cachedSnapshot, refsSource, REFS_KEY, PICK, CHALLENGE_HIT_SOURCE, passCloudflare, challengeExpression, challengeHitExpression, challengeProbeExpression, snapshotExpression, settleSnapshot, readEffect, controlsDelta, checkpointExpression, restoreExpression, followUpArmExpression, followUpCloseExpression, followUpInstallExpression, lastReadOf, FOLLOW_UP_KEY };
