@@ -7,7 +7,7 @@ const fs = require('node:fs'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { CDP, AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
-const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, liveHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe, viewerUrl } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe, viewerUrl } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
 const { createAgentInput, APPROVED, refuseChallenge, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
@@ -294,7 +294,7 @@ async function serve() {
     tab.controller = controller === 'agent' ? 'agent' : 'human';
     // Only a person holding the tab protects it from reaping; a bot's own
     // release does not.
-    tab.humanHeld = human === true && tab.controller === 'human';
+    tab.humanHeld = tab.controller === 'human' && (human === true || (!wasAgent && tab.humanHeld === true));
     // An explicit human takeover seals the tab to bots until the human
     // hands it back (the seal persists across restarts); a bot's own
     // release or the idle clock stays retakeable, and a lock stays locked.
@@ -310,9 +310,8 @@ async function serve() {
     await tab.view.webContents.executeJavaScript(tintScript(tab.controller === 'agent')).catch(() => {});
     await persist();
   }
-  // A blocking challenge on a bot's tab is handed to the person at once, and
-  // unlike a bot's own release it holds the tab (awaiting_human) until the
-  // watch sees it clear or the 30-minute hold lapses.
+  // A blocking challenge holds the tab for the person until the watch sees
+  // it clear, the person gives it back, or the 30-minute hold lapses.
   async function handleChallenge(tab, url, raw) {
     const challenge = challengeReply(tab, url, raw);
     if (challenge?.blocking && tab.controller === 'agent')
@@ -974,6 +973,11 @@ async function serve() {
         tab = m && tabs.get(m[1]);
       if (!tab) throw fail('VPS tab not found.', 404);
       if (!human) requireActor(tab, botId, undefined, false, overseer);
+      let control;
+      if (req.method === 'POST' && m[2] === 'control') {
+        control = await read(req);
+        if (!control || !['human', 'agent'].includes(control.controller)) throw fail('controller must be human or agent.');
+      }
       // The app touching a human-controlled tab on a person's behalf counts as
       // a human holding it, so the reaper leaves it alone; a tab released by
       // a bot or the idle clock stays reapable.
@@ -990,6 +994,7 @@ async function serve() {
           since: intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER),
         };
         const work = tab.queue.then(async () => {
+          if (!human) requireAgentRead(tab);
           const generation = ++tab.generation;
           let timer;
           const read = () => Promise.race([
@@ -1002,6 +1007,7 @@ async function serve() {
           // A Cloudflare check that clears by itself is waited out here too.
           if (!human && data?.challenge?.kind === 'cloudflare' && await passCloudflare((code) => wc.executeJavaScript(code))) data = await read();
           if (!data || !Array.isArray(data.elements)) throw fail('Snapshot returned no page data.', 503);
+          if (!human) requireAgentRead(tab);
           tab.url = data.url;
           tab.title = data.title;
           const settled = settleSnapshot(tab, data, generation, opts.since);
@@ -1017,16 +1023,20 @@ async function serve() {
         const quality = intParam(url, 'quality', 1, 100) ?? 50;
         const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 960;
         const capture = tab.queue.then(async () => {
+          if (!human) requireAgentRead(tab);
+          await wc.executeJavaScript('new Promise(resolve => { const timer = setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); })); })');
           const viewport = await wc.executeJavaScript(
-            '({width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio})',
+            '({width:globalThis.visualViewport?.width ?? innerWidth,height:globalThis.visualViewport?.height ?? innerHeight,pageLeft:globalThis.visualViewport?.pageLeft ?? scrollX,pageTop:globalThis.visualViewport?.pageTop ?? scrollY,deviceScaleFactor:devicePixelRatio})',
           );
           // No resize post-capture here: clip.scale is the downscale knob,
           // keeping the emitted image at maxWidth pixels when it would exceed it.
           const dsf = viewport.deviceScaleFactor || 1;
           const scale = viewport.width * dsf > maxWidth ? Math.max(0.01, maxWidth / viewport.width) : dsf;
-          const params = { format, fromSurface: true, clip: { x: 0, y: 0, width: viewport.width, height: viewport.height, scale } };
+          const params = { format, fromSurface: true, clip: { x: viewport.pageLeft, y: viewport.pageTop, width: viewport.width, height: viewport.height, scale } };
           if (format !== 'png') params.quality = quality;
-          return { shot: await wc.command('Page.captureScreenshot', params), viewport };
+          const shot = await wc.command('Page.captureScreenshot', params);
+          if (!human) requireAgentRead(tab);
+          return { shot, viewport };
         });
         tab.queue = capture.catch(() => {});
         const { shot, viewport } = await capture;
@@ -1036,7 +1046,10 @@ async function serve() {
         const body = await read(req);
         tab.lastUsedAt = Date.now();
         tab.pendingActions = (tab.pendingActions || 0) + 1;
+        let closed = false;
+        res.on('close', () => { if (!res.writableFinished) closed = true; });
         const action = tab.queue.then(async () => {
+          if (closed) throw fail('The request was closed before this action started.', 499);
           const result = await vpsPerform(tab, body, botId, overseer);
           // The bot is acting on the tab again; human_returned has done its job.
           if (tab.handback?.state === 'human_returned') tab.handback = null;
@@ -1050,7 +1063,8 @@ async function serve() {
         return send(200, await action);
       }
       if ((human || overseer || botId === tab.botId) && req.method === 'POST' && m[2] === 'control') {
-        const body = await read(req);
+        const body = control;
+        if (human && body.giveBack === true && (body.controller !== 'agent' || tab.controller !== 'human' || liveHandback(tab)?.state !== 'awaiting_human' || body.epoch !== tab.epoch)) return send(200, { ...describe(tab), ...(body.epoch !== tab.epoch && tab.controller === 'human' && liveHandback(tab)?.state === 'awaiting_human' ? { refused: 'stale' } : {}) });
         if (!human && body.controller === 'agent') { requireAgentClaim(tab); tab.handoff = reviewedHandoff(tab.handoff); }
         const handback = !human && body.controller !== 'agent' ? handbackRequest(body) : null;
         if (human && body.handoff?.phase === 'handed_off')
@@ -1063,12 +1077,9 @@ async function serve() {
             createdAt: Number(body.handoff.createdAt) || Date.now(),
           };
         else if (human && body.controller === 'agent') tab.handoff = reviewedHandoff(tab.handoff);
-        // The VPS records why a bot released a tab and reports it in tab
-        // status, but does not hold the tab for the human: the app has no
-        // give-back control for VPS tabs. Any other control change clears it.
-        // A CAPTCHA release names the viewer the person can solve it in, and
-        // the CAPTCHA watch returns the tab once the challenge clears.
-        await setController(tab, body.controller, human, handback ? { ...handback, botId: tab.botId, since: Date.now(), ...(handback.reason === 'captcha' && viewer ? { viewerUrl: viewer } : {}) } : null);
+        const next = nextHandback(tab, body.controller, human ? 'human' : 'agent', handback);
+        if (next?.reason === 'captcha' && viewer) next.viewerUrl = viewer;
+        await setController(tab, body.controller, human, next);
         return send(200, describe(tab));
       }
       if (human && req.method === 'POST' && m[2] === 'activate') {

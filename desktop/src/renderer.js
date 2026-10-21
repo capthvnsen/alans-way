@@ -132,15 +132,16 @@ function tabIcon(tab) {
   if (!tab.favicon) icon.textContent = tab.symbol;
   return icon;
 }
+function tabStripEntries() { return state.tabs.filter(tab => tab.host !== 'vps' || tab.handback?.state === 'awaiting_human'); }
 function renderTabs() {
   const container = $('tabs'), focused = document.activeElement.closest('.tab');
-  const focusedId = focused?.dataset.tabId, focusedClose = document.activeElement.classList.contains('tab-close');
+  const focusedId = focused?.dataset.tabId, focusedHost = focused?.dataset.host, focusedClose = document.activeElement.classList.contains('tab-close');
   const focusedIndex = focused ? [...container.children].indexOf(focused) : -1;
   container.replaceChildren();
-  const entries = state.tabs.map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : '◈' }));
+  const entries = tabStripEntries().map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : '◈' }));
   entries.forEach((tab, index) => {
-    const selected = state.browserTabId === tab.id;
-    const node = element('div', `tab${selected ? ' active' : ''}`); node.setAttribute('role', 'presentation'); node.dataset.tabId = tab.id;
+    const selected = state.browserTabId === tab.id && state.browserTabHost === tab.host;
+    const node = element('div', `tab${selected ? ' active' : ''}`); node.setAttribute('role', 'presentation'); node.dataset.tabId = tab.id; node.dataset.host = tab.host;
     const select = element('button', 'tab-select'); select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(selected));
     select.setAttribute('aria-setsize', String(entries.length)); select.setAttribute('aria-posinset', String(index + 1));
     select.setAttribute('aria-label', tab.title || 'New tab'); select.tabIndex = selected || (!state.tabs.some(item => item.id === state.browserTabId) && tab.id === entries[0]?.id) ? 0 : -1;
@@ -149,20 +150,22 @@ function renderTabs() {
     if (tab.agentBusy) node.classList.add('busy');
     if (tab.handback?.state === 'awaiting_human') { const badge = element('span', 'needs-you-badge'); badge.style.setProperty('--h', String(tab.agentHue ?? 168)); badge.title = `${state.bots.find(bot=>bot.id===tab.botId)?.name || 'Agent'} needs you`; node.append(badge); }
     if(tab.host)node.title=`${hostName(tab.host)} · ${state.bots.find(bot=>bot.id===tab.botId)?.name || tab.botId}${tab.controller === 'agent' ? ' · agent-controlled' : ''}`;
-    node.onclick = () => command('activate', { id: tab.id });
+    node.onclick = () => command('activate', { id: tab.id, host: tab.host });
     select.onkeydown = (event) => {
-      if (event.key === 'Delete') { event.preventDefault(); command('close-tab', { id: tab.id }); return; }
+      if (event.key === 'Delete') { event.preventDefault(); if (tab.host !== 'vps') command('close-tab', { id: tab.id, host: tab.host }); return; }
       const target = moveNavigationFocus(event, [...container.querySelectorAll('.tab:not(.tab-off) [role=tab]')], 'horizontal');
-      if (target) command('activate', { id: target.closest('.tab').dataset.tabId });
+      if (target) command('activate', { id: target.closest('.tab').dataset.tabId, host: target.closest('.tab').dataset.host });
     };
-    const close = element('button', 'tab-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
-    close.tabIndex = selected ? 0 : -1;
-    close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id }); }; node.append(close);
+    if (tab.host !== 'vps') {
+      const close = element('button', 'tab-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
+      close.tabIndex = selected ? 0 : -1;
+      close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id, host: tab.host }); }; node.append(close);
+    }
     container.append(node);
   });
   fitTabs();
   if (focusedId) {
-    const target = [...container.children].find(node => node.dataset.tabId === focusedId) || container.children[Math.min(focusedIndex, container.children.length - 1)];
+    const target = [...container.children].find(node => node.dataset.tabId === focusedId && node.dataset.host === focusedHost) || container.children[Math.min(focusedIndex, container.children.length - 1)];
     const fallback = target?.querySelector(focusedClose ? '.tab-close' : '[role=tab]');
     (canFocus(fallback) ? fallback : canFocus($('tabs-menu')) ? $('tabs-menu') : $('new-tab')).focus({ preventScroll: true });
   }
@@ -178,7 +181,7 @@ function fitTabs() {
   if (container.scrollWidth > container.clientWidth + 1) {
     menu.classList.remove('hidden');
     while (container.scrollWidth > container.clientWidth + 1) {
-      const candidate = nodes.find(node => !node.classList.contains('tab-off') && node.dataset.tabId !== state?.browserTabId);
+      const candidate = nodes.find(node => !node.classList.contains('tab-off') && (node.dataset.tabId !== state?.browserTabId || node.dataset.host !== state?.browserTabHost));
       if (!candidate) break;
       candidate.classList.add('tab-off'); hiddenCount++;
     }
@@ -206,22 +209,26 @@ function setTabsPanel(open) {
   if (open !== wasOpen) scheduleLayout();
 }
 function renderTabsPanel() {
-  const panel = $('tabs-panel'), focusedTab = document.activeElement?.closest('.tabs-panel-row')?.dataset.tabId;
+  const panel = $('tabs-panel'), focusedRow = document.activeElement?.closest('.tabs-panel-row'), focusedTab = focusedRow?.dataset.tabId, focusedHost = focusedRow?.dataset.host;
   panel.replaceChildren();
-  for (const tab of state.tabs) {
-    const selected = state.browserTabId === tab.id;
-    const row = element('div', `tabs-panel-row${selected ? ' active' : ''}`); row.dataset.tabId = tab.id;
+  for (const tab of tabStripEntries()) {
+    const selected = state.browserTabId === tab.id && state.browserTabHost === tab.host;
+    const row = element('div', `tabs-panel-row${selected ? ' active' : ''}`); row.dataset.tabId = tab.id; row.dataset.host = tab.host;
     const pick = element('button', 'tabs-panel-select'); pick.setAttribute('role', 'menuitemradio'); pick.setAttribute('aria-checked', String(selected));
     pick.setAttribute('aria-label', tab.title || 'New tab');
     const owner = tab.host ? `${hostName(tab.host)} · ${state.bots.find(bot => bot.id === tab.botId)?.name || tab.botId}${tab.controller === 'agent' ? ' · agent-controlled' : ''}` : '';
     pick.title = `${tab.title || 'New tab'}${owner ? ` · ${owner}` : ''}`;
     pick.append(tabIcon(tab), element('span', 'tab-title', tab.title || 'New tab'), element('span', 'tabs-panel-owner', owner));
-    pick.onclick = () => { command('activate', { id: tab.id }); setTabsPanel(false); };
-    const close = element('button', 'tabs-panel-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
-    close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id }); };
-    row.append(pick, close); panel.append(row);
+    pick.onclick = () => { command('activate', { id: tab.id, host: tab.host }); setTabsPanel(false); };
+    row.append(pick);
+    if (tab.host !== 'vps') {
+      const close = element('button', 'tabs-panel-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
+      close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id, host: tab.host }); };
+      row.append(close);
+    }
+    panel.append(row);
   }
-  if (focusedTab) panel.querySelector(`.tabs-panel-row[data-tab-id="${CSS.escape(focusedTab)}"] .tabs-panel-select`)?.focus({ preventScroll: true });
+  if (focusedTab) panel.querySelector(`.tabs-panel-row[data-tab-id="${CSS.escape(focusedTab)}"][data-host="${CSS.escape(focusedHost)}"] .tabs-panel-select`)?.focus({ preventScroll: true });
 }
 // The compact status affordance and its panel report both exact footer texts
 // whenever the narrow footer suppresses a status span (and on demand at any
@@ -424,7 +431,7 @@ function render(next) {
     $('presence-status').classList.toggle('active', window.HermesAvatars.isActive(bot.activity));
   }
   renderBots(); renderTabs(); renderSettingsBots(); renderRecordings(); renderSitePermissions(); renderExtensions(); renderDownloads(); refreshSettingsSections();
-  const tab = state.tabs.find((item) => item.id === state.activeTabId);
+  const tab = state.tabs.find((item) => item.id === state.activeTabId && item.host === state.hostLabel);
   const remote = state.activeTabId==='vps';
   $('vm-toggle').title = remote ? 'Return to browser' : 'Expand virtual desktop';
   $('vm-toggle').setAttribute('aria-label', $('vm-toggle').title);
@@ -474,11 +481,12 @@ function render(next) {
   handoffButton.title = handedOff ? `Bring the ${remoteName()} copy of this page back to your ${thisComputer()}` : `Move ${agentName || 'the agent'}’s page to the ${remoteName()} desktop`;
   // The bot's note is plain text from the page side of the trust line: it
   // only ever reaches the DOM through textContent.
-  const needsYou = tab?.handback?.state === 'awaiting_human' ? tab.handback : null;
+  const handbackTab = remote ? state.tabs.find(item => item.id === state.activeVpsTabId && item.host === 'vps') : tab;
+  const needsYou = handbackTab?.handback?.state === 'awaiting_human' ? handbackTab.handback : null;
   $('needs-you-banner').classList.toggle('hidden', !needsYou);
   if (needsYou) {
-    $('needs-you-banner').style.setProperty('--h', String(tab.agentHue ?? 168));
-    $('needs-you-text').textContent = `${agentName} needs you: ${needsYou.note || HANDBACK_TEXT[needsYou.reason] || 'take a look.'}`;
+    $('needs-you-banner').style.setProperty('--h', String(handbackTab.agentHue ?? 168));
+    $('needs-you-text').textContent = `${state.bots.find(bot => bot.id === handbackTab.botId)?.name || 'Agent'} needs you: ${needsYou.note || HANDBACK_TEXT[needsYou.reason] || 'take a look.'}`;
   }
   // Main clears the takeover notice a few seconds after a bot took the tab.
   const takeover = tab?.takeover && tab.controller === 'agent';
@@ -735,6 +743,7 @@ function renderOnboarding(show) {
       if (!await command('settings', { macSshHost: mine.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } })) return;
       await runSetupCheck(checkButton, results);
     });
+    appendServerSetup(card, () => command('settings', { macSshHost: mine.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } }));
     card.append(checkButton, button('Copy report', 'secondary-button', copyReport), results);
     actions.append(button('Back', 'secondary-button', () => go(2)), button('Done', 'primary-button', finish));
   }
@@ -1301,6 +1310,29 @@ async function runSetupCheck(trigger, container) {
 async function copyReport() {
   if (await command('copy-report')) toast('Report copied. Paste it in Discord so we can take a look.');
 }
+// The bot prepares public setup inputs. The user's click runs the reviewed
+// script from the app's SSH process, outside the gateway lifecycle boundary.
+function appendServerSetup(container, beforeRun) {
+  container.append(element('p', 'settings-note', 'When your bot gives you a setup plan, paste it here. Finish setup runs it over SSH and lets setup restart your bot after its checks pass. Wait about a minute, then message your bot and run Check setup.'));
+  const plan = element('textarea', 'onboarding-prompt');
+  plan.rows = 4; plan.placeholder = 'Paste the JSON setup plan from your bot';
+  plan.setAttribute('aria-label', 'Server setup plan');
+  const result = element('pre', 'settings-note'); result.style.whiteSpace = 'pre-wrap';
+  const run = element('button', 'secondary-button', 'Finish setup and restart my bot');
+  run.onclick = async () => {
+    run.disabled = true;
+    result.textContent = 'Running setup over SSH. This can take several minutes. Keep the app open.';
+    try {
+      if (beforeRun && !await beforeRun()) return;
+      const reply = await command('server-setup', { plan: plan.value });
+      result.textContent = reply && typeof reply.ok === 'boolean'
+        ? `${reply.ok ? '✓' : '✗'} ${reply.detail}${reply.note ? `\n\n${reply.note}` : ''}`
+        : 'Setup did not return a report. Check the connection and retry.';
+    } catch (error) { result.textContent = error.message || 'Setup could not start. Check the connection and retry.'; }
+    finally { run.disabled = false; }
+  };
+  container.append(plan, run, result);
+}
 // A section owns its mounted controls and may return a refresh function. Search
 // uses this public copy only; field contents, URLs and credentials never enter it.
 let settingsSession = null;
@@ -1749,6 +1781,11 @@ function mountAgentSetup(body) {
   const local = settingsField(advanced.content, 'mac-ssh-host', 'This computer’s SSH address', state.macSshHost, 'you@your-computer');
   advanced.content.append(element('p', 'settings-note', 'Use this computer’s address as reached from the agent machine. These addresses are shared by your bots; setup instructions are specific to the bot selected above.'));
   const save = settingsSaveFields(advanced.content, 'Save addresses', [local, vps], () => ({ macSshHost: local.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } }), { success: 'Addresses saved. Check the saved path next.', draftScope: () => ['agent', reviewedBotId, state.hostLabel], saved: () => [state.macSshHost || '', state.vpsBrowser?.sshHost || ''] }); save.id = 'settings-save-addresses';
+  appendServerSetup(advanced.content, () => {
+    if (local.value.trim() !== (state.macSshHost || '') || vps.value.trim() !== (state.vpsBrowser?.sshHost || ''))
+      throw Error('Save address changes before running setup.');
+    return true;
+  });
   const test = element('button', 'primary-button', 'Check saved path'); test.id = 'settings-test-path'; actions.prepend(test); const result = settingsStatus(actions); result.classList.add('connection-check-status');
   const invalidate = () => {
     epoch++; checked = false;
@@ -1979,7 +2016,7 @@ $('home-agent').onclick = async () => {
 document.querySelectorAll('[data-url]').forEach((button) => { button.onclick = () => command('create-tab', { url: button.dataset.url }); });
 for (const action of ['back', 'forward', 'reload']) $(action).onclick = () => command('history', { id: state.activeTabId, action });
 $('browser-error-reload').onclick = () => command('history', { id: state.activeTabId, action: 'reload' });
-$('control-button').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: tab.controller === 'agent' ? 'human' : 'agent' }); };
+$('control-button').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, host: tab.host, controller: tab.controller === 'agent' ? 'human' : 'agent' }); };
 async function stopRecording(save) {
   stoppedRecordingAt = state.recording?.startedAt || 0;
   const saved = await command('record-stop', { save, keepTyped: $('recording-keep').checked });
@@ -1994,8 +2031,14 @@ $('record-button').onclick = () => {
 };
 $('recording-stop').onclick = () => stopRecording(true);
 $('recording-discard').onclick = () => stopRecording(false);
-$('takeover-take-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: 'human', takeBack: true }); };
-$('needs-you-give-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, controller: 'agent' }); };
+$('takeover-take-back').onclick = () => { const tab = state.tabs.find((item) => item.id === state.activeTabId); if (tab) command('control', { id: tab.id, host: tab.host, controller: 'human', takeBack: true }); };
+$('needs-you-give-back').onclick = async () => {
+  const tab = state.tabs.find((item) => item.id === (state.activeTabId === 'vps' ? state.activeVpsTabId : state.activeTabId) && item.host === (state.activeTabId === 'vps' ? 'vps' : state.hostLabel));
+  if (tab) {
+    const reply = await command('control', { id: tab.id, host: tab.host, controller: 'agent', giveBack: true, epoch: tab.epoch });
+    if (reply?.refused === 'stale') toast('That changed while you were looking. Press Give back again.');
+  }
+};
 $('handoff-button').onclick = async () => {
   const tab = state.tabs.find((item) => item.id === state.activeTabId);
   if (!tab) return;

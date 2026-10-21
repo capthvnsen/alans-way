@@ -1,7 +1,7 @@
 import RFB from '../node_modules/@novnc/novnc/core/rfb.js';
 const api = window.workspace;
 const $ = (id) => document.getElementById(id);
-let rfb, currentUrl = '', connected = false, state, connectionVersion = 0;
+let rfb, currentUrl = '', connected = false, state, connectionVersion = 0, reconnectTimer;
 function toSocket(value) {
   const url = new URL(value);
   if (url.protocol === 'https:' || url.protocol === 'http:') {
@@ -16,8 +16,10 @@ function status(message) { api.command('remote-status', { status: message }).cat
 function showEmpty(title, message, action = 'Reconnect') {
   $('remote-title').textContent = title; $('remote-message').textContent = message; $('configure').textContent = action; $('remote-empty').classList.remove('hidden');
 }
-function connect(value) {
+function connect(value, retryAttempt = 0) {
   const version = ++connectionVersion;
+  let retryAllowed = true;
+  clearTimeout(reconnectTimer);
   rfb?.disconnect(); connected = false; currentUrl = value;
   $('connection-dot').classList.remove('connected');
   if (!value) { showEmpty('Your agent’s computer', 'Connect your VPS to see its desktop here.', 'Connect VPS'); return; }
@@ -27,16 +29,28 @@ function connect(value) {
     rfb.scaleViewport = true; rfb.resizeSession = false; rfb.focusOnClick = true; rfb.viewOnly = !state?.remoteControl; rfb.background = '#070708';
     rfb.addEventListener('connect', () => {
       if (version !== connectionVersion) return;
+      retryAttempt = 0; clearTimeout(reconnectTimer);
       connected = true; $('remote-empty').classList.add('hidden'); $('connection-dot').classList.add('connected'); status('connected'); render(state);
     });
-    rfb.addEventListener('disconnect', () => {
+    rfb.addEventListener('disconnect', (event) => {
       if (version !== connectionVersion) return;
-      connected = false; api.command('remote-control',{enabled:false}).catch(()=>{}); $('connection-dot').classList.remove('connected'); showEmpty('Desktop disconnected', 'Check Tailscale and your desktop viewer, then reconnect.'); status('disconnected');
+      connected = false; api.command('remote-control',{enabled:false}).catch(()=>{}); $('connection-dot').classList.remove('connected');
+      if (event.detail.clean === false && retryAllowed && retryAttempt < 3) {
+        showEmpty('Reconnecting…', 'The desktop connection dropped. Trying again shortly.'); status('reconnecting');
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(() => {
+          if (version === connectionVersion && retryAllowed && !connected) connect(currentUrl, retryAttempt + 1);
+        }, 2000 * 2 ** retryAttempt);
+        return;
+      }
+      showEmpty('Desktop disconnected', 'Check Tailscale and your desktop viewer, then reconnect.'); status('disconnected');
     });
     rfb.addEventListener('credentialsrequired', () => {
+      if (version !== connectionVersion) return;
+      retryAllowed = false; clearTimeout(reconnectTimer);
       $('credentials').classList.remove('hidden'); $('vnc-password').focus();
     });
-    rfb.addEventListener('securityfailure', () => { if (version === connectionVersion) { showEmpty('Connection needs attention', 'The desktop rejected the connection. Check the viewer URL and credentials.', 'Connection settings'); status('authentication failed'); } });
+    rfb.addEventListener('securityfailure', () => { if (version === connectionVersion) { retryAllowed = false; clearTimeout(reconnectTimer); showEmpty('Connection needs attention', 'The desktop rejected the connection. Check the viewer URL and credentials.', 'Connection settings'); status('authentication failed'); } });
   } catch (error) { showEmpty('Unable to connect', error.message, 'Connection settings'); status('disconnected'); }
 }
 function render(next) {

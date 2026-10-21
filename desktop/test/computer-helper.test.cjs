@@ -5,6 +5,98 @@ const fs = require('node:fs');
 const os = require('node:os');
 const { createHelper, createComputer, createComputerService, normalizeStep, normalizeKey, binaryCurrent, recordBuild } = require('../src/computer-helper.cjs');
 const { pickHelper, makeCompile } = require('../src/computer.cjs');
+const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
+
+function permissionComputer(t, handle) {
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const children = [];
+  t.mock.method(require('node:child_process'), 'spawn', () => {
+    const proc = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      unref() {}, kill() { this.emit('close', 1); },
+    });
+    proc.stdin.on('data', (chunk) => queueMicrotask(() => {
+      const request = JSON.parse(chunk);
+      const reply = request.cmd === 'init' ? { ok: true } : handle(request, proc);
+      if (reply) proc.stdout.write(JSON.stringify({ id: request.id, ...reply }) + '\n');
+    }));
+    children.push(proc);
+    return proc;
+  });
+  const setTimer = global.setTimeout;
+  t.mock.method(global, 'setTimeout', (callback, ms, ...args) => ms === 150
+    ? setTimer(() => { t.mock.timers.tick(ms); callback(...args); }, 0)
+    : setTimer(callback, ms, ...args));
+  // Reload to capture only the fake process transport; all helper logic stays real.
+  const filename = require.resolve('../src/computer-helper.cjs');
+  const cached = require.cache[filename];
+  let computer;
+  try {
+    delete require.cache[filename];
+    computer = require(filename).createComputer({ command: async () => ['fixture'] });
+  } finally { require.cache[filename] = cached; }
+  t.after(() => computer.close());
+  return { ...computer, children };
+}
+
+for (const grantedAt of [34999, 35001, 59000]) test(`read permission budget survives a real helper crash-retry or explains a late grant (${grantedAt} ms)`, async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  let requests = 0;
+  const computer = permissionComputer(t, (_request, proc) => {
+    requests++;
+    if (requests === 1) return { ok: false, code: 'permission', error: 'Accessibility is off.' };
+    t.mock.timers.tick(19999);
+    if (requests === 2) { proc.emit('close', 1); return; }
+    return { ok: true, generation: 1, elements: [] };
+  });
+  const service = createMacPermissionHelp({
+    platform: 'darwin',
+    systemPreferences: { isTrustedAccessibilityClient: () => Date.now() >= grantedAt },
+    sleep: async (ms) => t.mock.timers.tick(ms),
+  }).wrap(computer.service);
+  if (grantedAt < 35000) {
+    assert.equal((await service.snapshot('bot', 7)).generation, 1);
+    assert.equal(Date.now(), 74998);
+    assert.equal(requests, 3);
+    assert.equal(computer.children.length, 2);
+  } else {
+    await assert.rejects(service.snapshot('bot', 7), { code: 'permission', message: /Accessibility is off for alans-way-localapp/ });
+    assert.equal(Date.now(), 35000);
+    assert.equal(requests, 1);
+  }
+  assert.ok(Date.now() < 80000, 'ordinary calls must finish before the router deadline');
+});
+
+test('action permission recovery leaves room for the real batch budget and a final wait crash-retry', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  let requests = 0;
+  const computer = permissionComputer(t, (request, proc) => {
+    requests++;
+    if (requests === 1) return { ok: false, code: 'permission', error: 'Accessibility is off.' };
+    t.mock.timers.tick(({ 2: 19000, 3: 14800, 4: 11049, 5: 19999, 6: 19999 })[requests]);
+    if (requests === 5) { proc.emit('close', 1); return; }
+    return { ok: true, generation: 1,
+      ...(request.cmd === 'act' ? { results: request.steps.map(() => ({ ok: true })) } : {}),
+      elements: [{ ref: 'c1', role: 'AXStaticText', name: requests === 3 ? 'Ready' : requests === 6 ? 'Finished' : 'Loading' }],
+    };
+  });
+  const service = createMacPermissionHelp({
+    platform: 'darwin',
+    systemPreferences: { isTrustedAccessibilityClient: () => Date.now() >= 3999 },
+    sleep: async (ms) => t.mock.timers.tick(ms),
+  }).wrap(computer.service);
+  const reply = await service.action('bot', 7, { action: 'batch', steps: [
+    { action: 'click', x: 1, y: 2 }, { action: 'wait', text: 'Ready', timeout: 15000 },
+    { action: 'click', x: 1, y: 2 }, { action: 'wait', text: 'Finished', timeout: 15000 },
+  ] });
+  assert.equal(reply.results.length, 4);
+  assert.ok(reply.results.every((result) => result.ok));
+  assert.equal(requests, 6);
+  assert.equal(computer.children.length, 2);
+  assert.equal(Date.now(), 89147);
+  assert.ok(Date.now() < 90000 && Date.now() < 100000);
+});
 
 const fake = path.join(__dirname, 'computer-fake-helper.cjs');
 const fakeHelper = (mode, extra = {}) => createHelper({

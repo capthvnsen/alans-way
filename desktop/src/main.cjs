@@ -27,7 +27,7 @@ const { armQuitWatchdog } = require('./update-quit.cjs');
 const { githubFeed } = require('./win-update.cjs');
 const { PUBLISH } = require('../electron-builder.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
-const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
+const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, deliverPendingUpdateReport, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
 const { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createHermesHub } = require('./hermes-hub.cjs');
@@ -102,6 +102,7 @@ let obscuredFocus = null;
 let extensionStore, extensionHost, extensionPopup, extensionPopupTabId, extensionActiveContentsId;
 let registeringExtensionTab = false;
 const update = { available: '', tag: '', ready: false, busy: false, error: '', justUpdatedFrom: '' };
+const serverSetup = require('./server-setup.cjs').createServerSetup();
 const vmUpdater = createVmUpdater({ log: (label, error) => logError(label, error) });
 // Per-VM progress while an update or retry runs; prefs.vmUpdates holds the
 // persistent record (known VM version / last failure) the retry banner reads.
@@ -111,9 +112,11 @@ let hermesUpdating = false;
 // "Update everything" from the bottom bar: its lock flag and the last run's
 // step rows, closing summary and whether a staged app update awaits a restart.
 let updatingAll = false;
+let pendingUpdateDelivery = null;
 let updateRun = { steps: [], summary: '', restart: false };
 let lastSetupCheck = null;
-let activeTabId = 'home', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
+let tabActivationSequence = 0;
+let activeTabId = 'home', activeVpsTabId = '', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 // Native Hermes chat: 'telegram' shows the Telegram WebContentsView; 'hermes'
 // shows the DOM surface (the Telegram view then measures to zero and hides).
 let hermesHub = null, chatTarget = 'telegram';
@@ -122,6 +125,7 @@ const tabs = new Map();
 const vpsTabs = new Map();
 const recentLinkTabs = new Map();
 let vpsBrowserStatus = 'unconfigured', vpsBrowserError = '', vpsRefreshBusy = false, vpsFailures = 0, vpsTimer, vpsMirrorTimer, vpsMirrorDebounce;
+let waitingVpsTabs = new Set();
 const vpsBrowser = createVpsBrowser({ getConfig: () => prefs?.vpsBrowser });
 const configuredSessions = new WeakSet();
 const API_TOKEN = crypto.randomBytes(32).toString('hex');
@@ -205,6 +209,10 @@ const prefsSaver = createSaver({
 });
 function savePreferences() { prefsSaver.flush(); }
 function savePreferencesSoon() { prefsSaver.schedule(); }
+// Delivery must not start, or a restart be offered, before its record is durable.
+function saveUpdateReport() {
+  if (!prefsSaver.flush()) throw new Error('The update report could not be saved. Check that app data is writable before restarting.');
+}
 // Onboarding and the path check need this computer's SSH address as the agent
 // machine reaches it; derive it from Tailscale while the field was never set
 // so a fresh install starts with a working answer. A saved value is never
@@ -238,10 +246,34 @@ function actionReply(tab, payload = {}) {
   return { ...pageState(tab), ...payload, tab: compactTab(describeTab(tab, true)) };
 }
 function isVpsTab(id) { return vpsTabs.has(id); }
+function isVpsTarget(id, host) {
+  if (host !== undefined && host !== HOST_LABEL && host !== 'vps') throw new Error('Unknown tab computer.');
+  if (host === undefined && tabs.has(id) && isVpsTab(id)) throw new Error('Choose the tab and its computer.');
+  const remote = host === 'vps' || (host === undefined && isVpsTab(id));
+  if (host !== undefined && !(remote ? vpsTabs : tabs).has(id)) throw new Error('Tab not found on that computer.');
+  return remote;
+}
 async function refreshVpsTabs() {
   if (!prefs?.vpsBrowser?.sshHost || vpsRefreshBusy) return;
   vpsRefreshBusy = true;
-  try { const wasVps=vpsTabs.has(activeTabId); const data = await vpsBrowser.request('/v1/tabs', 'GET', undefined, { human: true }); vpsTabs.clear(); data.tabs.forEach(tab => { vpsTabs.set(tab.id, tab); resolveFavicon(tab, [tab.favicon]).catch(() => {}); }); if(wasVps&&!vpsTabs.has(activeTabId)){prefs.remoteControl=false;activeTabId='home';applyLayout();} vpsBrowserStatus = 'connected'; vpsBrowserError = ''; vpsFailures = 0; }
+  try {
+    const wasVps = vpsTabs.has(activeTabId);
+    const data = await vpsBrowser.request('/v1/tabs', 'GET', undefined, { human: true });
+    // API replies can warm vpsTabs before polling sees a new hold.
+    const waiting = new Set(data.tabs.filter(tab => tab.handback?.state === 'awaiting_human').map(tab => tab.id));
+    vpsTabs.clear();
+    data.tabs.forEach(tab => {
+      vpsTabs.set(tab.id, tab);
+      resolveFavicon(tab, [tab.favicon]).catch(() => {});
+      if (waiting.has(tab.id) && !waitingVpsTabs.has(tab.id)) {
+        notifiedHandbacks.delete(`vps:${tab.id}:${tab.handback.since}`);
+        notifyHandback(tab);
+      }
+    });
+    waitingVpsTabs = waiting;
+    if(wasVps&&!vpsTabs.has(activeTabId)){prefs.remoteControl=false;activeTabId='home';applyLayout();}
+    vpsBrowserStatus = 'connected'; vpsBrowserError = ''; vpsFailures = 0;
+  }
   catch (error) { vpsBrowserStatus = 'disconnected'; vpsBrowserError = /^Invalid VPS browser/.test(error.message) ? error.message : ''; vpsFailures++; }
   finally { vpsRefreshBusy = false; broadcast(); }
 }
@@ -392,7 +424,7 @@ function settingsWriteReceipt(entry) {
 function getState() {
   const state = { name: app.getName(), version: app.getVersion(), build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
-    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)), cloud: cloudView(),
+    remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)).concat([...vpsTabs.values()]), cloud: cloudView(),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
     update: { available: update.available, ready: update.ready, busy: update.busy, error: update.error, justUpdatedFrom: update.justUpdatedFrom,
@@ -407,7 +439,7 @@ function getState() {
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
     autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false,
-    activeTabId, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
+    activeTabId, activeVpsTabId, browserTabHost: activeTabId === 'vps' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (vpsTabs.has(activeVpsTabId) ? activeVpsTabId : tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     chatTarget, hermes: hermesSummary(),
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
@@ -759,9 +791,9 @@ function closeTab(id) {
   if (!tab) return;
   if (recording?.tabId === id) { try { stopRecording(); } catch (error) { logError('recording', error); } }
   tabs.delete(id);
-  handbackNotices.get(id)?.close();
-  handbackNotices.delete(id);
-  for (const key of notifiedHandbacks) if (key.startsWith(`${id}:`)) notifiedHandbacks.delete(key);
+  handbackNotices.get(`${HOST_LABEL}:${id}`)?.close();
+  handbackNotices.delete(`${HOST_LABEL}:${id}`);
+  for (const key of notifiedHandbacks) if (key.startsWith(`${HOST_LABEL}:${id}:`)) notifiedHandbacks.delete(key);
   if (tab.view.webContents) extensionHost?.removeTab(tab.view.webContents);
   if (browserReturnTabId === id) browserReturnTabId = [...tabs.keys()].at(-1) || 'home';
   tab.host?.contentView.removeChildView(tab.view);
@@ -997,7 +1029,7 @@ const handbackNotices = new Map(), notifiedHandbacks = new Set();
 function notifyHandback(info) {
   const h = info && info.handback;
   if (!h || h.state !== 'awaiting_human' || !Notification.isSupported()) return;
-  const key = `${info.id}:${h.since}`;
+  const key = `${info.host}:${info.id}:${h.since}`;
   if (notifiedHandbacks.has(key)) return;
   notifiedHandbacks.add(key);
   const notice = new Notification({ title: `${nameForBot(info.botId) || 'Your agent'} needs you`, body: h.note || HANDBACK_TEXT[h.reason] || '' });
@@ -1005,20 +1037,26 @@ function notifyHandback(info) {
     if (!win || win.isDestroyed()) return;
     if (win.isMinimized()) win.restore();
     win.show(); win.focus();
-    if (!tabs.has(info.id)) return;
+    if (!(info.host === 'vps' ? vpsTabs : tabs).has(info.id)) return;
     // A collapsed browser pane would hide the badge and the banner.
     if (prefs.showBrowser === false) { prefs.showBrowser = true; savePreferencesSoon(); }
-    activateTab(info.id).then(broadcast, () => {});
+    activateTab(info.id, info.host).then(broadcast, () => {});
   });
-  handbackNotices.set(info.id, notice);
+  handbackNotices.set(`${info.host}:${info.id}`, notice);
   notice.show();
 }
-async function activateTab(tabId) {
-  const id=isVpsTab(tabId)?'vps':tabId;
+async function activateTab(tabId, host) {
+  const remote = isVpsTarget(tabId, host), sequence = ++tabActivationSequence;
+  const id = remote ? 'vps' : tabId;
   if(id==='vps'&&activeTabId!=='vps')browserReturnTabId=activeTabId;
   if(activeTabId!==id)prefs.remoteControl=false;
   activeTabId=tabs.has(id)||['home','vps'].includes(id)?id:'home';
-  if(isVpsTab(tabId))await remoteRequest(tabId,'activate',{});
+  if (remote) {
+    activeVpsTabId = '';
+    await remoteRequest(tabId, 'activate', {});
+    if (sequence !== tabActivationSequence) return;
+    activeVpsTabId = tabId;
+  }
   applyLayout();
 }
 // One recording at a time, on a tab the human controls. The page script runs
@@ -1267,6 +1305,10 @@ function startUpdates() {
   mainLog().write('app', `v${app.getVersion()} started from ${path.resolve(process.execPath, '../../..')}`);
   if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
   if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
+  pendingUpdateDelivery = deliverPendingUpdateReport({ prefs, version: app.getVersion(), save: saveUpdateReport,
+    send: (report, target) => vmUpdater.hermesUpdateVm(target, { report }),
+    log: text => mainLog().write('update report', text),
+  }).catch(error => logError('update report', error));
   if (prefs.updateSnoozedUntil) { prefs.updateSnoozedUntil = 0; savePreferencesSoon(); }
   checkVersionsWhenIdle(); setInterval(checkVersionsWhenIdle, VERSIONS_EVERY_MS);
   if (!app.isPackaged) return;
@@ -1771,11 +1813,17 @@ function registerIpc() {
       case 'settings-write-status': return settingsWriteReceipt(settingsWriteEntry(event, value, true));
       case 'create-tab': return describeTab(createTab({ url: value.url || 'about:blank' }));
       case 'close-tab':
-        if (isVpsTab(value.id)) { if(activeTabId===value.id)prefs.remoteControl=false; await vpsBrowser.request(`/v1/tabs/${value.id}`,'DELETE',undefined,{human:true}); vpsTabs.delete(value.id); if(activeTabId===value.id)activeTabId='home'; applyLayout(); } else closeTab(value.id); break;
-      case 'activate': await activateTab(value.id); break;
+        if (isVpsTarget(value.id, value.host)) { if(activeTabId===value.id)prefs.remoteControl=false; await vpsBrowser.request(`/v1/tabs/${value.id}`,'DELETE',undefined,{human:true}); vpsTabs.delete(value.id); if(activeTabId===value.id)activeTabId='home'; applyLayout(); } else closeTab(value.id); break;
+      case 'activate': await activateTab(value.id, value.host); break;
       case 'toggle-vps-view': {
         if(activeTabId==='vps')activeTabId=tabs.has(browserReturnTabId)?browserReturnTabId:'home';
-        else {browserReturnTabId=activeTabId;activeTabId='vps';}
+        else {
+          browserReturnTabId=activeTabId;activeTabId='vps';
+          if (!vpsTabs.has(activeVpsTabId)) {
+            const waiting = [...vpsTabs.values()].find(tab => tab.handback?.state === 'awaiting_human');
+            if (waiting) await activateTab(waiting.id, 'vps');
+          }
+        }
         prefs.remoteControl=false;applyLayout();break;
       }
       case 'navigate': {
@@ -1792,8 +1840,9 @@ function registerIpc() {
         break;
       }
       case 'control': {
-        if(isVpsTab(value.id)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller});}
+        if(isVpsTarget(value.id, value.host)){if(value.controller==='agent')prefs.remoteControl=false;return remoteRequest(value.id,'control',{controller:value.controller,...(value.giveBack === true ? { giveBack: true, epoch: value.epoch } : {})});}
         const tab = tabs.get(value.id);
+        if (tab && value.giveBack === true && (value.controller !== 'agent' || tab.controller !== 'human' || liveHandback(tab)?.state !== 'awaiting_human' || value.epoch !== tab.epoch)) return { ...describeTab(tab), ...(value.epoch !== tab.epoch && tab.controller === 'human' && liveHandback(tab)?.state === 'awaiting_human' ? { refused: 'stale' } : {}) };
         // Give to agent also ends a Take back cooldown.
         if (tab && value.controller === 'agent') { tab.handoff = reviewedHandoff(tab.handoff); tab.tookBackUntil = 0; }
         if (tab && value.controller !== 'agent') tab.lastHumanInput = Date.now();
@@ -1996,6 +2045,19 @@ function registerIpc() {
         if (value?.copy !== false) clipboard.writeText(text);
         return text;
       }
+      case 'server-setup': {
+        if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll }))
+          return { ok: false, detail: 'Wait for the current server operation to finish.' };
+        const target = vmTargets(prefs)[0];
+        if (!target) return { ok: false, detail: 'Save the agent machine SSH address first.' };
+        if (/^[A-Za-z]:/.test(target.scriptPath || ''))
+          return { ok: false, detail: 'This step needs a POSIX SSH shell. On a Windows server, run the pinned setup in an external Git Bash shell.' };
+        hermesUpdating = true;
+        try {
+          await waitForVersionCheck();
+          return await serverSetup(target.sshHost, value?.plan);
+        } finally { hermesUpdating = false; }
+      }
       case 'test-agent-path': return testAgentPath();
       case 'setup-check': return runSetupCheck();
       case 'remove-old-connector': {
@@ -2083,7 +2145,7 @@ function registerIpc() {
       // confirmed the plan in the popover. Server first (Hermes, then the
       // plugin that must match it), then the browser host, then this app,
       // which only stages: the restart waits for "Restart to finish". Then
-      // the versions refresh and the bot reports once in Telegram.
+      // the versions refresh. A staged app's report waits until the next launch.
       case 'update-all': {
         if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) return { refused: 'Another update is already running. Try again when it finishes.' };
         const { steps, upToDate } = describeVersions({ app: app.getVersion(), appUpdate: stagedAppVersion(), appLatest, cache: prefs.versionCache });
@@ -2091,12 +2153,18 @@ function registerIpc() {
         const target = vmTargets(prefs)[0] || LOCAL_TARGET;
         updatingAll = true; updateRun = { steps: [], summary: '', restart: false }; holdAppInstall(true); broadcast();
         try {
+          await pendingUpdateDelivery;
           // A probe already in flight finishes first: its `hermes update
           // --check` fetches into the checkout `hermes update` moves.
           await waitForVersionCheck();
           mainLog().write('update all', `start ${steps.map((step) => `${step.id} ${step.from}->${step.to}`).join(', ')}`);
           const rows = await runSteps(steps, (step) => runUpdateStep(step, target), (next) => { updateRun.steps = next; broadcast(); });
           mainLog().write('update all', runLogText(rows));
+          const appStep = rows.find(row => row.id === 'app' && row.state === 'done');
+          if (appStep) {
+            prefs.pendingUpdateReport = { runId: crypto.randomUUID(), targetVersion: appStep.to, target: { ...target }, rows, attempts: 0 };
+            saveUpdateReport();
+          }
           // Wait out any probe that started before the run, then take a fresh one.
           await waitForVersionCheck();
           await checkVmVersions().catch((error) => logError('vm-check', error));
@@ -2104,9 +2172,13 @@ function registerIpc() {
           updateRun = { steps: rows, restart: rows.some((row) => row.id === 'app' && row.state === 'done'),
             summary: summarizeRun(rows, { gatewayRunning: prefs.versionCache?.gatewayRunning ?? null, where }) };
           broadcast();
-          if (prefs.versionCache?.hermes) {
+          if (appStep) {
+            updateRun.summary += ' Your bot will report the result when the app starts again.';
+          } else if (prefs.versionCache?.hermes) {
             const sent = await vmUpdater.hermesUpdateVm(target, { report: reportText(rows) });
-            updateRun = { ...updateRun, summary: `${updateRun.summary} ${sent.messaged ? 'Your bot messaged you on Telegram.' : 'The bot could not message you on Telegram.'}` };
+            const delivery = reportDeliveryText(sent);
+            mainLog().write('update report', delivery);
+            updateRun = { ...updateRun, summary: `${updateRun.summary} ${delivery}` };
           }
         } catch (error) {
           // The dialog shows why the run stopped instead of an empty summary.
@@ -2570,9 +2642,9 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0 } = 
     const wc = tab.view.webContents;
     const viaDevTools = async (cdpFormat) => {
       // clip.scale downscales at capture instead of a full-size decode then resize.
-      const size = await boundedJs(wc, '({ width: innerWidth, height: innerHeight, dsf: devicePixelRatio })');
+      const size = await boundedJs(wc, '({ width: globalThis.visualViewport?.width ?? innerWidth, height: globalThis.visualViewport?.height ?? innerHeight, pageLeft: globalThis.visualViewport?.pageLeft ?? scrollX, pageTop: globalThis.visualViewport?.pageTop ?? scrollY, dsf: devicePixelRatio })');
       const scale = maxWidth && size.width * size.dsf > maxWidth ? Math.max(0.01, maxWidth / size.width) : size.dsf;
-      const shot = await browserCommand(tab, 'Page.captureScreenshot', { format: cdpFormat, ...(cdpFormat === 'png' ? {} : { quality }), fromSurface: true, clip: { x: 0, y: 0, width: size.width, height: size.height, scale } });
+      const shot = await browserCommand(tab, 'Page.captureScreenshot', { format: cdpFormat, ...(cdpFormat === 'png' ? {} : { quality }), fromSurface: true, clip: { x: size.pageLeft, y: size.pageTop, width: size.width, height: size.height, scale } });
       return shot.data;
     };
     const encode = async () => {
