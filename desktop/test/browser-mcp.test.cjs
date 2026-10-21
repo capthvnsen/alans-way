@@ -97,6 +97,9 @@ test('public recovery guidance limits retries to reads and preserves uncertain m
   }
   assert.doesNotMatch(tools.find(tool => tool.name === 'cua_alans_way_action').description,
     /human_took_tab means[^\n]*then call again/i, 'interrupted input cannot be blindly repeated');
+  const actionDescription = tools.find(tool => tool.name === 'cua_alans_way_action').description;
+  assert.doesNotMatch(actionDescription, /not held/i);
+  assert.match(actionDescription, /on the user's computer and on the VM alike/);
 });
 
 test('control changes require a controller and epoch receipt and never replay uncertain replies', { timeout: 10000 }, async (t) => {
