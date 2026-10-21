@@ -1041,6 +1041,12 @@ test('window selection reaches every computer API and old hosts refuse it', { ti
   assert.deepEqual(old.seen.map((entry) => entry.line), ['GET /v1/status']);
 });
 
+test('browser guidance shows batching an observed search ref', { timeout: 8000 }, async (t) => {
+  const { client } = await computerHost(t, ['tabs']);
+  const action = (await client.listTools()).tools.find(tool => tool.name === 'cua_alans_way_action');
+  assert.ok(action.description.includes('- Observed search ref: batch[type(ref,"query"),press(Enter)].'));
+});
+
 test('list reads add at most 120 estimated schema tokens and keep typed field guidance', { timeout: 8000 }, async (t) => {
   const { client } = await computerHost(t, ['tabs']);
   const action = (await client.listTools()).tools.find(tool => tool.name === 'cua_alans_way_action');
