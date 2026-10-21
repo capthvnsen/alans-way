@@ -599,6 +599,7 @@ function snapshotExpression(opts = {}, parameterized = false) {
       const entries = found.list.map((el) => ({ el, d: R.describe(el) }));
       R.assign(entries, ${p('seed')}, !found.more);
       const listed = new Set();
+      let optionsLeft = 300;
       for (const x of entries) {
         const { el, d } = x;
         listed.add(x.ref);
@@ -611,6 +612,16 @@ function snapshotExpression(opts = {}, parameterized = false) {
         if (d.value && !/^(checkbox|radio)$/.test(d.type)) item.value = d.value;
         if (d.href) item.href = d.href;
         if (el.disabled) item.disabled = true;
+        if (el.tagName === 'SELECT') {
+          const count = Math.min(el.options.length, optionsLeft);
+          item.options = Array.from({ length: count }, (_, i) => {
+            const o = el.options[i];
+            return { label: o.label.slice(0, 200), value: o.value.slice(0, 200), selected: o.selected,
+              ...(o.disabled || o.parentElement?.disabled ? { disabled: true } : {}) };
+          });
+          optionsLeft -= count;
+          if (count < el.options.length) item.optionsTruncated = el.options.length - count;
+        }
         items.push(item);
         if (wantEffect && !focused && el.getRootNode && el.getRootNode().activeElement === el) focused = { ref: x.ref, name: d.name };
         if (wantEffect && !acted && (valueRef !== null || valueSel !== null)) {
@@ -733,7 +744,7 @@ async function cachedSnapshot(execute, opts = {}) {
 // webContents and frame execution hand back the same object with its keys in
 // a different order, so the order must not matter. Refs are part of it: a
 // control that came back under a new ref is a change the caller must hear about.
-const itemFingerprint = (item) => JSON.stringify(item, Object.keys(item).sort());
+const itemFingerprint = (item) => JSON.stringify(Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])));
 function elementFingerprint(elements) {
   return JSON.stringify((elements || []).map(itemFingerprint));
 }

@@ -19,6 +19,61 @@ function connectorRequest(fetch) {
   });
 }
 
+test('open optionally includes a bounded snapshot and keeps its tab receipt when the read fails', { timeout: 10000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-open-observation-'));
+  const seen = [];
+  let failRead = false, proofSupported = true;
+  const observation = { generation: 2, loading: true, text: 'Choose a country', elements: [{ ref: 'e1', role: 'select', name: 'Country', approvalTarget: { nodeId: 'fixture' } }], approvalContext: { version: 1, documentId: 'fixture' } };
+  const host = http.createServer(async (req, res) => {
+    for await (const _ of req) { /* consume the fixture open */ }
+    seen.push(req.method + ' ' + req.url);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/v1/status') return res.end(JSON.stringify({ capabilities: proofSupported ? ['approval-binding-v1'] : [] }));
+    if (req.method === 'POST') return res.end(JSON.stringify({ id: 'fixture', epoch: 7, controller: 'agent', host: 'vm' }));
+    if (failRead) { res.statusCode = 409; return res.end(JSON.stringify({ error: 'awaiting_human: inspect current control' })); }
+    res.end(JSON.stringify(observation));
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  const connection = path.join(profile, 'connection.json');
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture' }));
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection] });
+  const client = new Client({ name: 'open-observation-regression', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {}); await transport.close().catch(() => {});
+    await new Promise(resolve => host.close(resolve)); fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const open = async snapshot => {
+    const reply = await client.callTool({ name: 'cua_alans_way_open', arguments: { url: 'https://example.com', ...(snapshot === undefined ? {} : { snapshot }) } });
+    assert.ok(!reply.isError, JSON.stringify(reply));
+    return JSON.parse(reply.content[0].text);
+  };
+  assert.equal((await open()).observation, undefined);
+  assert.equal(seen.filter(x => x.includes('/snapshot')).length, 0);
+  const reply = await open(true);
+  assert.equal(reply.id, 'fixture'); assert.equal(reply.epoch, 7); assert.equal(reply.host, 'vm');
+  assert.deepEqual(reply.observation, observation);
+  assert.ok(seen.includes('GET /v1/tabs/fixture/snapshot?maxChars=2000'));
+  failRead = true;
+  const failed = await open(true);
+  assert.equal(failed.id, 'fixture'); assert.equal(failed.epoch, 7);
+  assert.equal(failed.observation, undefined);
+  assert.match(failed.observationError, /awaiting_human/);
+  assert.equal(seen.filter(x => x === 'POST /v1/tabs').length, 3, 'a failed observation never opens another tab');
+  proofSupported = false; failRead = false;
+  // A fresh connector must apply the same old-host proof filtering to open as to snapshot.
+  await client.close(); await transport.close();
+  const oldTransport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection] });
+  const oldClient = new Client({ name: 'old-host-observation-regression', version: '1' });
+  t.after(async () => { await oldClient.close().catch(() => {}); await oldTransport.close().catch(() => {}); });
+  await oldClient.connect(oldTransport);
+  const oldReply = JSON.parse((await oldClient.callTool({ name: 'cua_alans_way_open', arguments: { url: 'https://example.com', snapshot: true } })).content[0].text);
+  assert.equal(oldReply.observation.approvalContext, undefined);
+  assert.equal(oldReply.observation.elements[0].approvalTarget, undefined);
+});
+
 for (const [verb, firstMs, grantedAt, retryMs, completedAt, batch = true] of [
   ['snapshot', 1000, 34000, 40000, 74000],
   ['snapshot', 19000, 34999, 39998, 74998],
@@ -158,6 +213,7 @@ test('public recovery guidance limits retries to reads and preserves uncertain m
   assert.match(status.description, /cua_alans_way_tabs.*controller and epoch.*fresh snapshot/i);
   assert.match(status.description, /confirmed pre-dispatch missing tab.*approval-bearing calls.*fresh review/i);
   const open = tools.find(tool => tool.name === 'cua_alans_way_open');
+  assert.equal(open.inputSchema.properties.snapshot.type, 'boolean');
   for (const { description } of [status, open]) {
     assert.match(description, /Omit host for normal work, including work while the user is away/);
     assert.match(description, /user’s computer first; the router falls back to the VM when it is not reachable/);
@@ -178,6 +234,8 @@ test('public recovery guidance limits retries to reads and preserves uncertain m
   assert.doesNotMatch(tools.find(tool => tool.name === 'cua_alans_way_action').description,
     /human_took_tab means[^\n]*then call again/i, 'interrupted input cannot be blindly repeated');
   const actionDescription = tools.find(tool => tool.name === 'cua_alans_way_action').description;
+  assert.match(actionDescription, /latest observation.*ref or exact name/);
+  assert.doesNotMatch(actionDescription, /no snapshot needed/);
   assert.doesNotMatch(actionDescription, /not held/i);
   assert.match(actionDescription, /on the user's computer and on the VM alike/);
   for (const sentence of [
