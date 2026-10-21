@@ -15,7 +15,7 @@ const WAIT_POLL_MS = 150;
 // just before it ends can still take REQUEST_TIMEOUT_MS (20 s), keeping the call
 // well under the connector's 90 s abort.
 const CALL_BUDGET_MS = 45000;
-const READ_ONLY = new Set(['apps', 'snapshot', 'shot', 'menu']);
+const READ_ONLY = new Set(['init', 'apps', 'snapshot', 'shot', 'menu']);
 
 function helperError(response) {
   const code = response.code || 'failed';
@@ -275,17 +275,24 @@ function normalizeStep(item) {
 
 const needsGeneration = (step) => typeof step.ref === 'string';
 
+function windowOptions(windowId) {
+  if (windowId === undefined) return {};
+  if (!Number.isInteger(windowId) || windowId < 1 || windowId > 0xffffffff)
+    throw fail('bad_request', 'windowId must be a positive window number.');
+  return { windowId };
+}
+
 // The verbs shared by the MCP connector and the app's loopback API.
 function createComputerService(driver) {
   const seen = createComputerSnapshots();
 
-  async function snapshot(bot, pid, { since, menubar } = {}) {
-    return seen.snapshot(bot, pid, await driver.snapshot(pid, { menubar: menubar === true }), since);
+  async function snapshot(bot, pid, { since, menubar, windowId, delta } = {}) {
+    return seen.snapshot(bot, pid, await driver.snapshot(pid, { menubar: menubar === true, ...windowOptions(windowId) }), since, delta);
   }
 
   // Polls the tree until an element's name or value contains the text (or no
   // longer does), so one call can act and then confirm what the action caused.
-  async function waitFor(pid, step, tree, menubar, pin, deadline) {
+  async function waitFor(pid, step, tree, menubar, pin, deadline, window) {
     const needle = step.text.toLowerCase();
     const present = (current) => current.elements.some((element) => `${element.name || ''}\n${element.value || ''}`.toLowerCase().includes(needle));
     const started = Date.now();
@@ -299,7 +306,7 @@ function createComputerService(driver) {
         checkCall();
         if (tree) await waitInCall(new Promise((resolve) => setTimeout(resolve, Math.ceil(remainingMs(WAIT_POLL_MS)))));
         checkCall();
-        const { ok, ...latest } = await driver.snapshot(pid, { menubar, pin });
+        const { ok, ...latest } = await driver.snapshot(pid, { menubar, pin, ...window });
         tree = latest;
       } catch (error) {
         // The app quitting is what a wait for its text to go can be waiting for.
@@ -311,6 +318,9 @@ function createComputerService(driver) {
   }
 
   async function action(bot, pid, body) {
+    const window = windowOptions(body.windowId === undefined ? seen.windowId(bot, pid) : body.windowId);
+    if (seen.windowId(bot, pid) !== undefined && window.windowId !== seen.windowId(bot, pid))
+      throw fail('stale_window', 'Take a snapshot of the selected window before acting.');
     const batch = body.action === 'batch';
     const raw = batch ? (Array.isArray(body.steps) ? body.steps.slice(0, STEP_LIMIT) : []) : [body];
     const steps = raw.map(normalizeStep);
@@ -326,7 +336,7 @@ function createComputerService(driver) {
       try { checkCall(); }
       catch (error) { results.push({ ok: false, code: error.code, error: error.message }); break; }
       if (steps[at].action === 'wait') {
-        const waited = await waitFor(pid, steps[at++], tree, menubar, body.generation, deadline);
+        const waited = await waitFor(pid, steps[at++], tree, menubar, body.generation, deadline, window);
         tree = waited.tree;
         results.push(waited.result);
         if (waited.result.ok === false) break;
@@ -339,7 +349,7 @@ function createComputerService(driver) {
         break;
       }
       let reply;
-      try { reply = await driver.act(pid, { steps: steps.slice(at, end), generation: body.generation, menubar }); }
+      try { reply = await driver.act(pid, { steps: steps.slice(at, end), generation: body.generation, menubar, ...window }); }
       catch (error) {
         // Nothing ran yet: fail the call as before. Later, earlier steps did run and must be reported.
         if (!results.length) throw error;
@@ -370,7 +380,7 @@ function createComputerService(driver) {
     snapshot,
     action,
     menu: (pid, path) => driver.menu(pid, Array.isArray(path) ? path.filter((part) => typeof part === 'string') : []),
-    screenshot: (pid, maxWidth) => driver.screenshot(pid, maxWidth),
+    screenshot: async (pid, maxWidth, { windowId, bot } = {}) => driver.screenshot(pid, maxWidth, windowOptions(windowId === undefined ? seen.windowId(bot, pid) : windowId)),
     close: () => driver.close(),
   };
 }
@@ -378,23 +388,33 @@ function createComputerService(driver) {
 // platform.command(mode) -> [file, ...args]; shared by mac, Windows, and Linux.
 function createComputer({ command, env }) {
   const helper = createHelper({ command, env });
+  let windowSupport;
+  async function requireWindowSupport(windowId) {
+    if (windowId === undefined) return;
+    windowSupport ||= helper.request({ cmd: 'init' }).then((reply) => reply.windowBinding === true).catch((error) => { windowSupport = null; throw error; });
+    if (!await windowSupport) throw fail('unsupported_window', 'This helper cannot select a window. Update it before retrying.');
+  }
   const driver = {
     apps: async () => (await helper.request({ cmd: 'apps' })).apps || [],
-    snapshot: async (pid, { menubar, pin } = {}) => {
-      const { id, ...tree } = await helper.request({ cmd: 'snapshot', pid, ...(menubar ? { menubar: true } : {}), ...(Number.isInteger(pin) ? { pin } : {}) });
+    snapshot: async (pid, { menubar, pin, windowId } = {}) => {
+      await requireWindowSupport(windowId);
+      const { id, ...tree } = await helper.request({ cmd: 'snapshot', pid, ...windowOptions(windowId), ...(menubar ? { menubar: true } : {}), ...(Number.isInteger(pin) ? { pin } : {}) });
       return tree;
     },
-    act: async (pid, { steps, generation, menubar }) => {
+    act: async (pid, { steps, generation, menubar, windowId }) => {
+      await requireWindowSupport(windowId);
       const { ok, id, ...reply } = await helper.request({
-        cmd: 'act', pid, steps, ...(Number.isInteger(generation) ? { generation } : {}), ...(menubar ? { menubar: true } : {}),
+        cmd: 'act', pid, steps, ...windowOptions(windowId), ...(Number.isInteger(generation) ? { generation } : {}), ...(menubar ? { menubar: true } : {}),
       });
       return reply;
     },
     menu: async (pid, path) => { const { ok, id, ...list } = await helper.request({ cmd: 'menu', pid, path }); return list; },
-    screenshot: async (pid, maxWidth) => {
+    screenshot: async (pid, maxWidth, { windowId } = {}) => {
+      await requireWindowSupport(windowId);
       const cap = Number.isInteger(maxWidth) ? Math.min(Math.max(maxWidth, 320), 1280) : 960;
-      const shot = await helper.request({ cmd: 'shot', pid, maxWidth: cap });
+      const shot = await helper.request({ cmd: 'shot', pid, maxWidth: cap, ...windowOptions(windowId) });
       return {
+        ...(shot.windowId === undefined ? {} : { windowId: shot.windowId }),
         image: shot.image, imageWidth: shot.imageWidth, imageHeight: shot.imageHeight,
         windowX: shot.windowX, windowY: shot.windowY, windowWidth: shot.windowWidth, windowHeight: shot.windowHeight,
         ...(shot.note ? { note: shot.note } : {}),

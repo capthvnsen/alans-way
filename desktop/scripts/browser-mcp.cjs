@@ -50,6 +50,7 @@ const appData = process.platform === 'win32' ? (process.env.APPDATA || path.join
 const file = (connectionIndex>=0?process.argv[connectionIndex+1]:undefined) || process.env.HERMES_WORKSPACE_CONNECTION || path.join(appData, 'Hermes Workspace', 'connection.json');
 const objectSchema = (properties = {}, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = { type: 'string' };
+const computerWindowId = { type: 'integer', minimum: 1, maximum: 4294967295 };
 function singleContinuedFromArgv(argv) {
   const tabAt = argv.indexOf('--continued-tab');
   const urlAt = argv.indexOf('--continued-url');
@@ -96,8 +97,8 @@ const tools = [
   { name: 'cua_alans_way_screenshot', description: 'Capture the tab viewport, or a region with crop, as an image file. Hermes delivers it as MEDIA:<path>; run a vision step on that path to see pixels. Defaults to compact jpeg; png keeps alpha. With crop, map image pixels with the returned crop origin and size.', inputSchema: objectSchema({ tabId: string, format: { type: 'string', enum: ['jpeg', 'png', 'webp'], description: 'Image format, default jpeg.' }, quality: { type: 'integer', description: 'jpeg/webp quality 1-100, default 50.' }, maxWidth: { type: 'integer', description: 'Downscale cap on image width in px, default 960.' }, crop: { type: 'object', description: 'Rectangle inside the viewport, in CSS pixels.', properties: { x: { type: 'number', minimum: 0 }, y: { type: 'number', minimum: 0 }, width: { type: 'number', exclusiveMinimum: 0 }, height: { type: 'number', exclusiveMinimum: 0 } }, required: ['x', 'y', 'width', 'height'], additionalProperties: false } }, ['tabId']), annotations: { readOnlyHint: true } },
   { name: 'cua_alans_way_close', description: 'Close a tab this bot owns. Pass the current epoch. Required to free VPS tabs (global cap 40).', inputSchema: objectSchema({ tabId: string, epoch: { type: 'integer' } }, ['tabId', 'epoch']), annotations: { readOnlyHint: false, openWorldHint: true } },
   { name: 'workspace_computer_apps', description: 'List the desktop apps you can drive. They run on the same machine as the browser, named by host: mac, windows or linux is the user’s computer, vps is the VM desktop used while that computer is offline. Web pages are cua_alans_way_* work, not desktop work. Apps are driven in the background: the pointer never moves and focus never changes, so the app in front (frontmost:true) is the user’s and is refused, except on the VM desktop. Keychains, password managers, this workspace app, Windows UAC and lock screens, and password fields are off limits and not listed. If a call says Accessibility or Screen Recording is off, ask the user to turn it on for alans-way-localapp in System Settings > Privacy & Security, then retry.', inputSchema: objectSchema(), annotations: { readOnlyHint: true } },
-  { name: 'workspace_computer_snapshot', description: 'Read one app’s controls: elements[] of {ref, role, name, value?, x, y, width, height} in screen points, and generation. Pass generation with any action that uses a ref. since=<generation> answers {unchanged:true} when nothing changed. truncated:true means the element cap cut the list; hidden:N counts controls scrolled out of view, so scroll to reach them; note says why a list is empty (for example windows on another Space). menubar:true adds the menu bar. On the VM desktop pid 0 is the whole screen, and an app with no accessibility tree has no elements: use a screenshot.', inputSchema: objectSchema({ pid: { type: 'integer' }, since: { type: 'integer', description: 'Generation you already hold; returns {unchanged:true} when the tree is the same.' }, menubar: { type: 'boolean', description: 'Also list the top-level menu bar items.' } }, ['pid']), annotations: { readOnlyHint: true } },
-  { name: 'workspace_computer_screenshot', description: 'One app window as a small jpeg. Use it only when the snapshot has no named control for what you need, such as a canvas, a chart or an unlabeled icon. Image pixel (px, py) is screen point (window.x + px * window.width / imageWidth, window.y + py * window.height / imageHeight), the space snapshot and click coordinates use. Never the full screen, except pid 0 on the VM desktop. On Windows, restore a minimized window first.', inputSchema: objectSchema({ pid: { type: 'integer' }, maxWidth: { type: 'integer', description: 'Downscale cap in px, default 960, max 1280.' } }, ['pid']), annotations: { readOnlyHint: true } },
+  { name: 'workspace_computer_snapshot', description: 'Read one app’s controls: elements[] of {ref, role, name, value?, x, y, width, height} in screen points, and generation. Pass generation with any action that uses a ref. since=<generation> answers {unchanged:true} when nothing changed; otherwise it returns the whole elements list by default. With delta:true and a held since generation, a smaller reply may instead contain changed[] (new or updated elements) and removed[] (refs gone); merge these into your held tree. A missing baseline or large change still returns the whole elements list. truncated:true means the element cap cut the list; hidden:N counts controls scrolled out of view, so scroll to reach them; note says why a list is empty (for example windows on another Space). menubar:true adds the menu bar. On the VM desktop pid 0 is the whole screen, and an app with no accessibility tree has no elements: use a screenshot.', inputSchema: objectSchema({ pid: { type: 'integer' }, windowId: computerWindowId, delta: { type: 'boolean', description: 'Opt in to changed[] and removed[] replies against since; default false.' }, since: { type: 'integer', description: 'Generation you already hold; returns {unchanged:true} when the tree is the same.' }, menubar: { type: 'boolean', description: 'Also list the top-level menu bar items.' } }, ['pid']), annotations: { readOnlyHint: true } },
+  { name: 'workspace_computer_screenshot', description: 'One app window as a small jpeg. Use it only when the snapshot has no named control for what you need, such as a canvas, a chart or an unlabeled icon. Image pixel (px, py) is screen point (window.x + px * window.width / imageWidth, window.y + py * window.height / imageHeight), the space snapshot and click coordinates use. Never the full screen, except pid 0 on the VM desktop. On Windows, restore a minimized window first.', inputSchema: objectSchema({ pid: { type: 'integer' }, windowId: computerWindowId, maxWidth: { type: 'integer', description: 'Downscale cap in px, default 960, max 1280.' } }, ['pid']), annotations: { readOnlyHint: true } },
   { name: 'workspace_computer_menu', description: 'List an app’s menu bar: the top-level titles, or with path such as ["File"] that menu’s items with enabled, shortcut and submenu. Press one with workspace_computer_action action menu.', inputSchema: objectSchema({ pid: { type: 'integer' }, path: { type: 'array', items: string, description: 'Menu titles from the menu bar down, for example ["File","Open Recent"].' } }, ['pid']), annotations: { readOnlyHint: true } },
   { name: 'workspace_computer_action', description: `Act in a background desktop app; the pointer never moves and focus never changes.
 - press and type take a ref plus the generation you last received. A ref keeps working while its control keeps its role and name; stale_ref means that control changed, so snapshot again.
@@ -107,6 +108,7 @@ const tools = [
 - Pass the generation you last received with every action. Successful replies supply current state: unchanged:true, or changed[] (new or updated elements) and removed[] (refs gone) since that generation, or the whole elements[]. Reuse it when sufficient. Recovery after an uncertain result or missing current state needs a fresh snapshot before deciding on more input; inspect completed batch results first.
 - unsupported_action means the OS cannot do it in the background. The front app, keychains, password managers, Windows secure desktop and password fields are refused. On the VM desktop, click, drag and scroll at x,y and type without a ref are real input in the app's raised window.`, inputSchema: objectSchema({
     pid: { type: 'integer' },
+    windowId: computerWindowId,
     action: { type: 'string', enum: ['press', 'click', 'double_click', 'right_click', 'drag', 'type', 'scroll', 'key', 'hotkey', 'menu', 'wait', 'batch'] },
     generation: { type: 'integer', description: 'Generation from your latest snapshot or reply. Required whenever the action or a batch step uses a ref.' },
     ref: string,
@@ -281,7 +283,7 @@ async function computerService() {
     if (agentDesktop) process.env.ALANS_WAY_AGENT_DESKTOP = '1';
     else delete process.env.ALANS_WAY_AGENT_DESKTOP;
     if (changed && localDriver && hostChoice.key) require(localDriver).close();
-    hostChoice = { key, app: capabilities.includes('computer') || capabilities.includes('computer-v2'), host: typeof status.host === 'string' ? status.host : '' };
+    hostChoice = { key, windowBinding: capabilities.includes('computer-window-v1'), app: capabilities.includes('computer') || capabilities.includes('computer-v2'), host: typeof status.host === 'string' ? status.host : '' };
   }
   return hostChoice.app || !localDriver ? null : require(localDriver).service;
 }
@@ -343,6 +345,8 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => cal
         && (typeof args.tabId !== 'string' || !args.tabId.trim()))
       throw new Error('Pass a nonempty tabId from cua_alans_way_tabs before using this tool. No request was sent.');
     const computer = params.name.startsWith('workspace_computer_') ? await computerService() : null;
+    if (params.name.startsWith('workspace_computer_') && args.windowId !== undefined && !computer && !hostChoice.windowBinding)
+      throw new Error('This host cannot select a window. Update it before retrying.');
     const tabPath = `/v1/tabs/${encodeURIComponent(args.tabId || '')}`;
     switch (params.name) {
       case 'cua_alans_way_status': result = await request('/v1/status'); break;
@@ -391,17 +395,18 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => cal
         break;
       case 'workspace_computer_snapshot':
         result = computer
-          ? await computer.snapshot(botId, args.pid, { since: args.since, menubar: args.menubar })
+          ? await computer.snapshot(botId, args.pid, { since: args.since, menubar: args.menubar, windowId: args.windowId, delta: args.delta === true })
           : await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/snapshot?${new URLSearchParams({
-            ...(Number.isInteger(args.since) ? { since: args.since } : {}), ...(args.menubar ? { menubar: '1' } : {}) })}`);
+            ...(Number.isInteger(args.since) ? { since: args.since } : {}), ...(args.delta === true ? { delta: '1' } : {}), ...(args.menubar ? { menubar: '1' } : {}), ...(args.windowId !== undefined ? { windowId: args.windowId } : {}) })}`);
         break;
       case 'workspace_computer_screenshot': {
         const shot = computer
-          ? await computer.screenshot(args.pid, args.maxWidth)
-          : await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/screenshot${Number.isInteger(args.maxWidth) ? `?maxWidth=${args.maxWidth}` : ''}`);
+          ? await computer.screenshot(args.pid, args.maxWidth, { windowId: args.windowId, bot: botId })
+          : await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/screenshot${Number.isInteger(args.maxWidth) || args.windowId !== undefined ? `?${new URLSearchParams({ ...(Number.isInteger(args.maxWidth) ? { maxWidth: args.maxWidth } : {}), ...(args.windowId !== undefined ? { windowId: args.windowId } : {}) })}` : ''}`);
         return { content: [
           { type: 'image', data: shot.image, mimeType: 'image/jpeg' },
           { type: 'text', text: JSON.stringify({
+            ...(shot.windowId === undefined ? {} : { windowId: shot.windowId }),
             imageWidth: shot.imageWidth, imageHeight: shot.imageHeight,
             window: { x: shot.windowX, y: shot.windowY, width: shot.windowWidth, height: shot.windowHeight },
             note: [shot.note, 'Click coordinates stay in snapshot space. Screen x = window.x + px * window.width / imageWidth; screen y = window.y + py * window.height / imageHeight.'].filter(Boolean).join(' '),

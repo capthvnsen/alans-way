@@ -966,3 +966,36 @@ test('a cropped browser screenshot reaches the host and returns its coordinate m
   assert.match(fullMapping.note, /viewport.width \/ image width/);
   assert.deepEqual(seen[1], { path: '/v1/tabs/t1/screenshot', crop: undefined, format: null, maxWidth: '960', quality: '50' });
 });
+
+test('window selection reaches every computer API and old hosts refuse it', { timeout: 8000 }, async (t) => {
+  const { client, seen } = await computerHost(t, ['computer', 'computer-window-v1']);
+  for (const [name, args] of [
+    ['workspace_computer_snapshot', { pid: 7, windowId: 42 }],
+    ['workspace_computer_screenshot', { pid: 7, windowId: 42 }],
+    ['workspace_computer_action', { pid: 7, windowId: 42, action: 'click', x: 1, y: 2 }],
+  ]) assert.equal((await client.callTool({ name, arguments: args })).isError, undefined);
+  assert.ok(seen.some((entry) => entry.line === 'GET /v1/computer/7/snapshot?windowId=42'));
+  assert.ok(seen.some((entry) => entry.line === 'GET /v1/computer/7/screenshot?windowId=42'));
+  assert.equal(seen.find((entry) => entry.line.endsWith('/action')).body.windowId, 42);
+  const old = await computerHost(t, ['computer']);
+  const reply = await old.client.callTool({ name: 'workspace_computer_action', arguments: { pid: 7, windowId: 42, action: 'click', x: 1, y: 2 } });
+  assert.equal(reply.isError, true);
+  assert.deepEqual(old.seen.map((entry) => entry.line), ['GET /v1/status']);
+});
+
+test('snapshot delta opt-in is documented and forwarded only when enabled', { timeout: 8000 }, async (t) => {
+  const { client, seen } = await computerHost(t, ['computer']);
+  const tool = (await client.listTools()).tools.find((tool) => tool.name === 'workspace_computer_snapshot');
+  assert.equal(tool.inputSchema.properties.delta.type, 'boolean');
+  assert.match(tool.description, /delta:true/);
+  assert.match(tool.description, /changed.*removed/);
+  for (const delta of [undefined, false, true]) {
+    const reply = await client.callTool({ name: 'workspace_computer_snapshot', arguments: { pid: 7, since: 3, ...(delta === undefined ? {} : { delta }) } });
+    assert.equal(reply.isError, undefined);
+  }
+  assert.deepEqual(seen.filter((item) => item.line.includes('/snapshot')).map((item) => item.line), [
+    'GET /v1/computer/7/snapshot?since=3',
+    'GET /v1/computer/7/snapshot?since=3',
+    'GET /v1/computer/7/snapshot?since=3&delta=1',
+  ]);
+});
