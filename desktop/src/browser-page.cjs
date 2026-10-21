@@ -750,6 +750,7 @@ function snapshotExpression(opts = {}, parameterized = false) {
       // keep their line breaks without a style read per text node.
       const blockTag = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|BODY|CAPTION|DD|DETAILS|DIALOG|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H[1-6]|HEADER|HR|LEGEND|LI|MAIN|NAV|OL|P|PRE|SECTION|SUMMARY|TABLE|TR|UL)$/;
       let node, lastBlock = null, seenParent = null, parentVisible = true, parentBlock = null;
+      const seenText = new Set();
       let sigHash = 0x811c9dc5, sigNodes = 0;
       while ((node = walker.nextNode()) && sigNodes < 30000) {
         const p = node.parentElement;
@@ -769,6 +770,11 @@ function snapshotExpression(opts = {}, parameterized = false) {
         sigHash ^= 0x9d; sigHash = Math.imul(sigHash, 0x01000193);
         sigNodes++;
         if (!textCut) {
+          // shortcut: fold exact long chunks only in control observations; revisit if split-node repeats dominate.
+          if (R && chunk.length >= 60) {
+            if (seenText.has(chunk)) continue;
+            seenText.add(chunk);
+          }
           text += (text ? (parentBlock === lastBlock ? ' ' : '\\n') : '') + chunk;
           lastBlock = parentBlock;
           // The time budget never cuts the first screenful: a slow renderer
