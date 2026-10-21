@@ -157,6 +157,18 @@ test('public recovery guidance limits retries to reads and preserves uncertain m
   assert.match(status.description, /uncertain action or control change.*do not repeat/i);
   assert.match(status.description, /cua_alans_way_tabs.*controller and epoch.*fresh snapshot/i);
   assert.match(status.description, /confirmed pre-dispatch missing tab.*approval-bearing calls.*fresh review/i);
+  const open = tools.find(tool => tool.name === 'cua_alans_way_open');
+  for (const { description } of [status, open]) {
+    assert.match(description, /Omit host for normal work, including work while the user is away/);
+    assert.match(description, /user’s computer first; the router falls back to the VM when it is not reachable/);
+    assert.match(description, /host:"vm" only when the user explicitly requests the VM or the router reports the user’s computer unreachable/);
+    assert.doesNotMatch(description, /never replaced implicitly/);
+  }
+  assert.match(status.description, /VM status alone does not prove the user’s computer is unreachable/);
+  assert.match(status.description, /An already-running VM task stays on the VM when the user’s computer returns/);
+  assert.match(status.description, /Login, CAPTCHA, approval and uncertain-action errors are not outages and must not switch browsers/);
+  assert.ok(status.description.endsWith('Retry a read-only call once; report a persistent failure. For an uncertain action or control change, do not repeat it: use cua_alans_way_tabs to inspect the controller and epoch, take a fresh snapshot, and follow the error’s recovery instructions. Never restart, kill, or edit connector processes to steer the host. Ordinary calls can continue the last HTTPS page in the VPS browser only after a confirmed pre-dispatch missing tab; approval-bearing calls need fresh review in the destination tab. When continuation is reported, use the named tab; if only a URL is supplied, open it and inspect before proceeding. Calls that do not run on the Mac keep going.'));
+  assert.ok(open.description.endsWith('No human handoff, assignment, grant, or approval is ever needed. Shared sign-ins within a host, separate tab ownership and input. Opens in the background.'));
   for (const name of ['cua_alans_way_action', 'workspace_computer_action', 'cua_alans_way_snapshot']) {
     const description = tools.find(tool => tool.name === name).description;
     assert.match(description, /successful/i, `${name}: reuse applies to successful current state`);
@@ -168,6 +180,11 @@ test('public recovery guidance limits retries to reads and preserves uncertain m
   const actionDescription = tools.find(tool => tool.name === 'cua_alans_way_action').description;
   assert.doesNotMatch(actionDescription, /not held/i);
   assert.match(actionDescription, /on the user's computer and on the VM alike/);
+  for (const sentence of [
+    '- Consequential approval requires a fresh observed ref or unique exact name. If approval_invalid or page_changed reports a changed document/target, take a fresh snapshot, review it, and request a new approval; an old approval cannot move to a continued tab. approval_binding_unavailable requires updating the browser host/connector before approving again.',
+    '- When automatic takeover is enabled and the human took over a tab on their computer, act or claim: the app hands it back to you (waiting up to 10s while they type) and shows them a Take back button. Do not ask first. An action is checked before it takes the tab, so a malformed one, an epoch or generation from before their takeover or page change (stale_control_epoch: inspect current control and epoch, then follow the current control policy) or one the page refuses (a missing control, a CAPTCHA) leaves the tab with them. human_took_tab means they grabbed it during your call: inspect completed effects and current control before deciding on another action; uncertain input is not permission to repeat it. Only awaiting_human (you handed it over), recording_in_progress (they are recording a task), human_took_back (they pressed Take back; leave it for a minute) or human_has_control (automatic takeover is off, or a VM tab) keep it theirs: open your own tab or tell them what you need. Never ask the user to hand a tab back unless a call answered human_has_control.',
+    "- When only the human can continue (a CAPTCHA, a login, a 2FA code, card details, or a page they must review), release with a reason and a short note saying what to do. The app shows them a banner and a notification, and the tab stays theirs until they press Give back in Alan's Workspace or 30 minutes pass, on the user's computer and on the VM alike. Until then calls answer awaiting_human, and after the give-back human_returned: read the tab for the fresh epoch. Also tell the user in Telegram what you need.",
+  ]) assert.ok(actionDescription.split('\n').includes(sentence), 'approval, takeover and handback wording stays intact');
 });
 
 test('control changes require a controller and epoch receipt and never replay uncertain replies', { timeout: 10000 }, async (t) => {
