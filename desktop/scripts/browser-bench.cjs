@@ -74,6 +74,8 @@ function pages(s) {
 <fieldset><legend>Plan</legend>${['Starter', 'Team', 'Enterprise'].map((x) => `<label><input type=radio name=plan value=${x.toLowerCase()}> ${x}</label>`).join('')}</fieldset>
 <label><input type=checkbox name=news> Send me product news</label><br><label>Message <textarea name=msg rows=3></textarea></label><p id=err style="color:#b00"></p><button>Send request</button></form></main>`,
   `f.onsubmit=e=>{e.preventDefault();const d=Object.fromEntries(new FormData(f));d.news=!!f.news.checked;if(!/@/.test(d.email))return err.textContent='Enter a valid email';report('form',d);f.outerHTML='<h2>Thanks, '+d.name+'</h2><p>We will reply to '+d.email+' within a day.</p>'}`);
+  p['/dropdown'] = page('Delivery form', `<form id=f><label>Delivery <select name=delivery><option value="std" label="Standard delivery">Internal text</option><option value="exp" selected>Express delivery</option><option value="pickup" disabled>Collect in person</option></select></label><button>Submit</button></form>`,
+    `f.onsubmit=e=>{e.preventDefault();report('dropdown','submitted')};f.delivery.onchange=()=>report('dropdown','changed')`);
   p['/feed'] = page('Orders', `<main><h1>Orders</h1><ul id=l style="list-style:none;padding:0"></ul><div id=more>Loading more…</div><p id=out></p></main>`,
   `let n=0;const add=()=>{for(let i=0;i<20&&n<120;i++){n++;const k=n,li=document.createElement('li');li.style.height='44px';li.innerHTML='Order #'+k+' · $'+(17+k*3)+'.00 <button>Open</button>';li.querySelector('button').onclick=()=>{out.textContent='Opened order #'+k;report('feed',k)};l.append(li)}if(n>=120)more.remove()};
 new IntersectionObserver(e=>{if(e[0].isIntersecting)setTimeout(add,150)}).observe(more);add();`);
@@ -229,9 +231,10 @@ class Agent {
     for (const t of [data.text, data.effect && data.effect.text, ...(Array.isArray(data.results) ? data.results.map((x) => x && x.text) : [])]) if (typeof t === 'string' && t) this.seen += '\n' + t;
     if (data.continuedEpoch) this.tab.epoch = data.continuedEpoch;
     if (Number.isInteger(data.epoch) && this.tab && data.id === this.tab.id) this.tab.epoch = data.epoch;
+    if (data.observation) this.absorb(data.observation);
   }
   async open(url) {
-    const r = await this.call('cua_alans_way_open', { url, ...(this.opts.host ? { host: this.opts.host } : {}) });
+    const r = await this.call('cua_alans_way_open', { url, ...(this.opts.host ? { host: this.opts.host } : {}), ...(this.opts.openSnapshot ? { snapshot: true } : {}) });
     if (r.error) throw new Error(r.error);
     this.tab = { id: r.id, epoch: r.epoch };
     return r;
@@ -334,6 +337,17 @@ class Agent {
 
 // ---------------------------------------------------------------- tasks
 const tasks = [
+  { id: 'dropdown-options', what: 'find a form dropdown and report its labels, values and selected state without changing it', fixture: true,
+    async run(a, fx) {
+      await a.open(fx.url('/dropdown'));
+      if (!a.find(/^Delivery/)) await a.snapshot();
+      return JSON.stringify(a.find(/^Delivery/)?.options || []);
+    },
+    check: (fx, ans) => !fx.reports.dropdown && ans === JSON.stringify([
+      { label: 'Standard delivery', value: 'std', selected: false },
+      { label: 'Express delivery', value: 'exp', selected: true },
+      { label: 'Collect in person', value: 'pickup', selected: false, disabled: true },
+    ]) },
   { id: 'search-open', what: 'search, open the 6th result, read a fact', fixture: true,
     async run(a, fx) {
       await a.open(fx.url('/search'));
@@ -355,7 +369,7 @@ const tasks = [
   { id: 'infinite-list', what: 'scroll a lazy list to order #87 and open it', fixture: true,
     async run(a, fx) {
       await a.open(fx.url('/feed'));
-      await a.snapshot();
+      if (!a.lastControls) await a.snapshot();
       for (let i = 0; i < 12; i++) {
         const row = a.find(/order #87\b/i, /button/);
         if (row) { await a.act({ action: 'click', ref: row.ref }); break; }
@@ -499,13 +513,14 @@ async function runAgentSuite() {
     const browserTools = (await client.listTools()).tools.filter((t) => t.name.startsWith('cua_'));
     const toolsSize = JSON.stringify(browserTools).length;
     const actionProps = browserTools.find((t) => t.name === 'cua_alans_way_action')?.inputSchema?.properties || {};
+    const openSnapshot = !!browserTools.find((t) => t.name === 'cua_alans_way_open')?.inputSchema?.properties?.snapshot;
     const label = engine.length > 12 ? 'live' + (eng.host ? ':' + eng.host : '') : engine;
     try {
       for (const task of picked) {
         if (task.fixture && !eng.main) continue;
         for (let run = 0; run < runs; run++) {
           fixtures.reset(); await closeAll();
-          const a = new Agent(client, { host: eng.host, generation: !!actionProps.generation, names: !!actionProps.name });
+          const a = new Agent(client, { host: eng.host, generation: !!actionProps.generation, names: !!actionProps.name, openSnapshot });
           const t0 = Date.now();
           let ans = '', err = '';
           try { ans = String(await task.run(a, fx) || ''); } catch (e) { err = e.message; }

@@ -118,6 +118,7 @@ before(async () => {
     '/pop': page(`<script>setTimeout(()=>{window.open("${T}?pop");fetch('/mark?pop',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/pop-userinfo': page(`<script>setTimeout(()=>{window.open("http://u:p@127.0.0.1:${pb}/secret?popcred");fetch('/mark?pop-userinfo',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/reader': page('<button type="button" onclick="document.getElementById(\'result\').textContent=\'Details ready\'">Open details</button><p id="result"></p>'),
+    '/dropdown': page(`<title>fixture</title><form><label>Delivery <select multiple><option value="std" label="Standard delivery">Internal text</option><optgroup label="Priority" disabled><option value="exp" selected>Express</option></optgroup><option value="pickup" selected>Collect</option></select></label><button>Submit</button></form><label>Empty <select></select></label><label>Many <select>${Array.from({ length: 305 }, (_, i) => `<option value="${i}">${i === 0 ? 'x'.repeat(250) : 'Choice ' + i}</option>`).join('')}</select></label><script>document.querySelector('form').onsubmit=e=>{e.preventDefault();document.title='submitted'};document.addEventListener('change',()=>document.title='changed')</script>`),
     '/pop-blank': page(`<script>setTimeout(()=>{var w=window.open("about:blank");if(w)w.location="${T}?popblank";fetch('${T}?popblank-fetch',{mode:'no-cors'}).catch(()=>{});fetch('/mark?pop-blank',{mode:'no-cors'}).catch(()=>{})},300)</script>pop`),
     '/ok': page('<p id=ok>ok</p>' + '<img src="/i.png?1"><img src="/i.png?2"><img src="/i.png?3">'),
     '/white': page('<style>body{margin:0;min-height:5000px;background:white}</style>'),
@@ -184,6 +185,36 @@ after(async () => {
   for (const d of [dir, ...extraHosts.map((h) => h.dir)]) {
     if (d) { try { fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {} }
   }
+});
+
+test('read a form dropdown without selecting, submitting, or using eval', { skip: !chrome, timeout: 30000 }, async () => {
+  const { data: tab } = await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/dropdown` });
+  try {
+    const first = await api(`/v1/tabs/${tab.id}/snapshot`);
+    assert.equal(first.status, 200);
+    const select = first.data.elements.find(el => el.role === 'select' && /^Delivery/.test(el.name));
+    assert.deepEqual(select.options, [
+      { label: 'Standard delivery', value: 'std', selected: false },
+      { label: 'Express', value: 'exp', selected: true, disabled: true },
+      { label: 'Collect', value: 'pickup', selected: true },
+    ]);
+    assert.deepEqual(first.data.elements.find(el => /^Empty/.test(el.name)).options, []);
+    const many = first.data.elements.find(el => /^Many/.test(el.name));
+    assert.equal(many.options.length, 297); assert.equal(many.optionsTruncated, 8);
+    assert.equal(many.options[0].label.length, 200);
+    assert.equal(first.data.title, 'fixture', 'observation did not fire input or submit handlers');
+    const cdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+    try {
+      const { targetInfos } = await cdp.send('Target.getTargets');
+      const wc = await cdp.page(targetInfos.find(t => t.url.endsWith('/dropdown')).targetId);
+      await wc.executeJavaScript(`document.querySelector('option').label = 'Economy delivery'`);
+    } finally { cdp.socket.close(); }
+    const next = await api(`/v1/tabs/${tab.id}/snapshot?since=${first.data.generation}`);
+    assert.equal(next.data.unchanged, undefined, 'an option-only edit invalidates the snapshot fingerprint');
+    assert.equal(next.data.elements.find(el => el.ref === select.ref).options[0].label, 'Economy delivery');
+    const denied = await api(`/v1/tabs/${tab.id}/actions`, 'POST', { action: 'eval', code: 'document.querySelector("select").options.length', epoch: tab.epoch });
+    assert.equal(denied.status, 403); assert.match(denied.data.error, /commit_required/);
+  } finally { await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch); }
 });
 
 test('a screenshot after scrolling 3000px is not blank', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 30000 }, async () => {
