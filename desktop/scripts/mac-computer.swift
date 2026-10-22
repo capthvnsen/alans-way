@@ -421,7 +421,7 @@ func hasOffscreenWindow(_ pid: pid_t) -> Bool {
 }
 
 let otherSpaceNote = "No window of this app is readable: its windows are on another Space, minimized or hidden (a full-screen app in front puts them on another Space). Its menus and a screenshot still work. To use its controls, bring it forward with activate, then take a fresh snapshot."
-let noWindowNote = "This app has no open windows. Its menus still work (menubar:true), for example File > New."
+let noWindowNote = "This app has no open windows. Open one with its shortcut (for example cmd+n or cmd+o) or its menus (menubar:true, for example File > New), then take a fresh snapshot."
 let unsureWindowNote = "Window titles are unavailable. This does not mean the app is closed. Continue with its available controls and menus; if it has no task window, open one."
 
 func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws -> Walk {
@@ -1140,10 +1140,12 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
                 AXUIElementSetAttributeValue(window, "AXMinimized" as CFString, kCFBooleanFalse)
             }
             guard app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]),
-                  waitFor({ NSWorkspace.shared.frontmostApplication?.processIdentifier == pid && hasOnScreenWindow(pid) }, timeout: 2) else {
-                throw Fail("failed", "Could not bring that app's window onto this screen. Ask the user to show it.")
+                  waitFor({ NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }, timeout: 2) else {
+                throw Fail("failed", "Could not bring that app forward. Ask the user to show it.")
             }
-            out["note"] = "Brought the app's window onto this screen. Take a fresh snapshot before acting."
+            out["note"] = waitFor({ hasOnScreenWindow(pid) }, timeout: 1)
+                ? "Brought the app's window onto this screen. Take a fresh snapshot before acting."
+                : noWindowNote
             break
         }
         guard let selected = try selectedWindow(pid, windowId), selected.onScreen,
@@ -1342,7 +1344,9 @@ func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?)
     let menuRef = node.map { inMenu($0.element) } ?? false
     guard let selected else {
         if action == "menu" || action == "activate" || menuRef { return }
-        throw Fail("no_window", "Take a window snapshot before acting.")
+        // With no window at all, a shortcut can only reach the app itself, which must be in front.
+        if action == "key" && !hasOnScreenWindow(pid) && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return }
+        throw Fail("no_window", hasOnScreenWindow(pid) ? "Take a window snapshot before acting." : noWindowNote)
     }
     guard selected.onScreen || action == "activate" else { throw Fail("stale_window", "That window is not on the current screen. Bring it forward with activate, then take a fresh snapshot.") }
     for (x, y) in [("x", "y"), ("x2", "y2")] {

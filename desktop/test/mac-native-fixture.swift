@@ -5,6 +5,7 @@ var screenRequests = 0
 func fixtureRequestScreen() -> Bool { screenRequests += 1; return fixtureScreen }
 var fixtureLocked = false
 var fixtureOnScreen = true
+var activateShowsWindow = true
 var fixtureIdle = 0.0
 var fixtureFront: pid_t? = 7
 var fixtureBundleId = "com.example.editor"
@@ -64,7 +65,7 @@ func fixtureOpen(at url: URL, configuration: NSWorkspace.OpenConfiguration, comp
 }
 func fixtureActivate(_ target: NSRunningApplication, options: NSApplication.ActivationOptions) -> Bool {
     fixtureFront = 7
-    fixtureOnScreen = true
+    fixtureOnScreen = activateShowsWindow
     attributes[AXKey(element: app), default: [:]]["AXFocusedWindow"] = window
     return true
 }
@@ -179,6 +180,16 @@ func fixture() throws {
         let reply = try runStep(7, ["action": "activate"], windowId: 41)
         try expectFixture(fixtureFront == 7 && (reply["note"] as? String ?? "").contains("snapshot"), "a window on another Space is brought forward, then re-read")
         try expectFixture(performed.isEmpty, "no window is raised before it can be verified")
+    case "activate-nowindow":
+        fixtureFront = 99; fixtureIdle = 2; fixtureOnScreen = false; activateShowsWindow = false
+        let reply = try runStep(7, ["action": "activate"], windowId: nil)
+        try expectFixture(fixtureFront == 7 && (reply["note"] as? String ?? "").contains("menu"), "an app with no window comes forward and says how to open one")
+        try validateWindowStep(7, ["action": "key"], nil)
+        fixtureFront = 99
+        do { try validateWindowStep(7, ["action": "key"], nil); throw Fail("fixture", "key to a windowless app in back must be refused") }
+        catch let failure as Fail { try expectFixture(failure.code == "no_window" && failure.message.contains("cmd+n"), "the refusal names a way to open a window: \(failure.message)") }
+        do { try validateWindowStep(7, ["action": "click", "x": 1, "y": 1], nil); throw Fail("fixture", "click without a window must be refused") }
+        catch let failure as Fail { try expectFixture(failure.code == "no_window", "click needs a window") }
     default: throw Fail("fixture", "unknown scenario")
     }
 }
