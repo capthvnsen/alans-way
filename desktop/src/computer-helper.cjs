@@ -261,8 +261,8 @@ function normalizeStep(item) {
   }
   if (action === 'type' && (typeof step.text !== 'string' || step.text.length > 2000))
     throw fail('bad_request', 'Text must be a string of at most 2000 characters.');
-  // Only a desktop the agent owns types at the focused window; elsewhere apps never take focus.
-  const focusType = action === 'type' && step.ref === undefined && process.env.ALANS_WAY_AGENT_DESKTOP === '1';
+  // A desktop the agent owns types at the focused window; so does a Mac, whose helper checks that window and field first.
+  const focusType = action === 'type' && step.ref === undefined && (process.env.ALANS_WAY_AGENT_DESKTOP === '1' || process.platform === 'darwin');
   if (REF_ACTIONS.has(action) && !focusType && typeof step.ref !== 'string') throw fail('bad_request', `${action} needs a ref.`);
   if (action === 'select_text' && (typeof step.text !== 'string' || !step.text || step.text.length > 2000 ||
       ['prefix', 'suffix'].some((key) => step[key] !== undefined && (typeof step[key] !== 'string' || step[key].length > 2000)) ||
