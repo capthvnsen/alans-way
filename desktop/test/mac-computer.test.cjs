@@ -35,6 +35,7 @@ function fixtureBinary(t) {
     ['NSWorkspace.shared.fullPath(', 'fixturePath('],
     ['NSWorkspace.shared.openApplication(', 'fixtureOpen('],
     ['app.activate(options:', 'fixtureActivate(app, options:'],
+    ['event.postToPid(pid)', 'fixturePost(event, pid)'],
   ]) source = source.split(from).join(to);
   const file = path.join(dir, 'fixture.swift');
   fs.writeFileSync(file, source + '\n' + fs.readFileSync(path.join(__dirname, 'mac-native-fixture.swift'), 'utf8'));
@@ -46,7 +47,7 @@ function fixtureBinary(t) {
   return binary;
 }
 
-for (const scenario of ['front-read', 'front-action', 'menu-retry', 'launch', 'window-focus', 'window-ref', 'permissions', 'screen-request', 'activate', 'activate-offscreen', 'activate-nowindow']) {
+for (const scenario of ['front-read', 'front-action', 'menu-retry', 'launch', 'window-focus', 'window-ref', 'permissions', 'screen-request', 'activate', 'activate-offscreen', 'activate-nowindow', 'type-focused']) {
   test(`native fixture: ${scenario}`, { skip, timeout: 120000 }, (t) => {
     const result = spawnSync(fixtureBinary(t), [scenario], { encoding: 'utf8', timeout: 10000 });
     assert.equal(result.status, 0, result.stdout + result.stderr);

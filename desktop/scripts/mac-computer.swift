@@ -1193,10 +1193,17 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
         guard result == .success else { throw Fail("failed", "The app could not perform that action (\(result.rawValue)).") }
         out["via"] = "ax"
     case "type":
-        let node = try resolve(pid, step["ref"] as? String ?? "")
-        try rejectSecure(node)
         guard let text = step["text"] as? String else { throw Fail("bad_request", "type needs text.") }
         if text.count > 2000 { throw Fail("bad_request", "Text is too long.") }
+        guard let ref = step["ref"] as? String, !ref.isEmpty else {
+            // No field named: type into whatever has keyboard focus, such as a rename box the tree does not list.
+            try rejectSecureFocus(pid)
+            for character in text { try postKey(pid, key: character == "\n" ? "return" : String(character), modifiers: []) }
+            out["via"] = "keys"
+            break
+        }
+        let node = try resolve(pid, ref)
+        try rejectSecure(node)
         let result = AXUIElementSetAttributeValue(node.element, "AXValue" as CFString, text as CFString)
         if result != .success { throw Fail("failed", "Could not set that text (\(result.rawValue)).") }
     case "click":
@@ -1361,7 +1368,7 @@ func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?)
     if let node, !menuRef, !belongsToWindow(node.element, selected) {
         throw Fail("stale_ref", "That control is no longer in the selected window. Take a fresh snapshot.")
     }
-    if action == "key" || action == "menu" || menuRef {
+    if action == "key" || (action == "type" && step["ref"] == nil) || action == "menu" || menuRef {
         guard let focused = axValue(appElement(pid), "AXFocusedWindow"), CFGetTypeID(focused) == AXUIElementGetTypeID(), belongsToWindow(focused as! AXUIElement, selected) else {
             throw Fail("window_unverified", "The selected window does not have keyboard focus. Bring that window forward when you are idle, then take a fresh snapshot.")
         }

@@ -6,6 +6,13 @@ func fixtureRequestScreen() -> Bool { screenRequests += 1; return fixtureScreen 
 var fixtureLocked = false
 var fixtureOnScreen = true
 var activateShowsWindow = true
+var posted: [String] = []
+func fixturePost(_ event: CGEvent, _ pid: pid_t) {
+    var length = 0
+    var units = [UniChar](repeating: 0, count: 8)
+    event.keyboardGetUnicodeString(maxStringLength: 8, actualStringLength: &length, unicodeString: &units)
+    if event.type == .keyDown { posted.append(String(utf16CodeUnits: units, count: length)) }
+}
 var fixtureIdle = 0.0
 var fixtureFront: pid_t? = 7
 var fixtureBundleId = "com.example.editor"
@@ -190,6 +197,17 @@ func fixture() throws {
         catch let failure as Fail { try expectFixture(failure.code == "no_window" && failure.message.contains("cmd+n"), "the refusal names a way to open a window: \(failure.message)") }
         do { try validateWindowStep(7, ["action": "click", "x": 1, "y": 1], nil); throw Fail("fixture", "click without a window must be refused") }
         catch let failure as Fail { try expectFixture(failure.code == "no_window", "click needs a window") }
+    case "type-focused":
+        fixtureIdle = 2
+        _ = try runStep(7, ["action": "type", "text": "final.txt"], windowId: 41)
+        try expectFixture(posted.joined() == "final.txt", "focused typing posts each character: \(posted)")
+        try validateWindowStep(7, ["action": "type", "text": "x"], selected)
+        attributes[AXKey(element: app)]?["AXFocusedWindow"] = foreign
+        try refuses("window_unverified") { try validateWindowStep(7, ["action": "type", "text": "x"], selected) }
+        attributes[AXKey(element: app)]?["AXFocusedWindow"] = window
+        attributes[AXKey(element: app)]?["AXFocusedUIElement"] = field
+        attributes[AXKey(element: field)]?["AXSubrole"] = "AXSecureTextField"
+        try refuses("off_limits") { _ = try runStep(7, ["action": "type", "text": "secret"], windowId: 41) }
     default: throw Fail("fixture", "unknown scenario")
     }
 }
