@@ -207,6 +207,9 @@ func fixture() throws {
         fixtureFront = 99; viaHID = 0; posted = []
         _ = try runStep(7, ["action": "key", "key": "a"], windowId: 41)
         try expectFixture(viaHID == 0 && posted == ["a"], "an app in back gets keys only by pid")
+        viaHID = 0; posted = []
+        _ = try runStep(7, ["action": "type", "text": "x"], windowId: 41)
+        try expectFixture(fixtureFront == 7 && viaHID == 2 && posted == ["x"], "focused typing brings the app forward first so its field gets the keys")
         fixtureFront = 7
         try validateWindowStep(7, ["action": "type", "text": "x"], selected)
         attributes[AXKey(element: app)]?["AXFocusedWindow"] = foreign
@@ -215,6 +218,13 @@ func fixture() throws {
         attributes[AXKey(element: app)]?["AXFocusedUIElement"] = field
         attributes[AXKey(element: field)]?["AXSubrole"] = "AXSecureTextField"
         try refuses("off_limits") { _ = try runStep(7, ["action": "type", "text": "secret"], windowId: 41) }
+    case "shortcut-front":
+        fixtureIdle = 2; fixtureOnScreen = false
+        let stale = try selectedWindow(7, 41)
+        try validateWindowStep(7, ["action": "key", "key": "n", "modifiers": ["meta"]], stale)
+        try refuses("stale_window") { try validateWindowStep(7, ["action": "key", "key": "a", "modifiers": []], stale) }
+        fixtureFront = 99
+        try refuses("stale_window") { try validateWindowStep(7, ["action": "key", "key": "n", "modifiers": ["meta"]], stale) }
     default: throw Fail("fixture", "unknown scenario")
     }
 }

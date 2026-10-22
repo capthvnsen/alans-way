@@ -1199,6 +1199,11 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
         guard let ref = step["ref"] as? String, !ref.isEmpty else {
             // No field named: type into whatever has keyboard focus, such as a rename box the tree does not list.
             try rejectSecureFocus(pid)
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+                let app = try checkApp(pid, action: true, activating: true)
+                _ = app.activate(options: [.activateIgnoringOtherApps])
+                _ = waitFor({ NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }, timeout: 1)
+            }
             for character in text { try postKey(pid, key: character == "\n" ? "return" : String(character), modifiers: []) }
             out["via"] = "keys"
             break
@@ -1350,6 +1355,9 @@ func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?)
     let action = step["action"] as? String ?? ""
     let node = (step["ref"] as? String).flatMap { caches[pid]?.nodes[$0] }
     let menuRef = node.map { inMenu($0.element) } ?? false
+    // A Cmd shortcut is an app command: with the app in front it reaches that app's key window or panel, whichever window was read.
+    if action == "key", (step["modifiers"] as? [String] ?? []).contains("meta"),
+       NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return }
     guard let selected else {
         if action == "menu" || action == "activate" || menuRef { return }
         // With no window at all, a shortcut can only reach the app itself, which must be in front.
