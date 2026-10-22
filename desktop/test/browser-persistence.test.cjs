@@ -227,7 +227,8 @@ test('shutdown retains session-only sign-ins in encrypted form without changing 
     cookies: { get: async filter => { assert.deepEqual({ ...filter }, { session: true }); return cookies; }, flushStore: async () => {} },
     flushStorageData() {},
   }]));
-  const safeStorage = { isEncryptionAvailable: () => true, encryptString: text => { assert.ok(text.includes('fixture-session')); return Buffer.from('encrypted-fixture'); } };
+  const safeStorage = { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => 'gnome_libsecret',
+    encryptString: text => { assert.ok(text.includes('fixture-session')); return Buffer.from('encrypted-fixture'); } };
   const context = vm.createContext({ prefs, session: { fromPartition: name => sessions.get(name) }, safeStorage, savePreferences() {}, persistSettingsPreferences() {},
     createBrowserSessionStore: require('node:fs').existsSync(path.join(__dirname, '../src/browser-session.cjs')) ? require('../src/browser-session.cjs').createBrowserSessionStore : undefined,
     process: { platform: 'darwin' }, Buffer,
