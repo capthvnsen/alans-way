@@ -420,7 +420,7 @@ func hasOffscreenWindow(_ pid: pid_t) -> Bool {
     }
 }
 
-let otherSpaceNote = "No window of this app is readable: its windows are on another Space, minimized or hidden (a full-screen app in front puts them on another Space). Its menus and a screenshot still work. To use its controls, ask the user to bring it onto the current Space."
+let otherSpaceNote = "No window of this app is readable: its windows are on another Space, minimized or hidden (a full-screen app in front puts them on another Space). Its menus and a screenshot still work. To use its controls, bring it forward with activate, then take a fresh snapshot."
 let noWindowNote = "This app has no open windows. Its menus still work (menubar:true), for example File > New."
 let unsureWindowNote = "Window titles are unavailable. This does not mean the app is closed. Continue with its available controls and menus; if it has no task window, open one."
 
@@ -1011,7 +1011,7 @@ func windowIdOf(_ request: JSON) throws -> CGWindowID? {
     return value.uint32Value
 }
 
-let elsewhereShotNote = "Read only: this window is on another Space, minimized or hidden, where Accessibility cannot reach it and clicks at these coordinates may not land. To act on it, ask the user to bring it onto the current Space."
+let elsewhereShotNote = "Read only: this window is on another Space, minimized or hidden, where Accessibility cannot reach it and clicks at these coordinates may not land. To act on it, bring it forward with activate, then take a fresh snapshot."
 
 // ScreenCaptureKit's screenshot call needs macOS 14; the app supports 13.
 @available(macOS 14, *)
@@ -1344,7 +1344,7 @@ func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?)
         if action == "menu" || action == "activate" || menuRef { return }
         throw Fail("no_window", "Take a window snapshot before acting.")
     }
-    guard selected.onScreen || action == "activate" else { throw Fail("stale_window", "That window is not on the current screen. Ask the user to bring it back.") }
+    guard selected.onScreen || action == "activate" else { throw Fail("stale_window", "That window is not on the current screen. Bring it forward with activate, then take a fresh snapshot.") }
     for (x, y) in [("x", "y"), ("x2", "y2")] {
         if let px = number(step[x]), let py = number(step[y]) {
             let point = CGPoint(x: px, y: py)
