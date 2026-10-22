@@ -1421,6 +1421,8 @@ func launchApp(_ request: JSON) throws -> JSON {
     var launched: NSRunningApplication?
     NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, _ in launched = app; finished = true }
     guard waitFor({ finished }), let launched else { throw Fail("failed", "Could not open that app. Check whether it opened before retrying.") }
+    // An instance macOS lost track of (automatic termination gone wrong) reports pid -1 and has no windows.
+    guard launched.processIdentifier > 0 else { throw Fail("unresponsive", "That app is running but macOS cannot reach it. Ask the user to quit it, then retry.") }
     return ["pid": Int(launched.processIdentifier), "bundleId": id]
 }
 

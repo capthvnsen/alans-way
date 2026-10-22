@@ -15,6 +15,8 @@ var menuError = AXError.cannotComplete
 var performed: [String] = []
 var opened = 0
 var bundleURL: URL?
+var launchUnregistered = false
+let registeredApp = NSWorkspace.shared.runningApplications.first { $0.processIdentifier > 0 }!
 let app = appElement(7)
 let window = AXUIElementCreateApplication(1001)
 let field = AXUIElementCreateApplication(1002)
@@ -57,7 +59,8 @@ func fixturePath(forApplication name: String) -> String? { bundleURL?.path }
 func fixtureOpen(at url: URL, configuration: NSWorkspace.OpenConfiguration, completionHandler: ((NSRunningApplication?, Error?) -> Void)?) {
     opened += 1
     if configuration.activates { fatalError("launch must stay in background") }
-    completionHandler?(NSRunningApplication.current, nil)
+    // A command-line process is not registered with LaunchServices, so its own entry reports pid -1.
+    completionHandler?(launchUnregistered ? NSRunningApplication.current : registeredApp, nil)
 }
 func fixtureActivate(_ target: NSRunningApplication, options: NSApplication.ActivationOptions) -> Bool {
     fixtureFront = 7
@@ -117,11 +120,14 @@ func fixture() throws {
         bundleURL = dir
         for name in ["com.example.calculator", "Calculator"] {
             let reply = try dispatch(["cmd": "launch", "app": name])
-            try expectFixture(reply["pid"] as? Int == Int(NSRunningApplication.current.processIdentifier), "launch returns pid")
+            try expectFixture(reply["pid"] as? Int == Int(registeredApp.processIdentifier), "launch returns pid")
         }
+        launchUnregistered = true
+        try refuses("unresponsive") { _ = try dispatch(["cmd": "launch", "app": "Calculator"]) }
+        launchUnregistered = false
         policyExact = ["com.example.calculator"]
         try refuses("off_limits") { _ = try dispatch(["cmd": "launch", "app": "Calculator"]) }
-        try expectFixture(opened == 2, "blocked launch must not open")
+        try expectFixture(opened == 3, "blocked launch must not open")
         for name in ["", "/Applications/Calculator.app", "https://example.com"] {
             try refuses("bad_request") { _ = try dispatch(["cmd": "launch", "app": name]) }
         }
