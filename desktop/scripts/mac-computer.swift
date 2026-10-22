@@ -54,6 +54,17 @@ func screenLocked() -> Bool {
     (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true
 }
 
+// When this helper last posted input; the system counts it as input too.
+var lastPosted: Date?
+
+// The person is active only for input newer than this helper's own last event; older input was checked before that event.
+func personActive() -> Bool {
+    let idle = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: kCGAnyInputEventType)
+    guard idle < 2 else { return false }
+    guard let lastPosted else { return true }
+    return idle < Date().timeIntervalSince(lastPosted) - 0.3
+}
+
 @discardableResult
 func checkApp(_ pid: pid_t, action: Bool = false, activating: Bool = false) throws -> NSRunningApplication {
     guard let app = NSRunningApplication(processIdentifier: pid), app.activationPolicy == .regular, !app.isTerminated else {
@@ -61,8 +72,7 @@ func checkApp(_ pid: pid_t, action: Bool = false, activating: Bool = false) thro
     }
     if isBlocked(app.bundleIdentifier ?? "") { throw Fail("off_limits", "That app is off limits.") }
     if screenLocked() { throw Fail("locked", "The screen is locked, so apps cannot be read or driven. Ask the user to unlock it, then retry.") }
-    if action && (activating || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid),
-       CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: kCGAnyInputEventType) < 2 {
+    if action && (activating || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid), personActive() {
         throw Fail("in_front", inFrontMessage)
     }
     return app
@@ -631,7 +641,7 @@ var postedMouse = false
 
 func postMouse(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: Int, dragTo: CGPoint?) {
     postedMouse = true
-    let source = CGEventSource(stateID: .hidSystemState)
+    let source = CGEventSource(stateID: .privateState)
     let down: CGEventType = button == .right ? .rightMouseDown : .leftMouseDown
     let up: CGEventType = button == .right ? .rightMouseUp : .leftMouseUp
     let drag: CGEventType = button == .right ? .rightMouseDragged : .leftMouseDragged
@@ -639,6 +649,7 @@ func postMouse(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: In
         let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: at, mouseButton: button)
         event?.setIntegerValueField(.mouseEventClickState, value: Int64(state))
         event?.postToPid(pid)
+        lastPosted = Date()
     }
     post(.mouseMoved, point, 0)
     if let dragTo {
@@ -781,7 +792,8 @@ func postKey(_ pid: pid_t, key: String, modifiers: [String]) throws {
     let known = keyCodes[key]
     guard known != nil || key.count == 1 else { throw Fail("bad_request", "Unknown key \"\(key)\".") }
     let flags = keyFlags(modifiers)
-    let source = CGEventSource(stateID: .hidSystemState)
+    // A private source keeps these keys out of the hardware idle time that tells the person's own input apart.
+    let source = CGEventSource(stateID: .privateState)
     for isDown in [true, false] {
         guard let event = CGEvent(keyboardEventSource: source, virtualKey: known ?? 0, keyDown: isDown) else { throw Fail("failed", "Could not build the key event.") }
         event.flags = flags
@@ -790,7 +802,8 @@ func postKey(_ pid: pid_t, key: String, modifiers: [String]) throws {
             event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
         }
         // Open and Save panels run in another process: only session delivery reaches them while the app is in front.
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { event.post(tap: .cghidEventTap) } else { event.postToPid(pid) }
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { event.post(tap: .cgSessionEventTap) } else { event.postToPid(pid) }
+        lastPosted = Date()
         if isDown { usleep(8000) }
     }
 }
@@ -837,10 +850,11 @@ func scrollByWheel(_ pid: pid_t, at point: CGPoint, direction: String, amount: D
     case "left": dx = pixels
     default: dx = -pixels
     }
-    guard let event = CGEvent(scrollWheelEvent2Source: CGEventSource(stateID: .hidSystemState), units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else { return false }
+    guard let event = CGEvent(scrollWheelEvent2Source: CGEventSource(stateID: .privateState), units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else { return false }
     event.location = point
     postedMouse = true
     event.postToPid(pid)
+    lastPosted = Date()
     return true
 }
 
@@ -1204,6 +1218,17 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
                 _ = app.activate(options: [.activateIgnoringOtherApps])
                 _ = waitFor({ NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }, timeout: 1)
             }
+            // A text field that takes an insertion gets the exact text where its cursor is, as typing would.
+            if let value = axValue(appElement(pid), "AXFocusedUIElement"), CFGetTypeID(value) == AXUIElementGetTypeID() {
+                let focused = value as! AXUIElement
+                var settable: DarwinBoolean = false
+                if ["AXTextField", "AXTextArea"].contains(axString(focused, "AXRole")),
+                   AXUIElementIsAttributeSettable(focused, "AXSelectedText" as CFString, &settable) == .success, settable.boolValue,
+                   AXUIElementSetAttributeValue(focused, "AXSelectedText" as CFString, text as CFString) == .success {
+                    out["via"] = "ax"
+                    break
+                }
+            }
             for character in text { try postKey(pid, key: character == "\n" ? "return" : String(character), modifiers: []) }
             out["via"] = "keys"
             break
@@ -1351,6 +1376,17 @@ func belongsToWindow(_ element: AXUIElement, _ selected: SelectedWindow) -> Bool
     return false
 }
 
+// A front app's floating field editor, such as Finder's rename box: no focused window, and the field's parent is the app.
+func focusedInlineEditor(_ pid: pid_t) -> AXUIElement? {
+    let root = appElement(pid)
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+          axValue(root, "AXFocusedWindow").map({ CFGetTypeID($0) != AXUIElementGetTypeID() }) ?? true,
+          let value = axValue(root, "AXFocusedUIElement"), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+    let field = value as! AXUIElement
+    guard ["AXTextField", "AXTextArea"].contains(axString(field, "AXRole")), let parent = axParent(field), CFEqual(parent, root) else { return nil }
+    return field
+}
+
 func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?) throws {
     let action = step["action"] as? String ?? ""
     let node = (step["ref"] as? String).flatMap { caches[pid]?.nodes[$0] }
@@ -1378,7 +1414,12 @@ func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?)
         throw Fail("stale_ref", "That control is no longer in the selected window. Take a fresh snapshot.")
     }
     if action == "key" || (action == "type" && step["ref"] == nil) || action == "menu" || menuRef {
-        guard let focused = axValue(appElement(pid), "AXFocusedWindow"), CFGetTypeID(focused) == AXUIElementGetTypeID(), belongsToWindow(focused as! AXUIElement, selected) else {
+        // Inline editors such as Finder's rename box can leave no focused window while their field has focus.
+        let inSelected = { (name: String) -> Bool in
+            guard let value = axValue(appElement(pid), name), CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
+            return belongsToWindow(value as! AXUIElement, selected)
+        }
+        guard inSelected("AXFocusedWindow") || inSelected("AXFocusedUIElement") || focusedInlineEditor(pid) != nil else {
             throw Fail("window_unverified", "The selected window does not have keyboard focus. Bring that window forward when you are idle, then take a fresh snapshot.")
         }
     }

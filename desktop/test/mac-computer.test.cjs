@@ -20,6 +20,7 @@ function fixtureBinary(t) {
     ['AXUIElementCopyMultipleAttributeValues(', 'fixtureAttributes('],
     ['AXUIElementPerformAction(', 'fixturePerform('],
     ['AXUIElementSetAttributeValue(', 'fixtureSet('],
+    ['AXUIElementIsAttributeSettable(', 'fixtureSettable('],
     ['CGWindowListCopyWindowInfo(', 'fixtureWindows('],
     ['AXIsProcessTrusted()', 'fixtureTrusted'],
     ['CGPreflightScreenCaptureAccess()', 'fixtureScreen'],
@@ -30,13 +31,13 @@ function fixtureBinary(t) {
     ['app.bundleIdentifier ?? ""', 'fixtureBundleId'],
     ['NSWorkspace.shared.frontmostApplication?.processIdentifier', 'fixtureFront'],
     ['(CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true', 'fixtureLocked'],
-    ['CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: kCGAnyInputEventType)', 'fixtureIdle'],
+    ['CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: kCGAnyInputEventType)', 'fixtureIdle'],
     ['NSWorkspace.shared.urlForApplication(', 'fixtureURL('],
     ['NSWorkspace.shared.fullPath(', 'fixturePath('],
     ['NSWorkspace.shared.openApplication(', 'fixtureOpen('],
     ['app.activate(options:', 'fixtureActivate(app, options:'],
     ['event.postToPid(pid)', 'fixturePost(event, pid)'],
-    ['event.post(tap: .cghidEventTap)', 'fixtureHID(event, pid)'],
+    ['event.post(tap: .cgSessionEventTap)', 'fixtureHID(event, pid)'],
   ]) source = source.split(from).join(to);
   const file = path.join(dir, 'fixture.swift');
   fs.writeFileSync(file, source + '\n' + fs.readFileSync(path.join(__dirname, 'mac-native-fixture.swift'), 'utf8'));
@@ -48,7 +49,7 @@ function fixtureBinary(t) {
   return binary;
 }
 
-for (const scenario of ['front-read', 'front-action', 'menu-retry', 'launch', 'window-focus', 'window-ref', 'permissions', 'screen-request', 'activate', 'activate-offscreen', 'activate-nowindow', 'type-focused', 'shortcut-front']) {
+for (const scenario of ['front-read', 'front-action', 'menu-retry', 'launch', 'window-focus', 'window-ref', 'permissions', 'screen-request', 'activate', 'activate-offscreen', 'activate-nowindow', 'type-focused', 'shortcut-front', 'own-input', 'focus-field']) {
   test(`native fixture: ${scenario}`, { skip, timeout: 120000 }, (t) => {
     const result = spawnSync(fixtureBinary(t), [scenario], { encoding: 'utf8', timeout: 10000 });
     assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -149,6 +150,13 @@ test('the Mac helper checks focus before menu items, drag ends, and defaults to 
   assert.match(drag, /elementAt\(pid, end\), isSecure/);
   assert.match(swift, /struct Cache \{[^}]*var menubar: Bool/);
   assert.match(swift, /request\["menubar"\] as\? Bool \?\? caches\[pid\]\?\.menubar \?\? false/);
+});
+
+test('the Mac helper tells the person\'s input apart from its own events', () => {
+  const swift = fs.readFileSync(path.join(__dirname, '../scripts/mac-computer.swift'), 'utf8');
+  assert.ok(!swift.includes('stateID: .hidSystemState'), 'synthetic events must come from a private source');
+  assert.ok(!swift.includes('.combinedSessionState'), 'idle time must count hardware input only');
+  assert.ok(!swift.includes('cghidEventTap'), 'session delivery keeps posted events out of hardware idle time');
 });
 
 test('the Mac helper checks focus before pressing or clicking menu items', () => {

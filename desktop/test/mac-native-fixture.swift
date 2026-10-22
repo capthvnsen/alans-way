@@ -55,6 +55,10 @@ func fixturePerform(_ element: AXUIElement, _ action: CFString) -> AXError {
     performed.append(action as String)
     return .success
 }
+func fixtureSettable(_ element: AXUIElement, _ name: CFString, _ settable: UnsafeMutablePointer<DarwinBoolean>) -> AXError {
+    settable.pointee = DarwinBoolean(attributes[AXKey(element: element)]?[name as String] != nil)
+    return .success
+}
 func fixtureSet(_ element: AXUIElement, _ name: CFString, _ value: CFTypeRef) -> AXError {
     attributes[AXKey(element: element), default: [:]][name as String] = value
     return .success
@@ -225,6 +229,31 @@ func fixture() throws {
         try refuses("stale_window") { try validateWindowStep(7, ["action": "key", "key": "a", "modifiers": []], stale) }
         fixtureFront = 99
         try refuses("stale_window") { try validateWindowStep(7, ["action": "key", "key": "n", "modifiers": ["meta"]], stale) }
+    case "own-input":
+        fixtureFront = 7; fixtureIdle = 0.1
+        lastPosted = Date()
+        _ = try checkApp(7, action: true)
+        lastPosted = Date().addingTimeInterval(-1)
+        try refuses("in_front") { _ = try checkApp(7, action: true) }
+        lastPosted = nil
+        try refuses("in_front") { _ = try checkApp(7, action: true) }
+        _ = try runStep(7, ["action": "key", "key": "a"], windowId: 41)
+        try expectFixture(lastPosted.map { Date().timeIntervalSince($0) < 1 } == true, "posting keys records the time")
+    case "focus-field":
+        // Finder's inline rename box: no focused window, and the focused field's parent is the app itself.
+        let editor = AXUIElementCreateApplication(1006)
+        attributes[AXKey(element: editor)] = ["AXRole": "AXTextField", "AXParent": app, "AXValue": "a.txt", "AXSelectedText": "a"]
+        attributes[AXKey(element: app)]?["AXFocusedWindow"] = AXError.noValue
+        attributes[AXKey(element: app)]?["AXFocusedUIElement"] = editor
+        fixtureFront = 7; fixtureIdle = 2
+        try validateWindowStep(7, ["action": "type", "text": "b"], selected)
+        _ = try runStep(7, ["action": "type", "text": "final"], windowId: 41)
+        try expectFixture(attributes[AXKey(element: editor)]?["AXSelectedText"] as? String == "final" && posted.isEmpty, "text goes into the focused field's selection, not as keys")
+        fixtureFront = 99
+        try refuses("window_unverified") { try validateWindowStep(7, ["action": "type", "text": "b"], selected) }
+        fixtureFront = 7
+        attributes[AXKey(element: app)]?["AXFocusedUIElement"] = foreign
+        try refuses("window_unverified") { try validateWindowStep(7, ["action": "type", "text": "b"], selected) }
     default: throw Fail("fixture", "unknown scenario")
     }
 }
