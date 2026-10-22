@@ -65,7 +65,12 @@ Electron also explicitly disables session-cookie persistence and restoration,
 even in persistent partitions. See [Electron's network context implementation](https://github.com/electron/electron/blob/v44.5.1/shell/browser/net/network_context_service.cc#L101).
 `src/browser-session.cjs:6` saves only session cookies with OS encryption in the
 existing private preferences file, restores before pages load, preserves
-host-only/Secure/HttpOnly/SameSite flags, and does not invent expiry dates.
+host-only/Secure/HttpOnly/SameSite flags and partition keys, and does not invent expiry dates.
+The [Electron cookie converter](https://github.com/electron/electron/blob/v44.5.1/shell/browser/api/electron_api_cookies.cc#L54)
+omits partition keys, so the snapshot uses Chromium's cookie protocol through
+private, unloaded views in each session partition. Those views are always
+destroyed. Opaque partition keys cannot survive a process and are not restored
+as unpartitioned cookies.
 Live cookie changes, logout, explicit clearing, and quit refresh that snapshot.
 Writes are serialized and use the latest preferences after asynchronous reads.
 No plaintext fallback is allowed, including Linux `basic_text`.
@@ -82,7 +87,8 @@ native persistent cookies and site storage do not use this extra snapshot.
   barriers, staging, encrypted restoration, logout, write errors and safe fallback.
 - `node test/browser-storage-electron.cjs` uses a local HTTP fixture and three
   windowless Electron processes with temporary HOME/profile directories. It
-  checks cookies/local storage across forced exits and clearing across relaunch.
+  checks cookies/local storage across forced exits and clearing across relaunch,
+  including third-party partition keys and isolation between browser and chat.
 - `npm run test:restore-tabs` uses hidden windows, blocked external services,
   temporary profiles and six launches. It checks pending navigation, popups,
   15 user tabs, active selection, and task exclusion across repeated restarts.

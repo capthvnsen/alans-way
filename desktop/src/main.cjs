@@ -1277,7 +1277,7 @@ const checkVersionsWhenIdle = () => {
   if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) return;
   checkVmVersions().catch((error) => logError('vm-check', error));
 };
-const browserSessionStore = createBrowserSessionStore({ session, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs) });
+const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs) });
 async function saveBrowserSession() {
   savePreferences();
   await Promise.all(['persist:browser', 'persist:telegram'].map(async partition => {

@@ -54,15 +54,20 @@ if (typeof electron === 'string') {
       encryptString: text => Buffer.from(text.split('').reverse().join('')),
       decryptString: value => value.toString().split('').reverse().join('') };
     const savePreferences = () => require('../src/shell-support.cjs').writePrivateJson(file, prefs);
-    const browserSessionStore = require('../src/browser-session.cjs').createBrowserSessionStore({ session, safeStorage, getPreferences: () => prefs, savePreferences });
+    const browserSessionStore = require('../src/browser-session.cjs').createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences });
     const browser = session.fromPartition('persist:browser');
     assert.ok(browser.getStoragePath().startsWith(root + path.sep), 'browser profile must stay beneath stable app data');
     await browserSessionStore.restore();
     const view = new WebContentsView({ webPreferences: { partition: 'persist:browser', sandbox: true } });
     await view.webContents.loadURL(process.env.FIXTURE_URL);
+    const partitionKey = { topLevelSite: 'https://top.example', hasCrossSiteAncestor: true };
     if (phase === 'write') {
       await browser.cookies.set({ url: process.env.FIXTURE_URL, name: 'fixture-session', value: 'fixture-only', httpOnly: true });
       await browser.cookies.set({ url: process.env.FIXTURE_URL, name: 'fixture-expiring', value: 'fixture-only', expirationDate: Date.now() / 1000 + 3600 });
+      await session.fromPartition('persist:telegram').cookies.set({ url: process.env.FIXTURE_URL, name: 'fixture-chat', value: 'fixture-only' });
+      view.webContents.debugger.attach('1.3');
+      await view.webContents.debugger.sendCommand('Network.setCookies', { cookies: [{ url: 'https://third.example/', name: 'fixture-partitioned', value: 'fixture-only', secure: true, httpOnly: true, sameSite: 'None', partitionKey }] });
+      view.webContents.debugger.detach();
       await view.webContents.executeJavaScript("localStorage.setItem('fixture', 'retained')");
     } else {
       assert.equal(await view.webContents.executeJavaScript("localStorage.getItem('fixture')"), 'retained');
@@ -70,6 +75,15 @@ if (typeof electron === 'string') {
       const persistent = await browser.cookies.get({ name: 'fixture-expiring' });
       assert.equal(transient.length, phase === 'cleared' ? 0 : 1);
       assert.equal(persistent.length, phase === 'cleared' ? 0 : 1);
+      assert.equal((await browser.cookies.get({ name: 'fixture-chat' })).length, 0);
+      assert.equal((await session.fromPartition('persist:telegram').cookies.get({ name: 'fixture-chat' })).length, 1);
+      assert.equal((await session.fromPartition('persist:telegram').cookies.get({ name: 'fixture-session' })).length, 0);
+      view.webContents.debugger.attach('1.3');
+      const { cookies } = await view.webContents.debugger.sendCommand('Network.getAllCookies');
+      view.webContents.debugger.detach();
+      const partitioned = cookies.filter(cookie => cookie.name === 'fixture-partitioned');
+      assert.equal(partitioned.length, phase === 'cleared' ? 0 : 1);
+      if (phase === 'restore') assert.deepEqual(partitioned[0].partitionKey, partitionKey);
       if (phase === 'restore') {
         assert.equal(transient[0].session, true); assert.equal(transient[0].httpOnly, true); assert.equal(transient[0].hostOnly, true);
         const clearStart = source.indexOf("      case 'clear-cookies':");
