@@ -1004,6 +1004,11 @@ func selectedWindow(_ pid: pid_t, _ id: CGWindowID?) throws -> SelectedWindow? {
         guard frame.width >= 40, frame.height >= 40 else { return nil }
         return SelectedWindow(id: number.uint32Value, frame: frame, onScreen: (item[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true, titled: !(item[kCGWindowName as String] as? String ?? "").isEmpty)
     }
+    // Unnamed, read the window the app has focused, such as an Open panel in front of its document.
+    if id == nil, let value = axValue(appElement(pid), "AXFocusedWindow"), CFGetTypeID(value) == AXUIElementGetTypeID(),
+       let focused = windows.first(where: { $0.onScreen && matchesWindow(value as! AXUIElement, $0) }) {
+        return focused
+    }
     return try chooseWindow(windows, id)
 }
 

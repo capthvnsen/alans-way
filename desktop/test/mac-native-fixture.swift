@@ -67,8 +67,17 @@ func fixtureSet(_ element: AXUIElement, _ name: CFString, _ value: CFTypeRef) ->
     return .success
 }
 var fixtureNoWindows = false
+var fixtureDialog = false
 func fixtureWindows(_ options: CGWindowListOption, _ id: CGWindowID) -> CFArray? {
     if fixtureNoWindows { return [] as CFArray }
+    if fixtureDialog {
+        return [[kCGWindowOwnerPID as String: 7, kCGWindowLayer as String: 0, kCGWindowNumber as String: 41,
+                 kCGWindowBounds as String: ["X": 10, "Y": 20, "Width": 420, "Height": 520],
+                 kCGWindowIsOnscreen as String: true, kCGWindowName as String: "Task"],
+                [kCGWindowOwnerPID as String: 7, kCGWindowLayer as String: 0, kCGWindowNumber as String: 44,
+                 kCGWindowBounds as String: ["X": 60, "Y": 80, "Width": 300, "Height": 200],
+                 kCGWindowIsOnscreen as String: true, kCGWindowName as String: "Open"]] as CFArray
+    }
     return [[kCGWindowOwnerPID as String: 7, kCGWindowLayer as String: 0, kCGWindowNumber as String: 41,
              kCGWindowBounds as String: ["X": 10, "Y": 20, "Width": 420, "Height": 520],
              kCGWindowIsOnscreen as String: fixtureOnScreen, kCGWindowName as String: "Task"]] as CFArray
@@ -275,6 +284,15 @@ func fixture() throws {
         fixtureFront = 99; fixtureIdle = 2; activateFocus = panel
         let reply = try runStep(7, ["action": "activate"], windowId: 41)
         try expectFixture(fixtureFront == 7 && (reply["note"] as? String ?? "").contains("fresh snapshot"), "an app in front with its own dialog focused is brought forward, then re-read")
+    case "focused-dialog":
+        // An app whose Open panel has focus: reading the app reads the panel, not the bigger document window.
+        fixtureDialog = true
+        let panel = AXUIElementCreateApplication(1008)
+        attributes[AXKey(element: panel)] = ["AXRole": "AXWindow", "AXWindowNumber": 44]
+        try expectFixture(try selectedWindow(7, nil)?.id == 41, "without focus information the largest window is read")
+        attributes[AXKey(element: app)]?["AXFocusedWindow"] = panel
+        try expectFixture(try selectedWindow(7, nil)?.id == 44, "the focused dialog is read")
+        try expectFixture(try selectedWindow(7, 41)?.id == 41, "a named window is still honored")
     default: throw Fail("fixture", "unknown scenario")
     }
 }
