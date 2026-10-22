@@ -65,7 +65,9 @@ func fixtureSet(_ element: AXUIElement, _ name: CFString, _ value: CFTypeRef) ->
     attributes[AXKey(element: element), default: [:]][name as String] = value
     return .success
 }
+var fixtureNoWindows = false
 func fixtureWindows(_ options: CGWindowListOption, _ id: CGWindowID) -> CFArray? {
+    if fixtureNoWindows { return [] as CFArray }
     return [[kCGWindowOwnerPID as String: 7, kCGWindowLayer as String: 0, kCGWindowNumber as String: 41,
              kCGWindowBounds as String: ["X": 10, "Y": 20, "Width": 420, "Height": 520],
              kCGWindowIsOnscreen as String: fixtureOnScreen, kCGWindowName as String: "Task"]] as CFArray
@@ -74,7 +76,7 @@ func fixtureURL(withBundleIdentifier id: String) -> URL? { bundleURL }
 func fixturePath(forApplication name: String) -> String? { bundleURL?.path }
 func fixtureOpen(at url: URL, configuration: NSWorkspace.OpenConfiguration, completionHandler: ((NSRunningApplication?, Error?) -> Void)?) {
     opened += 1
-    if configuration.activates { reopened += 1; fixtureOnScreen = reopenShowsWindow }
+    if configuration.activates { reopened += 1; if reopenShowsWindow { fixtureNoWindows = false; fixtureOnScreen = true } }
     // A command-line process is not registered with LaunchServices, so its own entry reports pid -1.
     completionHandler?(launchUnregistered ? NSRunningApplication.current : registeredApp, nil)
 }
@@ -198,12 +200,16 @@ func fixture() throws {
     case "activate-nowindow":
         fixtureFront = 99; fixtureIdle = 2; fixtureOnScreen = false; activateShowsWindow = false
         bundleURL = URL(fileURLWithPath: "/Applications/Example.app")
+        // Windows on another Space: reopening would show App Exposé instead of a window.
+        _ = try runStep(7, ["action": "activate"], windowId: nil)
+        try expectFixture(reopened == 0, "an app with windows elsewhere is never reopened")
+        fixtureFront = 99; fixtureNoWindows = true
         let reply = try runStep(7, ["action": "activate"], windowId: nil)
         try expectFixture(fixtureFront == 7 && reopened == 1 && (reply["note"] as? String ?? "").contains("menu"), "an app with no window is reopened like a Dock click, then says how to open one")
-        fixtureFront = 99; reopenShowsWindow = true; fixtureOnScreen = false
+        fixtureFront = 99; reopenShowsWindow = true; fixtureOnScreen = false; fixtureNoWindows = true
         let shown = try runStep(7, ["action": "activate"], windowId: nil)
         try expectFixture(reopened == 2 && (shown["note"] as? String ?? "").contains("onto this screen"), "a reopened app's new window is reported")
-        fixtureFront = 7; reopenShowsWindow = false; fixtureOnScreen = false
+        fixtureFront = 7; reopenShowsWindow = false; fixtureOnScreen = false; fixtureNoWindows = true
         try validateWindowStep(7, ["action": "key"], nil)
         fixtureFront = 99
         do { try validateWindowStep(7, ["action": "key"], nil); throw Fail("fixture", "key to a windowless app in back must be refused") }
