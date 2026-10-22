@@ -37,6 +37,7 @@ const { screenshotClip } = require('./cdp.cjs');
 const { listReadExpression, cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
 const { createVpsBrowser, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
+const { createBrowserSessionStore } = require('./browser-session.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
 const { pdfFile } = require('./local-pdf.cjs');
 const recorder = require('./recorder.cjs');
@@ -197,10 +198,18 @@ function readPreferences() {
 }
 // Explicit changes save at once; automatic ones (page loads, Telegram catalog
 // polls) are batched. Either way nothing is written when nothing changed.
+function snapshotBrowserTabs() {
+  return [...tabs.values()].filter(tab => tab.owner === 'user' && !tab.extensionPage && tab.view?.webContents && !tab.view.webContents.isDestroyed()).flatMap(tab => {
+    let url = tab.view.webContents.getURL();
+    if (tab.requestedUrl) url = tab.recoveryUrl || tab.navigationUrl || (url && url !== 'about:blank' ? url : tab.requestedUrl);
+    if (!url || url === 'about:blank') return [];
+    return [{ url: url === NEWTAB_URL ? 'about:blank' : url, botId: tab.botId, owner: 'user', active: tab.id === activeTabId, ...(tab.localPdf ? { localPdf: true } : {}) }];
+  });
+}
 const prefsSaver = createSaver({
   snapshot() {
     if (!prefs) return null;
-    if (win && !win.isDestroyed()) prefs.savedTabs = [...tabs.values()].filter(tab => !tab.extensionPage && tab.view?.webContents && !tab.view.webContents.isDestroyed()).map((tab) => ({ url: tab.view.webContents.getURL() || tab.requestedUrl, botId: tab.botId, ...(tab.localPdf ? { localPdf: true } : {}) })).filter((item) => item.url);
+    if (!isQuitting && win && !win.isDestroyed()) prefs.savedTabs = snapshotBrowserTabs();
     return prefs;
   },
   write(text) {
@@ -229,7 +238,7 @@ function seedMacSshHost() {
 function describeTab(tab, forBot = false) {
   const wc = tab.view?.webContents;
   const url = wc && !wc.isDestroyed() ? wc.getURL() : '';
-  const info = { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
+  const info = { id: tab.id, title: tab.title || 'New tab', url, internal: url === NEWTAB_URL || url === 'about:blank', owner: tab.owner, botId: tab.botId, favicon: tab.favicon || '', agentHue: botAccent(tab.botId).hue,
     controller: tab.controller, epoch: tab.epoch, loading: tab.loading, error: tab.error || '', ...(tab.recoveryUrl ? { recoveryUrl: tab.recoveryUrl } : {}), allowedBots: tab.allowedBots, agentCursor: tab.agentCursor || null, agentBusy: agentInput.isDispatching(tab), extensionPage: tab.extensionPage === true, localPdf: tab.localPdf === true, viewport: tab.viewport || null, host: HOST_LABEL, session: `shared-${HOST_LABEL}`, handoff: tab.handoff || null, handback: liveHandback(tab), takeover: tab.takeover || null };
   return forBot ? redactTabForBot(info) : info;
 }
@@ -398,7 +407,7 @@ function settingsWriteEntry(event, token, checking = false, payload) {
 // Settings alone use a staged commit; the global automatic saver keeps its
 // existing behavior. Publish and seed only after the private-file write succeeds.
 function persistSettingsPreferences(next) {
-  if (win && !win.isDestroyed()) next.savedTabs = [...tabs.values()].filter(tab => !tab.extensionPage && tab.view?.webContents && !tab.view.webContents.isDestroyed()).map(tab => ({ url: tab.view.webContents.getURL() || tab.requestedUrl, botId: tab.botId, ...(tab.localPdf ? { localPdf: true } : {}) })).filter(item => item.url);
+  if (!isQuitting && win && !win.isDestroyed()) next.savedTabs = snapshotBrowserTabs();
   try {
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
     writePrivateJson(path.join(app.getPath('userData'), 'preferences.json'), next);
@@ -536,6 +545,16 @@ function applyLayout() {
   fit(remoteView, activeTabId === 'vps' ? layout.browser : prefs.preview ? layout.preview : null);
   if (remoteView && win.contentView.children.at(-1) !== remoteView) win.contentView.addChildView(remoteView);
 }
+function openTelegramLink(value, activate = true) {
+  const url = normalizeUrl(value), opened = recentLinkTabs.get(url);
+  if (opened && Date.now() - opened.at < 15000 && tabs.has(opened.tabId)) {
+    if (activate) { activeTabId = opened.tabId; applyLayout(); broadcast(); }
+    return;
+  }
+  const tab = createTab({ url, activate });
+  recentLinkTabs.set(url, { tabId: tab.id, at: Date.now() });
+  if (recentLinkTabs.size > 50) recentLinkTabs.delete(recentLinkTabs.keys().next().value);
+}
 function configureContents(contents, isTelegram = false) {
   contents.setWindowOpenHandler((details) => {
     let url;
@@ -545,17 +564,12 @@ function configureContents(contents, isTelegram = false) {
     if (isTelegram) {
       // Guest windows inherit the persist:telegram session, which the extension
       // host rejects — open Telegram links in our own browser-session tab.
-      const opened = recentLinkTabs.get(url);
-      if (opened && Date.now() - opened.at < 15000 && tabs.has(opened.tabId)) {
-        if (details.disposition !== 'background-tab') { activeTabId = opened.tabId; broadcast(); }
-      } else {
-        try { createTab({ url }); } catch {}
-      }
+      try { openTelegramLink(url, details.disposition !== 'background-tab'); } catch {}
       return { action: 'deny' };
     }
     return { action: 'allow', createWindow: (options) => {
       const parent = opener;
-      const tab = createTab({ url, extensionPage, botId: parent?.botId || prefs.selectedBotId || 'shared', controller: extensionPage ? 'human' : parent?.controller || 'human', options, skipLoad: details.disposition !== 'background-tab', activate: parent?.controller !== 'agent' && details.disposition !== 'background-tab' });
+      const tab = createTab({ url, extensionPage, owner: parent?.controller === 'agent' ? 'bot' : parent?.owner, botId: parent?.botId || prefs.selectedBotId || 'shared', controller: extensionPage ? 'human' : parent?.controller || 'human', options, skipLoad: details.disposition !== 'background-tab', activate: parent?.controller !== 'agent' && details.disposition !== 'background-tab' });
       if (parent?.controller === 'agent' && !extensionPage) parent.opened = [...(parent.opened || []), { tabId: tab.id, url }].slice(-10);
       return tab.view.webContents;
     } };
@@ -568,7 +582,7 @@ function configureContents(contents, isTelegram = false) {
     try { agentPageUrl(url); } catch { event.preventDefault(); }
   };
   contents.on('will-navigate', (event, url) => {
-    if (isTelegram && !url.startsWith(TELEGRAM)) { event.preventDefault(); try { createTab({ url }); } catch {} }
+    if (isTelegram && !url.startsWith(TELEGRAM)) { event.preventDefault(); try { openTelegramLink(url); } catch {} }
     else if (!isTelegram) blockAgentNavigation(event, url);
     if (isTelegram) return;
     if (!isTelegram && !/^https?:\/\//i.test(url) && url !== 'about:blank') {
@@ -680,7 +694,7 @@ function reloadBrowserPage(tab) {
   if (tab.error && tab.recoveryUrl) return tab.view.webContents.loadURL(tab.recoveryUrl).catch(() => {});
   return tab.view.webContents.reload();
 }
-function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedBotId || 'shared', controller = 'human', options, skipLoad = false, activate = true, extensionPage = false, localPdf = false } = {}) {
+function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedBotId || 'shared', controller = 'human', owner = controller === 'agent' ? 'bot' : 'user', options, skipLoad = false, activate = true, extensionPage = false, localPdf = false } = {}) {
   if (tabs.size >= 40) throw new Error('Close a tab before opening another.');
   if (filePath) {
     filePath = pdfFile(filePath);
@@ -696,7 +710,7 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
     webPreferences: { ...options?.webPreferences, preload: undefined, partition: 'persist:browser', contextIsolation: true, nodeIntegration: false, sandbox: true,
       webSecurity: true, navigateOnDragDrop: false, plugins: true, backgroundThrottling: false } });
   view.setBackgroundColor('#0b0b0c');
-  const tab = { id: crypto.randomUUID(), view, requestedUrl: skipLoad ? '' : targetUrl, botId: String(botId).slice(0, 100), controller, extensionPage, localPdf, epoch: 1, title: filePath ? path.basename(filePath) : 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
+  const tab = { id: crypto.randomUUID(), view, requestedUrl: skipLoad ? '' : targetUrl, owner, botId: String(botId).slice(0, 100), controller, extensionPage, localPdf, epoch: 1, title: filePath ? path.basename(filePath) : 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
   if (controller === 'agent') tab.agentSince = Date.now();
   tabs.set(tab.id, tab);
   tab.host = backgroundHost();
@@ -785,6 +799,7 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
   if (activate) { prefs.remoteControl = false; activeTabId = tab.id; }
   applyLayout(); broadcast();
   if (!skipLoad) view.webContents.loadURL(targetUrl).catch(() => {});
+  savePreferencesSoon();
   return tab;
 }
 function closeTab(id) {
@@ -1262,10 +1277,20 @@ const checkVersionsWhenIdle = () => {
   if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) return;
   checkVmVersions().catch((error) => logError('vm-check', error));
 };
-// Hands over to the new app build: electron-updater installs on quit, an
-// unsigned Mac swaps its own bundle and relaunches.
+const browserSessionStore = createBrowserSessionStore({ session, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs) });
+async function saveBrowserSession() {
+  savePreferences();
+  await Promise.all(['persist:browser', 'persist:telegram'].map(async partition => {
+    const target = session.fromPartition(partition);
+    target.flushStorageData();
+    await target.cookies.flushStore();
+  }));
+  await browserSessionStore.save();
+}
+// Hands over only after both Chromium and the session-only sign-ins are saved.
 async function restartIntoUpdate() {
   if (updateDriver === 'electron-updater') {
+    await saveBrowserSession();
     // quitAndInstall closes windows without a before-quit, so the close
     // handler would hide the window instead and the app would never exit.
     isQuitting = true;
@@ -1275,7 +1300,8 @@ async function restartIntoUpdate() {
     return;
   }
   await macUpdate.installMacUpdate({ tag: update.tag, bundlePath: path.resolve(process.execPath, '../../..') });
-  savePreferences(); app.relaunch(); app.exit(0);
+  await saveBrowserSession();
+  app.relaunch(); app.exit(0);
 }
 // One "Update everything" step against the agent machine (or this app). Each
 // reuses the flow its own button runs: hermes-update (quiet: the bot reports
@@ -1927,6 +1953,7 @@ function registerIpc() {
           if (domain && d !== domain && !d.endsWith(`.${domain}`)) continue;
           await jar.remove(`${c.secure ? 'https' : 'http'}://${d}${c.path || '/'}`, c.name).catch(() => {});
         }
+        await browserSessionStore.save();
         broadcast(); break;
       }
       case 'open-download': await downloadStore.open(value.id); break;
@@ -2527,9 +2554,11 @@ function registerIpc() {
     linkOpenedAt.set(chatId, now);
     try {
       const normalized = agentPageUrl(url);
+      const opened = recentLinkTabs.get(normalized);
+      if (opened && now - opened.at < 15000 && tabs.get(opened.tabId)?.botId === chatId) return;
       const tab = createTab({ url: normalized, botId: chatId, controller: 'agent', activate: value.outgoing === true });
       recentLinkTabs.set(normalized, { tabId: tab.id, at: now });
-      if (recentLinkTabs.size > 50) recentLinkTabs.clear();
+      if (recentLinkTabs.size > 50) recentLinkTabs.delete(recentLinkTabs.keys().next().value);
     } catch {}
   });
 }
@@ -2585,7 +2614,7 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
     target=await vpsBrowser.request('/v1/tabs','POST',{url:checkpoint.url},{botId:source.botId,human:true});vpsTabs.set(target.id,target);
     result=await remoteRequest(target.id,'restore',{checkpoint,handoff});target=result.tab;
   } else {
-    target=createTab({url:checkpoint.url,botId:source.botId,controller:'human',activate:false});target.handoff=handoff;
+    target=createTab({url:checkpoint.url,botId:source.botId,controller:'human',owner:source.owner || 'bot',activate:false});target.handoff=handoff;
     for(let n=0;n<100;n++){if(!target.view.webContents.isLoading()&&target.view.webContents.getURL()!=='about:blank')break;await new Promise(r=>setTimeout(r,100));}
     if(target.view.webContents.isLoading()){try{closeTab(target.id)}catch{}throw new Error(`${HOST_LABEL==='windows'?'PC':'Mac'} destination is still loading. Its tab was closed. Retry the handoff.`);}
     result=await target.view.webContents.executeJavaScript(restoreExpression(checkpoint));
@@ -3299,6 +3328,22 @@ function buildMenu() {
     { label: 'Help', submenu: [{ id: 'workspace-shortcuts', label: 'Keyboard Shortcuts', click: () => win.webContents.send('workspace:shortcuts') }, ...(prefs?.cloud?.sessionEnc ? [{ type: 'separator' }, { label: 'Get help', click: () => shell.openExternal(cloudView().supportUrl).catch(() => {}) }] : [])] },
   ]));
 }
+function restoreBrowserTabs() {
+  activeTabId = 'home';
+  // Older saves mixed task and user tabs without recording their origin.
+  const legacy = prefs.savedTabs.filter(item => !item.owner && item.botId && item.botId !== 'shared');
+  if (legacy.length) prefs.legacySavedTabs = [...(Array.isArray(prefs.legacySavedTabs) ? prefs.legacySavedTabs : []), ...legacy];
+  const saved = prefs.savedTabs.filter(item => item.owner === 'user' || (!item.owner && (!item.botId || item.botId === 'shared')));
+  for (const item of saved.slice(0, 40)) {
+    if (!item.url || (item.url === 'about:blank' && item.owner !== 'user')) continue;
+    try {
+      const tab = /^file:\/\//i.test(item.url)
+        ? createTab({ filePath: fileURLToPath(item.url), botId: item.botId, activate: false })
+        : createTab({ url: item.url, botId: item.botId, localPdf: item.localPdf === true, activate: false });
+      if (item.active === true) activeTabId = tab.id;
+    } catch {}
+  }
+}
 function createWindow() {
   nativeTheme.themeSource = 'dark';
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
@@ -3329,18 +3374,12 @@ function createWindow() {
   win.loadFile(path.join(ROOT, 'index.html'));
   remoteView.webContents.loadFile(path.join(ROOT, 'remote.html'));
   telegramView.webContents.loadURL(prefs.selectedBotId ? `${TELEGRAM}#${prefs.selectedBotId}` : TELEGRAM).catch(() => {});
-  for (const item of prefs.savedTabs.filter((item) => item.url && item.url !== 'about:blank').slice(0, 12)) {
-    try {
-      if (/^file:\/\//i.test(String(item.url))) createTab({ filePath: fileURLToPath(item.url), botId: item.botId, activate: false });
-      else createTab({ url: item.url, botId: item.botId, localPdf: item.localPdf === true, activate: false });
-    } catch {}
-  }
-  activeTabId = 'home';
+  restoreBrowserTabs();
   pdfWindowReady = true;
   for (const file of pendingPdfs.splice(0)) receivePdf(file);
   win.on('enter-full-screen', broadcast); win.on('leave-full-screen', broadcast);
   createTray();
-  win.on('session-end', () => { isQuitting = true; prefsSaver.flush(); });
+  win.on('session-end', () => { saveBrowserSession().catch(error => logError('browser-save', error)); isQuitting = true; });
   win.on('close', (event) => {
     if (isQuitting) return;
     if (process.platform === 'darwin' || tray) { event.preventDefault(); win.hide(); }
@@ -3445,6 +3484,10 @@ else {
     const stale = staleConnector();
     if (stale) try { fs.rmSync(stale, { recursive: true, force: true }); } catch (error) { logError('stale-connector', error); }
     const browserSession = session.fromPartition('persist:browser');
+    try { await browserSessionStore.restore(); }
+    catch { logError('browser-restore', new Error('Saved browser sign-ins could not be restored.')); }
+    const saveCookiesSoon = coalesce(() => browserSessionStore.save().catch(() => logError('browser-save', new Error('Browser sign-ins could not be saved.'))), 250);
+    for (const partition of ['persist:browser', 'persist:telegram']) session.fromPartition(partition).cookies.on('changed', saveCookiesSoon);
     for (const target of [session.defaultSession, browserSession, session.fromPartition('persist:telegram')]) {
       target.registerPreloadScript({ id: 'workspace-pdf-drop', type: 'frame', filePath: path.join(ROOT, 'pdf-drop-preload.cjs') });
     }
@@ -3498,6 +3541,24 @@ else {
     showWindow();
   });
   app.on('activate', showWindow);
-  app.on('before-quit', () => { isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close(); });
+  let browserQuitPending = false, browserQuitReady = false;
+  app.on('before-quit', event => {
+    if (!browserQuitReady) {
+      event.preventDefault();
+      if (!browserQuitPending) {
+        savePreferences();
+        isQuitting = true;
+        browserQuitPending = true;
+        saveBrowserSession().then(() => { browserQuitReady = true; app.quit(); }).catch(error => {
+          browserQuitPending = false;
+          isQuitting = false;
+          logError('browser-save', error);
+          dialog.showErrorBox('Browser data could not be saved', 'Try quitting again after checking that app data is writable.');
+        });
+      }
+      return;
+    }
+    isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close();
+  });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }
