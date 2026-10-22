@@ -25,6 +25,8 @@ var menuError = AXError.cannotComplete
 var performed: [String] = []
 var opened = 0
 var bundleURL: URL?
+var reopened = 0
+var reopenShowsWindow = false
 var launchUnregistered = false
 let registeredApp = NSWorkspace.shared.runningApplications.first { $0.processIdentifier > 0 }!
 let app = appElement(7)
@@ -72,7 +74,7 @@ func fixtureURL(withBundleIdentifier id: String) -> URL? { bundleURL }
 func fixturePath(forApplication name: String) -> String? { bundleURL?.path }
 func fixtureOpen(at url: URL, configuration: NSWorkspace.OpenConfiguration, completionHandler: ((NSRunningApplication?, Error?) -> Void)?) {
     opened += 1
-    if configuration.activates { fatalError("launch must stay in background") }
+    if configuration.activates { reopened += 1; fixtureOnScreen = reopenShowsWindow }
     // A command-line process is not registered with LaunchServices, so its own entry reports pid -1.
     completionHandler?(launchUnregistered ? NSRunningApplication.current : registeredApp, nil)
 }
@@ -141,7 +143,7 @@ func fixture() throws {
         launchUnregistered = false
         policyExact = ["com.example.calculator"]
         try refuses("off_limits") { _ = try dispatch(["cmd": "launch", "app": "Calculator"]) }
-        try expectFixture(opened == 3, "blocked launch must not open")
+        try expectFixture(opened == 3 && reopened == 0, "blocked launch must not open, and launch stays in background")
         for name in ["", "/Applications/Calculator.app", "https://example.com"] {
             try refuses("bad_request") { _ = try dispatch(["cmd": "launch", "app": name]) }
         }
@@ -195,8 +197,13 @@ func fixture() throws {
         try expectFixture(performed.isEmpty, "no window is raised before it can be verified")
     case "activate-nowindow":
         fixtureFront = 99; fixtureIdle = 2; fixtureOnScreen = false; activateShowsWindow = false
+        bundleURL = URL(fileURLWithPath: "/Applications/Example.app")
         let reply = try runStep(7, ["action": "activate"], windowId: nil)
-        try expectFixture(fixtureFront == 7 && (reply["note"] as? String ?? "").contains("menu"), "an app with no window comes forward and says how to open one")
+        try expectFixture(fixtureFront == 7 && reopened == 1 && (reply["note"] as? String ?? "").contains("menu"), "an app with no window is reopened like a Dock click, then says how to open one")
+        fixtureFront = 99; reopenShowsWindow = true; fixtureOnScreen = false
+        let shown = try runStep(7, ["action": "activate"], windowId: nil)
+        try expectFixture(reopened == 2 && (shown["note"] as? String ?? "").contains("onto this screen"), "a reopened app's new window is reported")
+        fixtureFront = 7; reopenShowsWindow = false; fixtureOnScreen = false
         try validateWindowStep(7, ["action": "key"], nil)
         fixtureFront = 99
         do { try validateWindowStep(7, ["action": "key"], nil); throw Fail("fixture", "key to a windowless app in back must be refused") }

@@ -1158,7 +1158,15 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
                   waitFor({ NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }, timeout: 2) else {
                 throw Fail("failed", "Could not bring that app forward. Ask the user to show it.")
             }
-            out["note"] = waitFor({ hasOnScreenWindow(pid) }, timeout: 1)
+            if !waitFor({ hasOnScreenWindow(pid) }, timeout: 1), let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.bundleIdentifier ?? "") ?? app.bundleURL {
+                // Like a Dock click: reopening an app that has no window makes most apps open one.
+                let configuration = NSWorkspace.OpenConfiguration()
+                configuration.activates = true
+                var reopened = false
+                NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in reopened = true }
+                _ = waitFor({ reopened })
+            }
+            out["note"] = waitFor({ hasOnScreenWindow(pid) }, timeout: 2)
                 ? "Brought the app's window onto this screen. Take a fresh snapshot before acting."
                 : noWindowNote
             break
