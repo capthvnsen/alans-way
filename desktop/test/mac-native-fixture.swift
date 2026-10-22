@@ -293,6 +293,9 @@ func fixture() throws {
         attributes[AXKey(element: app)]?["AXFocusedWindow"] = panel
         try expectFixture(try selectedWindow(7, nil)?.id == 44, "the focused dialog is read")
         try expectFixture(try selectedWindow(7, 41)?.id == 41, "a named window is still honored")
+        // Finder's Go to Folder sheet is focused but absent from the app's window list.
+        let walk = try walkApp(7, menubar: false, windowId: nil)
+        try expectFixture(walk.windowId == 44, "the focused sheet is read even when the window list omits it")
     default: throw Fail("fixture", "unknown scenario")
     }
 }

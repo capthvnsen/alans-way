@@ -447,7 +447,12 @@ func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
     let selected = try selectedWindow(pid, windowId)
     if let selected, selected.onScreen {
         let readableWindows = windows as? [AXUIElement] ?? []
-        let matches = readableWindows.filter { matchesWindow($0, selected) }
+        var matches = readableWindows.filter { matchesWindow($0, selected) }
+        // Some sheets (Finder's Go to Folder) have focus but are missing from the app's window list.
+        if matches.count != 1, let value = axValue(app, "AXFocusedWindow"), CFGetTypeID(value) == AXUIElementGetTypeID(),
+           matchesWindow(value as! AXUIElement, selected) {
+            matches = [value as! AXUIElement]
+        }
         guard matches.count == 1 else { throw Fail("window_unverified", "Could not match that window to its controls. Take a fresh snapshot.") }
         roots.append(Node(matches[0], depth: 0, limit: depthCap))
     }
