@@ -6,6 +6,7 @@ func fixtureRequestScreen() -> Bool { screenRequests += 1; return fixtureScreen 
 var fixtureLocked = false
 var fixtureOnScreen = true
 var activateShowsWindow = true
+var activateFocus: AXUIElement?
 var posted: [String] = []
 var viaHID = 0
 func fixtureHID(_ event: CGEvent, _ pid: pid_t) { viaHID += 1; fixturePost(event, pid) }
@@ -83,7 +84,7 @@ func fixtureOpen(at url: URL, configuration: NSWorkspace.OpenConfiguration, comp
 func fixtureActivate(_ target: NSRunningApplication, options: NSApplication.ActivationOptions) -> Bool {
     fixtureFront = 7
     fixtureOnScreen = activateShowsWindow
-    attributes[AXKey(element: app), default: [:]]["AXFocusedWindow"] = window
+    attributes[AXKey(element: app), default: [:]]["AXFocusedWindow"] = activateFocus ?? window
     return true
 }
 func expectFixture(_ condition: Bool, _ message: String) throws {
@@ -267,6 +268,13 @@ func fixture() throws {
         fixtureFront = 7
         attributes[AXKey(element: app)]?["AXFocusedUIElement"] = foreign
         try refuses("window_unverified") { try validateWindowStep(7, ["action": "type", "text": "b"], selected) }
+    case "activate-dialog":
+        // A freshly launched app can put its Open panel in front of the window that was read.
+        let panel = AXUIElementCreateApplication(1007)
+        attributes[AXKey(element: panel)] = ["AXRole": "AXWindow", "AXWindowNumber": 43]
+        fixtureFront = 99; fixtureIdle = 2; activateFocus = panel
+        let reply = try runStep(7, ["action": "activate"], windowId: 41)
+        try expectFixture(fixtureFront == 7 && (reply["note"] as? String ?? "").contains("fresh snapshot"), "an app in front with its own dialog focused is brought forward, then re-read")
     default: throw Fail("fixture", "unknown scenario")
     }
 }

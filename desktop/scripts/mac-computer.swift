@@ -1190,11 +1190,18 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
               app.activate(options: [.activateIgnoringOtherApps]) else {
             throw Fail("failed", "Could not bring the selected window forward. Take a fresh snapshot.")
         }
-        guard waitFor({
+        let focusedSelected = waitFor({
             guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
                   let focused = axValue(appElement(pid), "AXFocusedWindow"), CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
             return belongsToWindow(focused as! AXUIElement, selected)
-        }, timeout: 1) else { throw Fail("window_unverified", "Could not confirm keyboard focus in the selected window. Take a fresh snapshot.") }
+        }, timeout: 1)
+        if !focusedSelected {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+                throw Fail("window_unverified", "Could not confirm keyboard focus in the selected window. Take a fresh snapshot.")
+            }
+            // The app is in front but one of its own windows, such as an Open panel, has focus.
+            out["note"] = "The app is in front, but another of its windows (such as a dialog) has focus. Take a fresh snapshot."
+        }
     case "press":
         let node = try resolve(pid, step["ref"] as? String ?? "")
         try rejectSecure(node)
@@ -1449,7 +1456,9 @@ func act(_ request: JSON) throws -> JSON {
     let menubar = request["menubar"] as? Bool ?? caches[pid]?.menubar ?? false
     let expected = (request["generation"] as? NSNumber)?.intValue
     let held = refBooks[pid].flatMap { book in (book.history + book.pinned).last(where: { $0.generation == expected }) }
-    let windowId = try windowIdOf(request) ?? held?.windowId ?? caches[pid]?.windowId
+    // A bare activate names no window; a window cached by an earlier task may be gone.
+    let bareActivate = steps.count == 1 && steps[0]["action"] as? String == "activate" && request["windowId"] == nil && expected == nil
+    let windowId = try windowIdOf(request) ?? held?.windowId ?? (bareActivate ? nil : caches[pid]?.windowId)
     if expected != nil && (held == nil || held?.windowId != windowId) {
         throw Fail("stale_ref", "The selected window changed. Take a fresh snapshot.")
     }
