@@ -4,6 +4,7 @@ var fixtureScreen = false
 var screenRequests = 0
 func fixtureRequestScreen() -> Bool { screenRequests += 1; return fixtureScreen }
 var fixtureLocked = false
+var fixtureOnScreen = true
 var fixtureIdle = 0.0
 var fixtureFront: pid_t? = 7
 var fixtureBundleId = "com.example.editor"
@@ -49,7 +50,7 @@ func fixtureSet(_ element: AXUIElement, _ name: CFString, _ value: CFTypeRef) ->
 func fixtureWindows(_ options: CGWindowListOption, _ id: CGWindowID) -> CFArray? {
     return [[kCGWindowOwnerPID as String: 7, kCGWindowLayer as String: 0, kCGWindowNumber as String: 41,
              kCGWindowBounds as String: ["X": 10, "Y": 20, "Width": 420, "Height": 520],
-             kCGWindowIsOnscreen as String: true, kCGWindowName as String: "Task"]] as CFArray
+             kCGWindowIsOnscreen as String: fixtureOnScreen, kCGWindowName as String: "Task"]] as CFArray
 }
 func fixtureURL(withBundleIdentifier id: String) -> URL? { bundleURL }
 func fixturePath(forApplication name: String) -> String? { bundleURL?.path }
@@ -60,6 +61,7 @@ func fixtureOpen(at url: URL, configuration: NSWorkspace.OpenConfiguration, comp
 }
 func fixtureActivate(_ target: NSRunningApplication, options: NSApplication.ActivationOptions) -> Bool {
     fixtureFront = 7
+    fixtureOnScreen = true
     attributes[AXKey(element: app), default: [:]]["AXFocusedWindow"] = window
     return true
 }
@@ -163,6 +165,14 @@ func fixture() throws {
         attributes[AXKey(element: app)]?["AXFocusedUIElement"] = field
         attributes[AXKey(element: field)]?["AXSubrole"] = "AXSecureTextField"
         try refuses("off_limits") { _ = try runStep(7, ["action": "activate"], windowId: 41) }
+    case "activate-offscreen":
+        fixtureFront = 99; fixtureIdle = 2; fixtureOnScreen = false
+        try validateWindowStep(7, ["action": "activate"], try selectedWindow(7, 41))
+        try validateWindowStep(7, ["action": "activate"], nil)
+        try refuses("stale_window") { try validateWindowStep(7, ["action": "key"], try selectedWindow(7, 41)) }
+        let reply = try runStep(7, ["action": "activate"], windowId: 41)
+        try expectFixture(fixtureFront == 7 && (reply["note"] as? String ?? "").contains("snapshot"), "a window on another Space is brought forward, then re-read")
+        try expectFixture(performed.isEmpty, "no window is raised before it can be verified")
     default: throw Fail("fixture", "unknown scenario")
     }
 }

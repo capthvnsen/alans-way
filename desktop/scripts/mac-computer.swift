@@ -992,6 +992,11 @@ func selectedWindow(_ pid: pid_t, _ id: CGWindowID?) throws -> SelectedWindow? {
     return try chooseWindow(windows, id)
 }
 
+func hasOnScreenWindow(_ pid: pid_t) -> Bool {
+    let info = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    return info.contains { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid && ($0[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 && ($0[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true }
+}
+
 func matchesWindow(_ element: AXUIElement, _ selected: SelectedWindow) -> Bool {
     if let id = numberAttr(element, "AXWindowNumber") { return id == Double(selected.id) }
     guard let frame = axFrame(element) else { return false }
@@ -1128,6 +1133,19 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
     case "activate":
         let app = try checkApp(pid, action: true, activating: true)
         try rejectSecureFocus(pid)
+        if !hasOnScreenWindow(pid) {
+            // Its windows are on another Space, minimized or hidden: bring the app forward like a Dock click.
+            app.unhide()
+            for window in axValue(appElement(pid), "AXWindows") as? [AXUIElement] ?? [] where axValue(window, "AXMinimized") as? Bool == true {
+                AXUIElementSetAttributeValue(window, "AXMinimized" as CFString, kCFBooleanFalse)
+            }
+            guard app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]),
+                  waitFor({ NSWorkspace.shared.frontmostApplication?.processIdentifier == pid && hasOnScreenWindow(pid) }, timeout: 2) else {
+                throw Fail("failed", "Could not bring that app's window onto this screen. Ask the user to show it.")
+            }
+            out["note"] = "Brought the app's window onto this screen. Take a fresh snapshot before acting."
+            break
+        }
         guard let selected = try selectedWindow(pid, windowId), selected.onScreen,
               let windows = axValue(appElement(pid), "AXWindows") as? [AXUIElement] else {
             throw Fail("window_unverified", "Take a snapshot of the window before bringing it forward.")
@@ -1323,10 +1341,10 @@ func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?)
     let node = (step["ref"] as? String).flatMap { caches[pid]?.nodes[$0] }
     let menuRef = node.map { inMenu($0.element) } ?? false
     guard let selected else {
-        if action == "menu" || menuRef { return }
+        if action == "menu" || action == "activate" || menuRef { return }
         throw Fail("no_window", "Take a window snapshot before acting.")
     }
-    guard selected.onScreen else { throw Fail("stale_window", "That window is not on the current screen. Ask the user to bring it back.") }
+    guard selected.onScreen || action == "activate" else { throw Fail("stale_window", "That window is not on the current screen. Ask the user to bring it back.") }
     for (x, y) in [("x", "y"), ("x2", "y2")] {
         if let px = number(step[x]), let py = number(step[y]) {
             let point = CGPoint(x: px, y: py)
