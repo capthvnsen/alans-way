@@ -1174,10 +1174,16 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
             break
         }
         guard let selected = try selectedWindow(pid, windowId), selected.onScreen,
-              let windows = axValue(appElement(pid), "AXWindows") as? [AXUIElement] else {
+              axValue(appElement(pid), "AXWindows") is [AXUIElement] else {
             throw Fail("window_unverified", "Take a snapshot of the window before bringing it forward.")
         }
-        let matches = windows.filter { matchesWindow($0, selected) }
+        // A window that just opened can still be moving into place, so its frame needs a moment to match.
+        var matches: [AXUIElement] = []
+        _ = waitFor({
+            let current = (try? selectedWindow(pid, windowId)).flatMap { $0 } ?? selected
+            matches = (axValue(appElement(pid), "AXWindows") as? [AXUIElement] ?? []).filter { matchesWindow($0, current) }
+            return matches.count == 1
+        }, timeout: 1.5)
         guard matches.count == 1 else { throw Fail("window_unverified", "Could not verify the selected window. Take a fresh snapshot.") }
         try checkApp(pid, action: true, activating: true)
         guard AXUIElementPerformAction(matches[0], "AXRaise" as CFString) == .success,
