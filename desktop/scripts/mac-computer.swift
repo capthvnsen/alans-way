@@ -789,7 +789,8 @@ func postKey(_ pid: pid_t, key: String, modifiers: [String]) throws {
             var units = Array(key.utf16)
             event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
         }
-        event.postToPid(pid)
+        // Open and Save panels run in another process: only session delivery reaches them while the app is in front.
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { event.post(tap: .cghidEventTap) } else { event.postToPid(pid) }
         if isDown { usleep(8000) }
     }
 }

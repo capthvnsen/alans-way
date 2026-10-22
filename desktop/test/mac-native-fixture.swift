@@ -7,6 +7,8 @@ var fixtureLocked = false
 var fixtureOnScreen = true
 var activateShowsWindow = true
 var posted: [String] = []
+var viaHID = 0
+func fixtureHID(_ event: CGEvent, _ pid: pid_t) { viaHID += 1; fixturePost(event, pid) }
 func fixturePost(_ event: CGEvent, _ pid: pid_t) {
     var length = 0
     var units = [UniChar](repeating: 0, count: 8)
@@ -201,6 +203,11 @@ func fixture() throws {
         fixtureIdle = 2
         _ = try runStep(7, ["action": "type", "text": "final.txt"], windowId: 41)
         try expectFixture(posted.joined() == "final.txt", "focused typing posts each character: \(posted)")
+        try expectFixture(viaHID == 18, "keys reach a front app's out-of-process panels through the session: \(viaHID)")
+        fixtureFront = 99; viaHID = 0; posted = []
+        _ = try runStep(7, ["action": "key", "key": "a"], windowId: 41)
+        try expectFixture(viaHID == 0 && posted == ["a"], "an app in back gets keys only by pid")
+        fixtureFront = 7
         try validateWindowStep(7, ["action": "type", "text": "x"], selected)
         attributes[AXKey(element: app)]?["AXFocusedWindow"] = foreign
         try refuses("window_unverified") { try validateWindowStep(7, ["action": "type", "text": "x"], selected) }

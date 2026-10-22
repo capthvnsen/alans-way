@@ -36,6 +36,7 @@ function fixtureBinary(t) {
     ['NSWorkspace.shared.openApplication(', 'fixtureOpen('],
     ['app.activate(options:', 'fixtureActivate(app, options:'],
     ['event.postToPid(pid)', 'fixturePost(event, pid)'],
+    ['event.post(tap: .cghidEventTap)', 'fixtureHID(event, pid)'],
   ]) source = source.split(from).join(to);
   const file = path.join(dir, 'fixture.swift');
   fs.writeFileSync(file, source + '\n' + fs.readFileSync(path.join(__dirname, 'mac-native-fixture.swift'), 'utf8'));
