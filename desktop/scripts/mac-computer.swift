@@ -649,7 +649,20 @@ func axToQuartz(_ point: CGPoint) -> CGPoint { point }
 
 var postedMouse = false
 
-func postMouse(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: Int, dragTo: CGPoint?) {
+// The app owning the frontmost normal window at a screen point, in Quartz coordinates.
+func topWindowPid(at point: CGPoint) -> pid_t? {
+    let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    return info.first { item in
+        guard (item[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+              let bounds = item[kCGWindowBounds as String] as? NSDictionary,
+              let rect = CGRect(dictionaryRepresentation: bounds) else { return false }
+        return rect.contains(point)
+    }.flatMap { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value }
+}
+
+/// False when a session drag stopped early because the person moved the pointer or another app came forward.
+@discardableResult
+func postMouse(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: Int, dragTo: CGPoint?) -> Bool {
     postedMouse = true
     let source = CGEventSource(stateID: .privateState)
     let down: CGEventType = button == .right ? .rightMouseDown : .leftMouseDown
@@ -657,7 +670,9 @@ func postMouse(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: In
     let drag: CGEventType = button == .right ? .rightMouseDragged : .leftMouseDragged
     // A drag source such as a Finder row starts a drag only from held, stepped motion the window server sees,
     // so while the app is in front a drag goes through the session like keys do.
-    let session = dragTo != nil && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+    // The session delivers to whatever window is on top there, so both ends must be this app's own window.
+    let session = dragTo.map { NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+        && topWindowPid(at: point) == pid && topWindowPid(at: $0) == pid } ?? false
     func post(_ type: CGEventType, _ at: CGPoint, _ state: Int) {
         let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: at, mouseButton: button)
         event?.setIntegerValueField(.mouseEventClickState, value: Int64(state))
@@ -669,20 +684,29 @@ func postMouse(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: In
         post(down, point, 1)
         usleep(60_000)
         let steps = 12
+        var last = point
         for step in 1...steps {
+            // A session drag moves the real pointer: if it is not where we left it, the person took the mouse.
+            if session, let at = CGEvent(source: nil)?.location,
+               hypot(at.x - last.x, at.y - last.y) > 4 || NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+                post(up, last, 1)
+                return false
+            }
             let t = CGFloat(step) / CGFloat(steps)
-            post(drag, CGPoint(x: point.x + (dragTo.x - point.x) * t, y: point.y + (dragTo.y - point.y) * t), 1)
+            last = CGPoint(x: point.x + (dragTo.x - point.x) * t, y: point.y + (dragTo.y - point.y) * t)
+            post(drag, last, 1)
             usleep(16_000)
         }
         // Drop targets highlight only after the pointer rests over them.
         usleep(150_000)
         post(up, dragTo, 1)
-        return
+        return true
     }
     for count in 1...max(1, clicks) {
         post(down, point, count)
         post(up, point, count)
     }
+    return true
 }
 
 func elementAt(_ pid: pid_t, _ point: CGPoint) -> AXUIElement? {
@@ -1335,7 +1359,9 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
         if let element = elementAt(pid, end), isSecure(element) { throw Fail("off_limits", "Password fields are off limits.") }
         if setSliderValue(pid: pid, from: start, to: end) { out["via"] = "ax" }
         else {
-            postMouse(pid, axToQuartz(start), button: .left, clicks: 1, dragTo: axToQuartz(end))
+            guard postMouse(pid, axToQuartz(start), button: .left, clicks: 1, dragTo: axToQuartz(end)) else {
+                throw Fail("in_front", inFrontMessage)
+            }
             out["via"] = "event"
         }
     case "scroll":
@@ -1441,7 +1467,7 @@ func focusedInlineEditor(_ pid: pid_t) -> AXUIElement? {
           axValue(root, "AXFocusedWindow").map({ CFGetTypeID($0) != AXUIElementGetTypeID() }) ?? true,
           let value = axValue(root, "AXFocusedUIElement"), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
     let field = value as! AXUIElement
-    guard ["AXTextField", "AXTextArea"].contains(axString(field, "AXRole")), let parent = axParent(field), CFEqual(parent, root) else { return nil }
+    guard ["AXTextField", "AXTextArea"].contains(axString(field, "AXRole")), !isSecure(field), let parent = axParent(field), CFEqual(parent, root) else { return nil }
     return field
 }
 
@@ -1526,7 +1552,9 @@ func act(_ request: JSON) throws -> JSON {
         }
         // The steps already ran; a tree that cannot be read afterwards must not hide their results.
         // An app just launched or brought forward can miss one read while it builds its window.
-        let walk = (try? refresh(pid, menubar: menubar, windowId: selected?.id)) ?? { usleep(500_000); return try? refresh(pid, menubar: menubar, windowId: selected?.id) }()
+        let running = { NSRunningApplication(processIdentifier: pid).map { !$0.isTerminated } ?? false }
+        let walk = (try? refresh(pid, menubar: menubar, windowId: selected?.id))
+            ?? (running() && !screenLocked() ? { usleep(500_000); return try? refresh(pid, menubar: menubar, windowId: selected?.id) }() : nil)
         if let walk { for (key, value) in snapshotFields(walk) { reply[key] = value } }
         else { reply["note"] = "unresponsive: the steps ran but the app stopped responding, so there is no tree. Do not repeat them; take a fresh snapshot." }
     }
