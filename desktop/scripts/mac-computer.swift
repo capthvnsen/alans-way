@@ -1180,7 +1180,7 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
                 _ = waitFor({ reopened })
             }
             out["note"] = waitFor({ hasOnScreenWindow(pid) }, timeout: 2)
-                ? "Brought the app's window onto this screen. Take a fresh snapshot before acting."
+                ? "Brought the app's window onto this screen."
                 : noWindowNote
             break
         }
@@ -1201,7 +1201,7 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
                   waitFor({ NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }, timeout: 2) else {
                 throw Fail("failed", "Could not bring that app forward. Ask the user to show it.")
             }
-            out["note"] = "Brought the app forward. Take a fresh snapshot before acting."
+            out["note"] = "Brought the app forward; its new window may still be loading."
             break
         }
         guard matches.count == 1 else { throw Fail("window_unverified", "Could not verify the selected window. Take a fresh snapshot.") }
@@ -1220,7 +1220,7 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
                 throw Fail("window_unverified", "Could not confirm keyboard focus in the selected window. Take a fresh snapshot.")
             }
             // The app is in front but one of its own windows, such as an Open panel, has focus.
-            out["note"] = "The app is in front, but another of its windows (such as a dialog) has focus. Take a fresh snapshot."
+            out["note"] = "The app is in front, but another of its windows (such as a dialog) has focus."
         }
     case "press":
         let node = try resolve(pid, step["ref"] as? String ?? "")
