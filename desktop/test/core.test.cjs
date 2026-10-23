@@ -507,6 +507,20 @@ test('a caller holding the last generation gets only what changed', async () => 
   assert.deepEqual(controlsDelta({ byRef: new Map() }, { elements: [] }), { changed: [], removed: [] });
 });
 
+test('an action resends unchanged controls when the caller missed the previous reply', async () => {
+  const tab = { refs: new Set(), generation: 1 };
+  const page = { url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 'e1', role: 'button', name: 'Open' }] };
+  settleSnapshot(tab, page, 1);
+  const updated = { ...page, elements: [{ ref: 'e2', role: 'button', name: 'Close' }] };
+  const lost = await readEffect(() => updated, tab, { held: 1 });
+  const retry = await readEffect(() => updated, tab, { held: 1 });
+  assert.deepEqual(retry.elements, updated.elements);
+  assert.equal(retry.generation, lost.generation, 'resending a tree does not change it');
+  assert.equal(retry.effect.changed, false);
+  const current = await readEffect(() => updated, tab, { held: retry.generation });
+  assert.equal(current.elements, undefined);
+});
+
 test('action replies say when the effect read was truncated', async () => {
   const tab = { refs: new Set(), generation: 1 };
   const page = { url: 'https://a.example/', title: 'A', text: 'hello', elements: [{ ref: 'e1', role: 'button', name: 'Go' }] };
@@ -536,6 +550,18 @@ test('a dialog or banner over the page rides on snapshots and replies', async ()
   assert.deepEqual(quiet.overlays, overlays);
   const clear = settleSnapshot(tab, { url: 'https://a.example/', title: 'A', text: '', elements: [], overlays: [] }, 2);
   assert.equal(clear.overlays, undefined);
+});
+
+test('a new overlay close ref is usable even when the scanned controls did not change', async () => {
+  const tab = { refs: new Set(), generation: 1 };
+  const page = { url: 'https://a.example/', title: 'A', text: '', elements: [{ ref: 'e1', role: 'button', name: 'Go' }] };
+  settleSnapshot(tab, page, 1);
+  // The control scan hit its cap before this newly mounted overlay's close.
+  const overlays = [{ name: 'Newsletter', close: 'e9', closeName: 'No thanks' }];
+  const reply = await readEffect(() => ({ ...page, overlays, seq: 9, truncated: { elements: true } }), tab, { held: 1 });
+  assert.deepEqual(reply.overlays, overlays);
+  assert.ok(tab.refs.has('e9'), 'every ref offered in a reply must pass host validation');
+  assert.equal(tab.refSeed, 9);
 });
 
 test('an agent tab dismisses a confirm or prompt unless the action said how to answer', () => {

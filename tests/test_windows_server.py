@@ -173,6 +173,15 @@ class ServerStartupTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_windows_drive_root_is_a_valid_explicit_workspace(self):
+        from hermes_companion.config import build_mcp_config, validate_windows_path
+        for root in ['C:\\', 'D:/']:
+            with self.subTest(root=root):
+                self.assertEqual(validate_windows_path(root), root)
+                server = build_mcp_config('operator@private-pc', 'C:\\Python\\python.exe',
+                                          root, host_os='windows')['mcp_servers']['windows_companion']
+                self.assertIn("'" + root + "'", server['args'][-1])
+
     def test_windows_config_targets_windows_server_with_powershell_quoting(self):
         from hermes_companion.config import WINDOWS_TOOLS, build_mcp_config
         server = build_mcp_config(

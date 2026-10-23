@@ -52,10 +52,11 @@ def validate_absolute_path(value: str) -> str:
 
 def validate_windows_path(value: str) -> str:
     """Validate remote Windows spelling: drive-lettered, no traversal or device names."""
-    normalized = value.rstrip("/\\") if isinstance(value, str) else value
+    # Keep the drive's separator: stripping it turns C:\ into drive-relative C:.
+    normalized = value[:3] + value[3:].rstrip("/\\") if isinstance(value, str) else value
     if (not isinstance(normalized, str) or not re.fullmatch(r"[A-Za-z]:[\\/][^<>\"|?*]*", normalized)
             or _has_control(normalized)
-            or any(part in ("", ".", "..") for part in re.split(r"[\\/]", normalized[3:]))
+            or (normalized[3:] and any(part in ("", ".", "..") for part in re.split(r"[\\/]", normalized[3:])))
             or "${" in normalized):
         raise ValueError("remote paths must be absolute Windows paths (X:\\...) without traversal, control characters, or interpolation")
     return normalized

@@ -8,6 +8,7 @@ const { contractHolds, createContractMonitor } = require('./telegram-contract.cj
 // https://github.com/Ajaxy/telegram-tt
 let activityAccountId = '', activityConnected = false, activitySequence = 0;
 const seenLinks = new Map(), sentLinkIds = new Set();
+let linksAccountId = '';
 let activityWorkerReady = false, activityNetworkReady = true, activityRuntimeAccount = '';
 const telegramActions = new Set(['typing', 'recordVideo', 'uploadVideo', 'recordAudio', 'uploadAudio', 'uploadPhoto',
   'uploadFile', 'chooseLocation', 'chooseContact', 'playingGame', 'recordRound', 'uploadRound', 'chooseSticker', 'watchingAnimations']);
@@ -232,7 +233,14 @@ async function sync() {
     }
     const locked = cached?.passcode?.isScreenLocked;
     const status = locked ? 'locked' : authVisible ? 'login' : cached?.currentUserId ? 'connected' : 'loading';
-    activityAccountId = cached?.currentUserId ? String(cached.currentUserId) : '';
+    const nextAccountId = cached?.currentUserId ? String(cached.currentUserId) : '';
+    // Message ids and scan watermarks belong to one account. Reusing them can open the next
+    // account's history or suppress its new links; a blank id while loading is not a switch.
+    if (nextAccountId && nextAccountId !== linksAccountId) {
+      seenLinks.clear(); sentLinkIds.clear();
+      linksAccountId = nextAccountId;
+    }
+    activityAccountId = nextAccountId;
     activityConnected = status === 'connected';
     const users = cached?.users?.byId || {};
     const chats = cached?.chats?.byId || {};

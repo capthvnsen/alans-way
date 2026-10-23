@@ -34,6 +34,17 @@ test('retries keep the shape and add the attempt suffix, up to three', () => {
   assert.equal(retryUsername('Maya', 3, () => 0.999), 'maya_alan_9999_3_bot');
 });
 
+test('generated usernames stay valid for long names and names beginning with underscores', () => {
+  for (const name of ['A'.repeat(40), '_Maya', '__', '4' + 'a'.repeat(40)]) {
+    for (let attempt = 0; attempt <= 3; attempt++) {
+      const username = retryUsername(name, attempt, () => 0);
+      assert.match(username, /^[a-z][a-z0-9_]{4,31}$/, username);
+      assert.ok(username.endsWith('_bot'));
+    }
+    assert.match(botUsername(name, () => 0), /^[a-z][a-z0-9_]{4,31}$/);
+  }
+});
+
 test('getMe validation accepts a real-shaped answer and rejects junk', async () => {
   const good = await validateToken(TOKEN, async (url) => {
     assert.equal(url, `https://api.telegram.org/bot${TOKEN}/getMe`);

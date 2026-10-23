@@ -1130,7 +1130,19 @@ async function readEffectOnce(execute, tab, { parseWaitMs, navigated, target, se
   // Preserve scan truncation on every reply shape.
   const truncated = result.truncated && (result.truncated.text || result.truncated.elements) ? { truncated: result.truncated } : {};
   if (Number.isInteger(result.seq)) tab.refSeed = Math.max(tab.refSeed || 0, result.seq);
-  if (controlsSame) return { generation: previous.generation, effect, ...overlays, ...truncated };
+  if (controlsSame) {
+    // An overlay can mount beyond the control scan's cap. Its offered close
+    // ref still needs to pass the host's known-ref check.
+    for (const overlay of result.overlays || []) if (overlay.close) tab.refs.add(overlay.close);
+    const reply = { generation: previous.generation, effect, ...overlays, ...truncated };
+    // A lost reply can leave the caller holding older controls even though
+    // the page has stayed still since our last read.
+    if (held !== undefined && held !== previous.generation) {
+      reply.elements = result.elements.slice(0, EFFECT_ELEMENTS);
+      if (result.elements.length > EFFECT_ELEMENTS) reply.unlisted = result.elements.length - EFFECT_ELEMENTS;
+    }
+    return reply;
+  }
   tab.generation = generation;
   const settled = settleSnapshot(tab, result, generation);
   if (!nav && scan && held === scan.generation) {

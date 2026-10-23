@@ -19,6 +19,13 @@ const vm = (over = {}) => ({
 });
 const okLine = (extra = {}) => `${JSON.stringify({ ok: true, version: '0.3.2', restarted: true, error: '', ...extra })}\n`;
 
+test('a verbose local update retains its final JSON result after the output cap', { skip: process.platform === 'win32' }, async () => {
+  const updater = createVmUpdater({ readScript: () => `printf '%0500000d\\n' 0\nprintf '%s\\n' '${okLine().trim()}'\n` });
+  const result = await updater.updateVm(LOCAL_TARGET, 'v0.3.2');
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.version, '0.3.2');
+});
+
 function fakeRun(respond) {
   const calls = [];
   const run = (bin, args, opts = {}) => {
