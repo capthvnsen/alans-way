@@ -26,6 +26,11 @@ from .protocol import LaunchBinding, LaunchTicketStore, TurnRegistry, verify_tel
 log = logging.getLogger(__name__)
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
 TURN_ID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+MAX_TEXT_FIELD_BYTES = 256
+MAX_MULTIPART_PARTS = 8
+CAPABILITIES_CACHE_SECONDS = 45
+AUDIO_MIME_TYPES = {"audio/webm", "audio/mp4", "audio/ogg", "audio/wav"}
 
 
 class HermesAudio:
@@ -36,7 +41,11 @@ class HermesAudio:
     """
 
     def __init__(self, base_url: str, session_token: str, *, profile: str = ""):
+        parsed = urllib.parse.urlsplit(base_url)
+        if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in LOOPBACK_HOSTS):
+            raise ValueError("dashboard_api_base must be https or a loopback http URL")
         self.base_url = base_url.rstrip("/")
+        self._capabilities_cache: tuple[float, dict] | None = None
         self.session_token = session_token
         self.profile = profile
 
@@ -68,6 +77,13 @@ class HermesAudio:
     async def capabilities(self) -> dict:
         if not self.available:
             return {"ready": False, "reason": "Hermes audio API is not configured"}
+        if self._capabilities_cache and time.monotonic() - self._capabilities_cache[0] < CAPABILITIES_CACHE_SECONDS:
+            return self._capabilities_cache[1]
+        result = await self._fetch_capabilities()
+        self._capabilities_cache = (time.monotonic(), result)
+        return result
+
+    async def _fetch_capabilities(self) -> dict:
         try:
             config = await self._request_json("GET", "/api/audio/voice-config")
         except Exception as exc:
@@ -138,6 +154,7 @@ class VoiceBroker:
         # uncertain. The public hook cannot tell us whether an interrupted
         # accepted request already reached the model, so it must never replay.
         self.turns.recover_pending()
+        self.db.purge_older_than()
         self.audio = audio
         self.inject = inject
         self.app_url = app_url.rstrip("/")
@@ -181,8 +198,11 @@ class VoiceBroker:
         binding = self.db.get_call(call_id, token)
         return (token, binding) if binding else None
 
-    async def capabilities(self, _request: web.Request) -> web.Response:
+    async def capabilities(self, request: web.Request) -> web.Response:
         result = await self.audio.capabilities()
+        scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+        if not (scheme.lower() == "bearer" and token and self.db.token_active(token)):
+            result = {"ready": result["ready"]}
         status = 200 if result["ready"] else 503
         return web.json_response({"version": 1, **result}, status=status,
                                  headers={"Cache-Control": "no-store"})
@@ -213,6 +233,7 @@ class VoiceBroker:
             raise web.HTTPForbidden(text="Launch ticket belongs to a different Telegram bot")
         call_id, token = secrets.token_urlsafe(24), secrets.token_urlsafe(32)
         self.db.create_call(call_id, token, binding, ttl_seconds=self.call_ttl_seconds)
+        self.db.purge_older_than()
         return web.json_response({
             "call_id": call_id,
             "access_token": token,
@@ -226,18 +247,37 @@ class VoiceBroker:
             raise web.HTTPUnauthorized(text="Invalid call credential")
         _, binding = authorized
         call_id = request.match_info["call_id"]
+        # A chunked body has no length to check up front, and multipart draining
+        # would otherwise read it all.
+        if request.content_length is None:
+            raise web.HTTPLengthRequired()
+        if request.content_length > MAX_AUDIO_BYTES + 64 * 1024:
+            raise web.HTTPRequestEntityTooLarge(max_size=MAX_AUDIO_BYTES, actual_size=request.content_length)
         reader = await request.multipart()
         turn_id, mime = "", "audio/webm"
         audio = b""
+        total = 0
+        parts = 0
+
+        async def small_text(part) -> str:
+            data = b""
+            while chunk := await part.read_chunk(MAX_TEXT_FIELD_BYTES + 1):
+                data += chunk
+                if len(data) > MAX_TEXT_FIELD_BYTES:
+                    raise web.HTTPRequestEntityTooLarge(max_size=MAX_TEXT_FIELD_BYTES, actual_size=len(data))
+            return data.decode("utf-8", "replace").strip()
+
         while part := await reader.next():
+            parts += 1
+            if parts > MAX_MULTIPART_PARTS:
+                raise web.HTTPBadRequest(text="Too many form parts")
             if part.name == "turn_id":
-                turn_id = (await part.text()).strip()
+                turn_id = await small_text(part)
             elif part.name in ("mime_type", "content_type"):
-                mime = (await part.text()).strip().split(";", 1)[0] or mime
+                mime = (await small_text(part)).split(";", 1)[0] or mime
             elif part.name == "audio":
                 mime = (part.headers.get("Content-Type") or mime).split(";", 1)[0]
                 chunks = []
-                total = 0
                 while chunk := await part.read_chunk(64 * 1024):
                     total += len(chunk)
                     if total > MAX_AUDIO_BYTES:
@@ -246,8 +286,8 @@ class VoiceBroker:
                 audio = b"".join(chunks)
         if not TURN_ID_RE.fullmatch(turn_id):
             raise web.HTTPBadRequest(text="turn_id must be a UUID")
-        if not audio or not mime.startswith("audio/"):
-            raise web.HTTPBadRequest(text="Audio recording is required")
+        if not audio or mime.strip().lower() not in AUDIO_MIME_TYPES:
+            raise web.HTTPBadRequest(text="A webm, mp4, ogg or wav audio recording is required")
 
         try:
             transcript = await self.audio.transcribe(audio, mime)

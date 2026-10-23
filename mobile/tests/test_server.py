@@ -252,6 +252,41 @@ class VoiceHttpProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.broker.db.get_call("active-call", "credential"))
         self.assertIsNone(self.broker.db.consume(pending, user_id="42"))
 
+    async def test_capabilities_hide_the_describer_from_unauthenticated_callers(self):
+        anonymous = await self.client.get("/v1/capabilities")
+        self.assertEqual(anonymous.status, 200)
+        self.assertEqual(await anonymous.json(), {"version": 1, "ready": True})
+        bogus = await self.client.get("/v1/capabilities", headers={"Authorization": "Bearer nope"})
+        self.assertEqual(await bogus.json(), {"version": 1, "ready": True})
+        call = await self._create_call()
+        full = await self.client.get("/v1/capabilities", headers={"Authorization": f"Bearer {call['access_token']}"})
+        body = await full.json()
+        self.assertEqual(body["stt"], {"provider": "configured"})
+
+    async def test_turn_upload_limits_and_audio_type_whitelist(self):
+        call = await self._create_call()
+        headers = {"Authorization": f"Bearer {call['access_token']}"}
+        url = f"/v1/calls/{call['call_id']}/turns"
+
+        def form(turn_id=None, content_type="audio/webm", extra=()):
+            data = __import__("aiohttp").FormData()
+            data.add_field("turn_id", turn_id or str(uuid.uuid4()))
+            for name, value in extra:
+                data.add_field(name, value)
+            data.add_field("audio", b"synthetic audio", filename="clip.webm", content_type=content_type)
+            return data
+
+        self.assertEqual((await self.client.post(url, data=form(content_type="audio/webm;codecs=opus"), headers=headers)).status, 202)
+        self.assertEqual((await self.client.post(url, data=form(content_type="text/html"), headers=headers)).status, 400)
+        self.assertEqual((await self.client.post(url, data=form(content_type="audio/x-evil"), headers=headers)).status, 400)
+        self.assertEqual((await self.client.post(url, data=form(extra=[("mime_type", "x" * 1000)]), headers=headers)).status, 413)
+        many = [(f"f{i}", "1") for i in range(20)]
+        self.assertEqual((await self.client.post(url, data=form(extra=many), headers=headers)).status, 400)
+        big = await self.client.post(url, data=b"x", headers={**headers, "Content-Length": str(50 * 1024 * 1024),
+                                                              "Content-Type": "multipart/form-data; boundary=b"})
+        self.assertEqual(big.status, 413)
+        self.assertEqual(self.audio.transcriptions, 1)
+
     async def test_serves_only_miniapp_assets_with_private_headers(self):
         root = Path(__file__).parents[1] / "miniapp"
         client = TestClient(TestServer(self.broker.build_app(miniapp_dir=root)))
@@ -356,6 +391,18 @@ class HermesAudioAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.client.close()
+
+    async def test_rejects_remote_cleartext_dashboard_base(self):
+        for base in ("http://192.0.2.10:9119", "http://dashboard.example.test", "ftp://127.0.0.1"):
+            with self.assertRaises(ValueError):
+                HermesAudio(base, "token")
+        for base in ("http://127.0.0.1:9119", "http://localhost:9119", "https://dashboard.example.test"):
+            HermesAudio(base, "token")
+
+    async def test_capability_lookups_are_cached_briefly(self):
+        await self.adapter.capabilities()
+        await self.adapter.capabilities()
+        self.assertEqual(len(self.requests), 1)
 
     async def test_uses_dashboard_session_auth_and_configured_speech_contract(self):
         capabilities = await self.adapter.capabilities()

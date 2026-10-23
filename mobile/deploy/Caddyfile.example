@@ -12,6 +12,12 @@ voice.example.net {
 
     handle_path /call/* {
         root * /srv/alans-workspace/mobile/miniapp
-        file_server
+        @runtime path / /index.html /call.js /call.css /voice-client.js /lifecycle.js /assets/*.png
+        handle @runtime {
+            file_server
+        }
+        handle {
+            respond 404
+        }
     }
 }

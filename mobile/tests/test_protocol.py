@@ -113,3 +113,23 @@ class TurnRegistryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RetentionTests(unittest.TestCase):
+    def test_purges_calls_and_turns_older_than_a_day_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "voice.sqlite3"
+            store, turns = LaunchTicketStore(path), TurnRegistry(path)
+            binding = LaunchBinding("default", "9001", "42", "42", "session")
+            store.create_call("old", "old-token", binding, now=1_000)
+            store.create_call("new", "new-token", binding, now=1_000 + 23 * 3600)
+            turns.create("old", "t1", "hello", "session")
+            turns.create("new", "t2", "hello", "session")
+            with store._connection() as db:
+                db.execute("UPDATE turns SET created_at=1000 WHERE call_id='old'")
+                db.execute("UPDATE turns SET created_at=? WHERE call_id='new'", (1_000 + 23 * 3600,))
+            store.purge_older_than(now=1_000 + 25 * 3600)
+            self.assertIsNone(turns.get("old", "t1"))
+            self.assertIsNotNone(turns.get("new", "t2"))
+            with store._connection() as db:
+                self.assertEqual(db.execute("SELECT call_id FROM calls").fetchall(), [("new",)])

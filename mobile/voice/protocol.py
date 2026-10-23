@@ -152,6 +152,21 @@ class LaunchTicketStore:
             return None
         return self._binding_from_json(row[1])
 
+    def token_active(self, token: str, *, now: int | None = None) -> bool:
+        stamp = int(time.time() if now is None else now)
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        with self._connection() as db:
+            return db.execute("SELECT 1 FROM calls WHERE token_hash=? AND expires_at>=? AND closed_at IS NULL", (digest, stamp)).fetchone() is not None
+
+    def purge_older_than(self, seconds: int = 24 * 3600, *, now: int | None = None) -> None:
+        """Drop calls, their turns and stale launch tickets so audio blobs do not pile up."""
+        cutoff = int(time.time() if now is None else now) - seconds
+        with self._connection() as db:
+            db.execute("DELETE FROM turns WHERE created_at<?", (cutoff,))
+            db.execute("DELETE FROM turns WHERE call_id IN (SELECT call_id FROM calls WHERE created_at<?)", (cutoff,))
+            db.execute("DELETE FROM calls WHERE created_at<?", (cutoff,))
+            db.execute("DELETE FROM launch_tickets WHERE expires_at<?", (cutoff,))
+
     def close_call(self, call_id: str, token: str) -> bool:
         digest = hashlib.sha256(token.encode()).hexdigest()
         with self._connection() as db:
