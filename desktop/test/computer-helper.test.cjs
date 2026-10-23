@@ -9,7 +9,39 @@ const { createHelper, createComputer, createComputerService, normalizeStep, norm
 const { pickHelper, makeCompile } = require('../src/computer.cjs');
 const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
 
-function permissionComputer(t, handle, fakeTimers = false, answerInit = true) {
+test('the permission prompt runs in a separate child so AX reads can continue', async (t) => {
+  let request;
+  const computer = permissionComputer(t, (message, proc) => {
+    if (message.cmd === 'request_screen') { request = { message, proc }; return; }
+    return { ok: true, generation: 1, elements: [] };
+  }, false, true, true);
+  const prompting = computer.service.requestScreenAccess();
+  for (let i = 0; !request && i < 20; i++) await new Promise(setImmediate);
+  assert.ok(request);
+  assert.equal((await computer.service.snapshot('bot', 7)).generation, 1);
+  assert.equal(computer.children.length, 2);
+  request.proc.stdout.write(JSON.stringify({ id: request.message.id, ok: true, screenRecording: false }) + '\n');
+  await prompting;
+});
+
+test('Mac launch and permission reads reach the helper, while other hosts keep their verbs', async (t) => {
+  const calls = [];
+  const mac = permissionComputer(t, (request) => {
+    calls.push(request);
+    return request.cmd === 'launch' ? { ok: true, pid: 7, bundleId: 'com.example.calculator' }
+      : { ok: true, accessibility: false, screenRecording: true };
+  }, false, true, true);
+  assert.deepEqual(await mac.service.launch('Calculator'), { pid: 7, bundleId: 'com.example.calculator' });
+  assert.deepEqual(await mac.service.permissions(), { accessibility: false, screenRecording: true });
+  assert.deepEqual(calls.map(item => item.cmd), ['launch', 'permissions']);
+  await assert.rejects(mac.service.launch('/Applications/Calculator.app'), { code: 'bad_request' });
+  const other = createComputer({ command: async () => ['fixture'] });
+  assert.equal(other.service.launch, undefined);
+  assert.equal(other.service.permissions, undefined);
+  assert.deepEqual(normalizeStep({ action: 'activate' }), { action: 'activate' });
+});
+
+function permissionComputer(t, handle, fakeTimers = false, answerInit = true, nativeMac = false) {
   t.mock.method(performance, 'now', () => Date.now());
   const { EventEmitter } = require('node:events');
   const { PassThrough } = require('node:stream');
@@ -37,7 +69,7 @@ function permissionComputer(t, handle, fakeTimers = false, answerInit = true) {
   let computer;
   try {
     delete require.cache[filename];
-    computer = require(filename).createComputer({ command: async () => ['fixture'] });
+    computer = require(filename).createComputer({ command: async () => ['fixture'], nativeMac });
   } finally { require.cache[filename] = cached; }
   t.after(() => computer.close());
   return { ...computer, children };
@@ -230,8 +262,9 @@ test('steps are validated before they reach the helper', () => {
   assert.throws(() => normalizeStep({ action: 'type', ref: 'c1', text: 'x'.repeat(2001) }), /at most 2000/);
   assert.throws(() => normalizeStep({ action: 'press' }), /needs a ref/);
   assert.throws(() => normalizeStep({ action: 'type', ref: 5, text: 'x' }), /needs a ref/);
-  // Typing at the focus is only for a desktop the agent owns; elsewhere apps never take focus.
-  assert.throws(() => normalizeStep({ action: 'type', text: 'hi' }), /needs a ref/);
+  // Typing at the focus is for a desktop the agent owns, or a Mac, whose helper checks the focused window and field.
+  if (process.platform === 'darwin') assert.deepEqual(normalizeStep({ action: 'type', text: 'hi' }), { action: 'type', text: 'hi' });
+  else assert.throws(() => normalizeStep({ action: 'type', text: 'hi' }), /needs a ref/);
   process.env.ALANS_WAY_AGENT_DESKTOP = '1';
   try { assert.deepEqual(normalizeStep({ action: 'type', text: 'hi' }), { action: 'type', text: 'hi' }); }
   finally { delete process.env.ALANS_WAY_AGENT_DESKTOP; }

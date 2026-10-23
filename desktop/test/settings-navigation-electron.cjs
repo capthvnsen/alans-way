@@ -16,6 +16,7 @@ const responses = new Map(), calls = [];
 const realHandle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, handler) => realHandle(channel, channel === 'workspace:command' ? async (event, name, value) => {
   calls.push({ name, value });
+  if (name === 'request-screen-permission') return {};
   if (responses.has(name)) return responses.get(name)(value);
   return handler(event, name, value);
 } : handler);

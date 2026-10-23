@@ -4,6 +4,106 @@ const { performance } = require('node:perf_hooks');
 const { calls, context } = require('../src/call-budget.cjs');
 const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
 
+test('Screen Recording is requested once by setup or first use without blocking AX; each bot gets one notice', async () => {
+  let requests = 0, actions = 0, granted = false;
+  const help = createMacPermissionHelp({ platform: 'darwin', systemPreferences: { getMediaAccessStatus: () => 'denied' } });
+  const service = help.wrap({
+    requestScreenAccess: () => { requests++; return new Promise(() => {}); },
+    permissions: async () => ({ accessibility: true, screenRecording: granted }),
+    snapshot: async () => ({ generation: 1, elements: [{ ref: 'c1', name: 'Equals' }] }),
+    action: async () => { actions++; return { ok: true }; },
+  });
+  help.requestScreen();
+  const first = await service.snapshot('bot', 7);
+  assert.match(first.note, /Screen.*Recording.*alans-way-localapp/);
+  assert.match(first.note, /Continue.*controls and menus/);
+  assert.equal((await service.snapshot('bot', 7)).note, undefined);
+  assert.equal((await service.action('bot', 7, {})).ok, true);
+  assert.match((await service.snapshot('second', 7)).note, /Screen/);
+  help.requestScreen();
+  assert.equal(requests, 1);
+  assert.equal(actions, 1);
+  assert.deepEqual(await help.read(service), { accessibility: true, screen: 'denied', restartRequired: true });
+  granted = true;
+  assert.deepEqual(await help.read(service), { accessibility: true, screen: 'granted', restartRequired: true });
+  assert.equal((await service.snapshot('after-grant', 7)).note, undefined, 'a verified grant must not be reported as off');
+  granted = undefined;
+  assert.equal((await help.read(service)).screen, 'unknown');
+  assert.equal((await service.snapshot('unknown', 7)).note, undefined, 'an unavailable probe must not be reported as off');
+});
+
+test('repeated screenshot refusals mention the switch once and never replay input', async () => {
+  let attempts = 0;
+  const help = createMacPermissionHelp({ platform: 'darwin', systemPreferences: { getMediaAccessStatus: () => 'denied' } });
+  const service = help.wrap({ requestScreenAccess: async () => ({ screenRecording: false }), screenshot: async () => {
+    attempts++; throw Object.assign(Error('Screen Recording is off.'), { code: 'permission' });
+  } });
+  await assert.rejects(service.screenshot(7, 960, { bot: 'bot' }), /Screen & System Audio Recording.*alans-way-localapp/);
+  await assert.rejects(service.screenshot(7, 960, { bot: 'bot' }), error => error.code === 'permission' && !/Recording is off|System Settings/.test(error.message) && /Continue/.test(error.message));
+  assert.equal(attempts, 2);
+});
+
+test('a rejected screen prompt never blocks AX and an existing grant never prompts', async () => {
+  for (const granted of [true, false]) {
+    let requests = 0;
+    const help = createMacPermissionHelp({ platform: 'darwin', systemPreferences: { getMediaAccessStatus: () => granted ? 'granted' : 'denied' } });
+    const service = help.wrap({ requestScreenAccess: async () => { requests++; throw Error('Prompt unavailable'); },
+      action: async () => ({ ok: true }), permissions: async () => ({ accessibility: true, screenRecording: granted }) });
+    assert.equal((await service.action('bot', 7, {})).ok, true);
+    assert.equal((await service.action('bot', 7, {})).ok, true);
+    assert.equal(requests, granted ? 0 : 1);
+    assert.equal((await help.read(service)).screen, granted ? 'granted' : 'denied');
+  }
+});
+
+test('Computer permissions requests access and offers quit and reopen after a missing grant', async () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer.js'), 'utf8');
+  const commands = [];
+  const element = (tag, cls, text = '') => ({ tag, className: cls, textContent: text, children: [], hidden: false,
+    append(...children) { this.children.push(...children); }, setAttribute() {} });
+  const context = { element, command: async name => commands.push(name), settingsStatus: () => element('p'),
+    api: { command: async name => { commands.push(name); return { accessibility: true, screen: 'denied', restartRequired: true }; } },
+    runSettingsAction: async (_button, _status, work) => ({ ok: true, result: await work() }) };
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function showMacPermissions('), source.indexOf('const CHECK_GROUPS')), context);
+  const body = element('div');
+  context.showMacPermissions(body);
+  await new Promise(setImmediate);
+  assert.equal(commands.filter(name => name === 'request-screen-permission').length, 1);
+  const buttons = body.children.filter(node => node.tag === 'button');
+  const restart = buttons.find(node => node.textContent === "Quit and reopen Alan's Workspace");
+  assert.ok(restart);
+  assert.equal(restart.hidden, false);
+  await restart.onclick();
+  assert.ok(commands.includes('relaunch-for-permissions'));
+});
+
+test('the permission relaunch saves state, disables update installation and quits normally', async () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
+  const branch = source.slice(source.indexOf("case 'relaunch-for-permissions':"), source.indexOf("case 'open-mac-privacy':"));
+  for (const busy of [false, true]) {
+    const events = [];
+    const context = { process: { platform: 'darwin' }, update: {}, vmRetrying: false, hermesUpdating: false, updatingAll: false,
+      updateLocked: () => busy, holdAppInstall: hold => events.push(['hold', hold]), savePreferences: () => events.push('save'),
+      app: { relaunch: () => events.push('relaunch'), quit: () => events.push('quit') } };
+    const run = () => vm.runInNewContext(`(async () => { switch ('relaunch-for-permissions') { ${branch} } })()`, context);
+    if (busy) { await assert.rejects(run(), /update/i); assert.deepEqual(events, []); }
+    else { await run(); assert.deepEqual(events, [['hold', true], 'save', 'relaunch', 'quit']); }
+  }
+});
+
+test('permission status uses helper preflight and preserves unknown on failure', async () => {
+  const { readMacPermissions } = require('../src/mac-permissions.cjs');
+  assert.deepEqual(await readMacPermissions({ permissions: async () => ({ accessibility: true, screenRecording: false }) }),
+    { accessibility: true, screen: 'denied' });
+  assert.deepEqual(await readMacPermissions({ permissions: async () => ({ accessibility: false, screenRecording: true }) }),
+    { accessibility: false, screen: 'granted' });
+  assert.deepEqual(await readMacPermissions({ permissions: async () => { throw new Error('Unavailable'); } }),
+    { accessibility: null, screen: 'unknown' });
+});
+
 function fixture(t, { platform = 'darwin', screen = 'denied', grantOnPoll = Infinity, waitMs = 30, pollMs = 10 } = {}) {
   let now = 0;
   t.mock.method(Date, 'now', () => now);
@@ -40,7 +140,7 @@ test('a screenshot failure names Screen Recording when macOS has not granted it'
   for (const original of [failure('Screen Recording is off for this program.', 'permission'), failure('could not create image from display')]) {
     const error = help.explain(original);
     assert.match(error.message, /Screen Recording is off for alans-way-localapp \(denied\)/);
-    assert.match(error.message, /Privacy & Security > Screen Recording/);
+    assert.match(error.message, /Privacy & Security > Screen & System Audio Recording/);
   }
 });
 

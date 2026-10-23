@@ -5,6 +5,13 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { createConfig } = require('../electron-builder.cjs');
+
+test('the packaged workspace app explains its Screen Recording request', () => {
+  const config = createConfig({});
+  assert.equal(config.productName, 'alans-way-localapp');
+  assert.equal(config.appId, 'app.alans-way.localapp');
+  assert.match(config.mac.extendInfo.NSScreenCaptureUsageDescription, /window.*task/i);
+});
 const { isDeveloperIdSigned, updaterDriver } = require('../src/mac-update.cjs');
 const { githubFeed } = require('../src/win-update.cjs');
 

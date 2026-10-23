@@ -1,11 +1,12 @@
 import AppKit
+import UniformTypeIdentifiers
 import ApplicationServices
 import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
-// Reads and drives a Mac app through Accessibility without moving the pointer
-// or taking focus. Protocol v2: newline-delimited JSON, see `serve` below.
+// Reads and drives a Mac app through Accessibility without moving the pointer.
+// Explicit activation requires idle input. Protocol v2: JSON lines, see `serve`.
 
 typealias JSON = [String: Any]
 
@@ -29,7 +30,9 @@ let textEntry: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox"]
 // Close, minimize and zoom never need the agent, and every window has them.
 let windowChrome: Set<String> = ["AXCloseButton", "AXMinimizeButton", "AXZoomButton", "AXFullScreenButton"]
 let rowRoles: Set<String> = ["AXRow", "AXOutlineRow"]
-let inFrontMessage = "That app is the one in front. Leave it in the background; the real cursor stays yours."
+// The C macro for any input event is not imported by Swift.
+let kCGAnyInputEventType = CGEventType(rawValue: UInt32.max)!
+let inFrontMessage = "You are using that app right now. Retry in a few seconds after you stop using the keyboard and mouse."
 
 // MARK: policy
 
@@ -52,14 +55,27 @@ func screenLocked() -> Bool {
     (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true
 }
 
+// When this helper last posted input; the system counts it as input too.
+var lastPosted: Date?
+
+// The person is active only for input newer than this helper's own last event; older input was checked before that event.
+func personActive() -> Bool {
+    let idle = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: kCGAnyInputEventType)
+    guard idle < 2 else { return false }
+    guard let lastPosted else { return true }
+    return idle < Date().timeIntervalSince(lastPosted) - 0.3
+}
+
 @discardableResult
-func checkApp(_ pid: pid_t) throws -> NSRunningApplication {
+func checkApp(_ pid: pid_t, action: Bool = false, activating: Bool = false) throws -> NSRunningApplication {
     guard let app = NSRunningApplication(processIdentifier: pid), app.activationPolicy == .regular, !app.isTerminated else {
         throw Fail("not_found", "App not found.")
     }
     if isBlocked(app.bundleIdentifier ?? "") { throw Fail("off_limits", "That app is off limits.") }
     if screenLocked() { throw Fail("locked", "The screen is locked, so apps cannot be read or driven. Ask the user to unlock it, then retry.") }
-    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { throw Fail("in_front", inFrontMessage) }
+    if action && (activating || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid), personActive() {
+        throw Fail("in_front", inFrontMessage)
+    }
     return app
 }
 
@@ -415,9 +431,9 @@ func hasOffscreenWindow(_ pid: pid_t) -> Bool {
     }
 }
 
-let otherSpaceNote = "No window of this app is readable: its windows are on another Space, minimized or hidden (a full-screen app in front puts them on another Space). Its menus and a screenshot still work. To use its controls, ask the user to bring it onto the current Space."
-let noWindowNote = "This app has no open windows. Its menus still work (menubar:true), for example File > New."
-let unsureWindowNote = "No window of this app is readable: it has none open, or they are on another Space, minimized or hidden (Screen Recording is off, so which is unknown). Its menus still work (menubar:true)."
+let otherSpaceNote = "No window of this app is readable: its windows are on another Space, minimized or hidden (a full-screen app in front puts them on another Space). Its menus and a screenshot still work. To use its controls, bring it forward with activate, then take a fresh snapshot."
+let noWindowNote = "This app has no open windows. Open one with its shortcut (for example cmd+n or cmd+o) or its menus (menubar:true, for example File > New), then take a fresh snapshot."
+let unsureWindowNote = "Window titles are unavailable. This does not mean the app is closed. Continue with its available controls and menus; if it has no task window, open one."
 
 func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws -> Walk {
     let app = appElement(pid)
@@ -432,13 +448,18 @@ func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
     let selected = try selectedWindow(pid, windowId)
     if let selected, selected.onScreen {
         let readableWindows = windows as? [AXUIElement] ?? []
-        let matches = readableWindows.filter { matchesWindow($0, selected) }
+        var matches = readableWindows.filter { matchesWindow($0, selected) }
+        // Some sheets (Finder's Go to Folder) have focus but are missing from the app's window list.
+        if matches.count != 1, let value = axValue(app, "AXFocusedWindow"), CFGetTypeID(value) == AXUIElementGetTypeID(),
+           matchesWindow(value as! AXUIElement, selected) {
+            matches = [value as! AXUIElement]
+        }
         guard matches.count == 1 else { throw Fail("window_unverified", "Could not match that window to its controls. Take a fresh snapshot.") }
         roots.append(Node(matches[0], depth: 0, limit: depthCap))
     }
     let note = roots.isEmpty ? (hasOffscreenWindow(pid) ? otherSpaceNote : CGPreflightScreenCaptureAccess() ? noWindowNote : unsureWindowNote) : nil
-    if menubar, let bar = axValue(app, "AXMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID() {
-        roots.append(Node(bar as! AXUIElement, depth: 0, limit: 1))
+    if menubar {
+        roots.append(Node(try menuBar(pid), depth: 0, limit: 1))
     }
     var queue = roots
     var head = 0
@@ -626,7 +647,7 @@ var postedMouse = false
 
 func postMouse(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: Int, dragTo: CGPoint?) {
     postedMouse = true
-    let source = CGEventSource(stateID: .hidSystemState)
+    let source = CGEventSource(stateID: .privateState)
     let down: CGEventType = button == .right ? .rightMouseDown : .leftMouseDown
     let up: CGEventType = button == .right ? .rightMouseUp : .leftMouseUp
     let drag: CGEventType = button == .right ? .rightMouseDragged : .leftMouseDragged
@@ -634,6 +655,7 @@ func postMouse(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: In
         let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: at, mouseButton: button)
         event?.setIntegerValueField(.mouseEventClickState, value: Int64(state))
         event?.postToPid(pid)
+        lastPosted = Date()
     }
     post(.mouseMoved, point, 0)
     if let dragTo {
@@ -776,7 +798,8 @@ func postKey(_ pid: pid_t, key: String, modifiers: [String]) throws {
     let known = keyCodes[key]
     guard known != nil || key.count == 1 else { throw Fail("bad_request", "Unknown key \"\(key)\".") }
     let flags = keyFlags(modifiers)
-    let source = CGEventSource(stateID: .hidSystemState)
+    // A private source keeps these keys out of the hardware idle time that tells the person's own input apart.
+    let source = CGEventSource(stateID: .privateState)
     for isDown in [true, false] {
         guard let event = CGEvent(keyboardEventSource: source, virtualKey: known ?? 0, keyDown: isDown) else { throw Fail("failed", "Could not build the key event.") }
         event.flags = flags
@@ -784,7 +807,9 @@ func postKey(_ pid: pid_t, key: String, modifiers: [String]) throws {
             var units = Array(key.utf16)
             event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
         }
-        event.postToPid(pid)
+        // Open and Save panels run in another process: only session delivery reaches them while the app is in front.
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { event.post(tap: .cgSessionEventTap) } else { event.postToPid(pid) }
+        lastPosted = Date()
         if isDown { usleep(8000) }
     }
 }
@@ -831,10 +856,11 @@ func scrollByWheel(_ pid: pid_t, at point: CGPoint, direction: String, amount: D
     case "left": dx = pixels
     default: dx = -pixels
     }
-    guard let event = CGEvent(scrollWheelEvent2Source: CGEventSource(stateID: .hidSystemState), units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else { return false }
+    guard let event = CGEvent(scrollWheelEvent2Source: CGEventSource(stateID: .privateState), units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else { return false }
     event.location = point
     postedMouse = true
     event.postToPid(pid)
+    lastPosted = Date()
     return true
 }
 
@@ -849,10 +875,21 @@ func normalizedTitle(_ text: String) -> String {
 }
 
 func menuBar(_ pid: pid_t) throws -> AXUIElement {
-    guard let bar = axValue(appElement(pid), "AXMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID() else {
-        throw Fail("unsupported_action", "That app exposes no menu bar.")
+    let app = appElement(pid)
+    for attempt in 0...1 {
+        var bar: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(app, "AXMenuBar" as CFString, &bar)
+        if result == .success, let bar, CFGetTypeID(bar) == AXUIElementGetTypeID() { return bar as! AXUIElement }
+        if result == .cannotComplete || result == .noValue {
+            if attempt == 0 {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+                continue
+            }
+            throw Fail("unresponsive", "The app's menu bar is not ready (\(result.rawValue)). Wait a moment and retry.")
+        }
+        throw Fail("unsupported_action", "That app exposes no menu bar (\(result.rawValue)).")
     }
-    return bar as! AXUIElement
+    throw Fail("unresponsive", "The app's menu bar is not ready. Wait a moment and retry.")
 }
 
 func menuChildren(_ container: AXUIElement) -> [AXUIElement] {
@@ -973,7 +1010,17 @@ func selectedWindow(_ pid: pid_t, _ id: CGWindowID?) throws -> SelectedWindow? {
         guard frame.width >= 40, frame.height >= 40 else { return nil }
         return SelectedWindow(id: number.uint32Value, frame: frame, onScreen: (item[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true, titled: !(item[kCGWindowName as String] as? String ?? "").isEmpty)
     }
+    // Unnamed, read the window the app has focused, such as an Open panel in front of its document.
+    if id == nil, let value = axValue(appElement(pid), "AXFocusedWindow"), CFGetTypeID(value) == AXUIElementGetTypeID(),
+       let focused = windows.first(where: { $0.onScreen && matchesWindow(value as! AXUIElement, $0) }) {
+        return focused
+    }
     return try chooseWindow(windows, id)
+}
+
+func hasOnScreenWindow(_ pid: pid_t) -> Bool {
+    let info = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    return info.contains { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid && ($0[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 && ($0[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true }
 }
 
 func matchesWindow(_ element: AXUIElement, _ selected: SelectedWindow) -> Bool {
@@ -990,7 +1037,7 @@ func windowIdOf(_ request: JSON) throws -> CGWindowID? {
     return value.uint32Value
 }
 
-let elsewhereShotNote = "Read only: this window is on another Space, minimized or hidden, where Accessibility cannot reach it and clicks at these coordinates may not land. To act on it, ask the user to bring it onto the current Space."
+let elsewhereShotNote = "Read only: this window is on another Space, minimized or hidden, where Accessibility cannot reach it and clicks at these coordinates may not land. To act on it, bring it forward with activate, then take a fresh snapshot."
 
 // ScreenCaptureKit's screenshot call needs macOS 14; the app supports 13.
 @available(macOS 14, *)
@@ -1109,6 +1156,72 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
     postedMouse = false
     var out: JSON = [:]
     switch step["action"] as? String ?? "" {
+    case "activate":
+        let app = try checkApp(pid, action: true, activating: true)
+        try rejectSecureFocus(pid)
+        if !hasOnScreenWindow(pid) {
+            // Its windows are on another Space, minimized or hidden: bring the app forward like a Dock click.
+            app.unhide()
+            for window in axValue(appElement(pid), "AXWindows") as? [AXUIElement] ?? [] where axValue(window, "AXMinimized") as? Bool == true {
+                AXUIElementSetAttributeValue(window, "AXMinimized" as CFString, kCFBooleanFalse)
+            }
+            guard app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]),
+                  waitFor({ NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }, timeout: 2) else {
+                throw Fail("failed", "Could not bring that app forward. Ask the user to show it.")
+            }
+            if !waitFor({ hasOnScreenWindow(pid) }, timeout: 1), !hasOffscreenWindow(pid),
+               let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.bundleIdentifier ?? "") ?? app.bundleURL {
+                // Like a Dock click: reopening an app that has no window makes most apps open one.
+                // Only with no window anywhere; with windows elsewhere the same click shows App Exposé.
+                let configuration = NSWorkspace.OpenConfiguration()
+                configuration.activates = true
+                var reopened = false
+                NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in reopened = true }
+                _ = waitFor({ reopened })
+            }
+            out["note"] = waitFor({ hasOnScreenWindow(pid) }, timeout: 2)
+                ? "Brought the app's window onto this screen. Take a fresh snapshot before acting."
+                : noWindowNote
+            break
+        }
+        guard let selected = try selectedWindow(pid, windowId), selected.onScreen,
+              axValue(appElement(pid), "AXWindows") is [AXUIElement] else {
+            throw Fail("window_unverified", "Take a snapshot of the window before bringing it forward.")
+        }
+        // A window that just opened can still be moving into place, so its frame needs a moment to match.
+        var matches: [AXUIElement] = []
+        _ = waitFor({
+            let current = (try? selectedWindow(pid, windowId)).flatMap { $0 } ?? selected
+            matches = (axValue(appElement(pid), "AXWindows") as? [AXUIElement] ?? []).filter { matchesWindow($0, current) }
+            return matches.count == 1
+        }, timeout: 1.5)
+        if matches.count != 1 && windowId == nil {
+            // Nothing named a window and the new one is not readable yet: bringing the app forward is still what was asked.
+            guard app.activate(options: [.activateIgnoringOtherApps]),
+                  waitFor({ NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }, timeout: 2) else {
+                throw Fail("failed", "Could not bring that app forward. Ask the user to show it.")
+            }
+            out["note"] = "Brought the app forward. Take a fresh snapshot before acting."
+            break
+        }
+        guard matches.count == 1 else { throw Fail("window_unverified", "Could not verify the selected window. Take a fresh snapshot.") }
+        try checkApp(pid, action: true, activating: true)
+        guard AXUIElementPerformAction(matches[0], "AXRaise" as CFString) == .success,
+              app.activate(options: [.activateIgnoringOtherApps]) else {
+            throw Fail("failed", "Could not bring the selected window forward. Take a fresh snapshot.")
+        }
+        let focusedSelected = waitFor({
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                  let focused = axValue(appElement(pid), "AXFocusedWindow"), CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
+            return belongsToWindow(focused as! AXUIElement, selected)
+        }, timeout: 1)
+        if !focusedSelected {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+                throw Fail("window_unverified", "Could not confirm keyboard focus in the selected window. Take a fresh snapshot.")
+            }
+            // The app is in front but one of its own windows, such as an Open panel, has focus.
+            out["note"] = "The app is in front, but another of its windows (such as a dialog) has focus. Take a fresh snapshot."
+        }
     case "press":
         let node = try resolve(pid, step["ref"] as? String ?? "")
         try rejectSecure(node)
@@ -1138,10 +1251,33 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
         guard result == .success else { throw Fail("failed", "The app could not perform that action (\(result.rawValue)).") }
         out["via"] = "ax"
     case "type":
-        let node = try resolve(pid, step["ref"] as? String ?? "")
-        try rejectSecure(node)
         guard let text = step["text"] as? String else { throw Fail("bad_request", "type needs text.") }
         if text.count > 2000 { throw Fail("bad_request", "Text is too long.") }
+        guard let ref = step["ref"] as? String, !ref.isEmpty else {
+            // No field named: type into whatever has keyboard focus, such as a rename box the tree does not list.
+            try rejectSecureFocus(pid)
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+                let app = try checkApp(pid, action: true, activating: true)
+                _ = app.activate(options: [.activateIgnoringOtherApps])
+                _ = waitFor({ NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }, timeout: 1)
+            }
+            // A text field that takes an insertion gets the exact text where its cursor is, as typing would.
+            if let value = axValue(appElement(pid), "AXFocusedUIElement"), CFGetTypeID(value) == AXUIElementGetTypeID() {
+                let focused = value as! AXUIElement
+                var settable: DarwinBoolean = false
+                if ["AXTextField", "AXTextArea"].contains(axString(focused, "AXRole")),
+                   AXUIElementIsAttributeSettable(focused, "AXSelectedText" as CFString, &settable) == .success, settable.boolValue,
+                   AXUIElementSetAttributeValue(focused, "AXSelectedText" as CFString, text as CFString) == .success {
+                    out["via"] = "ax"
+                    break
+                }
+            }
+            for character in text { try postKey(pid, key: character == "\n" ? "return" : String(character), modifiers: []) }
+            out["via"] = "keys"
+            break
+        }
+        let node = try resolve(pid, ref)
+        try rejectSecure(node)
         let result = AXUIElementSetAttributeValue(node.element, "AXValue" as CFString, text as CFString)
         if result != .success { throw Fail("failed", "Could not set that text (\(result.rawValue)).") }
     case "click":
@@ -1269,20 +1405,45 @@ final class AXSettler {
 }
 
 func belongsToWindow(_ element: AXUIElement, _ selected: SelectedWindow) -> Bool {
-    if axString(element, "AXRole") == "AXWindow" { return matchesWindow(element, selected) }
-    guard let window = axValue(element, "AXWindow"), CFGetTypeID(window) == AXUIElementGetTypeID() else { return false }
-    return matchesWindow(window as! AXUIElement, selected)
+    var current: AXUIElement? = element
+    var seen = Set<AXKey>()
+    // SwiftUI controls can omit AXWindow; sheets still belong to their parent window.
+    for _ in 0..<32 {
+        guard let candidate = current, seen.insert(AXKey(element: candidate)).inserted else { return false }
+        if axString(candidate, "AXRole") == "AXWindow" { return matchesWindow(candidate, selected) }
+        if let window = axValue(candidate, "AXWindow"), CFGetTypeID(window) == AXUIElementGetTypeID() {
+            return matchesWindow(window as! AXUIElement, selected)
+        }
+        current = axParent(candidate)
+    }
+    return false
+}
+
+// A front app's floating field editor, such as Finder's rename box: no focused window, and the field's parent is the app.
+func focusedInlineEditor(_ pid: pid_t) -> AXUIElement? {
+    let root = appElement(pid)
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+          axValue(root, "AXFocusedWindow").map({ CFGetTypeID($0) != AXUIElementGetTypeID() }) ?? true,
+          let value = axValue(root, "AXFocusedUIElement"), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+    let field = value as! AXUIElement
+    guard ["AXTextField", "AXTextArea"].contains(axString(field, "AXRole")), let parent = axParent(field), CFEqual(parent, root) else { return nil }
+    return field
 }
 
 func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?) throws {
     let action = step["action"] as? String ?? ""
     let node = (step["ref"] as? String).flatMap { caches[pid]?.nodes[$0] }
     let menuRef = node.map { inMenu($0.element) } ?? false
+    // A Cmd shortcut is an app command: with the app in front it reaches that app's key window or panel, whichever window was read.
+    if action == "key", (step["modifiers"] as? [String] ?? []).contains("meta"),
+       NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return }
     guard let selected else {
-        if action == "menu" || menuRef { return }
-        throw Fail("no_window", "Take a window snapshot before acting.")
+        if action == "menu" || action == "activate" || menuRef { return }
+        // With no window at all, a shortcut can only reach the app itself, which must be in front.
+        if action == "key" && !hasOnScreenWindow(pid) && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return }
+        throw Fail("no_window", hasOnScreenWindow(pid) ? "Take a window snapshot before acting." : noWindowNote)
     }
-    guard selected.onScreen else { throw Fail("stale_window", "That window is not on the current screen. Ask the user to bring it back.") }
+    guard selected.onScreen || action == "activate" else { throw Fail("stale_window", "That window is not on the current screen. Bring it forward with activate, then take a fresh snapshot.") }
     for (x, y) in [("x", "y"), ("x2", "y2")] {
         if let px = number(step[x]), let py = number(step[y]) {
             let point = CGPoint(x: px, y: py)
@@ -1295,9 +1456,14 @@ func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?)
     if let node, !menuRef, !belongsToWindow(node.element, selected) {
         throw Fail("stale_ref", "That control is no longer in the selected window. Take a fresh snapshot.")
     }
-    if action == "key" || action == "menu" || menuRef {
-        guard let focused = axValue(appElement(pid), "AXFocusedWindow"), CFGetTypeID(focused) == AXUIElementGetTypeID(), matchesWindow(focused as! AXUIElement, selected) else {
-            throw Fail("window_unverified", "The selected window does not have keyboard focus. Take a fresh snapshot.")
+    if action == "key" || (action == "type" && step["ref"] == nil) || action == "menu" || menuRef {
+        // Inline editors such as Finder's rename box can leave no focused window while their field has focus.
+        let inSelected = { (name: String) -> Bool in
+            guard let value = axValue(appElement(pid), name), CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
+            return belongsToWindow(value as! AXUIElement, selected)
+        }
+        guard inSelected("AXFocusedWindow") || inSelected("AXFocusedUIElement") || focusedInlineEditor(pid) != nil else {
+            throw Fail("window_unverified", "The selected window does not have keyboard focus. Bring that window forward when you are idle, then take a fresh snapshot.")
         }
     }
 }
@@ -1305,12 +1471,14 @@ func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?)
 func act(_ request: JSON) throws -> JSON {
     let pid = try pidOf(request)
     try requireAccessibility()
-    try checkApp(pid)
+    try checkApp(pid, action: true)
     let steps = request["steps"] as? [JSON] ?? []
     let menubar = request["menubar"] as? Bool ?? caches[pid]?.menubar ?? false
     let expected = (request["generation"] as? NSNumber)?.intValue
     let held = refBooks[pid].flatMap { book in (book.history + book.pinned).last(where: { $0.generation == expected }) }
-    let windowId = try windowIdOf(request) ?? held?.windowId ?? caches[pid]?.windowId
+    // A bare activate names no window; a window cached by an earlier task may be gone.
+    let bareActivate = steps.count == 1 && steps[0]["action"] as? String == "activate" && request["windowId"] == nil && expected == nil
+    let windowId = try windowIdOf(request) ?? held?.windowId ?? (bareActivate ? nil : caches[pid]?.windowId)
     if expected != nil && (held == nil || held?.windowId != windowId) {
         throw Fail("stale_ref", "The selected window changed. Take a fresh snapshot.")
     }
@@ -1323,7 +1491,7 @@ func act(_ request: JSON) throws -> JSON {
     var succeeded = false
     for step in steps {
         do {
-            try checkApp(pid)
+            try checkApp(pid, action: true)
             try validateWindowStep(pid, step, try selectedWindow(pid, selected?.id))
             results.append(try runStep(pid, step, windowId: selected?.id))
             succeeded = true
@@ -1342,6 +1510,70 @@ func act(_ request: JSON) throws -> JSON {
     return reply
 }
 
+// Opening a file must never run code, so anything that can execute is refused up front.
+let runnableExtensions: Set<String> = ["app", "command", "terminal", "tool", "workflow", "action", "scpt", "scptd", "applescript",
+                                       "sh", "zsh", "bash", "py", "rb", "pl", "pkg", "mpkg", "dmg", "webloc", "inetloc", "fileloc", "prefPane", "kext"]
+
+func openDocument(_ request: JSON, _ path: String) throws -> JSON {
+    guard path.hasPrefix("/"), path.count <= 1024, !path.contains("\n") else { throw Fail("bad_request", "Give the file's absolute path.") }
+    let file = URL(fileURLWithPath: path).standardizedFileURL
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDirectory) else { throw Fail("not_found", "That file does not exist.") }
+    let type = try? file.resourceValues(forKeys: [.contentTypeKey]).contentType
+    if runnableExtensions.contains(file.pathExtension.lowercased()) || NSWorkspace.shared.isFilePackage(atPath: file.path)
+        || (!isDirectory.boolValue && FileManager.default.isExecutableFile(atPath: file.path))
+        || type.map({ $0.conforms(to: .executable) || $0.conforms(to: .script) || $0.conforms(to: .application) }) == true {
+        throw Fail("off_limits", "That file could run code, so it is not opened. Open documents and folders only.")
+    }
+    let named = (request["app"] as? String).flatMap { name -> URL? in
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: name) ?? NSWorkspace.shared.fullPath(forApplication: name).map { URL(fileURLWithPath: $0) }
+    }
+    guard let appURL = named ?? NSWorkspace.shared.urlForApplication(toOpen: file), let id = Bundle(url: appURL)?.bundleIdentifier else {
+        throw Fail("not_found", "No app opens that file.")
+    }
+    if isBlocked(id) { throw Fail("off_limits", "That app is off limits.") }
+    if screenLocked() { throw Fail("locked", "The screen is locked. Ask the user to unlock it, then retry.") }
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.activates = false
+    var finished = false
+    var opened: NSRunningApplication?
+    NSWorkspace.shared.open([file], withApplicationAt: appURL, configuration: configuration) { app, _ in opened = app; finished = true }
+    guard waitFor({ finished }), let opened, opened.processIdentifier > 0 else { throw Fail("failed", "Could not open that file. Check whether it opened before retrying.") }
+    // Name the window showing the item, so the next read targets it rather than another window of the app.
+    let pid = opened.processIdentifier, title = file.lastPathComponent
+    var shown: CGWindowID?
+    _ = waitFor({
+        let info = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        shown = info.first { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid && ($0[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
+            && ($0[kCGWindowName as String] as? String) == title }.flatMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value }
+        return shown != nil
+    }, timeout: 2)
+    return ["pid": Int(pid), "bundleId": id].merging(shown.map { ["windowId": Int($0)] } ?? [:]) { a, _ in a }
+}
+
+func launchApp(_ request: JSON) throws -> JSON {
+    if let path = request["path"] as? String { return try openDocument(request, path) }
+    guard let name = request["app"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          name.count <= 200, !name.contains("/"), !name.contains(":"), !name.contains("\n") else {
+        throw Fail("bad_request", "Choose an app by its name or bundle identifier.")
+    }
+    if isBlocked(name) { throw Fail("off_limits", "That app is off limits.") }
+    let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: name)
+        ?? NSWorkspace.shared.fullPath(forApplication: name).map { URL(fileURLWithPath: $0) }
+    guard let url, let id = Bundle(url: url)?.bundleIdentifier else { throw Fail("not_found", "App not found.") }
+    if isBlocked(id) { throw Fail("off_limits", "That app is off limits.") }
+    if screenLocked() { throw Fail("locked", "The screen is locked. Ask the user to unlock it, then retry.") }
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.activates = false
+    var finished = false
+    var launched: NSRunningApplication?
+    NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, _ in launched = app; finished = true }
+    guard waitFor({ finished }), let launched else { throw Fail("failed", "Could not open that app. Check whether it opened before retrying.") }
+    // An instance macOS lost track of (automatic termination gone wrong) reports pid -1 and has no windows.
+    guard launched.processIdentifier > 0 else { throw Fail("unresponsive", "That app is running but macOS cannot reach it. Ask the user to quit it, then retry.") }
+    return ["pid": Int(launched.processIdentifier), "bundleId": id]
+}
+
 func dispatch(_ request: JSON) throws -> JSON {
     if let policy = request["policy"] as? JSON { setPolicy(policy) }
     switch request["cmd"] as? String ?? "" {
@@ -1349,6 +1581,12 @@ func dispatch(_ request: JSON) throws -> JSON {
         return ["protocol": 2, "windowBinding": true]
     case "selftest":
         return try selftest()
+    case "permissions":
+        return ["accessibility": AXIsProcessTrusted(), "screenRecording": CGPreflightScreenCaptureAccess()]
+    case "request_screen":
+        return ["screenRecording": CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()]
+    case "launch":
+        return try launchApp(request)
     case "apps":
         try requireAccessibility()
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier

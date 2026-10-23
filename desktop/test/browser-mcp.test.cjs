@@ -612,7 +612,7 @@ test('browser MCP exposes close and reports non-JSON host errors cleanly', { tim
   assert.deepEqual(tools, [
     'cua_alans_way_status', 'cua_alans_way_tabs', 'cua_alans_way_open',
     'cua_alans_way_snapshot', 'cua_alans_way_screenshot', 'cua_alans_way_close',
-    'workspace_computer_apps', 'workspace_computer_snapshot', 'workspace_computer_screenshot', 'workspace_computer_menu', 'workspace_computer_action',
+    'workspace_computer_apps', 'workspace_computer_launch', 'workspace_computer_snapshot', 'workspace_computer_screenshot', 'workspace_computer_menu', 'workspace_computer_action',
     'cua_alans_way_action', 'cua_alans_way_recordings',
   ]);
   const result = await client.callTool({ name: 'cua_alans_way_status', arguments: {} });
@@ -903,6 +903,24 @@ test('the app list names the machine the apps run on', { timeout: 8000 }, async 
   const reply = JSON.parse((await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text);
   assert.equal(reply.host, 'mac');
   assert.equal(reply.apps[0].name, 'app-api-marker');
+});
+
+test('Mac launch goes through the advertised app API and old hosts refuse it', { timeout: 8000 }, async (t) => {
+  const { client, seen } = await computerHost(t, ['computer', 'computer-launch-v1'], 'mac');
+  const tools = (await client.listTools()).tools;
+  assert.ok(tools.find(tool => tool.name === 'workspace_computer_launch'));
+  assert.ok(tools.find(tool => tool.name === 'workspace_computer_action').inputSchema.properties.action.enum.includes('activate'));
+  const reply = await client.callTool({ name: 'workspace_computer_launch', arguments: { app: 'Calculator' } });
+  assert.equal(reply.isError, undefined, JSON.stringify(reply));
+  assert.deepEqual(seen.find(item => item.line === 'POST /v1/computer/launch').body, { app: 'Calculator' });
+  const opened = await client.callTool({ name: 'workspace_computer_launch', arguments: { path: '/tmp/task/edit.txt' } });
+  assert.equal(opened.isError, undefined, JSON.stringify(opened));
+  assert.deepEqual(seen.filter(item => item.line === 'POST /v1/computer/launch')[1].body, { path: '/tmp/task/edit.txt' });
+  assert.equal((await client.callTool({ name: 'workspace_computer_launch', arguments: {} })).isError, true);
+  const old = await computerHost(t, ['computer'], 'windows');
+  const refused = await old.client.callTool({ name: 'workspace_computer_launch', arguments: { app: 'Calculator' } });
+  assert.equal(refused.isError, true);
+  assert.ok(!old.seen.some(item => item.line.includes('/launch')));
 });
 
 test('computer tools go through the app API when the connected app advertises computer use', { timeout: 8000 }, async (t) => {

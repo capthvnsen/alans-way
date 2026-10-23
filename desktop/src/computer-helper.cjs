@@ -15,7 +15,7 @@ const WAIT_POLL_MS = 150;
 // just before it ends can still take REQUEST_TIMEOUT_MS (20 s), keeping the call
 // well under the connector's 90 s abort.
 const CALL_BUDGET_MS = 45000;
-const READ_ONLY = new Set(['init', 'apps', 'snapshot', 'shot', 'menu']);
+const READ_ONLY = new Set(['init', 'apps', 'snapshot', 'shot', 'menu', 'permissions']);
 
 function helperError(response) {
   const code = response.code || 'failed';
@@ -261,8 +261,8 @@ function normalizeStep(item) {
   }
   if (action === 'type' && (typeof step.text !== 'string' || step.text.length > 2000))
     throw fail('bad_request', 'Text must be a string of at most 2000 characters.');
-  // Only a desktop the agent owns types at the focused window; elsewhere apps never take focus.
-  const focusType = action === 'type' && step.ref === undefined && process.env.ALANS_WAY_AGENT_DESKTOP === '1';
+  // A desktop the agent owns types at the focused window; so does a Mac, whose helper checks that window and field first.
+  const focusType = action === 'type' && step.ref === undefined && (process.env.ALANS_WAY_AGENT_DESKTOP === '1' || process.platform === 'darwin');
   if (REF_ACTIONS.has(action) && !focusType && typeof step.ref !== 'string') throw fail('bad_request', `${action} needs a ref.`);
   if (action === 'select_text' && (typeof step.text !== 'string' || !step.text || step.text.length > 2000 ||
       ['prefix', 'suffix'].some((key) => step[key] !== undefined && (typeof step[key] !== 'string' || step[key].length > 2000)) ||
@@ -274,8 +274,8 @@ function normalizeStep(item) {
     throw fail('bad_request', 'menu needs a path such as ["File","Save"].');
   if (action === 'scroll' && !['up', 'down', 'left', 'right'].includes(step.direction))
     throw fail('bad_request', 'scroll needs a direction: up, down, left, or right.');
-  if (!REF_ACTIONS.has(action) && !POINT_OR_REF.has(action) && !['click', 'drag', 'menu'].includes(action))
-    throw fail('bad_request', 'Computer action must be press, type, select_text, secondary_action, click, double_click, right_click, drag, scroll, key, hotkey, menu, wait, or batch.');
+  if (!REF_ACTIONS.has(action) && !POINT_OR_REF.has(action) && !['click', 'drag', 'menu', 'activate'].includes(action))
+    throw fail('bad_request', 'Computer action must be press, type, select_text, secondary_action, click, double_click, right_click, drag, scroll, key, hotkey, menu, activate, wait, or batch.');
   return step;
 }
 
@@ -379,6 +379,9 @@ function createComputerService(driver) {
   }
 
   return {
+    ...(driver.launch ? { launch: (app, path) => driver.launch(app, path) } : {}),
+    ...(driver.permissions ? { permissions: () => driver.permissions() } : {}),
+    ...(driver.requestScreenAccess ? { requestScreenAccess: () => driver.requestScreenAccess() } : {}),
     // Off-limits apps would only be refused, so they are not offered.
     apps: async () => (await driver.apps())
       .filter((app) => !(app.pid < 0) && !isBlocked(app.bundleId))
@@ -392,8 +395,10 @@ function createComputerService(driver) {
 }
 
 // platform.command(mode) -> [file, ...args]; shared by mac, Windows, and Linux.
-function createComputer({ command, env }) {
+function createComputer({ command, env, nativeMac = false }) {
   const helper = createHelper({ command, env });
+  // A permission dialog must never occupy the app's AX request queue.
+  const permissionHelper = nativeMac ? createHelper({ command, env }) : null;
   let windowSupport;
   async function requireWindowSupport(windowId) {
     if (windowId === undefined) return;
@@ -401,6 +406,24 @@ function createComputer({ command, env }) {
     if (!await windowSupport) throw fail('unsupported_window', 'This helper cannot select a window. Update it before retrying.');
   }
   const driver = {
+    ...(nativeMac ? {
+      requestScreenAccess: async () => {
+        try { return await permissionHelper.request({ cmd: 'request_screen' }); }
+        finally { permissionHelper.close(); }
+      },
+      launch: async (app, path) => {
+        if (path !== undefined && (typeof path !== 'string' || !path.startsWith('/') || path.length > 1024 || path.includes('\n')))
+          throw fail('bad_request', "Give the file's absolute path.");
+        if ((path === undefined || app !== undefined) && (typeof app !== 'string' || !app.trim() || app.length > 200 || /[/:\n]/.test(app)))
+          throw fail('bad_request', 'Choose an app by its name or bundle identifier.');
+        const { ok, id, ...reply } = await helper.request({ cmd: 'launch', ...(app !== undefined ? { app } : {}), ...(path !== undefined ? { path } : {}) });
+        return reply;
+      },
+      permissions: async () => {
+        const { ok, id, ...reply } = await helper.request({ cmd: 'permissions' });
+        return reply;
+      },
+    } : {}),
     apps: async () => (await helper.request({ cmd: 'apps' })).apps || [],
     snapshot: async (pid, { menubar, pin, windowId } = {}) => {
       await requireWindowSupport(windowId);
@@ -426,9 +449,9 @@ function createComputer({ command, env }) {
         ...(shot.note ? { note: shot.note } : {}),
       };
     },
-    close: () => helper.close(),
+    close: () => { helper.close(); permissionHelper?.close(); },
   };
-  return { driver, service: createComputerService(driver), close: () => helper.close() };
+  return { driver, service: createComputerService(driver), close: () => driver.close() };
 }
 
 module.exports = { createHelper, createComputer, createComputerService, normalizeStep, normalizeKey, binaryCurrent, recordBuild };

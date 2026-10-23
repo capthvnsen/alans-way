@@ -91,6 +91,6 @@ function driverCommand(helper, args) {
   return [helper, ...args];
 }
 
-const { service, close } = createComputer({ command: async (mode) => driverCommand(await ensureBinary(), [mode]) });
+const { service, close } = createComputer({ command: async (mode) => driverCommand(await ensureBinary(), [mode]), nativeMac: true });
 
 module.exports = { service, close, ensureBinary, pickHelper, makeCompile, driverCommand, target };
