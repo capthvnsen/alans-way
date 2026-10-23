@@ -30,7 +30,7 @@ function botName(firstName) {
 function usernameSlug(firstName) {
   let slug = String(firstName || '').toLowerCase().replace(/[^a-z0-9_]+/g, '').slice(0, 18);
   if (!slug) slug = 'alan';
-  if (/^\d/.test(slug)) slug = `a${slug}`.slice(0, 18);
+  if (!/^[a-z]/.test(slug)) slug = `a${slug}`.slice(0, 18);
   return slug;
 }
 const randomTail = (rng, length) => Array.from({ length }, () => 'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(rng() * 36)]).join('');
@@ -41,8 +41,9 @@ function botUsername(firstName, rng = Math.random) {
 // BotFather "username is already taken" retries reuse the shape with an
 // attempt suffix; Review Focus 3 caps this at 3 retries before the fallback.
 function retryUsername(firstName, attempt, rng = Math.random) {
-  const base = `${usernameSlug(firstName)}_alan_${randomTail(rng, 4)}`;
-  return attempt > 0 ? `${base}_${attempt}_bot` : `${base}_bot`;
+  const suffix = `${attempt > 0 ? `_${attempt}` : ''}_bot`;
+  const slug = usernameSlug(firstName).slice(0, 32 - 10 - suffix.length);
+  return `${slug}_alan_${randomTail(rng, 4)}${suffix}`;
 }
 
 async function validateToken(token, fetchImpl = globalThis.fetch) {

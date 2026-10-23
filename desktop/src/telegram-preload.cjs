@@ -232,7 +232,13 @@ async function sync() {
     }
     const locked = cached?.passcode?.isScreenLocked;
     const status = locked ? 'locked' : authVisible ? 'login' : cached?.currentUserId ? 'connected' : 'loading';
-    activityAccountId = cached?.currentUserId ? String(cached.currentUserId) : '';
+    const nextAccountId = cached?.currentUserId ? String(cached.currentUserId) : '';
+    if (nextAccountId !== activityAccountId) {
+      // Message ids and scan watermarks belong to one account. Reusing them
+      // can open the next account's history or suppress all its new links.
+      seenLinks.clear(); sentLinkIds.clear();
+    }
+    activityAccountId = nextAccountId;
     activityConnected = status === 'connected';
     const users = cached?.users?.byId || {};
     const chats = cached?.chats?.byId || {};

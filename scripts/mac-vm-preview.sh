@@ -48,7 +48,7 @@ TART_PID="" WS_PID=""
 
 cleanup() {
   trap - EXIT INT TERM
-  [ -z "$WS_PID" ] || kill "$WS_PID" 2>/dev/null
+  [ -z "$WS_PID" ] || kill "$WS_PID" 2>/dev/null || true
   if [ -n "$TART_PID" ] && kill -0 "$TART_PID" 2>/dev/null; then
     say "mac-vm-preview: asking the VM to shut down"
     tart stop "$NAME" >/dev/null 2>&1 || kill "$TART_PID" 2>/dev/null || true
@@ -92,4 +92,4 @@ say "Watching this preview does not require the VM's TCC grants — those gate"
 say "the agent's own screen reads. Press Ctrl+C to stop and shut the VM down."
 rc=0; wait "$TART_PID" 2>/dev/null || rc=$?
 [ "$rc" = 0 ] || [ "$rc" = 130 ] || [ "$rc" = 143 ] \
-  || { say "mac-vm-preview: tart exited with status $rc — last output:"; tail -5 "$LOG" >&2; }
+  || { say "mac-vm-preview: tart exited with status $rc — last output:"; tail -5 "$LOG" >&2; exit "$rc"; }

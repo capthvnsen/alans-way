@@ -1045,7 +1045,8 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         if (point || tab.agentCursor) cursor(point || { x: tab.agentCursor.x, y: tab.agentCursor.y }, 'press', hl);
       } else if (action === 'scroll') {
         // The wheel lands where the cursor is: never on a challenge.
-        const aim = await boundedJs(wc, `(() => { const p = { x: Math.max(0, Math.min(${Number.isFinite(tab.agentCursor?.x) ? tab.agentCursor.x : 100}, innerWidth - 1)), y: Math.max(0, Math.min(${Number.isFinite(tab.agentCursor?.y) ? tab.agentCursor.y : 100}, innerHeight - 1)) }; return { ...p, challenge: (${CHALLENGE_HIT_SOURCE})([p], false) }; })()`);
+        const location = point || tab.agentCursor;
+        const aim = await boundedJs(wc, `(() => { const p = { x: Math.max(0, Math.min(${Number.isFinite(location?.x) ? location.x : 100}, innerWidth - 1)), y: Math.max(0, Math.min(${Number.isFinite(location?.y) ? location.y : 100}, innerHeight - 1)) }; return { ...p, challenge: (${CHALLENGE_HIT_SOURCE})([p], false) }; })()`);
         check();
         if (typeof aim.challenge?.kind === 'string') throw challengePresent(aim.challenge);
         point = { x: aim.x, y: aim.y };

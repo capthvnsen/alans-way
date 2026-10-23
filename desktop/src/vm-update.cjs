@@ -63,7 +63,9 @@ function defaultRun(bin, args, { input, timeoutMs = 45000, onStdout, verbatim = 
     const child = spawn(bin, args, { timeout: timeoutMs, windowsVerbatimArguments: verbatim });
     let out = '', err = '';
     child.stdout.on('data', (c) => {
-      if (out.length < 40000) out += c;
+      // The structured result is the last line, after potentially verbose
+      // package-manager output. Bound memory while retaining that tail.
+      out = (out + c).slice(-40000);
       if (onStdout) { try { onStdout(String(c)); } catch {} }
     });
     child.stderr.on('data', (c) => { if (err.length < 8000) err += c; });

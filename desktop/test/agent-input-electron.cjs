@@ -160,6 +160,15 @@ app.whenReady().then(async () => {
   assert.equal(appShortcutCalls, 0);
   await perform({ action: 'scroll', y: 400 });
   await eventually(() => value(view.webContents, 'scrollY'), y => y > 0);
+  await value(view.webContents, `(() => {
+    const box = document.createElement('div'); box.id = 'scrollbox';
+    box.style.cssText = 'position:fixed;right:20px;top:20px;width:180px;height:180px;overflow:auto';
+    box.innerHTML = '<div style="height:1200px;background:#eee">Scrollable panel</div>';
+    document.body.append(box);
+  })()`);
+  await perform({ action: 'scroll', selector: '#scrollbox', y: 300 });
+  await eventually(() => value(view.webContents, 'scrollbox.scrollTop'), y => y > 0);
+  await value(view.webContents, 'scrollbox.remove()');
   // A visible browser pane must also leave the human's composer alone.
   view.setVisible(true);
   await perform({ action: 'type', ref: 'e1', text: 'Visible agent pane' });
