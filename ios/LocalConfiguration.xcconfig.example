@@ -1,0 +1,5 @@
+// Obtain application credentials at https://my.telegram.org/apps.
+// Copy to LocalConfiguration.xcconfig, which is ignored by git.
+TELEGRAM_API_ID = YOUR_TELEGRAM_APPLICATION_ID
+TELEGRAM_API_HASH = YOUR_TELEGRAM_APPLICATION_HASH
+// DEVELOPMENT_TEAM = YOUR_APPLE_TEAM_ID

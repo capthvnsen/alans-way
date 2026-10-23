@@ -58,12 +58,30 @@ AVATAR_ASSETS = frozenset(f"desktop/assets/avatars/{name}.png" for name in (
     "minotaur", "poseidon", "zeus",
 ))
 BINARY_ASSETS.update({name: b"\x89PNG\r\n\x1a\n" for name in AVATAR_ASSETS})
-BINARY_LIMITS = {"desktop/src/newtab-backdrop.png": 4194304, "desktop/assets/icon.icns": 2097152}
+IOS_AVATAR_ASSETS = frozenset(
+    f"ios/AlanWorkspace/Resources/Assets.xcassets/{name}.imageset/{name}.png"
+    for name in ("apollo", "artemis", "athena", "faun", "hades", "hermes", "medusa",
+                 "minotaur", "poseidon", "zeus")
+)
+MINIAPP_AVATAR_ASSETS = frozenset(
+    f"mobile/miniapp/assets/{name}.png"
+    for name in ("apollo", "artemis", "athena", "faun", "hades", "hermes", "medusa",
+                 "minotaur", "poseidon", "zeus")
+)
+APP_ICON_ASSET = "ios/AlanWorkspace/Resources/Assets.xcassets/AppIcon.appiconset/Icon.png"
+MOBILE_AVATAR_ASSETS = IOS_AVATAR_ASSETS | MINIAPP_AVATAR_ASSETS
+BINARY_ASSETS.update({name: b"\x89PNG\r\n\x1a\n" for name in MOBILE_AVATAR_ASSETS})
+BINARY_ASSETS[APP_ICON_ASSET] = b"\x89PNG\r\n\x1a\n"
+BINARY_LIMITS = {
+    "desktop/src/newtab-backdrop.png": 4194304,
+    "desktop/assets/icon.icns": 2097152,
+    APP_ICON_ASSET: 1048576,
+}
 
 
 def valid_binary_asset(path: str, blob: bytes) -> bool:
     signature = BINARY_ASSETS.get(path)
-    limit = BINARY_LIMITS.get(path, 2097152 if path in AVATAR_ASSETS else 1048576)
+    limit = BINARY_LIMITS.get(path, 2097152 if path in AVATAR_ASSETS | MOBILE_AVATAR_ASSETS else 1048576)
     return bool(signature and blob.startswith(signature) and len(blob) <= limit)
 
 

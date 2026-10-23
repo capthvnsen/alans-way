@@ -1,0 +1,77 @@
+name: AlanWorkspace
+options:
+  bundleIdPrefix: com.openalan
+  deploymentTarget:
+    iOS: '17.0'
+  xcodeVersion: '27.0'
+  createIntermediateGroups: true
+packages:
+  TDLibKit:
+    url: https://github.com/Swiftgram/TDLibKit
+    exactVersion: 1.5.2-tdlib-1.8.68-f381f4b3
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: '0.1.0'
+    CURRENT_PROJECT_VERSION: '1'
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  AlanWorkspace:
+    type: application
+    platform: iOS
+    info:
+      path: AlanWorkspace/Info.plist
+      properties:
+        TELEGRAM_API_ID: $(TELEGRAM_API_ID)
+        TELEGRAM_API_HASH: $(TELEGRAM_API_HASH)
+    sources:
+      - path: AlanWorkspace
+    dependencies:
+      - package: TDLibKit
+    configFiles:
+      Debug: Configuration.xcconfig
+      Release: Configuration.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.openalan.workspace
+        PRODUCT_NAME: AlanWorkspace
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_KEY_CFBundleDisplayName: Alan's Workspace
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Speak with your Hermes agent during a voice call.
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: Share a photo with your agent in Telegram.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect to your agent computer on your private network.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+  AlanWorkspaceTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: AlanWorkspaceTests
+    dependencies:
+      - target: AlanWorkspace
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+  AlanWorkspaceUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: AlanWorkspaceUITests
+    dependencies:
+      - target: AlanWorkspace
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  AlanWorkspace:
+    build:
+      targets:
+        AlanWorkspace: all
+    test:
+      targets:
+        - AlanWorkspaceTests
+        - AlanWorkspaceUITests

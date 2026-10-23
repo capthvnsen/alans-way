@@ -31,6 +31,28 @@ class PublicationTests(unittest.TestCase):
         self.assertFalse(module.valid_binary_asset("desktop/assets/avatars/unknown.png", png))
         self.assertFalse(module.valid_binary_asset("runtime.png", png))
 
+    def test_only_named_mobile_avatar_assets_and_ios_app_icon_are_allowed(self):
+        module = self.module()
+        png = b"\x89PNG\r\n\x1a\n"
+        avatar_paths = [
+            f"ios/AlanWorkspace/Resources/Assets.xcassets/{name}.imageset/{name}.png"
+            for name in ("apollo", "artemis", "athena", "faun", "hades", "hermes",
+                         "medusa", "minotaur", "poseidon", "zeus")
+        ] + [f"mobile/miniapp/assets/{name}.png" for name in
+             ("apollo", "artemis", "athena", "faun", "hades", "hermes",
+              "medusa", "minotaur", "poseidon", "zeus")]
+        app_icon = "ios/AlanWorkspace/Resources/Assets.xcassets/AppIcon.appiconset/Icon.png"
+
+        for path in avatar_paths:
+            with self.subTest(path=path):
+                self.assertTrue(module.valid_binary_asset(path, png + bytes(1100000)))
+        self.assertTrue(module.valid_binary_asset(app_icon, png))
+        self.assertFalse(module.valid_binary_asset(app_icon, png + bytes(1048576)))
+        self.assertFalse(module.valid_binary_asset(
+            "ios/AlanWorkspace/Resources/Assets.xcassets/unknown.imageset/unknown.png", png))
+        self.assertFalse(module.valid_binary_asset("mobile/miniapp/assets/unknown.png", png))
+        self.assertFalse(module.valid_binary_asset("ios/private/secret.png", png))
+
     def test_generic_examples_and_documentation_are_allowed(self):
         self.assertEqual(self.scan("README.md", "macuser@mac-private-host /opt/hermes-companion/approved-workspace"), [])
         self.assertEqual(self.scan("tests/test_example.py", "SYNTHETIC_DENIED\nsecret_names = ['password.txt']"), [])

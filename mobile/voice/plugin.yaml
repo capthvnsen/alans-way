@@ -1,0 +1,33 @@
+name: mobile-voice
+version: "0.1.0"
+description: "Bound Telegram Mini App voice calls through Hermes configured speech and session injection."
+author: "Hermes Companion"
+provides_hooks:
+  - post_llm_call
+  - on_session_reset
+requires_env:
+  - TELEGRAM_BOT_TOKEN
+  - HERMES_DASHBOARD_SESSION_TOKEN
+config_schema:
+  app_url:
+    type: str
+    default: ""
+    description: "HTTPS Mini App URL for this bot, ending in /call"
+  dashboard_api_base:
+    type: str
+    default: "http://127.0.0.1:9119"
+    description: "Local Hermes dashboard speech endpoint"
+  port:
+    type: int
+    default: 8765
+    description: "Unique loopback broker port for this profile"
+  miniapp_dir:
+    type: str
+    default: ""
+    description: "Installed static Mini App directory; blank when a reverse proxy serves it"
+  turn_timeout:
+    type: int
+    default: 180
+    description: "Maximum seconds to await a completed Hermes voice turn"
+python_dependencies:
+  - aiohttp>=3.9,<4
