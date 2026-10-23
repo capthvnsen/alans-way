@@ -264,7 +264,8 @@ async function run() {
     check('sibling draft survives recovery', await sibling.wc.executeJavaScript('draft.value') === 'Sibling unsent');
     check('inert conversation draft and owner survive recovery', conversation && await conversation.executeJavaScript('draft.value') === 'Conversation unsent' && (await state()).selectedBotId === 'reload-a');
     await sleep(600); const disk = JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json')));
-    check('disk persists actual recovered URLs without canceled targets', disk.savedTabs.some(t => t.url === base + '/hold/api-interrupted-false') && !disk.savedTabs.some(t => /\/hold\/cancel-/.test(t.url)), { selectedBotId: disk.selectedBotId, savedTabs: disk.savedTabs });
+    // These recovered tabs were opened by bot tasks, so none belongs in user restore.
+    check('disk excludes recovered task tabs and canceled targets', disk.savedTabs.length === 0, { selectedBotId: disk.selectedBotId, savedTabs: disk.savedTabs });
     const image = await shell.capturePage(); fs.writeFileSync(path.join(out, 'recovered-shell.png'), image.toPNG()); result.captures.push({ name: 'recovered-shell.png', size: image.getSize(), scope: 'Software-rendered inactive shell only; child pixels may be unavailable.' });
   });
 }

@@ -24,7 +24,9 @@ if (typeof electron === 'string') {
   `, { eval: true, workerData: { slowReady } });
 
   const launch = (phase, base) => new Promise((resolve, reject) => {
-    const child = spawn(electron, [__filename, phase], { env: { ...process.env, HERMES_WORKSPACE_DATA: profile, HERMES_WORKSPACE_PORT: '0', HERMES_RESTORE_TABS_BASE: base }, stdio: ['ignore', 'inherit', 'pipe'] });
+    const env = { ...process.env, HOME: profile, HERMES_WORKSPACE_DATA: profile, HERMES_WORKSPACE_PORT: '0', HERMES_RESTORE_TABS_BASE: base };
+    delete env.ELECTRON_RUN_AS_NODE;
+    const child = spawn(electron, [`--user-data-dir=${profile}`, __filename, phase], { env, stdio: ['ignore', 'inherit', 'pipe'] });
     let stderr = '';
     const deadline = setTimeout(() => { child.kill('SIGKILL'); }, 90000);
     child.stderr.on('data', chunk => { stderr += chunk; process.stderr.write(chunk); });
@@ -67,7 +69,15 @@ if (typeof electron === 'string') {
         savedTabs: [{ url: `${base}/fast`, botId: 'shared' }] }));
       await launch('popup', base);
       assert.deepEqual(JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8')).savedTabs.map(item => item.url), [`${base}/fast`]);
+      const userTabs = Array.from({ length: 14 }, (_, i) => ({ url: `${base}/user-${i}`, botId: 'fixture-bot', owner: 'user', active: i === 12 }));
+      fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, savedTabs: [
+        ...userTabs, { url: `${base}/task`, botId: 'fixture-bot', owner: 'bot' },
+        { url: `${base}/legacy-task`, botId: 'fixture-bot' }, { url: 'about:blank', owner: 'user' },
+      ] }));
+      await launch('selection', base);
+      await launch('selection', base);
       console.log('PASS: pending restored tabs keep their requested URLs and legacy blank tabs are ignored.');
+      console.log('PASS: 15 user tabs retain order and active selection across two launches; tasks stay out.');
     } finally {
       await server.terminate();
       fs.rmSync(profile, { recursive: true, force: true });
@@ -75,6 +85,13 @@ if (typeof electron === 'string') {
   })().catch(error => { console.error(error.stack); process.exitCode = 1; });
 } else {
   const { app, BrowserWindow, webContents, session } = electron;
+  app.commandLine.appendSwitch('use-mock-keychain');
+  require('./settings-fixture-boundaries.cjs')();
+  const Module = require('node:module'), load = Module._load;
+  Module._load = function(request, ...args) {
+    const value = load.call(this, request, ...args);
+    return request === 'electron' ? { ...value, safeStorage: { isEncryptionAvailable: () => false } } : value;
+  };
   const { prepareFixture, quitFixture } = require('./electron-fixture.cjs');
   prepareFixture(process.env.HERMES_WORKSPACE_DATA);
   require('../src/main.cjs');
@@ -88,10 +105,10 @@ if (typeof electron === 'string') {
     const evaluate = code => win.webContents.executeJavaScript(code);
     await waitFor(() => evaluate('typeof window.workspace === "object"').catch(() => false), Boolean);
     const telegram = webContents.getAllWebContents().find(item => item.session === session.fromPartition('persist:telegram'));
-    telegram.stop(); await telegram.loadURL('about:blank');
+    telegram.stop();
     const state = () => evaluate('window.workspace.getState()');
     const base = process.env.HERMES_RESTORE_TABS_BASE;
-    const phase = process.argv[2];
+    const phase = process.argv.at(-1);
     if (phase === 'pending') {
       const current = await waitFor(state, value => value.tabs.some(tab => tab.url === `${base}/fast`));
       assert.equal(current.tabs.length, 2, 'Only valid saved tabs are restored.');
@@ -101,6 +118,12 @@ if (typeof electron === 'string') {
       const current = await waitFor(state, value => value.tabs.length === 2 && value.tabs.every(tab => expected.includes(tab.url)));
       assert.deepEqual(current.tabs.map(tab => tab.url), expected);
       assert.ok(current.tabs.every(tab => !tab.internal && tab.url !== 'about:blank' && !tab.url.endsWith('/newtab.html')));
+    } else if (phase === 'selection') {
+      const current = await waitFor(state, value => value.tabs.length === 15 && value.tabs.slice(0, 14).every(tab => tab.url.startsWith(`${base}/user-`)));
+      assert.deepEqual(current.tabs.slice(0, 14).map(tab => tab.url), Array.from({ length: 14 }, (_, i) => `${base}/user-${i}`));
+      assert.equal(current.activeTabId, current.tabs[12].id);
+      assert.ok(current.tabs.every(tab => tab.owner === 'user' && tab.controller === 'human'));
+      assert.ok(current.tabs[14].internal);
     } else if (phase === 'navigate') {
       // /hang-source never commits; a navigate to /hang-target before that
       // first commit must be what the quit-time snapshot saves.
