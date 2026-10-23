@@ -1,6 +1,7 @@
 """Exercise the release script without contacting Apple or building a binary."""
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -11,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "ios/scripts/testflight.sh"
 
 
+# The script reads plists with macOS plutil.
+@unittest.skipUnless(shutil.which("plutil"), "needs macOS plutil")
 class TestFlightUploadTests(unittest.TestCase):
     def run_upload(self, *, team="TESTTEAM01", fail_archive=False, extra_env=None, local_config=None):
         with tempfile.TemporaryDirectory() as folder:
