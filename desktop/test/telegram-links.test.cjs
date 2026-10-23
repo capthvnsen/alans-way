@@ -54,3 +54,11 @@ for (const historyId of [1, 200]) {
     assert.deepEqual(app.links(), ['https://first-account.example', 'https://second-account.example']);
   });
 }
+
+test('a blank account id while loading keeps the same account\'s link history', async () => {
+  const app = fixture();
+  await app.sync('100', 100, 'https://old-history.example');
+  await app.sync('', 100, 'https://old-history.example');
+  await app.sync('100', 101, 'https://after-reload.example');
+  assert.deepEqual(app.links(), ['https://after-reload.example']);
+});
