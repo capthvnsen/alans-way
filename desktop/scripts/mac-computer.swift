@@ -1539,7 +1539,16 @@ func openDocument(_ request: JSON, _ path: String) throws -> JSON {
     var opened: NSRunningApplication?
     NSWorkspace.shared.open([file], withApplicationAt: appURL, configuration: configuration) { app, _ in opened = app; finished = true }
     guard waitFor({ finished }), let opened, opened.processIdentifier > 0 else { throw Fail("failed", "Could not open that file. Check whether it opened before retrying.") }
-    return ["pid": Int(opened.processIdentifier), "bundleId": id]
+    // Name the window showing the item, so the next read targets it rather than another window of the app.
+    let pid = opened.processIdentifier, title = file.lastPathComponent
+    var shown: CGWindowID?
+    _ = waitFor({
+        let info = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        shown = info.first { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid && ($0[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
+            && ($0[kCGWindowName as String] as? String) == title }.flatMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value }
+        return shown != nil
+    }, timeout: 2)
+    return ["pid": Int(pid), "bundleId": id].merging(shown.map { ["windowId": Int($0)] } ?? [:]) { a, _ in a }
 }
 
 func launchApp(_ request: JSON) throws -> JSON {

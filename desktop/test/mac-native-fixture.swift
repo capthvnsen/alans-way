@@ -75,6 +75,7 @@ func fixtureSet(_ element: AXUIElement, _ name: CFString, _ value: CFTypeRef) ->
 }
 var fixtureNoWindows = false
 var fixtureDialog = false
+var fixtureWindowOwner: pid_t = 7
 func fixtureWindows(_ options: CGWindowListOption, _ id: CGWindowID) -> CFArray? {
     if fixtureNoWindows { return [] as CFArray }
     if fixtureDialog {
@@ -85,7 +86,7 @@ func fixtureWindows(_ options: CGWindowListOption, _ id: CGWindowID) -> CFArray?
                  kCGWindowBounds as String: ["X": 60, "Y": 80, "Width": 300, "Height": 200],
                  kCGWindowIsOnscreen as String: true, kCGWindowName as String: "Open"]] as CFArray
     }
-    return [[kCGWindowOwnerPID as String: 7, kCGWindowLayer as String: 0, kCGWindowNumber as String: 41,
+    return [[kCGWindowOwnerPID as String: fixtureWindowOwner, kCGWindowLayer as String: 0, kCGWindowNumber as String: 41,
              kCGWindowBounds as String: ["X": 10, "Y": 20, "Width": 420, "Height": 520],
              kCGWindowIsOnscreen as String: fixtureOnScreen, kCGWindowName as String: "Task"]] as CFArray
 }
@@ -333,6 +334,13 @@ func fixture() throws {
         try refuses("off_limits") { _ = try dispatch(["cmd": "launch", "path": note.path]) }
         policyExact = []
         try expectFixture(openedFiles.count == 1, "refused paths never open")
+        // The window showing the opened item is named after it; the reply names that window so the bot reads it, not another one.
+        let task = dir.appendingPathComponent("Task"); try FileManager.default.createDirectory(at: task, withIntermediateDirectories: true)
+        fixtureWindowOwner = registeredApp.processIdentifier
+        let shown = try dispatch(["cmd": "launch", "path": task.path])
+        fixtureWindowOwner = 7
+        try expectFixture(shown["windowId"] as? Int == 41, "the opened folder's window is named in the reply: \(shown)")
+        try expectFixture(reply["windowId"] == nil, "no window is claimed when none shows the item")
     default: throw Fail("fixture", "unknown scenario")
     }
 }
