@@ -33,13 +33,13 @@ final class WorkspaceSettings {
     }
     func viewerURL(for chatID: Int64) -> URL? { viewers[String(chatID)].flatMap(ViewerAddress.parse) }
     func viewerAddress(for chatID: Int64) -> String { viewers[String(chatID)] ?? "" }
-    func hasMiniAppConsent(chatID: Int64, accountID: Int64?) -> Bool {
-        guard let accountID else { return false }
-        return defaults.bool(forKey: "workspace.miniAppConsent.\(accountID).\(chatID)")
+    func hasMiniAppConsent(chatID: Int64, accountID: Int64?, host: String?) -> Bool {
+        guard let accountID, let host else { return false }
+        return defaults.bool(forKey: "workspace.miniAppConsent.\(accountID).\(chatID).\(host.lowercased())")
     }
-    func grantMiniAppConsent(chatID: Int64, accountID: Int64?) {
-        guard let accountID else { return }
-        defaults.set(true, forKey: "workspace.miniAppConsent.\(accountID).\(chatID)")
+    func grantMiniAppConsent(chatID: Int64, accountID: Int64?, host: String?) {
+        guard let accountID, let host else { return }
+        defaults.set(true, forKey: "workspace.miniAppConsent.\(accountID).\(chatID).\(host.lowercased())")
     }
     @discardableResult
     func setViewerAddress(_ address: String, for chatID: Int64) -> Bool {

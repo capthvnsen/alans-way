@@ -16,8 +16,7 @@ struct ConversationView: View {
     @State private var preparingCall = false
     @State private var errorText: String?
     @State private var attachmentURL: URL?
-    @State private var pendingCall = false
-    @State private var pendingWebAppButton: (TelegramButton, TelegramMessage)?
+    @State private var pendingLaunch: TelegramMiniAppLaunch?
     @State private var showCallComputer = false
     @FocusState private var composerFocused: Bool
 
@@ -74,17 +73,21 @@ struct ConversationView: View {
             }, onOpenComputer: { showCallComputer = true }, onOpenExternalURL: { url in openURL(url) })
             .sheet(isPresented: $showCallComputer) { ComputerView(chatID: chat.id, botName: chat.title) }
         }
-        .confirmationDialog("Call \(chat.title)?", isPresented: $pendingCall, titleVisibility: .visible) {
+        .confirmationDialog("Call \(chat.title)?", isPresented: Binding(
+            get: { pendingLaunch != nil },
+            set: { if !$0, let app = pendingLaunch { pendingLaunch = nil; closeCall(app) } }
+        ), titleVisibility: .visible) {
             Button("Open voice Mini App") {
-                settings.grantMiniAppConsent(chatID: chat.id, accountID: telegram.currentUserID)
-                if let (button, message) = pendingWebAppButton {
-                    pendingWebAppButton = nil
-                    activateApproved(button, message: message)
-                } else { Task { await startCall() } }
+                guard let app = pendingLaunch else { return }
+                pendingLaunch = nil
+                settings.grantMiniAppConsent(chatID: chat.id, accountID: telegram.currentUserID, host: app.url.host)
+                present(app)
             }
-            Button("Cancel", role: .cancel) { pendingWebAppButton = nil }
+            Button("Cancel", role: .cancel) {
+                if let app = pendingLaunch { pendingLaunch = nil; closeCall(app) }
+            }
         } message: {
-            Text("The bot’s Mini App receives your Telegram identity and opens a voice call for this conversation. Calls end when you leave the app.")
+            Text("The Mini App at \(pendingLaunch?.url.host ?? "an unknown host") receives your Telegram identity and opens a voice call for this conversation. Calls end when you leave the app.")
         }
         .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.item]) { result in
             switch result {
@@ -192,15 +195,21 @@ struct ConversationView: View {
     private func startCall() async {
         preparingCall = true
         defer { preparingCall = false }
-        do { launch = try await telegram.launchMiniApp(chatID: chat.id); composerFocused = false }
+        do { present(try await telegram.launchMiniApp(chatID: chat.id)) }
         catch { errorText = error.localizedDescription }
     }
 
+    // The Mini App's host is only known once Telegram returns its launch URL, and the
+    // page is not loaded until the person has approved that host for this chat.
+    private func present(_ app: TelegramMiniAppLaunch) {
+        if settings.hasMiniAppConsent(chatID: chat.id, accountID: telegram.currentUserID, host: app.url.host) {
+            launch = app
+            composerFocused = false
+        } else { pendingLaunch = app }
+    }
+
     private func requestCall() {
-        pendingWebAppButton = nil
-        if settings.hasMiniAppConsent(chatID: chat.id, accountID: telegram.currentUserID) {
-            Task { await startCall() }
-        } else { pendingCall = true }
+        Task { await startCall() }
     }
 
     private func closeCall(_ call: TelegramMiniAppLaunch) {
@@ -213,19 +222,9 @@ struct ConversationView: View {
 
     private func activate(_ button: TelegramButton, message: TelegramMessage) {
         if case .url(let url) = button.kind { openURL(url); return }
-        if case .webApp = button.kind,
-           !settings.hasMiniAppConsent(chatID: chat.id, accountID: telegram.currentUserID) {
-            pendingWebAppButton = (button, message)
-            pendingCall = true
-            return
-        }
-        activateApproved(button, message: message)
-    }
-
-    private func activateApproved(_ button: TelegramButton, message: TelegramMessage) {
         Task {
             do {
-                if let app = try await telegram.activateButton(button, messageID: message.id, chatID: chat.id) { launch = app }
+                if let app = try await telegram.activateButton(button, messageID: message.id, chatID: chat.id) { present(app) }
             } catch { errorText = error.localizedDescription }
         }
     }

@@ -31,10 +31,11 @@ final class WorkspaceSettingsTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let settings = WorkspaceSettings(defaults: defaults)
-        settings.grantMiniAppConsent(chatID: 1, accountID: 20)
-        XCTAssertTrue(settings.hasMiniAppConsent(chatID: 1, accountID: 20))
-        XCTAssertFalse(settings.hasMiniAppConsent(chatID: 2, accountID: 20))
-        XCTAssertFalse(settings.hasMiniAppConsent(chatID: 1, accountID: 21))
-        XCTAssertFalse(settings.hasMiniAppConsent(chatID: 1, accountID: nil))
+        settings.grantMiniAppConsent(chatID: 1, accountID: 20, host: "voice.example.test")
+        XCTAssertTrue(settings.hasMiniAppConsent(chatID: 1, accountID: 20, host: "voice.example.test"))
+        XCTAssertFalse(settings.hasMiniAppConsent(chatID: 1, accountID: 20, host: "other.example.test"))
+        XCTAssertFalse(settings.hasMiniAppConsent(chatID: 2, accountID: 20, host: "voice.example.test"))
+        XCTAssertFalse(settings.hasMiniAppConsent(chatID: 1, accountID: 21, host: "voice.example.test"))
+        XCTAssertFalse(settings.hasMiniAppConsent(chatID: 1, accountID: nil, host: "voice.example.test"))
     }
 }
