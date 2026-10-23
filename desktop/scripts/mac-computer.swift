@@ -1517,7 +1517,13 @@ func act(_ request: JSON) throws -> JSON {
     }
     var reply: JSON = ["results": results]
     if succeeded, request["snapshot"] as? Bool ?? true {
+        let settleStarted = ProcessInfo.processInfo.systemUptime
         settling.wait(timeoutMs: max(0, min(1000, (request["settleMs"] as? NSNumber)?.intValue ?? 250)))
+        // A pane drawn by another process, such as a System Settings page, sends this app no events, so a click waits a beat for it.
+        if request["settleMs"] == nil, steps.contains(where: { ["click", "press"].contains($0["action"] as? String ?? "") }) {
+            let rest = 0.3 - (ProcessInfo.processInfo.systemUptime - settleStarted)
+            if rest > 0 { usleep(useconds_t(rest * 1_000_000)) }
+        }
         // The steps already ran; a tree that cannot be read afterwards must not hide their results.
         // An app just launched or brought forward can miss one read while it builds its window.
         let walk = (try? refresh(pid, menubar: menubar, windowId: selected?.id)) ?? { usleep(500_000); return try? refresh(pid, menubar: menubar, windowId: selected?.id) }()
