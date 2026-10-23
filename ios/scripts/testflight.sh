@@ -15,6 +15,12 @@ fi
 
 ios_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ios_root"
+# The hash would be baked into the Info.plist of a build that leaves this Mac.
+local_config=${LOCAL_CONFIGURATION:-"$ios_root/LocalConfiguration.xcconfig"}
+if [ -n "${TELEGRAM_API_HASH:-}" ] || { [ -f "$local_config" ] && grep -Eq '^[[:space:]]*TELEGRAM_API_HASH[[:space:]]*=[[:space:]]*[^[:space:]/]' "$local_config"; }; then
+  echo 'Refusing to archive: TELEGRAM_API_HASH is set and would be baked into the TestFlight build. Unset it and clear it in LocalConfiguration.xcconfig.' >&2
+  exit 1
+fi
 command -v xcodegen >/dev/null 2>&1 || { echo 'Install XcodeGen with: brew install xcodegen' >&2; exit 1; }
 distribution_dir=${TESTFLIGHT_BUILD_DIR:-"$ios_root/.build/TestFlight"}
 mkdir -p "$distribution_dir"

@@ -12,7 +12,7 @@ SCRIPT = ROOT / "ios/scripts/testflight.sh"
 
 
 class TestFlightUploadTests(unittest.TestCase):
-    def run_upload(self, *, team="TESTTEAM01", fail_archive=False):
+    def run_upload(self, *, team="TESTTEAM01", fail_archive=False, extra_env=None, local_config=None):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             log = root / "commands.jsonl"
@@ -32,6 +32,11 @@ class TestFlightUploadTests(unittest.TestCase):
             env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
                        TESTFLIGHT_COMMAND_LOG=str(log), TESTFLIGHT_FAIL_ARCHIVE=str(int(fail_archive)),
                        TESTFLIGHT_BUILD_DIR=str(root / "build"))
+            env.pop("TELEGRAM_API_HASH", None)
+            env["LOCAL_CONFIGURATION"] = str(root / "Local.xcconfig")
+            if local_config is not None:
+                (root / "Local.xcconfig").write_text(local_config)
+            env.update(extra_env or {})
             env.pop("APPLE_TEAM_ID", None)
             if team is not None:
                 env["APPLE_TEAM_ID"] = team
@@ -44,6 +49,17 @@ class TestFlightUploadTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("APPLE_TEAM_ID", result.stderr)
         self.assertEqual(commands, [])
+
+    def test_refuses_to_archive_with_a_telegram_api_hash(self):
+        for kwargs in ({"extra_env": {"TELEGRAM_API_HASH": "synthetic-hash"}},
+                       {"local_config": "TELEGRAM_API_HASH = synthetic-hash\n"}):
+            result, commands = self.run_upload(**kwargs)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("TELEGRAM_API_HASH", result.stderr)
+            self.assertNotIn("synthetic-hash", result.stderr)
+            self.assertEqual(commands, [])
+        result, _ = self.run_upload(local_config="TELEGRAM_API_HASH =\n// note\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_failed_archive_is_never_uploaded(self):
         result, commands = self.run_upload(fail_archive=True)
