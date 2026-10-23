@@ -35,6 +35,7 @@ function fixtureBinary(t) {
     ['NSWorkspace.shared.urlForApplication(', 'fixtureURL('],
     ['NSWorkspace.shared.fullPath(', 'fixturePath('],
     ['NSWorkspace.shared.openApplication(', 'fixtureOpen('],
+    ['NSWorkspace.shared.open([', 'fixtureOpenFiles(['],
     ['app.activate(options:', 'fixtureActivate(app, options:'],
     ['event.postToPid(pid)', 'fixturePost(event, pid)'],
     ['event.post(tap: .cgSessionEventTap)', 'fixtureHID(event, pid)'],
@@ -49,7 +50,7 @@ function fixtureBinary(t) {
   return binary;
 }
 
-for (const scenario of ['front-read', 'front-action', 'menu-retry', 'launch', 'window-focus', 'window-ref', 'permissions', 'screen-request', 'activate', 'activate-offscreen', 'activate-nowindow', 'type-focused', 'shortcut-front', 'own-input', 'focus-field', 'activate-dialog', 'focused-dialog']) {
+for (const scenario of ['front-read', 'front-action', 'menu-retry', 'launch', 'window-focus', 'window-ref', 'permissions', 'screen-request', 'activate', 'activate-offscreen', 'activate-nowindow', 'type-focused', 'shortcut-front', 'own-input', 'focus-field', 'activate-dialog', 'focused-dialog', 'open-file']) {
   test(`native fixture: ${scenario}`, { skip, timeout: 120000 }, (t) => {
     const result = spawnSync(fixtureBinary(t), [scenario], { encoding: 'utf8', timeout: 10000 });
     assert.equal(result.status, 0, result.stdout + result.stderr);

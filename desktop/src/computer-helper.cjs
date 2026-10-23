@@ -379,7 +379,7 @@ function createComputerService(driver) {
   }
 
   return {
-    ...(driver.launch ? { launch: (app) => driver.launch(app) } : {}),
+    ...(driver.launch ? { launch: (app, path) => driver.launch(app, path) } : {}),
     ...(driver.permissions ? { permissions: () => driver.permissions() } : {}),
     ...(driver.requestScreenAccess ? { requestScreenAccess: () => driver.requestScreenAccess() } : {}),
     // Off-limits apps would only be refused, so they are not offered.
@@ -411,10 +411,12 @@ function createComputer({ command, env, nativeMac = false }) {
         try { return await permissionHelper.request({ cmd: 'request_screen' }); }
         finally { permissionHelper.close(); }
       },
-      launch: async (app) => {
-        if (typeof app !== 'string' || !app.trim() || app.length > 200 || /[/:\n]/.test(app))
+      launch: async (app, path) => {
+        if (path !== undefined && (typeof path !== 'string' || !path.startsWith('/') || path.length > 1024 || path.includes('\n')))
+          throw fail('bad_request', "Give the file's absolute path.");
+        if ((path === undefined || app !== undefined) && (typeof app !== 'string' || !app.trim() || app.length > 200 || /[/:\n]/.test(app)))
           throw fail('bad_request', 'Choose an app by its name or bundle identifier.');
-        const { ok, id, ...reply } = await helper.request({ cmd: 'launch', app });
+        const { ok, id, ...reply } = await helper.request({ cmd: 'launch', ...(app !== undefined ? { app } : {}), ...(path !== undefined ? { path } : {}) });
         return reply;
       },
       permissions: async () => {

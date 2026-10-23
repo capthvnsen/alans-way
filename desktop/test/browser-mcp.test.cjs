@@ -913,6 +913,10 @@ test('Mac launch goes through the advertised app API and old hosts refuse it', {
   const reply = await client.callTool({ name: 'workspace_computer_launch', arguments: { app: 'Calculator' } });
   assert.equal(reply.isError, undefined, JSON.stringify(reply));
   assert.deepEqual(seen.find(item => item.line === 'POST /v1/computer/launch').body, { app: 'Calculator' });
+  const opened = await client.callTool({ name: 'workspace_computer_launch', arguments: { path: '/tmp/task/edit.txt' } });
+  assert.equal(opened.isError, undefined, JSON.stringify(opened));
+  assert.deepEqual(seen.filter(item => item.line === 'POST /v1/computer/launch')[1].body, { path: '/tmp/task/edit.txt' });
+  assert.equal((await client.callTool({ name: 'workspace_computer_launch', arguments: {} })).isError, true);
   const old = await computerHost(t, ['computer'], 'windows');
   const refused = await old.client.callTool({ name: 'workspace_computer_launch', arguments: { app: 'Calculator' } });
   assert.equal(refused.isError, true);

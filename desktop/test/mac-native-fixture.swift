@@ -27,6 +27,13 @@ var performed: [String] = []
 var opened = 0
 var bundleURL: URL?
 var reopened = 0
+var openedFiles: [URL] = []
+func fixtureOpenFiles(_ urls: [URL], withApplicationAt app: URL, configuration: NSWorkspace.OpenConfiguration, completionHandler: ((NSRunningApplication?, Error?) -> Void)?) {
+    if configuration.activates { fatalError("opening a file must stay in background") }
+    openedFiles += urls
+    completionHandler?(registeredApp, nil)
+}
+func fixtureURL(toOpen url: URL) -> URL? { bundleURL }
 var reopenShowsWindow = false
 var launchUnregistered = false
 let registeredApp = NSWorkspace.shared.runningApplications.first { $0.processIdentifier > 0 }!
@@ -296,6 +303,28 @@ func fixture() throws {
         // Finder's Go to Folder sheet is focused but absent from the app's window list.
         let walk = try walkApp(7, menubar: false, windowId: nil)
         try expectFixture(walk.windowId == 44, "the focused sheet is read even when the window list omits it")
+    case "open-file":
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("Editor.app/Contents"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let data = try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "com.example.editor"], format: .xml, options: 0)
+        try data.write(to: dir.appendingPathComponent("Editor.app/Contents/Info.plist"))
+        bundleURL = dir.appendingPathComponent("Editor.app")
+        let note = dir.appendingPathComponent("edit.txt"); try "draft".write(to: note, atomically: true, encoding: .utf8)
+        let reply = try dispatch(["cmd": "launch", "path": note.path])
+        try expectFixture(reply["pid"] as? Int == Int(registeredApp.processIdentifier) && openedFiles.map(\.path) == [note.path], "a document opens in its app, in the background")
+        let script = dir.appendingPathComponent("run.command"); try "echo hi".write(to: script, atomically: true, encoding: .utf8)
+        try refuses("off_limits") { _ = try dispatch(["cmd": "launch", "path": script.path]) }
+        let tool = dir.appendingPathComponent("tool"); try "x".write(to: tool, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        try refuses("off_limits") { _ = try dispatch(["cmd": "launch", "path": tool.path]) }
+        try refuses("off_limits") { _ = try dispatch(["cmd": "launch", "path": dir.appendingPathComponent("Editor.app").path]) }
+        try refuses("not_found") { _ = try dispatch(["cmd": "launch", "path": dir.appendingPathComponent("missing.txt").path]) }
+        try refuses("bad_request") { _ = try dispatch(["cmd": "launch", "path": "relative/edit.txt"]) }
+        policyExact = ["com.example.editor"]
+        try refuses("off_limits") { _ = try dispatch(["cmd": "launch", "path": note.path]) }
+        policyExact = []
+        try expectFixture(openedFiles.count == 1, "refused paths never open")
     default: throw Fail("fixture", "unknown scenario")
     }
 }

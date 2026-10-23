@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import ApplicationServices
 import CoreGraphics
 import Foundation
@@ -1500,7 +1501,40 @@ func act(_ request: JSON) throws -> JSON {
     return reply
 }
 
+// Opening a file must never run code, so anything that can execute is refused up front.
+let runnableExtensions: Set<String> = ["app", "command", "terminal", "tool", "workflow", "action", "scpt", "scptd", "applescript",
+                                       "sh", "zsh", "bash", "py", "rb", "pl", "pkg", "mpkg", "dmg", "webloc", "inetloc", "fileloc", "prefPane", "kext"]
+
+func openDocument(_ request: JSON, _ path: String) throws -> JSON {
+    guard path.hasPrefix("/"), path.count <= 1024, !path.contains("\n") else { throw Fail("bad_request", "Give the file's absolute path.") }
+    let file = URL(fileURLWithPath: path).standardizedFileURL
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDirectory) else { throw Fail("not_found", "That file does not exist.") }
+    let type = try? file.resourceValues(forKeys: [.contentTypeKey]).contentType
+    if runnableExtensions.contains(file.pathExtension.lowercased()) || NSWorkspace.shared.isFilePackage(atPath: file.path)
+        || (!isDirectory.boolValue && FileManager.default.isExecutableFile(atPath: file.path))
+        || type.map({ $0.conforms(to: .executable) || $0.conforms(to: .script) || $0.conforms(to: .application) }) == true {
+        throw Fail("off_limits", "That file could run code, so it is not opened. Open documents and folders only.")
+    }
+    let named = (request["app"] as? String).flatMap { name -> URL? in
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: name) ?? NSWorkspace.shared.fullPath(forApplication: name).map { URL(fileURLWithPath: $0) }
+    }
+    guard let appURL = named ?? NSWorkspace.shared.urlForApplication(toOpen: file), let id = Bundle(url: appURL)?.bundleIdentifier else {
+        throw Fail("not_found", "No app opens that file.")
+    }
+    if isBlocked(id) { throw Fail("off_limits", "That app is off limits.") }
+    if screenLocked() { throw Fail("locked", "The screen is locked. Ask the user to unlock it, then retry.") }
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.activates = false
+    var finished = false
+    var opened: NSRunningApplication?
+    NSWorkspace.shared.open([file], withApplicationAt: appURL, configuration: configuration) { app, _ in opened = app; finished = true }
+    guard waitFor({ finished }), let opened, opened.processIdentifier > 0 else { throw Fail("failed", "Could not open that file. Check whether it opened before retrying.") }
+    return ["pid": Int(opened.processIdentifier), "bundleId": id]
+}
+
 func launchApp(_ request: JSON) throws -> JSON {
+    if let path = request["path"] as? String { return try openDocument(request, path) }
     guard let name = request["app"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           name.count <= 200, !name.contains("/"), !name.contains(":"), !name.contains("\n") else {
         throw Fail("bad_request", "Choose an app by its name or bundle identifier.")

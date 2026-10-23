@@ -2963,7 +2963,7 @@ function startApi() {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
       const overseer = isOverseer(botId);
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), ...(hostComputer && process.platform === 'darwin' ? ['computer-window-v1', 'computer-launch-v1'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets', 'commit-check', ...(require('./agent-input.cjs').APPROVAL_BINDING_VERSION === 1 ? ['approval-binding-v1'] : [])], tabCount: tabs.size+vpsTabs.size, ...(process.platform === 'darwin' ? { computerPermissions: await macPermissions.read(hostComputer) } : {}) });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), ...(hostComputer && process.platform === 'darwin' ? ['computer-window-v1', 'computer-launch-v1', 'computer-open-v1'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets', 'commit-check', ...(require('./agent-input.cjs').APPROVAL_BINDING_VERSION === 1 ? ['approval-binding-v1'] : [])], tabCount: tabs.size+vpsTabs.size, ...(process.platform === 'darwin' ? { computerPermissions: await macPermissions.read(hostComputer) } : {}) });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await Promise.race([
           telegramView.webContents.executeJavaScript(`(() => ({
@@ -3036,7 +3036,8 @@ function startApi() {
           if (computerMatch[1] === 'launch') {
             if (computerMatch[2] || req.method !== 'POST') return send(405, { error: 'Use POST /v1/computer/launch.' });
             if (!hostComputer.launch) return send(400, { error: 'Opening an app by name is only supported on Mac.' });
-            return send(200, await hostComputer.launch((await readJson(req)).app));
+            const body = await readJson(req);
+            return send(200, await hostComputer.launch(body.app, body.path));
           }
           const pid = Number(computerMatch[1]);
           if (!Number.isInteger(pid) || pid < 0) return send(400, { error: 'App pid must be a non-negative integer.' });
