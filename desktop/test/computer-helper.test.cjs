@@ -634,6 +634,10 @@ test('actions inherit the observing bot window and waits keep that window', asyn
   assert.equal((await service.screenshot(7, 640, { bot: 'a' })).windowId, 41);
   assert.equal((await service.screenshot(7, 640, { bot: 'b' })).windowId, 42);
   await assert.rejects(service.action('a', 7, { action: 'click', windowId: 42, x: 1, y: 2 }), { code: 'stale_window' });
+  // Raising another window (one just opened by path) acts on no content, so it needs no earlier read of that window.
+  await service.action('a', 7, { action: 'activate', windowId: 43 });
+  assert.equal(calls.at(-1).windowId, 43);
+  await assert.rejects(service.action('a', 7, { action: 'batch', windowId: 44, steps: [{ action: 'activate' }, { action: 'click', x: 1, y: 2 }] }), { code: 'stale_window' });
 });
 
 test('a shipped plugin-shaped capture still reads full snapshots or unchanged replies', async () => {
