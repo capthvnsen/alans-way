@@ -651,16 +651,27 @@ func postMouse(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: In
     let down: CGEventType = button == .right ? .rightMouseDown : .leftMouseDown
     let up: CGEventType = button == .right ? .rightMouseUp : .leftMouseUp
     let drag: CGEventType = button == .right ? .rightMouseDragged : .leftMouseDragged
+    // A drag source such as a Finder row starts a drag only from held, stepped motion the window server sees,
+    // so while the app is in front a drag goes through the session like keys do.
+    let session = dragTo != nil && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
     func post(_ type: CGEventType, _ at: CGPoint, _ state: Int) {
         let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: at, mouseButton: button)
         event?.setIntegerValueField(.mouseEventClickState, value: Int64(state))
-        event?.postToPid(pid)
+        if session { event?.post(tap: .cgSessionEventTap) } else { event?.postToPid(pid) }
         lastPosted = Date()
     }
     post(.mouseMoved, point, 0)
     if let dragTo {
         post(down, point, 1)
-        post(drag, dragTo, 1)
+        usleep(60_000)
+        let steps = 12
+        for step in 1...steps {
+            let t = CGFloat(step) / CGFloat(steps)
+            post(drag, CGPoint(x: point.x + (dragTo.x - point.x) * t, y: point.y + (dragTo.y - point.y) * t), 1)
+            usleep(16_000)
+        }
+        // Drop targets highlight only after the pointer rests over them.
+        usleep(150_000)
         post(up, dragTo, 1)
         return
     }
