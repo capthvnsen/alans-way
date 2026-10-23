@@ -1,0 +1,6 @@
+{
+  "name": "hermes-telegram-voice-miniapp",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test" }
+}

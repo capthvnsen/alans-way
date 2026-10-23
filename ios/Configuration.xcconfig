@@ -1,0 +1,5 @@
+// App-wide Telegram application credentials may be provided in the ignored local
+// override. Telegram account credentials and bot tokens never belong in a build.
+TELEGRAM_API_ID =
+TELEGRAM_API_HASH =
+#include? "LocalConfiguration.xcconfig"

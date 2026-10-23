@@ -1,0 +1,690 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		00739F3960B63B1ECA42F02B /* WorkspaceSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 811600DA355EAF826AC24E3C /* WorkspaceSettingsTests.swift */; };
+		0E01E07670CD42DDDFE7048F /* TDLibKit in Frameworks */ = {isa = PBXBuildFile; productRef = C5F671911FF079BBFC04C910 /* TDLibKit */; };
+		1607CCAFA3E4F15CF501B892 /* TelegramStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4695E1A2C3D735F7BAD249F6 /* TelegramStore.swift */; };
+		270D178306AC87286B87AEAF /* TelegramMiniAppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F2A64E9623B56C19845E75 /* TelegramMiniAppView.swift */; };
+		2AC6296E685174669AEC7A6D /* AgentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BE46BDAF695DC941BEC5180 /* AgentListView.swift */; };
+		309F19D03DC3422BDE3A6E77 /* TelegramModelMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFBF6A1C8690784EBDB03C36 /* TelegramModelMapperTests.swift */; };
+		4702C87B84BB4CFDF290192D /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED9377B8855E3C402146A072 /* ConversationView.swift */; };
+		7501752E4A01B396E9FEF9D7 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 332C8F5E93C0561DBF81EA6D /* PrivacyInfo.xcprivacy */; };
+		76729EC3A625BE34FE05F8B5 /* WorkspaceRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 388D4414D6FCBF28F43E6D08 /* WorkspaceRootView.swift */; };
+		81DE2CA72D8707A0BDB979D2 /* CallSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 699603DAEE4B2F036A206697 /* CallSheet.swift */; };
+		957893A4511CCBEA94D1E991 /* AlanWorkspaceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89C666E05FF981969BA6BC6B /* AlanWorkspaceApp.swift */; };
+		A394000E3BCA30523150BC45 /* WorkspaceTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96B5037979439E2A349C2237 /* WorkspaceTheme.swift */; };
+		AE7AD8C33467B7C1E8D46F67 /* ThirdPartyNotices.txt in Resources */ = {isa = PBXBuildFile; fileRef = 757F8CE9576A8AE2D81E61E8 /* ThirdPartyNotices.txt */; };
+		B727A0DF4C5C3F0182CDE634 /* TelegramKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14C0A4B8EE652A21485C95D /* TelegramKeychain.swift */; };
+		CB3CE6055508A392D8A16E44 /* WorkspaceLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3DB115A6925480AD6C790E9 /* WorkspaceLaunchTests.swift */; };
+		D233D6F04E0B5F7A61419FD3 /* WorkspaceSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B20C55068C0B8BD553B95CC /* WorkspaceSettings.swift */; };
+		D45FA408AD1811720A4540C6 /* ComputerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49BBD95CA4DAA3B2F007F7AA /* ComputerView.swift */; };
+		E386EEEEFB77893693F7D130 /* CallOriginPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4235538CCC550F10BC3EC573 /* CallOriginPolicyTests.swift */; };
+		E90E6DB1FC857EEA71519801 /* TelegramModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C977EFD330E896BD84CFD26 /* TelegramModels.swift */; };
+		E94B9A8118F61B969D27223C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FC96F43107F9FE6A1832FF2E /* Assets.xcassets */; };
+		FF1C1798B0652B7CAD923003 /* CallWebContentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28295B1173C01ABBF7FA37B4 /* CallWebContentTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		0A816859236A0E8DD6C5315F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 66D356DF4250D5AEBF35F774 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = DCF9905A160B86033A98AAD6;
+			remoteInfo = AlanWorkspace;
+		};
+		91F01102DEFAE04201D61C3F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 66D356DF4250D5AEBF35F774 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = DCF9905A160B86033A98AAD6;
+			remoteInfo = AlanWorkspace;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		24F2A64E9623B56C19845E75 /* TelegramMiniAppView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramMiniAppView.swift; sourceTree = "<group>"; };
+		28295B1173C01ABBF7FA37B4 /* CallWebContentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallWebContentTests.swift; sourceTree = "<group>"; };
+		332C8F5E93C0561DBF81EA6D /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		388D4414D6FCBF28F43E6D08 /* WorkspaceRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRootView.swift; sourceTree = "<group>"; };
+		4235538CCC550F10BC3EC573 /* CallOriginPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallOriginPolicyTests.swift; sourceTree = "<group>"; };
+		4695E1A2C3D735F7BAD249F6 /* TelegramStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramStore.swift; sourceTree = "<group>"; };
+		49BBD95CA4DAA3B2F007F7AA /* ComputerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerView.swift; sourceTree = "<group>"; };
+		4B20C55068C0B8BD553B95CC /* WorkspaceSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSettings.swift; sourceTree = "<group>"; };
+		5BE46BDAF695DC941BEC5180 /* AgentListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentListView.swift; sourceTree = "<group>"; };
+		699603DAEE4B2F036A206697 /* CallSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallSheet.swift; sourceTree = "<group>"; };
+		74ABEA476EDC13D185306339 /* AlanWorkspaceTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AlanWorkspaceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		757F8CE9576A8AE2D81E61E8 /* ThirdPartyNotices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdPartyNotices.txt; sourceTree = "<group>"; };
+		7C977EFD330E896BD84CFD26 /* TelegramModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramModels.swift; sourceTree = "<group>"; };
+		811600DA355EAF826AC24E3C /* WorkspaceSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSettingsTests.swift; sourceTree = "<group>"; };
+		885E8694695952E1A0B21044 /* AlanWorkspaceUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AlanWorkspaceUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		89C666E05FF981969BA6BC6B /* AlanWorkspaceApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlanWorkspaceApp.swift; sourceTree = "<group>"; };
+		96B5037979439E2A349C2237 /* WorkspaceTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceTheme.swift; sourceTree = "<group>"; };
+		AFBF6A1C8690784EBDB03C36 /* TelegramModelMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramModelMapperTests.swift; sourceTree = "<group>"; };
+		ED9377B8855E3C402146A072 /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
+		EE5BAAC77B46FEEF2B680965 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		F14C0A4B8EE652A21485C95D /* TelegramKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramKeychain.swift; sourceTree = "<group>"; };
+		F3DB115A6925480AD6C790E9 /* WorkspaceLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceLaunchTests.swift; sourceTree = "<group>"; };
+		F7D8DC409B45AB214705888A /* AlanWorkspace.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AlanWorkspace.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FC96F43107F9FE6A1832FF2E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		"TEMP_C11EE6A8-6F55-4DC3-97B4-4B3647AC00F1" /* Configuration.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configuration.xcconfig; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		ACF2F667DB8113B42E7BC429 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0E01E07670CD42DDDFE7048F /* TDLibKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0A32A273CD73A52655A59957 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F7D8DC409B45AB214705888A /* AlanWorkspace.app */,
+				74ABEA476EDC13D185306339 /* AlanWorkspaceTests.xctest */,
+				885E8694695952E1A0B21044 /* AlanWorkspaceUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		54144C0E8F087D61A50FF4A2 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				FC96F43107F9FE6A1832FF2E /* Assets.xcassets */,
+				332C8F5E93C0561DBF81EA6D /* PrivacyInfo.xcprivacy */,
+				757F8CE9576A8AE2D81E61E8 /* ThirdPartyNotices.txt */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		6BCCADA69AF3C7563F4AC7D3 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				4B20C55068C0B8BD553B95CC /* WorkspaceSettings.swift */,
+				96B5037979439E2A349C2237 /* WorkspaceTheme.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		84D6F71A54073D7DF23739EA = {
+			isa = PBXGroup;
+			children = (
+				C5EE9CD5DB3D828C06C7C2A2 /* AlanWorkspace */,
+				AC0F482DFAED5E357CE6D11B /* AlanWorkspaceTests */,
+				887CC86F4943DEDAA85B614A /* AlanWorkspaceUITests */,
+				0A32A273CD73A52655A59957 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		887CC86F4943DEDAA85B614A /* AlanWorkspaceUITests */ = {
+			isa = PBXGroup;
+			children = (
+				F3DB115A6925480AD6C790E9 /* WorkspaceLaunchTests.swift */,
+			);
+			path = AlanWorkspaceUITests;
+			sourceTree = "<group>";
+		};
+		965B221FFC17B1A748CA92AF /* Calls */ = {
+			isa = PBXGroup;
+			children = (
+				699603DAEE4B2F036A206697 /* CallSheet.swift */,
+				24F2A64E9623B56C19845E75 /* TelegramMiniAppView.swift */,
+			);
+			path = Calls;
+			sourceTree = "<group>";
+		};
+		AC0F482DFAED5E357CE6D11B /* AlanWorkspaceTests */ = {
+			isa = PBXGroup;
+			children = (
+				4235538CCC550F10BC3EC573 /* CallOriginPolicyTests.swift */,
+				28295B1173C01ABBF7FA37B4 /* CallWebContentTests.swift */,
+				AFBF6A1C8690784EBDB03C36 /* TelegramModelMapperTests.swift */,
+				811600DA355EAF826AC24E3C /* WorkspaceSettingsTests.swift */,
+			);
+			path = AlanWorkspaceTests;
+			sourceTree = "<group>";
+		};
+		AC578F120A75D9A69BAB45A6 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				89C666E05FF981969BA6BC6B /* AlanWorkspaceApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		AD3502E2DD7C5E4C1BEDF325 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				5BE46BDAF695DC941BEC5180 /* AgentListView.swift */,
+				49BBD95CA4DAA3B2F007F7AA /* ComputerView.swift */,
+				ED9377B8855E3C402146A072 /* ConversationView.swift */,
+				388D4414D6FCBF28F43E6D08 /* WorkspaceRootView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		C33721D0C2D64F3E143AAD09 /* Telegram */ = {
+			isa = PBXGroup;
+			children = (
+				F14C0A4B8EE652A21485C95D /* TelegramKeychain.swift */,
+				7C977EFD330E896BD84CFD26 /* TelegramModels.swift */,
+				4695E1A2C3D735F7BAD249F6 /* TelegramStore.swift */,
+			);
+			path = Telegram;
+			sourceTree = "<group>";
+		};
+		C5EE9CD5DB3D828C06C7C2A2 /* AlanWorkspace */ = {
+			isa = PBXGroup;
+			children = (
+				EE5BAAC77B46FEEF2B680965 /* Info.plist */,
+				AC578F120A75D9A69BAB45A6 /* App */,
+				965B221FFC17B1A748CA92AF /* Calls */,
+				54144C0E8F087D61A50FF4A2 /* Resources */,
+				6BCCADA69AF3C7563F4AC7D3 /* Support */,
+				C33721D0C2D64F3E143AAD09 /* Telegram */,
+				AD3502E2DD7C5E4C1BEDF325 /* Views */,
+			);
+			path = AlanWorkspace;
+			sourceTree = "<group>";
+		};
+		"TEMP_E71D0559-AAB3-4A5E-A897-DB3B8B23B0B7" /* ios */ = {
+			isa = PBXGroup;
+			children = (
+				"TEMP_C11EE6A8-6F55-4DC3-97B4-4B3647AC00F1" /* Configuration.xcconfig */,
+			);
+			path = ios;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5B3A485FA304069FF8598F01 /* AlanWorkspaceTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4184BB9498E2335703876987 /* Build configuration list for PBXNativeTarget "AlanWorkspaceTests" */;
+			buildPhases = (
+				5F3D8EFBA74FFDF506C1C4F6 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				964ED3E16FBE4A87509645F8 /* PBXTargetDependency */,
+			);
+			name = AlanWorkspaceTests;
+			packageProductDependencies = (
+			);
+			productName = AlanWorkspaceTests;
+			productReference = 74ABEA476EDC13D185306339 /* AlanWorkspaceTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		68E94549A543703C13CF366A /* AlanWorkspaceUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB7B39A26B75E48CB95329BD /* Build configuration list for PBXNativeTarget "AlanWorkspaceUITests" */;
+			buildPhases = (
+				2DD3C40559B104ACA1AB2582 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7CAA491FEF98C52B046F5FA8 /* PBXTargetDependency */,
+			);
+			name = AlanWorkspaceUITests;
+			packageProductDependencies = (
+			);
+			productName = AlanWorkspaceUITests;
+			productReference = 885E8694695952E1A0B21044 /* AlanWorkspaceUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		DCF9905A160B86033A98AAD6 /* AlanWorkspace */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8106E647A0E1EC5BFF88BD90 /* Build configuration list for PBXNativeTarget "AlanWorkspace" */;
+			buildPhases = (
+				8A678C56E8F15AFC1E22B1B9 /* Sources */,
+				73BCE1648F354ABB2DD5114C /* Resources */,
+				ACF2F667DB8113B42E7BC429 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AlanWorkspace;
+			packageProductDependencies = (
+				C5F671911FF079BBFC04C910 /* TDLibKit */,
+			);
+			productName = AlanWorkspace;
+			productReference = F7D8DC409B45AB214705888A /* AlanWorkspace.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		66D356DF4250D5AEBF35F774 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					5B3A485FA304069FF8598F01 = {
+						ProvisioningStyle = Automatic;
+					};
+					68E94549A543703C13CF366A = {
+						ProvisioningStyle = Automatic;
+						TestTargetID = DCF9905A160B86033A98AAD6;
+					};
+					DCF9905A160B86033A98AAD6 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = F74BDFD4787EC07F337312A9 /* Build configuration list for PBXProject "AlanWorkspace" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 84D6F71A54073D7DF23739EA;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				1196BC23C8A6234A721093E1 /* XCRemoteSwiftPackageReference "TDLibKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 0A32A273CD73A52655A59957 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				DCF9905A160B86033A98AAD6 /* AlanWorkspace */,
+				5B3A485FA304069FF8598F01 /* AlanWorkspaceTests */,
+				68E94549A543703C13CF366A /* AlanWorkspaceUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		73BCE1648F354ABB2DD5114C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E94B9A8118F61B969D27223C /* Assets.xcassets in Resources */,
+				7501752E4A01B396E9FEF9D7 /* PrivacyInfo.xcprivacy in Resources */,
+				AE7AD8C33467B7C1E8D46F67 /* ThirdPartyNotices.txt in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		2DD3C40559B104ACA1AB2582 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CB3CE6055508A392D8A16E44 /* WorkspaceLaunchTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5F3D8EFBA74FFDF506C1C4F6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E386EEEEFB77893693F7D130 /* CallOriginPolicyTests.swift in Sources */,
+				FF1C1798B0652B7CAD923003 /* CallWebContentTests.swift in Sources */,
+				309F19D03DC3422BDE3A6E77 /* TelegramModelMapperTests.swift in Sources */,
+				00739F3960B63B1ECA42F02B /* WorkspaceSettingsTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8A678C56E8F15AFC1E22B1B9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2AC6296E685174669AEC7A6D /* AgentListView.swift in Sources */,
+				957893A4511CCBEA94D1E991 /* AlanWorkspaceApp.swift in Sources */,
+				81DE2CA72D8707A0BDB979D2 /* CallSheet.swift in Sources */,
+				D45FA408AD1811720A4540C6 /* ComputerView.swift in Sources */,
+				4702C87B84BB4CFDF290192D /* ConversationView.swift in Sources */,
+				B727A0DF4C5C3F0182CDE634 /* TelegramKeychain.swift in Sources */,
+				270D178306AC87286B87AEAF /* TelegramMiniAppView.swift in Sources */,
+				E90E6DB1FC857EEA71519801 /* TelegramModels.swift in Sources */,
+				1607CCAFA3E4F15CF501B892 /* TelegramStore.swift in Sources */,
+				76729EC3A625BE34FE05F8B5 /* WorkspaceRootView.swift in Sources */,
+				D233D6F04E0B5F7A61419FD3 /* WorkspaceSettings.swift in Sources */,
+				A394000E3BCA30523150BC45 /* WorkspaceTheme.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		7CAA491FEF98C52B046F5FA8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = DCF9905A160B86033A98AAD6 /* AlanWorkspace */;
+			targetProxy = 91F01102DEFAE04201D61C3F /* PBXContainerItemProxy */;
+		};
+		964ED3E16FBE4A87509645F8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = DCF9905A160B86033A98AAD6 /* AlanWorkspace */;
+			targetProxy = 0A816859236A0E8DD6C5315F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0E3F9FEDB21225A565CCDD95 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openalan.AlanWorkspaceTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AlanWorkspace.app/AlanWorkspace";
+			};
+			name = Release;
+		};
+		4280A26B844079CD17749D42 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		46184AB5F451686C1A76CAED /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = "TEMP_C11EE6A8-6F55-4DC3-97B4-4B3647AC00F1" /* Configuration.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AlanWorkspace/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Alan's Workspace";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to your agent computer on your private network.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Speak with your Hermes agent during a voice call.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Share a photo with your agent in Telegram.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openalan.workspace;
+				PRODUCT_NAME = AlanWorkspace;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		4720CB03BE137C6103C524E6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = "TEMP_C11EE6A8-6F55-4DC3-97B4-4B3647AC00F1" /* Configuration.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AlanWorkspace/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Alan's Workspace";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to your agent computer on your private network.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Speak with your Hermes agent during a voice call.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Share a photo with your agent in Telegram.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openalan.workspace;
+				PRODUCT_NAME = AlanWorkspace;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		60906B1896A4F0B77759CD4C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		C0AEE514E6886A0C02556D7C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openalan.AlanWorkspaceTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AlanWorkspace.app/AlanWorkspace";
+			};
+			name = Debug;
+		};
+		E3436ADFB9A15C60CF4CDD2F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openalan.AlanWorkspaceUITests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = AlanWorkspace;
+			};
+			name = Debug;
+		};
+		E9BAEABA416C6BF614B5991E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openalan.AlanWorkspaceUITests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = AlanWorkspace;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		4184BB9498E2335703876987 /* Build configuration list for PBXNativeTarget "AlanWorkspaceTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C0AEE514E6886A0C02556D7C /* Debug */,
+				0E3F9FEDB21225A565CCDD95 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		8106E647A0E1EC5BFF88BD90 /* Build configuration list for PBXNativeTarget "AlanWorkspace" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				46184AB5F451686C1A76CAED /* Debug */,
+				4720CB03BE137C6103C524E6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AB7B39A26B75E48CB95329BD /* Build configuration list for PBXNativeTarget "AlanWorkspaceUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E3436ADFB9A15C60CF4CDD2F /* Debug */,
+				E9BAEABA416C6BF614B5991E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F74BDFD4787EC07F337312A9 /* Build configuration list for PBXProject "AlanWorkspace" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4280A26B844079CD17749D42 /* Debug */,
+				60906B1896A4F0B77759CD4C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1196BC23C8A6234A721093E1 /* XCRemoteSwiftPackageReference "TDLibKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Swiftgram/TDLibKit";
+			requirement = {
+				kind = exactVersion;
+				version = "1.5.2-tdlib-1.8.68-f381f4b3";
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C5F671911FF079BBFC04C910 /* TDLibKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1196BC23C8A6234A721093E1 /* XCRemoteSwiftPackageReference "TDLibKit" */;
+			productName = TDLibKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 66D356DF4250D5AEBF35F774 /* Project object */;
+}

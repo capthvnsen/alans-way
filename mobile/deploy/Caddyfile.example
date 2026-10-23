@@ -1,0 +1,17 @@
+# Example only. Configure DNS/TLS and the real host/path on your gateway.
+# The Hermes dashboard and voice broker remain bound to loopback.
+voice.example.net {
+    header {
+        Referrer-Policy "no-referrer"
+        X-Content-Type-Options "nosniff"
+    }
+
+    handle /v1/* {
+        reverse_proxy 127.0.0.1:8765
+    }
+
+    handle_path /call/* {
+        root * /srv/alans-workspace/mobile/miniapp
+        file_server
+    }
+}
