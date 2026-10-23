@@ -521,7 +521,11 @@ func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
     for root in roots { emit(root, "") }
     let book = refBooks[pid] ?? RefBook()
     refBooks[pid] = book
-    return record(found, book, truncated: truncated, hidden: hidden, note: note, windowId: selected?.id, windowFrame: selected?.frame)
+    // A rename box is not in the window's tree, so its row reads as blank; say that typing goes into it.
+    let editing = focusedInlineEditor(pid).map {
+        "A name is being edited in place (now \"\(axString($0, "AXValue"))\", \"\(axString($0, "AXSelectedText"))\" selected): type replaces the selected text and Return saves it."
+    }
+    return record(found, book, truncated: truncated, hidden: hidden, note: note ?? editing, windowId: selected?.id, windowFrame: selected?.frame)
 }
 
 func record(_ found: [Node], _ book: RefBook, truncated: Bool = false, hidden: Int = 0, note: String? = nil, windowId: CGWindowID? = nil, windowFrame: CGRect? = nil) -> Walk {
@@ -1515,7 +1519,9 @@ func act(_ request: JSON) throws -> JSON {
     if succeeded, request["snapshot"] as? Bool ?? true {
         settling.wait(timeoutMs: max(0, min(1000, (request["settleMs"] as? NSNumber)?.intValue ?? 250)))
         // The steps already ran; a tree that cannot be read afterwards must not hide their results.
-        if let walk = try? refresh(pid, menubar: menubar, windowId: selected?.id) { for (key, value) in snapshotFields(walk) { reply[key] = value } }
+        // An app just launched or brought forward can miss one read while it builds its window.
+        let walk = (try? refresh(pid, menubar: menubar, windowId: selected?.id)) ?? { usleep(500_000); return try? refresh(pid, menubar: menubar, windowId: selected?.id) }()
+        if let walk { for (key, value) in snapshotFields(walk) { reply[key] = value } }
         else { reply["note"] = "unresponsive: the steps ran but the app stopped responding, so there is no tree. Do not repeat them; take a fresh snapshot." }
     }
     return reply
