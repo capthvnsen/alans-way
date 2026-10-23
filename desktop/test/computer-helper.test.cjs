@@ -638,6 +638,9 @@ test('actions inherit the observing bot window and waits keep that window', asyn
   await service.action('a', 7, { action: 'activate', windowId: 43 });
   assert.equal(calls.at(-1).windowId, 43);
   await assert.rejects(service.action('a', 7, { action: 'batch', windowId: 44, steps: [{ action: 'activate' }, { action: 'click', x: 1, y: 2 }] }), { code: 'stale_window' });
+  // A bare activate brings the app forward; the window this bot read last may be gone since.
+  await service.action('a', 7, { action: 'activate' });
+  assert.equal(calls.at(-1).windowId, undefined);
 });
 
 test('a shipped plugin-shaped capture still reads full snapshots or unchanged replies', async () => {
