@@ -213,7 +213,7 @@ func fixture() throws {
         try validateWindowStep(7, ["action": "activate"], nil)
         try refuses("stale_window") { try validateWindowStep(7, ["action": "key"], try selectedWindow(7, 41)) }
         let reply = try runStep(7, ["action": "activate"], windowId: 41)
-        try expectFixture(fixtureFront == 7 && (reply["note"] as? String ?? "").contains("snapshot"), "a window on another Space is brought forward, then re-read")
+        try expectFixture(fixtureFront == 7 && (reply["note"] as? String ?? "").contains("onto this screen"), "a window on another Space is brought forward")
         try expectFixture(performed.isEmpty, "no window is raised before it can be verified")
     case "activate-nowindow":
         fixtureFront = 99; fixtureIdle = 2; fixtureOnScreen = false; activateShowsWindow = false
@@ -290,7 +290,7 @@ func fixture() throws {
         fixtureFront = 99; fixtureIdle = 2
         attributes[AXKey(element: app)]?["AXWindows"] = [foreign]
         let reply = try runStep(7, ["action": "activate"], windowId: nil)
-        try expectFixture(fixtureFront == 7 && (reply["note"] as? String ?? "").contains("fresh snapshot"), "the app comes forward and the bot re-reads")
+        try expectFixture(fixtureFront == 7 && (reply["note"] as? String ?? "").contains("Brought the app forward"), "the app comes forward")
         fixtureFront = 99
         try refuses("window_unverified") { _ = try runStep(7, ["action": "activate"], windowId: 41) }
     case "activate-dialog":
@@ -299,7 +299,7 @@ func fixture() throws {
         attributes[AXKey(element: panel)] = ["AXRole": "AXWindow", "AXWindowNumber": 43]
         fixtureFront = 99; fixtureIdle = 2; activateFocus = panel
         let reply = try runStep(7, ["action": "activate"], windowId: 41)
-        try expectFixture(fixtureFront == 7 && (reply["note"] as? String ?? "").contains("fresh snapshot"), "an app in front with its own dialog focused is brought forward, then re-read")
+        try expectFixture(fixtureFront == 7 && (reply["note"] as? String ?? "").contains("has focus"), "an app in front with its own dialog focused is brought forward")
     case "focused-dialog":
         // An app whose Open panel has focus: reading the app reads the panel, not the bigger document window.
         fixtureDialog = true

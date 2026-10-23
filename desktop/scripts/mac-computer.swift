@@ -521,7 +521,11 @@ func walkApp(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
     for root in roots { emit(root, "") }
     let book = refBooks[pid] ?? RefBook()
     refBooks[pid] = book
-    return record(found, book, truncated: truncated, hidden: hidden, note: note, windowId: selected?.id, windowFrame: selected?.frame)
+    // A rename box is not in the window's tree, so its row reads as blank; say that typing goes into it.
+    let editing = focusedInlineEditor(pid).map {
+        "A name is being edited in place (now \"\(axString($0, "AXValue"))\", \"\(axString($0, "AXSelectedText"))\" selected): type replaces the selected text and Return saves it."
+    }
+    return record(found, book, truncated: truncated, hidden: hidden, note: note ?? editing, windowId: selected?.id, windowFrame: selected?.frame)
 }
 
 func record(_ found: [Node], _ book: RefBook, truncated: Bool = false, hidden: Int = 0, note: String? = nil, windowId: CGWindowID? = nil, windowFrame: CGRect? = nil) -> Walk {
@@ -645,29 +649,64 @@ func axToQuartz(_ point: CGPoint) -> CGPoint { point }
 
 var postedMouse = false
 
-func postMouse(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: Int, dragTo: CGPoint?) {
+// The app owning the frontmost normal window at a screen point, in Quartz coordinates.
+func topWindowPid(at point: CGPoint) -> pid_t? {
+    let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    return info.first { item in
+        guard (item[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+              let bounds = item[kCGWindowBounds as String] as? NSDictionary,
+              let rect = CGRect(dictionaryRepresentation: bounds) else { return false }
+        return rect.contains(point)
+    }.flatMap { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value }
+}
+
+/// False when a session drag stopped early because the person moved the pointer or another app came forward.
+@discardableResult
+func postMouse(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: Int, dragTo: CGPoint?) -> Bool {
     postedMouse = true
     let source = CGEventSource(stateID: .privateState)
     let down: CGEventType = button == .right ? .rightMouseDown : .leftMouseDown
     let up: CGEventType = button == .right ? .rightMouseUp : .leftMouseUp
     let drag: CGEventType = button == .right ? .rightMouseDragged : .leftMouseDragged
+    // A drag source such as a Finder row starts a drag only from held, stepped motion the window server sees,
+    // so while the app is in front a drag goes through the session like keys do.
+    // The session delivers to whatever window is on top there, so both ends must be this app's own window.
+    let session = dragTo.map { NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+        && topWindowPid(at: point) == pid && topWindowPid(at: $0) == pid } ?? false
     func post(_ type: CGEventType, _ at: CGPoint, _ state: Int) {
         let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: at, mouseButton: button)
         event?.setIntegerValueField(.mouseEventClickState, value: Int64(state))
-        event?.postToPid(pid)
+        if session { event?.post(tap: .cgSessionEventTap) } else { event?.postToPid(pid) }
         lastPosted = Date()
     }
     post(.mouseMoved, point, 0)
     if let dragTo {
         post(down, point, 1)
-        post(drag, dragTo, 1)
+        usleep(60_000)
+        let steps = 12
+        var last = point
+        for step in 1...steps {
+            // A session drag moves the real pointer: if it is not where we left it, the person took the mouse.
+            if session, let at = CGEvent(source: nil)?.location,
+               hypot(at.x - last.x, at.y - last.y) > 4 || NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+                post(up, last, 1)
+                return false
+            }
+            let t = CGFloat(step) / CGFloat(steps)
+            last = CGPoint(x: point.x + (dragTo.x - point.x) * t, y: point.y + (dragTo.y - point.y) * t)
+            post(drag, last, 1)
+            usleep(16_000)
+        }
+        // Drop targets highlight only after the pointer rests over them.
+        usleep(150_000)
         post(up, dragTo, 1)
-        return
+        return true
     }
     for count in 1...max(1, clicks) {
         post(down, point, count)
         post(up, point, count)
     }
+    return true
 }
 
 func elementAt(_ pid: pid_t, _ point: CGPoint) -> AXUIElement? {
@@ -1180,7 +1219,7 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
                 _ = waitFor({ reopened })
             }
             out["note"] = waitFor({ hasOnScreenWindow(pid) }, timeout: 2)
-                ? "Brought the app's window onto this screen. Take a fresh snapshot before acting."
+                ? "Brought the app's window onto this screen."
                 : noWindowNote
             break
         }
@@ -1201,7 +1240,7 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
                   waitFor({ NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }, timeout: 2) else {
                 throw Fail("failed", "Could not bring that app forward. Ask the user to show it.")
             }
-            out["note"] = "Brought the app forward. Take a fresh snapshot before acting."
+            out["note"] = "Brought the app forward; its new window may still be loading."
             break
         }
         guard matches.count == 1 else { throw Fail("window_unverified", "Could not verify the selected window. Take a fresh snapshot.") }
@@ -1220,7 +1259,7 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
                 throw Fail("window_unverified", "Could not confirm keyboard focus in the selected window. Take a fresh snapshot.")
             }
             // The app is in front but one of its own windows, such as an Open panel, has focus.
-            out["note"] = "The app is in front, but another of its windows (such as a dialog) has focus. Take a fresh snapshot."
+            out["note"] = "The app is in front, but another of its windows (such as a dialog) has focus."
         }
     case "press":
         let node = try resolve(pid, step["ref"] as? String ?? "")
@@ -1320,7 +1359,9 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
         if let element = elementAt(pid, end), isSecure(element) { throw Fail("off_limits", "Password fields are off limits.") }
         if setSliderValue(pid: pid, from: start, to: end) { out["via"] = "ax" }
         else {
-            postMouse(pid, axToQuartz(start), button: .left, clicks: 1, dragTo: axToQuartz(end))
+            guard postMouse(pid, axToQuartz(start), button: .left, clicks: 1, dragTo: axToQuartz(end)) else {
+                throw Fail("in_front", inFrontMessage)
+            }
             out["via"] = "event"
         }
     case "scroll":
@@ -1426,7 +1467,7 @@ func focusedInlineEditor(_ pid: pid_t) -> AXUIElement? {
           axValue(root, "AXFocusedWindow").map({ CFGetTypeID($0) != AXUIElementGetTypeID() }) ?? true,
           let value = axValue(root, "AXFocusedUIElement"), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
     let field = value as! AXUIElement
-    guard ["AXTextField", "AXTextArea"].contains(axString(field, "AXRole")), let parent = axParent(field), CFEqual(parent, root) else { return nil }
+    guard ["AXTextField", "AXTextArea"].contains(axString(field, "AXRole")), !isSecure(field), let parent = axParent(field), CFEqual(parent, root) else { return nil }
     return field
 }
 
@@ -1502,9 +1543,19 @@ func act(_ request: JSON) throws -> JSON {
     }
     var reply: JSON = ["results": results]
     if succeeded, request["snapshot"] as? Bool ?? true {
+        let settleStarted = ProcessInfo.processInfo.systemUptime
         settling.wait(timeoutMs: max(0, min(1000, (request["settleMs"] as? NSNumber)?.intValue ?? 250)))
+        // A pane drawn by another process, such as a System Settings page, sends this app no events, so a click waits a beat for it.
+        if request["settleMs"] == nil, steps.contains(where: { ["click", "press"].contains($0["action"] as? String ?? "") }) {
+            let rest = 0.3 - (ProcessInfo.processInfo.systemUptime - settleStarted)
+            if rest > 0 { usleep(useconds_t(rest * 1_000_000)) }
+        }
         // The steps already ran; a tree that cannot be read afterwards must not hide their results.
-        if let walk = try? refresh(pid, menubar: menubar, windowId: selected?.id) { for (key, value) in snapshotFields(walk) { reply[key] = value } }
+        // An app just launched or brought forward can miss one read while it builds its window.
+        let running = { NSRunningApplication(processIdentifier: pid).map { !$0.isTerminated } ?? false }
+        let walk = (try? refresh(pid, menubar: menubar, windowId: selected?.id))
+            ?? (running() && !screenLocked() ? { usleep(500_000); return try? refresh(pid, menubar: menubar, windowId: selected?.id) }() : nil)
+        if let walk { for (key, value) in snapshotFields(walk) { reply[key] = value } }
         else { reply["note"] = "unresponsive: the steps ran but the app stopped responding, so there is no tree. Do not repeat them; take a fresh snapshot." }
     }
     return reply
@@ -1540,14 +1591,19 @@ func openDocument(_ request: JSON, _ path: String) throws -> JSON {
     NSWorkspace.shared.open([file], withApplicationAt: appURL, configuration: configuration) { app, _ in opened = app; finished = true }
     guard waitFor({ finished }), let opened, opened.processIdentifier > 0 else { throw Fail("failed", "Could not open that file. Check whether it opened before retrying.") }
     // Name the window showing the item, so the next read targets it rather than another window of the app.
+    // Wait until it has grown past its opening animation (selectedWindow skips tiny windows); a cold launch takes seconds.
     let pid = opened.processIdentifier, title = file.lastPathComponent
     var shown: CGWindowID?
     _ = waitFor({
         let info = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        shown = info.first { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid && ($0[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
-            && ($0[kCGWindowName as String] as? String) == title }.flatMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value }
+        shown = info.first { item in
+            let bounds = item[kCGWindowBounds as String] as? [String: Any]
+            func part(_ name: String) -> Double { (bounds?[name] as? NSNumber)?.doubleValue ?? 0 }
+            return (item[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid && (item[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
+                && (item[kCGWindowName as String] as? String) == title && part("Width") >= 40 && part("Height") >= 40
+        }.flatMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value }
         return shown != nil
-    }, timeout: 2)
+    }, timeout: 5)
     return ["pid": Int(pid), "bundleId": id].merging(shown.map { ["windowId": Int($0)] } ?? [:]) { a, _ in a }
 }
 

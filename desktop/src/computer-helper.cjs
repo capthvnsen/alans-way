@@ -324,8 +324,11 @@ function createComputerService(driver) {
   }
 
   async function action(bot, pid, body) {
-    const window = windowOptions(body.windowId === undefined ? seen.windowId(bot, pid) : body.windowId);
-    if (seen.windowId(bot, pid) !== undefined && window.windowId !== seen.windowId(bot, pid))
+    // Raising a window acts on none of its content, so a lone activate may name one this bot has not read yet,
+    // and one that names none brings the app forward rather than a window read earlier that may be gone.
+    const onlyActivate = body.action === 'activate';
+    const window = windowOptions(body.windowId === undefined && !onlyActivate ? seen.windowId(bot, pid) : body.windowId);
+    if (!onlyActivate && seen.windowId(bot, pid) !== undefined && window.windowId !== seen.windowId(bot, pid))
       throw fail('stale_window', 'Take a snapshot of the selected window before acting.');
     const batch = body.action === 'batch';
     const raw = batch ? (Array.isArray(body.steps) ? body.steps.slice(0, STEP_LIMIT) : []) : [body];
