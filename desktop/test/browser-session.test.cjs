@@ -8,8 +8,10 @@ function fixture(create = createBrowserSessionStore) {
   const cookies = new Map(), restored = [], writes = [];
   const safeStorage = {
     isEncryptionAvailable: () => available, getSelectedStorageBackend: () => backend,
-    encryptString: value => { text = value; sealed = Buffer.from('opaque fixture ciphertext'); return sealed; },
-    decryptString: value => { assert.deepEqual(value, sealed); return text; },
+    encryptString: () => assert.fail('sync keychain access blocks the main process'),
+    decryptString: () => assert.fail('sync keychain access blocks the main process'),
+    encryptStringAsync: async value => { text = value; sealed = Buffer.from('opaque fixture ciphertext'); return sealed; },
+    decryptStringAsync: async value => { assert.deepEqual(value, sealed); return { shouldReEncrypt: false, result: text }; },
   };
   const session = { fromPartition: partition => ({ cookies: {
     get: async filter => { assert.deepEqual(filter, { session: true }); return (cookies.get(partition) || []).map(({ partitionKey, partitionKeyOpaque, ...cookie }) => cookie); },

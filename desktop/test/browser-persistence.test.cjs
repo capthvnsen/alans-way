@@ -167,7 +167,7 @@ test('a chat link notification arriving after the human clicked reuses the exist
 test('ordinary quit keeps views alive until cookies are durable, and a repeated quit shares the drain', async () => {
   let listener, finish, saves = 0, closes = 0;
   const app = { on: (_name, fn) => { listener = fn; }, quit: () => listener({ preventDefault() {} }) };
-  const context = vm.createContext({ app, isQuitting: false,
+  const context = vm.createContext({ app, isQuitting: false, setTimeout() {}, QUIT_SAVE_MS: 8000, logError: (_label, error) => { throw error; },
     savePreferences() {}, saveBrowserSession: () => { saves++; return new Promise(resolve => { finish = resolve; }); },
     hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },
     modelAuthChild: null, tray: null, apiServer: null, clearInterval() {}, clearTimeout() {},
@@ -186,6 +186,33 @@ test('ordinary quit keeps views alive until cookies are durable, and a repeated 
   assert.equal(closes, 1);
   assert.equal(context.isQuitting, true);
 });
+
+for (const outcome of ['hangs', 'fails']) {
+  test(`quit still exits when saving browser sign-ins ${outcome}`, async () => {
+    // A keychain prompt nobody answers, or a denied one, must not keep the app from quitting.
+    let listener, closes = 0;
+    const timers = [], errors = [];
+    const app = { on: (_name, fn) => { listener = fn; }, quit: () => listener({ preventDefault() {} }) };
+    const context = vm.createContext({ app, isQuitting: false, setTimeout: (fn, ms) => timers.push({ fn, ms }), QUIT_SAVE_MS: 8000,
+      savePreferences() {}, saveBrowserSession: () => (outcome === 'hangs' ? new Promise(() => {}) : Promise.reject(new Error('denied'))),
+      logError: (label, error) => errors.push(`${label}: ${error.message}`),
+      hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },
+      modelAuthChild: null, tray: null, apiServer: null, clearInterval() {}, clearTimeout() {},
+      pointerTimer: 0, activityTimer: 0, idleTimer: 0, captchaTimer: 0, vpsTimer: 0, vpsMirrorTimer: 0, vpsMirrorDebounce: 0,
+    });
+    vm.runInContext(section('  let browserQuitPending', "  app.on('window-all-closed'"), context);
+    listener({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    if (outcome === 'hangs') {
+      assert.equal(closes, 0, 'a save in progress gets its time');
+      assert.ok(timers.length === 1 && timers[0].ms <= 10000);
+      timers[0].fn();
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.equal(closes, 1);
+    assert.equal(errors.length, 1);
+  });
+}
 
 for (const driver of ['electron-updater', 'self']) {
   test(`${driver} waits for browser storage before exiting into the update`, async () => {
@@ -228,7 +255,7 @@ test('shutdown retains session-only sign-ins in encrypted form without changing 
     flushStorageData() {},
   }]));
   const safeStorage = { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => 'gnome_libsecret',
-    encryptString: text => { assert.ok(text.includes('fixture-session')); return Buffer.from('encrypted-fixture'); } };
+    encryptStringAsync: async text => { assert.ok(text.includes('fixture-session')); return Buffer.from('encrypted-fixture'); } };
   const context = vm.createContext({ prefs, session: { fromPartition: name => sessions.get(name) }, safeStorage, savePreferences() {}, persistSettingsPreferences() {},
     WebContentsView: class { constructor() { this.webContents = { destroy() {}, debugger: { attach() {}, sendCommand: async () => ({ cookies }) } }; } },
     createBrowserSessionStore: require('node:fs').existsSync(path.join(__dirname, '../src/browser-session.cjs')) ? require('../src/browser-session.cjs').createBrowserSessionStore : undefined,

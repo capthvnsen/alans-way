@@ -28,7 +28,8 @@ function createBrowserSessionStore({ WebContentsView, safeStorage, getPreference
           const { cookies } = await command(partition, 'Network.getAllCookies');
           records[partition] = cookies.filter(cookie => cookie.session === true && !cookie.partitionKeyOpaque);
         }
-        getPreferences().sessionCookies = safeStorage.encryptString(JSON.stringify(records)).toString('base64');
+        // The async keychain call: a sync one blocks the main process for as long as a keychain prompt stays open.
+        getPreferences().sessionCookies = (await safeStorage.encryptStringAsync(JSON.stringify(records))).toString('base64');
       } else {
         // Never fall back to plaintext credentials, including Linux basic_text.
         delete prefs.sessionCookies;
@@ -41,7 +42,7 @@ function createBrowserSessionStore({ WebContentsView, safeStorage, getPreference
   async function restore() {
     const saved = getPreferences()?.sessionCookies;
     if (!saved || !secure()) return;
-    const records = JSON.parse(safeStorage.decryptString(Buffer.from(saved, 'base64')));
+    const records = JSON.parse((await safeStorage.decryptStringAsync(Buffer.from(saved, 'base64'))).result);
     for (const partition of PARTITIONS) {
       if (!Array.isArray(records[partition])) continue;
       const cookies = records[partition].filter(cookie => cookie.session === true && !cookie.partitionKeyOpaque && typeof cookie.domain === 'string').map(cookie => {

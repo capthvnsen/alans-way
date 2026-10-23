@@ -135,6 +135,7 @@ const API_TOKEN = crypto.randomBytes(32).toString('hex');
 // Connectors allow 90s for action requests; a batch stops starting new steps
 // early enough that its last step (wait caps at 30s) still answers in time.
 const BATCH_BUDGET_MS = 50000;
+const QUIT_SAVE_MS = 8000;
 const NAVIGATE_PARSE_MS = 3000;
 const OPEN_PARSE_MS = 8000;
 // A snapshot waits this long for a still-parsing document; the wait ends at DOMContentLoaded.
@@ -3568,12 +3569,10 @@ else {
         savePreferences();
         isQuitting = true;
         browserQuitPending = true;
-        saveBrowserSession().then(() => { browserQuitReady = true; app.quit(); }).catch(error => {
-          browserQuitPending = false;
-          isQuitting = false;
-          logError('browser-save', error);
-          dialog.showErrorBox('Browser data could not be saved', 'Try quitting again after checking that app data is writable.');
-        });
+        // A keychain prompt nobody answers, or a denied one, must not keep the app from quitting.
+        Promise.race([saveBrowserSession(), new Promise((_, reject) => setTimeout(() => reject(new Error('Saving browser sign-ins timed out.')), QUIT_SAVE_MS))])
+          .catch(error => logError('browser-save', error))
+          .then(() => { browserQuitReady = true; app.quit(); });
       }
       return;
     }
