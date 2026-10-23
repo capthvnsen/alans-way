@@ -50,7 +50,7 @@ if (typeof electron === 'string') {
     const prefs = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
     // The encryption boundary is deterministic and in memory. Real OS secure
     // storage is deliberately not consulted by this disposable fixture.
-    const safeStorage = { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => 'gnome_libsecret',
+    const safeStorage = { isAsyncEncryptionAvailable: async () => true, getSelectedStorageBackend: () => 'gnome_libsecret',
       encryptStringAsync: async text => Buffer.from(text.split('').reverse().join('')),
       decryptStringAsync: async value => ({ shouldReEncrypt: false, result: value.toString().split('').reverse().join('') }) };
     const savePreferences = () => require('../src/shell-support.cjs').writePrivateJson(file, prefs);

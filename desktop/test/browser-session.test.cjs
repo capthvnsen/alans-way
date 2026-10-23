@@ -7,7 +7,8 @@ function fixture(create = createBrowserSessionStore) {
   let prefs = {}, available = true, backend = 'gnome_libsecret', sealed, text;
   const cookies = new Map(), restored = [], writes = [];
   const safeStorage = {
-    isEncryptionAvailable: () => available, getSelectedStorageBackend: () => backend,
+    isEncryptionAvailable: () => assert.fail('the sync check reads the keychain on macOS'),
+    isAsyncEncryptionAvailable: async () => available, getSelectedStorageBackend: () => backend,
     encryptString: () => assert.fail('sync keychain access blocks the main process'),
     decryptString: () => assert.fail('sync keychain access blocks the main process'),
     encryptStringAsync: async value => { text = value; sealed = Buffer.from('opaque fixture ciphertext'); return sealed; },
@@ -94,7 +95,7 @@ test('a Settings save while cookie reads are pending does not lose the current s
 
 test('a failed private-file write is reported and does not poison the next save', async () => {
   let failing = true;
-  const store = createBrowserSessionStore({ session: {}, safeStorage: { isEncryptionAvailable: () => false },
+  const store = createBrowserSessionStore({ session: {}, safeStorage: { isAsyncEncryptionAvailable: async () => false },
     getPreferences: () => ({}), savePreferences: () => { if (failing) throw Error('fixture disk full'); } });
   await assert.rejects(store.save(), /fixture disk full/);
   failing = false;
@@ -110,7 +111,7 @@ test('a failed cookie read destroys its private inspector and keeps the previous
     } }; }
   }
   const store = createBrowserSessionStore({ WebContentsView, getPreferences: () => prefs, savePreferences() {},
-    safeStorage: { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => 'gnome_libsecret' } });
+    safeStorage: { isAsyncEncryptionAvailable: async () => true, getSelectedStorageBackend: () => 'gnome_libsecret' } });
   await assert.rejects(store.save(), /fixture read failed/);
   assert.equal(destroyed, 1);
   assert.equal(prefs.sessionCookies, 'previous-ciphertext');
