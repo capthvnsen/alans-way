@@ -1195,6 +1195,15 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
             matches = (axValue(appElement(pid), "AXWindows") as? [AXUIElement] ?? []).filter { matchesWindow($0, current) }
             return matches.count == 1
         }, timeout: 1.5)
+        if matches.count != 1 && windowId == nil {
+            // Nothing named a window and the new one is not readable yet: bringing the app forward is still what was asked.
+            guard app.activate(options: [.activateIgnoringOtherApps]),
+                  waitFor({ NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }, timeout: 2) else {
+                throw Fail("failed", "Could not bring that app forward. Ask the user to show it.")
+            }
+            out["note"] = "Brought the app forward. Take a fresh snapshot before acting."
+            break
+        }
         guard matches.count == 1 else { throw Fail("window_unverified", "Could not verify the selected window. Take a fresh snapshot.") }
         try checkApp(pid, action: true, activating: true)
         guard AXUIElementPerformAction(matches[0], "AXRaise" as CFString) == .success,

@@ -284,6 +284,14 @@ func fixture() throws {
         fixtureFront = 7
         attributes[AXKey(element: app)]?["AXFocusedUIElement"] = foreign
         try refuses("window_unverified") { try validateWindowStep(7, ["action": "type", "text": "b"], selected) }
+    case "activate-unmatched":
+        // A window that just opened can be on screen before its controls are reachable: with no window named, raise the app.
+        fixtureFront = 99; fixtureIdle = 2
+        attributes[AXKey(element: app)]?["AXWindows"] = [foreign]
+        let reply = try runStep(7, ["action": "activate"], windowId: nil)
+        try expectFixture(fixtureFront == 7 && (reply["note"] as? String ?? "").contains("fresh snapshot"), "the app comes forward and the bot re-reads")
+        fixtureFront = 99
+        try refuses("window_unverified") { _ = try runStep(7, ["action": "activate"], windowId: 41) }
     case "activate-dialog":
         // A freshly launched app can put its Open panel in front of the window that was read.
         let panel = AXUIElementCreateApplication(1007)
