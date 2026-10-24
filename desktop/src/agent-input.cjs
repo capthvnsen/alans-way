@@ -1051,12 +1051,37 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         if (typeof aim.challenge?.kind === 'string') throw challengePresent(aim.challenge);
         point = { x: aim.x, y: aim.y };
         await armFollowUp();
-        await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: Math.max(-2000, Math.min(2000, body.x || 0)), deltaY: Math.max(-2000, Math.min(2000, body.y || 0)) });
+        let x = Math.max(-20000, Math.min(20000, body.x || 0)), y = Math.max(-20000, Math.min(20000, body.y || 0));
+        // Include panels under the pointer: the document need not move when they scroll.
+        const progress = `(() => {
+          const positions = [[scrollX, scrollY]];
+          for (let el = document.elementFromPoint(${point.x}, ${point.y}); el; el = el.parentElement || el.getRootNode()?.host) {
+            if (/^(IFRAME|FRAME)$/.test(el.tagName)) return null;
+            positions.push([el.scrollLeft, el.scrollTop]);
+          }
+          return JSON.stringify(positions);
+        })()`;
+        let before = await boundedJs(wc, progress, 1000).catch(() => null);
+        do {
+          const deltaX = Math.max(-2000, Math.min(2000, x)), deltaY = Math.max(-2000, Math.min(2000, y));
+          await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX, deltaY });
+          x -= deltaX; y -= deltaY;
+          // The wheel ack precedes the scroll; hidden tabs still need a timer fallback.
+          const after = await boundedJs(wc, `new Promise(done => { const read = () => done(${progress}); setTimeout(read, 80); requestAnimationFrame(() => requestAnimationFrame(read)); })`, 1000).catch(() => null);
+          check();
+          if (after !== null && after === before) break;
+          before = after;
+        } while (x || y);
         cursor(point, 'scroll');
       }
       if (action !== 'move') await closeFollowUp();
       await watching.settle(likelyNavigation);
       check();
+      if (action === 'scroll') {
+        const scroll = await boundedJs(wc, '(() => { const maxY = Math.max(0, (document.scrollingElement || document.documentElement).scrollHeight - innerHeight); return { x: scrollX, y: scrollY, maxY, atEnd: scrollY >= maxY - 1 }; })()', 1000).catch(() => null);
+        check();
+        if (scroll) extra.scroll = scroll;
+      }
       succeeded = true;
       return { dispatched: true, input: 'tab-cdp', cursor: tab.agentCursor || null, navigated: watching.navigated(), ...extra };
     } finally {
