@@ -181,6 +181,24 @@ test('scroll follows a panel inside a shadow root', async () => {
   assert.equal(panel.scrollTop, 4584);
 });
 
+test('a challenge that appears before the first wheel sends no wheel at all', async () => {
+  const f = scrollFixture({ challengeAfter: 0 });
+  await assert.rejects(f.perform({ action: 'scroll', y: 6000 }), /challenge|CAPTCHA|check/i);
+  assert.equal(f.calls.filter(call => call.type === 'mouseWheel').length, 0);
+});
+
+test('scroll follows a shadow scroller that holds slotted content', async () => {
+  const f = scrollFixture({ maxY: 0 });
+  const host = { scrollLeft: 0, scrollTop: 0, parentElement: null, getRootNode: () => ({}) };
+  const scroller = { scrollLeft: 0, scrollTop: 0, parentElement: null, getRootNode: () => ({ host }) };
+  const slot = { scrollLeft: 0, scrollTop: 0, parentElement: scroller, getRootNode: () => ({ host }) };
+  const item = { scrollLeft: 0, scrollTop: 0, assignedSlot: slot, parentElement: host, getRootNode: () => ({}) };
+  f.page.document.elementFromPoint = () => item;
+  f.hook(async (_method, params) => { if (params.type === 'mouseWheel') scroller.scrollTop += params.deltaY; });
+  await f.perform({ action: 'scroll', y: 4584 });
+  assert.equal(scroller.scrollTop, 4584);
+});
+
 test('scroll omits its position on a failed read and sends no further unchecked wheel events', async () => {
   const f = scrollFixture();
   f.hook(async (method, code) => {

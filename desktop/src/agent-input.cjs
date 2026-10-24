@@ -1058,13 +1058,15 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
           let el = document.elementFromPoint(p.x, p.y);
           for (let inner; el && el.shadowRoot && (inner = el.shadowRoot.elementFromPoint(p.x, p.y)) && inner !== el;) el = inner;
           const positions = [[scrollX, scrollY]];
-          for (; el; el = el.parentElement || el.getRootNode()?.host) {
+          for (; el; el = el.assignedSlot || el.parentElement || el.getRootNode()?.host) {
             if (/^(IFRAME|FRAME)$/.test(el.tagName)) return { challenge, positions: null };
             positions.push([el.scrollLeft, el.scrollTop]);
           }
           return { challenge, positions: JSON.stringify(positions) };
         })()`;
         let before = await boundedJs(wc, probe, 1000).catch(() => null);
+        check();
+        if (typeof before?.challenge?.kind === 'string') throw challengePresent(before.challenge);
         for (;;) {
           const deltaX = Math.max(-2000, Math.min(2000, x)), deltaY = Math.max(-2000, Math.min(2000, y));
           await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX, deltaY });
