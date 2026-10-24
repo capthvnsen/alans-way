@@ -22,7 +22,7 @@ button { color: inherit; font: inherit; -webkit-tap-highlight-color: transparent
 .topbar { display: flex; align-items: center; justify-content: space-between; min-height: 42px; flex: 0 0 auto; }
 .agent-label { display: inline-flex; align-items: center; gap: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.045); border-radius: 99px; padding: 9px 14px; font-size: 13px; font-weight: 600; letter-spacing: .01em; backdrop-filter: blur(12px); }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #8b8e9b; box-shadow: 0 0 0 4px rgba(255,255,255,.06); }
-[data-state="listening"] .live-dot, [data-state="speaking"] .live-dot { background: #8ec4a2; box-shadow: 0 0 0 4px rgba(142,196,162,.12), 0 0 12px rgba(142,196,162,.55); }
+[data-state="hearing"] .live-dot, [data-state="listening"] .live-dot, [data-state="speaking"] .live-dot { background: #8ec4a2; box-shadow: 0 0 0 4px rgba(142,196,162,.12), 0 0 12px rgba(142,196,162,.55); }
 [data-state="thinking"] .live-dot { background: var(--accent); animation: blink 1.2s ease infinite; }
 .icon-button { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: rgba(255,255,255,.04); color: #d6d6dd; }
 .icon-button svg, .utility-icon svg, .round-control svg, .call-button svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
@@ -38,7 +38,7 @@ button { color: inherit; font: inherit; -webkit-tap-highlight-color: transparent
 .orbit { position: absolute; border: 1px solid rgba(184,224,204,.11); border-radius: 50%; inset: 8%; transform: scale(1.02); }
 .orbit-front { inset: 16%; border-color: rgba(255,255,255,.035); transform: scale(1.12); }
 .voice-ring { position: absolute; inset: 8%; border: 1px solid rgba(184,224,204,.2); border-radius: 50%; transform: scale(.95); opacity: 0; z-index: 1; }
-[data-state="listening"] .voice-ring, [data-state="speaking"] .voice-ring { animation: breathe 2.7s ease-out infinite; }
+[data-state="hearing"] .voice-ring, [data-state="listening"] .voice-ring, [data-state="speaking"] .voice-ring { animation: breathe 2.7s ease-out infinite; }
 [data-state="speaking"] .voice-ring { border-color: rgba(161,207,181,.46); animation-duration: 1.4s; }
 [data-state="thinking"] .portrait-frame { animation: think 2.4s ease-in-out infinite; }
 .stage-copy { text-align: center; margin-top: 0; position: relative; z-index: 2; }

@@ -111,12 +111,14 @@ class VoiceHttpProtocolTests(unittest.IsolatedAsyncioTestCase):
         async def upload():
             form = __import__("aiohttp").FormData()
             form.add_field("turn_id", turn_id)
-            form.add_field("audio", b"synthetic audio bytes", filename="clip.webm", content_type="audio/webm")
+            form.add_field("audio", b"synthetic audio bytes", filename="clip.wav", content_type="audio/wav")
             return await self.client.post(f"/v1/calls/{call['call_id']}/turns", data=form, headers=headers)
 
         first = await upload()
         self.assertEqual(first.status, 202)
-        self.assertEqual((await first.json())["status"], "accepted")
+        accepted = await first.json()
+        self.assertEqual(accepted["status"], "accepted")
+        self.assertEqual(accepted["transcript"], "remember this exact fact")
         self.assertEqual(len(self.injected), 1)
         self.assertEqual(self.transcript_bubbles, [("42", "remember this exact fact")])
         injected_text, session_key = self.injected[0]
@@ -152,6 +154,36 @@ class VoiceHttpProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.injected), 1)
         self.assertEqual(len(self.transcript_bubbles), 1)
 
+    async def test_speech_provider_failures_keep_the_call_and_reply_text(self):
+        call = await self._create_call()
+        headers = {"Authorization": f"Bearer {call['access_token']}"}
+        turn_id = str(uuid.uuid4())
+        url = f"/v1/calls/{call['call_id']}/turns"
+        form = __import__("aiohttp").FormData()
+        form.add_field("turn_id", turn_id)
+        form.add_field("audio", b"audio", filename="clip.wav", content_type="audio/wav")
+        with patch.object(self.audio, "transcribe", side_effect=RuntimeError("provider unavailable")):
+            response = await self.client.post(url, data=form, headers=headers)
+        self.assertEqual(response.status, 502)
+        self.assertIn("transcription failed", (await response.json())["error"])
+        form = __import__("aiohttp").FormData()
+        form.add_field("turn_id", turn_id)
+        form.add_field("audio", b"audio", filename="clip.wav", content_type="audio/wav")
+        self.assertEqual((await self.client.post(url, data=form, headers=headers)).status, 202)
+        turn = self.broker.turns.get(call["call_id"], turn_id)
+        self.broker.turns.capture(self.binding.session_key, turn.injected_text, "The text reply survives.")
+        with patch.object(self.audio, "synthesize", side_effect=RuntimeError("provider unavailable")):
+            for _ in range(30):
+                response = await self.client.get(f"{url}/{turn_id}", headers=headers)
+                status = await response.json()
+                if status["status"] == "failed":
+                    break
+                await asyncio.sleep(0.05)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["reply_text"], "The text reply survives.")
+        self.assertNotIn("audio_url", status)
+
     async def test_closed_call_token_cannot_submit_or_read(self):
         call = await self._create_call()
         headers = {"Authorization": f"Bearer {call['access_token']}"}
@@ -161,6 +193,106 @@ class VoiceHttpProtocolTests(unittest.IsolatedAsyncioTestCase):
             f"/v1/calls/{call['call_id']}/turns/not-a-turn", headers=headers
         )
         self.assertEqual(refused.status, 401)
+
+    async def test_interrupt_requires_matching_bearer_and_an_empty_capped_body(self):
+        call = await self._create_call()
+        call_id, turn_id = call["call_id"], str(uuid.uuid4())
+        self.broker.turns.create(call_id, turn_id, "hello", self.binding.session_key)
+        url = f"/v1/calls/{call_id}/turns/{turn_id}/interrupt"
+        headers = {"Authorization": f"Bearer {call['access_token']}"}
+        for auth in ({}, {"Authorization": "Bearer wrong-token"}):
+            self.assertEqual((await self.client.post(url, headers=auth)).status, 401)
+        self.broker.db.create_call("other-call", "other-token", self.binding)
+        self.assertEqual((await self.client.post(url, headers={"Authorization": "Bearer other-token"})).status, 401)
+        self.assertEqual((await self.client.post(url, data=b"x", headers=headers)).status, 400)
+        self.assertEqual((await self.client.post(url, data=b"x" * 1024, headers=headers)).status, 413)
+        self.assertEqual((await self.client.post(url, data=b"x", chunked=True, headers=headers)).status, 400)
+        self.assertEqual((await self.client.post(url, data=b"x" * 1024, chunked=True, headers=headers)).status, 413)
+        self.assertEqual((await self.client.post(url, data=b"", chunked=True, headers=headers)).status, 200)
+        address = self.client.make_url(url)
+        reader, writer = await asyncio.open_connection(address.host, address.port)
+        try:
+            writer.write((f"POST {url} HTTP/1.1\r\nHost: {address.host}\r\n"
+                          f"Authorization: {headers['Authorization']}\r\nConnection: close\r\n\r\n").encode())
+            await writer.drain()
+            self.assertIn(b"200", await asyncio.wait_for(reader.readline(), timeout=2))
+        finally:
+            writer.close()
+            await writer.wait_closed()
+        self.assertEqual((await self.client.post(url.replace(turn_id, "bad-id"), headers=headers)).status, 400)
+        other_id = str(uuid.uuid4())
+        self.assertEqual((await self.client.post(url.replace(turn_id, other_id), headers=headers)).status, 404)
+        for _ in range(2):
+            self.assertEqual((await self.client.post(url, headers=headers)).status, 200)
+
+    async def test_interrupt_during_synthesis_suppresses_late_audio_durably(self):
+        call = await self._create_call()
+        call_id, turn_id = call["call_id"], str(uuid.uuid4())
+        headers = {"Authorization": f"Bearer {call['access_token']}"}
+        url = f"/v1/calls/{call_id}/turns/{turn_id}"
+        turn, _ = self.broker.turns.create(call_id, turn_id, "hello", self.binding.session_key)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def delayed_speech(_text):
+            started.set()
+            await release.wait()
+            return b"stale audio", "audio/wav"
+
+        self.audio.synthesize = delayed_speech
+        self.broker.turns.capture(self.binding.session_key, turn.injected_text, "early reply text")
+        task = asyncio.create_task(self.broker._finish_turn(call_id, turn_id))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            status = await (await self.client.get(url, headers=headers)).json()
+            self.assertEqual(status["reply_text"], "early reply text")
+            self.assertEqual(status["status"], "synthesizing")
+            response = await self.client.post(url + "/interrupt", headers=headers)
+            self.assertEqual((await response.json())["agent_work"], "continues")
+        finally:
+            release.set()
+            await task
+        status = await (await self.client.get(url, headers=headers)).json()
+        self.assertTrue(status["playback_interrupted"])
+        self.assertNotIn("audio_url", status)
+        self.assertEqual(status["reply_text"], "early reply text")
+        self.assertEqual((await self.client.get(url + "/audio", headers=headers)).status, 404)
+        from mobile.voice.protocol import TurnRegistry
+        recovered = TurnRegistry(self.broker.db.path)
+        self.assertTrue(recovered.get(call_id, turn_id).playback_interrupted)
+        self.assertIsNone(recovered.get_audio(call_id, turn_id))
+
+    async def test_interrupt_before_reply_keeps_correlation_and_skips_synthesis(self):
+        call = await self._create_call()
+        call_id, turn_id = call["call_id"], str(uuid.uuid4())
+        headers = {"Authorization": f"Bearer {call['access_token']}"}
+        url = f"/v1/calls/{call_id}/turns/{turn_id}"
+        turn, _ = self.broker.turns.create(call_id, turn_id, "hello", self.binding.session_key)
+        self.assertEqual((await self.client.post(url + "/interrupt", headers=headers)).status, 200)
+        captured = self.broker.turns.capture(self.binding.session_key, turn.injected_text, "reply still in chat")
+        self.assertIsNotNone(captured)
+        with patch.object(self.audio, "synthesize", side_effect=AssertionError("stale TTS")):
+            await self.broker._finish_turn(call_id, turn_id)
+        status = await (await self.client.get(url, headers=headers)).json()
+        self.assertEqual(status["reply_text"], "reply still in chat")
+        self.assertTrue(status["playback_interrupted"])
+        self.assertNotIn("audio_url", status)
+
+    async def test_interrupt_removes_already_completed_audio_without_affecting_next_turn(self):
+        call = await self._create_call()
+        call_id, turn_id = call["call_id"], str(uuid.uuid4())
+        headers = {"Authorization": f"Bearer {call['access_token']}"}
+        turn, _ = self.broker.turns.create(call_id, turn_id, "first", self.binding.session_key)
+        self.broker.turns.capture(self.binding.session_key, turn.injected_text, "first reply")
+        self.broker.turns.complete_audio(call_id, turn_id, b"first audio", "audio/wav")
+        url = f"/v1/calls/{call_id}/turns/{turn_id}"
+        self.assertEqual((await self.client.get(url + "/audio", headers=headers)).status, 200)
+        self.assertEqual((await self.client.post(url + "/interrupt", headers=headers)).status, 200)
+        self.assertEqual((await self.client.get(url + "/audio", headers=headers)).status, 404)
+        next_id = str(uuid.uuid4())
+        next_turn, _ = self.broker.turns.create(call_id, next_id, "second", self.binding.session_key)
+        self.broker.turns.capture(self.binding.session_key, next_turn.injected_text, "second reply")
+        self.broker.turns.complete_audio(call_id, next_id, b"second audio", "audio/wav")
+        self.assertEqual(self.broker.turns.get_audio(call_id, next_id), (b"second audio", "audio/wav"))
 
     async def test_hangup_during_transcription_does_not_inject_a_turn(self):
         call = await self._create_call()
