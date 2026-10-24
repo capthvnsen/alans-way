@@ -1,7 +1,7 @@
 import RFB from '../node_modules/@novnc/novnc/core/rfb.js';
 const api = window.workspace;
 const $ = (id) => document.getElementById(id);
-let rfb, currentUrl = '', connected = false, state, connectionVersion = 0, reconnectTimer;
+let rfb, currentUrl = '', connected = false, state, connectionVersion = 0, reconnectTimer, retryNow;
 function toSocket(value) {
   const url = new URL(value);
   if (url.protocol === 'https:' || url.protocol === 'http:') {
@@ -30,7 +30,9 @@ function connect(value, retryAttempt = 0, frameRetried = false) {
   const version = ++connectionVersion;
   let retryAllowed = true;
   clearTimeout(reconnectTimer);
+  retryNow = undefined;
   rfb?.disconnect(); connected = false; currentUrl = value;
+  $('credentials').classList.add('hidden'); $('vnc-password').value = '';
   $('connection-dot').classList.remove('connected');
   if (!value) { showEmpty('Your agent’s computer', 'Connect your VPS to see its desktop here.', 'Connect VPS'); return; }
   showEmpty('Connecting…', 'Opening your VPS desktop through its existing viewer.', 'Connection settings'); status('connecting');
@@ -39,7 +41,7 @@ function connect(value, retryAttempt = 0, frameRetried = false) {
     rfb.scaleViewport = true; rfb.resizeSession = false; rfb.focusOnClick = true; rfb.viewOnly = !state?.remoteControl; rfb.background = '#070708';
     rfb.addEventListener('connect', () => {
       if (version !== connectionVersion) return;
-      retryAttempt = 0; clearTimeout(reconnectTimer);
+      retryAllowed = true; retryAttempt = 0; retryNow = undefined; clearTimeout(reconnectTimer);
       connected = true; $('remote-empty').classList.add('hidden'); $('connection-dot').classList.add('connected'); status('connected'); render(state);
       if (retryAllowed) reconnectTimer = setTimeout(() => {
         if (version !== connectionVersion || !retryAllowed || !connected || hasFrame()) return;
@@ -52,28 +54,35 @@ function connect(value, retryAttempt = 0, frameRetried = false) {
     rfb.addEventListener('disconnect', (event) => {
       if (version !== connectionVersion) return;
       clearTimeout(reconnectTimer);
+      retryNow = undefined;
       connected = false; api.command('remote-control',{enabled:false}).catch(()=>{}); $('connection-dot').classList.remove('connected');
-      if (event.detail.clean === false && retryAllowed && retryAttempt < 3) {
-        showEmpty('Reconnecting…', 'The desktop connection dropped. Trying again shortly.'); status('reconnecting');
-        reconnectTimer = setTimeout(() => {
+      if (event.detail.clean === false && retryAllowed && currentUrl) {
+        const backoff = Math.min(30000, 2000 * 2 ** Math.min(retryAttempt, 4));
+        const delay = Math.round(Math.min(30000, backoff * (0.8 + Math.random() * 0.4)));
+        const nextAttempt = new Date(Date.now() + delay).toLocaleTimeString();
+        showEmpty('Reconnecting…', `The desktop connection dropped. Next attempt at ${nextAttempt}.`); status('reconnecting');
+        retryNow = () => {
           if (version === connectionVersion && retryAllowed && !connected) connect(currentUrl, retryAttempt + 1, frameRetried);
-        }, 2000 * 2 ** retryAttempt);
+        };
+        reconnectTimer = setTimeout(retryNow, delay);
         return;
       }
+      retryAllowed = false;
       showEmpty('Desktop disconnected', 'Check Tailscale and your desktop viewer, then reconnect.'); status('disconnected');
     });
     rfb.addEventListener('credentialsrequired', () => {
       if (version !== connectionVersion) return;
-      retryAllowed = false; clearTimeout(reconnectTimer);
+      retryAllowed = false; retryNow = undefined; clearTimeout(reconnectTimer);
       $('credentials').classList.remove('hidden'); $('vnc-password').focus();
     });
-    rfb.addEventListener('securityfailure', () => { if (version === connectionVersion) { retryAllowed = false; clearTimeout(reconnectTimer); showEmpty('Connection needs attention', 'The desktop rejected the connection. Check the viewer URL and credentials.', 'Connection settings'); status('authentication failed'); } });
+    rfb.addEventListener('securityfailure', () => { if (version === connectionVersion) { retryAllowed = false; retryNow = undefined; clearTimeout(reconnectTimer); showEmpty('Connection needs attention', 'The desktop rejected the connection. Check the viewer URL and credentials.', 'Connection settings'); status('authentication failed'); } });
   } catch (error) { showEmpty('Unable to connect', error.message, 'Connection settings'); status('disconnected'); }
 }
 function render(next) {
   if (!next) return;
+  const viewerSettingsChanged = state && next.settingsFieldRevisions?.remoteUrl !== state.settingsFieldRevisions?.remoteUrl;
   state = next;
-  if (state.remoteUrl !== currentUrl) connect(state.remoteUrl);
+  if (state.remoteUrl !== currentUrl || viewerSettingsChanged) connect(state.remoteUrl);
   if (rfb) { rfb.viewOnly = !state.remoteControl; if(!state.remoteControl)rfb.blur(); }
   $('control').textContent = state.remoteControl ? 'Stop control' : 'Take control'; $('control').classList.toggle('controlling', state.remoteControl);
   $('control').setAttribute('aria-pressed',String(state.remoteControl));
@@ -83,6 +92,10 @@ function render(next) {
   $('remote-hint').textContent = state.remoteControl ? 'You control this view · click, drag, scroll and type' : state.activeTabId === 'vps' ? 'Watching · click Take control to use your mouse and keyboard' : 'Watching · drag the preview anywhere · Take control for mouse and keyboard';
   $('paste').disabled=!connected || !state.remoteControl;
 }
+window.addEventListener('online', () => retryNow?.());
+window.addEventListener('focus', () => retryNow?.());
+document.addEventListener('visibilitychange', () => { if (!document.hidden) retryNow?.(); });
+api.onRemoteRetry?.(() => retryNow?.());
 $('control').onclick = async () => {
   try {
     if(!state.remoteControl){await api.command('remote-control',{enabled:true});rfb?.focus();}

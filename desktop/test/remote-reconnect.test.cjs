@@ -3,12 +3,14 @@ const { test } = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { EventEmitter } = require('node:events');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/remote.js'), 'utf8');
 const url = 'https://192.0.2.1/viewer/';
 
-function viewer() {
+function viewer(random = 0.5) {
   const clients = [], calls = [], timers = new Map(), elements = new Map();
+  const listeners = {};
   let pixels = [0, 0, 0, 255];
   const canvas = { width: 1, height: 1, getContext: () => ({ getImageData: () => ({ data: pixels }) }) };
   let timerId = 0;
@@ -25,17 +27,27 @@ function viewer() {
     addEventListener(name, listener) { this.listeners[name] = listener; }
     emit(name, detail = {}) { this.listeners[name]({ detail }); }
     disconnect() { this.emit('disconnect', { clean: true }); }
+    sendCredentials(value) { this.credentials = value; }
     blur() {}
   }
   const context = {
-    RFB, URL, window: { workspace: { command: async (name, value) => { calls.push({ name, ...value }); } } },
-    document: { getElementById: element },
+    RFB, URL, Math: Object.assign(Object.create(Math), { random: () => random }),
+    window: {
+      addEventListener: (name, callback) => { listeners[name] = callback; },
+      workspace: {
+        command: async (name, value) => { calls.push({ name, ...value }); },
+        onRemoteRetry: callback => { listeners.resume = callback; },
+        onState() {}, getState: () => new Promise(() => {}),
+      },
+    },
+    document: { getElementById: element, hidden: false, addEventListener: (name, callback) => { listeners[name] = callback; } },
     setTimeout: (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; },
     clearTimeout: id => timers.delete(id),
   };
-  vm.runInNewContext(source.slice(source.indexOf('const api ='), source.indexOf("$('control').onclick")), context);
+  vm.runInNewContext(source.slice(source.indexOf('const api =')), context);
   return {
     clients, calls, timers, element, connect: context.connect, render: context.render,
+    event: (name, hidden = false) => { context.document.hidden = hidden; listeners[name](); },
     paint: data => { pixels = data; },
     current: () => clients.at(-1),
     status: () => calls.filter(call => call.name === 'remote-status').at(-1)?.status,
@@ -48,22 +60,57 @@ function viewer() {
   };
 }
 
-test('unclean disconnect retries the current URL after 2s, 4s and 8s, then stops', () => {
+test('unclean disconnect keeps retrying with exponential backoff capped at 30s', () => {
   const view = viewer();
   view.connect(url);
-  for (const delay of [2000, 4000, 8000]) {
+  for (const delay of [2000, 4000, 8000, 16000, ...Array(40).fill(30000)]) {
     view.current().emit('disconnect', { clean: false });
     assert.equal(view.status(), 'reconnecting');
     assert.equal(view.calls.filter(call => call.name === 'remote-control').at(-1).enabled, false);
+    assert.equal(view.element('remote-title').textContent, 'Reconnecting…');
+    assert.match(view.element('remote-message').textContent, /Next attempt at .+\./);
     view.retry(delay);
     assert.equal(view.current().url, 'wss://192.0.2.1/viewer/websockify');
   }
-  view.current().emit('disconnect', { clean: false });
-  assert.equal(view.clients.length, 4);
-  assert.equal(view.timers.size, 0);
-  assert.equal(view.status(), 'disconnected');
-  assert.equal(view.element('remote-title').textContent, 'Desktop disconnected');
+  assert.equal(view.clients.length, 45);
 });
+
+test('retry delays have jitter and never exceed the cap', () => {
+  for (const random of [0, 0.25, 0.75, 1]) {
+    const view = viewer(random);
+    view.connect(url);
+    for (const base of [2000, 4000, 8000, 16000, 30000, 30000]) {
+      view.current().emit('disconnect', { clean: false });
+      view.retry(Math.round(Math.min(30000, base * (0.8 + random * 0.4))));
+    }
+  }
+});
+
+for (const event of ['online', 'visibilitychange', 'focus', 'resume']) {
+  test(`${event} retries immediately once, without interrupting a connection attempt`, () => {
+    const view = viewer();
+    view.connect(url); view.event(event);
+    assert.equal(view.clients.length, 1);
+    view.current().emit('disconnect', { clean: false });
+    const pending = [...view.timers.values()][0];
+    if (event === 'visibilitychange') {
+      view.event(event, true);
+      assert.equal(view.clients.length, 1, 'hiding does not retry');
+    }
+    view.event(event);
+    assert.equal(view.clients.length, 2);
+    assert.equal(view.timers.size, 0);
+    pending.callback(); view.event(event);
+    assert.equal(view.clients.length, 2, 'queued callbacks and duplicate signals do not reconnect again');
+    view.current().emit('connect'); view.event(event);
+    assert.equal(view.clients.length, 2, 'a healthy connection stays open');
+    view.current().emit('disconnect', { clean: false }); view.retry(2000);
+  });
+}
+
+function recoveryEvents(view) {
+  for (const event of ['online', 'visibilitychange', 'focus', 'resume']) view.event(event);
+}
 
 test('a successful connection resets the retry counter', () => {
   const view = viewer();
@@ -81,6 +128,8 @@ test('a clean disconnect never retries', () => {
   view.connect(url); view.current().emit('disconnect', { clean: true });
   assert.equal(view.timers.size, 0);
   assert.equal(view.status(), 'disconnected');
+  recoveryEvents(view);
+  assert.equal(view.clients.length, 1);
 });
 
 for (const event of ['securityfailure', 'credentialsrequired']) {
@@ -89,6 +138,8 @@ for (const event of ['securityfailure', 'credentialsrequired']) {
     view.connect(url); view.current().emit(event);
     view.current().emit('disconnect', { clean: false });
     assert.equal(view.timers.size, 0);
+    recoveryEvents(view);
+    assert.equal(view.clients.length, 1);
   });
 
   test(`${event} cancels a pending retry`, () => {
@@ -115,7 +166,8 @@ test('changing or clearing the URL cancels retries and ignores stale events and 
     assert.equal(view.timers.size, 0);
     const count = view.clients.length, status = view.status();
     pending.callback();
-    old.emit('disconnect', { clean: false }); old.emit('connect'); old.emit('securityfailure');
+    old.emit('disconnect', { clean: false }); old.emit('connect'); old.emit('securityfailure'); old.emit('credentialsrequired');
+    recoveryEvents(view);
     assert.equal(view.clients.length, count);
     assert.equal(view.timers.size, 0);
     assert.equal(view.status(), status);
@@ -123,14 +175,46 @@ test('changing or clearing the URL cancels retries and ignores stale events and 
   }
 });
 
-test('manual reconnect starts a fresh retry budget', () => {
+test('the Reconnect button tries now and resets backoff', () => {
   const view = viewer();
   view.connect(url);
   for (const delay of [2000, 4000, 8000]) {
     view.current().emit('disconnect', { clean: false }); view.retry(delay);
   }
   view.current().emit('disconnect', { clean: false });
-  view.connect(url);
+  const pending = [...view.timers.values()][0];
+  view.element('configure').onclick();
+  assert.equal(view.clients.length, 5);
+  assert.equal(view.timers.size, 0);
+  pending.callback();
+  assert.equal(view.clients.length, 5);
+  view.current().emit('disconnect', { clean: false }); view.retry(2000);
+});
+
+test('saving viewer settings restarts cleanly even when the URL is unchanged', () => {
+  const view = viewer();
+  const settings = { remoteUrl: url, remoteControl: false, settingsFieldRevisions: { remoteUrl: 0 } };
+  view.render(settings);
+  const old = view.current();
+  old.emit('securityfailure');
+  view.render({ ...settings, settingsFieldRevisions: { remoteUrl: 1 } });
+  assert.equal(view.clients.length, 2);
+  old.emit('disconnect', { clean: false });
+  recoveryEvents(view);
+  assert.equal(view.clients.length, 2);
+  view.current().emit('disconnect', { clean: false }); view.retry(2000);
+});
+
+test('submitting credentials keeps the prompt flow and successful authentication restores retries', () => {
+  const view = viewer();
+  view.connect(url); view.current().emit('credentialsrequired');
+  view.element('vnc-password').value = 'test-password';
+  view.element('credentials').onsubmit({ preventDefault() {} });
+  assert.equal(view.current().credentials.password, 'test-password');
+  assert.equal(view.element('vnc-password').value, '');
+  recoveryEvents(view);
+  assert.equal(view.clients.length, 1);
+  view.current().emit('connect');
   view.current().emit('disconnect', { clean: false }); view.retry(2000);
 });
 
@@ -200,4 +284,51 @@ test('a network retry after blank recovery cannot reset its first-frame retry bu
   assert.equal(view.clients.length, 3);
   assert.equal(view.timers.size, 0);
   assert.equal(view.element('remote-title').textContent, 'Desktop has no picture');
+});
+
+test('native resume and window recovery reach the viewer through the preload bridge', () => {
+  const ipc = new EventEmitter(), powerMonitor = new EventEmitter(), win = new EventEmitter();
+  let workspace, retries = 0, destroyed = false;
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/preload.cjs'), 'utf8'), {
+    require: name => name === 'electron' ? {
+      ipcRenderer: ipc, contextBridge: { exposeInMainWorld: (name, value) => { if (name === 'workspace') workspace = value; } },
+    } : { shortcutReference: () => [] },
+    location: { protocol: 'file:', pathname: '/remote.html' }, process: { platform: 'darwin' },
+  });
+  workspace.onRemoteRetry(() => { retries++; });
+  const main = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
+  const remoteView = { webContents: {
+    isDestroyed: () => destroyed, send: channel => ipc.emit(channel, {}),
+  } };
+  const start = main.indexOf("  powerMonitor.on('resume'");
+  const focus = main.indexOf("  for (const name of ['show', 'restore', 'focus'])");
+  vm.runInNewContext(main.slice(start, main.indexOf('  let wasOnline', start)) + main.slice(focus, main.indexOf('  buildMenu();', focus)), {
+    powerMonitor, win, remoteView, setTimeout: () => ({ unref() {} }),
+  });
+  powerMonitor.emit('resume');
+  for (const event of ['show', 'restore', 'focus']) win.emit(event);
+  assert.equal(retries, 4);
+  destroyed = true;
+  powerMonitor.emit('resume'); win.emit('focus');
+  assert.equal(retries, 4, 'closed renderers are ignored');
+});
+
+test('showing the native viewer panel signals recovery only when it becomes visible', () => {
+  const main = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
+  let visible = false, retries = 0, bounds = {};
+  const remoteView = {
+    webContents: { isDestroyed: () => false, send: channel => { assert.equal(channel, 'workspace:remote-retry'); retries++; } },
+    getVisible: () => visible, setVisible: value => { visible = value; },
+    getBounds: () => bounds, setBounds: value => { bounds = value; },
+  };
+  const fit = vm.runInNewContext(main.slice(main.indexOf('function fit('), main.indexOf('function backgroundHost(')) + '\nfit', {
+    remoteView, layout: {}, win: { getContentBounds: () => ({ width: 1000, height: 800 }) },
+  });
+  const rect = { x: 0, y: 0, width: 900, height: 700 };
+  fit(remoteView, rect); fit(remoteView, rect);
+  assert.equal(retries, 1);
+  fit(remoteView, null);
+  assert.equal(retries, 1);
+  fit(remoteView, rect);
+  assert.equal(retries, 2);
 });
