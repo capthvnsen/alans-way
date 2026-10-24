@@ -215,6 +215,21 @@ class VoiceHttpProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.injected), 5)
         self.assertEqual(len(self.transcript_bubbles), 5)
 
+    async def test_retry_of_accepted_turn_that_transcribes_as_filler_keeps_the_turn(self):
+        call = await self._create_call()
+        headers = {"Authorization": f"Bearer {call['access_token']}"}
+        turn_id = str(uuid.uuid4())
+        statuses = []
+        for transcript in ("what time is it", "you"):
+            form = __import__("aiohttp").FormData()
+            form.add_field("turn_id", turn_id)
+            form.add_field("audio", b"speech", filename="clip.wav", content_type="audio/wav")
+            with patch.object(self.audio, "transcribe", return_value=transcript):
+                response = await self.client.post(f"/v1/calls/{call['call_id']}/turns", data=form, headers=headers)
+            statuses.append((response.status, (await response.json())["transcript"]))
+        self.assertEqual(statuses, [(202, "what time is it"), (202, "what time is it")])
+        self.assertEqual(len(self.injected), 1)
+
     async def test_closed_call_token_cannot_submit_or_read(self):
         call = await self._create_call()
         headers = {"Authorization": f"Bearer {call['access_token']}"}

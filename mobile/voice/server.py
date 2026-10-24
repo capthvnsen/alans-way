@@ -302,6 +302,10 @@ class VoiceBroker:
             raise web.HTTPUnauthorized(text="Call ended during transcription")
         transcript = transcript.strip()
         if not any(char.isalnum() for char in transcript) or transcript.lower() in SILENCE_TRANSCRIPTS:
+            # A retry of an accepted turn can re-transcribe as filler; keep reporting the real turn.
+            existing = self.turns.get(call_id, turn_id)
+            if existing:
+                return web.json_response(self._turn_json(existing), status=202, headers={"Cache-Control": "no-store"})
             return web.json_response({"call_id": call_id, "turn_id": turn_id,
                                       "status": "ignored", "reason": "no_speech"})
 
