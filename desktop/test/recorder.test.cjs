@@ -145,13 +145,13 @@ test('typed terms never reach the recording file on disk', () => {
   }
   // A typed term echoed in a path, title, type-step name/selector or click
   // name/selector is scrubbed before the file is written.
-  const done = finishRecording([input({ name: 'Zebra search', selector: 'input[name="zebra_q"]', value: 'Zebra umbrella 7731' }),
+  const done = finishRecording([input({ name: 'Zebra search', selector: 'input[name="zebra_q"]', value: 'Zebra umbrella 77310429' }),
     normalizeEvent({ kind: 'click', url: 'https://shop.example/find', role: 'button', name: 'prefixzebrasuffix', selector: '#xzebrax' }),
     navigateStep('https://shop.example/search/prefixzebrasuffix')], { title: 'prefixzebrasuffix', fallbackTitle: 'shop.example' });
   store.save({ title: done.title, steps: done.steps });
   for (const file of fs.readdirSync(dir)) {
     const bytes = fs.readFileSync(path.join(dir, file));
-    for (const term of ['cn-90425', 'zebra', 'umbrella', '7731']) assert.ok(!bytes.includes(term), `${term} reached disk in ${file}`);
+    for (const term of ['cn-90425', 'zebra', 'umbrella', '77310429']) assert.ok(!bytes.includes(term), `${term} reached disk in ${file}`);
   }
 });
 
