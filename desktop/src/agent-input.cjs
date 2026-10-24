@@ -1052,26 +1052,33 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         point = { x: aim.x, y: aim.y };
         await armFollowUp();
         let x = Math.max(-20000, Math.min(20000, body.x || 0)), y = Math.max(-20000, Math.min(20000, body.y || 0));
-        // Include panels under the pointer: the document need not move when they scroll.
-        const progress = `(() => {
+        // Include panels under the pointer, inside shadow roots too: the document need not move when they scroll.
+        const probe = `(() => {
+          const p = { x: ${point.x}, y: ${point.y} }, challenge = (${CHALLENGE_HIT_SOURCE})([p], false);
+          let el = document.elementFromPoint(p.x, p.y);
+          for (let inner; el && el.shadowRoot && (inner = el.shadowRoot.elementFromPoint(p.x, p.y)) && inner !== el;) el = inner;
           const positions = [[scrollX, scrollY]];
-          for (let el = document.elementFromPoint(${point.x}, ${point.y}); el; el = el.parentElement || el.getRootNode()?.host) {
-            if (/^(IFRAME|FRAME)$/.test(el.tagName)) return null;
+          for (; el; el = el.parentElement || el.getRootNode()?.host) {
+            if (/^(IFRAME|FRAME)$/.test(el.tagName)) return { challenge, positions: null };
             positions.push([el.scrollLeft, el.scrollTop]);
           }
-          return JSON.stringify(positions);
+          return { challenge, positions: JSON.stringify(positions) };
         })()`;
-        let before = await boundedJs(wc, progress, 1000).catch(() => null);
-        do {
+        let before = await boundedJs(wc, probe, 1000).catch(() => null);
+        for (;;) {
           const deltaX = Math.max(-2000, Math.min(2000, x)), deltaY = Math.max(-2000, Math.min(2000, y));
           await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX, deltaY });
           x -= deltaX; y -= deltaY;
           // The wheel ack precedes the scroll; hidden tabs still need a timer fallback.
-          const after = await boundedJs(wc, `new Promise(done => { const read = () => done(${progress}); setTimeout(read, 80); requestAnimationFrame(() => requestAnimationFrame(read)); })`, 1000).catch(() => null);
+          const after = await boundedJs(wc, `new Promise(done => { let read = false; const once = () => { if (!read) { read = true; done(${probe}); } }; setTimeout(once, 80); requestAnimationFrame(() => requestAnimationFrame(once)); })`, 1000).catch(() => null);
           check();
-          if (after !== null && after === before) break;
+          if (!x && !y) break;
+          // Every further wheel needs a fresh look: a frame or an unreadable page keeps the single wheel it had before.
+          if (!before?.positions || !after?.positions) break;
+          if (typeof after.challenge?.kind === 'string') throw challengePresent(after.challenge);
+          if (after.positions === before.positions) break;
           before = after;
-        } while (x || y);
+        }
         cursor(point, 'scroll');
       }
       if (action !== 'move') await closeFollowUp();
