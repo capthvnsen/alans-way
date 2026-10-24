@@ -1049,11 +1049,11 @@ function effectElements(elements, contentRefs, clicked) {
   const role = clicked?.role?.trim().toLowerCase(), name = clicked?.name?.trim().toLowerCase();
   const matches = role && name ? elements.filter(item => (item.role || '').trim().toLowerCase() === role && (item.name || '').trim().toLowerCase() === name) : [];
   const repeat = matches.length === 1 && !listed.includes(matches[0]) && listed.length > 0;
-  if (repeat) {
-    listed[listed.length - 1] = matches[0];
-    while (Buffer.byteLength(JSON.stringify(listed)) > budget) listed.splice(Math.max(0, listed.length - 2), 1);
-  }
-  return listed;
+  if (!repeat) return listed;
+  const swapped = [...listed.slice(0, -1), matches[0]];
+  while (Buffer.byteLength(JSON.stringify(swapped)) > budget && swapped.length > 1) swapped.splice(swapped.length - 2, 1);
+  // A control too big to fit beside most of the list (a long select) is not worth the controls it pushes out.
+  return swapped.length >= Math.ceil(listed.length / 2) && Buffer.byteLength(JSON.stringify(swapped)) <= budget ? swapped : listed;
 }
 // Past this share of the list, a delta costs about as much as the list.
 const DELTA_SHARE = 0.6;

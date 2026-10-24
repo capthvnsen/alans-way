@@ -578,6 +578,13 @@ test('a larger repeat control keeps its place while the list stays within its by
   assert.ok(Buffer.byteLength(JSON.stringify(reply.elements)) <= Buffer.byteLength(JSON.stringify(elements.slice(0, 40))));
   assert.equal(reply.unlisted, 60 - reply.elements.length);
 });
+test('a repeat control too big for half the list leaves the original list', async () => {
+  const elements = Array.from({ length: 60 }, (_, i) => ({ ref: `e${i + 1}`, role: 'a', name: `Link ${i}` }));
+  elements[54] = { ref: 'e55', role: 'combobox', name: 'Country', value: 'x'.repeat(4000) };
+  const reply = await readEffect(() => ({ url: 'https://shop.example/checkout', title: 'Checkout', text: '', elements }), { refs: new Set() }, { navigated: true, clicked: { role: 'combobox', name: 'Country' } });
+  assert.deepEqual(reply.elements, elements.slice(0, 40));
+  assert.equal(reply.unlisted, 20);
+});
 test('a dialog or banner over the page rides on snapshots and replies', async () => {
   const tab = { refs: new Set(), generation: 1 };
   const overlays = [{ name: 'Join our newsletter', close: 'e9', closeName: 'No thanks' }];
