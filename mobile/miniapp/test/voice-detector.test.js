@@ -36,6 +36,18 @@ test("brief noise is discarded and continuous speech is bounded", () => {
   assert.ok(detector.sample(frame(0.1)).utterance);
 });
 
+test("a 250 ms noise burst is discarded but 300 ms of quiet speech survives", () => {
+  const detector = createVoiceDetector({ sampleRate: 1000 });
+  detector.sample(frame(0.1, 250));
+  for (let i = 0; i < 8; i++) assert.equal(detector.sample(frame(0)).utterance, undefined);
+  assert.equal(detector.sample(frame(0.012)).started, true);
+  detector.sample(frame(0.012));
+  detector.sample(frame(0.012));
+  let result;
+  for (let i = 0; i < 8; i++) result = detector.sample(frame(0));
+  assert.ok(result.utterance);
+});
+
 test("playback gates echo but lets loud speech start a barge-in after sustained voice", () => {
   const detector = createVoiceDetector({ sampleRate: 1000 });
   for (let i = 0; i < 20; i++) {
@@ -43,6 +55,7 @@ test("playback gates echo but lets loud speech start a barge-in after sustained 
   }
   for (let i = 0; i < 3; i++) assert.equal(detector.sample(frame(0.2, 43), { speaking: true, playbackLevel: 0.1 }).started, false);
   assert.equal(detector.sample(frame(0.2, 43), { speaking: true, playbackLevel: 0.1 }).started, true);
+  assert.equal(detector.sample(frame(0.2, 43)).confirmed, false);
   assert.equal(detector.sample(frame(0.2, 43)).confirmed, false);
   assert.equal(detector.sample(frame(0.2, 43)).confirmed, true);
 });

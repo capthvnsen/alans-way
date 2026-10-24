@@ -100,6 +100,7 @@ class MobileVoicePlugin:
                     "sendMessage", self.bot_token, {
                         "chat_id": binding.chat_id,
                         "text": "🎙 Voice transcript:\n" + transcript[:3500],
+                        "disable_notification": True,
                     },
                 )),
                 inject=lambda content, key: self.ctx.inject_message(

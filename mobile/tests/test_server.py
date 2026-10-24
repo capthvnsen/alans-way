@@ -184,6 +184,52 @@ class VoiceHttpProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["reply_text"], "The text reply survives.")
         self.assertNotIn("audio_url", status)
 
+    async def test_silence_transcripts_are_ignored_without_injection_or_bubbles(self):
+        call = await self._create_call()
+        headers = {"Authorization": f"Bearer {call['access_token']}"}
+        for transcript in ("", " \n\t", ".", "-", "…", "?! ,。", " YOU ", "you.", "Thank You", "Thank you.",
+                           "thanks for watching", "Thanks for watching.", "[BLANK_AUDIO]", "(Silence)"):
+            with self.subTest(transcript=transcript):
+                turn_id = str(uuid.uuid4())
+                form = __import__("aiohttp").FormData()
+                form.add_field("turn_id", turn_id)
+                form.add_field("audio", b"noise", filename="clip.wav", content_type="audio/wav")
+                with patch.object(self.audio, "transcribe", return_value=transcript):
+                    response = await self.client.post(f"/v1/calls/{call['call_id']}/turns", data=form, headers=headers)
+                self.assertEqual(response.status, 200)
+                self.assertEqual(await response.json(), {"call_id": call["call_id"], "turn_id": turn_id,
+                                                         "status": "ignored", "reason": "no_speech"})
+                self.assertIsNone(self.broker.turns.get(call["call_id"], turn_id))
+        self.assertEqual(self.injected, [])
+        self.assertEqual(self.transcript_bubbles, [])
+        self.assertEqual(self.broker._tasks, set())
+        for transcript in ("you are right", "thank you for helping", "thanks for watching the dog", "你好", "42"):
+            with self.subTest(transcript=transcript):
+                form = __import__("aiohttp").FormData()
+                form.add_field("turn_id", str(uuid.uuid4()))
+                form.add_field("audio", b"speech", filename="clip.wav", content_type="audio/wav")
+                with patch.object(self.audio, "transcribe", return_value=transcript):
+                    response = await self.client.post(f"/v1/calls/{call['call_id']}/turns", data=form, headers=headers)
+                self.assertEqual(response.status, 202)
+                self.assertEqual((await response.json())["transcript"], transcript)
+        self.assertEqual(len(self.injected), 5)
+        self.assertEqual(len(self.transcript_bubbles), 5)
+
+    async def test_retry_of_accepted_turn_that_transcribes_as_filler_keeps_the_turn(self):
+        call = await self._create_call()
+        headers = {"Authorization": f"Bearer {call['access_token']}"}
+        turn_id = str(uuid.uuid4())
+        statuses = []
+        for transcript in ("what time is it", "you"):
+            form = __import__("aiohttp").FormData()
+            form.add_field("turn_id", turn_id)
+            form.add_field("audio", b"speech", filename="clip.wav", content_type="audio/wav")
+            with patch.object(self.audio, "transcribe", return_value=transcript):
+                response = await self.client.post(f"/v1/calls/{call['call_id']}/turns", data=form, headers=headers)
+            statuses.append((response.status, (await response.json())["transcript"]))
+        self.assertEqual(statuses, [(202, "what time is it"), (202, "what time is it")])
+        self.assertEqual(len(self.injected), 1)
+
     async def test_closed_call_token_cannot_submit_or_read(self):
         call = await self._create_call()
         headers = {"Authorization": f"Bearer {call['access_token']}"}
@@ -477,6 +523,11 @@ class PluginRuntimeTests(unittest.TestCase):
             self.assertEqual(listener.call_args.kwargs["port"], 8877)
             self.assertEqual(listener.call_args.kwargs["host"], "127.0.0.1")
             self.assertEqual(ctx.cleanup, plugin.close)
+            with patch("mobile.voice.hermes_plugin._telegram", return_value={"message_id": 1}) as telegram:
+                plugin.broker.send_transcript(LaunchBinding("other-profile", "9001", "42", "42", "session"), "hello")
+            self.assertEqual(telegram.call_args.args[2], {
+                "chat_id": "42", "text": "🎙 Voice transcript:\nhello", "disable_notification": True,
+            })
 
     def test_listener_unload_releases_socket_for_reload(self):
         with tempfile.TemporaryDirectory() as temp:

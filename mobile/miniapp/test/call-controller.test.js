@@ -27,7 +27,7 @@ class ElementMock {
   async click() { return this.listeners.get("click")?.(); }
 }
 
-async function loadController({ turnFailureStatus, success = false, permission, audioReply, connection, turnResult, resume } = {}) {
+async function loadController({ turnFailureStatus, success = false, permission, audioReply, connection, turnResult, submittedResult, resume } = {}) {
   const source = (await readFile(new URL("../call.js", import.meta.url), "utf8"))
     .replace(/^import \{(.*?)\} from "\.\/lifecycle\.js";\s*$/m, "const {$1} = globalThis.__lifecycle;")
     .replace(/^import \{ VoiceClient \} from "\.\/voice-client\.js";\s*$/m, "const VoiceClient = window.__TEST_VOICE_CLIENT__;");
@@ -76,9 +76,10 @@ async function loadController({ turnFailureStatus, success = false, permission, 
       this.sendCount += 1;
       this.lastBlob = blob;
       if (!success) throw Object.assign(new Error("temporary turn failure"), { status: turnFailureStatus });
-      return { transcript: "spoken input" };
+      return submittedResult || { transcript: "spoken input" };
     }
     async waitForTurn(_turnId, _signal, onUpdate) {
+      this.pollCount = (this.pollCount || 0) + 1;
       onUpdate?.({ transcript: "spoken input", reply_text: "early reply", status: "synthesizing" });
       return turnResult || { transcript: "spoken input", reply_text: "early reply", status: "completed" };
     }
@@ -175,6 +176,22 @@ test("a no-speech clip quietly resumes capture without consuming another launch"
   }
   assert.equal(app.connections.length, 1);
   assert.equal(app.connections[0].sendCount, 2, "recording continues after the first quiet clip");
+  await app.elements["hangup-button"].click();
+});
+
+test("an ignored transcript resumes listening without polling, text, or audio", async () => {
+  const app = await loadController({ success: true, submittedResult: { status: "ignored", reason: "no_speech" },
+    audioReply() { assert.fail("ignored turns have no reply audio"); } });
+  await app.elements["call-button"].click();
+  for (let turn = 0; turn < 2; turn++) {
+    await app.speak();
+    assert.equal(app.elements["call-shell"].dataset.state, "listening");
+    assert.equal(app.elements["error-panel"].hidden, true);
+    assert.equal(app.elements["transcript-list"].children.length, 0);
+    assert.doesNotMatch(app.elements["state-detail"].textContent, /try speaking again/i);
+  }
+  assert.equal(app.connections[0].sendCount, 2);
+  assert.equal(app.connections[0].pollCount, undefined);
   await app.elements["hangup-button"].click();
 });
 

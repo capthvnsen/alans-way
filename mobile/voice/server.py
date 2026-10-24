@@ -31,6 +31,8 @@ MAX_TEXT_FIELD_BYTES = 256
 MAX_MULTIPART_PARTS = 8
 CAPABILITIES_CACHE_SECONDS = 45
 AUDIO_MIME_TYPES = {"audio/webm", "audio/mp4", "audio/ogg", "audio/wav"}
+SILENCE_TRANSCRIPTS = {"you", "you.", "thank you", "thank you.", "thanks for watching",
+                       "thanks for watching.", "[blank_audio]", "(silence)"}
 
 
 class HermesAudio:
@@ -298,17 +300,21 @@ class VoiceBroker:
         # reset may revoke the call while speech is being transcribed.
         if not self._auth_call(request):
             raise web.HTTPUnauthorized(text="Call ended during transcription")
-        if not transcript:
-            return web.json_response({"error": "No speech detected"}, status=422)
+        transcript = transcript.strip()
+        if not any(char.isalnum() for char in transcript) or transcript.lower() in SILENCE_TRANSCRIPTS:
+            # A retry of an accepted turn can re-transcribe as filler; keep reporting the real turn.
+            existing = self.turns.get(call_id, turn_id)
+            if existing:
+                return web.json_response(self._turn_json(existing), status=202, headers={"Cache-Control": "no-store"})
+            return web.json_response({"call_id": call_id, "turn_id": turn_id,
+                                      "status": "ignored", "reason": "no_speech"})
 
         try:
             turn, created = self.turns.create(call_id, turn_id, transcript, binding.session_key)
         except ValueError:
             raise web.HTTPConflict(text="turn_id was already used for different turn content")
         if created:
-            # The canonical Hermes user turn and assistant response remain in
-            # the existing session. This separate, clearly labeled bot bubble
-            # makes the spoken input visible in Telegram exactly once.
+            # This labeled bot bubble makes the injected input visible in Telegram exactly once.
             accepted = False
             try:
                 accepted = bool(self.inject(turn.injected_text, binding.session_key))
