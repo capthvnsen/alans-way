@@ -389,11 +389,15 @@ class VoiceBroker:
     async def interrupt_playback(self, request: web.Request) -> web.Response:
         if not self._auth_call(request):
             raise web.HTTPUnauthorized(text="Invalid call credential")
+        body_size = request.content_length or 0
+        if body_size > MAX_TEXT_FIELD_BYTES:
+            raise web.HTTPRequestEntityTooLarge(max_size=MAX_TEXT_FIELD_BYTES, actual_size=body_size)
         if request.content_length is None:
-            raise web.HTTPLengthRequired()
-        if request.content_length > MAX_TEXT_FIELD_BYTES:
-            raise web.HTTPRequestEntityTooLarge(max_size=MAX_TEXT_FIELD_BYTES, actual_size=request.content_length)
-        if request.content_length:
+            while chunk := await request.content.read(MAX_TEXT_FIELD_BYTES + 1):
+                body_size += len(chunk)
+                if body_size > MAX_TEXT_FIELD_BYTES:
+                    raise web.HTTPRequestEntityTooLarge(max_size=MAX_TEXT_FIELD_BYTES, actual_size=body_size)
+        if body_size:
             raise web.HTTPBadRequest(text="Interrupt requests must have an empty body")
         call_id, turn_id = request.match_info["call_id"], request.match_info["turn_id"]
         if not TURN_ID_RE.fullmatch(turn_id):

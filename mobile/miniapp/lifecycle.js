@@ -59,13 +59,17 @@ export function audioLevel(samples) {
   return Math.sqrt(energy / samples.length);
 }
 
-export function createVoiceDetector({ sampleRate, preRollMs = 250, silenceMs = 800, minimumSpeechMs = 240, maxUtteranceMs = 25_000 }) {
+export function createVoiceDetector({ sampleRate, echoControl = true, preRollMs = 250, silenceMs = 800, minimumSpeechMs = 240, maxUtteranceMs = 25_000 }) {
   let preRoll = [];
   let preRollSamples = 0;
   let utterance = [];
   let speechMs = 0;
   let quietMs = 0;
   let elapsedMs = 0;
+  let candidate = [];
+  let candidateMs = 0;
+  let holdoffMs = 0;
+  let lastPlaybackLevel = 0;
   const detector = {
     hearing: false,
     noiseFloor: 0.003,
@@ -75,6 +79,12 @@ export function createVoiceDetector({ sampleRate, preRollMs = 250, silenceMs = 8
       utterance = [];
       speechMs = quietMs = elapsedMs = 0;
       detector.hearing = false;
+      holdoffMs = 0;
+      candidate = [];
+      candidateMs = 0;
+    },
+    playbackEnded() {
+      holdoffMs = 500;
     },
     sample(samples, { muted = false, interrupted = false, speaking = false, playbackLevel = 0 } = {}) {
       const level = audioLevel(samples);
@@ -84,15 +94,21 @@ export function createVoiceDetector({ sampleRate, preRollMs = 250, silenceMs = 8
         return result;
       }
       const ms = samples.length / sampleRate * 1000;
-      const threshold = speaking
-        ? Math.max(0.055, detector.noiseFloor * 4, playbackLevel * 1.5)
+      if (speaking) lastPlaybackLevel = playbackLevel;
+      const playbackGated = speaking || holdoffMs > 0;
+      const threshold = playbackGated
+        ? Math.max(echoControl ? 0.055 : 0.09, detector.noiseFloor * 4, (speaking ? playbackLevel : lastPlaybackLevel) * (echoControl ? 1.5 : 2))
         : Math.max(0.01, detector.noiseFloor * 3);
+      holdoffMs = Math.max(0, holdoffMs - ms);
       const voiced = level >= threshold;
-      if (!detector.hearing && !voiced && !speaking) {
+      if (!detector.hearing && !voiced && !playbackGated) {
         detector.noiseFloor += (level - detector.noiseFloor) * (1 - Math.exp(-ms / 1000));
       }
       if (!detector.hearing) {
         if (!voiced) {
+          candidate = [];
+          candidateMs = 0;
+          if (playbackGated) return result;
           preRoll.push(samples.slice());
           preRollSamples += samples.length;
           const excess = preRollSamples - Math.round(sampleRate * preRollMs / 1000);
@@ -104,7 +120,15 @@ export function createVoiceDetector({ sampleRate, preRollMs = 250, silenceMs = 8
           }
           return result;
         }
-        utterance = preRoll;
+        if (playbackGated && candidateMs + ms < 170) {
+          candidate.push(samples.slice());
+          candidateMs += ms;
+          return result;
+        }
+        utterance = preRoll.concat(candidate);
+        speechMs = elapsedMs = candidateMs;
+        candidate = [];
+        candidateMs = 0;
         preRoll = [];
         preRollSamples = 0;
         detector.hearing = true;
@@ -112,8 +136,10 @@ export function createVoiceDetector({ sampleRate, preRollMs = 250, silenceMs = 8
       }
       utterance.push(samples.slice());
       elapsedMs += ms;
+      const wasConfirmed = speechMs >= minimumSpeechMs;
       if (voiced) { speechMs += ms; quietMs = 0; }
       else quietMs += ms;
+      result.confirmed = !wasConfirmed && speechMs >= minimumSpeechMs;
       if (quietMs >= silenceMs || elapsedMs >= maxUtteranceMs) {
         if (speechMs >= minimumSpeechMs) result.utterance = utterance;
         detector.reset();

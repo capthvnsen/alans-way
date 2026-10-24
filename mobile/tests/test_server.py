@@ -154,6 +154,36 @@ class VoiceHttpProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.injected), 1)
         self.assertEqual(len(self.transcript_bubbles), 1)
 
+    async def test_speech_provider_failures_keep_the_call_and_reply_text(self):
+        call = await self._create_call()
+        headers = {"Authorization": f"Bearer {call['access_token']}"}
+        turn_id = str(uuid.uuid4())
+        url = f"/v1/calls/{call['call_id']}/turns"
+        form = __import__("aiohttp").FormData()
+        form.add_field("turn_id", turn_id)
+        form.add_field("audio", b"audio", filename="clip.wav", content_type="audio/wav")
+        with patch.object(self.audio, "transcribe", side_effect=RuntimeError("provider unavailable")):
+            response = await self.client.post(url, data=form, headers=headers)
+        self.assertEqual(response.status, 502)
+        self.assertIn("transcription failed", (await response.json())["error"])
+        form = __import__("aiohttp").FormData()
+        form.add_field("turn_id", turn_id)
+        form.add_field("audio", b"audio", filename="clip.wav", content_type="audio/wav")
+        self.assertEqual((await self.client.post(url, data=form, headers=headers)).status, 202)
+        turn = self.broker.turns.get(call["call_id"], turn_id)
+        self.broker.turns.capture(self.binding.session_key, turn.injected_text, "The text reply survives.")
+        with patch.object(self.audio, "synthesize", side_effect=RuntimeError("provider unavailable")):
+            for _ in range(30):
+                response = await self.client.get(f"{url}/{turn_id}", headers=headers)
+                status = await response.json()
+                if status["status"] == "failed":
+                    break
+                await asyncio.sleep(0.05)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["reply_text"], "The text reply survives.")
+        self.assertNotIn("audio_url", status)
+
     async def test_closed_call_token_cannot_submit_or_read(self):
         call = await self._create_call()
         headers = {"Authorization": f"Bearer {call['access_token']}"}
@@ -176,7 +206,19 @@ class VoiceHttpProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post(url, headers={"Authorization": "Bearer other-token"})).status, 401)
         self.assertEqual((await self.client.post(url, data=b"x", headers=headers)).status, 400)
         self.assertEqual((await self.client.post(url, data=b"x" * 1024, headers=headers)).status, 413)
-        self.assertEqual((await self.client.post(url, data=b"x", chunked=True, headers=headers)).status, 411)
+        self.assertEqual((await self.client.post(url, data=b"x", chunked=True, headers=headers)).status, 400)
+        self.assertEqual((await self.client.post(url, data=b"x" * 1024, chunked=True, headers=headers)).status, 413)
+        self.assertEqual((await self.client.post(url, data=b"", chunked=True, headers=headers)).status, 200)
+        address = self.client.make_url(url)
+        reader, writer = await asyncio.open_connection(address.host, address.port)
+        try:
+            writer.write((f"POST {url} HTTP/1.1\r\nHost: {address.host}\r\n"
+                          f"Authorization: {headers['Authorization']}\r\nConnection: close\r\n\r\n").encode())
+            await writer.drain()
+            self.assertIn(b"200", await asyncio.wait_for(reader.readline(), timeout=2))
+        finally:
+            writer.close()
+            await writer.wait_closed()
         self.assertEqual((await self.client.post(url.replace(turn_id, "bad-id"), headers=headers)).status, 400)
         other_id = str(uuid.uuid4())
         self.assertEqual((await self.client.post(url.replace(turn_id, other_id), headers=headers)).status, 404)

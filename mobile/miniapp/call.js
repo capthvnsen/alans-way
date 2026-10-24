@@ -16,7 +16,6 @@ let state = CallState.idle;
 let client;
 let stream;
 let audioContext;
-let audioUnlockPromise;
 let captureProcessor;
 let playbackAnalyser;
 let playbackSamples;
@@ -24,6 +23,8 @@ let microphoneSource;
 let captureSink;
 let audioSource;
 let currentTurnId;
+let pendingInterruptedTurn;
+let turnNotice = "";
 let aborter;
 let detector;
 let echoControl = true;
@@ -54,6 +55,7 @@ function setState(next) {
   if (hostAudioInterrupted && [CallState.listening, CallState.hearing, CallState.thinking, CallState.speaking].includes(state)) {
     ui.detail.textContent = "Audio is temporarily interrupted. Your call is still connected.";
   }
+  if (state === CallState.listening && turnNotice && !hostAudioInterrupted) ui.detail.textContent = turnNotice;
   const active = [CallState.listening, CallState.hearing, CallState.thinking, CallState.speaking].includes(state);
   ui.call.disabled = [CallState.requestingPermission, CallState.connecting, CallState.listening, CallState.hearing, CallState.thinking, CallState.ended].includes(state);
   ui.callLabel.textContent = state === CallState.speaking ? "Stop reply" : state === CallState.hearing ? "Hearing you" : state === CallState.listening ? "Listening" : state === CallState.thinking ? "Thinking…" : state === CallState.connecting ? "Connecting" : "Start call";
@@ -62,6 +64,15 @@ function setState(next) {
   ui.hangup.disabled = !active && state !== CallState.error && state !== CallState.connecting;
   ui.privacy.textContent = active ? (muted ? "Microphone muted · call stays in this conversation." : "Microphone active · audio is sent securely for this call.") : state === CallState.ended ? "Microphone and audio session released." : "Microphone is off until you start.";
   ui.errorPanel.hidden = state !== CallState.error;
+  if (active && audioNeedsResume()) {
+    ui.shell.dataset.state = "audio-paused";
+    ui.stateLabel.textContent = "AUDIO PAUSED";
+    ui.stateTitle.textContent = "Tap to resume audio";
+    ui.detail.textContent = hostAudioInterrupted ? "Audio is temporarily interrupted. Your call is still connected." : "Tap to resume your microphone and reply audio.";
+    ui.call.disabled = false;
+    ui.callLabel.textContent = "Resume audio";
+    ui.call.setAttribute("aria-label", "Resume call audio");
+  }
 }
 
 function haptic(style = "light") {
@@ -88,8 +99,8 @@ function showError(error) {
   aborter = null;
   console.error("Voice call error", error);
   ui.errorText.textContent = error instanceof Error ? error.message : "The call could not continue. Please try again.";
-  retryAllowed = Boolean(client?.call) || (!launchTicketConsumed && ![401, 403].includes(error?.status));
-  if ([401, 403].includes(error?.status)) {
+  retryAllowed = Boolean(client?.call) || (!launchTicketConsumed && ![401, 403, 410].includes(error?.status));
+  if ([401, 403, 410].includes(error?.status)) {
     client?.disconnect();
     client = null;
     retryAllowed = false;
@@ -190,7 +201,7 @@ async function beginCapture() {
   captureSink.gain.value = 0;
   captureProcessor.connect(captureSink);
   captureSink.connect(audioContext.destination);
-  detector = createVoiceDetector({ sampleRate: audioContext.sampleRate });
+  detector = createVoiceDetector({ sampleRate: audioContext.sampleRate, echoControl });
   const captureStartedAt = Date.now();
   let heardSound = false;
   captureProcessor.onaudioprocess = (event) => {
@@ -209,13 +220,19 @@ async function beginCapture() {
     ui.shell.style.setProperty("--mic-level", String(muted ? 0 : Math.min(1, result.level / 0.08)));
     if (!muted && result.level > 0.001) heardSound = true;
     if (result.started) {
-      if (state === CallState.speaking) stopReplyForBargeIn();
+      turnNotice = "";
+      if (state === CallState.speaking) stopReplyForBargeIn(false);
       setState(CallState.hearing);
     }
+    if (result.confirmed) confirmReplyInterrupt();
     if (result.utterance) finishUtterance(result.utterance);
-    else if (state === CallState.hearing && !detector.hearing) setState(CallState.listening);
-    if (state === CallState.listening && !hostAudioInterrupted) {
+    else if (state === CallState.hearing && !detector.hearing) {
+      pendingInterruptedTurn = null;
+      setState(CallState.listening);
+    }
+    if (state === CallState.listening && !hostAudioInterrupted && !audioNeedsResume()) {
       ui.detail.textContent = muted ? "Microphone muted."
+        : turnNotice ? turnNotice
         : !heardSound && Date.now() - captureStartedAt >= 8_000
           ? "No microphone sound detected. Check your microphone input, then try speaking again."
           : "Speak naturally. I’ll respond after you pause.";
@@ -228,9 +245,20 @@ function unlockAudioOutput() {
     const Context = window.AudioContext || window.webkitAudioContext;
     if (!Context) throw new Error("This browser cannot play voice audio.");
     audioContext = new Context();
+    audioContext.onstatechange = () => {
+      if (audioNeedsResume()) {
+        detector?.reset();
+        if (state === CallState.hearing) setState(CallState.listening);
+      }
+      setState(state);
+    };
   }
-  if (["suspended", "interrupted"].includes(audioContext.state)) audioUnlockPromise = audioContext.resume().catch(() => {});
-  return audioUnlockPromise || Promise.resolve();
+  if (audioNeedsResume()) return audioContext.resume().catch(() => {}).finally(() => setState(state));
+  return Promise.resolve();
+}
+
+function audioNeedsResume() {
+  return ["suspended", "interrupted"].includes(audioContext?.state);
 }
 
 async function finishUtterance(frames) {
@@ -257,6 +285,11 @@ async function finishUtterance(frames) {
     const result = await callClient.waitForTurn(turnId, signal, showTranscript);
     if (!isCurrent()) return;
     showTranscript(result);
+    if (["failed", "cancelled", "rejected"].includes(result.status)) {
+      turnNotice = result.reply_text ? "Reply audio is unavailable. Read the reply in the transcript." : "Could not complete this turn. Please try speaking again.";
+      setState(CallState.listening);
+      return;
+    }
     if (result.playback_interrupted) { setState(CallState.listening); return; }
     const replyBlob = await callClient.getReplyAudio(turnId, result.audio_url, signal);
     if (!isCurrent()) return;
@@ -264,7 +297,11 @@ async function finishUtterance(frames) {
   } catch (error) {
     if (isCurrent() && error?.name !== "AbortError") {
       if (error?.status === 422) setState(CallState.listening);
-      else showError(error);
+      else if ([401, 403, 410].includes(error?.status)) showError(error);
+      else {
+        turnNotice = "Could not complete this turn. Please try speaking again.";
+        setState(CallState.listening);
+      }
     }
   }
 }
@@ -290,6 +327,7 @@ async function startReplyPlayback(blob, isCurrent) {
     playbackAnalyser.disconnect();
     playbackAnalyser = null;
     detector?.reset();
+    detector?.playbackEnded();
     if (isCurrent() && state === CallState.speaking) setState(CallState.listening);
   };
   detector.reset();
@@ -309,16 +347,23 @@ function stopPlayback() {
   playbackAnalyser = null;
 }
 
-function stopReplyForBargeIn() {
+function stopReplyForBargeIn(confirmed = true) {
   if (state !== CallState.speaking) return;
   stopPlayback();
-  const interruptedTurn = currentTurnId;
+  detector?.playbackEnded();
+  pendingInterruptedTurn = currentTurnId;
   currentTurnId = null;
-  if (interruptedTurn) client?.interrupt(interruptedTurn).catch(() => {
-    addTranscript("Call", "Could not confirm the interrupted reply with the service. Its work continues in chat.");
-  });
+  if (confirmed) confirmReplyInterrupt();
   setState(CallState.listening);
   haptic("soft");
+}
+
+function confirmReplyInterrupt() {
+  const turnId = pendingInterruptedTurn;
+  pendingInterruptedTurn = null;
+  if (turnId) client?.interrupt(turnId).catch(() => {
+    addTranscript("Call", "Could not confirm the interrupted reply with the service. Its work continues in chat.");
+  });
 }
 
 function stopReply() {
@@ -360,7 +405,8 @@ async function hangup({ close = true } = {}) {
   }
 }
 
-ui.call.addEventListener("click", () => state === CallState.speaking ? stopReply() : startCall());
+ui.call.addEventListener("click", () => audioNeedsResume() ? unlockAudioOutput() : state === CallState.speaking ? stopReply() : startCall());
+document.addEventListener("click", () => audioNeedsResume() ? unlockAudioOutput() : undefined);
 ui.retry.addEventListener("click", () => state === CallState.error ? startCall() : undefined);
 ui.hangup.addEventListener("click", () => hangup());
 ui.mute.addEventListener("click", () => {
@@ -433,16 +479,13 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("HermesHostLifecycle", (event) => {
   if (event.detail?.state === "background") hangup({ close: false });
 });
-window.addEventListener("HermesHostAudioInterruption", (event) => {
+window.addEventListener("HermesHostAudioInterruption", async (event) => {
   hostAudioInterrupted = Boolean(event.detail?.interrupted);
   detector?.reset();
   if (state === CallState.hearing) setState(CallState.listening);
-  if (!hostAudioInterrupted && event.detail?.shouldResume && ["suspended", "interrupted"].includes(audioContext?.state)) audioContext.resume().catch(() => {});
-  if ([CallState.listening, CallState.hearing, CallState.thinking, CallState.speaking].includes(state)) {
-    ui.detail.textContent = hostAudioInterrupted
-      ? "Audio is temporarily interrupted. Your call is still connected."
-      : state === CallState.speaking ? "Speak to interrupt, or tap Stop reply." : "Speak naturally. I’ll respond after you pause.";
-  }
+  setState(state);
+  if (!hostAudioInterrupted && audioNeedsResume()) await unlockAudioOutput();
+  setState(state);
 });
 
 applyHostPresentation();

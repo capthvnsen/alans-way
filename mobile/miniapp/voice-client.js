@@ -30,13 +30,20 @@ export class VoiceClient {
     body.append("audio", blob, `turn-${turnId}.${filenameExtension}`);
     body.append("turn_id", turnId);
     body.append("mime_type", blob.type || "audio/webm");
-    const response = await this.fetch(new URL(`/v1/calls/${encodeURIComponent(this.call.call_id)}/turns`, this.apiBase), {
-      method: "POST",
-      headers: { Authorization: `Bearer ${this.call.access_token}` },
-      body,
-      signal,
-    });
-    return this.#json(response);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        const response = await this.fetch(new URL(`/v1/calls/${encodeURIComponent(this.call.call_id)}/turns`, this.apiBase), {
+          method: "POST",
+          headers: { Authorization: `Bearer ${this.call.access_token}` },
+          body,
+          signal,
+        });
+        return await this.#json(response);
+      } catch (error) {
+        if (attempt || !isTransient(error) || signal?.aborted) throw error;
+      }
+    }
   }
 
   async waitForTurn(turnId, signal, onUpdate) {
@@ -45,20 +52,23 @@ export class VoiceClient {
     const started = Date.now();
     while (Date.now() - started < 120_000) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-      const response = await this.fetch(url, {
-        headers: { Authorization: `Bearer ${this.call.access_token}` }, signal,
-      });
-      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-      const result = await this.#json(response);
+      let result;
+      try {
+        const response = await this.fetch(url, {
+          headers: { Authorization: `Bearer ${this.call.access_token}` }, signal,
+        });
+        result = await this.#json(response);
+      } catch (error) {
+        if (!isTransient(error) || signal?.aborted) throw error;
+        await wait(250, signal);
+        continue;
+      }
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       onUpdate?.(result);
-      if (result.status === "completed" || result.playback_interrupted) return result;
-      if (["failed", "cancelled", "rejected"].includes(result.status)) {
-        throw new Error(result.error || "The voice turn could not be completed.");
-      }
+      if (["completed", "failed", "cancelled", "rejected"].includes(result.status) || result.playback_interrupted) return result;
       await wait(250, signal);
     }
-    throw new Error("Hermes is taking longer than expected. You can end the call and continue in chat.");
+    throw new Error("Hermes is taking longer than expected. Please try speaking again.");
   }
 
   async getReplyAudio(turnId, audioUrl, signal) {
@@ -119,6 +129,10 @@ export class VoiceClient {
     error.status = response.status;
     return error;
   }
+}
+
+function isTransient(error) {
+  return error?.name !== "AbortError" && (!error?.status || error.status >= 500);
 }
 
 function wait(milliseconds, signal) {

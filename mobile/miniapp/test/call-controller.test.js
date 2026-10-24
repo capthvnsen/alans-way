@@ -27,7 +27,7 @@ class ElementMock {
   async click() { return this.listeners.get("click")?.(); }
 }
 
-async function loadController({ turnFailureStatus, success = false, permission, audioReply, connection } = {}) {
+async function loadController({ turnFailureStatus, success = false, permission, audioReply, connection, turnResult, resume } = {}) {
   const source = (await readFile(new URL("../call.js", import.meta.url), "utf8"))
     .replace(/^import \{(.*?)\} from "\.\/lifecycle\.js";\s*$/m, "const {$1} = globalThis.__lifecycle;")
     .replace(/^import \{ VoiceClient \} from "\.\/voice-client\.js";\s*$/m, "const VoiceClient = window.__TEST_VOICE_CLIENT__;");
@@ -38,6 +38,7 @@ async function loadController({ turnFailureStatus, success = false, permission, 
   let level = 0.12;
   let processor;
   const sources = [];
+  let audioContext;
   const track = { enabled: true, stop() { this.stopped = true; } };
   const stream = () => ({
     active: true,
@@ -45,11 +46,13 @@ async function loadController({ turnFailureStatus, success = false, permission, 
     getAudioTracks: () => [track],
   });
   class AudioContextMock {
+    constructor() { audioContext = this; }
     state = "running";
     sampleRate = 8000;
     createScriptProcessor() { processor = { connect() {}, disconnect() {} }; return processor; }
     async decodeAudioData() { return {}; }
-    async resume() {}
+    async resume() { this.resumeCount = (this.resumeCount || 0) + 1; if (!resume || await resume(this)) this.setState("running"); }
+    setState(value) { this.state = value; this.onstatechange?.(); }
     async close() { this.state = "closed"; }
     createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
     createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} }; }
@@ -77,7 +80,7 @@ async function loadController({ turnFailureStatus, success = false, permission, 
     }
     async waitForTurn(_turnId, _signal, onUpdate) {
       onUpdate?.({ transcript: "spoken input", reply_text: "early reply", status: "synthesizing" });
-      return { transcript: "spoken input", reply_text: "early reply", status: "completed" };
+      return turnResult || { transcript: "spoken input", reply_text: "early reply", status: "completed" };
     }
     async getReplyAudio() { return audioReply ? audioReply() : new Blob(["reply"]); }
     async interrupt(turnId) { this.interrupted.push(turnId); }
@@ -120,7 +123,7 @@ async function loadController({ turnFailureStatus, success = false, permission, 
   };
   vm.runInNewContext(source, context, { filename: "call.js" });
   return {
-    elements, connections, sources, track, listeners, document, getLocation: () => context.location,
+    elements, connections, sources, track, listeners, document, getAudioContext: () => audioContext, getLocation: () => context.location,
     setLevel(value) { level = value; },
     async frame(count = 1) {
       for (let i = 0; i < count; i++) {
@@ -137,7 +140,7 @@ async function loadController({ turnFailureStatus, success = false, permission, 
   };
 }
 
-test("actual call controller recovers an established call after a turn error and hangs up", async () => {
+test("a transient turn error returns to listening and keeps the call connected", async () => {
   const app = await loadController();
   assert.equal(app.elements["state-title"].textContent, "Talk to Athena");
   assert.equal(app.elements.portrait.alt, "Athena avatar");
@@ -149,10 +152,12 @@ test("actual call controller recovers an established call after a turn error and
   assert.equal(new URL(app.getLocation().href).search, "", "the consumed launch ticket is removed from browser history");
 
   await app.speak();
-  assert.equal(app.elements["error-panel"].hidden, false);
+  assert.equal(app.elements["error-panel"].hidden, true);
+  assert.equal(app.elements["call-shell"].dataset.state, "listening");
+  assert.match(app.elements["state-detail"].textContent, /try speaking again/i);
   assert.equal(app.connections[0].call.call_id, "call-1");
 
-  await app.elements["retry-button"].click();
+  await app.speak();
   assert.equal(app.connections.length, 1, "resume must reuse the authorized call instead of consuming a missing ticket");
   assert.equal(app.elements["call-shell"].dataset.state, "listening");
   await app.elements["hangup-button"].click();
@@ -203,7 +208,7 @@ test("a silent microphone produces visible feedback instead of appearing healthy
   await app.elements["hangup-button"].click();
 });
 
-test("barge-in stops playback immediately and captures a fresh correlated turn", async () => {
+test("sustained barge-in stops playback and captures a fresh correlated turn", async () => {
   const app = await loadController({ success: true });
   await app.elements["call-button"].click();
   await app.speak();
@@ -213,7 +218,13 @@ test("barge-in stops playback immediately and captures a fresh correlated turn",
   app.setLevel(0.025); await app.frame(10);
   assert.equal(firstSource.stopped, undefined, "playback echo must not interrupt");
   app.setLevel(0.12); await app.frame();
+  assert.equal(firstSource.stopped, undefined, "a cough leaves the reply playing");
+  app.setLevel(0); await app.frame(8);
+  assert.deepEqual(app.connections[0].interrupted, []);
+  app.setLevel(0.12); await app.frame(2);
   assert.equal(firstSource.stopped, true);
+  assert.deepEqual(app.connections[0].interrupted, [], "200 ms stops local playback but does not delete broker audio");
+  await app.frame();
   assert.deepEqual(app.connections[0].interrupted, ["turn-1"]);
   assert.equal(app.elements["call-shell"].dataset.state, "hearing");
   await app.frame(2);
@@ -223,6 +234,10 @@ test("barge-in stops playback immediately and captures a fresh correlated turn",
   staleEnded();
   assert.equal(app.elements["call-shell"].dataset.state, "speaking", "an old playback callback cannot change the new turn");
   app.sources[1].onended();
+  app.setLevel(0.04); await app.frame(3);
+  app.setLevel(0.02); await app.frame(2);
+  app.setLevel(0); await app.frame(8);
+  assert.equal(app.connections[0].sendCount, 2, "speaker tail must not upload a turn");
   assert.equal(app.elements["call-shell"].dataset.state, "listening");
   await app.speak();
   assert.equal(app.connections[0].sendCount, 3, "listening resumes automatically after playback");
@@ -319,4 +334,106 @@ test("background during connection revokes a credential that arrives late", asyn
   assert.equal(app.connections[0].call, null);
   assert.equal(app.track.stopped, true);
   assert.equal(app.elements["call-shell"].dataset.state, "ended");
+});
+
+
+test("a failed turn with reply text displays it once and resumes listening", async () => {
+  const app = await loadController({ success: true, turnResult: { status: "failed", reply_text: "early reply", error: "TTS failed" } });
+  await app.elements["call-button"].click();
+  await app.speak();
+  assert.equal(app.elements["call-shell"].dataset.state, "listening");
+  assert.equal(app.elements["transcript-list"].children.length, 2);
+  assert.equal(app.elements["transcript-list"].children[1].children[1].text, "early reply");
+  assert.equal(app.sources.length, 0);
+  assert.equal(app.track.stopped, undefined);
+  assert.match(app.elements["state-detail"].textContent, /transcript/i);
+  await app.elements["hangup-button"].click();
+});
+
+for (const status of [401, 403, 410]) {
+  test(`auth or expired call error ${status} releases media and forbids resuming`, async () => {
+    const app = await loadController({ turnFailureStatus: status });
+    await app.elements["call-button"].click();
+    await app.speak();
+    assert.equal(app.elements["call-shell"].dataset.state, "error");
+    assert.equal(app.track.stopped, true);
+    assert.equal(app.connections[0].disconnected, true);
+    assert.equal(app.elements["retry-button"].textContent, "Close");
+    await app.elements["hangup-button"].click();
+  });
+}
+
+
+for (const replyPlaying of [false, true]) {
+  test(`audio interruption without shouldResume recovers while ${replyPlaying ? "speaking" : "listening"}`, async () => {
+    const app = await loadController({ success: true });
+    await app.elements["call-button"].click();
+    if (replyPlaying) await app.speak();
+    const context = app.getAudioContext();
+    context.setState("suspended");
+    app.listeners.get("HermesHostAudioInterruption")({ detail: { interrupted: true } });
+    await app.listeners.get("HermesHostAudioInterruption")({ detail: { interrupted: false, shouldResume: false } });
+    assert.equal(context.state, "running");
+    assert.equal(context.resumeCount, 1);
+    assert.equal(app.elements["call-shell"].dataset.state, replyPlaying ? "speaking" : "listening");
+    await app.elements["hangup-button"].click();
+  });
+}
+
+test("blocked audio resume shows a tappable state and retries on the next tap", async () => {
+  let allowResume = false;
+  const app = await loadController({ success: true, resume: () => allowResume });
+  await app.elements["call-button"].click();
+  const context = app.getAudioContext();
+  context.setState("interrupted");
+  app.listeners.get("HermesHostAudioInterruption")({ detail: { interrupted: true } });
+  await app.listeners.get("HermesHostAudioInterruption")({ detail: { interrupted: false } });
+  assert.equal(context.resumeCount, 1);
+  assert.equal(app.elements["call-shell"].dataset.state, "audio-paused");
+  assert.equal(app.elements["state-title"].textContent, "Tap to resume audio");
+  assert.equal(app.elements["call-button"].disabled, false);
+  app.setLevel(0.12); await app.frame(15);
+  assert.equal(app.connections[0].sendCount, 0);
+  allowResume = true;
+  await app.elements["call-button"].click();
+  assert.equal(context.state, "running");
+  assert.equal(app.elements["call-shell"].dataset.state, "listening");
+  context.setState("suspended");
+  assert.equal(app.elements["call-shell"].dataset.state, "audio-paused");
+  await app.listeners.get("document:click")();
+  assert.equal(context.state, "running");
+  await app.speak();
+  assert.equal(app.connections[0].sendCount, 1);
+  await app.elements["hangup-button"].click();
+});
+
+
+test("speaker tail after a short barge-in cannot confirm a broker interrupt", async () => {
+  const app = await loadController({ success: true });
+  await app.elements["call-button"].click();
+  await app.speak();
+  app.setLevel(0.12); await app.frame(2);
+  assert.equal(app.sources[0].stopped, true);
+  app.setLevel(0.03); await app.frame(3);
+  app.setLevel(0); await app.frame(8);
+  assert.deepEqual(app.connections[0].interrupted, []);
+  assert.equal(app.connections[0].sendCount, 1);
+  await app.elements["hangup-button"].click();
+});
+
+
+test("a pending browser resume does not block a fresh resume from a user tap", async () => {
+  let allowResume = false;
+  const app = await loadController({ success: true, resume: () => allowResume ? true : new Promise(() => {}) });
+  await app.elements["call-button"].click();
+  const context = app.getAudioContext();
+  context.setState("suspended");
+  app.listeners.get("HermesHostAudioInterruption")({ detail: { interrupted: false } });
+  assert.equal(app.elements["call-shell"].dataset.state, "audio-paused");
+  allowResume = true;
+  const tapped = app.elements["call-button"].click();
+  assert.equal(context.resumeCount, 2);
+  await tapped;
+  assert.equal(context.state, "running");
+  await app.elements["hangup-button"].click();
 });

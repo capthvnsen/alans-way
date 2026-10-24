@@ -36,12 +36,15 @@ test("brief noise is discarded and continuous speech is bounded", () => {
   assert.ok(detector.sample(frame(0.1)).utterance);
 });
 
-test("playback gates echo but lets loud speech start a barge-in immediately", () => {
+test("playback gates echo but lets loud speech start a barge-in after sustained voice", () => {
   const detector = createVoiceDetector({ sampleRate: 1000 });
   for (let i = 0; i < 20; i++) {
     assert.equal(detector.sample(frame(0.08), { speaking: true, playbackLevel: 0.1 }).started, false);
   }
-  assert.equal(detector.sample(frame(0.2), { speaking: true, playbackLevel: 0.1 }).started, true);
+  for (let i = 0; i < 3; i++) assert.equal(detector.sample(frame(0.2, 43), { speaking: true, playbackLevel: 0.1 }).started, false);
+  assert.equal(detector.sample(frame(0.2, 43), { speaking: true, playbackLevel: 0.1 }).started, true);
+  assert.equal(detector.sample(frame(0.2, 43)).confirmed, false);
+  assert.equal(detector.sample(frame(0.2, 43)).confirmed, true);
 });
 
 test("mute and temporary audio interruptions discard partial speech and pre-roll", () => {
@@ -64,4 +67,53 @@ test("PCM is encoded as a mono WAV with clipped signed 16-bit samples", async ()
   assert.equal(bytes.getInt16(44, true), -32768);
   assert.equal(bytes.getInt16(46, true), 0);
   assert.equal(bytes.getInt16(48, true), 32767);
+});
+
+
+test("post-playback holdoff rejects a decaying echo tail without adapting the noise floor", () => {
+  const detector = createVoiceDetector({ sampleRate: 1000 });
+  detector.sample(frame(0.04), { speaking: true, playbackLevel: 0.04 });
+  detector.playbackEnded();
+  const floor = detector.noiseFloor;
+  for (const level of [0.05, 0.04, 0.03, 0.02, 0.012]) {
+    assert.equal(detector.sample(frame(level)).started, false);
+    assert.equal(detector.noiseFloor, floor);
+  }
+  for (let i = 0; i < 8; i++) assert.equal(detector.sample(frame(0)).utterance, undefined);
+  assert.equal(detector.sample(frame(0.03)).started, true);
+  detector.sample(frame(0.03));
+  detector.sample(frame(0.03));
+  let result;
+  for (let i = 0; i < 8; i++) result = detector.sample(frame(0));
+  assert.ok(result.utterance);
+});
+
+test("disabling echo cancellation keeps a higher playback threshold", () => {
+  const detector = createVoiceDetector({ sampleRate: 1000, echoControl: false });
+  for (let i = 0; i < 10; i++) {
+    assert.equal(detector.sample(frame(0.08), { speaking: true }).started, false);
+  }
+});
+
+
+test("isolated loud blocks cannot accumulate into a playback interruption", () => {
+  const detector = createVoiceDetector({ sampleRate: 1000 });
+  for (let i = 0; i < 10; i++) {
+    assert.equal(detector.sample(frame(0.2, 43), { speaking: true }).started, false);
+    assert.equal(detector.sample(frame(0, 43), { speaking: true }).started, false);
+  }
+  assert.equal(detector.hearing, false);
+});
+
+
+test("speech starting near the end of holdoff keeps all voiced samples", () => {
+  const detector = createVoiceDetector({ sampleRate: 1000 });
+  detector.playbackEnded();
+  for (let i = 0; i < 4; i++) detector.sample(frame(0));
+  assert.equal(detector.sample(frame(0.1)).started, false);
+  assert.equal(detector.sample(frame(0.1)).started, true);
+  assert.equal(detector.sample(frame(0.1)).confirmed, true);
+  let result;
+  for (let i = 0; i < 8; i++) result = detector.sample(frame(0));
+  assert.ok(result.utterance);
 });

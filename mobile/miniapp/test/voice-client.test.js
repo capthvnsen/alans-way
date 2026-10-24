@@ -141,3 +141,65 @@ test("WAV uploads keep their format and reply audio cannot forward credentials t
   assert.equal(uploaded.get("mime_type"), "audio/wav");
   await assert.rejects(client.getReplyAudio("t6", "https://other.example.test/audio"), /untrusted origin/);
 });
+
+
+for (const failure of ["network", 502]) {
+  test(`upload retries ${failure} once with the same turn and audio`, async () => {
+    const uploads = [];
+    const client = new VoiceClient({ apiBase: "https://voice.example.test", fetchImpl: async (_url, options) => {
+      uploads.push(options);
+      if (uploads.length === 1) {
+        if (failure === "network") throw new TypeError("Failed to fetch");
+        return response(failure, {});
+      }
+      return response(202, { status: "accepted" });
+    } });
+    client.call = { call_id: "c1", access_token: "token" };
+    assert.equal((await client.sendTurn(new Blob(["voice"]), "same-turn")).status, "accepted");
+    assert.equal(uploads.length, 2);
+    for (const { body } of uploads) {
+      assert.equal(body.get("turn_id"), "same-turn");
+      assert.equal(await body.get("audio").text(), "voice");
+    }
+  });
+}
+
+test("upload retries are bounded and auth failures are never retried", async () => {
+  for (const status of [503, 401, 403, 410, 422]) {
+    let requests = 0;
+    const client = new VoiceClient({ apiBase: "https://voice.example.test", fetchImpl: async () => {
+      requests += 1;
+      return response(status, {});
+    } });
+    client.call = { call_id: "c1", access_token: "token" };
+    await assert.rejects(client.sendTurn(new Blob(["voice"]), "same-turn"), { status });
+    assert.equal(requests, status === 503 ? 2 : 1);
+  }
+});
+
+test("polling recovers from network and server blips and returns a failed text reply", async () => {
+  let requests = 0;
+  const updates = [];
+  const client = new VoiceClient({ apiBase: "https://voice.example.test", fetchImpl: async () => {
+    requests += 1;
+    if (requests === 1) throw new TypeError("Failed to fetch");
+    if (requests === 2) return response(502, {});
+    return response(200, { status: "failed", reply_text: "Read this reply", error: "TTS failed" });
+  } });
+  client.call = { call_id: "c1", access_token: "token" };
+  const result = await client.waitForTurn("t1", undefined, (value) => updates.push(value));
+  assert.equal(result.reply_text, "Read this reply");
+  assert.equal(updates.length, 1);
+  assert.equal(requests, 3);
+});
+
+test("polling stops immediately on an expired call", async () => {
+  let requests = 0;
+  const client = new VoiceClient({ apiBase: "https://voice.example.test", fetchImpl: async () => {
+    requests += 1;
+    return response(401, {});
+  } });
+  client.call = { call_id: "c1", access_token: "token" };
+  await assert.rejects(client.waitForTurn("t1"), { status: 401 });
+  assert.equal(requests, 1);
+});
