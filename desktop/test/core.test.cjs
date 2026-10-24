@@ -540,6 +540,44 @@ test('a long list in an action reply says how many controls it left out', async 
   assert.equal(reply.unlisted, 15);
   assert.ok(tab.refs.has('e55'), 'every scanned ref is valid, listed or not');
 });
+test('full action lists include the unique control matching the click within the existing limits', async () => {
+  const elements = Array.from({ length: 60 }, (_, i) => ({ ref: `e${i + 1}`, role: 'a', name: `Link ${i}` }));
+  elements[54] = { ref: 'e55', role: 'a', name: ' next ' };
+  elements[55] = { ref: 'e56', role: 'button', name: 'next' };
+  elements[56] = { ref: 'e57', role: 'a', name: 'Next page' };
+  const page = { url: 'https://books.example/page-2', title: 'Books', text: '', elements, contentRefs: ['e60'] };
+  for (const mode of ['navigation', 'full', 'missed']) {
+    const tab = { refs: new Set(), generation: 1 };
+    if (mode === 'missed') settleSnapshot(tab, page, 2);
+    const reply = await readEffect(() => page, tab, { clicked: { role: ' A ', name: ' NEXT ' }, navigated: mode === 'navigation', held: mode === 'missed' ? 1 : undefined });
+    assert.equal(reply.elements.length, 40, mode);
+    assert.equal(reply.elements.at(-1), elements[54], mode);
+    assert.equal(reply.unlisted, 20, mode);
+    assert.ok(Buffer.byteLength(JSON.stringify(reply.elements)) <= Buffer.byteLength(JSON.stringify(elements.slice(0, 40))), mode);
+    assert.equal(tab.scan.byRef.size, 60, 'listing must not change scan bookkeeping');
+  }
+});
+test('duplicate repeat controls are not added to a navigation reply', async () => {
+  const elements = Array.from({ length: 60 }, (_, i) => ({ ref: `e${i + 1}`, role: 'a', name: i >= 54 && i <= 55 ? 'next' : `Link ${i}` }));
+  const reply = await readEffect(() => ({ url: 'https://books.example/page-2', title: 'Books', text: '', elements }), { refs: new Set() }, { navigated: true, clicked: { role: 'a', name: 'Next' } });
+  assert.deepEqual(reply.elements, elements.slice(0, 40));
+  assert.equal(reply.unlisted, 20);
+});
+test('without a clicked control a navigation reply keeps its original list', async () => {
+  const elements = Array.from({ length: 60 }, (_, i) => ({ ref: `e${i + 1}`, role: 'a', name: i === 54 ? 'next' : `Link ${i}` }));
+  const reply = await readEffect(() => ({ url: 'https://books.example/page-2', title: 'Books', text: '', elements, contentRefs: ['e60'] }), { refs: new Set() }, { navigated: true });
+  assert.deepEqual(reply.elements, [elements[59], ...elements.slice(0, 39)]);
+  assert.equal(reply.unlisted, 20);
+});
+test('a larger repeat control keeps its place while the list stays within its byte budget', async () => {
+  const elements = Array.from({ length: 60 }, (_, i) => ({ ref: `e${i + 1}`, role: 'a', name: `Link ${i}` }));
+  elements[54] = { ref: 'e55', role: 'a', name: 'Next', href: `https://books.example/${'x'.repeat(500)}` };
+  const reply = await readEffect(() => ({ url: 'https://books.example/page-2', title: 'Books', text: '', elements }), { refs: new Set() }, { navigated: true, clicked: { role: 'a', name: 'Next' } });
+  assert.equal(reply.elements.at(-1), elements[54]);
+  assert.ok(reply.elements.length < 40);
+  assert.ok(Buffer.byteLength(JSON.stringify(reply.elements)) <= Buffer.byteLength(JSON.stringify(elements.slice(0, 40))));
+  assert.equal(reply.unlisted, 60 - reply.elements.length);
+});
 test('a dialog or banner over the page rides on snapshots and replies', async () => {
   const tab = { refs: new Set(), generation: 1 };
   const overlays = [{ name: 'Join our newsletter', close: 'e9', closeName: 'No thanks' }];

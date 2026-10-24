@@ -67,6 +67,16 @@ test('cursor motion is deterministic, eased, bounded and lands exactly on the ta
   assert.equal(f.scripts.filter(code => code.includes('"path":[')).length, 1, 'exactly one injection carries the tween path');
 });
 
+test('clicks carry the control description observed before navigation', async () => {
+  const clicked = { role: 'a', name: 'Next' };
+  const f = fixture({ found: { clicked } });
+  f.hook(async method => {
+    if (method === 'Input.dispatchMouseEvent') f.tab.scan = null;
+  });
+  assert.deepEqual((await f.perform({ action: 'click', ref: 'e1' })).clicked, clicked);
+  assert.equal((await f.perform({ action: 'move', ref: 'e1' })).clicked, undefined);
+});
+
 test('a tab the human is not watching skips the glide and its pacing', async () => {
   let paced = 0;
   const f = fixture({ visible: false, delay: async () => { paced++; } });

@@ -1040,6 +1040,21 @@ function settleSnapshot(tab, data, generation, since) {
 }
 // A full list in an action reply stops here; unlisted says how many more a snapshot shows.
 const EFFECT_ELEMENTS = 40;
+function effectElements(elements, contentRefs, clicked) {
+  const content = new Set(contentRefs);
+  const ordered = content.size ? [...elements.filter(item => content.has(item.ref)), ...elements.filter(item => !content.has(item.ref))] : elements;
+  const listed = ordered.slice(0, EFFECT_ELEMENTS);
+  const budget = (content.size || clicked) && Buffer.byteLength(JSON.stringify(elements.slice(0, EFFECT_ELEMENTS)));
+  if (content.size) while (Buffer.byteLength(JSON.stringify(listed)) > budget) listed.pop();
+  const role = clicked?.role?.trim().toLowerCase(), name = clicked?.name?.trim().toLowerCase();
+  const matches = role && name ? elements.filter(item => (item.role || '').trim().toLowerCase() === role && (item.name || '').trim().toLowerCase() === name) : [];
+  const repeat = matches.length === 1 && !listed.includes(matches[0]) && listed.length > 0;
+  if (repeat) {
+    listed[listed.length - 1] = matches[0];
+    while (Buffer.byteLength(JSON.stringify(listed)) > budget) listed.splice(Math.max(0, listed.length - 2), 1);
+  }
+  return listed;
+}
 // Past this share of the list, a delta costs about as much as the list.
 const DELTA_SHARE = 0.6;
 // What changed in the controls since the scan the caller holds: new or updated
@@ -1077,7 +1092,7 @@ async function readEffect(execute, tab, opts = {}) {
   if (reply?.challenge?.kind !== 'cloudflare' || !(await passCloudflare(execute, opts.cloudflareWaitMs))) return reply;
   return (await readEffectOnce(execute, tab, { ...opts, navigated: opts.navigated === true || undefined, settle: false })) || reply;
 }
-async function readEffectOnce(execute, tab, { parseWaitMs, navigated, target, settle, held } = {}) {
+async function readEffectOnce(execute, tab, { parseWaitMs, navigated, target, clicked, settle, held } = {}) {
   const previous = tab.snapshotStamp, scan = tab.scan;
   const generation = Math.max(previous && Number.isInteger(previous.generation) ? previous.generation : 0, Number.isInteger(tab.generation) ? tab.generation : 0) + 1;
   let timer;
@@ -1138,8 +1153,8 @@ async function readEffectOnce(execute, tab, { parseWaitMs, navigated, target, se
     // A lost reply can leave the caller holding older controls even though
     // the page has stayed still since our last read.
     if (held !== undefined && held !== previous.generation) {
-      reply.elements = result.elements.slice(0, EFFECT_ELEMENTS);
-      if (result.elements.length > EFFECT_ELEMENTS) reply.unlisted = result.elements.length - EFFECT_ELEMENTS;
+      reply.elements = effectElements(result.elements, undefined, clicked);
+      if (result.elements.length > reply.elements.length) reply.unlisted = result.elements.length - reply.elements.length;
     }
     return reply;
   }
@@ -1149,13 +1164,7 @@ async function readEffectOnce(execute, tab, { parseWaitMs, navigated, target, se
     const delta = controlsDelta(scan, result);
     if (delta.changed.length + delta.removed.length <= Math.max(8, result.elements.length * DELTA_SHARE)) return { ...delta, generation, effect, ...overlays, ...truncated };
   }
-  const content = new Set(nav ? result.contentRefs : []);
-  const elements = content.size ? [...settled.elements.filter(item => content.has(item.ref)), ...settled.elements.filter(item => !content.has(item.ref))] : settled.elements;
-  const listed = elements.slice(0, EFFECT_ELEMENTS);
-  if (content.size) {
-    const budget = Buffer.byteLength(JSON.stringify(settled.elements.slice(0, EFFECT_ELEMENTS)));
-    while (Buffer.byteLength(JSON.stringify(listed)) > budget) listed.pop();
-  }
+  const listed = effectElements(settled.elements, nav ? result.contentRefs : undefined, clicked);
   const reply = { elements: listed, generation: settled.generation, effect, ...overlays, ...truncated };
   if (settled.elements.length > listed.length) reply.unlisted = settled.elements.length - listed.length;
   return reply;

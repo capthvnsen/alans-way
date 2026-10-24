@@ -2753,7 +2753,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
   if (depth === 0) await syncDialogGuard(tab);
   if (depth === 0) agentInput.approve(tab, body);
   const reply = (payload) => depth > 0 ? payload : actionReply(tab, payload);
-  const finish = async (payload, opts) => depth > 0 ? payload : actionReply(tab, { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) });
+  const finish = async (payload, opts) => depth > 0 ? { ...payload, ...(opts?.clicked ? { clicked: opts.clicked } : {}) } : actionReply(tab, { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) });
   if (body.action === 'batch') {
     if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
     const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
@@ -2761,12 +2761,16 @@ async function performStep(tab, body, botId, depth, isAborted) {
     // Takeover validates just the first step, with the batch's approval mark.
     if (tab.preflight) return performAction(tab, { ...steps[0], epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, 1, isAborted);
     const results = [], started = Date.now();
-    let lastTarget, sawInput = false;
+    let lastTarget, lastClicked, sawInput = false;
     for (const step of steps) {
       if (!step || typeof step !== 'object') { results.push({ ok: false, error: 'Invalid step.' }); break; }
       if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ ok: false, error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
       if (isAborted()) { results.push({ ok: false, error: 'The request was closed; remaining steps were not run.' }); break; }
-      try { results.push({ ok: true, ...(await performAction(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, 1, isAborted)) }); }
+      try {
+        const { clicked, ...result } = await performAction(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, 1, isAborted);
+        results.push({ ok: true, ...result });
+        if (clicked) lastClicked = clicked;
+      }
       catch (error) { results.push({ ok: false, error: errorMessage(error) }); break; }
       // A step aimed by name reports the ref it resolved to.
       const ref = results.at(-1).ref || step.ref;
@@ -2775,7 +2779,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     }
     // A takeover mid-batch seals the accumulated step results too.
     requireActor(tab, botId, body.epoch, true, overseer);
-    return actionReply(tab, { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput, held: body.generation })), dispatched: true });
+    return actionReply(tab, { results, ...(await actionEffect(tab, { target: lastTarget, clicked: lastClicked, settle: sawInput, held: body.generation })), dispatched: true });
   }
   // Page script and DevTools calls are checked in their branches, after the challenge preflight.
   if (body.action !== 'cdp' && body.action !== 'eval') await agentInput.guard(tab, body);
@@ -2926,13 +2930,13 @@ async function performStep(tab, body, botId, depth, isAborted) {
     return finish({ value, dispatched: true });
   }
   if (INPUT_ACTIONS.has(body.action)) {
-    const { input, cursor, navigated, ...result } = await agentInput.perform(tab, body, botId);
+    const { input, cursor, navigated, clicked, ...result } = await agentInput.perform(tab, body, botId);
     broadcast();
     const payload = { ...result, ...(depth === 0 && cursor ? { cursor: { x: cursor.x, y: cursor.y } } : {}), dispatched: true };
     // A move changes no page state; report it without paying for a read.
     if (body.action === 'move') return depth > 0 ? payload : actionReply(tab, { ...payload, effect: { ...EMPTY_EFFECT } });
     return finish(payload,
-      { navigated, settle: true, target: result.ref || body.ref !== undefined || body.selector !== undefined ? { ref: result.ref || body.ref, selector: body.selector } : undefined });
+      { navigated, clicked, settle: true, target: result.ref || body.ref !== undefined || body.selector !== undefined ? { ref: result.ref || body.ref, selector: body.selector } : undefined });
   }
   let parseWaitMs = 0, didNavigate = false;
   if (body.action === 'navigate') {

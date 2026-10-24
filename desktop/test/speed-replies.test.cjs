@@ -221,6 +221,8 @@ const contentNav = '<nav>' + Array.from({ length: 55 }, (_, i) => `<a href="/nav
 const contentStart = `<!doctype html><title>Library</title>${contentNav}<main><a href="/content-result">Travel</a></main>`;
 const contentResult = `<!doctype html><title>Travel</title>${contentNav}<section><h1>Travel books</h1><p>The first book is Mountain journeys.</p><a href="/nav-b">Mountain journeys</a></section>`;
 const routes = { '/content-start': contentStart, '/content-result': contentResult, '/double-follow': doubleFollowPage, '/shifting-link': shiftingLinkPage, '/covered-link': coveredLinkPage, '/hop-a': hopA, '/hop-b': hopB, '/crowd': crowdPage, '/review': reviewPage, '/shell': shellPage, '/popup': popupPage, '/todos': todoPage, '/twins': twinPage, '/decoy': decoyPage, '/overlay': overlayPage, '/named': shadowNamePage, '/frame-outer': frameOuter, '/frame-inner': frameInner, '/frame-stuck': frameStuck, '/widgets': widgetPage, '/bench': benchPage, '/long': longPage, '/async': asyncPage, '/nav-a': navA, '/nav-b': navB, '/focus': focusPage, '/fetchp': fetchPage, '/hang-page': hangPage, '/noise': noisePage, '/quiet': quietPage, '/hint': hintPage, '/bound': boundPage, '/busy': busyPage, '/checkout': checkoutPage, '/embed': embedPage, '/chat': chatPage, '/notes': quietChatPage };
+routes['/repeat-start'] = '<!doctype html><title>Page 1</title><a href="/repeat-result">Next</a>';
+routes['/repeat-result'] = '<!doctype html><title>Page 2</title><nav>' + Array.from({ length: 59 }, (_, i) => `<a href="${i === 54 ? '/repeat-result' : '/nav-b'}">${i === 54 ? 'Next' : `Category ${i}`}</a>`).join(' ') + '</nav><main><a href="/nav-b">A book</a></main>';
 
 let dir, profile, browser, host, site, port, connection, stderr = '', cdpPort;
 const api = async (route, method = 'GET', body, epoch) => {
@@ -1031,6 +1033,27 @@ test('navigation replies lead with the new content within the existing limits', 
   assert.ok(reply.data.effect.text.length <= 600);
   const follow = await act(tab, { action: 'click', ref: reply.data.elements[0].ref });
   assert.equal(follow.data.effect.url, `http://bench.example:${port}/nav-b`);
+});
+
+test('navigation replies expose Next for another click without a snapshot, including batches', live, async () => {
+  for (const batch of [false, true]) {
+    const tab = await openTab('/repeat-start');
+    const snapshot = (await api(`/v1/tabs/${tab.id}/snapshot`)).data;
+    const ref = pick(snapshot.elements, e => e.name === 'Next', 'Next');
+    const click = { action: 'click', ref };
+    const reply = await act(tab, batch ? { action: 'batch', steps: [click] } : click);
+    assert.equal(reply.status, 200, JSON.stringify(reply.data));
+    assert.equal(reply.data.effect.navigated, true);
+    assert.equal(reply.data.elements[0].name, 'A book');
+    assert.equal(reply.data.elements.at(-1).name, 'Next');
+    assert.equal(reply.data.elements.length, 40);
+    assert.equal(reply.data.unlisted, 20);
+    assert.equal(reply.data.clicked, undefined, 'click metadata stays internal');
+    if (batch) assert.equal(reply.data.results[0].clicked, undefined);
+    const follow = await act(tab, { action: 'click', name: 'Next', role: 'a' });
+    assert.equal(follow.status, 200, JSON.stringify(follow.data));
+    assert.equal(follow.data.effect.navigated, true);
+  }
 });
 
 test('Search moving after the policy hit focuses Search first try, never Appearance', live, async () => {
