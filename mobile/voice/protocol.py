@@ -9,7 +9,7 @@ import sqlite3
 import time
 import urllib.parse
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -212,6 +212,7 @@ class VoiceTurn:
     reply_text: str = ""
     status: str = "accepted"
     error: str = ""
+    playback_interrupted: bool = False
 
 
 class TurnRegistry:
@@ -244,7 +245,7 @@ class TurnRegistry:
         key = (call_id, turn_id)
         if self.path:
             with self._connection() as db:
-                row = db.execute("SELECT session_key,marker,injected_text,transcript,reply_text,status,error FROM turns WHERE call_id=? AND turn_id=?", key).fetchone()
+                row = db.execute("SELECT session_key,marker,injected_text,transcript,reply_text,status,error,playback_interrupted FROM turns WHERE call_id=? AND turn_id=?", key).fetchone()
                 if row:
                     if row[0] != session_key or row[3] != transcript:
                         raise ValueError("turn_id already exists with different request data")
@@ -281,7 +282,7 @@ class TurnRegistry:
                 self._memory[key] = VoiceTurn(
                     old.call_id, old.turn_id, old.session_key, old.marker,
                     old.injected_text, old.transcript, old.reply_text,
-                    "failed", reason,
+                    "failed", reason, old.playback_interrupted,
                 )
                 count += 1
         return count
@@ -289,7 +290,7 @@ class TurnRegistry:
     def capture(self, session_key: str, user_message: str, reply_text: str) -> VoiceTurn | None:
         if self.path:
             with self._connection() as db:
-                row = db.execute("SELECT call_id,turn_id,session_key,marker,injected_text,transcript FROM turns WHERE session_key=? AND status='accepted' ORDER BY created_at", (session_key,)).fetchall()
+                row = db.execute("SELECT call_id,turn_id,session_key,marker,injected_text,transcript,playback_interrupted FROM turns WHERE session_key=? AND status='accepted' ORDER BY created_at", (session_key,)).fetchall()
                 match = next((r for r in row if r[4] == user_message), None)
                 if not match:
                     return None
@@ -297,29 +298,29 @@ class TurnRegistry:
                 cur = db.execute("UPDATE turns SET reply_text=?,status='synthesizing',updated_at=? WHERE call_id=? AND turn_id=? AND status='accepted'", (reply_text or "", now, match[0], match[1]))
                 if cur.rowcount == 0:
                     return None
-                return VoiceTurn(match[0], match[1], match[2], match[3], match[4], match[5], reply_text or "", "synthesizing")
+                return VoiceTurn(match[0], match[1], match[2], match[3], match[4], match[5], reply_text or "", "synthesizing", playback_interrupted=bool(match[6]))
         match = next((t for t in self._memory.values() if t.session_key == session_key and t.status == "accepted" and t.injected_text == user_message), None)
         if not match:
             return None
-        done = VoiceTurn(match.call_id, match.turn_id, match.session_key, match.marker, match.injected_text, match.transcript, reply_text or "", "completed")
+        done = replace(match, reply_text=reply_text or "", status="completed")
         self._memory[(match.call_id, match.turn_id)] = done
         return done
 
     def get(self, call_id: str, turn_id: str) -> VoiceTurn | None:
         if self.path:
             with self._connection() as db:
-                row = db.execute("SELECT session_key,marker,injected_text,transcript,reply_text,status,error FROM turns WHERE call_id=? AND turn_id=?", (call_id, turn_id)).fetchone()
+                row = db.execute("SELECT session_key,marker,injected_text,transcript,reply_text,status,error,playback_interrupted FROM turns WHERE call_id=? AND turn_id=?", (call_id, turn_id)).fetchone()
             return VoiceTurn(call_id, turn_id, *row) if row else None
         return self._memory.get((call_id, turn_id))
 
     def complete_audio(self, call_id: str, turn_id: str, audio: bytes, mime: str) -> None:
         if self.path:
             with self._connection() as db:
-                db.execute("UPDATE turns SET audio=?,audio_mime=?,status='completed',updated_at=? WHERE call_id=? AND turn_id=? AND status='synthesizing'", (audio, mime, int(time.time()), call_id, turn_id))
+                db.execute("UPDATE turns SET audio=CASE WHEN playback_interrupted=0 THEN ? END,audio_mime=CASE WHEN playback_interrupted=0 THEN ? END,status='completed',updated_at=? WHERE call_id=? AND turn_id=? AND status='synthesizing'", (audio, mime, int(time.time()), call_id, turn_id))
             return
         old = self._memory.get((call_id, turn_id))
         if old:
-            self._memory[(call_id, turn_id)] = VoiceTurn(old.call_id, old.turn_id, old.session_key, old.marker, old.injected_text, old.transcript, old.reply_text, "completed")
+            self._memory[(call_id, turn_id)] = replace(old, status="completed")
 
     def set_status(self, call_id: str, turn_id: str, status: str) -> None:
         if self.path:
@@ -328,21 +329,25 @@ class TurnRegistry:
         else:
             old = self._memory.get((call_id, turn_id))
             if old:
-                self._memory[(call_id, turn_id)] = VoiceTurn(old.call_id, old.turn_id, old.session_key, old.marker, old.injected_text, old.transcript, old.reply_text, status, old.error)
+                self._memory[(call_id, turn_id)] = replace(old, status=status)
 
     def get_audio(self, call_id: str, turn_id: str) -> tuple[bytes, str] | None:
         if self.path:
             with self._connection() as db:
-                row = db.execute("SELECT audio,audio_mime FROM turns WHERE call_id=? AND turn_id=? AND status='completed'", (call_id, turn_id)).fetchone()
+                row = db.execute("SELECT audio,audio_mime FROM turns WHERE call_id=? AND turn_id=? AND status='completed' AND playback_interrupted=0", (call_id, turn_id)).fetchone()
             return (row[0], row[1]) if row and row[0] is not None else None
         return None
 
     def interrupt_playback(self, call_id: str, turn_id: str) -> bool:
         if self.path:
             with self._connection() as db:
-                cur = db.execute("UPDATE turns SET playback_interrupted=1,updated_at=? WHERE call_id=? AND turn_id=?", (int(time.time()), call_id, turn_id))
+                cur = db.execute("UPDATE turns SET playback_interrupted=1,audio=NULL,audio_mime=NULL,updated_at=? WHERE call_id=? AND turn_id=?", (int(time.time()), call_id, turn_id))
             return cur.rowcount == 1
-        return (call_id, turn_id) in self._memory
+        key = (call_id, turn_id)
+        if key not in self._memory:
+            return False
+        self._memory[key] = replace(self._memory[key], playback_interrupted=True)
+        return True
 
     def claim_transcript_delivery(self, call_id: str, turn_id: str) -> bool:
         """Claim the bot-authored transcript side effect once before calling Telegram."""
@@ -363,4 +368,4 @@ class TurnRegistry:
         else:
             old = self._memory.get((call_id, turn_id))
             if old:
-                self._memory[(call_id, turn_id)] = VoiceTurn(old.call_id, old.turn_id, old.session_key, old.marker, old.injected_text, old.transcript, status="failed", error=error[:500])
+                self._memory[(call_id, turn_id)] = replace(old, status="failed", error=error[:500])

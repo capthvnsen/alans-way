@@ -1,4 +1,4 @@
-import { CallState, SPEECH_THRESHOLD, audioConstraints, createAttemptGuard, createSilenceGate, recordingMimeType, shouldInterruptPlayback, transition } from "./lifecycle.js";
+import { CallState, audioConstraints, audioLevel, createAttemptGuard, createVoiceDetector, encodeWav, transition } from "./lifecycle.js";
 import { VoiceClient } from "./voice-client.js";
 
 const $ = (id) => document.getElementById(id);
@@ -15,28 +15,25 @@ const host = window.__HERMES_HOST__ || {};
 let state = CallState.idle;
 let client;
 let stream;
-let recorder;
-let recorderParts = [];
 let audioContext;
 let audioUnlockPromise;
-let analyser;
+let captureProcessor;
+let playbackAnalyser;
+let playbackSamples;
 let microphoneSource;
 let captureSink;
-let monitorFrame = 0;
 let audioSource;
 let currentTurnId;
 let aborter;
-let gate = createSilenceGate();
+let detector;
 let echoControl = true;
 let muted = false;
-let handlingUtterance = false;
 let closed = false;
 let hostAudioInterrupted = false;
 let launchTicketConsumed = false;
 let retryAllowed = true;
 const attemptGuard = createAttemptGuard();
 let activeAttempt = 0;
-let resetVoiceActivity = () => {};
 
 function setState(next) {
   if (state !== next) state = transition(state, next);
@@ -47,19 +44,20 @@ function setState(next) {
     "requesting-permission": ["MICROPHONE PERMISSION", "Allow microphone", "Your microphone stays off until you approve."],
     connecting: ["SECURE CONNECTION", "Connecting…", "Opening a voice call for this conversation."],
     listening: ["LISTENING", "I’m here", "Speak naturally. I’ll respond after you pause."],
-    thinking: ["WORKING ON IT", "One moment…", "Your spoken turn is being handled by this agent."],
-    speaking: [`${agentName.toLocaleUpperCase()} IS SPEAKING`, "Here’s what I found", "Tap the center button to stop the audio."],
+    hearing: ["HEARING YOU", "Go ahead", "Pause when you are ready for a reply."],
+    thinking: ["THINKING", "One moment…", "Your spoken turn is being handled by this agent."],
+    speaking: [`${agentName.toLocaleUpperCase()} IS SPEAKING`, "Here’s what I found", "Speak to interrupt, or tap Stop reply."],
     error: ["CALL PAUSED", "Couldn’t connect", "Check your connection or microphone permission, then try again."],
     ended: ["CALL ENDED", "Talk soon", "Your call has ended."],
   }[state];
   [ui.stateLabel.textContent, ui.stateTitle.textContent, ui.detail.textContent] = copy;
-  if (hostAudioInterrupted && [CallState.listening, CallState.thinking, CallState.speaking].includes(state)) {
+  if (hostAudioInterrupted && [CallState.listening, CallState.hearing, CallState.thinking, CallState.speaking].includes(state)) {
     ui.detail.textContent = "Audio is temporarily interrupted. Your call is still connected.";
   }
-  const active = [CallState.listening, CallState.thinking, CallState.speaking].includes(state);
-  ui.call.disabled = [CallState.requestingPermission, CallState.connecting, CallState.thinking, CallState.ended].includes(state) || (state === CallState.listening && muted);
-  ui.callLabel.textContent = state === CallState.speaking ? "Stop reply" : state === CallState.listening ? "Send voice" : state === CallState.thinking ? "Thinking…" : state === CallState.connecting ? "Connecting" : "Start call";
-  ui.call.setAttribute("aria-label", state === CallState.speaking ? "Stop reply audio" : state === CallState.listening ? "Send recorded voice turn" : "Start call");
+  const active = [CallState.listening, CallState.hearing, CallState.thinking, CallState.speaking].includes(state);
+  ui.call.disabled = [CallState.requestingPermission, CallState.connecting, CallState.listening, CallState.hearing, CallState.thinking, CallState.ended].includes(state);
+  ui.callLabel.textContent = state === CallState.speaking ? "Stop reply" : state === CallState.hearing ? "Hearing you" : state === CallState.listening ? "Listening" : state === CallState.thinking ? "Thinking…" : state === CallState.connecting ? "Connecting" : "Start call";
+  ui.call.setAttribute("aria-label", state === CallState.speaking ? "Stop reply audio" : state === CallState.hearing ? "Hearing you" : state === CallState.listening ? "Listening" : "Start call");
   ui.mute.disabled = !active;
   ui.hangup.disabled = !active && state !== CallState.error && state !== CallState.connecting;
   ui.privacy.textContent = active ? (muted ? "Microphone muted · call stays in this conversation." : "Microphone active · audio is sent securely for this call.") : state === CallState.ended ? "Microphone and audio session released." : "Microphone is off until you start.";
@@ -104,7 +102,7 @@ function showError(error) {
 async function startCall() {
   if (![CallState.idle, CallState.error].includes(state)) return;
   if (state === CallState.error && !retryAllowed) { hangup(); return; }
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+  if (!navigator.mediaDevices?.getUserMedia) {
     showError(new Error("This browser cannot capture voice audio. Update Telegram or iOS and try again."));
     return;
   }
@@ -145,8 +143,13 @@ async function startCall() {
       client = new VoiceClient({ apiBase, initData, launchTicket });
       connectAttempted = true;
       launchTicketConsumed = true;
+      const callClient = client;
       try {
-        await client.connect(aborter.signal);
+        await callClient.connect(aborter.signal);
+        if (!attemptGuard.isCurrent(attempt) || closed) {
+          await callClient.disconnect();
+          return;
+        }
       } finally {
         // The launch ticket is single-use. Remove it after the first request
         // settles so it cannot leak through later navigation or referrers.
@@ -177,102 +180,47 @@ function normalizeError(error) {
 async function beginCapture() {
   if (!stream || closed || state === CallState.ended) return;
   if (!audioContext) unlockAudioOutput();
-  if (audioContext.state === "suspended") await audioContext.resume();
+  if (["suspended", "interrupted"].includes(audioContext.state)) await audioContext.resume();
+  stream.getAudioTracks().forEach((track) => { track.enabled = !muted; });
   microphoneSource = audioContext.createMediaStreamSource(stream);
-  analyser = audioContext.createAnalyser();
-  analyser.fftSize = 512;
-  microphoneSource.connect(analyser);
-  // Keep WebKit's capture graph attached to a live destination without
-  // playing microphone audio back through the speaker.
+  // shortcut: capture uses the main thread; use AudioWorklet once supported hosts are verified.
+  captureProcessor = audioContext.createScriptProcessor(2048, 1, 1);
+  microphoneSource.connect(captureProcessor);
   captureSink = audioContext.createGain();
   captureSink.gain.value = 0;
-  analyser.connect(captureSink);
+  captureProcessor.connect(captureSink);
   captureSink.connect(audioContext.destination);
-  startRecorder();
-  gate = createSilenceGate();
-  const floatSamples = typeof analyser.getFloatTimeDomainData === "function";
-  const values = floatSamples ? new Float32Array(analyser.fftSize) : new Uint8Array(analyser.fftSize);
-  let utteranceStartedAt = 0;
-  let lastVoiceAt = Date.now();
-  let lastRecorderResetAt = Date.now();
+  detector = createVoiceDetector({ sampleRate: audioContext.sampleRate });
   const captureStartedAt = Date.now();
   let heardSound = false;
-  resetVoiceActivity = () => {
-    utteranceStartedAt = 0;
-    lastVoiceAt = Date.now();
-    gate.reset();
-  };
-  const monitor = () => {
-    if (!analyser || !stream?.active || closed) return;
-    if (floatSamples) analyser.getFloatTimeDomainData(values);
-    else analyser.getByteTimeDomainData(values);
-    let energy = 0;
-    for (const value of values) { const centered = floatSamples ? value : (value - 128) / 128; energy += centered * centered; }
-    const level = Math.sqrt(energy / values.length);
-    const now = Date.now();
-    const voiced = !muted && level >= SPEECH_THRESHOLD;
-    ui.shell.style.setProperty("--mic-level", String(muted ? 0 : Math.min(1, level / 0.08)));
-    if (!muted && level > 0.001) heardSound = true;
+  captureProcessor.onaudioprocess = (event) => {
+    if (!stream?.active || closed) return;
+    let playbackLevel = 0;
+    if (audioSource && playbackAnalyser) {
+      playbackAnalyser.getFloatTimeDomainData(playbackSamples);
+      playbackLevel = audioLevel(playbackSamples);
+    }
+    const result = detector.sample(event.inputBuffer.getChannelData(0), {
+      muted,
+      interrupted: hostAudioInterrupted || audioContext.state !== "running" || state === CallState.thinking,
+      speaking: state === CallState.speaking,
+      playbackLevel,
+    });
+    ui.shell.style.setProperty("--mic-level", String(muted ? 0 : Math.min(1, result.level / 0.08)));
+    if (!muted && result.level > 0.001) heardSound = true;
+    if (result.started) {
+      if (state === CallState.speaking) stopReplyForBargeIn();
+      setState(CallState.hearing);
+    }
+    if (result.utterance) finishUtterance(result.utterance);
+    else if (state === CallState.hearing && !detector.hearing) setState(CallState.listening);
     if (state === CallState.listening && !hostAudioInterrupted) {
       ui.detail.textContent = muted ? "Microphone muted."
-        : voiced ? "I hear you. Pause to send, or tap Send voice."
-          : !heardSound && now - captureStartedAt >= 8_000
-            ? "No microphone sound detected. Check your microphone input, then try speaking again."
-            : "Speak naturally. Pause to send, or tap Send voice.";
+        : !heardSound && Date.now() - captureStartedAt >= 8_000
+          ? "No microphone sound detected. Check your microphone input, then try speaking again."
+          : "Speak naturally. I’ll respond after you pause.";
     }
-    if (voiced) {
-      if (!utteranceStartedAt) utteranceStartedAt = now;
-      lastVoiceAt = now;
-    }
-    const utteranceEnded = !muted && gate.sample(level, now);
-    if (shouldInterruptPlayback({ state, level, muted })) stopReplyForBargeIn();
-    if (utteranceEnded || (utteranceStartedAt && now - utteranceStartedAt >= 25_000)) {
-      utteranceStartedAt = 0;
-      lastVoiceAt = now;
-      lastRecorderResetAt = now;
-      finishUtterance();
-    } else if (!utteranceStartedAt && now - lastVoiceAt >= 3_000 && now - lastRecorderResetAt >= 3_000) {
-      // Keep at most a few seconds of silence as VAD pre-roll; never grow an
-      // unbounded MediaRecorder Blob during a long idle call.
-      rotateIdleRecorder();
-      lastRecorderResetAt = now;
-    }
-    monitorFrame = requestAnimationFrame(monitor);
   };
-  monitorFrame = requestAnimationFrame(monitor);
-}
-
-function startRecorder() {
-  if (!stream?.active || closed) return;
-  const preferred = recordingMimeType((type) => MediaRecorder.isTypeSupported?.(type));
-  recorderParts = [];
-  recorder = preferred ? new MediaRecorder(stream, { mimeType: preferred }) : new MediaRecorder(stream);
-  recorder.ondataavailable = (event) => { if (event.data?.size) recorderParts.push(event.data); };
-  recorder.start(200);
-}
-
-function rotateIdleRecorder() {
-  if (!recorder || recorder.state === "inactive" || handlingUtterance) return;
-  const idleRecorder = recorder;
-  idleRecorder.onstop = () => {
-    if (recorder !== idleRecorder || closed) return;
-    recorderParts = [];
-    recorder = null;
-    startRecorder();
-  };
-  idleRecorder.stop();
-}
-
-function discardRecorderSegment() {
-  if (!recorder || recorder.state === "inactive" || handlingUtterance) return;
-  const segment = recorder;
-  segment.onstop = () => {
-    if (recorder !== segment || closed) return;
-    recorderParts = [];
-    recorder = null;
-    startRecorder();
-  };
-  segment.stop();
 }
 
 function unlockAudioOutput() {
@@ -281,66 +229,70 @@ function unlockAudioOutput() {
     if (!Context) throw new Error("This browser cannot play voice audio.");
     audioContext = new Context();
   }
-  if (audioContext.state === "suspended") audioUnlockPromise = audioContext.resume().catch(() => {});
+  if (["suspended", "interrupted"].includes(audioContext.state)) audioUnlockPromise = audioContext.resume().catch(() => {});
   return audioUnlockPromise || Promise.resolve();
 }
 
-async function finishUtterance() {
-  if (!recorder || recorder.state === "inactive" || handlingUtterance) return;
-  handlingUtterance = true;
+async function finishUtterance(frames) {
+  if (closed || ![CallState.listening, CallState.hearing].includes(state)) return;
   const attempt = activeAttempt;
   const turnId = crypto.randomUUID();
   currentTurnId = turnId;
   const callClient = client;
   const signal = aborter?.signal;
-  setState(CallState.thinking);
-  const finished = recorder;
-  finished.onstop = async () => {
-    const blob = new Blob(recorderParts, { type: finished.mimeType || "audio/mp4" });
-    recorderParts = [];
-    recorder = null;
-    try {
-      if (!attemptGuard.isCurrent(attempt) || closed) return;
-      if (!blob.size) throw new Error("The microphone produced no audio. Check your microphone input, then resume the call.");
-      await callClient.sendTurn(blob, turnId, signal);
-      if (!attemptGuard.isCurrent(attempt) || closed) return;
-      const result = await callClient.waitForTurn(turnId, signal);
-      if (!attemptGuard.isCurrent(attempt) || closed) return;
-      if (result.transcript) addTranscript("You", result.transcript);
-      else if (result.user_transcript) addTranscript("You", result.user_transcript);
-      if (result.reply_text) addTranscript(host.botName || "Hermes", result.reply_text);
-      const replyBlob = await callClient.getReplyAudio(turnId, result.audio_url, signal);
-      if (!attemptGuard.isCurrent(attempt) || closed) return;
-      await startReplyPlayback(replyBlob, attempt);
-    } catch (error) {
-      if (attemptGuard.isCurrent(attempt) && error?.name !== "AbortError") {
-        if (error?.status === 422) setState(CallState.listening);
-        else showError(error);
-      }
-    } finally {
-      handlingUtterance = false;
-      if (attemptGuard.isCurrent(attempt) && !closed && state !== CallState.error && state !== CallState.ended) {
-        // Keep capture active after a quiet/no-speech clip and during playback.
-        if (!recorder) startRecorder();
-        if (state === CallState.thinking) setState(CallState.listening);
-      }
-    }
+  const isCurrent = () => attemptGuard.isCurrent(attempt) && !closed && currentTurnId === turnId;
+  let transcriptShown = false;
+  let replyShown = false;
+  const showTranscript = (result) => {
+    if (!isCurrent()) return;
+    const transcript = result.transcript || result.user_transcript;
+    if (transcript && !transcriptShown) { addTranscript("You", transcript); transcriptShown = true; }
+    if (result.reply_text && !replyShown) { addTranscript(host.botName || "Hermes", result.reply_text); replyShown = true; }
   };
-  finished.stop();
+  setState(CallState.thinking);
+  try {
+    const blob = encodeWav(frames, audioContext.sampleRate);
+    showTranscript(await callClient.sendTurn(blob, turnId, signal));
+    if (!isCurrent()) return;
+    const result = await callClient.waitForTurn(turnId, signal, showTranscript);
+    if (!isCurrent()) return;
+    showTranscript(result);
+    if (result.playback_interrupted) { setState(CallState.listening); return; }
+    const replyBlob = await callClient.getReplyAudio(turnId, result.audio_url, signal);
+    if (!isCurrent()) return;
+    await startReplyPlayback(replyBlob, isCurrent);
+  } catch (error) {
+    if (isCurrent() && error?.name !== "AbortError") {
+      if (error?.status === 422) setState(CallState.listening);
+      else showError(error);
+    }
+  }
 }
 
-async function startReplyPlayback(blob, attempt) {
+async function startReplyPlayback(blob, isCurrent) {
   if (!audioContext) throw new Error("Audio output is unavailable. End and restart the call.");
+  const context = audioContext;
   await unlockAudioOutput();
-  const buffer = await audioContext.decodeAudioData(await blob.arrayBuffer());
-  if (!attemptGuard.isCurrent(attempt) || closed) return;
-  const source = audioContext.createBufferSource();
+  if (!isCurrent()) return;
+  const buffer = await context.decodeAudioData(await blob.arrayBuffer());
+  if (!isCurrent()) return;
+  const source = context.createBufferSource();
   source.buffer = buffer;
-  source.connect(audioContext.destination);
+  playbackAnalyser = context.createAnalyser();
+  playbackAnalyser.fftSize = 2048;
+  playbackSamples = new Float32Array(playbackAnalyser.fftSize);
+  source.connect(playbackAnalyser);
+  playbackAnalyser.connect(context.destination);
   source.onended = () => {
-    if (audioSource === source) audioSource = null;
-    if (!closed && state === CallState.speaking) setState(CallState.listening);
+    if (audioSource !== source) return;
+    audioSource = null;
+    source.disconnect();
+    playbackAnalyser.disconnect();
+    playbackAnalyser = null;
+    detector?.reset();
+    if (isCurrent() && state === CallState.speaking) setState(CallState.listening);
   };
+  detector.reset();
   audioSource = source;
   source.start();
   setState(CallState.speaking);
@@ -352,33 +304,38 @@ function stopPlayback() {
   if (!source) return;
   source.onended = null;
   try { source.stop(); } catch {}
+  source.disconnect();
+  playbackAnalyser?.disconnect();
+  playbackAnalyser = null;
 }
 
 function stopReplyForBargeIn() {
   if (state !== CallState.speaking) return;
   stopPlayback();
-  if (currentTurnId) client?.interrupt(currentTurnId).catch(() => {});
+  const interruptedTurn = currentTurnId;
+  currentTurnId = null;
+  if (interruptedTurn) client?.interrupt(interruptedTurn).catch(() => {
+    addTranscript("Call", "Could not confirm the interrupted reply with the service. Its work continues in chat.");
+  });
   setState(CallState.listening);
   haptic("soft");
 }
 
-async function stopReply() {
-  if (state !== CallState.speaking) return;
-  stopPlayback();
-  if (currentTurnId) client?.interrupt(currentTurnId).catch(() => {});
-  setState(CallState.listening);
+function stopReply() {
+  detector?.reset();
+  stopReplyForBargeIn();
 }
 
 function releaseMedia() {
-  cancelAnimationFrame(monitorFrame);
-  analyser = null;
+  if (captureProcessor) captureProcessor.onaudioprocess = null;
+  captureProcessor?.disconnect();
+  captureProcessor = null;
   microphoneSource?.disconnect();
   captureSink?.disconnect();
   microphoneSource = null;
   captureSink = null;
+  detector?.reset();
   ui.shell.style.setProperty("--mic-level", "0");
-  if (recorder && recorder.state !== "inactive") recorder.stop();
-  recorder = null;
   stream?.getTracks().forEach((track) => track.stop());
   stream = null;
   stopPlayback();
@@ -393,9 +350,9 @@ async function hangup({ close = true } = {}) {
   aborter?.abort();
   currentTurnId = null;
   releaseMedia();
+  if (state !== CallState.ended) setState(CallState.ended);
   await client?.disconnect();
   client = null;
-  if (state !== CallState.ended) setState(CallState.ended);
   haptic("medium");
   if (close) {
     try { telegram?.close(); } catch { window.TelegramWebviewProxy?.postEvent("web_app_close", {}); }
@@ -403,18 +360,17 @@ async function hangup({ close = true } = {}) {
   }
 }
 
-ui.call.addEventListener("click", () => state === CallState.speaking ? stopReply() : state === CallState.listening && !muted ? finishUtterance() : startCall());
+ui.call.addEventListener("click", () => state === CallState.speaking ? stopReply() : startCall());
 ui.retry.addEventListener("click", () => state === CallState.error ? startCall() : undefined);
 ui.hangup.addEventListener("click", () => hangup());
 ui.mute.addEventListener("click", () => {
   muted = !muted;
   stream?.getAudioTracks().forEach((track) => { track.enabled = !muted; });
-  resetVoiceActivity();
-  if (muted) discardRecorderSegment();
+  detector?.reset();
+  if (state === CallState.hearing) setState(CallState.listening);
   ui.mute.setAttribute("aria-pressed", String(muted));
   ui.mute.setAttribute("aria-label", muted ? "Unmute microphone" : "Mute microphone");
   ui.muteLabel.textContent = muted ? "Unmute" : "Mute";
-  if (state === CallState.listening) ui.call.disabled = muted;
   ui.privacy.textContent = muted ? "Microphone muted · call stays in this conversation." : "Microphone active · audio is sent securely for this call.";
   haptic();
 });
@@ -433,7 +389,7 @@ ui.transcriptToggle.addEventListener("click", () => {
   haptic("soft");
 });
 ui.computerButton.addEventListener("click", () => {
-  if (!host.canOpenComputer || ![CallState.listening, CallState.thinking, CallState.speaking].includes(state)) return;
+  if (!host.canOpenComputer || ![CallState.listening, CallState.hearing, CallState.thinking, CallState.speaking].includes(state)) return;
   window.TelegramWebviewProxy?.postEvent("hermes_open_computer", {});
 });
 
@@ -467,20 +423,25 @@ function applyTelegramTheme() {
 
 telegram?.onEvent?.("themeChanged", applyTelegramTheme);
 telegram?.onEvent?.("viewportChanged", applyTelegramTheme);
+telegram?.onEvent?.("deactivated", () => {
+  if (state !== CallState.requestingPermission) hangup({ close: false });
+});
 window.addEventListener("pagehide", () => hangup({ close: false }));
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && [CallState.listening, CallState.thinking, CallState.speaking].includes(state)) hangup({ close: false });
+  if (document.hidden && [CallState.connecting, CallState.listening, CallState.hearing, CallState.thinking, CallState.speaking].includes(state)) hangup({ close: false });
 });
 window.addEventListener("HermesHostLifecycle", (event) => {
   if (event.detail?.state === "background") hangup({ close: false });
 });
 window.addEventListener("HermesHostAudioInterruption", (event) => {
   hostAudioInterrupted = Boolean(event.detail?.interrupted);
-  if (!hostAudioInterrupted && event.detail?.shouldResume && audioContext?.state === "suspended") audioContext.resume().catch(() => {});
-  if ([CallState.listening, CallState.thinking, CallState.speaking].includes(state)) {
+  detector?.reset();
+  if (state === CallState.hearing) setState(CallState.listening);
+  if (!hostAudioInterrupted && event.detail?.shouldResume && ["suspended", "interrupted"].includes(audioContext?.state)) audioContext.resume().catch(() => {});
+  if ([CallState.listening, CallState.hearing, CallState.thinking, CallState.speaking].includes(state)) {
     ui.detail.textContent = hostAudioInterrupted
       ? "Audio is temporarily interrupted. Your call is still connected."
-      : state === CallState.speaking ? "Tap the center button to stop the audio." : "Speak naturally. I’ll respond after you pause.";
+      : state === CallState.speaking ? "Speak to interrupt, or tap Stop reply." : "Speak naturally. I’ll respond after you pause.";
   }
 });
 
