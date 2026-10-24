@@ -280,8 +280,10 @@ async function finishUtterance(frames) {
   setState(CallState.thinking);
   try {
     const blob = encodeWav(frames, audioContext.sampleRate);
-    showTranscript(await callClient.sendTurn(blob, turnId, signal));
+    const submitted = await callClient.sendTurn(blob, turnId, signal);
     if (!isCurrent()) return;
+    if (submitted.status === "ignored") { setState(CallState.listening); return; }
+    showTranscript(submitted);
     const result = await callClient.waitForTurn(turnId, signal, showTranscript);
     if (!isCurrent()) return;
     showTranscript(result);

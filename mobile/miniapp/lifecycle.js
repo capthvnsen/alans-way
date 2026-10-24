@@ -59,7 +59,7 @@ export function audioLevel(samples) {
   return Math.sqrt(energy / samples.length);
 }
 
-export function createVoiceDetector({ sampleRate, echoControl = true, preRollMs = 250, silenceMs = 800, minimumSpeechMs = 240, maxUtteranceMs = 25_000 }) {
+export function createVoiceDetector({ sampleRate, echoControl = true, preRollMs = 250, silenceMs = 800, minimumSpeechMs = 280, maxUtteranceMs = 25_000 }) {
   let preRoll = [];
   let preRollSamples = 0;
   let utterance = [];
