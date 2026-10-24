@@ -82,7 +82,7 @@ function render(next) {
   if (!next) return;
   const viewerSettingsChanged = state && next.settingsFieldRevisions?.remoteUrl !== state.settingsFieldRevisions?.remoteUrl;
   state = next;
-  if (state.remoteUrl !== currentUrl || viewerSettingsChanged) connect(state.remoteUrl);
+  if (state.remoteUrl !== currentUrl || (viewerSettingsChanged && !connected)) connect(state.remoteUrl);
   if (rfb) { rfb.viewOnly = !state.remoteControl; if(!state.remoteControl)rfb.blur(); }
   $('control').textContent = state.remoteControl ? 'Stop control' : 'Take control'; $('control').classList.toggle('controlling', state.remoteControl);
   $('control').setAttribute('aria-pressed',String(state.remoteControl));

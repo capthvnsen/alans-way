@@ -205,6 +205,15 @@ test('saving viewer settings restarts cleanly even when the URL is unchanged', (
   view.current().emit('disconnect', { clean: false }); view.retry(2000);
 });
 
+test('saving other addresses leaves a healthy desktop connection alone', () => {
+  const view = viewer();
+  const settings = { remoteUrl: url, remoteControl: false, settingsFieldRevisions: { remoteUrl: 0 } };
+  view.render(settings);
+  view.current().emit('connect');
+  view.render({ ...settings, settingsFieldRevisions: { remoteUrl: 1 } });
+  assert.equal(view.clients.length, 1);
+});
+
 test('submitting credentials keeps the prompt flow and successful authentication restores retries', () => {
   const view = viewer();
   view.connect(url); view.current().emit('credentialsrequired');
