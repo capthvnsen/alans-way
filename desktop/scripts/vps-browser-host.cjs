@@ -501,19 +501,23 @@ async function serve() {
     const wc = tab.view.webContents;
     requireActor(tab, botId, body.epoch, true, overseer);
     if (depth === 0) input.approve(tab, body);
-    const finish = async (payload, opts) => depth > 0 ? payload : { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) };
+    const finish = async (payload, opts) => depth > 0 ? { ...payload, ...(opts?.clicked ? { clicked: opts.clicked } : {}) } : { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) };
     if (body.action === 'batch') {
       if (depth > 0) throw fail('Batches cannot nest.');
       const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
       if (!steps.length) throw fail('batch needs a non-empty steps array (max 25).');
       const results = [], started = Date.now();
-      let lastTarget, sawInput = false;
+      let lastTarget, lastClicked, sawInput = false;
       for (const step of steps) {
         if (!step || typeof step !== 'object') { results.push({ ok: false, error: 'Invalid step.' }); break; }
         if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ ok: false, error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
         try { checkCall(); }
         catch (error) { results.push({ ok: false, code: error.code, error: error.message }); break; }
-        try { results.push({ ok: true, ...(await vpsPerform(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, overseer, 1)) }); }
+        try {
+          const { clicked, ...result } = await vpsPerform(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, overseer, 1);
+          results.push({ ok: true, ...result });
+          if (clicked) lastClicked = clicked;
+        }
         catch (error) { results.push({ ok: false, error: errorMessage(error) }); break; }
         // A step aimed by name reports the ref it resolved to.
         const ref = results.at(-1).ref || step.ref;
@@ -522,7 +526,7 @@ async function serve() {
       }
       // A takeover mid-batch seals the accumulated step results too.
       requireActor(tab, botId, body.epoch, true, overseer);
-      return { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput, held: body.generation })), dispatched: true };
+      return { results, ...(await actionEffect(tab, { target: lastTarget, clicked: lastClicked, settle: sawInput, held: body.generation })), dispatched: true };
     }
     // Page script and DevTools calls are checked in their branches, after the challenge preflight.
     if (body.action !== 'cdp' && body.action !== 'eval') await input.guard(tab, body);
@@ -650,11 +654,12 @@ async function serve() {
       if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
       return finish({ value, dispatched: true });
     }
-    let result = {}, didNavigate;
+    let result = {}, didNavigate, clicked;
     if (INPUT_ACTIONS.has(body.action)) {
-      const { input: _input, cursor, navigated, ...performed } = await input.perform(tab, body, botId);
+      const { input: _input, cursor, navigated, clicked: control, ...performed } = await input.perform(tab, body, botId);
       result = { ...performed, ...(depth === 0 && cursor ? { cursor: { x: cursor.x, y: cursor.y } } : {}) };
       didNavigate = navigated;
+      clicked = control;
     } else if (body.action === 'navigate') {
       await input.clear(tab);
       requireActor(tab, botId, body.epoch, true, overseer);
@@ -674,7 +679,7 @@ async function serve() {
     // A move changes no page state; report it without paying for a read.
     if (body.action === 'move') return depth > 0 ? result : { ...result, effect: { ...EMPTY_EFFECT } };
     return finish(result,
-      { navigated: didNavigate, settle: INPUT_ACTIONS.has(body.action), target: result.ref || body.ref !== undefined || body.selector !== undefined ? { ref: result.ref || body.ref, selector: body.selector } : undefined });
+      { navigated: didNavigate, clicked, settle: INPUT_ACTIONS.has(body.action), target: result.ref || body.ref !== undefined || body.selector !== undefined ? { ref: result.ref || body.ref, selector: body.selector } : undefined });
   }
   const mirror = (() => { try { return JSON.parse(fs.readFileSync(mirrorFile)).bots || {}; } catch { return {}; } })();
   const saveMirror = () => write(mirrorFile, { bots: mirror });

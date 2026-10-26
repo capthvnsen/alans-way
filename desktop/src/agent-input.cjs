@@ -933,7 +933,15 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
           const kind = CLICKS[action];
           // Hover can move or cover the target. Verify identity on the existing
           // tracker round trip, then resolve once more before refusing the click.
-          const verifyHit = (arm) => boundedJs(wc, `(() => { ${arm ? followUpArmExpression() : ''}; const C = ${commitSource(tab.refSeed)}, hit = C.hit(${Number(point.x)}, ${Number(point.y)}); return { look: C.look(hit), matches: ${targeted ? `C.matches(${locateElement(target)}, hit)` : 'true'} }; })()`, 3000).catch(() => null);
+          const verifyHit = (arm) => boundedJs(wc, `(() => {
+            ${arm ? followUpArmExpression() : ''};
+            const C = ${commitSource(tab.refSeed)}, hit = C.hit(${Number(point.x)}, ${Number(point.y)});
+            const el = ${targeted ? locateElement(target) : 'hit'};
+            // The repeat-control hint is best effort; it must never block the click.
+            let clicked;
+            try { const d = el?.nodeType === 1 ? window[Symbol.for(${JSON.stringify(REFS_KEY)})]?.describe?.(el) : null; if (d) clicked = { role: d.role, name: d.name }; } catch {}
+            return { look: C.look(hit), matches: ${targeted ? 'C.matches(el, hit)' : 'true'}, clicked };
+          })()`, 3000).catch(() => null);
           for (let count = 1; count <= kind.count; count++) {
             for (let attempt = 0; attempt < 2; attempt++) {
               dry();
@@ -960,6 +968,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
                 continue;
               }
               if (body[APPROVED]) checkLiveBinding(body, finalHit?.look);
+              extra.clicked = finalHit?.clicked;
               break;
             }
             mouseDown = { point, button: kind.button };
