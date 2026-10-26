@@ -2992,6 +2992,7 @@ async function readJson(req) {
   catch { throw Object.assign(new Error('Invalid JSON.'), { status: 400 }); }
 }
 function startApi() {
+  const takeDesktopLease = process.platform === 'darwin' ? require('./computer.cjs').createDesktopLease() : null;
   apiServer = http.createServer(async (req, res) => {
     const send = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
     // No browser-origin requests or CORS: this endpoint is for the paired native connector.
@@ -3074,6 +3075,8 @@ function startApi() {
             if (computerMatch[2] || req.method !== 'POST') return send(405, { error: 'Use POST /v1/computer/launch.' });
             if (!hostComputer.launch) return send(400, { error: 'Opening an app by name is only supported on Mac.' });
             const body = await readJson(req);
+            const busy = takeDesktopLease?.(botId, nameForBot(botId));
+            if (busy) return send(409, busy);
             return send(200, await hostComputer.launch(body.app, body.path));
           }
           const pid = Number(computerMatch[1]);
@@ -3084,10 +3087,16 @@ function startApi() {
             return send(200, await hostComputer.screenshot(pid, intParam(url, 'maxWidth', 1, 10000), { windowId: intParam(url, 'windowId', 1, 0xffffffff), bot: botId }));
           if (req.method === 'GET' && computerMatch[2] === 'menu') {
             let menuPath; try { menuPath = JSON.parse(url.searchParams.get('path') || '[]'); } catch { throw Object.assign(new Error('path must be a JSON array of menu titles.'), { status: 400 }); }
+            const busy = takeDesktopLease?.(botId, nameForBot(botId));
+            if (busy) return send(409, busy);
             return send(200, await hostComputer.menu(pid, menuPath));
           }
-          if (req.method === 'POST' && computerMatch[2] === 'action')
-            return send(200, await hostComputer.action(botId, pid, await readJson(req)));
+          if (req.method === 'POST' && computerMatch[2] === 'action') {
+            const body = await readJson(req);
+            const busy = takeDesktopLease?.(botId, nameForBot(botId));
+            if (busy) return send(409, busy);
+            return send(200, await hostComputer.action(botId, pid, body));
+          }
           return send(405, { error: 'Method not supported.' });
         });
       }

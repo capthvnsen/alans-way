@@ -19,6 +19,16 @@ function connectorRequest(fetch) {
   });
 }
 
+test('desktop busy is a clear tool error with holder and retry time', async () => {
+  const request = connectorRequest(async () => ({ ok: false, status: 409, text: async () => JSON.stringify({ error: 'desktop_busy', holder: 'Agent A', retryAfter: 12 }) }));
+  await assert.rejects(request('/v1/computer/7/action', 'POST', { action: 'click' }), error => {
+    assert.equal(error.message, 'desktop_busy: The Mac is being used by Agent A; try again in 12 s.');
+    assert.equal(error.browserRequest.status, 409);
+    assert.equal(error.browserRequest.uncertainOutcome, undefined);
+    return true;
+  });
+});
+
 test('open optionally includes a bounded snapshot and keeps its tab receipt when the read fails', { timeout: 10000 }, async (t) => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-open-observation-'));
   const seen = [];
@@ -932,6 +942,7 @@ test('computer tools go through the app API when the connected app advertises co
   assert.match(await call('workspace_computer_action', { pid: 7, action: 'batch', generation: 4, menubar: true, steps: [{ action: 'press', ref: 'a1' }] }), /app-api-marker/);
   const shot = await client.callTool({ name: 'workspace_computer_screenshot', arguments: { pid: 7, maxWidth: 640 } });
   assert.equal(shot.isError, undefined);
+  assert.deepEqual(shot.content[0], { type: 'image', data: 'AAAA', mimeType: 'image/jpeg' });
   assert.match(JSON.parse(shot.content[1].text).note, /^Read only: elsewhere\. Click coordinates stay/);
   const lines = seen.map((entry) => entry.line);
   assert.deepEqual(lines.filter((line) => line !== 'GET /v1/status'), [
@@ -1030,7 +1041,8 @@ test('a cropped browser screenshot reaches the host and returns its coordinate m
   assert.match(mapping.note, /x = crop\.x \+ px \* crop\.width \/ image width/);
   assert.match(mapping.note, /y = crop\.y \+ py \* crop\.height \/ image height/);
   const tool = (await client.listTools()).tools.find(tool => tool.name === 'cua_alans_way_screenshot');
-  assert.match(tool.description, /MEDIA:<path>/);
+  assert.match(tool.description, /MCP image content/);
+  assert.doesNotMatch(tool.description, /Hermes|MEDIA:/);
   assert.match(tool.description, /vision step/);
   assert.match(tool.description, /Defaults to compact jpeg; png keeps alpha/);
   assert.deepEqual(tool.inputSchema.properties.crop.required, ['x', 'y', 'width', 'height']);
