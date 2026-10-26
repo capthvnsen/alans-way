@@ -97,8 +97,8 @@ test('the locate script scrolls only when out of view and never waits on rAF alo
   assert.match(locate, /setTimeout\(r, 80\)/, 'the rAF wait has a timer fallback');
 });
 
-function scrollFixture({ x = 0, y = 0, maxX = 30000, maxY = 30000, challengeAfter = Infinity } = {}) {
-  const f = fixture();
+function scrollFixture({ x = 0, y = 0, maxX = 30000, maxY = 30000, challengeAfter = Infinity, lag = 0, delay } = {}) {
+  const f = fixture({ delay });
   const { CHALLENGE_HIT_SOURCE } = require('../src/browser-page.cjs');
   let wheels = 0;
   const page = { scrollX: x, scrollY: y, innerHeight: 600,
@@ -109,13 +109,20 @@ function scrollFixture({ x = 0, y = 0, maxX = 30000, maxY = 30000, challengeAfte
     const result = await execute(code);
     // The page mock has no DOM for the real challenge scan; stand in a CAPTCHA once enough wheels have landed.
     const probe = code.split(CHALLENGE_HIT_SOURCE).join(`(() => ${wheels >= challengeAfter ? "({ kind: 'recaptcha' })" : 'null'})`);
-    return code.includes('const positions =') || code.includes('const maxY =') ? require('node:vm').runInNewContext(probe, page) : result;
+    if (!code.includes('const positions =') && !code.includes('const maxY =')) return result;
+    // A lagging renderer applies each wheel only after `lag` more looks at the page.
+    for (const wheel of pending.splice(0)) if (wheel.looks-- > 0) pending.push(wheel); else land(wheel);
+    return require('node:vm').runInNewContext(probe, page);
+  };
+  const pending = [];
+  const land = ({ deltaX, deltaY }) => {
+    page.scrollX = Math.max(0, Math.min(maxX, page.scrollX + deltaX));
+    page.scrollY = Math.max(0, Math.min(maxY, page.scrollY + deltaY));
   };
   f.hook(async (_method, params) => {
     if (params.type !== 'mouseWheel') return;
     wheels++;
-    page.scrollX = Math.max(0, Math.min(maxX, page.scrollX + params.deltaX));
-    page.scrollY = Math.max(0, Math.min(maxY, page.scrollY + params.deltaY));
+    if (lag) pending.push({ ...params, looks: lag }); else land(params);
   });
   return { ...f, page };
 }
@@ -132,6 +139,15 @@ test('scroll sends 4584 pixels as three wheel events at the same aim and reports
   assert.deepEqual({ ...result.scroll }, { x: 0, y: 4584, maxY: 30000, atEnd: false });
   assert.ok(f.scripts.find(code => code.includes('const p =')).includes('120'), 'the challenge check uses the existing cursor aim');
   assert.equal((await f.perform({ action: 'move', x: 10, y: 20 })).scroll, undefined, 'other actions keep their reply shape');
+});
+
+test('a wheel the renderer applies late still gets the rest of the scroll', async () => {
+  const waits = [];
+  const f = scrollFixture({ lag: 3, delay: async ms => { waits.push(ms); } });
+  const result = await f.perform({ action: 'scroll', y: 4584 });
+  assert.equal(f.calls.filter(call => call.type === 'mouseWheel').length, 3, 'a slow first wheel is not read as the end of the page');
+  assert.ok(waits.length > 0 && waits.reduce((a, b) => a + b, 0) <= 400 * 2, 'it waits briefly for each late wheel');
+  assert.equal(result.scroll.y, 4584);
 });
 
 test('a challenge that scrolls under the pointer stops the remaining wheel events', async () => {

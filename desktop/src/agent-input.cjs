@@ -1081,8 +1081,14 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
           await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX, deltaY });
           x -= deltaX; y -= deltaY;
           // The wheel ack precedes the scroll; hidden tabs still need a timer fallback.
-          const after = await boundedJs(wc, `new Promise(done => { let read = false; const once = () => { if (!read) { read = true; done(${probe}); } }; setTimeout(once, 80); requestAnimationFrame(() => requestAnimationFrame(once)); })`, 1000).catch(() => null);
+          let after = await boundedJs(wc, `new Promise(done => { let read = false; const once = () => { if (!read) { read = true; done(${probe}); } }; setTimeout(once, 80); requestAnimationFrame(() => requestAnimationFrame(once)); })`, 1000).catch(() => null);
           check();
+          // A busy renderer can apply the wheel after that look, so give it a moment before calling the page stuck.
+          for (let waited = 0; before?.positions && after?.positions === before.positions && waited < 400; waited += 50) {
+            await delay(50);
+            after = await boundedJs(wc, probe, 1000).catch(() => null);
+            check();
+          }
           if (!x && !y) break;
           // Every further wheel needs a fresh look: a frame or an unreadable page keeps the single wheel it had before.
           if (!before?.positions || !after?.positions) break;
