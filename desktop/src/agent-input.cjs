@@ -1051,12 +1051,46 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         if (typeof aim.challenge?.kind === 'string') throw challengePresent(aim.challenge);
         point = { x: aim.x, y: aim.y };
         await armFollowUp();
-        await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: Math.max(-2000, Math.min(2000, body.x || 0)), deltaY: Math.max(-2000, Math.min(2000, body.y || 0)) });
+        let x = Math.max(-20000, Math.min(20000, body.x || 0)), y = Math.max(-20000, Math.min(20000, body.y || 0));
+        // Include panels under the pointer, inside shadow roots too: the document need not move when they scroll.
+        const probe = `(() => {
+          const p = { x: ${point.x}, y: ${point.y} }, challenge = (${CHALLENGE_HIT_SOURCE})([p], false);
+          let el = document.elementFromPoint(p.x, p.y);
+          for (let inner; el && el.shadowRoot && (inner = el.shadowRoot.elementFromPoint(p.x, p.y)) && inner !== el;) el = inner;
+          const positions = [[scrollX, scrollY]];
+          for (; el; el = el.assignedSlot || el.parentElement || el.getRootNode()?.host) {
+            if (/^(IFRAME|FRAME)$/.test(el.tagName)) return { challenge, positions: null };
+            positions.push([el.scrollLeft, el.scrollTop]);
+          }
+          return { challenge, positions: JSON.stringify(positions) };
+        })()`;
+        let before = await boundedJs(wc, probe, 1000).catch(() => null);
+        check();
+        if (typeof before?.challenge?.kind === 'string') throw challengePresent(before.challenge);
+        for (;;) {
+          const deltaX = Math.max(-2000, Math.min(2000, x)), deltaY = Math.max(-2000, Math.min(2000, y));
+          await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX, deltaY });
+          x -= deltaX; y -= deltaY;
+          // The wheel ack precedes the scroll; hidden tabs still need a timer fallback.
+          const after = await boundedJs(wc, `new Promise(done => { let read = false; const once = () => { if (!read) { read = true; done(${probe}); } }; setTimeout(once, 80); requestAnimationFrame(() => requestAnimationFrame(once)); })`, 1000).catch(() => null);
+          check();
+          if (!x && !y) break;
+          // Every further wheel needs a fresh look: a frame or an unreadable page keeps the single wheel it had before.
+          if (!before?.positions || !after?.positions) break;
+          if (typeof after.challenge?.kind === 'string') throw challengePresent(after.challenge);
+          if (after.positions === before.positions) break;
+          before = after;
+        }
         cursor(point, 'scroll');
       }
       if (action !== 'move') await closeFollowUp();
       await watching.settle(likelyNavigation);
       check();
+      if (action === 'scroll') {
+        const scroll = await boundedJs(wc, '(() => { const maxY = Math.max(0, (document.scrollingElement || document.documentElement).scrollHeight - innerHeight); return { x: scrollX, y: scrollY, maxY, atEnd: scrollY >= maxY - 1 }; })()', 1000).catch(() => null);
+        check();
+        if (scroll) extra.scroll = scroll;
+      }
       succeeded = true;
       return { dispatched: true, input: 'tab-cdp', cursor: tab.agentCursor || null, navigated: watching.navigated(), ...extra };
     } finally {
