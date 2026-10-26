@@ -957,6 +957,38 @@ test('computer tools go through the app API when the connected app advertises co
   assert.ok(seen.every((entry) => entry.bot === 'mcp-test'));
 });
 
+test('desktop input tools advertise optional expect_host and accept calls carrying it', { timeout: 8000 }, async (t) => {
+  const { client, seen } = await computerHost(t, ['computer', 'computer-launch-v1'], 'mac');
+  const tools = (await client.listTools()).tools;
+  for (const [name, args, endpoint, forwarded] of [
+    ['workspace_computer_launch', { app: 'Calculator' }, '/v1/computer/launch', { app: 'Calculator' }],
+    ['workspace_computer_action', { pid: 7, action: 'key', key: 'Enter' }, '/v1/computer/7/action', { action: 'key', key: 'Enter', expect_host: 'computer' }],
+  ]) {
+    const schema = tools.find(tool => tool.name === name).inputSchema;
+    assert.deepEqual(schema.properties.expect_host, { type: 'string', enum: ['computer', 'vm'], description: 'Send the host reported by the observation you acted on.' });
+    assert.ok(!schema.required.includes('expect_host'));
+    const reply = await client.callTool({ name, arguments: { ...args, expect_host: 'computer' } });
+    assert.equal(reply.isError, undefined, JSON.stringify(reply));
+    assert.deepEqual(seen.find(item => item.line === 'POST ' + endpoint).body, forwarded);
+  }
+  for (const tool of tools.filter(tool => tool.name.endsWith('_screenshot')))
+    assert.doesNotMatch(tool.description, /Hermes|MEDIA:/);
+});
+
+test('the app computer service accepts expect_host without changing the action', async () => {
+  const { createComputerService } = require('../src/computer-helper.cjs');
+  const seen = [];
+  const service = createComputerService({ act: async (pid, body) => {
+    seen.push({ pid, body });
+    return { results: [{ ok: true }], elements: [] };
+  } });
+  for (const expect_host of [undefined, 'computer', 'vm'])
+    await service.action('test', 7, { action: 'key', key: 'Enter', ...(expect_host ? { expect_host } : {}) });
+  assert.equal(seen.length, 3);
+  assert.deepEqual(seen[1], seen[0]);
+  assert.deepEqual(seen[2], seen[0]);
+});
+
 test('computer tools use the in-process driver when the connected host has no computer endpoint', { timeout: 8000 }, async (t) => {
   const { client, seen } = await computerHost(t, ['tabs', 'snapshot']);
   const text = (await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text;
