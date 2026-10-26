@@ -505,7 +505,10 @@ function fit(view, rect) {
   const next = { x, y, width: Math.max(1, Math.min(Math.round(rect.width), size.width - x)), height: Math.max(1, Math.min(Math.round(rect.height), size.height - y)) };
   const previous = view.getBounds();
   if (Object.keys(next).some(key => next[key] !== previous[key])) view.setBounds(next);
-  if (!view.getVisible()) view.setVisible(true);
+  if (!view.getVisible()) {
+    view.setVisible(true);
+    if (view === remoteView) view.webContents.send('workspace:remote-retry');
+  }
 }
 function backgroundHost(width = 900, height = 700) {
   width = Math.max(900, Math.ceil(width)); height = Math.max(700, Math.ceil(height));
@@ -3326,7 +3329,10 @@ function watchTelegram(wc) {
   wc.on('unresponsive', () => { clearTimeout(hangTimer); watchHang(); });
   wc.on('responsive', () => clearTimeout(hangTimer));
   const stuck = () => telegramStatus === 'offline' || telegramStatus === 'loading';
-  powerMonitor.on('resume', () => { const timer = setTimeout(() => { if (stuck()) telegramRecovery.now(); }, 3000); timer.unref?.(); });
+  powerMonitor.on('resume', () => {
+    if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:remote-retry');
+    const timer = setTimeout(() => { if (stuck()) telegramRecovery.now(); }, 3000); timer.unref?.();
+  });
   let wasOnline = net.isOnline();
   const timer = setInterval(() => {
     const online = net.isOnline();
@@ -3406,6 +3412,9 @@ function createWindow() {
     else if (process.platform === 'linux') { event.preventDefault(); win.minimize(); }
   });
   for (const name of ['show', 'hide', 'minimize', 'restore', 'focus', 'blur']) win.on(name, () => sendPollTier());
+  for (const name of ['show', 'restore', 'focus']) win.on(name, () => {
+    if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:remote-retry');
+  });
   buildMenu();
   startApi();
   // Read the real pointer position, even over native child views or another app.
