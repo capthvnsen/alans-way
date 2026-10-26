@@ -49,10 +49,10 @@ test('invalid list requests and stale container refs fail explicitly', () => {
 });
 
 test('attr fields read a styling or label attribute, and refuse form values', () => {
-  const row = { getAttribute: name => ({ class: 'star-rating  Five', 'data-id': '7', value: 'secret' })[name] ?? null, querySelector: () => null };
-  const code = listReadExpression({ list: { selector: 'p', fields: { rating: { type: 'attr', attr: 'class' }, id: { type: 'attr', attr: 'data-id' }, label: { type: 'attr', attr: 'aria-label' } } } });
-  assert.deepEqual(JSON.parse(JSON.stringify(vm.runInNewContext(code, { document: { querySelector: () => null, querySelectorAll: () => [row] }, URL }).items)), [{ rating: 'star-rating Five', id: '7', label: '' }]);
-  for (const field of [{ type: 'attr', attr: 'value' }, { type: 'attr', attr: 'onclick' }, { type: 'attr', attr: 'href' }, { type: 'attr' }, { type: 'text', attr: 'class' }, { type: 'attr', attr: 'Class' }])
+  const row = { getAttribute: name => ({ class: 'star-rating  Five', 'aria-current': 'page', value: 'secret' })[name] ?? null, querySelector: () => null };
+  const code = listReadExpression({ list: { selector: 'p', fields: { rating: { type: 'attr', attr: 'class' }, id: { type: 'attr', attr: 'aria-current' }, label: { type: 'attr', attr: 'aria-label' } } } });
+  assert.deepEqual(JSON.parse(JSON.stringify(vm.runInNewContext(code, { document: { querySelector: () => null, querySelectorAll: () => [row] }, URL }).items)), [{ rating: 'star-rating Five', id: 'page', label: '' }]);
+  for (const field of [{ type: 'attr', attr: 'value' }, { type: 'attr', attr: 'data-csrf-token' }, { type: 'attr', attr: 'aria-valuetext' }, { type: 'attr', attr: 'onclick' }, { type: 'attr', attr: 'href' }, { type: 'attr' }, { type: 'text', attr: 'class' }, { type: 'attr', attr: 'Class' }])
     assert.throws(() => listReadExpression({ list: { selector: 'p', fields: { x: field } } }), /attr/, JSON.stringify(field));
 });
 

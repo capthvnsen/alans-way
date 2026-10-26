@@ -16,9 +16,10 @@ const SHORT_HREF = `(raw) => {
   } catch { return ''; }
 }`;
 const REFS_KEY = 'hw.refs';
-// Attributes that carry what a page shows only through styling (a star rating
-// in a class name) or labels; not form values, which can hold a typed secret.
-const READABLE_ATTR = /^(?:class|id|title|alt|role|datetime|aria-[a-z]+|data-[a-z0-9_.:-]+)$/;
+// Named attributes that carry what a page shows only through styling (a star
+// rating in a class name) or labels. No data-* or value-like names: those can
+// hold tokens or typed secrets.
+const READABLE_ATTR = /^(?:class|id|title|alt|role|datetime|aria-(?:label|current|checked|selected|pressed|expanded|disabled))$/;
 // Only selectors and typed fields enter this fixed reader; callers cannot supply code.
 function listReadExpression(body) {
   const invalid = message => { throw Object.assign(new Error(message), { status: 400 }); };
@@ -35,7 +36,7 @@ function listReadExpression(body) {
     if (!/^[a-zA-Z][a-zA-Z0-9_]{0,39}$/.test(name) || !field || typeof field !== 'object' ||
         !['text', 'href', 'attr'].includes(field.type) || field.selector !== undefined && !selector(field.selector) ||
         (field.type === 'attr') !== (field.attr !== undefined) || field.attr !== undefined && !READABLE_ATTR.test(field.attr) ||
-        Object.keys(field).some(key => !['type', 'selector', 'attr'].includes(key))) invalid('Each list field needs type text, href, or attr with attr set to class, id, title, alt, role, datetime, an aria- or a data- name, and an optional child selector.');
+        Object.keys(field).some(key => !['type', 'selector', 'attr'].includes(key))) invalid('Each list field needs type text, href, or attr (class, id, title, alt, role, datetime, aria-label, aria-current, aria-checked, aria-selected, aria-pressed, aria-expanded or aria-disabled), and an optional child selector.');
   }
   const bound = (value, fallback, max, min) => {
     if (value === undefined) return fallback;
