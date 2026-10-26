@@ -71,13 +71,21 @@ const compile = makeCompile({ hasDevTools, build });
 
 function createDesktopLease() {
   let holder;
-  return (botId, name) => {
-    if (!botId) return null;
-    const now = Date.now();
-    if (holder && holder.botId !== botId && holder.expiresAt > now)
-      return { error: 'desktop_busy', holder: holder.name, retryAfter: Math.ceil((holder.expiresAt - now) / 1000) };
-    holder = { botId, name: name || botId, expiresAt: now + 20000 };
-    return null;
+  return {
+    take(botId, name) {
+      if (!botId) return null;
+      const now = Date.now();
+      if (holder && holder.botId !== botId && (holder.active || holder.expiresAt > now))
+        return { error: 'desktop_busy', holder: holder.name, retryAfter: holder.active ? 20 : Math.ceil((holder.expiresAt - now) / 1000) };
+      if (!holder || holder.botId !== botId) holder = { botId, active: 0 };
+      holder.name = name || botId;
+      holder.active++;
+      return null;
+    },
+    release(botId) {
+      if (!botId || holder?.botId !== botId) return;
+      if (--holder.active === 0) holder.expiresAt = Date.now() + 20000;
+    },
   };
 }
 
