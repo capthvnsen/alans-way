@@ -271,17 +271,18 @@ for (let attempt = 0; attempt < 5; attempt++) test(`real Chromium: read a code f
   }
 });
 
-test('a screenshot after scrolling 3000px is not blank', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 30000 }, async () => {
+test('a screenshot after a large scroll is not blank and the reply reports its position', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 30000 }, async () => {
   const white = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/white` })).data;
   const stripes = (await api('/v1/tabs', 'POST', { url: `http://test.example:${pa}/stripes` })).data;
   try {
     const blank = await api(`/v1/tabs/${white.id}/screenshot?format=png`);
     assert.equal(blank.status, 200);
-    for (const y of [1500, 1500]) {
-      const scrolled = await api(`/v1/tabs/${stripes.id}/actions`, 'POST', { action: 'scroll', y, epoch: stripes.epoch });
-      assert.equal(scrolled.status, 200, JSON.stringify(scrolled.data));
-    }
-    assert.ok(await until(async () => (await api(`/v1/tabs/${stripes.id}/actions`, 'POST', { action: 'eval', code: 'scrollY', epoch: stripes.epoch })).data.value === 3000), 'the wheel scrolled 3000px');
+    const scrolled = await api(`/v1/tabs/${stripes.id}/actions`, 'POST', { action: 'scroll', y: 4584, epoch: stripes.epoch });
+    assert.equal(scrolled.status, 200, JSON.stringify(scrolled.data));
+    const { scroll } = scrolled.data;
+    assert.ok(scroll.y > 2000, 'the wheel is not silently clamped to 2000px');
+    assert.deepEqual(scroll, { x: 0, y: Math.min(4584, scroll.maxY), maxY: scroll.maxY, atEnd: scroll.maxY <= 4584 });
+    assert.equal((await api(`/v1/tabs/${stripes.id}/actions`, 'POST', { action: 'eval', code: 'scrollY', epoch: stripes.epoch })).data.value, scroll.y);
     const shot = await api(`/v1/tabs/${stripes.id}/screenshot?format=png`);
     assert.equal(shot.status, 200);
     const png = Buffer.from(shot.data.base64, 'base64');

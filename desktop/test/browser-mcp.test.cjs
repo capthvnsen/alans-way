@@ -19,6 +19,16 @@ function connectorRequest(fetch) {
   });
 }
 
+test('desktop busy is a clear tool error with holder and retry time', async () => {
+  const request = connectorRequest(async () => ({ ok: false, status: 409, text: async () => JSON.stringify({ error: 'desktop_busy', holder: 'Agent A', retryAfter: 12 }) }));
+  await assert.rejects(request('/v1/computer/7/action', 'POST', { action: 'click' }), error => {
+    assert.equal(error.message, 'desktop_busy: The Mac is being used by Agent A; try again in 12 s.');
+    assert.equal(error.browserRequest.status, 409);
+    assert.equal(error.browserRequest.uncertainOutcome, undefined);
+    return true;
+  });
+});
+
 test('open optionally includes a bounded snapshot and keeps its tab receipt when the read fails', { timeout: 10000 }, async (t) => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-open-observation-'));
   const seen = [];
@@ -932,6 +942,7 @@ test('computer tools go through the app API when the connected app advertises co
   assert.match(await call('workspace_computer_action', { pid: 7, action: 'batch', generation: 4, menubar: true, steps: [{ action: 'press', ref: 'a1' }] }), /app-api-marker/);
   const shot = await client.callTool({ name: 'workspace_computer_screenshot', arguments: { pid: 7, maxWidth: 640 } });
   assert.equal(shot.isError, undefined);
+  assert.deepEqual(shot.content[0], { type: 'image', data: 'AAAA', mimeType: 'image/jpeg' });
   assert.match(JSON.parse(shot.content[1].text).note, /^Read only: elsewhere\. Click coordinates stay/);
   const lines = seen.map((entry) => entry.line);
   assert.deepEqual(lines.filter((line) => line !== 'GET /v1/status'), [
@@ -944,6 +955,38 @@ test('computer tools go through the app API when the connected app advertises co
   assert.equal(lines.filter((line) => line === 'GET /v1/status').length, 1, 'the decision is cached');
   assert.deepEqual(seen.find((entry) => entry.line === 'POST /v1/computer/7/action').body, { action: 'batch', generation: 4, menubar: true, steps: [{ action: 'press', ref: 'a1' }] });
   assert.ok(seen.every((entry) => entry.bot === 'mcp-test'));
+});
+
+test('desktop input tools advertise optional expect_host and accept calls carrying it', { timeout: 8000 }, async (t) => {
+  const { client, seen } = await computerHost(t, ['computer', 'computer-launch-v1'], 'mac');
+  const tools = (await client.listTools()).tools;
+  for (const [name, args, endpoint, forwarded] of [
+    ['workspace_computer_launch', { app: 'Calculator' }, '/v1/computer/launch', { app: 'Calculator' }],
+    ['workspace_computer_action', { pid: 7, action: 'key', key: 'Enter' }, '/v1/computer/7/action', { action: 'key', key: 'Enter', expect_host: 'computer' }],
+  ]) {
+    const schema = tools.find(tool => tool.name === name).inputSchema;
+    assert.deepEqual(schema.properties.expect_host, { type: 'string', enum: ['computer', 'vm'], description: 'Send the host reported by the observation you acted on.' });
+    assert.ok(!schema.required.includes('expect_host'));
+    const reply = await client.callTool({ name, arguments: { ...args, expect_host: 'computer' } });
+    assert.equal(reply.isError, undefined, JSON.stringify(reply));
+    assert.deepEqual(seen.find(item => item.line === 'POST ' + endpoint).body, forwarded);
+  }
+  for (const tool of tools.filter(tool => tool.name.endsWith('_screenshot')))
+    assert.doesNotMatch(tool.description, /Hermes|MEDIA:/);
+});
+
+test('the app computer service accepts expect_host without changing the action', async () => {
+  const { createComputerService } = require('../src/computer-helper.cjs');
+  const seen = [];
+  const service = createComputerService({ act: async (pid, body) => {
+    seen.push({ pid, body });
+    return { results: [{ ok: true }], elements: [] };
+  } });
+  for (const expect_host of [undefined, 'computer', 'vm'])
+    await service.action('test', 7, { action: 'key', key: 'Enter', ...(expect_host ? { expect_host } : {}) });
+  assert.equal(seen.length, 3);
+  assert.deepEqual(seen[1], seen[0]);
+  assert.deepEqual(seen[2], seen[0]);
 });
 
 test('computer tools use the in-process driver when the connected host has no computer endpoint', { timeout: 8000 }, async (t) => {
@@ -1030,7 +1073,8 @@ test('a cropped browser screenshot reaches the host and returns its coordinate m
   assert.match(mapping.note, /x = crop\.x \+ px \* crop\.width \/ image width/);
   assert.match(mapping.note, /y = crop\.y \+ py \* crop\.height \/ image height/);
   const tool = (await client.listTools()).tools.find(tool => tool.name === 'cua_alans_way_screenshot');
-  assert.match(tool.description, /MEDIA:<path>/);
+  assert.match(tool.description, /MCP image content/);
+  assert.doesNotMatch(tool.description, /Hermes|MEDIA:/);
   assert.match(tool.description, /vision step/);
   assert.match(tool.description, /Defaults to compact jpeg; png keeps alpha/);
   assert.deepEqual(tool.inputSchema.properties.crop.required, ['x', 'y', 'width', 'height']);

@@ -933,7 +933,15 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
           const kind = CLICKS[action];
           // Hover can move or cover the target. Verify identity on the existing
           // tracker round trip, then resolve once more before refusing the click.
-          const verifyHit = (arm) => boundedJs(wc, `(() => { ${arm ? followUpArmExpression() : ''}; const C = ${commitSource(tab.refSeed)}, hit = C.hit(${Number(point.x)}, ${Number(point.y)}); return { look: C.look(hit), matches: ${targeted ? `C.matches(${locateElement(target)}, hit)` : 'true'} }; })()`, 3000).catch(() => null);
+          const verifyHit = (arm) => boundedJs(wc, `(() => {
+            ${arm ? followUpArmExpression() : ''};
+            const C = ${commitSource(tab.refSeed)}, hit = C.hit(${Number(point.x)}, ${Number(point.y)});
+            const el = ${targeted ? locateElement(target) : 'hit'};
+            // The repeat-control hint is best effort; it must never block the click.
+            let clicked;
+            try { const d = el?.nodeType === 1 ? window[Symbol.for(${JSON.stringify(REFS_KEY)})]?.describe?.(el) : null; if (d) clicked = { role: d.role, name: d.name }; } catch {}
+            return { look: C.look(hit), matches: ${targeted ? 'C.matches(el, hit)' : 'true'}, clicked };
+          })()`, 3000).catch(() => null);
           for (let count = 1; count <= kind.count; count++) {
             for (let attempt = 0; attempt < 2; attempt++) {
               dry();
@@ -960,6 +968,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
                 continue;
               }
               if (body[APPROVED]) checkLiveBinding(body, finalHit?.look);
+              extra.clicked = finalHit?.clicked;
               break;
             }
             mouseDown = { point, button: kind.button };
@@ -1051,12 +1060,52 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
         if (typeof aim.challenge?.kind === 'string') throw challengePresent(aim.challenge);
         point = { x: aim.x, y: aim.y };
         await armFollowUp();
-        await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: Math.max(-2000, Math.min(2000, body.x || 0)), deltaY: Math.max(-2000, Math.min(2000, body.y || 0)) });
+        let x = Math.max(-20000, Math.min(20000, body.x || 0)), y = Math.max(-20000, Math.min(20000, body.y || 0));
+        // Include panels under the pointer, inside shadow roots too: the document need not move when they scroll.
+        const probe = `(() => {
+          const p = { x: ${point.x}, y: ${point.y} }, challenge = (${CHALLENGE_HIT_SOURCE})([p], false);
+          let el = document.elementFromPoint(p.x, p.y);
+          for (let inner; el && el.shadowRoot && (inner = el.shadowRoot.elementFromPoint(p.x, p.y)) && inner !== el;) el = inner;
+          const positions = [[scrollX, scrollY]];
+          for (; el; el = el.assignedSlot || el.parentElement || el.getRootNode()?.host) {
+            if (/^(IFRAME|FRAME)$/.test(el.tagName)) return { challenge, positions: null };
+            positions.push([el.scrollLeft, el.scrollTop]);
+          }
+          return { challenge, positions: JSON.stringify(positions) };
+        })()`;
+        let before = await boundedJs(wc, probe, 1000).catch(() => null);
+        check();
+        if (typeof before?.challenge?.kind === 'string') throw challengePresent(before.challenge);
+        for (;;) {
+          const deltaX = Math.max(-2000, Math.min(2000, x)), deltaY = Math.max(-2000, Math.min(2000, y));
+          await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX, deltaY });
+          x -= deltaX; y -= deltaY;
+          // The wheel ack precedes the scroll; hidden tabs still need a timer fallback.
+          let after = await boundedJs(wc, `new Promise(done => { let read = false; const once = () => { if (!read) { read = true; done(${probe}); } }; setTimeout(once, 80); requestAnimationFrame(() => requestAnimationFrame(once)); })`, 1000).catch(() => null);
+          check();
+          // A busy renderer can apply the wheel after that look, so give it a moment before calling the page stuck.
+          for (let waited = 0; before?.positions && after?.positions === before.positions && waited < 400; waited += 50) {
+            await delay(50);
+            after = await boundedJs(wc, probe, 1000).catch(() => null);
+            check();
+          }
+          if (!x && !y) break;
+          // Every further wheel needs a fresh look: a frame or an unreadable page keeps the single wheel it had before.
+          if (!before?.positions || !after?.positions) break;
+          if (typeof after.challenge?.kind === 'string') throw challengePresent(after.challenge);
+          if (after.positions === before.positions) break;
+          before = after;
+        }
         cursor(point, 'scroll');
       }
       if (action !== 'move') await closeFollowUp();
       await watching.settle(likelyNavigation);
       check();
+      if (action === 'scroll') {
+        const scroll = await boundedJs(wc, '(() => { const maxY = Math.max(0, (document.scrollingElement || document.documentElement).scrollHeight - innerHeight); return { x: scrollX, y: scrollY, maxY, atEnd: scrollY >= maxY - 1 }; })()', 1000).catch(() => null);
+        check();
+        if (scroll) extra.scroll = scroll;
+      }
       succeeded = true;
       return { dispatched: true, input: 'tab-cdp', cursor: tab.agentCursor || null, navigated: watching.navigated(), ...extra };
     } finally {
