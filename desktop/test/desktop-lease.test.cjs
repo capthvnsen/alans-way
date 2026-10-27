@@ -1,10 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
 const { createDesktopLease } = require('../src/computer.cjs');
-const { calls, context, READ_BUDGET_MS } = require('../src/call-budget.cjs');
+const { computerRoutes } = require('./computer-routes-fixture.cjs');
 
 test('desktop input takes, refreshes and expires a lease by bot ID', t => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
@@ -20,29 +17,6 @@ test('desktop input takes, refreshes and expires a lease by bot ID', t => {
   assert.equal(take('b'), null);
   assert.deepEqual(take('a'), { error: 'desktop_busy', holder: 'b', retryAfter: 20 });
 });
-
-function computerRoutes(driver = {}) {
-  const seen = [];
-  const source = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
-  const routes = source.slice(source.indexOf('const computerMatch ='), source.indexOf("const match = /^\\/v1\\/tabs"));
-  assert.ok(routes.includes('hostComputer.action'), 'exercise the actual computer route table');
-  const route = vm.runInNewContext(`async (req) => {
-    const url = new URL(req.url, 'http://127.0.0.1');
-    const botId = req.headers['x-hermes-bot'] || '';
-    const send = (status, body) => ({status, body});
-    ${routes}
-  }`, {
-    URL, AbortController, process: { platform: 'darwin' },
-    res: { on() {} }, calls, context, READ_BUDGET_MS,
-    readJson: async req => req.body || {}, intParam: () => undefined,
-    desktopLease: createDesktopLease(), nameForBot: id => id === 'a' ? 'Agent A' : '',
-    hostComputer: { ...Object.fromEntries(['apps', 'launch', 'snapshot', 'screenshot', 'menu', 'action'].map(verb => [verb, async () => { seen.push(verb); return { ok: true }; }])), ...driver },
-  });
-  return {
-    seen,
-    request: async (url, botId = 'a', method = 'GET', headers = {}) => JSON.parse(JSON.stringify(await route({ url, method, headers: { ...headers, 'x-hermes-bot': botId } }))),
-  };
-}
 
 for (const [endpoint, method] of [['launch', 'POST'], ['7/menu', 'GET'], ['7/action', 'POST']]) {
   test(`${endpoint} keeps the lease until all holder requests complete, then expires after 20 idle seconds`, async t => {

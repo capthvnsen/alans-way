@@ -180,7 +180,7 @@ const recordings = recorder.createRecordingStore(path.join(app.getPath('userData
 let pointerTimer, activityTimer, idleTimer, captchaTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, vmUpdates: {}, versionCache: {},
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -2993,6 +2993,18 @@ async function readJson(req) {
 }
 function startApi() {
   const desktopLease = process.platform === 'darwin' ? require('./computer.cjs').createDesktopLease() : null;
+  const desktopApproval = require('./desktop-approval.cjs').createDesktopApproval({
+    trusted: (id) => isOverseer(id) || prefs.bots.some((bot) => bot.id === id) || prefs.desktopTrustedBots.includes(id),
+    ask: async (name, id, signal) => {
+      app.dock?.bounce('critical');
+      const { response } = await dialog.showMessageBox({ type: 'question', signal, buttons: ['Deny', 'Allow', 'Always allow'], defaultId: 0, cancelId: 0,
+        message: `Let ${name} use the apps on this computer?`,
+        detail: `The agent "${name}" (ID ${id}) wants to click, type and press keys in your apps through Alan's Workspace. Allow lasts until it has been idle for 30 minutes. Hermes bots in your Workspace never ask.` });
+      if (signal.aborted) return null;
+      if (response === 2) { prefs.desktopTrustedBots = [...new Set([...prefs.desktopTrustedBots, id])]; savePreferences(); }
+      return response > 0;
+    },
+  });
   apiServer = http.createServer(async (req, res) => {
     const send = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
     // No browser-origin requests or CORS: this endpoint is for the paired native connector.
@@ -3063,6 +3075,8 @@ function startApi() {
       // Session 0 and see no windows. Same verbs the MCP connector wraps.
       const computerMatch = /^\/v1\/computer\/(apps|launch|\d{1,10})(?:\/(snapshot|screenshot|action|menu))?$/.exec(url.pathname);
       if (computerMatch) {
+        let agentName = nameForBot(botId);
+        if (!agentName) try { agentName = decodeURIComponent(String(req.headers['x-hermes-bot-name'] || '')).replace(/\p{C}/gu, '').slice(0, 80); } catch { /* the bot ID names it instead */ }
         const controller = new AbortController();
         res.on('close', () => { if (!res.writableFinished) controller.abort(); });
         return await calls.run(context(req.headers['x-alans-way-remaining-ms'] === undefined ? undefined : Number(req.headers['x-alans-way-remaining-ms']), controller.signal, req.method === 'GET' ? READ_BUDGET_MS : Infinity), async () => {
@@ -3075,7 +3089,9 @@ function startApi() {
             if (computerMatch[2] || req.method !== 'POST') return send(405, { error: 'Use POST /v1/computer/launch.' });
             if (!hostComputer.launch) return send(400, { error: 'Opening an app by name is only supported on Mac.' });
             const body = await readJson(req);
-            const busy = desktopLease?.take(botId, nameForBot(botId));
+            const refused = await desktopApproval?.check(botId, agentName);
+            if (refused) return send(403, refused);
+            const busy = desktopLease?.take(botId, agentName);
             if (busy) return send(409, busy);
             try { return send(200, await hostComputer.launch(body.app, body.path)); }
             finally { desktopLease?.release(botId); }
@@ -3088,14 +3104,16 @@ function startApi() {
             return send(200, await hostComputer.screenshot(pid, intParam(url, 'maxWidth', 1, 10000), { windowId: intParam(url, 'windowId', 1, 0xffffffff), bot: botId }));
           if (req.method === 'GET' && computerMatch[2] === 'menu') {
             let menuPath; try { menuPath = JSON.parse(url.searchParams.get('path') || '[]'); } catch { throw Object.assign(new Error('path must be a JSON array of menu titles.'), { status: 400 }); }
-            const busy = desktopLease?.take(botId, nameForBot(botId));
+            const busy = desktopLease?.take(botId, agentName);
             if (busy) return send(409, busy);
             try { return send(200, await hostComputer.menu(pid, menuPath)); }
             finally { desktopLease?.release(botId); }
           }
           if (req.method === 'POST' && computerMatch[2] === 'action') {
             const body = await readJson(req);
-            const busy = desktopLease?.take(botId, nameForBot(botId));
+            const refused = await desktopApproval?.check(botId, agentName);
+            if (refused) return send(403, refused);
+            const busy = desktopLease?.take(botId, agentName);
             if (busy) return send(409, busy);
             try { return send(200, await hostComputer.action(botId, pid, body)); }
             finally { desktopLease?.release(botId); }
