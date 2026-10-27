@@ -245,11 +245,22 @@ app.whenReady().then(async () => {
     const { status, data } = await apiRaw(route, method, body, actor);
     assert.ok(status < 300, data.error); return data;
   };
+  // Desktop input from an agent missing from the bot list asks the user first; a denial sends nothing.
+  const showMessageBox = dialog.showMessageBox;
+  const prompts = [];
+  dialog.showMessageBox = async (options) => { prompts.push(options); return { response: 0 }; };
+  const unlisted = await apiRaw('/v1/computer/1/action', 'POST', { action: 'press', ref: 'c1', generation: 1 });
+  dialog.showMessageBox = showMessageBox;
+  assert.deepEqual(unlisted, { status: 403, data: { error: 'desktop_approval_denied', name: 'capture-regression' } });
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0].message, /Let capture-regression use the apps on this computer\?/);
+  assert.deepEqual(prompts[0].buttons, ['Deny', 'Allow', 'Always allow']);
+  console.log('PASS: desktop input from an unlisted agent asks the user and a denial sends nothing.');
   // Host computer use validates a request before any helper runs, so this holds without Accessibility.
-  const noGeneration = await apiRaw('/v1/computer/1/action', 'POST', { action: 'press', ref: 'c1' });
+  const noGeneration = await apiRaw('/v1/computer/1/action', 'POST', { action: 'press', ref: 'c1' }, '123');
   assert.equal(noGeneration.status, 409);
   assert.equal(noGeneration.data.code, 'stale_ref');
-  const badComputerAction = await apiRaw('/v1/computer/1/action', 'POST', { action: 'teleport' });
+  const badComputerAction = await apiRaw('/v1/computer/1/action', 'POST', { action: 'teleport' }, '123');
   assert.equal(badComputerAction.status, 400);
   assert.equal(badComputerAction.data.code, 'bad_request');
   console.log('PASS: computer actions that use a ref need the snapshot generation, and unknown actions are refused.');
