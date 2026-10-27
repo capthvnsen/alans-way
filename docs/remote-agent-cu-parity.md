@@ -4,7 +4,7 @@ Audit date: 2026-10-25. Report only; no runtime changes or live desktop experime
 
 ## Sources and scope
 
-Plugin anchors below use `plugin/` for `/Users/alex/alans-way-agents` at
+Plugin anchors below use `plugin/` for a local `alans-way-agents` checkout at
 `origin/release/plugin-0.21.10`, commit
 `6dfac6c50ed5d9347414e42dc9ca5d8c4d1e5387`. All plugin source was read with
 `git show`, not from the stale checkout. App anchors use repository-relative
@@ -40,6 +40,23 @@ smallest proposed remedy follow each rank.
 | 6 | Provider adds read recovery and actionable error messages over shared timeouts. | Medium success: avoids replaying uncertain writes; handles child restarts. | Client timeout/reconnect settings plus a short read-once recovery instruction; preserve shared budgets. See §6. |
 | 7 | Provider offers app-name resolution, foreground convenience, and a Save-dialog guard. | Medium success, low-to-medium speed. | Document launch/activate and native dialog shortcuts; move the Save-name validation into the shared service if enforced parity is required. See §7. |
 | 8 | Some exposed descriptions still assume Hermes. | Medium success: a raw client may look for nonexistent tools or mishandle images. | Make descriptions conditional/client-neutral in the router and `browser-mcp.cjs`. See §8. |
+
+## Status (2026-10-26)
+
+The audit below is unchanged; this table tracks what was done since. User guide: [desktop/docs/remote-agents.md](../desktop/docs/remote-agents.md).
+
+| Rank | Status | What changed |
+| --- | --- | --- |
+| 1 | Closed | The app asks the user on their computer before desktop input (launch, action) from any agent not in the Workspace bot list or overseer list: Deny, Allow (until 30 idle minutes), Always allow. On by default; unanswered or denied calls send nothing. Enforced in the app, so it works over SSH and the HTTP bridge, which carries no elicitation. `desktop/src/desktop-approval.cjs`, `desktop/src/main.cjs` computer routes. |
+| 2 | Closed (schema) | `expect_host` is advertised on launch and action, with mismatch recovery advice. Automatic host binding without model bookkeeping stays a router change. |
+| 3 | Closed | Generic custom instructions in the user guide; the shared observations already existed. |
+| 4 | Open, by design | Element numbering and the change cache stay a Hermes adapter feature. Raw clients use refs, generations and `changed`/`removed` as documented in the tool schemas. |
+| 5 | Open, by design | Automatic pixel selection stays in the adapter. Images are already MCP content; geometry is in every screenshot reply. |
+| 6 | Closed | Desktop tool errors carry next-step advice by code (stale ref/window, in front, no window, locked, permission, off limits, not found, unresponsive, timeout, focus); `desktop_busy` and both approval errors say what to do and that nothing was sent; the troubleshooting table covers host mismatch and transport failures. |
+| 7 | Closed (Save guard) | The shared computer service refuses a folder path typed by ref into a Save dialog name field before any input. App-name resolution stays a Hermes convenience. |
+| 8 | Closed (connector) | Connector descriptions no longer assume Telegram or Hermes-only skill tools. The router's desktop guidance is fixed on the plugin side (alans-way-agents `capthvnsen/remote-agent-setup`). |
+
+The desktop lease (one agent drives the desktop at a time, HTTP 409 `desktop_busy`) also landed; it was design work, not an existing Hermes advantage (§6).
 
 ### 1. Separate desktop permission from browser approval
 
