@@ -139,7 +139,7 @@ if (typeof electron === 'string') {
   const realLoad = Module._load;
   Module._load = function(request, parent, isMain) {
     if (request === 'electron') return facade;
-    if (parent?.filename.startsWith(target) && /(?:^|\/)computer\.cjs$/.test(request)) return { service: new Proxy({ close() {} }, { get: (o, key) => o[key] || deny(`host computer ${String(key)}`) }) };
+    if (parent?.filename.startsWith(target) && /(?:^|\/)computer\.cjs$/.test(request)) return { service: new Proxy({ close() {} }, { get: (o, key) => o[key] || deny(`host computer ${String(key)}`) }), createDesktopLease: () => ({ take: () => null, release() {} }) };
     return realLoad.call(this, request, parent, isMain);
   };
   const handles = new Map();
