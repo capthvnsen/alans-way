@@ -22,7 +22,8 @@ function connectorRequest(fetch) {
 test('desktop busy is a clear tool error with holder and retry time', async () => {
   const request = connectorRequest(async () => ({ ok: false, status: 409, text: async () => JSON.stringify({ error: 'desktop_busy', holder: 'Agent A', retryAfter: 12 }) }));
   await assert.rejects(request('/v1/computer/7/action', 'POST', { action: 'click' }), error => {
-    assert.equal(error.message, 'desktop_busy: The Mac is being used by Agent A; try again in 12 s.');
+    assert.match(error.message, /^desktop_busy: The Mac is being used by Agent A; try again in 12 s\. Reads still work\..*Nothing was sent\.$/);
+    assert.equal(error.browserRequest.code, 'desktop_busy');
     assert.equal(error.browserRequest.status, 409);
     assert.equal(error.browserRequest.uncertainOutcome, undefined);
     return true;
@@ -251,7 +252,7 @@ test('public recovery guidance limits retries to reads and preserves uncertain m
   for (const sentence of [
     '- Consequential approval requires a fresh observed ref or unique exact name. If approval_invalid or page_changed reports a changed document/target, take a fresh snapshot, review it, and request a new approval; an old approval cannot move to a continued tab. approval_binding_unavailable requires updating the browser host/connector before approving again.',
     '- When automatic takeover is enabled and the human took over a tab on their computer, act or claim: the app hands it back to you (waiting up to 10s while they type) and shows them a Take back button. Do not ask first. An action is checked before it takes the tab, so a malformed one, an epoch or generation from before their takeover or page change (stale_control_epoch: inspect current control and epoch, then follow the current control policy) or one the page refuses (a missing control, a CAPTCHA) leaves the tab with them. human_took_tab means they grabbed it during your call: inspect completed effects and current control before deciding on another action; uncertain input is not permission to repeat it. Only awaiting_human (you handed it over), recording_in_progress (they are recording a task), human_took_back (they pressed Take back; leave it for a minute) or human_has_control (automatic takeover is off, or a VM tab) keep it theirs: open your own tab or tell them what you need. Never ask the user to hand a tab back unless a call answered human_has_control.',
-    "- When only the human can continue (a CAPTCHA, a login, a 2FA code, card details, or a page they must review), release with a reason and a short note saying what to do. The app shows them a banner and a notification, and the tab stays theirs until they press Give back in Alan's Workspace or 30 minutes pass, on the user's computer and on the VM alike. Until then calls answer awaiting_human, and after the give-back human_returned: read the tab for the fresh epoch. Also tell the user in Telegram what you need.",
+    "- When only the human can continue (a CAPTCHA, a login, a 2FA code, card details, or a page they must review), release with a reason and a short note saying what to do. The app shows them a banner and a notification, and the tab stays theirs until they press Give back in Alan's Workspace or 30 minutes pass, on the user's computer and on the VM alike. Until then calls answer awaiting_human, and after the give-back human_returned: read the tab for the fresh epoch. Also tell the user in your chat what you need.",
   ]) assert.ok(actionDescription.split('\n').includes(sentence), 'approval, takeover and handback wording stays intact');
 });
 
@@ -965,7 +966,9 @@ test('desktop input tools advertise optional expect_host and accept calls carryi
     ['workspace_computer_action', { pid: 7, action: 'key', key: 'Enter' }, '/v1/computer/7/action', { action: 'key', key: 'Enter', expect_host: 'computer' }],
   ]) {
     const schema = tools.find(tool => tool.name === name).inputSchema;
-    assert.deepEqual(schema.properties.expect_host, { type: 'string', enum: ['computer', 'vm'], description: 'Send the host reported by the observation you acted on.' });
+    const { description, ...expectHost } = schema.properties.expect_host;
+    assert.deepEqual(expectHost, { type: 'string', enum: ['computer', 'vm'] });
+    assert.match(description, /^Send the host reported by the observation you acted on\. A host mismatch refusal .*fresh snapshot/);
     assert.ok(!schema.required.includes('expect_host'));
     const reply = await client.callTool({ name, arguments: { ...args, expect_host: 'computer' } });
     assert.equal(reply.isError, undefined, JSON.stringify(reply));
