@@ -1,4 +1,4 @@
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -51,14 +51,55 @@ function toCdpCookie(c) {
   return { name: c.name, value: c.value, domain: c.domain, path: c.path || '/', expires: session ? -1 : c.expirationDate,
     httpOnly: c.httpOnly === true, secure: c.secure === true, session, ...(SAME_SITE[c.sameSite] ? { sameSite: SAME_SITE[c.sameSite] } : {}) };
 }
+// The reverse, for a page moved back from the VM: only cookies the page's own
+// URL would send, so a VM cannot plant sign-ins for other sites on this
+// computer. Partitioned (CHIPS) cookies are left out; Electron cannot set them.
+const ELECTRON_SAME_SITE = { None: 'no_restriction', Lax: 'lax', Strict: 'strict' };
+function toElectronCookies(cookies, pageUrl) {
+  let page;
+  try { page = new URL(pageUrl); } catch { return []; }
+  if (!/^https?:$/.test(page.protocol)) return [];
+  const host = page.hostname.toLowerCase();
+  return (Array.isArray(cookies) ? cookies : []).filter((c) => {
+    if (!c || typeof c.name !== 'string' || typeof c.value !== 'string' || c.name.length > 4096 || c.value.length > 8192 || c.partitionKey) return false;
+    const domain = String(c.domain || '').toLowerCase();
+    const bare = domain.replace(/^\./, '');
+    return !!bare && (host === bare || (domain.startsWith('.') && host.endsWith('.' + bare))) && (c.secure !== true || page.protocol === 'https:');
+  }).slice(0, 150).map((c) => {
+    const session = c.session === true || !(Number(c.expires) > 0);
+    const path = typeof c.path === 'string' && c.path.startsWith('/') ? c.path : '/';
+    return { url: `${page.protocol}//${host}${path}`, name: c.name, value: c.value, path, secure: c.secure === true, httpOnly: c.httpOnly === true,
+      ...(String(c.domain).startsWith('.') ? { domain: c.domain } : {}), ...(session ? {} : { expirationDate: Number(c.expires) }),
+      ...(ELECTRON_SAME_SITE[c.sameSite] ? { sameSite: ELECTRON_SAME_SITE[c.sameSite] } : {}) };
+  });
+}
+// Sign-in cookies only travel to a VM reached over the tailnet: a Tailscale
+// address (100.64.0.0/10, fd7a:115c:a1e0::/48) or a MagicDNS name. sshHost can
+// be an ~/.ssh/config alias, so callers pass ssh -G's resolved hostname.
+function isTailnetHost(value) {
+  const host = String(value || '').trim().replace(/^[^@]*@/, '').replace(/^\[|\]$/g, '').toLowerCase();
+  const v4 = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) return Number(v4[1]) >= 64 && Number(v4[1]) <= 127 && Number(v4[2]) <= 255 && Number(v4[3]) <= 255;
+  return /^fd7a:115c:a1e0:/.test(host) || /^[a-z0-9-]+(\.[a-z0-9-]+)*\.ts\.net\.?$/.test(host);
+}
+const sshResolvedHostname = (configText) => (/^hostname\s+(\S+)\s*$/m.exec(String(configText || '')) || [])[1] || '';
+// Resolves the hostname ssh will actually dial for sshHost; '' when ssh -G fails.
+function resolveSshHostname(sshHost, run = (args) => new Promise((resolve) => {
+  execFile('ssh', args, { timeout: 3000 }, (error, stdout) => resolve(error ? '' : stdout));
+})) {
+  if (!isSshTarget(sshHost)) return Promise.resolve('');
+  return run(['-G', sshHost]).then(sshResolvedHostname);
+}
 // collect() resolves to Map<bot, tabs[]> for the agent-controlled tabs now,
 // or null while there is nothing to mirror to (VM not configured or offline).
 // Only a bot whose tabs changed is pushed, and a bot that lost all its agent
 // tabs is cleared once so a stale mirror cannot resurrect them. On the first
 // successful connect every bot in bots() is cleared the same way, which also
 // wipes mirrors left on the VM by an earlier app session.
-function createMirrorPusher({ collect, push, bots = () => [] }) {
-  const sent = new Map();
+// An unchanged mirror is still resent every refreshMs so the VM's 24 hour
+// freshness check never expires a long-running task.
+function createMirrorPusher({ collect, push, bots = () => [], refreshMs = 3600000, now = Date.now }) {
+  const sent = new Map(), sentAt = new Map();
   let busy = false, pendingClear;
   return async function run() {
     if (busy) return;
@@ -70,11 +111,11 @@ function createMirrorPusher({ collect, push, bots = () => [] }) {
       for (const bot of new Set([...current.keys(), ...sent.keys(), ...pendingClear])) {
         const tabs = current.get(bot) || [];
         const signature = JSON.stringify(tabs);
-        if (tabs.length ? sent.get(bot) === signature : !sent.has(bot) && !pendingClear.has(bot)) continue;
+        if (tabs.length ? sent.get(bot) === signature && now() - sentAt.get(bot) < refreshMs : !sent.has(bot) && !pendingClear.has(bot)) continue;
         try {
           await push(bot, tabs);
           pendingClear.delete(bot);
-          if (tabs.length) sent.set(bot, signature); else sent.delete(bot);
+          if (tabs.length) { sent.set(bot, signature); sentAt.set(bot, now()); } else sent.delete(bot);
         } catch { /* the VM may be unreachable; the next tick retries */ }
       }
     } catch { /* a page that vanished mid-read is picked up on the next tick */ } finally { busy = false; }
@@ -152,4 +193,4 @@ function createVpsBrowser({ getConfig }) {
   }
   return { request };
 }
-module.exports = { createVpsBrowser, remoteCommand, asciiJson, checkScriptPath, sshArgs, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin };
+module.exports = { createVpsBrowser, remoteCommand, asciiJson, checkScriptPath, sshArgs, backoffDelay, toCdpCookie, toElectronCookies, isTailnetHost, sshResolvedHostname, resolveSshHostname, createMirrorPusher, prepareMirrorTabs, settleWithin };

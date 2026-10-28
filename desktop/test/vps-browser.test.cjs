@@ -1,7 +1,7 @@
 const test = require('node:test');
 const { posixCommand } = require('../src/remote-shell.cjs');
 const assert = require('node:assert/strict');
-const { createVpsBrowser, remoteCommand, asciiJson, sshArgs, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('../src/vps-browser.cjs');
+const { createVpsBrowser, remoteCommand, asciiJson, sshArgs, backoffDelay, toCdpCookie, toElectronCookies, isTailnetHost, sshResolvedHostname, resolveSshHostname, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('../src/vps-browser.cjs');
 
 test('VPS SSH failures include a bounded stderr tail', async () => {
   const browser = createVpsBrowser({ getConfig: () => ({ sshHost: '127.0.0.1', scriptPath: '/nonexistent/vps-browser-host.cjs', sudo: false }) });
@@ -144,3 +144,49 @@ test('a bad script path has a readable reason before anything is sent', () => {
   assert.match(checkScriptPath("/x/it's.cjs"), /Invalid VPS browser script path/);
 });
 
+
+test('an unchanged mirror is resent once an hour so the VM never ages it out', async () => {
+  let clock = 0;
+  const pushed = [];
+  const run = createMirrorPusher({ now: () => clock, collect: async () => new Map([['a', [{ id: 't1', url: 'https://a.example/' }]]]), push: async (bot) => pushed.push(bot) });
+  await run();
+  clock = 3599999;
+  await run();
+  assert.equal(pushed.length, 1);
+  clock = 3600000;
+  await run();
+  assert.equal(pushed.length, 2, 'refreshed after an hour unchanged');
+});
+
+test('sign-ins only travel to a tailnet address or MagicDNS name', async () => {
+  for (const host of ['100.64.0.1', 'me@100.101.102.103', '100.127.255.255', 'fd7a:115c:a1e0::1', '[fd7a:115c:a1e0:ab12::5]', 'vm.tail1234.ts.net', 'root@orgo.tailnet-x.ts.net'])
+    assert.equal(isTailnetHost(host), true, host);
+  for (const host of ['', '77.42.86.93', '100.63.255.255', '100.128.0.1', '100.64.0.256', '10.0.0.5', 'vm.example.com', 'ts.net.evil.com', 'fd7a:115c:a1e1::1', 'orgo'])
+    assert.equal(isTailnetHost(host), false, host);
+  assert.equal(sshResolvedHostname('user root\nhostname 100.88.1.2\nport 22\n'), '100.88.1.2');
+  assert.equal(sshResolvedHostname('port 22'), '');
+  const seen = [];
+  assert.equal(await resolveSshHostname('orgo', async (args) => { seen.push(args); return 'hostname orgo.tail1.ts.net\n'; }), 'orgo.tail1.ts.net');
+  assert.deepEqual(seen, [['-G', 'orgo']]);
+  assert.equal(await resolveSshHostname('-oProxyCommand=x', async () => { throw new Error('never run'); }), '', 'an option-shaped host never reaches ssh');
+});
+
+test('cookies moved back from the VM are limited to the page they belong to', () => {
+  const base = { value: 'v', path: '/', httpOnly: true, secure: true, session: false, expires: 1900000000, sameSite: 'Lax' };
+  const set = toElectronCookies([
+    { ...base, name: 'sid', domain: '.shop.example' },
+    { ...base, name: 'host', domain: 'www.shop.example', session: true, expires: -1, sameSite: 'None', path: '/cart' },
+    { ...base, name: 'other', domain: '.bank.example' },
+    { ...base, name: 'sibling', domain: 'api.shop.example' },
+    { ...base, name: 'chips', domain: '.shop.example', partitionKey: { topLevelSite: 'https://x.example' } },
+    { ...base, name: 'evil', domain: '.example' + 'x' },
+  ], 'https://www.shop.example/cart?id=1');
+  assert.deepEqual(set.map((c) => c.name), ['sid', 'host']);
+  assert.deepEqual(set[0], { url: 'https://www.shop.example/', name: 'sid', value: 'v', path: '/', secure: true, httpOnly: true, domain: '.shop.example', expirationDate: 1900000000, sameSite: 'lax' });
+  assert.equal(set[1].domain, undefined, 'a host-only cookie stays host-only');
+  assert.equal(set[1].expirationDate, undefined, 'a session cookie stays a session cookie');
+  assert.equal(set[1].url, 'https://www.shop.example/cart');
+  assert.deepEqual(toElectronCookies([{ ...base, name: 'sid', domain: 'shop.example' }], 'http://shop.example/'), [], 'a Secure cookie never lands on an http page');
+  assert.deepEqual(toElectronCookies([{ ...base, name: 'sid', domain: 'shop.example' }], 'file:///etc/passwd'), []);
+  assert.deepEqual(toElectronCookies('nope', 'https://shop.example/'), []);
+});
