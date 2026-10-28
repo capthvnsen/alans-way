@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-28T04:53:11.776Z",
+  "generatedAt": "2026-10-28T05:07:07.700Z",
   "runs": [
     {
       "mode": "oracle",
@@ -50,6 +50,7 @@
           "respBytesMean": 15038.266666666666,
           "turnsMean": null,
           "tokensPerSolved": null,
+          "usageMissing": 0,
           "costPerSolvedUsd": null
         },
         "public": {
@@ -64,6 +65,7 @@
           "respBytesMean": 24209.541666666668,
           "turnsMean": null,
           "tokensPerSolved": null,
+          "usageMissing": 0,
           "costPerSolvedUsd": null
         },
         "fixture": {
@@ -78,6 +80,7 @@
           "respBytesMean": 8924.083333333334,
           "turnsMean": null,
           "tokensPerSolved": null,
+          "usageMissing": 0,
           "costPerSolvedUsd": null
         }
       }
@@ -99,6 +102,7 @@
           "respBytesMean": 421.1,
           "turnsMean": null,
           "tokensPerSolved": null,
+          "usageMissing": 0,
           "costPerSolvedUsd": null
         },
         "public": {
@@ -113,6 +117,7 @@
           "respBytesMean": 449.875,
           "turnsMean": null,
           "tokensPerSolved": null,
+          "usageMissing": 0,
           "costPerSolvedUsd": null
         },
         "fixture": {
@@ -127,6 +132,7 @@
           "respBytesMean": 401.9166666666667,
           "turnsMean": null,
           "tokensPerSolved": null,
+          "usageMissing": 0,
           "costPerSolvedUsd": null
         }
       }
@@ -134,7 +140,8 @@
   ],
   "comparisons": [],
   "validity": {
-    "nullArmPasses": []
+    "nullArmPasses": [],
+    "mixedLabels": []
   },
   "tasks": {
     "oracle-local": {
@@ -151,6 +158,7 @@
         "respBytesMean": 5804,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-wiki-search-extract": {
@@ -166,6 +174,7 @@
         "respBytesMean": 16601,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-wiki-multihop": {
@@ -181,6 +190,7 @@
         "respBytesMean": 12108,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-books-pagination": {
@@ -196,6 +206,7 @@
         "respBytesMean": 30425,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-quotes-infinite-scroll": {
@@ -211,6 +222,7 @@
         "respBytesMean": 6515.333333333333,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-js-prompt": {
@@ -226,6 +238,7 @@
         "respBytesMean": 6552,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-shadow-switch": {
@@ -241,6 +254,7 @@
         "respBytesMean": 61699,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-iframe-datepicker": {
@@ -256,6 +270,7 @@
         "respBytesMean": 53972,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-shadow-nested": {
@@ -271,6 +286,7 @@
         "respBytesMean": 3947,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-iframe-decoy": {
@@ -286,6 +302,7 @@
         "respBytesMean": 4431,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-dialog-chain": {
@@ -301,6 +318,7 @@
         "respBytesMean": 2358,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-file-download": {
@@ -316,6 +334,7 @@
         "respBytesMean": 2440,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-new-tab-code": {
@@ -331,6 +350,7 @@
         "respBytesMean": 10633,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-infinite-scroll-select": {
@@ -346,6 +366,7 @@
         "respBytesMean": 44980,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-paginate-max": {
@@ -361,6 +382,7 @@
         "respBytesMean": 9207,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-flaky-overlay": {
@@ -376,6 +398,7 @@
         "respBytesMean": 4826,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-combobox-virtual": {
@@ -391,6 +414,7 @@
         "respBytesMean": 5050,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-canvas-click": {
@@ -406,6 +430,7 @@
         "respBytesMean": 2206,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-wizard-validation": {
@@ -421,6 +446,7 @@
         "respBytesMean": 15571,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-drag-reorder": {
@@ -436,6 +462,7 @@
         "respBytesMean": 1440,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       }
     },
@@ -453,6 +480,7 @@
         "respBytesMean": 416,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-wiki-search-extract": {
@@ -468,6 +496,7 @@
         "respBytesMean": 481,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-wiki-multihop": {
@@ -483,6 +512,7 @@
         "respBytesMean": 476,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-books-pagination": {
@@ -498,6 +528,7 @@
         "respBytesMean": 475,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-quotes-infinite-scroll": {
@@ -513,6 +544,7 @@
         "respBytesMean": 407,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-js-prompt": {
@@ -528,6 +560,7 @@
         "respBytesMean": 420,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-shadow-switch": {
@@ -543,6 +576,7 @@
         "respBytesMean": 448,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "pub-iframe-datepicker": {
@@ -558,6 +592,7 @@
         "respBytesMean": 476,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-shadow-nested": {
@@ -573,6 +608,7 @@
         "respBytesMean": 404,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-iframe-decoy": {
@@ -588,6 +624,7 @@
         "respBytesMean": 402,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-dialog-chain": {
@@ -603,6 +640,7 @@
         "respBytesMean": 402,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-file-download": {
@@ -618,6 +656,7 @@
         "respBytesMean": 403,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-new-tab-code": {
@@ -633,6 +672,7 @@
         "respBytesMean": 399,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-infinite-scroll-select": {
@@ -648,6 +688,7 @@
         "respBytesMean": 403,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-paginate-max": {
@@ -663,6 +704,7 @@
         "respBytesMean": 407,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-flaky-overlay": {
@@ -678,6 +720,7 @@
         "respBytesMean": 398,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-combobox-virtual": {
@@ -693,6 +736,7 @@
         "respBytesMean": 401,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-canvas-click": {
@@ -708,6 +752,7 @@
         "respBytesMean": 401,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-wizard-validation": {
@@ -723,6 +768,7 @@
         "respBytesMean": 401,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       },
       "fx-drag-reorder": {
@@ -738,6 +784,7 @@
         "respBytesMean": 402,
         "turnsMean": null,
         "tokensPerSolved": null,
+        "usageMissing": 0,
         "costPerSolvedUsd": null
       }
     }

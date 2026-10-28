@@ -6,7 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// Nearest-rank percentile.
+// Nearest-rank percentile; p50 of an even count is the lower middle value.
 const pct = (xs, p) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); return s[Math.max(0, Math.ceil(p / 100 * s.length) - 1)]; };
 const sum = (xs) => xs.reduce((a, b) => a + b, 0);
 const mean = (xs) => xs.length ? sum(xs) / xs.length : null;
@@ -28,6 +28,8 @@ function stats(rows) {
     toolCallsMean: mean(nums(ran, 'toolCalls')), respBytesMean: mean(nums(ran, 'respBytes')), turnsMean: mean(nums(ran, 'agentTurns')),
     // All tokens/cost spent, failed runs included, per task actually solved.
     tokensPerSolved: tokens.length && pass.length ? sum(tokens) / pass.length : null,
+    // Runs with no usage (crash, timeout) add nothing above, so say how many there were.
+    usageMissing: tokens.length ? ran.length - tokens.length : 0,
     costPerSolvedUsd: cost.length && pass.length ? sum(cost) / pass.length : null,
   };
 }
@@ -58,8 +60,9 @@ function summarize(runs, baseline) {
   const comparisons = base && tasks[base] ? labels.filter((l) => l !== base).map((l) => compare(tasks, l, base)) : [];
   // A negative-control arm that passes anything means a check is vacuous.
   const vacuous = all.filter((r) => r.mode === 'null' && r.ok).map((r) => r.id);
+  const mixedLabels = labels.filter((l) => new Set(all.filter((r) => r.label === l).map((r) => r.mode)).size > 1);
   return {
-    generatedAt: new Date().toISOString(), runs: runs.map((r) => r.meta), arms, comparisons, validity: { nullArmPasses: vacuous },
+    generatedAt: new Date().toISOString(), runs: runs.map((r) => r.meta), arms, comparisons, validity: { nullArmPasses: vacuous, mixedLabels },
     tasks: Object.fromEntries(labels.map((l) => [l, Object.fromEntries(Object.entries(tasks[l]).map(([id, rows]) => [id, { tier: rows[0].tier, ...stats(rows) }]))])),
   };
 }
@@ -70,7 +73,7 @@ function toMarkdown(s) {
   const out = ['| Arm | Driver | Tier | Success | Strict | Wall p50 | Wall p90 | Tool calls | Obs KB | Turns | Tokens/solved | $/solved |', '|---|---|---|---|---|---|---|---|---|---|---|---|'];
   for (const a of s.arms) for (const [tier, t] of Object.entries(a.tiers)) {
     if (!t.runs) { out.push(`| ${a.label} | ${a.driver || 'n/a'} | ${tier} | not run (${t.skipped} skipped) | | | | | | | | |`); continue; }
-    out.push(`| ${a.label} | ${a.driver || 'n/a'} | ${tier} | ${t.pass}/${t.runs} | ${t.strict}/${t.runs} | ${sec(t.wallP50Ms)} | ${sec(t.wallP90Ms)} | ${num(t.toolCallsMean)} | ${t.respBytesMean == null ? 'n/a' : num(t.respBytesMean / 1024)} | ${num(t.turnsMean)} | ${t.tokensPerSolved == null ? 'n/a' : Math.round(t.tokensPerSolved)} | ${t.costPerSolvedUsd == null ? 'n/a' : '$' + t.costPerSolvedUsd.toFixed(3)} |`);
+    out.push(`| ${a.label} | ${a.driver || 'n/a'} | ${tier} | ${t.pass}/${t.runs} | ${t.strict}/${t.runs} | ${sec(t.wallP50Ms)} | ${sec(t.wallP90Ms)} | ${num(t.toolCallsMean)} | ${t.respBytesMean == null ? 'n/a' : num(t.respBytesMean / 1024)} | ${num(t.turnsMean)} | ${t.tokensPerSolved == null ? 'n/a' : Math.round(t.tokensPerSolved) + (t.usageMissing ? ` (${t.usageMissing} runs without usage)` : '')} | ${t.costPerSolvedUsd == null ? 'n/a' : '$' + t.costPerSolvedUsd.toFixed(3)} |`);
   }
   const labels = s.arms.map((a) => a.label);
   const ids = [...new Set(labels.flatMap((l) => Object.keys(s.tasks[l])))];
@@ -84,6 +87,7 @@ function toMarkdown(s) {
     for (const c of s.comparisons) out.push(`| ${c.arm} | ${c.baseline} | ${c.commonTasks} | ${sec(c.wallSumMs)} | ${sec(c.baselineWallSumMs)} | ${num(c.wallRatio, 2)} | ${num(c.tokensRatio, 2)} |`);
   }
   if (s.validity.nullArmPasses.length) out.push('', `WARNING: the null arm passed ${s.validity.nullArmPasses.join(', ')}; those checks are vacuous.`);
+  if (s.validity.mixedLabels.length) out.push('', `WARNING: ${s.validity.mixedLabels.join(', ')} mixes several modes under one label; give each arm its own --label.`);
   return out.join('\n') + '\n';
 }
 

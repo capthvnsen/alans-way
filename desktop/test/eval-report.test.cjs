@@ -27,6 +27,15 @@ test('per-arm stats count failures in cost per solved task and keep skipped rows
   assert.match(toMarkdown(s), /\| hermes-remote \| remote \| desktop \| not run \(1 skipped\)/);
 });
 
+test('says when runs lack usage and when one label mixes modes', () => {
+  const s = summarize([{ meta: {}, rows: [row({ id: 'a', tokens: 1000 }), row({ id: 'b', ok: false, crashed: true }), row({ id: 'c', mode: 'codex', tokens: 10 })] }]);
+  assert.equal(s.arms[0].tiers.all.usageMissing, 1);
+  assert.deepEqual(s.validity.mixedLabels, ['hermes-remote']);
+  const md = toMarkdown(s);
+  assert.match(md, /505 \(1 runs without usage\)/);
+  assert.match(md, /WARNING: hermes-remote mixes several modes/);
+});
+
 test('comparison uses only tasks both arms solved, on medians of passing runs', () => {
   const s = summarize([
     { meta: { label: 'codex-local' }, rows: [row({ id: 'a', mode: 'codex', label: undefined, wallMs: 4000, tokens: 800 }), row({ id: 'b', mode: 'codex', label: undefined, ok: false, wallMs: 9000 })] },

@@ -31,7 +31,7 @@ Success is decided by code, never by a model: the fixture page reports its own s
 
 | Arm | What runs | Measures |
 |---|---|---|
-| `oracle` | A scripted best-known solution through the shipped MCP server (`scripts/browser-mcp.cjs`) | Tool-layer floor: latency, calls and observation bytes with zero model time. Validates every check. |
+| `oracle` | A scripted best-known solution through the shipped MCP server (`scripts/browser-mcp.cjs`) | Tool-layer floor: latency, calls and observation bytes with zero model time. Every check it passes is shown to be satisfiable. |
 | `null` | Opens the start page and does nothing | Negative control: must fail every task. The report warns if it passes any. |
 | `hermes` | `hermes -z "<prompt>" --usage-file F` per task, isolated `HERMES_HOME`, Alan's Way skill via `--plugin-dir` | The product: success, wall time, turns, tokens and cost from Hermes' usage file. |
 | `codex` | `codex exec --json` per task with the same goal text | Baseline: success, wall time, tool calls and tokens from the Codex event stream. |
@@ -43,20 +43,20 @@ Success is decided by code, never by a model: the fixture page reports its own s
 
 Per run (`results.jsonl`): `ok`, `overBudget` (tool calls above the task's `maxSteps`), `wallMs` (start of the agent to its exit, including any one-shot startup), `toolCalls`, `httpCalls` and `httpErrors` (every request to the browser host, counted at a proxy), `respBytes` (bytes the tools returned), `agentTurns`, `tokens`, `costUsd`, and a failure category (`wrong_answer`, `wrong_state`, `tool_error`, `over_budget`, `gave_up`, `timeout`, `agent_crash`).
 
-Per arm and tier (`results.json`, `results.md`): success, strict success (within budget), wall p50 and p90 (nearest rank, all runs), mean tool calls, mean observation KB, mean turns, **tokens per solved task** and **cost per solved task**. The last two divide everything spent, failed runs included, by the number of tasks actually solved, so an arm cannot look cheap by failing fast.
+Per arm and tier (`results.json`, `results.md`): success, strict success (within budget), wall p50 and p90 (nearest rank, all runs), mean tool calls, mean observation KB, mean turns, **tokens per solved task** and **cost per solved task**. The last two divide everything spent, failed runs included, by the number of tasks actually solved, so an arm cannot look cheap by failing fast. Runs that left no usage record (a crash or timeout) are counted and shown next to the figure.
 
 Cost is what Hermes reports (`estimated_cost_usd`). Codex runs on a subscription and its event stream reports tokens but no price, so its cost column stays `n/a`; compare tokens instead.
 
 ## Baseline comparison method
 
 1. Same machine, same task list, same goal text, same checks, at least 3 repeats per task. Run arms back to back on an idle machine; note any change in between.
-2. `report.cjs` picks the baseline (`--baseline LABEL`, default the first arm whose label starts with `codex`) and, for each other arm, sums the per-task median wall time over passing runs **on tasks both arms solved at least once**, plus the same for tokens. It prints the sums and their ratio (below 1.0 means the arm is faster or uses fewer tokens than the baseline).
+2. `report.cjs` picks the baseline (`--baseline LABEL`, default the first arm whose label starts with `codex`) and, for each other arm, sums the per-task median (lower median for an even count) wall time over passing runs **on tasks both arms solved at least once**, plus the same for tokens. It prints the sums and their ratio (below 1.0 means the arm is faster or uses fewer tokens than the baseline).
 3. Success is compared first. A speed or token ratio only counts as a win when success is no lower than the baseline's.
 4. A claim of "N x faster" holds when the wall ratio is at or below 1/N under rule 3. "N x cheaper" needs the token ratio (or cost per solved task when both arms report cost) at or below 1/N.
 
 Known asymmetries to report alongside any comparison:
 
-- **Unverifiable checks for Codex.** Codex's browser is not on our host, so `pub-shadow-switch` and `pub-iframe-datepicker` (DOM checks) fail as unverifiable, and `pub-form-multifield` and `pub-wiki-multihop` rely on the URL Codex reports. Compare success on the remaining 18 browser tasks, or judge those four by hand.
+- **Unverifiable checks for Codex.** Codex's browser is not on our host, so `pub-shadow-switch` and `pub-iframe-datepicker` (DOM checks) fail as unverifiable, and `pub-form-multifield` and `pub-wiki-multihop` rely on the URL Codex reports. Compare success on the remaining 16 browser tasks, or judge those four by hand.
 - **The approval gate.** Alan's Way refuses actions that look like they submit, buy or post until the user approves (`commit_required`). `pub-form-multifield` hits it on "Submit" by design, so an unattended Hermes run fails it; Codex has no such gate. Report the result with and without that task.
 - **One-shot startup.** `hermes -z` pays CLI startup on every task, and it is slower than `codex exec`'s; gateway users (the Telegram path) never pay it. The harness counts it in `wallMs` because each arm pays its own startup. Report gateway numbers separately if you measure them.
 
@@ -82,9 +82,9 @@ Run on 2026-10-28 (UTC), commit `v0.21.13-1-g2e73067`, MacBook (darwin-arm64), N
 
 What this run shows:
 
-- **The tool layer is not the bottleneck.** With zero model time, a task costs 0.8 s at the median and 1.9 s at p90, in 2 to 13 tool calls. Any agent's wall time above that is model time, startup and the network.
+- **The tool layer is not the bottleneck.** With zero model time, a task costs 0.8 s at the median and 1.9 s at p90, in 2 to 14 tool calls. Any agent's wall time above that is model time, startup and the network.
 - **Checks are not vacuous.** The null arm fails all 60 runs.
-- **The 3 public failures are the approval gate, as designed.** `pub-form-multifield` stops at `commit_required` on the Submit button. The oracle does not simulate a person approving on a public site.
+- **The 3 public failures are the approval gate, as designed.** `pub-form-multifield` stops at `commit_required` on the Submit button (seen in that step's reply inside the batch when probed by hand; the row records only that the URL did not change). The oracle does not simulate a person approving on a public site.
 - **Finding: the commit gate also refuses read-only `eval` on ordinary pages.** On Wikipedia ("Donate" link), books.toscrape ("Add a comment" sidebar link) and quotes.toscrape and fixture pages with timers, `eval` fails with `commit_required` even when the code only reads. Before this change 5 of 8 public oracles, the datepicker check and the paged-table fixture oracle failed on that alone. They now use `read` with `list`, clicks, scrolls and the `dialog` option; harness checks approve their own read-only check code with the test receipt from `desktop/test/approval-fixture.cjs` (agent actions never get it), and fixture oracles approve gated fixture actions the same way. A model agent that reaches for `eval` on these pages will hit the same wall. Whether the gate should treat links like "Donate" as commits is a product decision, not changed here.
 
 Not run here, and why: no model arm ran because this worker has no model credentials it may read and the brief rules out spending on them; the desktop tier needs an unlocked screen and Accessibility grants (the screen was locked); the remote arm needs the VPS.

@@ -37,7 +37,7 @@ if (argv.includes('--list')) {
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 function writeMeta(outDir, extra) {
-  const gitSha = spawnSync('git', ['describe', '--always', '--dirty'], { cwd: __dirname, encoding: 'utf8' }).stdout.trim() || null;
+  const gitSha = (spawnSync('git', ['describe', '--always', '--dirty'], { cwd: __dirname, encoding: 'utf8' }).stdout || '').trim() || null;
   fs.writeFileSync(path.join(outDir, 'meta.json'), JSON.stringify({
     mode, repeat, tasks: sel || 'all', model: opt('model', process.env.EVAL_MODEL) || null, provider: opt('provider', process.env.EVAL_PROVIDER) || null,
     gitSha, node: process.version, platform: `${process.platform}-${process.arch}`, ...extra, finishedAt: new Date().toISOString(),
@@ -157,15 +157,16 @@ async function manual(picked, outDir) {
   const fixtures = await createFixtures(opt('fixture-host'));
   const stack = await startStack({ connection: opt('connection'), fixturePort: fixtures.port });
   const startedAt = new Date().toISOString();
-  // Round trip to the browser host before any task: separates network distance (local vs VPS over Tailscale) from agent time.
-  const rtts = [];
-  for (let i = 0; i < 5; i++) { const t = Date.now(); await stack.tabs(); rtts.push(Date.now() - t); }
-  const hostRttMs = rtts.sort((a, b) => a - b)[2];
+  let hostRttMs = null;
   const driver = opt('driver') || (/^(127\.|localhost$|\[::1\]$)/.test(new URL(stack.hostUrl).hostname) ? 'local' : 'remote');
   const label = opt('label', `${mode}-${driver}`);
   const rows = [];
   let tools = null;
   try {
+    // Round trip to the browser host before any task: separates network distance (local vs VPS over Tailscale) from agent time.
+    const rtts = [];
+    for (let i = 0; i < 5; i++) { const t = Date.now(); await stack.tabs(); rtts.push(Date.now() - t); }
+    hostRttMs = rtts.sort((a, b) => a - b)[2];
     const home = mode === 'hermes' ? prepareHermesHome(stack) : null;
     if (mode !== 'hermes' && mode !== 'codex') tools = await connectTools(stack);
     for (const task of picked) for (let rep = 0; rep < repeat; rep++) {
