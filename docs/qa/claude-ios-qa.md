@@ -13,10 +13,10 @@
 
 | # | Area | Severity | Status |
 |---|------|----------|--------|
-| 1 | Chat sync | High | Fixed: branch `capthvnsen/ios-history-sync` |
-| 2 | Chat sync | High | Fixed: branch `capthvnsen/ios-cache-unload` |
-| 3 | Offline and reconnect | Medium | Fixed: branch `capthvnsen/ios-reconnect` |
-| 4 | Accessibility | Medium | Partly fixed: branch `capthvnsen/ios-dynamic-type` |
+| 1 | Chat sync | High | Fixed: #257 |
+| 2 | Chat sync | High | Fixed: #258 |
+| 3 | Offline and reconnect | Medium | Fixed: #259 |
+| 4 | Accessibility | Medium | Partly fixed: #260 |
 | 5 | Onboarding | Medium | Not fixed (overlaps #235) |
 | 6 | Onboarding | High | Fixed in open PR #235 |
 | 7 | Onboarding | Low | Not fixed (noted in #235) |
