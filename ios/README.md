@@ -42,6 +42,18 @@ After processing completes, verify the version/build and internal-only indicator
 
 The bundled privacy manifest declares app-local preferences, file metadata for the app's storage and document picker, and disk-space checks for local database/file storage. It is a required-reason API declaration, separate from any App Store privacy questionnaire.
 
+## First-run onboarding
+
+A new install walks beta testers through three steps:
+
+1. **Telegram app.** Numbered instructions link to [my.telegram.org/apps](https://my.telegram.org/apps) and collect the App api_id and App api_hash. The form checks their shape (a number and a 32-character hexadecimal code) before saving them to device-only Keychain items. Builds with bundled credentials skip this step. If Telegram later rejects the pair, **Use different app credentials** on the phone-number screen deletes the unauthorized local session and the saved pair so they can be entered again.
+2. **Sign in.** Phone number, code, two-step password and email steps as before. Common Telegram errors, such as an invalid code or a rate limit, are shown in plain language.
+3. **Hermes bot.** Choose an existing bot chat or open one by @username. An optional screen then checks the voice Mini App address (it reads the plugin's public `/v1/capabilities` readiness on that origin and is not saved) and the desktop viewer address (saved for that bot). Each failure names a likely fix. **Skip for now** and **Skip checks** go straight to the agent list.
+
+The completion flag is the `workspace.onboardingComplete` preference. A tester who signs out later sees the sign-in screens without the welcome. UI tests override the flag with the launch arguments `-workspace.onboardingComplete YES` or `NO`.
+
+TODO (Alex): set the Apple Team ID and create the App Store Connect record before the first TestFlight upload. See [TestFlight internal testing](#testflight-internal-testing).
+
 ## Telegram account setup
 
 Register this client at [my.telegram.org/apps](https://my.telegram.org/apps) to obtain its application API ID and API hash. These identify the Telegram client application; they are different from a Hermes bot token. A release build should supply the application credentials so users only sign into Telegram.
