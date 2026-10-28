@@ -1,0 +1,37 @@
+name: ios
+
+on:
+  push:
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  pull_request:
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  simulator:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use the newest installed Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          xcodebuild -version
+      - run: brew install xcodegen
+      - uses: actions/cache@v4
+        with:
+          path: ios/.build/SourcePackages
+          key: ios-spm-${{ hashFiles('ios/project.yml', 'ios/AlanWorkspace.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+      # Ad hoc signing needs no team or secrets, and the Keychain test needs a signed app.
+      - run: ./ios/scripts/build.sh simulator
+      - name: Unit tests
+        working-directory: ios
+        run: |
+          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for r, ds in sorted(json.load(sys.stdin)["devices"].items(), reverse=True) if "iOS" in r for d in ds if d["name"].startswith("iPhone")))')
+          xcodebuild -project AlanWorkspace.xcodeproj -scheme AlanWorkspace \
+            -destination "platform=iOS Simulator,id=$device" -derivedDataPath .build/DerivedData \
+            -clonedSourcePackagesDirPath .build/SourcePackages -parallel-testing-enabled NO \
+            -only-testing:AlanWorkspaceTests CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
