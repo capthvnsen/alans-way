@@ -81,6 +81,20 @@ final class WorkspaceLaunchTests: XCTestCase {
         add(screenshot)
     }
 
+    func testConversationTextFollowsDynamicType() {
+        func messageHeight(_ size: String) -> CGFloat {
+            let app = XCUIApplication()
+            app.launchArguments = ["--ui-testing", "--interface-preview", "-UIPreferredContentSizeCategoryName", size]
+            app.launch()
+            app.buttons["agentChat-101"].tap()
+            let text = app.staticTexts["Pick up where we left off."]
+            XCTAssertTrue(text.waitForExistence(timeout: 5))
+            return text.frame.height
+        }
+        let regular = messageHeight("UICTContentSizeCategoryL")
+        XCTAssertGreaterThan(messageHeight("UICTContentSizeCategoryAccessibilityXXXL"), regular * 1.5)
+    }
+
     func testInvalidCallLaunchShowsFailureAndCanAlwaysBeClosed() {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--invalid-call-host"]
