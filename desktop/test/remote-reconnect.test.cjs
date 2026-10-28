@@ -99,7 +99,7 @@ for (const event of ['online', 'visibilitychange', 'focus', 'resume']) {
     }
     view.event(event);
     assert.equal(view.clients.length, 2);
-    assert.equal(view.timers.size, 0);
+    assert.deepEqual([...view.timers.values()].map(timer => timer.delay), [15000], 'only the new handshake deadline remains');
     pending.callback(); view.event(event);
     assert.equal(view.clients.length, 2, 'queued callbacks and duplicate signals do not reconnect again');
     view.current().emit('connect'); view.event(event);
@@ -111,6 +111,30 @@ for (const event of ['online', 'visibilitychange', 'focus', 'resume']) {
 function recoveryEvents(view) {
   for (const event of ['online', 'visibilitychange', 'focus', 'resume']) view.event(event);
 }
+
+test('a handshake stalled across sleep or a Tailscale drop is replaced after 15s', () => {
+  const view = viewer();
+  view.connect(url);
+  const old = view.current();
+  recoveryEvents(view);
+  assert.equal(view.clients.length, 1, 'recovery signals do not interrupt an active handshake');
+  view.retry(15000);
+  assert.equal(view.clients.length, 2, 'a silent handshake cannot wedge the viewer forever');
+  old.emit('connect'); old.emit('disconnect', { clean: false });
+  assert.equal(view.status(), 'connecting', 'late old socket events are fenced out');
+  view.current().emit('connect'); view.retry(2000);
+  assert.equal(view.status(), 'connected');
+});
+
+test('a queued handshake timeout cannot replace a connected or authenticated viewer', () => {
+  for (const event of ['connect', 'credentialsrequired', 'securityfailure']) {
+    const view = viewer(); view.connect(url);
+    const timeout = [...view.timers.values()].find(timer => timer.delay === 15000);
+    assert.ok(timeout, 'connection attempts have a deadline');
+    view.current().emit(event); timeout.callback();
+    assert.equal(view.clients.length, 1, event);
+  }
+});
 
 test('a successful connection resets the retry counter', () => {
   const view = viewer();
@@ -163,13 +187,13 @@ test('changing or clearing the URL cancels retries and ignores stale events and 
     assert.equal(view.timers.size, 1);
     const pending = [...view.timers.values()][0];
     view.connect(nextUrl);
-    assert.equal(view.timers.size, 0);
+    assert.equal(view.timers.size, nextUrl ? 1 : 0, 'only a new URL gets a new handshake deadline');
     const count = view.clients.length, status = view.status();
     pending.callback();
     old.emit('disconnect', { clean: false }); old.emit('connect'); old.emit('securityfailure'); old.emit('credentialsrequired');
     recoveryEvents(view);
     assert.equal(view.clients.length, count);
-    assert.equal(view.timers.size, 0);
+    assert.equal(view.timers.size, nextUrl ? 1 : 0);
     assert.equal(view.status(), status);
     if (nextUrl) { view.current().emit('disconnect', { clean: false }); view.retry(2000); }
   }
@@ -185,7 +209,7 @@ test('the Reconnect button tries now and resets backoff', () => {
   const pending = [...view.timers.values()][0];
   view.element('configure').onclick();
   assert.equal(view.clients.length, 5);
-  assert.equal(view.timers.size, 0);
+  assert.deepEqual([...view.timers.values()].map(timer => timer.delay), [15000]);
   pending.callback();
   assert.equal(view.clients.length, 5);
   view.current().emit('disconnect', { clean: false }); view.retry(2000);
@@ -277,10 +301,10 @@ test('disconnects, URL changes and authentication requests cancel first-frame re
     if (action === 'change-url' || action === 'clear-url') view.connect(action === 'clear-url' ? '' : 'https://203.0.113.1/viewer/');
     else view.current().emit(action, { clean: true });
     const count = view.clients.length;
-    assert.equal(view.timers.size, 0);
+    assert.equal(view.timers.size, action === 'change-url' ? 1 : 0);
     pending.callback();
     assert.equal(view.clients.length, count, action);
-    assert.equal(view.timers.size, 0);
+    assert.equal(view.timers.size, action === 'change-url' ? 1 : 0);
   }
 });
 

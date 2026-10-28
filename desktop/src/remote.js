@@ -76,6 +76,10 @@ function connect(value, retryAttempt = 0, frameRetried = false) {
       $('credentials').classList.remove('hidden'); $('vnc-password').focus();
     });
     rfb.addEventListener('securityfailure', () => { if (version === connectionVersion) { retryAllowed = false; retryNow = undefined; clearTimeout(reconnectTimer); showEmpty('Connection needs attention', 'The desktop rejected the connection. Check the viewer URL and credentials.', 'Connection settings'); status('authentication failed'); } });
+    // A socket can stay open without completing VNC negotiation after sleep.
+    reconnectTimer = setTimeout(() => {
+      if (version === connectionVersion && retryAllowed && !connected) connect(currentUrl, retryAttempt + 1, frameRetried);
+    }, 15000);
   } catch (error) { showEmpty('Unable to connect', error.message, 'Connection settings'); status('disconnected'); }
 }
 function render(next) {
