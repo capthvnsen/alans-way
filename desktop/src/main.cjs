@@ -2614,6 +2614,7 @@ async function navigateVps(id,url) {
   await remoteRequest(id,'control',{controller:'human'});
   await remoteRequest(id,'human-actions',{action:'navigate',url:normalizeUrl(url)});
 }
+const handoffRequests = new Map();
 async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   const source=tabs.get(id) || vpsTabs.get(id); if(!source)throw new Error('Source tab not found.');
   const sourceHost=tabs.has(id)?'mac':'vps';
@@ -2621,9 +2622,9 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   // stays accepted as the compat wire name for the user's own computer.
   const dest=destination===HOST_LABEL?'mac':destination;
   if(!['mac','vps'].includes(dest)||dest===sourceHost)throw new Error('Choose the other computer.');
-  if(source.handoffPending)return source.handoffPending;
+  if(handoffRequests.has(id))return handoffRequests.get(id);
   if(source.handoff?.phase==='handed_off')throw new Error('This page already moved. Continue at its destination or use Move back.');
-  source.handoffPending=(async()=>{
+  const work=(async()=>{
   if(sourceHost==='mac') { changeController(id,'human'); await source.queue; }
   else await remoteRequest(id,'control',{controller:'human'});
   const checkpoint=sourceHost==='mac'?await source.view.webContents.executeJavaScript(checkpointExpression(includeDrafts)):await remoteRequest(id,'checkpoint',{includeDrafts});
@@ -2650,7 +2651,8 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   if(dest==='vps')await remoteRequest(target.id,'activate',{}).catch(error=>logError('handoff activate',error));
   return record;
   })();
-  try{return await source.handoffPending;}finally{delete source.handoffPending;}
+  handoffRequests.set(id,work);
+  try{return await work;}finally{handoffRequests.delete(id);}
 }
 // History navigation has no promise. Listeners go on before the trigger so a
 // fast (cached or same-document) navigation cannot finish unobserved.

@@ -118,7 +118,7 @@ test('a task handed back from the remote browser does not become a restorable us
       isLoading: () => false, getURL: () => options.url, executeJavaScript: async () => ({ verification: {}, restored: [], skipped: [] }),
     } } }; }, restoreExpression() {}, savePreferences() {}, applyLayout() {}, broadcast() {},
   });
-  vm.runInContext(section('async function handoffTab(', '\n// History navigation has no promise.'), context);
+  vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
   await context.handoffTab({ id: 'remote-task', destination: 'mac' });
   assert.equal(created.owner, 'bot');
   assert.equal(created.controller, 'human', 'handoff review must still require human control');
