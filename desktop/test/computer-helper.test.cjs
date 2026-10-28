@@ -199,7 +199,9 @@ test('a silent helper times out, is killed, and the next request starts fresh', 
   const env = { ...process.env, FAKE_MODE: 'hang' };
   const helper = createHelper({ command: async (kind) => [process.execPath, fake, kind], env, timeoutMs: 300 });
   t.after(() => helper.close());
-  await assert.rejects(helper.request({ cmd: 'apps' }), /timed out/);
+  await assert.rejects(helper.request({ cmd: 'apps' }), (error) => error.code === 'timeout' && /timed out/.test(error.message));
+  // An action that times out carries the code that maps to "snapshot before retrying".
+  await assert.rejects(helper.request({ cmd: 'act', steps: [] }), (error) => error.code === 'timeout' && /may have executed/.test(error.message));
   env.FAKE_MODE = 'ok';
   env.FAKE_STARTUP_DELAY_MS = '500';
   assert.equal((await helper.request({ cmd: 'apps', timeoutMs: 10000 })).ok, true);
