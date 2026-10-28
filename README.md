@@ -144,7 +144,7 @@ Release installs update themselves. When an update is ready, the popup updates e
 
 ## Development
 
-An iOS development app now lives in [`ios/`](ios/README.md), with a native Telegram bot chat interface, an embedded Telegram voice Mini App host, and a configurable desktop viewer. The Mini App and Hermes voice plugin are in [`mobile/`](mobile/README.md). See the iOS guide for Xcode builds, Telegram application credentials, and the live gateway/device checks still needed before release.
+An iOS development app now lives in [`ios/`](ios/README.md), with a native Telegram bot chat interface, an embedded Telegram voice Mini App host, and a configurable desktop viewer. The Mini App and Hermes voice plugin are in [`mobile/`](mobile/README.md). See the iOS guide for Xcode builds, Telegram application credentials, and the live gateway/device checks still needed before release. Beta testers start with the [iOS beta tester guide](docs/ios-beta-testers.md); the app's data handling is in the [iOS privacy policy](docs/privacy-policy-ios.md).
 
 ```sh
 # Desktop app

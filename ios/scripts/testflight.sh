@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+case "${1:-}" in
+  '') external=0 ;;
+  --external) external=1 ;;
+  *) echo 'Usage: APPLE_TEAM_ID=YOURTEAMID ./ios/scripts/testflight.sh [--external]' >&2; exit 1 ;;
+esac
 if [ -z "${APPLE_TEAM_ID:-}" ]; then
   echo 'Set APPLE_TEAM_ID to your Apple Developer team ID. Sign into Xcode Settings > Accounts first.' >&2
   exit 1
@@ -26,6 +31,8 @@ distribution_dir=${TESTFLIGHT_BUILD_DIR:-"$ios_root/.build/TestFlight"}
 mkdir -p "$distribution_dir"
 cp ExportOptions-TestFlight.plist "$distribution_dir/ExportOptions.plist"
 /usr/bin/plutil -insert teamID -string "$APPLE_TEAM_ID" "$distribution_dir/ExportOptions.plist"
+# External groups need a build App Store Connect may offer outside the team; it then goes through Beta App Review.
+[ "$external" = 1 ] && /usr/bin/plutil -remove testFlightInternalTestingOnly "$distribution_dir/ExportOptions.plist"
 xcodegen generate --spec project.yml
 
 xcodebuild -project AlanWorkspace.xcodeproj -scheme AlanWorkspace \

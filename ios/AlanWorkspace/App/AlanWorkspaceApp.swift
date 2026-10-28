@@ -1,3 +1,4 @@
+import MetricKit
 import SwiftUI
 
 @main
@@ -7,6 +8,7 @@ struct AlanWorkspaceApp: App {
     @State private var invalidCallDismissed = false
 
     init() {
+        MXMetricManager.shared.add(DiagnosticsStore.shared)
         #if DEBUG
         _telegram = State(initialValue: ProcessInfo.processInfo.arguments.contains("--interface-preview") ? TelegramStore.interfacePreview() : TelegramStore())
         #else
