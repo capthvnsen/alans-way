@@ -974,21 +974,23 @@ async function serve() {
             .map(describe),
         });
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
-        const body = await read(req);
+        // A cookie jar can outgrow the default body cap.
+        const body = await read(req, human ? 2000000 : undefined);
         // A Move from the app carries the page's sign-in cookies; they land
         // before the first load. Agents cannot plant cookies this way.
         const cookies = human ? cookieParams({ cookies: cleanCookies(body.cookies) }) : [];
         const { tab: opened, closed } = await open(body, botId, human, cookies.length ? (t) => setCookies(t, cookies) : undefined);
         return send(201, { ...describe(opened), ...(cookies.length ? { signIns: cookies.length } : {}), ...(closed.length ? { closedTabs: closed } : {}) });
       }
-      // Which Mac tabs a restore resumed from the mirror the app last pushed,
-      // so the app can retire its own copies when it wakes.
+      // Which Mac tabs still in the mirror a restore resumed on a live VM tab,
+      // so the app can retire its own copies when it wakes. No freshness test:
+      // a push that lands after the restore (in flight at sleep) is still stale.
       if (url.pathname === '/v1/mirror/continued' && req.method === 'GET') {
         if (!isApp) throw fail('Only the app may read the mirror.', 403);
         const bots = {};
         for (const [bot, entry] of Object.entries(mirror)) for (const t of entry.tabs || []) {
           const vmId = entry.restored?.[t.id];
-          if (vmId && tabs.has(vmId) && entry.restoredAt?.[t.id] === entry.updatedAt) (bots[bot] ||= {})[t.id] = vmId;
+          if (vmId && tabs.has(vmId)) (bots[bot] ||= {})[t.id] = vmId;
         }
         return send(200, { bots });
       }

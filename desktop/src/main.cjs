@@ -302,7 +302,12 @@ let tailnetCheck = { host: '', ok: Promise.resolve(false) };
 function signInsTravel() {
   const host = prefs?.vpsBrowser?.sshHost || '';
   if (prefs?.carrySignIns === false || !host) return Promise.resolve(false);
-  if (tailnetCheck.host !== host) tailnetCheck = { host, ok: resolveSshHostname(host).then(isTailnetHost) };
+  if (tailnetCheck.host !== host) {
+    // Only a yes is kept, so a slow ssh -G or an ssh config fix is retried.
+    const ok = resolveSshHostname(host).then(isTailnetHost);
+    tailnetCheck = { host, ok };
+    ok.then((yes) => { if (!yes && tailnetCheck.ok === ok) tailnetCheck = { host: '', ok }; });
+  }
   return tailnetCheck.ok;
 }
 const pageCookies = async (url) => (await settleWithin(session.fromPartition('persist:browser').cookies.get({ url }), 2000, [])).slice(0, 100).map(toCdpCookie);

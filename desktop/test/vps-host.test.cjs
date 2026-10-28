@@ -1032,6 +1032,7 @@ test('a task interrupted by host loss resumes on the VM, and the woken Mac retir
   const push = createMirrorPusher({ collect: async () => new Map([['bot-h', macTabs]]), push: (bot, tabs) => host.api('/v1/mirror', 'POST', { bot, tabs }, { human: true }) });
   await push();
   assert.deepEqual((await host.api('/v1/mirror/continued', 'GET', undefined, { human: true })).data, { bots: {} }, 'nothing has moved while the Mac is up');
+  const late = createMirrorPusher({ collect: async () => new Map([['bot-h', macTabs]]), push: (bot, tabs) => host.api('/v1/mirror', 'POST', { bot, tabs }, { human: true }) });
 
   // The lid closes: the Mac stops pushing and the router restores for the bot.
   const restored = await host.api('/v1/restore', 'POST', { bot: 'bot-h' }, { bot: 'bot-h' });
@@ -1048,6 +1049,7 @@ test('a task interrupted by host loss resumes on the VM, and the woken Mac retir
   assert.equal(snap.data.tab.controller, 'agent');
 
   // The Mac wakes: the app learns which tabs continued, the agent token cannot.
+  await late(); // a push in flight at sleep that lands on wake
   assert.equal((await host.api('/v1/mirror/continued', 'GET', undefined, { bot: 'bot-h' })).status, 403);
   const continued = (await host.api('/v1/mirror/continued', 'GET', undefined, { human: true })).data.bots;
   assert.deepEqual(continued, { 'bot-h': { 'mac-h': vmTab } });

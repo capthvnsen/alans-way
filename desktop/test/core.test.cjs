@@ -649,4 +649,6 @@ test('a Mac tab the VM resumed while away is retired once, pointing agents at th
   assert.equal(continuedOnVm({ ...tab, controller: 'human' }, 'vm-9'), null, 'a tab the human holds is theirs');
   assert.equal(continuedOnVm(tab, '../x'), null);
   assert.equal(continuedOnVm(undefined, 'vm-9'), null);
+  assert.equal(continuedOnVm({ ...tab, handoff: { ...record, phase: 'reviewed' } }, 'vm-9'), null, 'the human reopened it for agents after this move');
+  assert.ok(continuedOnVm({ ...tab, handoff: { ...record, phase: 'reviewed' } }, 'vm-10'), 'a later move is retired again');
 });

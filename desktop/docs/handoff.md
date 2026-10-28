@@ -32,7 +32,9 @@ Cookies leave this computer only over the existing SSH link to the VM, and only
 when the host ssh actually dials (`ssh -G <host>`, so `~/.ssh/config` aliases
 work) is a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) or a
 MagicDNS name (`*.ts.net`). A VM reached by a public IP still gets URL, scroll
-and drafts, without sign-ins. The same rule applies to the background mirror.
+and drafts, without sign-ins. So does a bare MagicDNS short name (`my-vm`): use
+the full `my-vm.<tailnet>.ts.net` or the 100.x address. The same rule applies to
+the background mirror.
 
 On the VM the mirror is `mirror.json` (mode 0600, plain JSON, kept up to 24
 hours and refreshed hourly while unchanged). Only the app token can write or

@@ -320,7 +320,8 @@ function takeoverDelay(lastInput, started, now = Date.now()) {
 // away: the same retired-source record a manual Move leaves, or null when the
 // tab is no longer the agent's copy to retire.
 function continuedOnVm(tab, destinationTabId, now = Date.now()) {
-  if (!tab || tab.controller !== 'agent' || tab.handoff?.phase === 'handed_off' || !/^[\w-]{1,100}$/.test(String(destinationTabId))) return null;
+  // Once retired for that VM tab, a human who gave the tab back to agents decided.
+  if (!tab || tab.controller !== 'agent' || tab.handoff?.phase === 'handed_off' || tab.handoff?.destinationTabId === destinationTabId || !/^[\w-]{1,100}$/.test(String(destinationTabId))) return null;
   return { id: crypto.randomUUID(), phase: 'handed_off', sourceHost: 'mac', sourceTabId: tab.id, destinationHost: 'vps', destinationTabId, createdAt: now, automatic: true };
 }
 function reviewedHandoff(handoff) {

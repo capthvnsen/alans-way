@@ -78,7 +78,8 @@ function toElectronCookies(cookies, pageUrl) {
 // be an ~/.ssh/config alias, so callers pass ssh -G's resolved hostname.
 function isTailnetHost(value) {
   const host = String(value || '').trim().replace(/^[^@]*@/, '').replace(/^\[|\]$/g, '').toLowerCase();
-  const v4 = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  // No leading zeros: inet_aton would read 100.064.x.x as octal.
+  const v4 = /^100\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$/.exec(host);
   if (v4) return Number(v4[1]) >= 64 && Number(v4[1]) <= 127 && Number(v4[2]) <= 255 && Number(v4[3]) <= 255;
   return /^fd7a:115c:a1e0:/.test(host) || /^[a-z0-9-]+(\.[a-z0-9-]+)*\.ts\.net\.?$/.test(host);
 }
