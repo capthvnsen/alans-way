@@ -139,6 +139,8 @@ struct WorkspaceSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var confirmLogOut = false
     @State private var errorText: String?
+    @State private var diagnosticsReport: URL?
+    @State private var diagnosticsCount = 0
 
     var body: some View {
         NavigationStack {
@@ -158,12 +160,31 @@ struct WorkspaceSettingsView: View {
                 } footer: {
                     Text("Signing out removes this device’s Telegram session. Your account and conversations remain in Telegram.")
                 }.listRowBackground(WorkspaceTheme.surface)
-                Section { Text("Alan’s Workspace · 0.1.0").font(.footnote).foregroundStyle(WorkspaceTheme.secondary) }
+                Section {
+                    if let diagnosticsReport {
+                        ShareLink(item: diagnosticsReport) { Label("Share crash and hang reports (\(diagnosticsCount))", systemImage: "square.and.arrow.up") }
+                        Button("Delete reports", role: .destructive) {
+                            DiagnosticsStore.shared.clear()
+                            self.diagnosticsReport = nil
+                        }
+                    } else {
+                        Text("No crash or hang reports on this device").foregroundStyle(WorkspaceTheme.secondary)
+                    }
+                } header: {
+                    Text("Diagnostics")
+                } footer: {
+                    Text("Apple’s MetricKit delivers crash and hang reports to the app. They stay on this device until you share them; nothing is uploaded automatically.")
+                }.listRowBackground(WorkspaceTheme.surface)
+                Section { Text("Alan’s Workspace · \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")").font(.footnote).foregroundStyle(WorkspaceTheme.secondary) }
                     .listRowBackground(WorkspaceTheme.surface)
             }
             .scrollContentBackground(.hidden).background(WorkspaceTheme.background)
             .navigationTitle("Workspace").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .task {
+                diagnosticsCount = DiagnosticsStore.shared.reportFiles().count
+                diagnosticsReport = diagnosticsCount > 0 ? try? DiagnosticsStore.shared.exportReport() : nil
+            }
             .confirmationDialog("Sign out of Telegram on this device?", isPresented: $confirmLogOut, titleVisibility: .visible) {
                 Button("Sign out", role: .destructive) {
                     Task {
