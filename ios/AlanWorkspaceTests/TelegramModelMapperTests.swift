@@ -104,6 +104,20 @@ final class TelegramModelMapperTests: XCTestCase {
         XCTAssertEqual(match?.absoluteString, "https://voice.example.test/call?ticket=once")
     }
 
+    func testOfflineAndReconnectingStatesAreShownButAWorkingConnectionIsNot() {
+        XCTAssertEqual(TelegramModelMapper.connectionStatus(.connectionStateWaitingForNetwork), "Waiting for network…")
+        XCTAssertEqual(TelegramModelMapper.connectionStatus(.connectionStateConnecting), "Connecting…")
+        XCTAssertEqual(TelegramModelMapper.connectionStatus(.connectionStateUpdating), "Updating…")
+        XCTAssertNil(TelegramModelMapper.connectionStatus(.connectionStateReady))
+    }
+
+    func testNetworkPathIsReportedToTelegramAsItsInterfaceType() {
+        XCTAssertEqual(TelegramModelMapper.networkType(satisfied: false, wifi: true, cellular: false), .networkTypeNone)
+        XCTAssertEqual(TelegramModelMapper.networkType(satisfied: true, wifi: true, cellular: true), .networkTypeWiFi)
+        XCTAssertEqual(TelegramModelMapper.networkType(satisfied: true, wifi: false, cellular: true), .networkTypeMobile)
+        XCTAssertEqual(TelegramModelMapper.networkType(satisfied: true, wifi: false, cellular: false), .networkTypeOther)
+    }
+
     private func message(id: Int64, chatID: Int64, senderID: Int64, isOutgoing: Bool,
                          title: String, kind: TelegramButtonKind) -> TelegramMessage {
         TelegramMessage(id: id, chatID: chatID, senderID: senderID, senderName: "Bot",
