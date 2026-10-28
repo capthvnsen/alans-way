@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
-const { CDP } = require('../src/cdp.cjs');
+const { CDP, AGENT_BROWSER_FLAGS } = require('../src/cdp.cjs');
 const { cachedSnapshot, snapshotExpression } = require('../src/browser-page.cjs');
 const crypto = require('node:crypto');
 // Test harness scripts that use timers or requests carry an approval, as a
@@ -149,7 +149,7 @@ before(async () => {
   pa = await listen(site);
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vps-chrome-'));
   profile = path.join(dir, 'profile');
-  browser = spawn(chrome, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-sandbox',
+  browser = spawn(chrome, [...AGENT_BROWSER_FLAGS, '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-sandbox',
     // A fresh macOS headless profile must not wait for the login keychain.
     ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
     '--host-resolver-rules=MAP test.example 127.0.0.1', 'about:blank'], { stdio: 'ignore' });
