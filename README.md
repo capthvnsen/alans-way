@@ -2,23 +2,38 @@
 
 **The open-source Grokbot killer.** A companion app and plugin for stock Hermes. Your bots live on a VM or VPS and work on your Mac or PC, on your terms.
 
-The app is called **Alan's Workspace**.
+> **Join the [Alan's Way Discord](https://discord.gg/jBQCPUsVE)** to get help, report bugs and shape what ships next.
 
-[**Download for Mac**](https://openalan.com/download/mac) · [**Download for Windows**](https://openalan.com/download/windows) · [openalan.com](https://openalan.com) · [Discord](https://discord.gg/jBQCPUsVE) · [X @alexhvnsen](https://x.com/alexhvnsen)
+[**Download for Mac**](https://openalan.com/download/mac) · [**Download for Windows**](https://openalan.com/download/windows) · [**Discord**](https://discord.gg/jBQCPUsVE) · [openalan.com](https://openalan.com) · [X @alexhvnsen](https://x.com/alexhvnsen)
 
-[![GitHub stars](https://img.shields.io/github/stars/capthvnsen/alans-way?style=social)](https://github.com/capthvnsen/alans-way)
+[![Discord](https://img.shields.io/badge/Discord-Alan%27s%20Way-5865F2?logo=discord&logoColor=white)](https://discord.gg/jBQCPUsVE) [![GitHub stars](https://img.shields.io/github/stars/capthvnsen/alans-way?style=social)](https://github.com/capthvnsen/alans-way)
 
-Star the repo if this is useful. It's the cheapest way to help.
+Latest release: **[v0.21.13](https://github.com/capthvnsen/alans-way/releases/tag/v0.21.13)** (Oct 27, 2026). Star the repo if this is useful. It's the cheapest way to help.
 
-Join the Discord to contribute or report bugs. Follow and DM the creator on X.
+A desktop app for people running [Hermes Agent](https://github.com/NousResearch/hermes-agent) on a server (Linux VPS, or a macOS VM via [Tart](https://tart.run)) who want to watch, steer, and lend their agents a local browser, without giving up the keyboard. The app runs on macOS (Apple Silicon), Windows 10/11 x64 or Linux x64.
 
-A desktop app for people running [Hermes Agent](https://github.com/NousResearch/hermes-agent) on a server (Linux VPS, or a macOS VM via [Tart](https://tart.run)) who want to watch, steer, and lend their agents a local browser, without giving up the keyboard. The app itself runs on macOS (Apple Silicon), Windows 10/11 x64 or Linux x64.
+**Tailscale is required.** It is the backbone: your computer, your server and any remote agent talk over your Tailscale network and nothing else. Install Tailscale on your computer and your server and sign in to the same account. SSH addresses must be Tailscale names (`*.ts.net`) or Tailscale IPs (`100.64.0.0/10`); the setup scripts refuse public addresses, and the server's SSH key can log in to your computer only from the tailnet.
 
-**Tailscale is required.** Your computer and your server talk over your Tailscale network and nothing else. Install Tailscale on both and sign in to the same account. SSH addresses must be Tailscale names (`*.ts.net`) or Tailscale IPs (`100.64.0.0/10`); the setup scripts refuse public addresses, and the server's SSH key can log in to your computer only from the tailnet.
+## Core features
+
+1. **A simple chat with a real browser.** Your Telegram bot chats sit on the left and real Chromium tabs on the right, like the browser in the ChatGPT desktop app. Each bot gets a colored, named cursor in its own tabs, so you can watch it click around. "Take over" a tab and every queued agent action on it is cancelled. Bots only see tabs you own or grant. [Desktop guide](desktop/README.md)
+2. **Fast computer use over MCP.** Agents get browser tools (`cua_alans_way_*`) for the Workspace browser and desktop tools (`workspace_computer_*`) for apps on your Mac or PC, built to match Codex-level computer use and to stay fast when the agent runs on a remote server. Agents drive background apps and tabs without moving your cursor. [Integration](desktop/docs/integration.md) · [Parity with Hermes](docs/remote-agent-cu-parity.md)
+3. **Close the lid, keep working.** With the [agent plugin](https://github.com/capthvnsen/alans-way-agents), *new* browser and desktop work goes to the VM when your computer is unreachable, and work already running on the VM continues. **Not shipped yet:** moving in-flight work. An action that is running on your computer when it sleeps fails visibly; its tab stays there and can be inspected or resumed after you reconnect. There is no "Move to VM" button yet. [VM browser](desktop/docs/vps-browser.md) · [Handoff status](desktop/docs/integration.md#browser-task-handoff)
+4. **A live view of the VM desktop.** A mini preview of your server's desktop floats in the corner. Drag it anywhere, expand it, hide it, or switch to **Take control** to drive it yourself. Linux servers use a noVNC viewer you already run; macOS guest VMs use `scripts/mac-vm-preview.sh`. [macOS guest VM](docs/mac-vm-guest.md)
+5. **The same threads on any device.** Telegram stays stock: your Hermes gateway owns the bot conversation and the app embeds the official Telegram Web client, so the same chat is on your phone. Other agents keep their threads in their own app. Grok Bot, for example, uses the Workspace tools from the Grok Bot app. An iOS app is in development in [`ios/`](ios/README.md).
+6. **Add-on tools for production Hermes and Grok Bot, no forks.** The Hermes side is a stock plugin, [alans-way-agents](https://github.com/capthvnsen/alans-way-agents), installed into your existing gateway. Grok Bot and other MCP clients connect through a custom connector, over SSH through Tailscale. [Remote agents](desktop/docs/remote-agents.md)
+7. **Proactivity.** With the plugin, when the chat with your primary bot has been quiet for two hours it checks in once: it does one safe, reversible thing toward your goals and reports it, suggests something, asks one useful question, or stays silent. Check-ins land only between 08:00 and 22:00 in your timezone and never mid-task. Each unanswered one doubles the wait, and any reply resets it. Consequential actions (external messages, purchases, credential or permission changes, production changes, destructive operations) always need your approval.
+
+The app works without the plugin (manual tab sharing), and the plugin falls back to VM-only browsing when the app isn't running. Nothing here provisions email, calendar, Notion or similar accounts: those exist only if you install and authorize them in Hermes yourself.
+
+| Repo | What it is | Who installs it |
+|---|---|---|
+| **alans-way** (this one) | The desktop app (macOS/Windows/Linux) + companion CLI | You, on your computer |
+| [alans-way-agents](https://github.com/capthvnsen/alans-way-agents) | The plugin: idle check-ins, workspace skill, auto-routing, remote-agent router | Your Hermes gateway (VPS or macOS VM) |
 
 ## Requirements
 
-This is not a standalone app — it pairs with a Hermes setup you already have running. Before installing:
+This is not a standalone app. It pairs with a Hermes setup you already have running. Before installing:
 
 - **A [Hermes Agent](https://github.com/NousResearch/hermes-agent) gateway already running** on a server (Linux VPS, or a macOS VM via [Tart](https://tart.run)), with Telegram (or another supported platform) already connected to it.
 - **[Tailscale](https://tailscale.com)**, installed and signed into the same account on both your computer and that server.
@@ -48,33 +63,6 @@ curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/c
 Alan's Workspace for Linux is x86_64 only; 64-bit ARM Linux is not supported yet.
 
 No Telegram bot on your Hermes server yet? Run `hermes gateway setup` there first. On Windows, or with no SSH access to the server, use [Connect your agents](#connect-your-agents) instead.
-
-## What you get
-
-- **See every bot's cursor.** Each agent gets a colored, named cursor in its tabs. You can literally watch it click around.
-- **Agents get their own browser, not yours.** Bot tabs are separate Chromium views. Your mouse, keyboard, clipboard, and other apps are never touched.
-- **Grab the wheel anytime.** "Take over" a tab and every queued agent action on it is cancelled instantly.
-- **A window into the VPS.** A mini preview of your server's desktop floats in the corner. Drag it anywhere, hide it, or click to take control.
-- **Shut your laptop, keep working.** With the [agent plugin](https://github.com/capthvnsen/alans-way-agents), *new* browser work routes to the VPS when your computer is unreachable. An in-flight host action fails visibly; its live tab stays on the host and can be inspected or resumed after reconnecting. Work already running on the VPS continues. (Backend checkpoint/restore plumbing exists, but the app exposes no cross-host handoff button yet.)
-- **Explicit permissions.** Bots only see tabs you own or grant. Extension account pages are human-only. Nothing is shared unless you share it.
-
-## The two repos
-
-| Repo | What it is | Who installs it |
-|---|---|---|
-| **alans-way** (this one) | The desktop app (macOS/Windows/Linux) + companion CLI | You, on your computer |
-| [alans-way-agents](https://github.com/capthvnsen/alans-way-agents) | The plugin: idle check-ins, workspace skill, auto-routing | Your Hermes gateway (VPS or macOS VM) |
-
-The app works without the plugin (manual tab sharing), and the plugin falls back to VPS-only browsing when the app isn't running.
-
-## How the pieces fit
-
-- **Telegram stays stock.** Your existing Hermes gateway on the VPS keeps owning the bot conversation end to end. This app embeds the official Telegram Web client so you can chat and watch. It is not a second gateway and never polls the bot token.
-- **Host browser.** The app's own Chromium tabs are the bots' window into your computer, driven per-tab through Chromium's debugger by a loopback-only connector.
-- **VPS browser.** A separate managed Chromium on the server handles cloud work and is the fallback for *new* tasks when your computer is asleep. It does not absorb in-flight host tabs: those block and resume.
-- **Remote desktop preview.** Optional. On a Linux server it needs a VNC server plus a noVNC (WebSocket) viewer you already run, the app only embeds the viewer URL you paste in. On a macOS guest VM, `scripts/mac-vm-preview.sh` bridges Tart's VNC display into the same view. Its **Take control** mode is the one place your input is forwarded to the remote desktop.
-- **Plugin proactivity is idle check-ins.** When the chat with the optional primary bot has been quiet for two hours, it checks in once: it does one safe, reversible thing toward your goals and reports it, suggests something it could do, or asks one useful question, or stays silent. Check-ins land only between 08:00 and 22:00 in your timezone and never mid-task; each one left unanswered doubles the wait (toward roughly weekly) and any reply resets it. Consequential actions (external messages, purchases, credential or permission changes, production changes, destructive operations) always require your approval.
-- **No bundled account connections.** Email, calendar, Notion and similar tools exist only if you install and authorize them separately in Hermes, nothing here provisions them.
 
 ## Install the app
 
@@ -138,7 +126,7 @@ Fetch https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-pro
 The bot then has browser tools (`cua_alans_way_*`) that open tabs you can watch, and desktop tools (`workspace_computer_*`) for background apps.
 The plugin's `workspace-setup` skill teaches installed agents the same playbook.
 
-**Other agents (Grok Bot or any MCP client):** see [remote agents](desktop/docs/remote-agents.md) for the connector, transport and desktop approval.
+**Other agents (Grok Bot or any MCP client):** the client's computer joins your tailnet and reaches the VM over SSH, where a restricted key can start the workspace router and nothing else. See [remote agents](desktop/docs/remote-agents.md) for setup, the HTTP fallback and desktop approval.
 
 ## Upgrading
 
@@ -162,12 +150,12 @@ An iOS development app now lives in [`ios/`](ios/README.md), with a native Teleg
 # Desktop app
 cd desktop && npm ci && npm run check && npm start
 
-# Companion CLI (optional — file tools + diagnostics)
+# Companion CLI (optional: file tools + diagnostics)
 python3 -m venv .venv && .venv/bin/pip install -e '.[mcp]'
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request and [SECURITY.md](SECURITY.md) to report a vulnerability. Design docs live in [`docs/`](docs/) — [setup for agents](docs/setup-for-agents.md), [multi-profile fleets](docs/agent-setup.md), [security model](docs/mac-security.md), [integration](desktop/docs/integration.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request and [SECURITY.md](SECURITY.md) to report a vulnerability. Design docs live in [`docs/`](docs/): [setup for agents](docs/setup-for-agents.md), [multi-profile fleets](docs/agent-setup.md), [security model](docs/mac-security.md), [integration](desktop/docs/integration.md), [remote agents](desktop/docs/remote-agents.md). Questions or ideas: [Discord](https://discord.gg/jBQCPUsVE).
 
 ## License
 
