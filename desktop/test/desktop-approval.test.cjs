@@ -82,6 +82,18 @@ test('launch and action ask before the lease and the driver; reads and menus do 
   assert.equal(asked.length, 2, 'the denial held for launch, agent a was asked; reads and menus were not');
 });
 
+test('computer routes reject missing or oversized bot IDs before approval or driver access', async () => {
+  const { approval, asked } = gate([]);
+  const { request, seen } = computerRoutes({}, { approval });
+  for (const botId of ['', 'x'.repeat(101)]) {
+    for (const [endpoint, method] of [['launch', 'POST'], ['7/action', 'POST'], ['apps', 'GET'], ['7/snapshot', 'GET'], ['7/screenshot', 'GET'], ['7/menu', 'GET']]) {
+      assert.equal((await request(`/v1/computer/${endpoint}`, botId, method)).status, 400);
+    }
+  }
+  assert.deepEqual(asked, []);
+  assert.deepEqual(seen, []);
+});
+
 test('the agent display name comes from the app, else the connector header', async () => {
   const { approval, asked } = gate([true, true, true]);
   const { request } = computerRoutes({}, { approval });
