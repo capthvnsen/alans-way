@@ -683,7 +683,7 @@ async function serve() {
   }
   const mirror = (() => { try { return JSON.parse(fs.readFileSync(mirrorFile)).bots || {}; } catch { return {}; } })();
   const saveMirror = () => write(mirrorFile, { bots: mirror });
-  const mirrorFresh = (entry) => entry && Number(entry.updatedAt) > Date.now() - MIRROR_TTL_MS;
+  const mirrorFresh = (entry) => entry && Number(entry.refreshedAt ?? entry.updatedAt) > Date.now() - MIRROR_TTL_MS;
   // A mirror the app stopped refreshing (app closed, bot removed) must not
   // resurrect an old task on a failover days later.
   for (const bot of Object.keys(mirror)) {
@@ -716,9 +716,11 @@ async function serve() {
     if (typeof body.bot !== 'string' || !body.bot || body.bot.length > 100) throw fail('mirror needs a bot id.');
     if (!Array.isArray(body.tabs)) throw fail('mirror needs a tabs array.');
     const previous = mirror[body.bot];
+    const cleaned = body.tabs.slice(0, 40).map(cleanMirrorTab).filter(Boolean);
     const entry = {
-      updatedAt: Math.max(Date.now(), (previous?.updatedAt || 0) + 1),
-      tabs: body.tabs.slice(0, 40).map(cleanMirrorTab).filter(Boolean),
+      updatedAt: previous && JSON.stringify(previous.tabs) === JSON.stringify(cleaned) ? previous.updatedAt : Math.max(Date.now(), (previous?.updatedAt || 0) + 1),
+      refreshedAt: Date.now(),
+      tabs: cleaned,
       restored: previous?.restored || {}, restoredAt: previous?.restoredAt || {}, verification: previous?.verification || {}, restoredUrl: previous?.restoredUrl || {},
     };
     mirror[body.bot] = entry;
