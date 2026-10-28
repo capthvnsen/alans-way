@@ -30,7 +30,9 @@ async function checkLatest(channel = 'stable', fetchImpl = fetch) {
 }
 
 function canUpdate(version, current, activeChannel, selectedChannel) {
-  return normalizeChannel(activeChannel) === normalizeChannel(selectedChannel) && compareVersions(version, current) === 1;
+  const channel = normalizeChannel(activeChannel);
+  const matchesChannel = channel === 'nightly' ? /^\d+\.\d+\.\d+-nightly\.\d{8}$/.test(version) : /^\d+\.\d+\.\d+$/.test(version);
+  return matchesChannel && channel === normalizeChannel(selectedChannel) && compareVersions(version, current) === 1;
 }
 
 function configureUpdater(updater, channel, tag) {

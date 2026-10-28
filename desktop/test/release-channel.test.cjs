@@ -34,6 +34,13 @@ test('channel changes, older versions, equal versions and malformed versions nev
   for (const version of [nightly.name, 'invalid', '0.21.12']) assert.equal(canUpdate(version, nightly.name, 'nightly', 'nightly'), false);
 });
 
+test('Stable never accepts a Nightly installer and Nightly only accepts nightly versions', () => {
+  assert.equal(canUpdate(nightly.name, '0.21.13', 'stable', 'stable'), false);
+  assert.equal(canUpdate('0.21.14-rc.1', '0.21.13', 'stable', 'stable'), false);
+  assert.equal(canUpdate('0.21.14', '0.21.13', 'nightly', 'nightly'), false);
+  assert.equal(canUpdate('0.21.14', '0.21.13', 'stable', 'stable'), true);
+});
+
 test('updater uses a pinned feed and resets implicit downgrade permission', () => {
   const updater = { setFeedURL(feed) { this.feed = feed; }, set channel(value) { this.selectedChannel = value; this.allowDowngrade = true; } };
   configureUpdater(updater, 'nightly', nightly.tag_name);
@@ -84,13 +91,14 @@ test('the packaged updater only downloads the selected newer version and ignores
   const fs = require('node:fs'), vm = require('node:vm'), { EventEmitter } = require('node:events');
   const source = fs.readFileSync(require.resolve('../src/main.cjs'), 'utf8');
   const launch = source.slice(source.indexOf("let updateDriver = 'none';"), source.indexOf('\nfunction cloudSession()'));
-  for (const scenario of ['newer', 'older', 'equal', 'changed channel', 'mismatched manifest']) await t.test(scenario, async () => {
-    const update = {}, prefs = { releaseChannel: 'nightly', lastVersion: '0.21.13' };
+  for (const scenario of ['newer', 'older', 'equal', 'changed channel', 'mismatched manifest', 'stable', 'stable rejects nightly']) await t.test(scenario, async () => {
+    const update = {}, prefs = { releaseChannel: scenario.startsWith('stable') ? 'stable' : 'nightly', lastVersion: '0.21.13' };
+    const candidate = scenario === 'stable' ? '0.21.14' : nightly.name;
     let downloads = 0, resolveRelease;
     const updater = new EventEmitter();
     updater.setFeedURL = () => {};
-    updater.checkForUpdates = async () => ({ updateInfo: { version: scenario === 'mismatched manifest' ? '9.0.0' : nightly.name } });
-    updater.downloadUpdate = async () => { downloads++; updater.emit('update-downloaded', { version: nightly.name }); };
+    updater.checkForUpdates = async () => ({ updateInfo: { version: scenario === 'mismatched manifest' ? '9.0.0' : candidate } });
+    updater.downloadUpdate = async () => { downloads++; updater.emit('update-downloaded', { version: candidate }); };
     const context = vm.createContext({ app: { isPackaged: true, getVersion: () => '0.21.13' }, prefs, update,
       process: { platform: 'win32', execPath: '/fixture/app' }, path: require('node:path'),
       releaseChannel: { ...require('../src/release-channel.cjs'), checkLatest: () => new Promise(resolve => { resolveRelease = resolve; }) },
@@ -101,11 +109,18 @@ test('the packaged updater only downloads the selected newer version and ignores
     });
     vm.runInContext(launch + '\nstartUpdates();', context);
     if (scenario === 'changed channel') prefs.releaseChannel = 'stable';
-    resolveRelease({ tag: nightly.tag_name, version: scenario === 'older' ? '0.21.12' : scenario === 'equal' ? '0.21.13' : nightly.name });
+    resolveRelease({ tag: nightly.tag_name, version: scenario === 'older' ? '0.21.12' : scenario === 'equal' ? '0.21.13' : candidate });
     await vm.runInContext('checkAppVersions()', context);
-    assert.equal(downloads, scenario === 'newer' ? 1 : 0);
-    assert.equal(Boolean(update.ready), scenario === 'newer');
+    assert.equal(downloads, ['newer', 'stable'].includes(scenario) ? 1 : 0);
+    assert.equal(Boolean(update.ready), ['newer', 'stable'].includes(scenario));
     assert.equal(updater.allowDowngrade, false);
     assert.equal(updater.autoDownload, false);
+    if (scenario === 'stable') {
+      assert.equal(updater.autoInstallOnAppQuit, true, 'Windows Stable keeps install-on-quit available');
+      updater.emit('update-downloaded', { version: nightly.name });
+      assert.equal(update.ready, false, 'an unexpected Nightly notification invalidates the staged installer');
+      assert.equal(update.available, '', 'explicit restart cannot install a rejected installer from the updater cache');
+      assert.equal(updater.autoInstallOnAppQuit, false, 'a rejected Nightly notification also disarms automatic installation');
+    }
   });
 });

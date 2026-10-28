@@ -1361,7 +1361,12 @@ function startUpdates() {
     autoUpdater.on('checking-for-update', () => note('checking'));
     autoUpdater.on('update-available', (info) => { note(`available ${info?.version}`); appLatest = info?.version || ''; broadcast(); });
     autoUpdater.on('update-not-available', (info) => { note('none available'); appLatest = info?.version || ''; broadcast(); });
-    autoUpdater.on('update-downloaded', (info) => { if (!releaseChannel.canUpdate(info.version, app.getVersion(), activeReleaseChannel, prefs.releaseChannel)) return; note(`downloaded ${info.version}`); appLatest = info.version; update.available = info.version; update.ready = true; broadcast(); });
+    autoUpdater.on('update-downloaded', (info) => {
+      if (!releaseChannel.canUpdate(info.version, app.getVersion(), activeReleaseChannel, prefs.releaseChannel)) {
+        autoUpdater.autoInstallOnAppQuit = false; update.available = ''; update.ready = false; appLatest = ''; broadcast(); return;
+      }
+      note(`downloaded ${info.version}`); appLatest = info.version; update.available = info.version; update.ready = true; broadcast();
+    });
     autoUpdater.autoDownload = false;
     autoUpdater.allowDowngrade = false;
     let logged = false;
