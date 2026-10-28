@@ -2663,9 +2663,9 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
       const cookies=carry?await pageCookies(checkpoint.url):[];
       target=await vpsBrowser.request('/v1/tabs','POST',{url:checkpoint.url,...(cookies.length?{cookies}:{})},{botId:source.botId,human:true});vpsTabs.set(target.id,target);
       signIns=target.signIns||0;
-    } else {
+    } else if(carry) {
       const jar=session.fromPartition('persist:browser').cookies;
-      for(const cookie of carry?toElectronCookies(remoteCookies,checkpoint.url):[])if(await jar.set(cookie).then(()=>true,()=>false))signIns++;
+      for(const cookie of toElectronCookies(remoteCookies,checkpoint.url))if(await jar.set(cookie).then(()=>true,()=>false))signIns++;
     }
   } catch(error) {
     // Nothing exists on the other side yet: give the source back to whoever had it.

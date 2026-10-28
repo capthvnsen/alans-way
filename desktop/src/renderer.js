@@ -473,12 +473,12 @@ function render(next) {
   // A handed-off source stays retired once its remote copy came back: the new
   // local tab carries a handoff record pointing at that remote tab id.
   const movedBack = !!handedOff && state.tabs.some((item) => item !== tab && item.handoff?.sourceTabId === handedOff);
-  const canHandoff = state.vpsBrowserStatus === 'connected' && !!tab && !tab.extensionPage && !tab.internal && !tab.localPdf && /^https?:/.test(tab.url || '') && (!tab.handoff || tab.handoff.phase !== 'handed_off' || (!!handedOff && !movedBack));
+  const canHandoff = state.vpsBrowserStatus === 'connected' && !!tab && !tab.extensionPage && !tab.internal && (tab.controller === 'agent' || (!!handedOff && !movedBack));
   const handoffButton = $('handoff-button');
   handoffButton.classList.toggle('hidden', !canHandoff);
   handoffButton.disabled = !canHandoff || handoffBusy;
   handoffButton.textContent = handoffBusy ? 'Moving…' : handedOff ? 'Move back' : `Move to ${remoteName()}`;
-  handoffButton.title = `${handedOff ? `Bring the ${remoteName()} copy of this page back to your ${thisComputer()}` : `Move ${tab?.controller === 'agent' ? `${agentName}’s page` : 'this page'} to the ${remoteName()} desktop`}. ${state.carrySignIns ? 'Its sign-in cookies go along over Tailscale; passwords and site storage stay.' : 'Sign-ins stay here (Settings › Tabs).'}`;
+  handoffButton.title = `${handedOff ? `Bring the ${remoteName()} copy of this page back to your ${thisComputer()}` : `Move ${agentName || 'the agent'}’s page to the ${remoteName()} desktop`}. ${state.carrySignIns ? 'Its sign-in cookies go along over Tailscale; passwords and site storage stay.' : 'Sign-ins stay here (Settings › General).'}`;
   // The VM resumed agent tabs while this computer slept; say so once.
   const continued = state.continuedNotice;
   if (continued && !resumeToasts.has(`continued:${continued.at}`)) { resumeToasts.add(`continued:${continued.at}`); toast(`${continued.count === 1 ? 'A task' : `${continued.count} tasks`} continued on the ${remoteName()} while this computer was away. Press Move back to bring ${continued.count === 1 ? 'it' : 'one'} here.`); }
