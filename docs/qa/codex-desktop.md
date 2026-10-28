@@ -76,7 +76,9 @@ credential changes, or public listeners were used.
   text race: browser continuation, real Chromium crash recovery, connection
   drafts/journeys, conversation/session-wire compatibility, first action,
   asynchronous settings/navigation/persistence, shortcut query/round2, and state
-  ordering. Fixed settings and plugin fixtures were rerun separately.
+  ordering. Final fixture reruns passed: both plugin suites, all 37 settings
+  recovery checks, and settings persistence with zero failures and no startup
+  rejection.
 
 Live installed-app suites, real accounts, vendor Web Store installation, native
 Hermes execution, Windows hardware, and a multi-hour memory soak were not run.
