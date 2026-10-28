@@ -58,6 +58,9 @@ final class WorkspaceLaunchTests: XCTestCase {
         app.launchArguments = ["--ui-testing", "--interface-preview"]
         app.launch()
         XCTAssertTrue(app.staticTexts["INTERFACE PREVIEW · SAMPLE DATA"].waitForExistence(timeout: 10))
+        app.buttons["workspaceSettings"].tap()
+        XCTAssertTrue(app.staticTexts["No crash or hang reports on this device"].waitForExistence(timeout: 5))
+        app.buttons["Done"].tap()
         app.buttons["agentChat-101"].tap()
         XCTAssertTrue(app.textFields["messageComposer"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Pick up where we left off."].exists)
