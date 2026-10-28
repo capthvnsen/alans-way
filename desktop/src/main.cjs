@@ -285,7 +285,8 @@ async function refreshVpsTabs() {
     waitingVpsTabs = waiting;
     if(wasVps&&!vpsTabs.has(activeTabId)){prefs.remoteControl=false;activeTabId='home';applyLayout();}
     // Before the mirror can push this computer's now-stale pages again.
-    if (vpsBrowserStatus !== 'connected' || continuedCheckDue) { continuedCheckDue = false; await retireContinuedTabs().catch((error) => { continuedCheckDue = true; logError('continued-tabs', error); }); }
+    // An older VM broker has no such route (404): nothing to retire there.
+    if (vpsBrowserStatus !== 'connected' || continuedCheckDue) await retireContinuedTabs().then(() => { continuedCheckDue = false; }, (error) => { continuedCheckDue = error.status !== 404; if (continuedCheckDue) logError('continued-tabs', error); });
     vpsBrowserStatus = 'connected'; vpsBrowserError = ''; vpsFailures = 0;
   }
   catch (error) { vpsBrowserStatus = 'disconnected'; vpsBrowserError = /^Invalid VPS browser/.test(error.message) ? error.message : ''; vpsFailures++; }
@@ -323,7 +324,8 @@ async function retireContinuedTabs() {
 const pushVpsMirror = createMirrorPusher({
   bots: () => (prefs?.bots || []).map((bot) => bot.id),
   async collect() {
-    if (!prefs?.vpsBrowser?.sshHost || vpsBrowserStatus !== 'connected') return null;
+    // A push before the retire check would hide what the VM resumed from it.
+    if (!prefs?.vpsBrowser?.sshHost || vpsBrowserStatus !== 'connected' || continuedCheckDue) return null;
     const carry = await signInsTravel();
     const agentTabs = [...tabs.values()].filter((tab) => {
       const wc = tab.view?.webContents;
@@ -3412,7 +3414,7 @@ function watchTelegram(wc) {
   // Lid close: send the freshest mirror now, best effort (sleep may not wait).
   powerMonitor.on('suspend', () => { clearTimeout(vpsMirrorDebounce); pushVpsMirror(); });
   powerMonitor.on('resume', () => {
-    continuedCheckDue = true;
+    continuedCheckDue = true; refreshVpsTabs();
     if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:remote-retry');
     const timer = setTimeout(() => { if (stuck()) telegramRecovery.now(); }, 3000); timer.unref?.();
   });

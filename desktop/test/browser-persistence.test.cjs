@@ -335,3 +335,22 @@ test('Mac self-update snapshots work done while the new bundle is being staged',
   await context.restartIntoUpdate();
   assert.equal(saved.at(-1), 'after staging');
 });
+
+test('on wake the app retires each local tab the VM resumed, once, and tells the human', async () => {
+  const { continuedOnVm, requireAgentClaim } = require('../src/core.cjs');
+  const tabs = new Map([['mac-1', { id: 'mac-1', botId: 'bot-a', controller: 'agent' }], ['mac-2', { id: 'mac-2', botId: 'bot-b', controller: 'agent' }], ['mac-3', { id: 'mac-3', botId: 'bot-a', controller: 'human' }]]);
+  let saved = 0;
+  const context = vm.createContext({ tabs, prefs: { handoffs: [] }, continuedOnVm, Date, Object,
+    vpsBrowser: { request: async (route) => { assert.equal(route, '/v1/mirror/continued'); return { bots: { 'bot-a': { 'mac-1': 'vm-1', 'mac-3': 'vm-3', 'gone': 'vm-x' }, 'bot-c': { 'mac-2': 'vm-2' } } }; } },
+    changeController: (id, controller) => { tabs.get(id).controller = controller; }, savePreferences: () => { saved++; }, broadcast() {} });
+  vm.runInContext(section('let continuedCheckDue = true', '\nconst pushVpsMirror') + ';this.notice = () => continuedNotice;', context);
+  await context.retireContinuedTabs();
+  assert.equal(tabs.get('mac-1').controller, 'human');
+  assert.throws(() => requireAgentClaim(tabs.get('mac-1'), Date.now(), { autoTakeover: true }), /handoff_source: this task moved to the vps tab vm-1/);
+  assert.equal(tabs.get('mac-2').controller, 'agent', 'a map entry for another bot never retires this bot’s tab');
+  assert.equal(tabs.get('mac-3').handoff, undefined, 'a tab the human holds is left alone');
+  assert.equal(context.notice().count, 1);
+  assert.equal(saved, 1);
+  await context.retireContinuedTabs();
+  assert.equal(context.prefs.handoffs.length, 1, 'a second check retires nothing new');
+});
