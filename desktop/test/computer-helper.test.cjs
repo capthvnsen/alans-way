@@ -691,3 +691,23 @@ test('text selection and app actions validate before dispatch', async () => {
   await service.action('fixture', 7, { action: 'batch', generation: 3, steps: [select, { action: 'secondary_action', ref: 'c2', secondaryAction: 'AXShowMenu' }] });
   assert.deepEqual(received[0].steps, [select, { action: 'secondary_action', ref: 'c2', secondaryAction: 'AXShowMenu' }]);
 });
+
+test('a folder path typed into a Save dialog name field is refused before any input', async () => {
+  const acted = [];
+  const dialog = { generation: 3, elements: [{ ref: 'c1', role: 'textfield', name: 'Save As:', value: 'Untitled' }, { ref: 'c2', role: 'popupbutton', name: 'Where:' }] };
+  const service = createComputerService({
+    snapshot: async (pid) => (pid === 5 ? dialog : { generation: 4, elements: [{ ref: 'c1', role: 'textfield', name: 'Search' }] }),
+    act: async (pid, body) => { acted.push(body.steps); return { results: body.steps.map(() => ({ ok: true })), ...dialog }; },
+  });
+  await service.snapshot('bot', 5);
+  for (const body of [
+    { action: 'type', ref: 'c1', generation: 3, text: '~/Documents/report.txt' },
+    { action: 'batch', generation: 3, steps: [{ action: 'key', key: 'a' }, { action: 'type', ref: 'c1', text: '/Volumes/Work/report.txt' }] },
+  ]) await assert.rejects(service.action('bot', 5, body), (error) => error.code === 'bad_request' && /Save dialog.*cmd\+shift\+g/.test(error.message));
+  assert.deepEqual(acted, [], 'nothing ran');
+  await service.action('bot', 5, { action: 'type', ref: 'c1', generation: 3, text: 'report.txt' });
+  await service.snapshot('bot', 6);
+  await service.action('bot', 6, { action: 'type', ref: 'c1', generation: 4, text: '~/Documents/report.txt' });
+  await service.action('other', 5, { action: 'type', ref: 'c1', generation: 3, text: '~/Documents/report.txt' });
+  assert.equal(acted.length, 3, 'bare names, other windows and agents that never saw the dialog are not refused');
+});

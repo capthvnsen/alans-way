@@ -38,7 +38,7 @@ const isString = (value) => typeof value === 'string';
 const ARRAY_ITEMS = {
   bots: (item) => isObject(item) && isString(item.id), avatarLibrary: (item) => isObject(item) && isString(item.id),
   savedTabs: (item) => isObject(item) && isString(item.url),
-  order: isString, hidden: isString, overseerBots: isString,
+  order: isString, hidden: isString, overseerBots: isString, desktopTrustedBots: isString,
 };
 // A hand-edited or half-written preferences file must never hand the app a
 // string where it iterates an array. Any field of the wrong type falls back to

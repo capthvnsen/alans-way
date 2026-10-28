@@ -69,6 +69,26 @@ async function pickHelper({ binary, source, bundled, exists, current, compile })
 
 const compile = makeCompile({ hasDevTools, build });
 
+function createDesktopLease() {
+  let holder;
+  return {
+    take(botId, name) {
+      if (!botId) return null;
+      const now = Date.now();
+      if (holder && holder.botId !== botId && (holder.active || holder.expiresAt > now))
+        return { error: 'desktop_busy', holder: holder.name, retryAfter: holder.active ? 20 : Math.ceil((holder.expiresAt - now) / 1000) };
+      if (!holder || holder.botId !== botId) holder = { botId, active: 0 };
+      holder.name = name || botId;
+      holder.active++;
+      return null;
+    },
+    release(botId) {
+      if (!botId || holder?.botId !== botId) return;
+      if (--holder.active === 0) holder.expiresAt = Date.now() + 20000;
+    },
+  };
+}
+
 // Packaging builds the helper ahead of time (scripts/build-computer.cjs); this
 // is the fallback for a checkout that was never packaged or a Mac without the
 // compiler, where an older or bundled build is better than nothing.
@@ -93,4 +113,4 @@ function driverCommand(helper, args) {
 
 const { service, close } = createComputer({ command: async (mode) => driverCommand(await ensureBinary(), [mode]), nativeMac: true });
 
-module.exports = { service, close, ensureBinary, pickHelper, makeCompile, driverCommand, target };
+module.exports = { service, close, ensureBinary, pickHelper, makeCompile, driverCommand, target, createDesktopLease };

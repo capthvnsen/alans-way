@@ -138,6 +138,8 @@ Fetch https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-pro
 The bot then has browser tools (`cua_alans_way_*`) that open tabs you can watch, and desktop tools (`workspace_computer_*`) for background apps.
 The plugin's `workspace-setup` skill teaches installed agents the same playbook.
 
+**Other agents (Grok Bot or any MCP client):** see [remote agents](desktop/docs/remote-agents.md) for the connector, transport and desktop approval.
+
 ## Upgrading
 
 Release installs update themselves. When an update is ready, the popup updates every saved VM over SSH first (Hermes plugins per profile, one gateway restart if plugin code changed), then the app. Any VM left behind gets a retry banner until it catches up.

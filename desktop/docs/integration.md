@@ -2,6 +2,8 @@
 
 Keep stock Hermes unchanged. The companion should launch or register the browser MCP connector on the Mac through the existing private SSH route, using its bot/profile identity as `--bot-id`. Map Telegram bot IDs to Hermes profile IDs explicitly if those namespaces differ. The UI can assign a tab to either ID; they must match the connector argument.
 
+Any MCP client can use this connector with its own `--bot-id` (and optional `--bot-name`); browser and computer screenshots return standard MCP image content. Existing `X-Hermes-Bot` headers and `HERMES_*` settings also apply to these clients.
+
 ## Local browser interface
 
 The desktop app creates `~/Library/Application Support/Hermes Workspace/connection.json` with mode 0600. The connector rereads it for every call, allowing token rotation on app restart. Tokens and browser profiles never belong in the shared repository. The endpoint is loopback only; run the connector on the Mac rather than exposing the HTTP service on Tailscale.
@@ -242,3 +244,11 @@ Run `npm run test:extensions` for the generated MV3 fixture and
 `npm run test:web-store` for the real public 1Password package. Each uses an
 isolated profile; the latter requires network access and uses no account.
 The desktop distribution is GPL-3.0-or-later; the Python addon stays MIT.
+
+## Mac desktop input lease
+
+`POST /v1/computer/launch`, `GET /v1/computer/:pid/menu` and `POST /v1/computer/:pid/action` take or refresh a desktop lease keyed by `X-Hermes-Bot`. Only one bot holds it; it expires after 20 seconds without input requests from that bot. Another bot gets HTTP 409 with `{error:"desktop_busy", holder:<display name or bot ID>, retryAfter:<seconds>}`; the connector reports “desktop_busy: The Mac is being used by <holder>; try again in N s.” Apps, snapshots and screenshots remain readable by other bots. Trusted app/human input is unaffected, and the native frontmost-app idle policy still applies. The loopback API has no MCP disconnect notification, so abandoned leases end by idle expiry.
+
+## Desktop input approval
+
+Before the lease, `POST /v1/computer/launch` and `POST /v1/computer/:pid/action` from a bot that is not in the Workspace bot list, the overseer list or `desktopTrustedBots` ask the user on this computer (Deny, Allow until 30 idle minutes, Always allow). One prompt is shared by concurrent requests and waits 40 seconds. An unanswered prompt returns HTTP 403 `{error:"desktop_approval_required", name}`, a denial `{error:"desktop_approval_denied", name}`; neither reaches the driver or takes the lease. A denial holds for 60 seconds without prompting again. Requests without `X-Hermes-Bot` are the trusted human/app path, as for the lease; the connector always sends one. The display name is the Workspace bot name, else the connector's `X-Hermes-Bot-Name`. User guide: [remote-agents.md](remote-agents.md).

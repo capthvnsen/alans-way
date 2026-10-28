@@ -19,6 +19,17 @@ function connectorRequest(fetch) {
   });
 }
 
+test('desktop busy is a clear tool error with holder and retry time', async () => {
+  const request = connectorRequest(async () => ({ ok: false, status: 409, text: async () => JSON.stringify({ error: 'desktop_busy', holder: 'Agent A', retryAfter: 12 }) }));
+  await assert.rejects(request('/v1/computer/7/action', 'POST', { action: 'click' }), error => {
+    assert.match(error.message, /^desktop_busy: The Mac is being used by Agent A; try again in 12 s\. Reads still work\..*Nothing was sent\.$/);
+    assert.equal(error.browserRequest.code, 'desktop_busy');
+    assert.equal(error.browserRequest.status, 409);
+    assert.equal(error.browserRequest.uncertainOutcome, undefined);
+    return true;
+  });
+});
+
 test('open optionally includes a bounded snapshot and keeps its tab receipt when the read fails', { timeout: 10000 }, async (t) => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-open-observation-'));
   const seen = [];
@@ -241,7 +252,7 @@ test('public recovery guidance limits retries to reads and preserves uncertain m
   for (const sentence of [
     '- Consequential approval requires a fresh observed ref or unique exact name. If approval_invalid or page_changed reports a changed document/target, take a fresh snapshot, review it, and request a new approval; an old approval cannot move to a continued tab. approval_binding_unavailable requires updating the browser host/connector before approving again.',
     '- When automatic takeover is enabled and the human took over a tab on their computer, act or claim: the app hands it back to you (waiting up to 10s while they type) and shows them a Take back button. Do not ask first. An action is checked before it takes the tab, so a malformed one, an epoch or generation from before their takeover or page change (stale_control_epoch: inspect current control and epoch, then follow the current control policy) or one the page refuses (a missing control, a CAPTCHA) leaves the tab with them. human_took_tab means they grabbed it during your call: inspect completed effects and current control before deciding on another action; uncertain input is not permission to repeat it. Only awaiting_human (you handed it over), recording_in_progress (they are recording a task), human_took_back (they pressed Take back; leave it for a minute) or human_has_control (automatic takeover is off, or a VM tab) keep it theirs: open your own tab or tell them what you need. Never ask the user to hand a tab back unless a call answered human_has_control.',
-    "- When only the human can continue (a CAPTCHA, a login, a 2FA code, card details, or a page they must review), release with a reason and a short note saying what to do. The app shows them a banner and a notification, and the tab stays theirs until they press Give back in Alan's Workspace or 30 minutes pass, on the user's computer and on the VM alike. Until then calls answer awaiting_human, and after the give-back human_returned: read the tab for the fresh epoch. Also tell the user in Telegram what you need.",
+    "- When only the human can continue (a CAPTCHA, a login, a 2FA code, card details, or a page they must review), release with a reason and a short note saying what to do. The app shows them a banner and a notification, and the tab stays theirs until they press Give back in Alan's Workspace or 30 minutes pass, on the user's computer and on the VM alike. Until then calls answer awaiting_human, and after the give-back human_returned: read the tab for the fresh epoch. Also tell the user in your chat what you need.",
   ]) assert.ok(actionDescription.split('\n').includes(sentence), 'approval, takeover and handback wording stays intact');
 });
 
@@ -932,6 +943,7 @@ test('computer tools go through the app API when the connected app advertises co
   assert.match(await call('workspace_computer_action', { pid: 7, action: 'batch', generation: 4, menubar: true, steps: [{ action: 'press', ref: 'a1' }] }), /app-api-marker/);
   const shot = await client.callTool({ name: 'workspace_computer_screenshot', arguments: { pid: 7, maxWidth: 640 } });
   assert.equal(shot.isError, undefined);
+  assert.deepEqual(shot.content[0], { type: 'image', data: 'AAAA', mimeType: 'image/jpeg' });
   assert.match(JSON.parse(shot.content[1].text).note, /^Read only: elsewhere\. Click coordinates stay/);
   const lines = seen.map((entry) => entry.line);
   assert.deepEqual(lines.filter((line) => line !== 'GET /v1/status'), [
@@ -944,6 +956,40 @@ test('computer tools go through the app API when the connected app advertises co
   assert.equal(lines.filter((line) => line === 'GET /v1/status').length, 1, 'the decision is cached');
   assert.deepEqual(seen.find((entry) => entry.line === 'POST /v1/computer/7/action').body, { action: 'batch', generation: 4, menubar: true, steps: [{ action: 'press', ref: 'a1' }] });
   assert.ok(seen.every((entry) => entry.bot === 'mcp-test'));
+});
+
+test('desktop input tools advertise optional expect_host and accept calls carrying it', { timeout: 8000 }, async (t) => {
+  const { client, seen } = await computerHost(t, ['computer', 'computer-launch-v1'], 'mac');
+  const tools = (await client.listTools()).tools;
+  for (const [name, args, endpoint, forwarded] of [
+    ['workspace_computer_launch', { app: 'Calculator' }, '/v1/computer/launch', { app: 'Calculator' }],
+    ['workspace_computer_action', { pid: 7, action: 'key', key: 'Enter' }, '/v1/computer/7/action', { action: 'key', key: 'Enter', expect_host: 'computer' }],
+  ]) {
+    const schema = tools.find(tool => tool.name === name).inputSchema;
+    const { description, ...expectHost } = schema.properties.expect_host;
+    assert.deepEqual(expectHost, { type: 'string', enum: ['computer', 'vm'] });
+    assert.match(description, /^Send the host reported by the observation you acted on\. A host mismatch refusal .*fresh snapshot/);
+    assert.ok(!schema.required.includes('expect_host'));
+    const reply = await client.callTool({ name, arguments: { ...args, expect_host: 'computer' } });
+    assert.equal(reply.isError, undefined, JSON.stringify(reply));
+    assert.deepEqual(seen.find(item => item.line === 'POST ' + endpoint).body, forwarded);
+  }
+  for (const tool of tools.filter(tool => tool.name.endsWith('_screenshot')))
+    assert.doesNotMatch(tool.description, /Hermes|MEDIA:/);
+});
+
+test('the app computer service accepts expect_host without changing the action', async () => {
+  const { createComputerService } = require('../src/computer-helper.cjs');
+  const seen = [];
+  const service = createComputerService({ act: async (pid, body) => {
+    seen.push({ pid, body });
+    return { results: [{ ok: true }], elements: [] };
+  } });
+  for (const expect_host of [undefined, 'computer', 'vm'])
+    await service.action('test', 7, { action: 'key', key: 'Enter', ...(expect_host ? { expect_host } : {}) });
+  assert.equal(seen.length, 3);
+  assert.deepEqual(seen[1], seen[0]);
+  assert.deepEqual(seen[2], seen[0]);
 });
 
 test('computer tools use the in-process driver when the connected host has no computer endpoint', { timeout: 8000 }, async (t) => {
@@ -1030,7 +1076,8 @@ test('a cropped browser screenshot reaches the host and returns its coordinate m
   assert.match(mapping.note, /x = crop\.x \+ px \* crop\.width \/ image width/);
   assert.match(mapping.note, /y = crop\.y \+ py \* crop\.height \/ image height/);
   const tool = (await client.listTools()).tools.find(tool => tool.name === 'cua_alans_way_screenshot');
-  assert.match(tool.description, /MEDIA:<path>/);
+  assert.match(tool.description, /MCP image content/);
+  assert.doesNotMatch(tool.description, /Hermes|MEDIA:/);
   assert.match(tool.description, /vision step/);
   assert.match(tool.description, /Defaults to compact jpeg; png keeps alpha/);
   assert.deepEqual(tool.inputSchema.properties.crop.required, ['x', 'y', 'width', 'height']);
