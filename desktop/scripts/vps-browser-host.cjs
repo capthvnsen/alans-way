@@ -699,7 +699,10 @@ async function serve() {
       .filter((d) => d && typeof d.selector === 'string' && d.selector.length < 500 && typeof d.value === 'string' && d.value.length <= 10000 && d.type !== 'password' && !SECRET_FIELD.test(d.selector))
       .slice(0, 30)
       .map((d) => ({ selector: d.selector, tag: String(d.tag || ''), type: String(d.type || ''), editable: d.editable === true, value: d.value }));
-    const cookies = (Array.isArray(t.cookies) ? t.cookies : [])
+    return { id: String(t.id), url: t.url, title: String(t.title || '').slice(0, 300), scroll: { x: finite(t.scroll?.x, 1e7), y: finite(t.scroll?.y, 1e7) }, drafts, cookies: cleanCookies(t.cookies) };
+  }
+  function cleanCookies(list) {
+    return (Array.isArray(list) ? list : [])
       .filter((c) => c && typeof c.name === 'string' && typeof c.value === 'string' && c.name.length <= 4096 && c.value.length <= 8192 && /^\.?[\w.-]{1,253}$/.test(String(c.domain)) && typeof c.path === 'string' && c.path.startsWith('/'))
       .slice(0, 150)
       .map((c) => ({
@@ -708,7 +711,6 @@ async function serve() {
         httpOnly: c.httpOnly === true, secure: c.secure === true, session: c.session === true || !(Number(c.expires) > 0),
         ...(['Strict', 'Lax', 'None'].includes(c.sameSite) ? { sameSite: c.sameSite } : {}),
       }));
-    return { id: String(t.id), url: t.url, title: String(t.title || '').slice(0, 300), scroll: { x: finite(t.scroll?.x, 1e7), y: finite(t.scroll?.y, 1e7) }, drafts, cookies };
   }
   function saveMirrorEntry(body) {
     if (typeof body.bot !== 'string' || !body.bot || body.bot.length > 100) throw fail('mirror needs a bot id.');
@@ -972,8 +974,23 @@ async function serve() {
             .map(describe),
         });
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
-        const { tab: opened, closed } = await open(await read(req), botId, human);
-        return send(201, { ...describe(opened), ...(closed.length ? { closedTabs: closed } : {}) });
+        const body = await read(req);
+        // A Move from the app carries the page's sign-in cookies; they land
+        // before the first load. Agents cannot plant cookies this way.
+        const cookies = human ? cookieParams({ cookies: cleanCookies(body.cookies) }) : [];
+        const { tab: opened, closed } = await open(body, botId, human, cookies.length ? (t) => setCookies(t, cookies) : undefined);
+        return send(201, { ...describe(opened), ...(cookies.length ? { signIns: cookies.length } : {}), ...(closed.length ? { closedTabs: closed } : {}) });
+      }
+      // Which Mac tabs a restore resumed from the mirror the app last pushed,
+      // so the app can retire its own copies when it wakes.
+      if (url.pathname === '/v1/mirror/continued' && req.method === 'GET') {
+        if (!isApp) throw fail('Only the app may read the mirror.', 403);
+        const bots = {};
+        for (const [bot, entry] of Object.entries(mirror)) for (const t of entry.tabs || []) {
+          const vmId = entry.restored?.[t.id];
+          if (vmId && tabs.has(vmId) && entry.restoredAt?.[t.id] === entry.updatedAt) (bots[bot] ||= {})[t.id] = vmId;
+        }
+        return send(200, { bots });
       }
       if (url.pathname === '/v1/mirror' && req.method === 'POST') {
         if (!isApp) throw fail('Only the app may update the mirror.', 403);
@@ -1147,7 +1164,10 @@ async function serve() {
         if (tab.controller !== 'human') throw fail('Take control before checkpointing.', 409);
         const body = await read(req);
         await tab.queue;
-        return send(200, await wc.executeJavaScript(checkpointExpression(body.includeDrafts)));
+        const page = await wc.executeJavaScript(checkpointExpression(body.includeDrafts));
+        // Move back: the page's own cookies, for the app to set before it loads the page locally.
+        if (body.includeCookies === true && /^https?:\/\//.test(page.url)) page.cookies = ((await wc.command('Network.getCookies', { urls: [page.url] }).catch(() => null))?.cookies || []).slice(0, 150);
+        return send(200, page);
       }
       if (human && req.method === 'POST' && m[2] === 'restore') {
         if (tab.controller !== 'human') throw fail('Destination must remain under human review.', 409);
