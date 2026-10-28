@@ -1112,7 +1112,11 @@ def cmd_act(req):
     response = {'ok': True, 'results': results}
     if req.get('snapshot', True) and any(item['ok'] for item in results):
         time.sleep(min(max(int(req.get('settleMs', 60)), 0), 2000) / 1000)
-        response.update(walk_reply(walk_app(pid, app, bool(req.get('menubar')))))
+        # The steps already ran; a tree that cannot be read afterwards must not hide their results.
+        try:
+            response.update(walk_reply(walk_app(pid, app, bool(req.get('menubar')))))
+        except Fail as exc:
+            response['note'] = f'{exc.code}: the steps ran but the app could not be read afterwards ({exc}) Do not repeat them; take a fresh snapshot.'
     return response
 
 
@@ -1540,6 +1544,17 @@ def cmd_selftest(req):
         except Fail as exc:
             refused = (exc.code, str(exc))
         check(refused == ('unsupported_action', 'That app has no menu bar.'), 'menu listing on the screen')
+        del sent[:]
+
+        def gone(*_args, **_kw):
+            fail('The app stopped responding.', 'unresponsive')
+        real_walk, globals()['walk_app'] = walk_app, gone
+        try:
+            reply = cmd_act({'pid': 0, 'steps': steps[:1], 'settleMs': 0})
+        finally:
+            globals()['walk_app'] = real_walk
+        check(reply['ok'] and codes(reply) == ['ok'] and sent and reply['note'].startswith('unresponsive: the steps ran')
+              and 'elements' not in reply, 'a tree unreadable after the input keeps the results of the steps that ran')
     finally:
         restore()
     del sent[:], displays[:]
