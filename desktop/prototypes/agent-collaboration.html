@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Workspace room · offline prototype</title>
+<style>
+  :root { color-scheme: dark; font: 15px system-ui, sans-serif; background: #151617; color: #eceae6; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  main { max-width: 1100px; margin: 28px auto; padding: 0 20px; display: grid; grid-template-columns: minmax(280px, 520px) 1fr; gap: 24px; }
+  section, aside { background: #1e2022; border: 1px solid #45474b; border-radius: 12px; padding: 20px; }
+  h1 { font-size: 20px; margin: 8px 0; } h2 { font-size: 16px; } p { line-height: 1.5; }
+  small, .muted { color: #b5b8be; }
+  button, select, textarea { font: inherit; color: inherit; background: #292d31; border: 1px solid #6c727b; border-radius: 6px; padding: 9px 12px; }
+  button { cursor: pointer; } button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid #98d4c7; outline-offset: 2px; }
+  textarea { width: 100%; resize: vertical; margin: 8px 0; } label { display: block; margin-top: 12px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; } .primary { background: #23544a; }
+  #transcript { height: 380px; overflow: auto; margin: 18px 0; }
+  article { border-left: 3px solid #92beb4; margin: 14px 0; padding: 4px 12px; }
+  article[data-author="grok"] { border-color: #c1adf3; }
+  article[data-author="system"] { border-color: #747a82; color: #b5b8be; }
+  article p { margin: 5px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #error { color: #ffb7a6; min-height: 24px; }
+  #status { color: #98d4c7; } .badge { color: #e9cd8e; text-transform: uppercase; letter-spacing: .08em; font-size: 11px; }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; margin: 12px auto; } }
+</style>
+<main>
+  <section aria-label="Workspace shared chat pane">
+    <span class="badge">Offline prototype · simulated bots</span>
+    <h1>Workspace room</h1>
+    <small>Alex · Hermes · Grok Bot</small>
+    <p id="status" role="status" aria-live="polite"></p>
+    <div class="actions"><button id="pause">Pause bots</button><button id="resume" disabled>Resume</button></div>
+    <div id="transcript" role="log" aria-label="Room messages" aria-live="polite" tabindex="0"></div>
+    <p id="truncated" class="muted"></p>
+    <form id="composer">
+      <label for="message">Message as Alex</label>
+      <textarea id="message" rows="3" maxlength="4000" required placeholder="@hermes Compare approaches with Grok."></textarea>
+      <button class="primary" type="submit">Send</button>
+    </form>
+    <p id="error" role="alert"></p>
+    <small>A leading @hermes or @grok starts work. Other messages stay in the room.</small>
+  </section>
+  <aside aria-label="Prototype controls and desktop boundary">
+    <h2>Shared task, separate authority</h2>
+    <p>This page makes no network requests and cannot use the desktop. Room history exists only until reload.</p>
+    <p>In the proposed live version, Grok connects over Tailscale to workspace-mcp; Hermes uses its plugin. Each keeps its own provider thread.</p>
+    <h2>VM desktop</h2>
+    <p class="muted">Not connected. A task handoff carries intent, never a desktop lease or approval. A busy desktop stays busy until its existing lease permits input.</p>
+    <h2>Simulate the assigned bot</h2>
+    <p id="assignment">Waiting for Alex’s @mention.</p>
+    <form id="simulation">
+      <label for="reply">Simulated bot reply</label>
+      <textarea id="reply" rows="4" maxlength="4000" required>Here is my proposal. Please review it.</textarea>
+      <label for="handoff">Next step</label>
+      <select id="handoff"><option value="">Reply and finish</option><option value="peer">Hand off to the other bot</option></select>
+      <p><button id="simulate" type="submit" disabled>Post simulated reply</button></p>
+    </form>
+    <p class="muted">Six turns maximum per Alex instruction. Bot text containing @mentions never wakes another bot. Pause cancels the assigned turn; Resume waits for a new instruction.</p>
+  </aside>
+</main>
+<script src="agent-room.js"></script>
+<script>
+  const room = createAgentRoom();
+  const byId = id => document.getElementById(id);
+  const names = { alex: 'Alex', hermes: 'Hermes', grok: 'Grok Bot', system: 'Workspace' };
+  let renderedTurn = null;
+  let renderedMessage = 0;
+  function render() {
+    const state = room.state();
+    renderedTurn = state.active;
+    byId('status').textContent = state.paused ? 'Paused by Alex' : state.active
+      ? `${names[state.active.bot]} assigned · turn ${state.active.number} of ${state.maxTurns}`
+      : `Waiting for Alex · ${state.turns} of ${state.maxTurns} turns used`;
+    byId('pause').disabled = state.paused;
+    byId('resume').disabled = !state.paused;
+    byId('simulate').disabled = !state.active;
+    byId('assignment').textContent = state.active ? `${names[state.active.bot]} may reply once.` : 'No bot turn is assigned.';
+    for (const row of state.messages.filter(row => row.id > renderedMessage)) {
+      const article = document.createElement('article');
+      article.dataset.author = row.author;
+      const author = document.createElement('strong');
+      author.textContent = names[row.author];
+      const body = document.createElement('p');
+      body.textContent = row.text;
+      article.append(author, body);
+      if (row.handoffTo) {
+        const handoff = document.createElement('small');
+        handoff.textContent = `Requested handoff → ${names[row.handoffTo]}`;
+        article.append(handoff);
+      }
+      byId('transcript').append(article);
+      renderedMessage = row.id;
+    }
+    while (byId('transcript').children.length > 100) byId('transcript').firstChild.remove();
+    byId('truncated').textContent = state.droppedMessages ? `${state.droppedMessages} earlier room messages omitted.` : '';
+    byId('transcript').scrollTop = byId('transcript').scrollHeight;
+  }
+  function run(action) {
+    byId('error').textContent = '';
+    try { action(); } catch (error) { byId('error').textContent = error.message; }
+    render();
+  }
+  byId('composer').addEventListener('submit', event => {
+    event.preventDefault();
+    run(() => { room.owner.post(byId('message').value); byId('message').value = ''; });
+  });
+  byId('simulation').addEventListener('submit', event => {
+    event.preventDefault();
+    const turn = renderedTurn;
+    run(() => {
+      if (!turn) throw new Error('Send an Alex @mention first.');
+      const peer = turn.bot === 'hermes' ? 'grok' : 'hermes';
+      room.bots[turn.bot].reply(turn.id, byId('reply').value, byId('handoff').value === 'peer' ? peer : null);
+    });
+  });
+  byId('pause').addEventListener('click', () => run(() => room.owner.pause()));
+  byId('resume').addEventListener('click', () => run(() => room.owner.resume()));
+  render();
+</script>
+</html>
