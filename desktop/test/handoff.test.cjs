@@ -87,3 +87,21 @@ test('Move back keeps its destination gated if the VM source retirement was not 
   assert.throws(() => requireAgentClaim(target, Date.now(), { autoTakeover: true }), /handoff_review_required/);
   assert.equal(record.verification, 'review_required', 'the human must resolve an ambiguous source before agents continue');
 });
+
+test('Move back gates its destination while source retirement is still in flight', async () => {
+  const f = fixture({ remote: true }); f.resume();
+  let retire;
+  const request = f.context.remoteRequest;
+  f.context.remoteRequest = async (id, operation, body) => {
+    if (body?.handoff) await new Promise(resolve => { retire = resolve; });
+    return request(id, operation, body);
+  };
+  const moving = f.move();
+  await new Promise(resolve => setImmediate(resolve));
+  const target = [...f.context.tabs.values()][0];
+  assert.throws(() => requireAgentClaim(target), /handoff_review_required/, 'verification cannot open the claim gate before retirement completes');
+  retire();
+  const record = await moving;
+  assert.equal(record.sourceRetired, true);
+  assert.doesNotThrow(() => requireAgentClaim(target));
+});
