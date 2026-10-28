@@ -24,8 +24,7 @@ const macUpdate = require('./mac-update.cjs');
 const setupCheck = require('./setup-check.cjs');
 const { createLog } = require('./main-log.cjs');
 const { armQuitWatchdog } = require('./update-quit.cjs');
-const { githubFeed } = require('./win-update.cjs');
-const { PUBLISH } = require('../electron-builder.cjs');
+const releaseChannel = require('./release-channel.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
 const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, deliverPendingUpdateReport, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
@@ -180,7 +179,7 @@ const recordings = recorder.createRecordingStore(path.join(app.getPath('userData
 let pointerTimer, activityTimer, idleTimer, captchaTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -188,7 +187,9 @@ function readPreferences() {
   try {
     const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Preferences are not an object.');
-    return normalizePreferences(parsed, defaults);
+    const normalized = normalizePreferences(parsed, defaults);
+    normalized.releaseChannel = releaseChannel.normalizeChannel(normalized.releaseChannel);
+    return normalized;
   }
   catch {
     // Keep the unreadable file: the next save would otherwise erase every bot,
@@ -434,7 +435,7 @@ function settingsWriteReceipt(entry) {
   return { settingsWrite: { status, detail: record?.detail || '' }, state: getState() };
 }
 function getState() {
-  const state = { name: app.getName(), version: app.getVersion(), build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
+  const state = { name: app.getName(), version: app.getVersion(), releaseChannel: prefs.releaseChannel, activeReleaseChannel, build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)).concat([...vpsTabs.values()]), cloud: cloudView(),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
@@ -1268,13 +1269,13 @@ async function probeVersions() {
 }
 // The app step in "Update everything" only plans for a build the updater
 // has staged (update-now has the same guard).
-const stagedAppVersion = () => (updateDriver === 'electron-updater' ? update.ready : updateDriver === 'self' && Boolean(update.tag)) ? update.available : '';
+const stagedAppVersion = () => prefs.releaseChannel === activeReleaseChannel && (updateDriver === 'electron-updater' ? update.ready : updateDriver === 'self' && Boolean(update.tag)) ? update.available : '';
 // Every update path takes its lock, then waits out a probe already in flight.
 const waitForVersionCheck = () => versionsProbe?.catch(() => {});
 // While "Update everything" runs, quitting must not install the staged app
 // build: the app would come back ahead of a half-updated server.
 function holdAppInstall(hold) {
-  if (updateDriver === 'electron-updater') require('electron-updater').autoUpdater.autoInstallOnAppQuit = !hold;
+  if (updateDriver === 'electron-updater') require('electron-updater').autoUpdater.autoInstallOnAppQuit = !hold && process.platform !== 'darwin' && prefs.releaseChannel === activeReleaseChannel;
 }
 const VERSIONS_EVERY_MS = 30 * 60 * 1000;
 const checkVersionsWhenIdle = () => {
@@ -1293,6 +1294,7 @@ async function saveBrowserSession() {
 }
 // Hands over only after both Chromium and the session-only sign-ins are saved.
 async function restartIntoUpdate() {
+  if (!stagedAppVersion()) throw new Error('Restart the app to apply your release channel before installing an update.');
   if (updateDriver === 'electron-updater') {
     await saveBrowserSession();
     // quitAndInstall closes windows without a before-quit, so the close
@@ -1332,8 +1334,10 @@ async function runUpdateStep(step, target) {
 }
 // Offline or rate-limited checks stay quiet for the user; only the first failure is logged, and the next check retries.
 let updateDriver = 'none';
+let activeReleaseChannel = 'stable';
 let appLatest = '', checkAppVersions = () => {};
 function startUpdates() {
+  activeReleaseChannel = prefs.releaseChannel;
   mainLog().write('app', `v${app.getVersion()} started from ${path.resolve(process.execPath, '../../..')}`);
   if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
   if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
@@ -1351,25 +1355,36 @@ function startUpdates() {
   let check;
   if (updateDriver === 'electron-updater') {
     const { autoUpdater } = require('electron-updater');
-    autoUpdater.autoInstallOnAppQuit = true;
+    // Squirrel cannot unstage a Mac build after it fetches it; defer that until explicit restart.
+    autoUpdater.autoInstallOnAppQuit = process.platform !== 'darwin';
     const note = (text) => mainLog().write('updater', text);
     autoUpdater.on('checking-for-update', () => note('checking'));
     autoUpdater.on('update-available', (info) => { note(`available ${info?.version}`); appLatest = info?.version || ''; broadcast(); });
     autoUpdater.on('update-not-available', (info) => { note('none available'); appLatest = info?.version || ''; broadcast(); });
-    autoUpdater.on('update-downloaded', (info) => { note(`downloaded ${info.version}`); appLatest = info.version; update.available = info.version; update.ready = true; broadcast(); });
-    const feed = githubFeed(fs.existsSync(path.join(process.resourcesPath, 'app-update.yml')), PUBLISH);
-    if (feed) autoUpdater.setFeedURL(feed);
+    autoUpdater.on('update-downloaded', (info) => { if (!releaseChannel.canUpdate(info.version, app.getVersion(), activeReleaseChannel, prefs.releaseChannel)) return; note(`downloaded ${info.version}`); appLatest = info.version; update.available = info.version; update.ready = true; broadcast(); });
+    autoUpdater.autoDownload = false;
+    autoUpdater.allowDowngrade = false;
     let logged = false;
     const failed = (error) => { appLatest = ''; broadcast(); mainLog().write('updater error', String(error?.message || error)); if (!logged) { logged = true; logError('updater', error); } };
     autoUpdater.on('error', failed);
-    check = () => autoUpdater.checkForUpdates().catch(failed);
+    let checking;
+    check = () => checking ||= (async () => {
+      if (prefs.releaseChannel !== activeReleaseChannel) return;
+      const latest = await releaseChannel.checkLatest(activeReleaseChannel);
+      appLatest = latest?.version || ''; broadcast();
+      if (!latest || !releaseChannel.canUpdate(latest.version, app.getVersion(), activeReleaseChannel, prefs.releaseChannel)) return;
+      releaseChannel.configureUpdater(autoUpdater, activeReleaseChannel, latest.tag);
+      const result = await autoUpdater.checkForUpdates();
+      if (result?.updateInfo.version === latest.version && releaseChannel.canUpdate(latest.version, app.getVersion(), activeReleaseChannel, prefs.releaseChannel)) await autoUpdater.downloadUpdate();
+    })().catch(failed).finally(() => { checking = null; });
   } else {
     // Linux reads release evidence too, but only the Mac self-updater stages it.
     check = async () => {
       try {
-        const latest = await macUpdate.checkLatest();
+        if (prefs.releaseChannel !== activeReleaseChannel) return;
+        const latest = await releaseChannel.checkLatest(activeReleaseChannel);
         appLatest = latest?.version || '';
-        if (updateDriver === 'self' && latest && macUpdate.isNewer(latest.version, app.getVersion())) { update.available = latest.version; update.tag = latest.tag; broadcast(); }
+        if (updateDriver === 'self' && latest && releaseChannel.canUpdate(latest.version, app.getVersion(), activeReleaseChannel, prefs.releaseChannel)) { update.available = latest.version; update.tag = latest.tag; broadcast(); }
         broadcast();
       } catch { appLatest = ''; broadcast(); }
     };
@@ -1990,6 +2005,11 @@ function registerIpc() {
         // Stage this explicit choice until the actual private-file write succeeds.
         // Failed choices must not leak into broadcasts or later automatic saves.
         const next = { ...prefs };
+        if (Object.hasOwn(value, 'releaseChannel')) {
+          if (!['stable', 'nightly'].includes(value.releaseChannel)) throw new Error('Choose Stable or Nightly.');
+          if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) throw new Error('Wait for the current update to finish before changing channels.');
+          next.releaseChannel = value.releaseChannel;
+        }
         let followed = '', vpsChanged = false;
         if (typeof value.macSshHost === 'string' && value.macSshHost.trim() && !isSshTarget(value.macSshHost.trim())) throw new Error('Enter the Mac SSH address as user@host or host, with no spaces or symbols.');
         if (value.vpsBrowser && typeof value.vpsBrowser === 'object') {
@@ -2019,6 +2039,10 @@ function registerIpc() {
           if (Object.hasOwn(value, field) || (field === 'remoteUrl' && value.vpsBrowser && typeof value.vpsBrowser === 'object')) settingsFieldRevisions[field]++;
         }
         persistSettingsPreferences(next);
+        if (Object.hasOwn(value, 'releaseChannel')) {
+          holdAppInstall(false);
+          if (prefs.releaseChannel !== activeReleaseChannel) { update.available = ''; update.tag = ''; update.ready = false; appLatest = ''; }
+        }
         if (vpsChanged) setTimeout(checkVersionsWhenIdle, 0);
         if (value.vpsBrowser && typeof value.vpsBrowser === 'object') { vpsBrowserStatus = 'connecting'; refreshVpsTabs(); }
         if (followed || typeof value.remoteUrl === 'string') remoteStatus = 'disconnected';
@@ -2128,11 +2152,11 @@ function registerIpc() {
         break;
       case 'update-now': {
         if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
-        const autoUpdate = updateDriver === 'electron-updater';
-        const tag = autoUpdate ? `v${update.available}` : update.tag;
-        if (autoUpdate ? !update.ready : !tag) break;
+        if (!stagedAppVersion()) break;
+        const hostVersion = stableHostTarget(app.getVersion(), stagedAppVersion(), prefs.versionCache);
+        const tag = hostVersion ? `v${hostVersion}` : '';
         update.busy = true; update.error = ''; broadcast();
-        const targets = vmTargets(prefs);
+        const targets = tag ? vmTargets(prefs) : [];
         for (const target of targets) vmProgress[target.id] = { state: 'updating' };
         if (targets.length) broadcast();
         // Every saved VM first, then this app. A VM failure or timeout is
@@ -2245,7 +2269,7 @@ function registerIpc() {
         break;
       }
       case 'open-download-page': shell.openExternal(`https://openalan.com/download/${HOST_LABEL === 'windows' ? 'windows' : 'mac'}`); break;
-      case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/v${app.getVersion()}`); break;
+      case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/${app.getVersion().includes('-nightly.') ? `nightly-${app.getVersion().split('-nightly.')[1]}` : `v${app.getVersion()}`}`); break;
       case 'dismiss-bundle-warning': bundleWarningDismissed = true; broadcast(); break;
       case 'dismiss-updated': update.justUpdatedFrom = ''; break;
       case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;

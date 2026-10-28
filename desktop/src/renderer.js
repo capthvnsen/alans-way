@@ -1367,7 +1367,7 @@ const SETTINGS_SECTIONS = [
   { id: 'browser-connector', category: 'connections', title: 'This computer', description: 'Browser tabs and logins stay here.', words: 'browser connector local api pair connection token app data copy open details', mount: mountBrowserConnector },
   { id: 'agent-setup', category: 'connections', title: 'Agent machine', description: 'Your existing Hermes machine.', words: 'agent setup remote connection cloud setup server hermes ssh address gateway tailscale wizard connect migrate manual command update prompt copy save addresses run bot', mount: mountAgentSetup },
   { id: 'remote-desktop', category: 'connections', title: 'Remote desktop · Optional', description: 'Viewer only, separate from agent setup.', words: 'remote connection desktop preview vps vm novnc vnc tailscale watch macos linux viewer address save computer runs platform corner', mount: mountRemoteConnection },
-  { id: 'updates', category: 'support', title: 'Updates', description: 'Review version and update status for this app, Hermes and the agent plugin.', words: 'update status versions check refresh restart available errors hermes plugin', mount: mountSettingsUpdates },
+  { id: 'updates', category: 'support', title: 'Updates', description: 'Choose Stable or Nightly and review version and update status for this app, Hermes and the agent plugin.', words: 'update status versions check refresh restart available errors hermes plugin release channel stable nightly', mount: mountSettingsUpdates },
   { id: 'diagnostics', category: 'support', title: 'Diagnostics and help', description: 'Check this computer, your connection and the server. Copy a report or get help from the team.', words: 'diagnostics support help setup check troubleshoot error report discord', mount: mountSettingsDiagnostics },
 ];
 function settingsSearchText(value) { return value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim(); }
@@ -1866,6 +1866,12 @@ function mountAgentSetup(body) {
   return refresh;
 }
 function mountSettingsUpdates(body) {
+  const channel = element('select', 'settings-select'); channel.id = 'settings-release-channel'; channel.setAttribute('aria-label', 'Release channel');
+  for (const [value, label] of [['stable', 'Stable (default)'], ['nightly', 'Nightly (less tested)']]) { const option = element('option', '', label); option.value = value; channel.append(option); }
+  const current = element('p', 'settings-note'), channelNote = element('p', 'settings-note', 'Nightly follows daily builds from main and is less tested. Channel changes apply after you quit and reopen the app. Returning to Stable waits for a newer stable version; it never downgrades.');
+  body.append(current, channel, channelNote); const channelStatus = settingsStatus(body);
+  channel.onchange = async () => { await runSettingsAction(channel, channelStatus, () => command('settings', { releaseChannel: channel.value }), 'Saving channel…', 'Channel saved. Quit and reopen the app to apply it.'); channel.value = state.releaseChannel || 'stable'; };
+
   const summary = element('p', 'settings-update-summary'), versions = element('p', 'settings-note settings-version-detail'), error = element('p', 'settings-note');
   summary.id = 'settings-update-summary'; summary.setAttribute('role', 'status'); body.append(summary, versions, error);
   settingsAction(body, 'Check for updates', 'versions-refresh', {}, { busy: 'Requesting update status…', success: 'Update check requested. New version information appears here when it is available.' });
@@ -1874,6 +1880,8 @@ function mountSettingsUpdates(body) {
   hermes.onclick = async () => { const reply = await runSettingsAction(hermes, status, () => api.command('hermes-update'), 'Updating Hermes on the agent machine. This can take a few minutes.'); if (reply.ok) { status.textContent = reply.result?.detail || 'The update returned no result.'; status.classList.toggle('error', !reply.result?.ok); } };
   return () => {
     const v = state.versions || {}, u = state.update || {}, run = state.updateAll || {};
+    channel.value = state.releaseChannel || 'stable';
+    current.textContent = `Current channel: ${state.activeReleaseChannel === 'nightly' ? 'Nightly (less tested)' : 'Stable'} · Installed v${state.version}${state.releaseChannel !== state.activeReleaseChannel ? ' · Restart required to apply selected channel' : ''}`;
     summary.textContent = run.busy || u.busy ? 'Updating…' : u.ready ? 'Restart is ready to finish the app update.' : v.hasUpdate || u.available ? 'Updates are available.' : v.tooltip ? 'No available updates reported.' : 'Version status has not been checked yet.';
     versions.textContent = v.tooltip || v.text || `Alan’s Workspace ${state.version || ''}`;
     error.textContent = u.error || run.summary || ''; error.classList.toggle('error', !!u.error);

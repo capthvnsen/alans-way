@@ -135,6 +135,7 @@ private struct AgentRow: View {
 }
 
 struct WorkspaceSettingsView: View {
+    @Environment(WorkspaceSettings.self) private var settings
     @Environment(TelegramStore.self) private var telegram
     @Environment(\.dismiss) private var dismiss
     @State private var confirmLogOut = false
@@ -149,6 +150,15 @@ struct WorkspaceSettingsView: View {
                     Label("Computer access is set per agent", systemImage: "desktopcomputer")
                 }.listRowBackground(WorkspaceTheme.surface)
                 Section {
+                    Picker("Preferred channel", selection: Binding(get: { settings.releaseChannel }, set: { settings.releaseChannel = $0 })) {
+                        ForEach(ReleaseChannel.allCases) { channel in Text(channel.title).tag(channel) }
+                    }.accessibilityIdentifier("releaseChannel")
+                    Text("Current build: \(WorkspaceSettings.installedChannel.title) · \(WorkspaceSettings.installedVersion)")
+                        .font(.footnote).foregroundStyle(WorkspaceTheme.secondary)
+                } header: { Text("Release channel") } footer: {
+                    Text("Stable follows tagged releases. Nightly follows main and is less tested. This preference does not install or downgrade builds. TestFlight access must be arranged by Alex; use TestFlight to change builds. When returning to Stable, wait for a newer stable build.")
+                }.listRowBackground(WorkspaceTheme.surface)
+                Section {
                     Link("Telegram privacy policy", destination: URL(string: "https://telegram.org/privacy")!)
                     Link("Alan’s Workspace source", destination: URL(string: "https://github.com/capthvnsen/alans-way")!)
                     NavigationLink("Open source licenses") { LicenseNoticesView() }
@@ -158,7 +168,7 @@ struct WorkspaceSettingsView: View {
                 } footer: {
                     Text("Signing out removes this device’s Telegram session. Your account and conversations remain in Telegram.")
                 }.listRowBackground(WorkspaceTheme.surface)
-                Section { Text("Alan’s Workspace · 0.1.0").font(.footnote).foregroundStyle(WorkspaceTheme.secondary) }
+                Section { Text("Alan’s Workspace · \(WorkspaceSettings.installedVersion)").font(.footnote).foregroundStyle(WorkspaceTheme.secondary) }
                     .listRowBackground(WorkspaceTheme.surface)
             }
             .scrollContentBackground(.hidden).background(WorkspaceTheme.background)

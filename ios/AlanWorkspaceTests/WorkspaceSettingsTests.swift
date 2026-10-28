@@ -9,6 +9,20 @@ final class WorkspaceSettingsTests: XCTestCase {
         }
     }
 
+    @MainActor func testReleaseChannelDefaultsAndPersists() {
+        let suite = "workspace-test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = WorkspaceSettings(defaults: defaults)
+        XCTAssertEqual(settings.releaseChannel, .stable)
+        settings.releaseChannel = .nightly
+        XCTAssertEqual(WorkspaceSettings(defaults: defaults).releaseChannel, .nightly)
+        settings.releaseChannel = .stable
+        XCTAssertEqual(WorkspaceSettings(defaults: defaults).releaseChannel, .stable)
+        defaults.set("invalid", forKey: "workspace.releaseChannel")
+        XCTAssertEqual(WorkspaceSettings(defaults: defaults).releaseChannel, .stable)
+    }
+
     @MainActor func testBotPresentationAndViewerStayBoundToChat() {
         let suite = "workspace-test-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
