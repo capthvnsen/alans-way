@@ -8,7 +8,7 @@ const fs = require('node:fs'),
   crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { CDP, AGENT_BROWSER_FLAGS, screenshotClip } = require('../src/cdp.cjs');
-const { normalizeUrl, agentPageUrl, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe, viewerUrl } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, redactTabForBot, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe, viewerUrl } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
 const { createAgentInput, APPROVED, refuseChallenge, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
@@ -961,6 +961,7 @@ async function serve() {
         human = req.headers['x-hermes-human'] === '1',
         overseer = overseerBots.has(botId);
       if (human && !isApp) throw fail('Human-only operations need the app token.', 403);
+      const describeForCaller = (tab) => human ? describe(tab) : redactTabForBot(describe(tab));
       try {
         const botName = decodeURIComponent(String(req.headers['x-hermes-bot-name'] || '')).slice(0, 80);
         if (botId && botName) botNames.set(botId, botName);
@@ -969,11 +970,11 @@ async function serve() {
         return send(200, {
           tabs: [...tabs.values()]
             .filter((t) => human || overseer || t.botId === botId || (t.allowedBots ?? []).includes(botId))
-            .map(describe),
+            .map(describeForCaller),
         });
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
         const { tab: opened, closed } = await open(await read(req), botId, human);
-        return send(201, { ...describe(opened), ...(closed.length ? { closedTabs: closed } : {}) });
+        return send(201, { ...describeForCaller(opened), ...(closed.length ? { closedTabs: closed } : {}) });
       }
       if (url.pathname === '/v1/mirror' && req.method === 'POST') {
         if (!isApp) throw fail('Only the app may update the mirror.', 403);
@@ -1002,7 +1003,7 @@ async function serve() {
       // a bot or the idle clock stays reapable.
       if (human && tab.controller === 'human') tab.humanHeld = true;
       const wc = tab.view.webContents;
-      if (req.method === 'GET' && !m[2]) return send(200, describe(tab));
+      if (req.method === 'GET' && !m[2]) return send(200, describeForCaller(tab));
       if (!human) tab.lastAgentActivity = Date.now();
       if (req.method === 'GET' && m[2] === 'snapshot') {
         if (!human) requireAgentRead(tab);
@@ -1030,7 +1031,7 @@ async function serve() {
           tab.url = data.url;
           tab.title = data.title;
           const settled = settleSnapshot(tab, data, generation, opts.since);
-          return { ...settled, ...(human ? {} : await handleChallenge(tab, data.url, settled.challenge)), tab: describe(tab) };
+          return { ...settled, ...(human ? {} : await handleChallenge(tab, data.url, settled.challenge)), tab: describeForCaller(tab) };
         });
         tab.queue = work.catch(() => {});
         return send(200, await work);
@@ -1059,7 +1060,7 @@ async function serve() {
         });
         tab.queue = capture.catch(() => {});
         const { shot, viewport, crop } = await capture;
-        return send(200, { base64: shot.data, mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], viewport, ...(rawCrop === null ? {} : { crop }), tab: describe(tab) });
+        return send(200, { base64: shot.data, mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], viewport, ...(rawCrop === null ? {} : { crop }), tab: describeForCaller(tab) });
       }
       if (req.method === 'POST' && m[2] === 'actions') {
         const controller = new AbortController();
@@ -1076,7 +1077,7 @@ async function serve() {
           // The bot is acting on the tab again; human_returned has done its job.
           if (tab.handback?.state === 'human_returned') tab.handback = null;
           await persist();
-          return { ...result, tab: describe(tab) };
+          return { ...result, tab: describeForCaller(tab) };
         }).finally(() => {
           tab.pendingActions--;
           if (!human) tab.lastAgentActivity = Date.now();
@@ -1102,7 +1103,7 @@ async function serve() {
         const next = nextHandback(tab, body.controller, human ? 'human' : 'agent', handback);
         if (next?.reason === 'captcha' && viewer) next.viewerUrl = viewer;
         await setController(tab, body.controller, human, next);
-        return send(200, describe(tab));
+        return send(200, describeForCaller(tab));
       }
       if (human && req.method === 'POST' && m[2] === 'activate') {
         await cdp.send('Target.activateTarget', { targetId: tab.targetId });

@@ -10,7 +10,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const vm = require('node:vm');
 const { spawn } = require('node:child_process');
-const { HANDBACK_MS } = require('../src/core.cjs');
+const { HANDBACK_MS, redactTabForBot } = require('../src/core.cjs');
 const { screenshotClip } = require('../src/cdp.cjs');
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -286,6 +286,29 @@ test('bots cannot read a human-controlled tab until control is taken', async () 
   assert.equal((await api(`/v1/tabs/${held.id}/snapshot`, 'GET', undefined, { bot: 'overseer-1' })).status, 200);
 });
 
+test('human-held VPS metadata is redacted for bots in list, get and release replies', async () => {
+  const url = 'https://privacy.example/private/document?access=synthetic#fragment';
+  const opened = (await api('/v1/tabs', 'POST', { url })).data;
+  const released = await api(`/v1/tabs/${opened.id}/control`, 'POST', { controller: 'human' });
+  const held = await api(`/v1/tabs/${opened.id}`, 'GET', undefined, { human: true });
+  assert.equal(held.data.url, url, 'the app retains the full URL');
+  assert.notEqual(held.data.title, '');
+  assert.equal((await api(`/v1/tabs/${opened.id}`)).data.id, opened.id);
+  const replies = [released.data];
+  for (const bot of ['bot-a', 'overseer-1']) {
+    replies.push((await api(`/v1/tabs/${opened.id}`, 'GET', undefined, { bot })).data);
+    replies.push((await api('/v1/tabs', 'GET', undefined, { bot })).data.tabs.find(tab => tab.id === opened.id));
+  }
+  for (const tab of replies) {
+    assert.equal(tab.controller, 'human');
+    assert.equal(tab.url, 'https://privacy.example');
+    assert.equal(tab.title, '');
+    assert.equal(tab.favicon, '');
+  }
+  const claimed = await api(`/v1/tabs/${opened.id}/control`, 'POST', { controller: 'agent' });
+  assert.equal(claimed.data.url, url, 'agent-held metadata stays complete');
+});
+
 test('snapshot bounds, since-dedupe and screenshot format params round-trip', async () => {
   const tab = (await api('/v1/tabs', 'POST', { url: 'http://bounds.example/' })).data;
   const first = await api(`/v1/tabs/${tab.id}/snapshot?maxChars=100&maxElements=10`);
@@ -535,7 +558,10 @@ test('a second or stale give-back is a no-op', async () => {
   const host = await startHost({ now: 1000 });
   const api = host.api;
   const tab = (await api('/v1/tabs', 'POST', { url: 'https://login.example/' })).data;
-  const control = (body, human = false) => api(`/v1/tabs/${tab.id}/control`, 'POST', body, { human });
+  const control = async (body, human = false) => {
+    const response = await api(`/v1/tabs/${tab.id}/control`, 'POST', body, { human });
+    return { ...response, data: redactTabForBot(response.data) };
+  };
   const held = (await control({ controller: 'human', reason: 'login' })).data;
   const giveBack = { controller: 'agent', giveBack: true, epoch: held.epoch };
   assert.deepEqual((await control({ ...giveBack, epoch: held.epoch - 1 }, true)).data, { ...held, refused: 'stale' }, 'a stale click signals refusal while the human has the tab');
