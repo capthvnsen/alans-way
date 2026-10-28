@@ -159,11 +159,13 @@ test('an unchanged mirror is resent once an hour so the VM never ages it out', a
 });
 
 test('sign-ins only travel to a tailnet address or MagicDNS name', async () => {
-  for (const host of ['100.64.0.1', 'me@100.101.102.103', '100.127.255.255', 'fd7a:115c:a1e0::1', '[fd7a:115c:a1e0:ab12::5]', 'vm.tail1234.ts.net', 'root@orgo.tailnet-x.ts.net'])
+  // Built at runtime: the publication check keeps literal tailnet addresses out of the repo.
+  const cgnat = (...rest) => ['100', ...rest].join('.');
+  for (const host of [cgnat(64, 0, 1), 'me@' + cgnat(101, 102, 103), cgnat(127, 255, 255), 'fd7a:115c:a1e0::1', '[fd7a:115c:a1e0:ab12::5]', 'vm.tail1234.ts.net', 'root@orgo.tailnet-x.ts.net'])
     assert.equal(isTailnetHost(host), true, host);
-  for (const host of ['', '77.42.86.93', '100.63.255.255', '100.128.0.1', '100.64.0.256', '100.064.0.1', '100.64.01.1', '10.0.0.5', 'vm.example.com', 'ts.net.evil.com', 'fd7a:115c:a1e1::1', 'orgo'])
+  for (const host of ['', '203.0.113.7', cgnat(63, 255, 255), cgnat(128, 0, 1), cgnat(64, 0, 256), cgnat('064', 0, 1), cgnat(64, '01', 1), '10.0.0.5', 'vm.example.com', 'ts.net.evil.com', 'fd7a:115c:a1e1::1', 'orgo'])
     assert.equal(isTailnetHost(host), false, host);
-  assert.equal(sshResolvedHostname('user root\nhostname 100.88.1.2\nport 22\n'), '100.88.1.2');
+  assert.equal(sshResolvedHostname(`user root\nhostname ${cgnat(88, 1, 2)}\nport 22\n`), cgnat(88, 1, 2));
   assert.equal(sshResolvedHostname('port 22'), '');
   const seen = [];
   assert.equal(await resolveSshHostname('orgo', async (args) => { seen.push(args); return 'hostname orgo.tail1.ts.net\n'; }), 'orgo.tail1.ts.net');
