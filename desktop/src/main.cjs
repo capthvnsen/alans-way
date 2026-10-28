@@ -2646,6 +2646,7 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   const retired={id:record.id,phase:'handed_off',sourceHost,destinationHost:dest,destinationTabId:target.id,createdAt:record.createdAt};
   if(sourceHost==='mac')source.handoff=retired;
   else record.sourceRetired=await remoteRequest(id,'control',{controller:'human',handoff:retired}).then(()=>true,()=>false);
+  if(record.sourceRetired===false)record.verification='review_required';
   prefs.remoteControl=false; prefs.handoffs=[record,...prefs.handoffs].slice(0,20);activeTabId=dest==='vps'?'vps':target.id;
   savePreferences();applyLayout();broadcast();
   if(dest==='vps')await remoteRequest(target.id,'activate',{}).catch(error=>logError('handoff activate',error));

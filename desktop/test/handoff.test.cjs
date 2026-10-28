@@ -3,8 +3,9 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { requireAgentClaim } = require('../src/core.cjs');
 
-function fixture({ activationFails = false, remote = false } = {}) {
+function fixture({ activationFails = false, retirementFails = false, remote = false } = {}) {
   const main = fs.readFileSync(require.resolve('../src/main.cjs'), 'utf8');
   let resume, created = 0, saved = 0;
   const source = { id: remote ? 'vm-task' : 'mac-task', botId: 'bot-a', controller: 'agent',
@@ -16,11 +17,12 @@ function fixture({ activationFails = false, remote = false } = {}) {
     crypto: { randomUUID: () => `move-${created}` }, checkpointExpression() {},
     changeController: (_id, controller) => { source.controller = controller; },
     vpsBrowser: { request: async () => ({ id: `vm-${++created}`, botId: source.botId, controller: 'human' }) },
-    createTab: () => ({ id: `mac-${++created}`, view: { webContents: {
+    createTab: () => { const target = { id: `mac-${++created}`, controller: 'human', view: { webContents: {
       isLoading: () => false, getURL: () => 'https://task.example/', executeJavaScript: async () => ({ verification: 'ready' }),
-    } } }), restoreExpression() {},
-    remoteRequest: async (id, operation) => {
+    } } }; context.tabs.set(target.id, target); return target; }, restoreExpression() {},
+    remoteRequest: async (id, operation, body) => {
       if (operation === 'checkpoint') { await source.queue; return { url: 'https://task.example/' }; }
+      if (body?.handoff && retirementFails) throw new Error('Tailscale disconnected before retirement');
       if (operation === 'activate' && activationFails) throw new Error('Tailscale disconnected');
       return { tab: { id, botId: source.botId, controller: 'human' }, verification: 'ready', restored: 0, skipped: 0 };
     },
@@ -75,4 +77,13 @@ test('a failed checkpoint releases the pending handoff so it can be retried', as
   contents.executeJavaScript = read;
   await f.move();
   assert.equal(f.created(), 1);
+});
+
+test('Move back keeps its destination gated if the VM source retirement was not acknowledged', async () => {
+  const f = fixture({ remote: true, retirementFails: true }); f.resume();
+  const record = await f.move();
+  assert.equal(record.sourceRetired, false);
+  const target = f.context.tabs.get(record.destinationTabId);
+  assert.throws(() => requireAgentClaim(target, Date.now(), { autoTakeover: true }), /handoff_review_required/);
+  assert.equal(record.verification, 'review_required', 'the human must resolve an ambiguous source before agents continue');
 });
