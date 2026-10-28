@@ -7,7 +7,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, continuedOnVm, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
@@ -35,7 +35,7 @@ const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { screenshotClip } = require('./cdp.cjs');
 const { listReadExpression, cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
-const { createVpsBrowser, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
+const { createVpsBrowser, backoffDelay, toCdpCookie, toElectronCookies, isTailnetHost, resolveSshHostname, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createBrowserSessionStore } = require('./browser-session.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
@@ -284,6 +284,8 @@ async function refreshVpsTabs() {
     });
     waitingVpsTabs = waiting;
     if(wasVps&&!vpsTabs.has(activeTabId)){prefs.remoteControl=false;activeTabId='home';applyLayout();}
+    // Before the mirror can push this computer's now-stale pages again.
+    if (vpsBrowserStatus !== 'connected' || continuedCheckDue) { continuedCheckDue = false; await retireContinuedTabs().catch((error) => { continuedCheckDue = true; logError('continued-tabs', error); }); }
     vpsBrowserStatus = 'connected'; vpsBrowserError = ''; vpsFailures = 0;
   }
   catch (error) { vpsBrowserStatus = 'disconnected'; vpsBrowserError = /^Invalid VPS browser/.test(error.message) ? error.message : ''; vpsFailures++; }
@@ -293,11 +295,36 @@ async function refreshVpsTabs() {
 // the page's cookies) so a failover can continue them signed in. Password
 // fields never leave: checkpointExpression skips them.
 const mirrorPages = new Map(), mirrorCapWarned = new Set();
+// Sign-in cookies cross only with the user's consent (Settings, on by default)
+// and only to a VM that ssh reaches over the tailnet.
+let tailnetCheck = { host: '', ok: Promise.resolve(false) };
+function signInsTravel() {
+  const host = prefs?.vpsBrowser?.sshHost || '';
+  if (prefs?.carrySignIns === false || !host) return Promise.resolve(false);
+  if (tailnetCheck.host !== host) tailnetCheck = { host, ok: resolveSshHostname(host).then(isTailnetHost) };
+  return tailnetCheck.ok;
+}
+const pageCookies = async (url) => (await settleWithin(session.fromPartition('persist:browser').cookies.get({ url }), 2000, [])).slice(0, 100).map(toCdpCookie);
+// While this computer slept the VM may have resumed its agent tabs from the
+// mirror. Each local copy is retired like a manual Move so only one copy runs:
+// agents are told the VM tab to continue in, and the human gets Move back.
+let continuedCheckDue = true, continuedNotice = null;
+async function retireContinuedTabs() {
+  const { bots = {} } = await vpsBrowser.request('/v1/mirror/continued', 'GET', undefined, { human: true });
+  let moved = 0;
+  for (const [bot, map] of Object.entries(bots)) for (const [id, destinationTabId] of Object.entries(map || {})) {
+    const tab = tabs.get(id), record = tab?.botId === bot && continuedOnVm(tab, destinationTabId);
+    if (!record) continue;
+    changeController(id, 'human');
+    tab.handoff = record; prefs.handoffs = [record, ...prefs.handoffs].slice(0, 20); moved++;
+  }
+  if (moved) { continuedNotice = { count: moved, at: Date.now() }; savePreferences(); broadcast(); }
+}
 const pushVpsMirror = createMirrorPusher({
   bots: () => (prefs?.bots || []).map((bot) => bot.id),
   async collect() {
     if (!prefs?.vpsBrowser?.sshHost || vpsBrowserStatus !== 'connected') return null;
-    const jar = session.fromPartition('persist:browser').cookies;
+    const carry = await signInsTravel();
     const agentTabs = [...tabs.values()].filter((tab) => {
       const wc = tab.view?.webContents;
       return tab.controller === 'agent' && !tab.extensionPage && tab.botId !== 'shared' && wc && !wc.isDestroyed() && /^https?:\/\//.test(wc.getURL());
@@ -308,8 +335,7 @@ const pushVpsMirror = createMirrorPusher({
       const page = await settleWithin(wc.executeJavaScript(checkpointExpression(true)), 2000, null) || mirrorPages.get(tab.id);
       if (!page) return null;
       mirrorPages.set(tab.id, page);
-      const cookies = (await settleWithin(jar.get({ url: page.url }), 2000, [])).slice(0, 100).map(toCdpCookie);
-      return { botId: tab.botId, tab: { id: tab.id, ...page, cookies } };
+      return { botId: tab.botId, tab: { id: tab.id, ...page, cookies: carry ? await pageCookies(page.url) : [] } };
     }));
     for (const id of mirrorPages.keys()) if (!tabs.has(id)) mirrorPages.delete(id);
     const bots = new Map();
@@ -366,7 +392,7 @@ let uiStateRevision = 0, uiStateSignature = '';
 // A newer renderer time origin replaces the ledger; older origins stay fenced.
 const settingsWriteCallers = new WeakMap();
 const settingsWriteFields = {
-  autoOpenLinks: ['autoOpenLinks'], autoTakeover: ['autoTakeover'], preview: ['preview'],
+  autoOpenLinks: ['autoOpenLinks'], autoTakeover: ['autoTakeover'], carrySignIns: ['carrySignIns'], preview: ['preview'],
   addresses: ['macSshHost', 'vpsBrowser', 'remoteUrl'], viewer: ['remoteUrl'],
 };
 // Explicit same-value choices also advance their field. A delayed tracked write
@@ -389,7 +415,7 @@ function settingsWriteEntry(event, token, checking = false, payload) {
   if (!checking) {
     const keys = Object.keys(payload).filter(key => !['_settingsWrite', '_settingsContext', '_settingsBase'].includes(key)).sort();
     const expectedKeys = token.slot === 'addresses' ? ['macSshHost', 'vpsBrowser'] : token.slot === 'viewer' ? ['remoteUrl'] : [token.slot];
-    if (JSON.stringify(keys) !== JSON.stringify(expectedKeys) || (token.slot in { autoOpenLinks: 1, autoTakeover: 1, preview: 1 } && typeof payload[token.slot] !== 'boolean')) throw Error('Invalid Settings save fields.');
+    if (JSON.stringify(keys) !== JSON.stringify(expectedKeys) || (token.slot in { autoOpenLinks: 1, autoTakeover: 1, carrySignIns: 1, preview: 1 } && typeof payload[token.slot] !== 'boolean')) throw Error('Invalid Settings save fields.');
   }
   const record = { sequence: token.sequence, slot: token.slot, status: checking ? 'not-applied' : 'admitted', expected: payload };
   ledger.slots.set(token.slot, record);
@@ -437,7 +463,7 @@ function getState() {
   const state = { name: app.getName(), version: app.getVersion(), build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)).concat([...vpsTabs.values()]), cloud: cloudView(),
-    vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
+    vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, continuedNotice, macSshHost: prefs.macSshHost || '',
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
     update: { available: update.available, ready: update.ready, busy: update.busy, error: update.error, justUpdatedFrom: update.justUpdatedFrom,
       popup: shouldShowUpdatePopup({ available: update.available, snoozedUntil: prefs.updateSnoozedUntil, now: Date.now(), busy: update.busy }),
@@ -450,7 +476,7 @@ function getState() {
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? setupCheck.inRouterApplications(process.execPath) : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
-    autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false,
+    autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false, carrySignIns: prefs.carrySignIns !== false,
     activeTabId, activeVpsTabId, browserTabHost: activeTabId === 'vps' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (vpsTabs.has(activeVpsTabId) ? activeVpsTabId : tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     chatTarget, hermes: hermesSummary(),
@@ -2012,6 +2038,7 @@ function registerIpc() {
         if (typeof value.macSshHost === 'string') next.macSshHost = value.macSshHost.trim();
         if (typeof value.autoOpenLinks === 'boolean') next.autoOpenLinks = value.autoOpenLinks;
         if (typeof value.autoTakeover === 'boolean') next.autoTakeover = value.autoTakeover;
+        if (typeof value.carrySignIns === 'boolean') next.carrySignIns = value.carrySignIns;
         if (typeof value.primaryBotId === 'string') next.primaryBotId = next.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : next.primaryBotId;
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) next.locationDefault = value.locationDefault;
         if (Number.isFinite(value.chatWidth)) next.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
@@ -2621,14 +2648,33 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   // stays accepted as the compat wire name for the user's own computer.
   const dest=destination===HOST_LABEL?'mac':destination;
   if(!['mac','vps'].includes(dest)||dest===sourceHost)throw new Error('Choose the other computer.');
+  const wasController=source.controller;
   if(sourceHost==='mac') { changeController(id,'human'); await source.queue; }
   else await remoteRequest(id,'control',{controller:'human'});
-  const checkpoint=sourceHost==='mac'?await source.view.webContents.executeJavaScript(checkpointExpression(includeDrafts)):await remoteRequest(id,'checkpoint',{includeDrafts});
-  if(!/^https?:\/\//.test(checkpoint.url))throw new Error('Open a web page before handing it off.');
-  const handoff={id:crypto.randomUUID(),sourceHost,sourceTabId:id,destinationHost:dest,createdAt:Date.now(),note:String(note).slice(0,4000),phase:'review_required'};
-  let target,result;
+  // Sign-in cookies for the page's own URL ride along (see signInsTravel);
+  // site storage, page memory and passwords never do.
+  const carry=await signInsTravel();
+  let target,result,checkpoint,signIns=0;
+  try {
+    checkpoint=sourceHost==='mac'?await source.view.webContents.executeJavaScript(checkpointExpression(includeDrafts)):await remoteRequest(id,'checkpoint',{includeDrafts,includeCookies:carry});
+    if(!/^https?:\/\//.test(checkpoint.url))throw new Error('Open a web page before handing it off.');
+    const {cookies:remoteCookies,...page}=checkpoint;checkpoint=page;
+    if(dest==='vps') {
+      const cookies=carry?await pageCookies(checkpoint.url):[];
+      target=await vpsBrowser.request('/v1/tabs','POST',{url:checkpoint.url,...(cookies.length?{cookies}:{})},{botId:source.botId,human:true});vpsTabs.set(target.id,target);
+      signIns=target.signIns||0;
+    } else {
+      const jar=session.fromPartition('persist:browser').cookies;
+      for(const cookie of carry?toElectronCookies(remoteCookies,checkpoint.url):[])if(await jar.set(cookie).then(()=>true,()=>false))signIns++;
+    }
+  } catch(error) {
+    // Nothing exists on the other side yet: give the source back to whoever had it.
+    if(sourceHost==='mac'&&tabs.has(id)&&wasController==='agent')changeController(id,'agent','agent');
+    else if(sourceHost==='vps'&&wasController==='agent')await remoteRequest(id,'control',{controller:'agent'}).catch(()=>{});
+    throw error;
+  }
+  const handoff={id:crypto.randomUUID(),sourceHost,sourceTabId:id,destinationHost:dest,createdAt:Date.now(),note:String(note).slice(0,4000),phase:'review_required',signIns,signInsCarried:carry};
   if(dest==='vps') {
-    target=await vpsBrowser.request('/v1/tabs','POST',{url:checkpoint.url},{botId:source.botId,human:true});vpsTabs.set(target.id,target);
     result=await remoteRequest(target.id,'restore',{checkpoint,handoff});target=result.tab;
   } else {
     target=createTab({url:checkpoint.url,botId:source.botId,controller:'human',owner:source.owner || 'bot',activate:false});target.handoff=handoff;
@@ -3363,7 +3409,10 @@ function watchTelegram(wc) {
   wc.on('unresponsive', () => { clearTimeout(hangTimer); watchHang(); });
   wc.on('responsive', () => clearTimeout(hangTimer));
   const stuck = () => telegramStatus === 'offline' || telegramStatus === 'loading';
+  // Lid close: send the freshest mirror now, best effort (sleep may not wait).
+  powerMonitor.on('suspend', () => { clearTimeout(vpsMirrorDebounce); pushVpsMirror(); });
   powerMonitor.on('resume', () => {
+    continuedCheckDue = true;
     if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:remote-retry');
     const timer = setTimeout(() => { if (stuck()) telegramRecovery.now(); }, 3000); timer.unref?.();
   });

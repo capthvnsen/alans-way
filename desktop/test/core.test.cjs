@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeUrl, agentPageUrl, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, handbackRequest, nextHandback, liveHandback, HANDBACK_MS, dialogAnswer, answerDialog } = require('../src/core.cjs');
+const { normalizeUrl, agentPageUrl, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, continuedOnVm, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, handbackRequest, nextHandback, liveHandback, HANDBACK_MS, dialogAnswer, answerDialog } = require('../src/core.cjs');
 const { controlsDelta, snapshotExpression, settleSnapshot, readEffect } = require('../src/browser-page.cjs');
 const { locateElement } = require('../src/agent-input.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
@@ -638,4 +638,15 @@ test('main content priority keeps the original byte budget and snapshot bookkeep
   assert.equal(reply.effect.text, 'Travel books');
   const same = await readEffect(() => ({ ...data, sameDoc: true, contentRefs: undefined, contentText: undefined }), tab);
   assert.equal(same.effect.changed, false, 'ranking must not manufacture a later control change');
+});
+
+test('a Mac tab the VM resumed while away is retired once, pointing agents at the VM tab', () => {
+  const tab = { id: 'mac-1', controller: 'agent', botId: 'b' };
+  const record = continuedOnVm(tab, 'vm-9', 5);
+  assert.deepEqual({ ...record, id: undefined }, { id: undefined, phase: 'handed_off', sourceHost: 'mac', sourceTabId: 'mac-1', destinationHost: 'vps', destinationTabId: 'vm-9', createdAt: 5, automatic: true });
+  assert.throws(() => requireAgentClaim({ ...tab, controller: 'human', handoff: record }, 10, { autoTakeover: true }), /^Error: handoff_source: this task moved to the vps tab vm-9/);
+  assert.equal(continuedOnVm({ ...tab, handoff: record }, 'vm-9'), null, 'already retired');
+  assert.equal(continuedOnVm({ ...tab, controller: 'human' }, 'vm-9'), null, 'a tab the human holds is theirs');
+  assert.equal(continuedOnVm(tab, '../x'), null);
+  assert.equal(continuedOnVm(undefined, 'vm-9'), null);
 });
