@@ -31,6 +31,8 @@ MAX_TEXT_FIELD_BYTES = 256
 MAX_MULTIPART_PARTS = 8
 CAPABILITIES_CACHE_SECONDS = 45
 AUDIO_MIME_TYPES = {"audio/webm", "audio/mp4", "audio/ogg", "audio/wav"}
+SILENCE_TRANSCRIPTS = {"you", "you.", "thank you", "thank you.", "thanks for watching",
+                       "thanks for watching.", "[blank_audio]", "(silence)"}
 
 
 class HermesAudio:
@@ -298,17 +300,21 @@ class VoiceBroker:
         # reset may revoke the call while speech is being transcribed.
         if not self._auth_call(request):
             raise web.HTTPUnauthorized(text="Call ended during transcription")
-        if not transcript:
-            return web.json_response({"error": "No speech detected"}, status=422)
+        transcript = transcript.strip()
+        if not any(char.isalnum() for char in transcript) or transcript.lower() in SILENCE_TRANSCRIPTS:
+            # A retry of an accepted turn can re-transcribe as filler; keep reporting the real turn.
+            existing = self.turns.get(call_id, turn_id)
+            if existing:
+                return web.json_response(self._turn_json(existing), status=202, headers={"Cache-Control": "no-store"})
+            return web.json_response({"call_id": call_id, "turn_id": turn_id,
+                                      "status": "ignored", "reason": "no_speech"})
 
         try:
             turn, created = self.turns.create(call_id, turn_id, transcript, binding.session_key)
         except ValueError:
             raise web.HTTPConflict(text="turn_id was already used for different turn content")
         if created:
-            # The canonical Hermes user turn and assistant response remain in
-            # the existing session. This separate, clearly labeled bot bubble
-            # makes the spoken input visible in Telegram exactly once.
+            # This labeled bot bubble makes the injected input visible in Telegram exactly once.
             accepted = False
             try:
                 accepted = bool(self.inject(turn.injected_text, binding.session_key))
@@ -342,6 +348,9 @@ class VoiceBroker:
             if turn.status == "failed":
                 return
             if turn.status == "synthesizing":
+                if turn.playback_interrupted:
+                    self.turns.set_status(call_id, turn_id, "completed")
+                    return
                 try:
                     audio, mime = await self.audio.synthesize(turn.reply_text)
                     self.turns.complete_audio(call_id, turn_id, audio, mime)
@@ -386,7 +395,19 @@ class VoiceBroker:
     async def interrupt_playback(self, request: web.Request) -> web.Response:
         if not self._auth_call(request):
             raise web.HTTPUnauthorized(text="Invalid call credential")
+        body_size = request.content_length or 0
+        if body_size > MAX_TEXT_FIELD_BYTES:
+            raise web.HTTPRequestEntityTooLarge(max_size=MAX_TEXT_FIELD_BYTES, actual_size=body_size)
+        if request.content_length is None:
+            while chunk := await request.content.read(MAX_TEXT_FIELD_BYTES + 1):
+                body_size += len(chunk)
+                if body_size > MAX_TEXT_FIELD_BYTES:
+                    raise web.HTTPRequestEntityTooLarge(max_size=MAX_TEXT_FIELD_BYTES, actual_size=body_size)
+        if body_size:
+            raise web.HTTPBadRequest(text="Interrupt requests must have an empty body")
         call_id, turn_id = request.match_info["call_id"], request.match_info["turn_id"]
+        if not TURN_ID_RE.fullmatch(turn_id):
+            raise web.HTTPBadRequest(text="turn_id must be a UUID")
         if not self.turns.interrupt_playback(call_id, turn_id):
             raise web.HTTPNotFound(text="Unknown turn")
         return web.json_response({
@@ -398,10 +419,11 @@ class VoiceBroker:
 
     @staticmethod
     def _turn_json(turn) -> dict:
-        out = {"call_id": turn.call_id, "turn_id": turn.turn_id, "status": turn.status}
-        if turn.status in ("synthesizing", "completed"):
-            out.update({"transcript": turn.transcript, "reply_text": turn.reply_text})
-        if turn.status == "completed":
+        out = {"call_id": turn.call_id, "turn_id": turn.turn_id, "status": turn.status,
+               "transcript": turn.transcript, "playback_interrupted": bool(turn.playback_interrupted)}
+        if turn.reply_text or turn.status in ("synthesizing", "completed"):
+            out["reply_text"] = turn.reply_text
+        if turn.status == "completed" and not turn.playback_interrupted:
             out["audio_url"] = f"/v1/calls/{turn.call_id}/turns/{turn.turn_id}/audio"
         if turn.error:
             out["error"] = turn.error

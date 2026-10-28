@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "alans-workspace": {
+      "command": "ssh",
+      "args": [
+        "-T",
+        "-i", "KEY_PATH",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ServerAliveInterval=30",
+        "VM_USER@VM_HOST"
+      ]
+    }
+  }
+}

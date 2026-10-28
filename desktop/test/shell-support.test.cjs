@@ -219,3 +219,8 @@ test('tailscaleSshHost probes the bundled CLI before PATH', () => {
   assert.equal(seen[0], 'C:\\Program Files\\Tailscale\\tailscale.exe');
 });
 
+
+test('always-allowed desktop agents stay a list of bot ID strings', () => {
+  assert.deepEqual(normalizePreferences({ desktopTrustedBots: 'grok' }, { savedTabs: [], desktopTrustedBots: [] }).desktopTrustedBots, []);
+  assert.deepEqual(normalizePreferences({ desktopTrustedBots: ['grok', 5, null] }, { savedTabs: [], desktopTrustedBots: [] }).desktopTrustedBots, ['grok']);
+});

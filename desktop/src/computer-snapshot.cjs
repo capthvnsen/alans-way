@@ -19,7 +19,7 @@ function createComputerSnapshots() {
     const key = `${bot}\u0000${pid}`;
     const before = sent.get(key);
     sent.delete(key);
-    sent.set(key, { windowId: tree.windowId, generation: tree.generation, elements: new Map(tree.elements.map((element) => [element.ref, canonical(element)])) });
+    sent.set(key, { windowId: tree.windowId, generation: tree.generation, saveDialog: tree.elements.some((element) => /^(Save As|Where):/.test(element.name || '')), elements: new Map(tree.elements.map((element) => [element.ref, canonical(element)])) });
     if (sent.size > MAX_TRACKED) sent.delete(sent.keys().next().value);
     return before;
   };
@@ -39,7 +39,7 @@ function createComputerSnapshots() {
     if (JSON.stringify(changed).length + JSON.stringify(removed).length >= DELTA_SHARE * JSON.stringify(elements).length) return result;
     return { ...rest, changed, removed };
   }
-  return { snapshot, action, windowId: (bot, pid) => sent.get(`${bot}\u0000${pid}`)?.windowId };
+  return { snapshot, action, windowId: (bot, pid) => sent.get(`${bot}\u0000${pid}`)?.windowId, inSaveDialog: (bot, pid) => sent.get(`${bot}\u0000${pid}`)?.saveDialog === true };
 }
 
 module.exports = { createComputerSnapshots };

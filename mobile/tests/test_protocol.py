@@ -110,6 +110,20 @@ class TurnRegistryTests(unittest.TestCase):
             self.assertIn("status is unknown", turn.error)
             self.assertEqual(restarted.recover_pending(), 0)
 
+    def test_existing_interruption_flag_suppresses_audio_after_upgrade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "voice.sqlite3"
+            registry = TurnRegistry(path)
+            turn, _ = registry.create("call-a", "turn-a", "hello", "session-a")
+            registry.capture("session-a", turn.injected_text, "reply")
+            registry.complete_audio("call-a", "turn-a", b"old audio", "audio/wav")
+            # Older brokers recorded this flag without removing saved audio.
+            with registry._connection() as db:
+                db.execute("UPDATE turns SET playback_interrupted=1")
+            upgraded = TurnRegistry(path)
+            self.assertTrue(upgraded.get("call-a", "turn-a").playback_interrupted)
+            self.assertIsNone(upgraded.get_audio("call-a", "turn-a"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -100,7 +100,7 @@ function FixtureWindow(options) {
 }
 Object.setPrototypeOf(FixtureWindow, BrowserWindow);
 FixtureWindow.prototype = BrowserWindow.prototype;
-const fakeHost = { service: new Proxy({ close() {} }, { get: (obj, name) => obj[name] || (async () => { throw block(`host computer ${String(name)}`); }) }) };
+const fakeHost = { service: new Proxy({ close() {} }, { get: (obj, name) => obj[name] || (async () => { throw block(`host computer ${String(name)}`); }) }), createDesktopLease: () => ({ take: () => null, release() {} }) };
 const electronView = { ...electron, BrowserWindow: FixtureWindow, Tray: InertTray,
   screen: { getPrimaryDisplay: () => electron.screen.getPrimaryDisplay(), getCursorScreenPoint: () => ({ x: -1000, y: -1000 }) },
   Menu: { ...electron.Menu, setApplicationMenu() {}, getApplicationMenu: () => null },

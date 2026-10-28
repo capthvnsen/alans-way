@@ -67,6 +67,16 @@ test('cursor motion is deterministic, eased, bounded and lands exactly on the ta
   assert.equal(f.scripts.filter(code => code.includes('"path":[')).length, 1, 'exactly one injection carries the tween path');
 });
 
+test('clicks carry the control description observed before navigation', async () => {
+  const clicked = { role: 'a', name: 'Next' };
+  const f = fixture({ found: { clicked } });
+  f.hook(async method => {
+    if (method === 'Input.dispatchMouseEvent') f.tab.scan = null;
+  });
+  assert.deepEqual((await f.perform({ action: 'click', ref: 'e1' })).clicked, clicked);
+  assert.equal((await f.perform({ action: 'move', ref: 'e1' })).clicked, undefined);
+});
+
 test('a tab the human is not watching skips the glide and its pacing', async () => {
   let paced = 0;
   const f = fixture({ visible: false, delay: async () => { paced++; } });
@@ -85,6 +95,156 @@ test('the locate script scrolls only when out of view and never waits on rAF alo
   const locate = f.scripts.find(code => code.includes('elementFromPoint'));
   assert.match(locate, /box\.top < 0/, 'an in-view element is not scrolled');
   assert.match(locate, /setTimeout\(r, 80\)/, 'the rAF wait has a timer fallback');
+});
+
+function scrollFixture({ x = 0, y = 0, maxX = 30000, maxY = 30000, challengeAfter = Infinity, lag = 0, delay } = {}) {
+  const f = fixture({ delay });
+  const { CHALLENGE_HIT_SOURCE } = require('../src/browser-page.cjs');
+  let wheels = 0;
+  const page = { scrollX: x, scrollY: y, innerHeight: 600,
+    document: { scrollingElement: { scrollHeight: maxY + 600 }, elementFromPoint: () => null },
+    setTimeout: read => read(), requestAnimationFrame: read => read() };
+  const execute = f.tab.view.webContents.executeJavaScript;
+  f.tab.view.webContents.executeJavaScript = async code => {
+    const result = await execute(code);
+    // The page mock has no DOM for the real challenge scan; stand in a CAPTCHA once enough wheels have landed.
+    const probe = code.split(CHALLENGE_HIT_SOURCE).join(`(() => ${wheels >= challengeAfter ? "({ kind: 'recaptcha' })" : 'null'})`);
+    if (!code.includes('const positions =') && !code.includes('const maxY =')) return result;
+    // A lagging renderer applies each wheel only after `lag` more looks at the page.
+    for (const wheel of pending.splice(0)) if (wheel.looks-- > 0) pending.push(wheel); else land(wheel);
+    return require('node:vm').runInNewContext(probe, page);
+  };
+  const pending = [];
+  const land = ({ deltaX, deltaY }) => {
+    page.scrollX = Math.max(0, Math.min(maxX, page.scrollX + deltaX));
+    page.scrollY = Math.max(0, Math.min(maxY, page.scrollY + deltaY));
+  };
+  f.hook(async (_method, params) => {
+    if (params.type !== 'mouseWheel') return;
+    wheels++;
+    if (lag) pending.push({ ...params, looks: lag }); else land(params);
+  });
+  return { ...f, page };
+}
+
+test('scroll sends 4584 pixels as three wheel events at the same aim and reports its position', async () => {
+  const f = scrollFixture();
+  f.tab.agentCursor = { x: 120, y: 180 };
+  const result = await f.perform({ action: 'scroll', y: 4584 });
+  assert.deepEqual(f.calls.filter(call => call.type === 'mouseWheel').map(({ x, y, deltaX, deltaY }) => ({ x, y, deltaX, deltaY })), [
+    { x: 40, y: 60, deltaX: 0, deltaY: 2000 },
+    { x: 40, y: 60, deltaX: 0, deltaY: 2000 },
+    { x: 40, y: 60, deltaX: 0, deltaY: 584 },
+  ]);
+  assert.deepEqual({ ...result.scroll }, { x: 0, y: 4584, maxY: 30000, atEnd: false });
+  assert.ok(f.scripts.find(code => code.includes('const p =')).includes('120'), 'the challenge check uses the existing cursor aim');
+  assert.equal((await f.perform({ action: 'move', x: 10, y: 20 })).scroll, undefined, 'other actions keep their reply shape');
+});
+
+test('a wheel the renderer applies late still gets the rest of the scroll', async () => {
+  const waits = [];
+  const f = scrollFixture({ lag: 3, delay: async ms => { waits.push(ms); } });
+  const result = await f.perform({ action: 'scroll', y: 4584 });
+  assert.equal(f.calls.filter(call => call.type === 'mouseWheel').length, 3, 'a slow first wheel is not read as the end of the page');
+  assert.ok(waits.length > 0 && waits.reduce((a, b) => a + b, 0) <= 400 * 2, 'it waits briefly for each late wheel');
+  assert.equal(result.scroll.y, 4584);
+});
+
+test('a challenge that scrolls under the pointer stops the remaining wheel events', async () => {
+  const f = scrollFixture({ challengeAfter: 1 });
+  await assert.rejects(f.perform({ action: 'scroll', y: 6000 }), /challenge|CAPTCHA|check/i);
+  assert.equal(f.calls.filter(call => call.type === 'mouseWheel').length, 1);
+});
+
+test('scroll caps each axis at 20000 pixels in either direction', async () => {
+  for (const sign of [1, -1]) {
+    const f = scrollFixture({ x: 30000, y: 30000, maxX: 60000, maxY: 60000 });
+    const result = await f.perform({ action: 'scroll', x: sign * 50000, y: sign * 50000 });
+    const wheels = f.calls.filter(call => call.type === 'mouseWheel');
+    assert.equal(wheels.length, 10);
+    assert.ok(wheels.every(call => call.deltaX === sign * 2000 && call.deltaY === sign * 2000));
+    assert.equal(result.scroll.x, 30000 + sign * 20000);
+    assert.equal(result.scroll.y, 30000 + sign * 20000);
+  }
+});
+
+test('scroll stops when the page cannot move and reports the end, including short pages', async () => {
+  for (const [y, maxY, delta, atEnd] of [[0, 1000, 4584, true], [1000, 1000, 4584, true], [5000, 6000, -20000, false], [0, -100, 4584, true]]) {
+    const f = scrollFixture({ y, maxY });
+    const result = await f.perform({ action: 'scroll', y: delta });
+    assert.ok(f.calls.filter(call => call.type === 'mouseWheel').length < Math.ceil(Math.abs(delta) / 2000));
+    assert.equal(result.scroll.maxY, Math.max(0, maxY));
+    assert.equal(result.scroll.atEnd, atEnd);
+  }
+});
+
+test('scroll continues horizontally when vertical scrolling reaches the end', async () => {
+  const f = scrollFixture({ maxY: 1000 });
+  const result = await f.perform({ action: 'scroll', x: 4584, y: 4584 });
+  assert.equal(f.calls.filter(call => call.type === 'mouseWheel').length, 3);
+  assert.deepEqual({ ...result.scroll }, { x: 4584, y: 1000, maxY: 1000, atEnd: true });
+});
+
+test('scroll does not stop when a panel moves but the main document stays put', async () => {
+  const f = scrollFixture({ maxY: 0 });
+  const panel = { scrollLeft: 0, scrollTop: 0, parentElement: null, getRootNode: () => ({}) };
+  f.page.document.elementFromPoint = () => panel;
+  f.hook(async (_method, params) => { if (params.type === 'mouseWheel') panel.scrollTop += params.deltaY; });
+  const result = await f.perform({ action: 'scroll', y: 4584 });
+  assert.equal(panel.scrollTop, 4584);
+  assert.equal(f.calls.filter(call => call.type === 'mouseWheel').length, 3);
+  assert.deepEqual({ ...result.scroll }, { x: 0, y: 0, maxY: 0, atEnd: true }, 'the reply describes the main document');
+});
+
+test('scroll follows a panel inside a shadow root', async () => {
+  const f = scrollFixture({ maxY: 0 });
+  const host = { scrollLeft: 0, scrollTop: 0, parentElement: null, getRootNode: () => ({}) };
+  const panel = { scrollLeft: 0, scrollTop: 0, parentElement: null, getRootNode: () => ({ host }) };
+  host.shadowRoot = { elementFromPoint: () => panel };
+  f.page.document.elementFromPoint = () => host;
+  f.hook(async (_method, params) => { if (params.type === 'mouseWheel') panel.scrollTop += params.deltaY; });
+  await f.perform({ action: 'scroll', y: 4584 });
+  assert.equal(panel.scrollTop, 4584);
+});
+
+test('a challenge that appears before the first wheel sends no wheel at all', async () => {
+  const f = scrollFixture({ challengeAfter: 0 });
+  await assert.rejects(f.perform({ action: 'scroll', y: 6000 }), /challenge|CAPTCHA|check/i);
+  assert.equal(f.calls.filter(call => call.type === 'mouseWheel').length, 0);
+});
+
+test('scroll follows a shadow scroller that holds slotted content', async () => {
+  const f = scrollFixture({ maxY: 0 });
+  const host = { scrollLeft: 0, scrollTop: 0, parentElement: null, getRootNode: () => ({}) };
+  const scroller = { scrollLeft: 0, scrollTop: 0, parentElement: null, getRootNode: () => ({ host }) };
+  const slot = { scrollLeft: 0, scrollTop: 0, parentElement: scroller, getRootNode: () => ({ host }) };
+  const item = { scrollLeft: 0, scrollTop: 0, assignedSlot: slot, parentElement: host, getRootNode: () => ({}) };
+  f.page.document.elementFromPoint = () => item;
+  f.hook(async (_method, params) => { if (params.type === 'mouseWheel') scroller.scrollTop += params.deltaY; });
+  await f.perform({ action: 'scroll', y: 4584 });
+  assert.equal(scroller.scrollTop, 4584);
+});
+
+test('scroll omits its position on a failed read and sends no further unchecked wheel events', async () => {
+  const f = scrollFixture();
+  f.hook(async (method, code) => {
+    if (method === 'evaluate' && (code.includes('const positions =') || code.includes('const maxY ='))) throw new Error('Context destroyed');
+  });
+  const result = await f.perform({ action: 'scroll', y: 4584 });
+  assert.equal(result.dispatched, true);
+  assert.equal(Object.hasOwn(result, 'scroll'), false);
+  assert.deepEqual(f.calls.filter(call => call.type === 'mouseWheel').map(call => call.deltaY), [2000]);
+});
+
+test('scroll still validates deltas and refuses a challenge at its aim before input', async () => {
+  for (const body of [{ x: NaN }, { y: Infinity }, { x: '1' }]) {
+    const f = fixture();
+    await assert.rejects(f.perform({ action: 'scroll', ...body }), /Scroll deltas must be finite/);
+    assert.equal(f.calls.length, 0);
+  }
+  const f = fixture({ found: { challenge: { kind: 'captcha' } } });
+  await assert.rejects(f.perform({ action: 'scroll', y: 4584 }), /challenge_present/);
+  assert.equal(f.calls.some(call => call.type === 'mouseWheel'), false);
 });
 
 test('control changes cancel motion before the press is dispatched', async () => {

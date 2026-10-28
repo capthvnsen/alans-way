@@ -335,6 +335,9 @@ function createComputerService(driver) {
     const steps = raw.map(normalizeStep);
     if (steps.some(needsGeneration) && !Number.isInteger(body.generation))
       throw fail('stale_ref', 'Pass the generation from your latest snapshot with every action that uses a ref.');
+    // Typed into a Save dialog's name field, a folder path becomes part of the file name.
+    if (seen.inSaveDialog(bot, pid) && steps.some((step) => step.action === 'type' && typeof step.ref === 'string' && /^~?\//.test(step.text) && step.text.replace(/^\/+|\/+$/g, '').includes('/')))
+      throw fail('bad_request', "That is a Save dialog's name field: a folder path there becomes part of the file name. Press cmd+shift+g, type the folder path without a ref, press return, then type the bare file name into the name field and press return.");
     const menubar = body.menubar === true;
     const results = [];
     const deadline = Date.now() + CALL_BUDGET_MS;

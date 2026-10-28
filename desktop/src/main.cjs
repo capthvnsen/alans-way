@@ -180,7 +180,7 @@ const recordings = recorder.createRecordingStore(path.join(app.getPath('userData
 let pointerTimer, activityTimer, idleTimer, captchaTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, vmUpdates: {}, versionCache: {},
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -505,7 +505,10 @@ function fit(view, rect) {
   const next = { x, y, width: Math.max(1, Math.min(Math.round(rect.width), size.width - x)), height: Math.max(1, Math.min(Math.round(rect.height), size.height - y)) };
   const previous = view.getBounds();
   if (Object.keys(next).some(key => next[key] !== previous[key])) view.setBounds(next);
-  if (!view.getVisible()) view.setVisible(true);
+  if (!view.getVisible()) {
+    view.setVisible(true);
+    if (view === remoteView) view.webContents.send('workspace:remote-retry');
+  }
 }
 function backgroundHost(width = 900, height = 700) {
   width = Math.max(900, Math.ceil(width)); height = Math.max(700, Math.ceil(height));
@@ -2753,7 +2756,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
   if (depth === 0) await syncDialogGuard(tab);
   if (depth === 0) agentInput.approve(tab, body);
   const reply = (payload) => depth > 0 ? payload : actionReply(tab, payload);
-  const finish = async (payload, opts) => depth > 0 ? payload : actionReply(tab, { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) });
+  const finish = async (payload, opts) => depth > 0 ? { ...payload, ...(opts?.clicked ? { clicked: opts.clicked } : {}) } : actionReply(tab, { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) });
   if (body.action === 'batch') {
     if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
     const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
@@ -2761,12 +2764,16 @@ async function performStep(tab, body, botId, depth, isAborted) {
     // Takeover validates just the first step, with the batch's approval mark.
     if (tab.preflight) return performAction(tab, { ...steps[0], epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, 1, isAborted);
     const results = [], started = Date.now();
-    let lastTarget, sawInput = false;
+    let lastTarget, lastClicked, sawInput = false;
     for (const step of steps) {
       if (!step || typeof step !== 'object') { results.push({ ok: false, error: 'Invalid step.' }); break; }
       if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ ok: false, error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
       if (isAborted()) { results.push({ ok: false, error: 'The request was closed; remaining steps were not run.' }); break; }
-      try { results.push({ ok: true, ...(await performAction(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, 1, isAborted)) }); }
+      try {
+        const { clicked, ...result } = await performAction(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, 1, isAborted);
+        results.push({ ok: true, ...result });
+        if (clicked) lastClicked = clicked;
+      }
       catch (error) { results.push({ ok: false, error: errorMessage(error) }); break; }
       // A step aimed by name reports the ref it resolved to.
       const ref = results.at(-1).ref || step.ref;
@@ -2775,7 +2782,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     }
     // A takeover mid-batch seals the accumulated step results too.
     requireActor(tab, botId, body.epoch, true, overseer);
-    return actionReply(tab, { results, ...(await actionEffect(tab, { target: lastTarget, settle: sawInput, held: body.generation })), dispatched: true });
+    return actionReply(tab, { results, ...(await actionEffect(tab, { target: lastTarget, clicked: lastClicked, settle: sawInput, held: body.generation })), dispatched: true });
   }
   // Page script and DevTools calls are checked in their branches, after the challenge preflight.
   if (body.action !== 'cdp' && body.action !== 'eval') await agentInput.guard(tab, body);
@@ -2926,13 +2933,13 @@ async function performStep(tab, body, botId, depth, isAborted) {
     return finish({ value, dispatched: true });
   }
   if (INPUT_ACTIONS.has(body.action)) {
-    const { input, cursor, navigated, ...result } = await agentInput.perform(tab, body, botId);
+    const { input, cursor, navigated, clicked, ...result } = await agentInput.perform(tab, body, botId);
     broadcast();
     const payload = { ...result, ...(depth === 0 && cursor ? { cursor: { x: cursor.x, y: cursor.y } } : {}), dispatched: true };
     // A move changes no page state; report it without paying for a read.
     if (body.action === 'move') return depth > 0 ? payload : actionReply(tab, { ...payload, effect: { ...EMPTY_EFFECT } });
     return finish(payload,
-      { navigated, settle: true, target: result.ref || body.ref !== undefined || body.selector !== undefined ? { ref: result.ref || body.ref, selector: body.selector } : undefined });
+      { navigated, clicked, settle: true, target: result.ref || body.ref !== undefined || body.selector !== undefined ? { ref: result.ref || body.ref, selector: body.selector } : undefined });
   }
   let parseWaitMs = 0, didNavigate = false;
   if (body.action === 'navigate') {
@@ -2985,6 +2992,19 @@ async function readJson(req) {
   catch { throw Object.assign(new Error('Invalid JSON.'), { status: 400 }); }
 }
 function startApi() {
+  const desktopLease = process.platform === 'darwin' ? require('./computer.cjs').createDesktopLease() : null;
+  const desktopApproval = require('./desktop-approval.cjs').createDesktopApproval({
+    trusted: (id) => isOverseer(id) || prefs.bots.some((bot) => bot.id === id) || prefs.desktopTrustedBots.includes(id),
+    ask: async (name, id, signal) => {
+      app.dock?.bounce('critical');
+      const { response } = await dialog.showMessageBox({ type: 'question', signal, buttons: ['Deny', 'Allow', 'Always allow'], defaultId: 0, cancelId: 0,
+        message: `Let ${name} use the apps on this computer?`,
+        detail: `The agent "${name}" (ID ${id}) wants to click, type and press keys in your apps through Alan's Workspace. Allow lasts until it has been idle for 30 minutes. Hermes bots in your Workspace never ask.` });
+      if (signal.aborted) return null;
+      if (response === 2) { prefs.desktopTrustedBots = [...new Set([...prefs.desktopTrustedBots, id])]; savePreferences(); }
+      return response > 0;
+    },
+  });
   apiServer = http.createServer(async (req, res) => {
     const send = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
     // No browser-origin requests or CORS: this endpoint is for the paired native connector.
@@ -3055,6 +3075,8 @@ function startApi() {
       // Session 0 and see no windows. Same verbs the MCP connector wraps.
       const computerMatch = /^\/v1\/computer\/(apps|launch|\d{1,10})(?:\/(snapshot|screenshot|action|menu))?$/.exec(url.pathname);
       if (computerMatch) {
+        let agentName = nameForBot(botId);
+        if (!agentName) try { agentName = decodeURIComponent(String(req.headers['x-hermes-bot-name'] || '')).replace(/\p{C}/gu, '').slice(0, 80); } catch { /* the bot ID names it instead */ }
         const controller = new AbortController();
         res.on('close', () => { if (!res.writableFinished) controller.abort(); });
         return await calls.run(context(req.headers['x-alans-way-remaining-ms'] === undefined ? undefined : Number(req.headers['x-alans-way-remaining-ms']), controller.signal, req.method === 'GET' ? READ_BUDGET_MS : Infinity), async () => {
@@ -3067,7 +3089,12 @@ function startApi() {
             if (computerMatch[2] || req.method !== 'POST') return send(405, { error: 'Use POST /v1/computer/launch.' });
             if (!hostComputer.launch) return send(400, { error: 'Opening an app by name is only supported on Mac.' });
             const body = await readJson(req);
-            return send(200, await hostComputer.launch(body.app, body.path));
+            const refused = await desktopApproval?.check(botId, agentName);
+            if (refused) return send(403, refused);
+            const busy = desktopLease?.take(botId, agentName);
+            if (busy) return send(409, busy);
+            try { return send(200, await hostComputer.launch(body.app, body.path)); }
+            finally { desktopLease?.release(botId); }
           }
           const pid = Number(computerMatch[1]);
           if (!Number.isInteger(pid) || pid < 0) return send(400, { error: 'App pid must be a non-negative integer.' });
@@ -3077,10 +3104,20 @@ function startApi() {
             return send(200, await hostComputer.screenshot(pid, intParam(url, 'maxWidth', 1, 10000), { windowId: intParam(url, 'windowId', 1, 0xffffffff), bot: botId }));
           if (req.method === 'GET' && computerMatch[2] === 'menu') {
             let menuPath; try { menuPath = JSON.parse(url.searchParams.get('path') || '[]'); } catch { throw Object.assign(new Error('path must be a JSON array of menu titles.'), { status: 400 }); }
-            return send(200, await hostComputer.menu(pid, menuPath));
+            const busy = desktopLease?.take(botId, agentName);
+            if (busy) return send(409, busy);
+            try { return send(200, await hostComputer.menu(pid, menuPath)); }
+            finally { desktopLease?.release(botId); }
           }
-          if (req.method === 'POST' && computerMatch[2] === 'action')
-            return send(200, await hostComputer.action(botId, pid, await readJson(req)));
+          if (req.method === 'POST' && computerMatch[2] === 'action') {
+            const body = await readJson(req);
+            const refused = await desktopApproval?.check(botId, agentName);
+            if (refused) return send(403, refused);
+            const busy = desktopLease?.take(botId, agentName);
+            if (busy) return send(409, busy);
+            try { return send(200, await hostComputer.action(botId, pid, body)); }
+            finally { desktopLease?.release(botId); }
+          }
           return send(405, { error: 'Method not supported.' });
         });
       }
@@ -3326,7 +3363,10 @@ function watchTelegram(wc) {
   wc.on('unresponsive', () => { clearTimeout(hangTimer); watchHang(); });
   wc.on('responsive', () => clearTimeout(hangTimer));
   const stuck = () => telegramStatus === 'offline' || telegramStatus === 'loading';
-  powerMonitor.on('resume', () => { const timer = setTimeout(() => { if (stuck()) telegramRecovery.now(); }, 3000); timer.unref?.(); });
+  powerMonitor.on('resume', () => {
+    if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:remote-retry');
+    const timer = setTimeout(() => { if (stuck()) telegramRecovery.now(); }, 3000); timer.unref?.();
+  });
   let wasOnline = net.isOnline();
   const timer = setInterval(() => {
     const online = net.isOnline();
@@ -3406,6 +3446,9 @@ function createWindow() {
     else if (process.platform === 'linux') { event.preventDefault(); win.minimize(); }
   });
   for (const name of ['show', 'hide', 'minimize', 'restore', 'focus', 'blur']) win.on(name, () => sendPollTier());
+  for (const name of ['show', 'restore', 'focus']) win.on(name, () => {
+    if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:remote-retry');
+  });
   buildMenu();
   startApi();
   // Read the real pointer position, even over native child views or another app.

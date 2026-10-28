@@ -26,37 +26,49 @@ export class VoiceClient {
   async sendTurn(blob, turnId, signal) {
     if (!this.call) throw new Error("The voice call is not connected.");
     const body = new FormData();
-    const filenameExtension = blob.type.toLowerCase().includes("mp4") ? "m4a" : "webm";
+    const filenameExtension = blob.type.toLowerCase().includes("wav") ? "wav" : blob.type.toLowerCase().includes("mp4") ? "m4a" : "webm";
     body.append("audio", blob, `turn-${turnId}.${filenameExtension}`);
     body.append("turn_id", turnId);
     body.append("mime_type", blob.type || "audio/webm");
-    const response = await this.fetch(new URL(`/v1/calls/${encodeURIComponent(this.call.call_id)}/turns`, this.apiBase), {
-      method: "POST",
-      headers: { Authorization: `Bearer ${this.call.access_token}` },
-      body,
-      signal,
-    });
-    return this.#json(response);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        const response = await this.fetch(new URL(`/v1/calls/${encodeURIComponent(this.call.call_id)}/turns`, this.apiBase), {
+          method: "POST",
+          headers: { Authorization: `Bearer ${this.call.access_token}` },
+          body,
+          signal,
+        });
+        return await this.#json(response);
+      } catch (error) {
+        if (attempt || !isTransient(error) || signal?.aborted) throw error;
+      }
+    }
   }
 
-  async waitForTurn(turnId, signal) {
+  async waitForTurn(turnId, signal, onUpdate) {
     if (!this.call) throw new Error("The voice call is not connected.");
     const url = new URL(`/v1/calls/${encodeURIComponent(this.call.call_id)}/turns/${encodeURIComponent(turnId)}`, this.apiBase);
     const started = Date.now();
     while (Date.now() - started < 120_000) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-      const response = await this.fetch(url, {
-        headers: { Authorization: `Bearer ${this.call.access_token}` }, signal,
-      });
-      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-      const result = await this.#json(response);
-      if (result.status === "completed") return result;
-      if (["failed", "cancelled", "rejected"].includes(result.status)) {
-        throw new Error(result.error || "The voice turn could not be completed.");
+      let result;
+      try {
+        const response = await this.fetch(url, {
+          headers: { Authorization: `Bearer ${this.call.access_token}` }, signal,
+        });
+        result = await this.#json(response);
+      } catch (error) {
+        if (!isTransient(error) || signal?.aborted) throw error;
+        await wait(250, signal);
+        continue;
       }
-      await wait(900, signal);
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      onUpdate?.(result);
+      if (["completed", "failed", "cancelled", "rejected"].includes(result.status) || result.playback_interrupted) return result;
+      await wait(250, signal);
     }
-    throw new Error("Hermes is taking longer than expected. You can end the call and continue in chat.");
+    throw new Error("Hermes is taking longer than expected. Please try speaking again.");
   }
 
   async getReplyAudio(turnId, audioUrl, signal) {
@@ -72,10 +84,11 @@ export class VoiceClient {
 
   async interrupt(turnId) {
     if (!this.call || !turnId) return;
-    await this.fetch(new URL(`/v1/calls/${encodeURIComponent(this.call.call_id)}/turns/${encodeURIComponent(turnId)}/interrupt`, this.apiBase), {
+    const response = await this.fetch(new URL(`/v1/calls/${encodeURIComponent(this.call.call_id)}/turns/${encodeURIComponent(turnId)}/interrupt`, this.apiBase), {
       method: "POST",
       headers: { Authorization: `Bearer ${this.call.access_token}` },
     });
+    if (!response.ok) throw await this.#error(response);
   }
 
   async disconnect() {
@@ -116,6 +129,10 @@ export class VoiceClient {
     error.status = response.status;
     return error;
   }
+}
+
+function isTransient(error) {
+  return error?.name !== "AbortError" && (!error?.status || error.status >= 500);
 }
 
 function wait(milliseconds, signal) {
