@@ -202,6 +202,42 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
   return { request, close };
 }
 
+// A connector that drives its own desktop (the VM) runs once per agent, so the
+// agents share the app's lease rules through a file beside their connection:
+// one bot holds it while acting and for idleMs after. A holder that died
+// mid-action frees it at once; a reused pid only until the acting cap.
+// shortcut: read-then-write is not atomic across processes, so two takes in the
+// same instant can both win; add a lock file if that is ever seen.
+function createFileDesktopLease(file, idleMs = 20000, actingMs = 120000) {
+  let active = 0;
+  const read = () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
+  const write = (holder) => {
+    const temp = `${file}.${process.pid}`;
+    try { fs.writeFileSync(temp, JSON.stringify(holder)); fs.renameSync(temp, file); }
+    catch { /* an unwritable lease must not stop computer use */ }
+  };
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+  return {
+    take(botId, name) {
+      const holder = read();
+      const now = Date.now();
+      if (holder && holder.botId !== botId) {
+        const acting = holder.actingUntil > now && Number.isInteger(holder.pid) && alive(holder.pid);
+        if (acting || holder.expiresAt > now)
+          return { error: 'desktop_busy', holder: holder.name, retryAfter: acting ? idleMs / 1000 : Math.ceil((holder.expiresAt - now) / 1000) };
+      }
+      active++;
+      write({ botId, name: name || botId, pid: process.pid, actingUntil: now + actingMs });
+      return null;
+    },
+    release(botId) {
+      if (--active > 0) return;
+      const holder = read();
+      if (holder?.botId === botId && holder.pid === process.pid) write({ botId, name: holder.name, pid: process.pid, expiresAt: Date.now() + idleMs });
+    },
+  };
+}
+
 // A build is current when the source it was built from is byte-identical, not
 // when mtimes happen to line up: checkouts and packaging reshuffle those.
 const sourceHash = (source) => crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex');
@@ -460,4 +496,4 @@ function createComputer({ command, env, nativeMac = false }) {
   return { driver, service: createComputerService(driver), close: () => driver.close() };
 }
 
-module.exports = { createHelper, createComputer, createComputerService, normalizeStep, normalizeKey, binaryCurrent, recordBuild };
+module.exports = { createHelper, createComputer, createComputerService, createFileDesktopLease, normalizeStep, normalizeKey, binaryCurrent, recordBuild };

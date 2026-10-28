@@ -95,3 +95,41 @@ test('trusted human input is never blocked and does not take or refresh a bot le
   t.mock.timers.tick(1000);
   assert.equal((await request('/v1/computer/7/action', 'b', 'POST')).status, 200);
 });
+
+test('connectors in separate processes share one file lease with the same rules', async t => {
+  const { createFileDesktopLease } = require('../src/computer-helper.cjs');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { spawnSync } = require('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-lease-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'desktop-lease.json');
+  t.mock.timers.enable({ apis: ['Date'], now: 1000000 });
+  const hermes = createFileDesktopLease(file);
+  const grok = createFileDesktopLease(file);
+  assert.equal(hermes.take('h', 'Hermes'), null);
+  assert.deepEqual(grok.take('g', 'Grok Bot'), { error: 'desktop_busy', holder: 'Hermes', retryAfter: 20 }, 'busy while acting');
+  assert.equal(hermes.take('h', 'Hermes'), null, 'the holder refreshes');
+  hermes.release('h');
+  assert.equal(grok.take('g').error, 'desktop_busy', 'one of two holder calls still runs');
+  hermes.release('h');
+  t.mock.timers.tick(19000);
+  assert.deepEqual(grok.take('g'), { error: 'desktop_busy', holder: 'Hermes', retryAfter: 1 });
+  t.mock.timers.tick(1000);
+  assert.equal(grok.take('g', 'Grok Bot'), null, 'free after 20 idle seconds');
+  // A holder process that died mid-action frees the desktop at once.
+  const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))']).stdout.toString();
+  fs.writeFileSync(file, JSON.stringify({ botId: 'gone', name: 'Gone', pid: Number(dead), actingUntil: Date.now() + 60000 }));
+  assert.equal(hermes.take('h'), null);
+  // A live but reused pid holds it only until the acting cap.
+  fs.writeFileSync(file, JSON.stringify({ botId: 'stuck', name: 'Stuck', pid: process.pid, actingUntil: Date.now() + 1000 }));
+  assert.equal(hermes.take('h').error, 'desktop_busy');
+  t.mock.timers.tick(1000);
+  assert.equal(hermes.take('h'), null);
+  fs.writeFileSync(file, '{not json');
+  assert.equal(grok.take('g'), null, 'an unreadable lease is free');
+  const unwritable = createFileDesktopLease(path.join(dir, 'missing', 'desktop-lease.json'));
+  assert.equal(unwritable.take('g'), null, 'an unwritable lease never blocks input');
+  unwritable.release('g');
+});
