@@ -338,7 +338,8 @@ public final class TelegramStore {
     private func startClient() throws {
         guard let apiID, let apiHash else { throw TelegramStoreError.notConfigured }
         if client != nil { return }
-        let manager = TDLibClientManager()
+        // One manager for the app's lifetime: each runs its own td_receive loop, and TDLib aborts on concurrent receives.
+        let manager = self.manager ?? TDLibClientManager()
         self.manager = manager
         let newClient = manager.createClient { [weak self] data, client in
             guard let update = try? client.decoder.decode(Update.self, from: data) else { return }
@@ -380,7 +381,6 @@ public final class TelegramStore {
                 messagesByChat.removeAll()
                 selectedChatID = nil
                 self.client = nil
-                self.manager = nil
                 waitingForParameters = false
                 parametersRequestInFlight = false
             default:
