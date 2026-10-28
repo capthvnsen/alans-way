@@ -71,7 +71,7 @@ const fakeTray=class {setToolTip(){}setContextMenu(){}on(){}destroy(){}};
 const noNative = new Proxy({close(){}},{get(t,k){return t[k]||deny('native.'+String(k));}});
 const eProxy = new Proxy(electron,{get(t,k){if(k==='safeStorage')return {isEncryptionAvailable:()=>false,encryptString:deny('safeStorage.encrypt'),decryptString:deny('safeStorage.decrypt')};if(k==='globalShortcut')return new Proxy({},{get:(_,p)=>deny('globalShortcut.'+String(p))});if(k==='BrowserWindow')return FixtureWindow;if(k==='app')return appProxy;if(k==='Tray')return fakeTray;if(k==='clipboard')return new Proxy({},{get:(_,p)=>deny('clipboard.'+String(p))});if(k==='shell')return new Proxy({},{get:(_,p)=>deny('shell.'+String(p))});if(k==='dialog')return new Proxy({},{get:(_,p)=>deny('dialog.'+String(p))});if(k==='systemPreferences')return new Proxy({},{get:(_,p)=>deny('systemPreferences.'+String(p))});if(k==='net')return new Proxy(t.net,{get:(v,p)=>p==='isOnline'?()=>false:deny('net.'+String(p))});if(k==='screen')return new Proxy(t.screen,{get:(v,p)=>p==='getCursorScreenPoint'?()=>({x:-10000,y:-10000}):typeof v[p]==='function'?v[p].bind(v):v[p]});return t[k];}});
 const rawLoad=Module._load;
-Module._load=function(request,parent,...args){if(request==='electron')return eProxy;if(parent?.filename?.startsWith(snapshot) && /(?:^|\/)(?:computer|win-computer|vps-computer)\.cjs$/.test(request))return {service:noNative};return rawLoad.call(this,request,parent,...args);};
+Module._load=function(request,parent,...args){if(request==='electron')return eProxy;if(parent?.filename?.startsWith(snapshot) && /(?:^|\/)(?:computer|win-computer|vps-computer)\.cjs$/.test(request))return {service:noNative,createDesktopLease:()=>({take:()=>null,release(){}})};return rawLoad.call(this,request,parent,...args);};
 const controls=[];let nextControl;
 const rawHandle=ipcMain.handle.bind(ipcMain);
 ipcMain.handle=function(channel,handler){ return rawHandle(channel,async (event,...args)=>{
@@ -120,6 +120,7 @@ app.whenReady().then(async()=>{
  try{
  await until(()=>{win=ownedWindows.find(w=>w.webContents.getURL().endsWith('/index.html'));wc=win?.webContents;return !!wc;},'frozen index',12000);
  await until(()=>js('!!window.workspace && !!state?.api && document.readyState==="complete"'),'real preload and renderer');
+ if(!output.boundary.some(item=>item.kind==='server.listen'))throw Error('Main did not reach the guarded local API listener.');
  await js(`window.criticTrusted=[];for(const t of ['click','keydown','keyup'])document.addEventListener(t,e=>{if(window.criticTrusted.length<250)window.criticTrusted.push({type:t,trusted:e.isTrusted,key:e.key,target:e.target.id});},true);`);
  output.webPreferences=wc.getLastWebPreferences();output.loadedURL=wc.getURL();
  await sleep(400);await run();await responsiveness();output.trustedInputs=await js('window.criticTrusted');finish(0);

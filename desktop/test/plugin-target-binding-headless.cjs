@@ -127,7 +127,7 @@ async function startClient(elicitation = true) {
   });
   root = `http://127.0.0.1:${await listen(site)}`;
   const profile = path.join(temp, 'profile');
-  browser = child(chrome, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-sandbox', '--disable-background-networking', 'about:blank']);
+  browser = child(chrome, ['--headless=new', ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []), '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-sandbox', '--disable-background-networking', 'about:blank']);
   const portFile = path.join(profile, 'DevToolsActivePort');
   await until(() => fs.existsSync(portFile) || (browser.exitCode !== null && assert.fail(browser.stderrText())), 'Chromium startup');
   cdpPort = fs.readFileSync(portFile, 'utf8').split('\n')[0];
