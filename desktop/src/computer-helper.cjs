@@ -236,7 +236,7 @@ function createFileDesktopLease(file, idleMs = 20000, actingMs = 120000) {
       return locked(() => {
         if (!botId) return busy();
         const holder = read(), now = Date.now();
-        if (holder && holder.botId !== botId) {
+        if (holder && (holder.botId !== botId || (holder.pid !== process.pid && holder.actingUntil > now && alive(holder.pid)))) {
           const acting = holder.actingUntil > now && alive(holder.pid);
           if (acting || holder.expiresAt > now)
             return { error: 'desktop_busy', holder: holder.name, retryAfter: acting ? idleMs / 1000 : Math.ceil((holder.expiresAt - now) / 1000) };

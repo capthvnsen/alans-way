@@ -135,7 +135,7 @@ test('connectors in separate processes share one file lease with the same rules'
 });
 
 
-test('a simultaneous take in separate live processes has exactly one winner', async t => {
+for (const sameBot of [false, true]) test(`a simultaneous take in live processes has one winner (same bot: ${sameBot})`, async t => {
   const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
   const { spawn } = require('node:child_process');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lease-race-'));
@@ -143,7 +143,7 @@ test('a simultaneous take in separate live processes has exactly one winner', as
   t.after(() => { for (const child of children) child.kill(); fs.rmSync(dir, { recursive: true, force: true }); });
   const code = `const {createFileDesktopLease}=require(process.argv[1]); process.send('ready');process.once('message',()=>{process.send(createFileDesktopLease(process.argv[2]).take(process.argv[3]));});setInterval(()=>{},1000);`;
   const replies = Array.from({ length: 8 }, (_, i) => {
-    const child = spawn(process.execPath, ['-e', code, require.resolve('../src/computer-helper.cjs'), file, 'bot-'+i], { stdio: ['ignore','ignore','ignore','ipc'] });
+    const child = spawn(process.execPath, ['-e', code, require.resolve('../src/computer-helper.cjs'), file, sameBot ? 'same-bot' : 'bot-'+i], { stdio: ['ignore','ignore','ignore','ipc'] });
     children.push(child);
     return new Promise((resolve, reject) => { child.once('error', reject); child.on('message', message => { if (message === 'ready') { child.ready = true; if (children.length === 8 && children.every(c=>c.ready)) for (const c of children) c.send('take'); } else resolve(message); }); });
   });
