@@ -382,7 +382,8 @@ async function request(endpoint, method = 'GET', body, epoch, approvedConnection
   }
 }
 const server = new Server({ name: 'hermes-cua-alans-way', version: '0.1.0' }, { capabilities: { tools: {} } });
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+// shortcut: Hermes keys omit app version and env, so startup may reuse schemas for 60s; version the config if immediate invalidation is needed.
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools, ttlMs: 60_000 }));
 server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => calls.run(
   context(params._meta?.['alans-way/remainingMs'], extra.signal, params.name.startsWith('workspace_computer_') && params.name !== 'workspace_computer_action' ? READ_BUDGET_MS : Infinity), async () => {
   try {
