@@ -115,6 +115,8 @@ app.whenReady().then(async () => {
         } finally {
           view?.dispose(); pane.remove();
           siblings.forEach((n, i) => { n.className = classes[i]; });
+          // Restoring the slots may not resize the shell on a clamped display.
+          window.dispatchEvent(new Event('resize'));
         }
       })()`);
       for (const [phase, measured] of Object.entries(layout)) {
@@ -167,7 +169,16 @@ app.whenReady().then(async () => {
   const realSend = wc.send.bind(wc);
   wc.send = (channel, ...args) => { if (channel !== 'workspace:state') realSend(channel, ...args); };
   try {
+    await waitFor(() => telegramView.getVisible() === true, Boolean);
+    // A native-focus test needs a key window before Telegram takes focus.
+    win.show();
+    await waitFor(() => {
+      // macOS can leave a CLI-launched Electron app inactive despite win.focus().
+      if (!win.isFocused()) { app.focus({ steal: true }); win.focus(); }
+      return win.isFocused();
+    }, Boolean);
     telegram.focus();
+    assert.equal(webContents.getFocusedWebContents()?.id, telegram.id, 'the popup starts with visible Telegram holding native focus');
     const real = await evaluate('window.workspace.getState()');
     realSend('workspace:state', { ...real, update: { ...real.update, available: '9.9.9', popup: true } });
     await waitFor(() => evaluate('!document.getElementById("update-popup").classList.contains("hidden")'), Boolean);
@@ -176,16 +187,7 @@ app.whenReady().then(async () => {
     realSend('workspace:state', real);
     await waitFor(() => evaluate('document.getElementById("update-popup").classList.contains("hidden")'), Boolean);
     await waitFor(() => telegramView.getVisible() === true, Boolean);
-    // Only a key window can hand native focus back: take it, so the wait
-    // below proves the popup really returned focus to Telegram instead of
-    // passing vacuously on an unfocused window.
-    win.show();
     try {
-      await waitFor(() => {
-        // macOS can leave a CLI-launched Electron app inactive despite win.focus().
-        if (!win.isFocused()) { app.focus({ steal: true }); win.focus(); }
-        return win.isFocused();
-      }, Boolean);
       await waitFor(() => webContents.getFocusedWebContents()?.id === telegram.id, Boolean);
     } catch (error) {
       throw new Error(`Native focus acquisition failed: platform=${process.platform}, visible=${win.isVisible()}, minimized=${win.isMinimized()}, focusedWindow=${BrowserWindow.getFocusedWindow()?.id}, expectedWindow=${win.id}, focusedWebContents=${webContents.getFocusedWebContents()?.id}, expectedTelegram=${telegram.id}`, { cause: error });
