@@ -1505,12 +1505,10 @@ async function telegramFirstName() {
 // steps. The value travels over ssh stdin so it never shows in a process list.
 async function cloudWriteEnv(host, key, value, tokenedProfiles) {
   const profiles = await sshRun(host, 'ls ~/.hermes/profiles 2>/dev/null');
+  if (profiles.code !== 0) return { ok: false, detail: 'Could not read the profile inventory; no credentials changed.' };
   const profile = key === 'TELEGRAM_BOT_TOKEN' ? cloudTelegram.untokenedProfile(profiles.out, tokenedProfiles) : cloudModel.chooseProfile(profiles.out);
   const envPath = cloudModel.envPathFor(profile);
-  const current = await sshRun(host, cloudConnect.sshReadCommand(envPath));
-  // A failed read (missing file, ssh error) means an empty base — never feed
-  // error text into setEnvValue or the write would clobber the real .env.
-  const write = await sshWrite(host, envPath, cloudModel.setEnvValue(current.code === 0 ? current.out : '', key, value));
+  const write = await sshWrite(host, envPath, { key, value });
   if (write.code !== 0) return { ok: false, detail: 'The computer refused the env file write.' };
   if (key === 'TELEGRAM_BOT_TOKEN') {
     const setup = await sshRun(host, cloudTelegram.workspaceSetupCommand(profile), { timeoutMs: 300000 });
@@ -1557,22 +1555,17 @@ function localRun(file, args, { timeoutMs = 10000 } = {}) {
 function sshRun(host, remote, { timeoutMs = 15000 } = {}) {
   return localRun('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, posixCommand(remote)], { timeoutMs });
 }
-// Writes a whole file over stdin so the content never lands in the remote
-// command line (keys would leak into ps otherwise). Leading ~ stays unquoted
-// so it expands; the rest of the path is single-quoted against remote-side
-// interpolation of profile names.
+// Env values travel only on stdin; the remote transaction preserves the file.
 function sshWrite(host, remotePath, content, { timeoutMs = 15000 } = {}) {
-  const p = String(remotePath);
-  const target = p.startsWith('~/') ? `"$HOME"/${cloudMigrate.shellQuote(p.slice(2))}` : cloudMigrate.shellQuote(p);
   return new Promise((resolve) => {
-    const child = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, `cat > ${target}`], { timeout: timeoutMs });
+    const child = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, require('./env-write.cjs').command], { timeout: timeoutMs });
     let out = '', err = '';
     child.stdout.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
     child.stderr.on('data', (chunk) => { err = (err + chunk).slice(-20000); });
     child.stdin.on('error', () => {});
     child.on('error', () => resolve({ code: -1, out, err }));
     child.on('close', (code) => resolve({ code: code ?? -1, out, err }));
-    child.stdin.end(content);
+    child.stdin.end(JSON.stringify({ path: remotePath, ...content }));
   });
 }
 // scripts/connect-mac.sh keeps its authorized_keys editor between "tailnet
@@ -2477,13 +2470,8 @@ function registerIpc() {
         if (!host) throw new Error('Connect to the computer first.');
         const key = String(value.key || '').trim();
         if (!/^sk-[\w-]{10,}$/.test(key)) throw new Error('Paste the Anthropic API key (it starts with sk-).');
-        const profile = cloudModel.chooseProfile((await sshRun(host, 'ls ~/.hermes/profiles 2>/dev/null')).out);
-        const envPath = cloudModel.envPathFor(profile);
-        const current = await sshRun(host, cloudConnect.sshReadCommand(envPath));
-        const write = await sshWrite(host, envPath, cloudModel.setEnvValue(current.code === 0 ? current.out : '', 'ANTHROPIC_API_KEY', key));
-        if (write.code !== 0) return { done: false, detail: 'The key could not be written on the computer.' };
-        const status = await sshRun(host, 'supervisorctl status 2>/dev/null');
-        await sshRun(host, cloudModel.gatewayRestartCommand(status.out), { timeoutMs: 30000 });
+        const write = await cloudWriteEnv(host, 'ANTHROPIC_API_KEY', key);
+        if (!write.ok) return { done: false, detail: write.detail };
         prefs.cloud = { ...(prefs.cloud || {}), model: 'apikey' };
         const next = nextCloudStep(prefs, 'model');
         if (next === 'done') { prefs.cloud.step = 'done'; prefs.onboarded = true; } else setCloudStep(prefs, next);

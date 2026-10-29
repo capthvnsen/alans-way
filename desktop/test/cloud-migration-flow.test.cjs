@@ -117,7 +117,7 @@ for (const legacy of [false, true]) {
     const scripts = [];
     const f = fixture({ sessionEnc: 'fixture', ...(legacy ? { step: 'done', botUsername: 'original_bot' } : { step: 'telegram' }) }, {
       sshRun: async (_, command) => ({ code: 0, out: command.startsWith('ls ') ? 'personal\n' : command.startsWith('cat ') ? env : 'anthropic: logged in' }),
-      sshWrite: async (_, file, value) => { writes.push(file); env = value; return { code: 0 }; },
+      sshWrite: async (_, file, value) => { writes.push(file); env = require('../src/cloud-model.cjs').setEnvValue(env, value.key, value.value); return { code: 0 }; },
       // Completion requires the embedded bot chat to accept /start (#165).
       telegramView: { webContents: { isDestroyed: () => false,
         executeJavaScript: async (script) => { scripts.push(script); return { ok: true }; } } },
