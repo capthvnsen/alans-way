@@ -1,25 +1,26 @@
-# License coverage across the four products
+# MIT licensing across the four products
 
-This is an inventory of the checked-in notices, not a license change. Checked 2026-10-29. The root MIT license is not a blanket description of all Alan's Way products.
+Alex's decision: all four Alan's Way products use the **[MIT License](../LICENSE)**, **Copyright (c) 2026 Alex Hansen**. This includes the shared persona/voice/proactivity/identity config spec and supporting code. There is no pending product-license choice.
 
-| Product / source | Existing license evidence | Coverage and gaps |
+| Product / source | License | Notice location |
 | --- | --- | --- |
-| Alan's Workspace desktop, `desktop/` | [GPL text](../desktop/LICENSE), [distribution notice](../desktop/NOTICE.md), `desktop/package.json`: `GPL-3.0-or-later` | Desktop code/bundle uses GPL-3.0-or-later. [LICENSE-MIT](../desktop/LICENSE-MIT) retains the earlier original-code notice; it does not make the current bundle MIT. Third-party notices still apply. |
-| Alan's Workspace iOS, `ios/` | [GPL text](../ios/LICENSE), [notice](../ios/NOTICE.md) | GPL-3.0-or-later, including reused artwork. Bundled TDLib dependencies carry their own notices. The source tree does not establish App Store distribution readiness. |
-| Workspace mobile voice support, `mobile/` | [GPL text](../mobile/LICENSE), [notice](../mobile/NOTICE.md) | Mini App, Python voice bridge, and reused artwork are GPL-3.0-or-later. This Hermes voice bridge is distinct from the main MIT Hermes plugin in the agents repo. |
-| Alan's CU MCP, `desktop/scripts/browser-mcp.cjs` and supporting `desktop/` code | The enclosing [desktop notice](../desktop/NOTICE.md) and GPL package metadata | Covered by the existing desktop GPL-3.0-or-later scope; no separate `workspace-mcp` license or exception was found. **TODO:** confirm that scope is the intended license for the separately named product. Do not infer MIT from the MCP SDK's own license. |
-| Alan's Plugin for Hermes, agents repo | [Root MIT license at inspected revision](https://github.com/capthvnsen/alans-way-agents/blob/e749fc0f677f22ecb4ad2da649d7da2ff8e4cf04/LICENSE); root README declares MIT | Existing `alans-way/`, `alans-way-computer/`, and router/setup source are in that MIT repo. Imported or distributed dependencies retain their own terms. |
-| Alan's Plugin for Grok Bot, agents repo | Same agents root MIT license; no dedicated package identified at inspected revision | **TODO:** identify the shipped skill/settings directory and confirm its notices, third-party material, and intended coverage. An absent package cannot be audited as a complete distribution. |
-| Shared persona/voice/proactivity/identity spec, agents repo | No canonical spec identified at inspected revision | **TODO:** publish/identify the spec and confirm coverage under the agents license or add an explicit notice there. Do not choose a new license in this docs PR. |
-| Optional Python companion CLI, `src/hermes_companion/` | [Root MIT license](../LICENSE), `pyproject.toml`: `MIT` | MIT; this is not the Node CU MCP server or the agents repo's Hermes plugin. |
-| Root docs and support scripts without a more specific notice | [Root MIT license](../LICENSE) | Keep directory-specific licenses and third-party notices when redistributing a mixed tree. |
+| Alan's Workspace desktop, `desktop/` | MIT | [LICENSE](../desktop/LICENSE), [dependency notices](../desktop/NOTICE.md); `desktop/package.json` and the root lockfile entry declare MIT |
+| Alan's Workspace iOS, `ios/` | MIT | [LICENSE](../ios/LICENSE), [notice](../ios/NOTICE.md), and the bundled `ThirdPartyNotices.txt` |
+| Workspace mobile voice support, `mobile/` | MIT | [LICENSE](../mobile/LICENSE), [notice](../mobile/NOTICE.md), and Mini App package metadata |
+| Alan's CU MCP, `desktop/scripts/browser-mcp.cjs` and supporting `desktop/` code | MIT | [Desktop LICENSE](../desktop/LICENSE); server location and runtime behavior are unchanged |
+| Alan's Plugin for Hermes, `capthvnsen/alans-way-agents` | MIT | The agents repository maintains the plugin license files and notices |
+| Alan's Plugin for Grok Bot, `capthvnsen/alans-way-agents` | MIT | Include the same standard MIT text and Alex Hansen copyright in the skill/settings package |
+| Shared config spec, `capthvnsen/alans-way-agents` | MIT | Use the same license for the spec and both plugin readers; package/spec paths are tracked separately in [products](products.md#shared-config-contract) |
+| Optional Python companion CLI, root docs and support scripts | MIT | [Root LICENSE](../LICENSE); `pyproject.toml` declares MIT |
 
-The agents repository inspection is pinned to [`e749fc0f677f22ecb4ad2da649d7da2ff8e4cf04`](https://github.com/capthvnsen/alans-way-agents/tree/e749fc0f677f22ecb4ad2da649d7da2ff8e4cf04), not an audit of unpublished packages or every transitive dependency. No LICENSE/NOTICE text or package metadata is changed by this work.
+The plugin and website source trees are maintained in their own repositories; this repo's license files do not modify those repositories. The missing Grok package/shared spec publication paths are packaging work, not undecided licensing.
 
-## Decisions for Alex
+## Third-party licenses and desktop distribution
 
-- **CU MCP:** confirm GPL-3.0-or-later under `desktop/` is the intended public license boundary. If a different license is desired, review the shared code/dependencies and rights first; this PR makes no alternative grant.
-- **Grok Bot package:** publish its path and confirm license/notice coverage for skill text, settings, and any bundled assets or third-party material.
-- **Shared config spec:** publish its path and confirm its license alongside both plugin readers in `alans-way-agents`.
+MIT applies to Alan's Way's own source. Third-party dependencies retain their copyrights, licenses, and distribution requirements. Preserve their notices rather than replacing them with Alex's copyright.
 
-Contribute under the existing license of the files you touch. Route licensing questions through [Discord](https://discord.gg/jBQCPUsVE) or an issue with the relevant product label; report vulnerabilities using [SECURITY.md](../SECURITY.md).
+The pinned [`electron-chrome-extensions` 4.9.0 package](https://registry.npmjs.org/electron-chrome-extensions/4.9.0) offers GPL and Patron license options; its tarball contains `LICENSE-GPL` and `LICENSE-PATRON.md`. The current app explicitly selects `GPL-3.0` for that dependency. Its notices and applicable GPL source/distribution obligations remain in effect for a desktop bundle containing it. The MIT product-source decision does not grant a Patron license or make that combined bundle MIT-only. Dependency selection/runtime changes are outside this licensing update.
+
+The desktop also includes Electron/Chromium notices, noVNC (MPL-2.0), the MCP SDK (MIT), and other dependencies. iOS retains TDLibKit/TDLibFramework MIT notices and TDLib's Boost Software License 1.0 text. The mobile broker retains aiohttp's Apache-2.0 and dependency notices. See the component NOTICE files above; this is not a full transitive-dependency audit.
+
+Contributions to Alan's Way source use MIT. Community: [Discord](https://discord.gg/jBQCPUsVE) · [openalan.com](https://openalan.com). Report vulnerabilities using [SECURITY.md](../SECURITY.md).

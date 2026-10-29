@@ -1,6 +1,6 @@
 # Four products: ownership, installation, and shared config
 
-[Alan's Way](../README.md) has four products in two repositories. This is the current product map; older plans and research may use the previous app/plugin naming. Community: [Discord](https://discord.gg/jBQCPUsVE) · [openalan.com](https://openalan.com).
+[Alan's Way](../README.md) has four products in two repositories. All four products and the shared config spec use the **[MIT License](../LICENSE)**, Copyright (c) 2026 Alex Hansen. Third-party software retains its own terms; see [licensing](licensing.md). This is the current product map; older plans and research may use the previous app/plugin naming. Community: [Discord](https://discord.gg/jBQCPUsVE) · [openalan.com](https://openalan.com).
 
 ## Source boundaries
 
@@ -56,7 +56,7 @@ Keep one authoritative definition in `alans-way-agents`, with adapters for each 
 
 - Identify/publish the Grok skill + settings directory and the supported install/uninstall procedure. A working MCP connector alone does not complete that package install.
 - Identify/publish the shared config spec's canonical filename, schema/version, local storage path, defaults, precedence with native settings, and unsupported-capability behavior for both readers. Do not invent a config file in this repo.
-- Confirm license coverage for the Grok package and shared spec when published; decide whether CU MCP should continue under the existing desktop GPL scope. See [license coverage](licensing.md).
+- Include the standard MIT license, Copyright (c) 2026 Alex Hansen, when publishing the Grok package and shared spec. The license decision is settled; see [licensing and dependency notices](licensing.md).
 
 ## Where to contribute or report issues
 

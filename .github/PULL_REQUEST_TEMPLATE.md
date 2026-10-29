@@ -25,4 +25,4 @@
 
 ## Decisions for Alex
 
-<!-- List unresolved choices and corresponding TODOs (e.g. license, package path, shared config contract), or write "None". -->
+<!-- List unresolved choices and corresponding TODOs (e.g. package path, shared config contract), or write "None". -->

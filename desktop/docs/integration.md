@@ -246,7 +246,7 @@ and [1Password browser requirements](https://support.1password.com/additional-br
 Run `npm run test:extensions` for the generated MV3 fixture and
 `npm run test:web-store` for the real public 1Password package. Each uses an
 isolated profile; the latter requires network access and uses no account.
-The desktop distribution is GPL-3.0-or-later; the Python addon stays MIT.
+Alan's Way source is MIT, Copyright (c) 2026 Alex Hansen. The current extension dependency still selects its own GPL license; preserve its notices and distribution obligations. See [licensing](../../docs/licensing.md).
 
 ## Mac desktop input lease
 

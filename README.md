@@ -2,6 +2,8 @@
 
 Four products for working with your agents across your computer and a VM. Install the parts you need; Hermes is required for the Hermes plugin, not for every MCP client.
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 [**openalan.com**](https://openalan.com) · [**Discord: help and community**](https://discord.gg/jBQCPUsVE) · [Latest Workspace release](https://github.com/capthvnsen/alans-way/releases/latest)
 
 ## What to install
@@ -93,12 +95,12 @@ The existing connection path is documented in [remote agents](desktop/docs/remot
 
 ## Contributing and support
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md), the [directory/product map](docs/products.md), and [license coverage and open decisions](docs/licensing.md). Issues and PRs identify one or more of the four products using the [product labels](.github/labels.yml). App and CU MCP changes belong here; plugin and shared config changes belong in `alans-way-agents`.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md), the [directory/product map](docs/products.md), and [MIT licensing and dependency notices](docs/licensing.md). Issues and PRs identify one or more of the four products using the [product labels](.github/labels.yml). App and CU MCP changes belong here; plugin and shared config changes belong in `alans-way-agents`.
 
 Get help on [Discord](https://discord.gg/jBQCPUsVE), visit [openalan.com](https://openalan.com), or open an [issue](https://github.com/capthvnsen/alans-way/issues). Report vulnerabilities privately via [SECURITY.md](SECURITY.md). Never post credentials, connection files, private addresses, or raw session logs.
 
 ## License
 
-Workspace desktop, iOS, mobile voice support, and the CU MCP code under `desktop/` have GPL-3.0-or-later notices. The optional Python companion CLI uses the root MIT license. The agents repo currently has an MIT license; Grok package and shared spec coverage need confirmation when published. See the [coverage audit](docs/licensing.md) for exact files and TODOs. This documentation change does not relicense code.
+All four Alan's Way products—**Alan's Workspace**, **Alan's CU MCP**, **Alan's Plugin for Hermes**, and **Alan's Plugin for Grok Bot**—are licensed under the **[MIT License](LICENSE)**. Copyright (c) 2026 Alex Hansen. The shared config spec and supporting code use MIT too. Third-party software retains its own licenses; see [dependency notices and desktop distribution constraints](docs/licensing.md).
 
 Independent community project. Not affiliated with Nous Research or xAI.

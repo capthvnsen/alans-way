@@ -1,6 +1,6 @@
 # Contributing
 
-Alan's Way has [four products](docs/products.md). Community and setup help: [Discord](https://discord.gg/jBQCPUsVE) · [openalan.com](https://openalan.com). Read [SECURITY.md](SECURITY.md) before reporting a vulnerability.
+Alan's Way has [four products](docs/products.md). Community and setup help: [Discord](https://discord.gg/jBQCPUsVE) · [openalan.com](https://openalan.com). All four products use the **[MIT License](LICENSE)**, Copyright (c) 2026 Alex Hansen; retain third-party notices. Read [SECURITY.md](SECURITY.md) before reporting a vulnerability.
 
 ## Choose the product and repository
 
@@ -21,7 +21,7 @@ Use the issue forms to select the product(s), including **Shared config / multip
 
 The label inventory is [`.github/labels.yml`](.github/labels.yml). It is documentation for maintainers and label-management tools, not an automatic workflow: maintainers create/update these names in GitHub's **Issues → Labels**, then apply all matching product labels during triage. Issue dropdowns and PR checkboxes do not apply labels automatically. Use both plugin labels for shared config changes; use Workspace and CU MCP labels for shared app/server changes. No label-sync action is installed.
 
-Open a focused PR with the product checkboxes filled in, a behavior/doc summary, and checks actually run. List unresolved packaging, config, or license choices under **Decisions for Alex**, using a TODO in the relevant docs. Do not silently pick a license. Follow [license coverage](docs/licensing.md); contributions use the existing license of the files touched. Maintainers handle merging, releases and deployment separately.
+Open a focused PR with the product checkboxes filled in, a behavior/doc summary, and checks actually run. List unresolved packaging or config choices under **Decisions for Alex**, using a TODO in the relevant docs. The product license is MIT; do not remove third-party license obligations. Follow [license coverage](docs/licensing.md); contributions use the existing license of the files touched. Maintainers handle merging, releases and deployment separately.
 
 ## Development setup
 
