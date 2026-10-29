@@ -142,6 +142,17 @@ final class WorkspaceLaunchTests: XCTestCase {
         add(screenshot)
     }
 
+    func testOfflineConnectionIsShownOnAgentsAndConversation() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--interface-preview", "--preview-offline"]
+        app.launch()
+        let status = app.staticTexts["Waiting for network…"]
+        XCTAssertTrue(status.waitForExistence(timeout: 10))
+        app.buttons["agentChat-101"].tap()
+        XCTAssertTrue(app.textFields["messageComposer"].waitForExistence(timeout: 5))
+        XCTAssertTrue(status.exists)
+    }
+
     func testConversationTextFollowsDynamicType() {
         func messageHeight(_ size: String) -> CGFloat {
             let app = XCUIApplication()

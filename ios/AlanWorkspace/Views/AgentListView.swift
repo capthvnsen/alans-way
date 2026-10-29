@@ -79,6 +79,7 @@ struct AgentListView: View {
             .background(WorkspaceTheme.background)
             .toolbar(.hidden, for: .navigationBar)
             .refreshable { await refresh() }
+            .safeAreaInset(edge: .top, spacing: 0) { ConnectionBanner() }
             .task { await refresh() }
             .sheet(isPresented: $showSettings) { WorkspaceSettingsView() }
             .alert("Open a Telegram bot", isPresented: $showAddBot) {
@@ -101,6 +102,20 @@ struct AgentListView: View {
         guard !telegram.isInterfacePreview else { return }
         do { try await telegram.loadChats() }
         catch { errorText = error.localizedDescription }
+    }
+}
+
+/// Telegram queues messages while offline, so say so instead of letting them look sent.
+struct ConnectionBanner: View {
+    @Environment(TelegramStore.self) private var telegram
+
+    var body: some View {
+        if let status = telegram.connectionStatus {
+            Label(status, systemImage: "wifi.exclamationmark")
+                .font(.footnote).foregroundStyle(.orange)
+                .frame(maxWidth: .infinity).padding(8).background(WorkspaceTheme.surface)
+                .accessibilityIdentifier("connectionStatus")
+        }
     }
 }
 

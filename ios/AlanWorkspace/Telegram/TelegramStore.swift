@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 import TDLibKit
 import UIKit
@@ -16,6 +17,8 @@ public final class TelegramStore {
     public private(set) var isSending = false
     public private(set) var errorMessage: String?
     public private(set) var isInterfacePreview = false
+    /// Shown while Telegram is offline or catching up; nil once the connection works.
+    public private(set) var connectionStatus: String?
     public var currentUserID: Int64? { userID }
     public var hasBundledCredentials: Bool { bundledCredentials() != nil }
 
@@ -35,6 +38,7 @@ public final class TelegramStore {
     @ObservationIgnored private var completedUploadBeforeResponse: Set<Int64> = []
     @ObservationIgnored private var activeFileSends = 0
     @ObservationIgnored private let fileManager = FileManager.default
+    @ObservationIgnored private var pathMonitor: NWPathMonitor?
 
     public init() {}
 
@@ -51,6 +55,9 @@ public final class TelegramStore {
                          lastMessagePreview: "I’ve gathered the latest context.", unreadCount: 1)
         ]
         store.selectedChatID = 101
+        if ProcessInfo.processInfo.arguments.contains("--preview-offline") {
+            store.connectionStatus = TelegramModelMapper.connectionStatus(.connectionStateWaitingForNetwork)
+        }
         store.messagesByChat[101] = [
             TelegramMessage(id: 1, chatID: 101, senderName: "Hermes", isOutgoing: false,
                             date: Date().addingTimeInterval(-90), text: "Ready when you are."),
@@ -372,11 +379,29 @@ public final class TelegramStore {
             Task { @MainActor [weak self] in await self?.consume(update, receivedBy: client) }
         }
         client = newClient
+        startNetworkMonitor()
         waitingForParameters = false
         parametersRequestInFlight = false
         self.apiID = apiID
         self.apiHash = apiHash
         authState = .configuring
+    }
+
+    /// TDLib asks to be told about every network change so it reconnects at once instead of after its retry backoff.
+    private func startNetworkMonitor() {
+        guard pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let satisfied = path.status == .satisfied
+            let wifi = path.usesInterfaceType(.wifi)
+            let cellular = path.usesInterfaceType(.cellular)
+            Task { @MainActor [weak self] in
+                let type = TelegramModelMapper.networkType(satisfied: satisfied, wifi: wifi, cellular: cellular)
+                _ = try? await self?.client?.setNetworkType(type: type)
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "TelegramStore.network"))
+        pathMonitor = monitor
     }
 
     private func consume(_ update: Update, receivedBy client: TDLibClient) async {
@@ -408,11 +433,15 @@ public final class TelegramStore {
                 historyLoadedChatIDs.removeAll()
                 selectedChatID = nil
                 self.client = nil
+                self.manager = nil
+                connectionStatus = nil
                 waitingForParameters = false
                 parametersRequestInFlight = false
             default:
                 authState = .configuring
             }
+        case .updateConnectionState(let value):
+            connectionStatus = TelegramModelMapper.connectionStatus(value.state)
         case .updateNewChat(let value):
             apply(value.chat)
         case .updateChatTitle(let value):
@@ -657,6 +686,21 @@ public final class TelegramStore {
 }
 
 enum TelegramModelMapper {
+    static func connectionStatus(_ state: ConnectionState) -> String? {
+        switch state {
+        case .connectionStateWaitingForNetwork: "Waiting for network…"
+        case .connectionStateConnectingToProxy, .connectionStateConnecting: "Connecting…"
+        case .connectionStateUpdating: "Updating…"
+        case .connectionStateReady: nil
+        }
+    }
+
+    static func networkType(satisfied: Bool, wifi: Bool, cellular: Bool) -> NetworkType {
+        guard satisfied else { return .networkTypeNone }
+        if wifi { return .networkTypeWiFi }
+        return cellular ? .networkTypeMobile : .networkTypeOther
+    }
+
     static func preview(_ message: Message) -> String {
         switch message.content {
         case .messageText(let text): text.text.text

@@ -104,6 +104,20 @@ final class TelegramModelMapperTests: XCTestCase {
         XCTAssertEqual(match?.absoluteString, "https://voice.example.test/call?ticket=once")
     }
 
+    func testOfflineAndReconnectingStatesAreShownButAWorkingConnectionIsNot() {
+        XCTAssertEqual(TelegramModelMapper.connectionStatus(.connectionStateWaitingForNetwork), "Waiting for network…")
+        XCTAssertEqual(TelegramModelMapper.connectionStatus(.connectionStateConnecting), "Connecting…")
+        XCTAssertEqual(TelegramModelMapper.connectionStatus(.connectionStateUpdating), "Updating…")
+        XCTAssertNil(TelegramModelMapper.connectionStatus(.connectionStateReady))
+    }
+
+    func testNetworkPathIsReportedToTelegramAsItsInterfaceType() {
+        XCTAssertEqual(TelegramModelMapper.networkType(satisfied: false, wifi: true, cellular: false), .networkTypeNone)
+        XCTAssertEqual(TelegramModelMapper.networkType(satisfied: true, wifi: true, cellular: true), .networkTypeWiFi)
+        XCTAssertEqual(TelegramModelMapper.networkType(satisfied: true, wifi: false, cellular: true), .networkTypeMobile)
+        XCTAssertEqual(TelegramModelMapper.networkType(satisfied: true, wifi: false, cellular: false), .networkTypeOther)
+    }
+
     func testShortHistoryPageStillOffersEarlierMessages() {
         // TDLib often answers the first history request with only the locally cached last message.
         let pushed = text(id: 30)

@@ -26,6 +26,7 @@ struct ConversationView: View {
     var body: some View {
         VStack(spacing: 0) {
             Rectangle().fill(WorkspaceTheme.line).frame(height: 0.5)
+            ConnectionBanner()
             timeline
             composer
         }
