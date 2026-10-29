@@ -18,7 +18,7 @@
 
 - **Unrecorded destination after partial restore failure.** Create the VM destination, then fail or lose the restore response. Fault injection confirms one human-held VM tab remains with no entry in `prefs.handoffs`. Retrying after giving the source back can create another destination. A safe fix needs remote operation identity/reconciliation: blindly deleting a destination after an ambiguous response could discard work. Inspect the destination before retrying.
 - **Failed outbound Move hides its retry button.** Trigger the preceding failure, or fail the checkpoint after takeover. The source remains human-controlled without a retirement record; the renderer hides Move because it requires agent control or a retired source. Confirmed by evaluating the production visibility expression after the injected failure. Workaround: inspect the VM, give the source back to its agent, then retry if appropriate.
-- **Unrelated cross-repository test drift.** `desktop/test/commit-patterns.test.cjs` finds different commit-pattern lists in this checkout and `/Users/alex/alans-way-agents/alans-way/scripts/commit-patterns.json`. Reproduce with `node --test desktop/test/commit-patterns.test.cjs`; neither list was changed by this work.
+- **Optional paired-plugin parity.** Set `ALANS_WAY_AGENTS` explicitly to opt into a paired plugin checkout. The default suite stays inside this repository.
 
 ## Verification and limits
 
