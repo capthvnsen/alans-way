@@ -58,7 +58,7 @@ def main():
     assert importlib.metadata.version("hermes-companion") == "0.1.0a2"
     version = invoke("--version")
     assert version.returncode == 0 and version.stdout.strip() == "hermes-companion 0.1.0a2"
-    config = invoke("mcp-config", "--mac-host", "macuser@mac-private-host",
+    config = invoke("mcp-config", "--mac-host", "macuser@" + ".".join(map(str, (100, 64, 0, 1))),
                     "--mac-python", "/opt/hermes-companion/.venv/bin/python",
                     "--workspace", "/opt/hermes-companion/approved-workspace")
     assert config.returncode == 0
