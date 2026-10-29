@@ -197,7 +197,9 @@ test('read top ten product links and prices on a page with a commit control', { 
     const route = `/v1/tabs/${tab.id}/actions`;
     const list = { selector: 'article', maxItems: 10, fields: { title: { type: 'text', selector: 'a' }, url: { type: 'href', selector: 'a' }, price: { type: 'text', selector: '.price' } } };
     const denied = await api(route, 'POST', { action: 'eval', code: 'document.title', epoch: tab.epoch });
-    assert.equal(denied.status, 403); assert.match(denied.data.error, /commit_required/);
+    assert.equal(denied.status, 403); assert.match(denied.data.error, /commit_required: .*To only read the page, use the read action: a list field reads text, href, or an attribute such as class/);
+    const styled = await api(route, 'POST', { action: 'read', selector: '#grid', list: { selector: 'article', maxItems: 2, fields: { kind: { type: 'attr', attr: 'class', selector: '.price' } } }, epoch: tab.epoch });
+    assert.deepEqual(styled.data.items, [{ kind: 'price' }, { kind: 'price' }]);
     const first = await api(route, 'POST', { action: 'read', selector: '#grid', list, epoch: tab.epoch });
     assert.equal(first.status, 200);
     assert.equal(first.data.items?.length, 10);

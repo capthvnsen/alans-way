@@ -38,4 +38,15 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertFalse(settings.hasMiniAppConsent(chatID: 1, accountID: 21, host: "voice.example.test"))
         XCTAssertFalse(settings.hasMiniAppConsent(chatID: 1, accountID: nil, host: "voice.example.test"))
     }
+
+    @MainActor func testOnboardingCompletionPersists() {
+        let suite = "workspace-test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = WorkspaceSettings(defaults: defaults)
+        XCTAssertFalse(settings.hasCompletedOnboarding)
+        settings.completeOnboarding()
+        XCTAssertTrue(settings.hasCompletedOnboarding)
+        XCTAssertTrue(WorkspaceSettings(defaults: defaults).hasCompletedOnboarding)
+    }
 }
