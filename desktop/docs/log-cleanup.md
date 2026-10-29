@@ -6,8 +6,9 @@ bot account. Stop the broker/desktop app before apply; dry-run does not contact
 the broker or alter files:
 
 ```sh
+# Set BROKER_HOME to the isolated broker account’s home directory.
 sudo node /opt/alans-way/desktop/scripts/cleanup-workspace-logs.cjs \
-  --root /var/lib/alan-broker/browser --log-dir /var/lib/alan-broker/logs
+  --root "$BROKER_HOME/.local/share/hermes-alans-way/browser" --log-dir /var/lib/alan-broker/logs
 ```
 
 Review the path/action-only plan, then add `--apply`. The utility rotates every

@@ -18,12 +18,21 @@ function confirmedOffline(raw) {
   });
 }
 
+function trustedParents(start, brokerUid = process.getuid?.()) {
+  for (let dir = start; ; dir = path.dirname(dir)) {
+    const info = fs.lstatSync(dir);
+    if (!info.isDirectory() || ![brokerUid, 0].includes(info.uid) || ((info.mode & 0o022) && !(info.uid === 0 && (info.mode & 0o1000)))) throw new Error('Untrusted cleanup parent.');
+    if (dir === path.dirname(dir)) break;
+  }
+}
+
 async function cleanup({ root, logDir = root, brokerUid, apply = false }) {
   root = fs.realpathSync(root); logDir = fs.realpathSync(logDir);
   brokerUid ??= fs.lstatSync(root).uid;
   for (const dir of [root, logDir]) {
     const info = fs.lstatSync(dir);
     if (!info.isDirectory() || info.uid !== brokerUid || info.mode & 0o022) throw new Error('Unsafe data/log directory.');
+    trustedParents(dir, brokerUid);
   }
   const connection = privateJson(path.join(root, 'connection.json'), brokerUid);
   if (connection.botId) throw new Error('Use the broker data directory, not a bot export.');
@@ -47,6 +56,8 @@ async function cleanup({ root, logDir = root, brokerUid, apply = false }) {
   inspect(path.join(root, 'connection.json'), 'rotate-broker-on-restart', true);
   const appToken = config.appTokenFile || path.join(root, 'app-token.json');
   if (!path.isAbsolute(appToken)) throw new Error('App token path must be absolute.');
+  if (fs.realpathSync(path.dirname(appToken)) !== path.dirname(appToken)) throw new Error('Noncanonical app token parent.');
+  trustedParents(path.dirname(appToken), brokerUid);
   inspect(appToken, 'rotate-human-on-restart', true);
   if (!apply) return { dryRun: true, actions };
   if (process.getuid?.() !== 0) throw new Error('Apply requires root for credential ownership.');

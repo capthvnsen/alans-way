@@ -30,3 +30,34 @@ test('only confirmed connection refusal counts as offline; a live unauthorized b
   await confirmedOffline(url);
   assert.throws(() => confirmedOffline('http://203.0.113.1'), /loopback/);
 });
+
+
+test('root apply rotates synthetic bot credentials and removes only known logs and broker tokens', { skip: process.platform !== 'linux' || process.getuid?.() !== 0 }, async t => {
+  const { provision } = require('../scripts/bot-credential.cjs');
+  const { authorizeBot } = require('../src/bot-auth.cjs');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(),'cleanup-apply-'));fs.chmodSync(base,0o711);
+  t.after(()=>fs.rmSync(base,{recursive:true,force:true}));
+  const root=path.join(base,'broker'),exports=path.join(base,'exports'),uid=60000;
+  fs.mkdirSync(root,{mode:0o700});fs.mkdirSync(exports,{mode:0o711});fs.chownSync(root,uid,uid);
+  const server=http.createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const url=`http://127.0.0.1:${server.address().port}`;await new Promise(resolve=>server.close(resolve));
+  const write=(name,value)=>{const file=path.join(root,name);fs.writeFileSync(file,value,{mode:0o600});fs.chownSync(file,uid,uid);};
+  write('connection.json',JSON.stringify({url,token:'synthetic-broker'}));
+  write('app-token.json',JSON.stringify({token:'synthetic-human'}));
+  write('main.log','synthetic-old-log');write('main.log.old','synthetic-old-log');write('keep.txt','retained');
+  const args={root,brokerUid:uid,botId:'a',uid:60001,output:path.join(exports,'a.json')};
+  provision({...args,apply:true});const old=JSON.parse(fs.readFileSync(args.output)).token;
+  const result=await cleanup({root,brokerUid:uid,apply:true});
+  assert.equal(result.dryRun,false);
+  for(const name of ['connection.json','app-token.json','main.log','main.log.old'])assert.equal(fs.existsSync(path.join(root,name)),false,name);
+  assert.equal(fs.readFileSync(path.join(root,'keep.txt'),'utf8'),'retained');
+  assert.equal(fs.statSync(args.output).uid,60001);assert.equal(fs.statSync(args.output).mode&0o777,0o600);
+  const registry=path.join(root,'bot-credentials.json');
+  // Registry owner is the synthetic broker, so verify revocation in that UID.
+  const probe=`const {authorizeBot}=require(process.argv[1]);process.exit(authorizeBot(process.argv[2],require('node:fs').readFileSync(0,'utf8'),'a')?0:1);`;
+  const {spawnSync}=require('node:child_process');
+  const check=token=>spawnSync(process.execPath,['-e',probe,require.resolve('../src/bot-auth.cjs'),registry],{uid,gid:uid,input:'Bearer '+token});
+  assert.equal(check(old).status,1);
+  const current=JSON.parse(fs.readFileSync(args.output)).token;assert.ok(current!==old,'bot credential rotated');assert.equal(check(current).status,0);
+  assert.doesNotMatch(JSON.stringify(result),/synthetic/);
+});
