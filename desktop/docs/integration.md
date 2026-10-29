@@ -255,3 +255,11 @@ Alan's Way source is MIT, Copyright (c) 2026 Alex Hansen. The current extension 
 ## Desktop input approval
 
 Before the lease, `POST /v1/computer/launch` and `POST /v1/computer/:pid/action` from a bot that is not in the Workspace bot list, the overseer list or `desktopTrustedBots` ask the user on this computer (Deny, Allow until 30 idle minutes, Always allow). One prompt is shared by concurrent requests and waits 40 seconds. An unanswered prompt returns HTTP 403 `{error:"desktop_approval_required", name}`, a denial `{error:"desktop_approval_denied", name}`; neither reaches the driver or takes the lease. A denial holds for 60 seconds without prompting again. Requests without `X-Hermes-Bot` are the trusted human/app path, as for the lease; the connector always sends one. The display name is the Workspace bot name, else the connector's `X-Hermes-Bot-Name`. User guide: [remote-agents.md](remote-agents.md).
+
+
+Legacy file leases serialize updates with an exclusive lock and fail closed if
+storage is missing, corrupt or unwritable. A crash while updating can leave
+`desktop-lease.json.lock`: stop all connectors and inspect/remove that lock
+before restarting. Do not give separate bot OS users write access to the broker
+or credential-export directory to make a legacy lease work. Migrate those hosts
+to the authenticated broker computer routes in PR #272.

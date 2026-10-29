@@ -202,38 +202,56 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
   return { request, close };
 }
 
-// A connector that drives its own desktop (the VM) runs once per agent, so the
-// agents share the app's lease rules through a file beside their connection:
-// one bot holds it while acting and for idleMs after. A holder that died
-// mid-action frees it at once; a reused pid only until the acting cap.
-// shortcut: read-then-write is not atomic across processes, so two takes in the
-// same instant can both win; add a lock file if that is ever seen.
+// Legacy same-user connectors serialize lease updates; broker-hosted computer
+// routes are required when bots run under separate OS identities.
 function createFileDesktopLease(file, idleMs = 20000, actingMs = 120000) {
   let active = 0;
-  const read = () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
-  const write = (holder) => {
-    const temp = `${file}.${process.pid}`;
-    try { fs.writeFileSync(temp, JSON.stringify(holder)); fs.renameSync(temp, file); }
-    catch { /* an unwritable lease must not stop computer use */ }
+  const busy = () => ({ error: 'desktop_busy', holder: 'Desktop lease unavailable', retryAfter: 1 });
+  const read = () => {
+    let fd;
+    try {
+      fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.size > 4096) throw Error('Invalid lease');
+      const holder = JSON.parse(fs.readFileSync(fd, 'utf8'));
+      if (!holder || typeof holder.botId !== 'string' || typeof holder.name !== 'string' || !Number.isInteger(holder.pid) || holder.pid <= 0 || ![holder.actingUntil, holder.expiresAt].some(Number.isFinite)) throw Error('Invalid lease');
+      return holder;
+    } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    finally { if (fd !== undefined) fs.closeSync(fd); }
   };
-  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+  const write = (holder) => {
+    const temp = `${file}.${crypto.randomUUID()}.tmp`;
+    try { fs.writeFileSync(temp, JSON.stringify(holder), { flag: 'wx', mode: 0o600 }); fs.renameSync(temp, file); }
+    finally { fs.rmSync(temp, { force: true }); }
+  };
+  const locked = (operation) => {
+    let fd;
+    try { fd = fs.openSync(`${file}.lock`, 'wx', 0o600); return operation(); }
+    catch { return busy(); }
+    finally { if (fd !== undefined) { fs.closeSync(fd); fs.unlinkSync(`${file}.lock`); } }
+  };
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
   return {
     take(botId, name) {
-      const holder = read();
-      const now = Date.now();
-      if (holder && holder.botId !== botId) {
-        const acting = holder.actingUntil > now && Number.isInteger(holder.pid) && alive(holder.pid);
-        if (acting || holder.expiresAt > now)
-          return { error: 'desktop_busy', holder: holder.name, retryAfter: acting ? idleMs / 1000 : Math.ceil((holder.expiresAt - now) / 1000) };
-      }
-      active++;
-      write({ botId, name: name || botId, pid: process.pid, actingUntil: now + actingMs });
-      return null;
+      return locked(() => {
+        if (!botId) return busy();
+        const holder = read(), now = Date.now();
+        if (holder && holder.botId !== botId) {
+          const acting = holder.actingUntil > now && alive(holder.pid);
+          if (acting || holder.expiresAt > now)
+            return { error: 'desktop_busy', holder: holder.name, retryAfter: acting ? idleMs / 1000 : Math.ceil((holder.expiresAt - now) / 1000) };
+        }
+        write({ botId, name: name || botId, pid: process.pid, actingUntil: now + actingMs });
+        active++;
+        return null;
+      });
     },
     release(botId) {
-      if (--active > 0) return;
-      const holder = read();
-      if (holder?.botId === botId && holder.pid === process.pid) write({ botId, name: holder.name, pid: process.pid, expiresAt: Date.now() + idleMs });
+      if (active <= 0 || --active > 0) return;
+      locked(() => {
+        const holder = read();
+        if (holder?.botId === botId && holder.pid === process.pid) write({ botId, name: holder.name, pid: process.pid, expiresAt: Date.now() + idleMs });
+      });
     },
   };
 }

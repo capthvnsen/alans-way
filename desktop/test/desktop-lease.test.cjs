@@ -83,14 +83,14 @@ test('computer reads remain open and do not refresh the input lease', async t =>
   assert.equal((await request('/v1/computer/launch', 'b', 'POST')).status, 200);
 });
 
-test('trusted human input is never blocked and does not take or refresh a bot lease', async t => {
+test('missing identities fail closed and do not take or refresh a bot lease', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
   const { request } = computerRoutes();
-  await request('/v1/computer/7/action', '', 'POST');
+  assert.equal((await request('/v1/computer/7/action', '', 'POST')).status, 400);
   assert.equal((await request('/v1/computer/7/action', 'a', 'POST')).status, 200);
   t.mock.timers.tick(19000);
   for (const [endpoint, method] of [['launch', 'POST'], ['7/menu', 'GET'], ['7/action', 'POST']])
-    assert.equal((await request(`/v1/computer/${endpoint}`, '', method)).status, 200);
+    assert.equal((await request(`/v1/computer/${endpoint}`, '', method)).status, 400);
   assert.equal((await request('/v1/computer/7/action', 'b', 'POST', { 'x-hermes-human': '1' })).status, 409);
   t.mock.timers.tick(1000);
   assert.equal((await request('/v1/computer/7/action', 'b', 'POST')).status, 200);
@@ -128,8 +128,28 @@ test('connectors in separate processes share one file lease with the same rules'
   t.mock.timers.tick(1000);
   assert.equal(hermes.take('h'), null);
   fs.writeFileSync(file, '{not json');
-  assert.equal(grok.take('g'), null, 'an unreadable lease is free');
+  assert.equal(grok.take('g').error, 'desktop_busy', 'corrupt lease fails closed');
   const unwritable = createFileDesktopLease(path.join(dir, 'missing', 'desktop-lease.json'));
-  assert.equal(unwritable.take('g'), null, 'an unwritable lease never blocks input');
+  assert.equal(unwritable.take('g').error, 'desktop_busy', 'unwritable lease fails closed');
   unwritable.release('g');
+});
+
+
+test('a simultaneous take in separate live processes has exactly one winner', async t => {
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const { spawn } = require('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lease-race-'));
+  const file = path.join(dir, 'lease.json'), children = [];
+  t.after(() => { for (const child of children) child.kill(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const code = `const {createFileDesktopLease}=require(process.argv[1]); process.send('ready');process.once('message',()=>{process.send(createFileDesktopLease(process.argv[2]).take(process.argv[3]));});setInterval(()=>{},1000);`;
+  const replies = Array.from({ length: 8 }, (_, i) => {
+    const child = spawn(process.execPath, ['-e', code, require.resolve('../src/computer-helper.cjs'), file, 'bot-'+i], { stdio: ['ignore','ignore','ignore','ipc'] });
+    children.push(child);
+    return new Promise((resolve, reject) => { child.once('error', reject); child.on('message', message => { if (message === 'ready') { child.ready = true; if (children.length === 8 && children.every(c=>c.ready)) for (const c of children) c.send('take'); } else resolve(message); }); });
+  });
+  const results = await Promise.all(replies);
+  assert.equal(results.filter(result => result === null).length, 1);
+  assert.equal(results.filter(result => result?.error === 'desktop_busy').length, 7);
+  fs.writeFileSync(file+'.lock','stale');
+  assert.equal(require('../src/computer-helper.cjs').createFileDesktopLease(file).take('other').error,'desktop_busy');
 });
