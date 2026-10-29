@@ -690,7 +690,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     if (!page) { if (script) throw commitRequired(`the page did not answer the commit check, so ${what} could set off a commit control`); return; }
     const live = page.names.find(looksLikeCommit);
     if (!live) return;
-    if (script) throw commitRequired(`${what} here could set off "${live}"`);
+    if (script) throw commitRequired(`${what} here could set off "${live}"${body.action === 'eval' ? '. To only read the page, use the read action: a list field reads text, href, or an attribute such as class' : ''}`);
     if (reload) throw commitRequired(`reloading here could resubmit "${live}"`);
     if (isActionUrl(url, page.origin)) throw commitRequired(`${url.slice(0, 80)} looks like an address that confirms, orders, pays, submits or deletes`);
   }
