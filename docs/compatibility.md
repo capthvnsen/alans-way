@@ -26,6 +26,9 @@ Linux host notes: desktop control needs an X11 session (Wayland is not
 supported) and these packages: `python3 python3-gi gir1.2-atspi-2.0
 at-spi2-core xdotool x11-utils` (on Debian or Ubuntu,
 `sudo apt-get install -y python3 python3-gi gir1.2-atspi-2.0 at-spi2-core xdotool x11-utils`).
+The helper runs under `/usr/bin/python3` when it exists, so the packages
+must be installed for that interpreter, not a bundled one. Without
+`python3-gi` a snapshot fails with a `needs_gi` error.
 Screenshots use ImageMagick `import` when present and otherwise fall back
 to `xwd` (converted through netpbm or Pillow), `scrot -a`, or `ffmpeg`
 x11grab, so installing any one of `imagemagick`, `x11-apps`, `scrot`, or
