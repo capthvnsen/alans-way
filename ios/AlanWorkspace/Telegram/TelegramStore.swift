@@ -17,6 +17,7 @@ public final class TelegramStore {
     public private(set) var errorMessage: String?
     public private(set) var isInterfacePreview = false
     public var currentUserID: Int64? { userID }
+    public var hasBundledCredentials: Bool { bundledCredentials() != nil }
 
     @ObservationIgnored private var manager: TDLibClientManager?
     @ObservationIgnored private var client: TDLibClient?
@@ -29,6 +30,7 @@ public final class TelegramStore {
     @ObservationIgnored private var tdChatsByID: [Int64: Chat] = [:]
     @ObservationIgnored private var botIDByChatID: [Int64: Int64] = [:]
     @ObservationIgnored private var chatOrderByID: [Int64: Int64] = [:]
+    @ObservationIgnored private var historyLoadedChatIDs: Set<Int64> = []
     @ObservationIgnored private var pendingUploads: [Int64: URL] = [:]
     @ObservationIgnored private var completedUploadBeforeResponse: Set<Int64> = []
     @ObservationIgnored private var activeFileSends = 0
@@ -94,6 +96,24 @@ public final class TelegramStore {
         try startClient()
     }
 
+    /// Discards saved app credentials before sign-in completes so a mistyped API ID or hash can be entered again.
+    public func resetAppCredentials() async throws {
+        guard authState != .ready else { return }
+        if let client {
+            // Destroying the unauthorized local database lets TDLib accept a different API ID.
+            _ = try await client.destroy()
+            let deadline = Date().addingTimeInterval(10)
+            while self.client != nil && Date() < deadline { try await Task.sleep(nanoseconds: 100_000_000) }
+            self.client = nil
+        }
+        try TelegramKeychain.deleteCredentials()
+        apiID = nil
+        apiHash = nil
+        waitingForParameters = false
+        parametersRequestInFlight = false
+        authState = .configuring
+    }
+
     public func submitPhoneNumber(_ phone: String) async throws {
         guard let client else { throw TelegramStoreError.notConfigured }
         try await client.setAuthenticationPhoneNumber(phoneNumber: phone, settings: nil)
@@ -129,9 +149,15 @@ public final class TelegramStore {
         selectedChatID = chatID
         errorMessage = nil
         if let client { try? await client.openChat(chatId: chatID) }
-        if messagesByChat[chatID] == nil {
-            do { try await loadMoreMessages(chatID: chatID) }
-            catch { errorMessage = error.localizedDescription }
+        // Updates can cache a chat's newest messages before it is opened, so check for loaded history instead.
+        if !historyLoadedChatIDs.contains(chatID) {
+            do {
+                // TDLib's first page is often just the cached last message; fetch a little more to fill the screen.
+                for _ in 0..<3 {
+                    try await loadMoreMessages(chatID: chatID)
+                    if !hasMoreMessages.contains(chatID) || messagesByChat[chatID, default: []].count >= 20 { break }
+                }
+            } catch { errorMessage = error.localizedDescription }
         }
         if let client, let ids = messagesByChat[chatID]?.map(\.id), !ids.isEmpty {
             try? await client.viewMessages(chatId: chatID, forceRead: true, messageIds: ids, source: nil)
@@ -167,6 +193,7 @@ public final class TelegramStore {
         _ = try await client.logOut()
         chats.removeAll()
         messagesByChat.removeAll()
+        historyLoadedChatIDs.removeAll()
         selectedChatID = nil
         authState = .closed
     }
@@ -211,13 +238,12 @@ public final class TelegramStore {
             offset: current.isEmpty ? 0 : 0,
             onlyLocal: false
         )
-        let page = result.messages ?? []
-        let converted = page.map { TelegramModelMapper.message($0, users: usersByID) }
-        let known = Set(current.map(\.id))
-        let additions = converted.filter { !known.contains($0.id) }
-        messagesByChat[chatID] = (additions + current).sorted { $0.id < $1.id }
-        if page.count < 50 || additions.isEmpty { hasMoreMessages.remove(chatID) }
-        else { hasMoreMessages.insert(chatID) }
+        let converted = (result.messages ?? []).map { TelegramModelMapper.message($0, users: usersByID) }
+        let merged = TelegramHistory.merge(page: converted, into: current)
+        messagesByChat[chatID] = merged.messages
+        historyLoadedChatIDs.insert(chatID)
+        if merged.hasMore { hasMoreMessages.insert(chatID) }
+        else { hasMoreMessages.remove(chatID) }
         for item in converted { scheduleAttachmentDownload(item) }
     }
 
@@ -338,7 +364,8 @@ public final class TelegramStore {
     private func startClient() throws {
         guard let apiID, let apiHash else { throw TelegramStoreError.notConfigured }
         if client != nil { return }
-        let manager = TDLibClientManager()
+        // One manager for the app's lifetime: each runs its own td_receive loop, and TDLib aborts on concurrent receives.
+        let manager = self.manager ?? TDLibClientManager()
         self.manager = manager
         let newClient = manager.createClient { [weak self] data, client in
             guard let update = try? client.decoder.decode(Update.self, from: data) else { return }
@@ -378,9 +405,9 @@ public final class TelegramStore {
                 authState = .closed
                 chats.removeAll()
                 messagesByChat.removeAll()
+                historyLoadedChatIDs.removeAll()
                 selectedChatID = nil
                 self.client = nil
-                self.manager = nil
                 waitingForParameters = false
                 parametersRequestInFlight = false
             default:
@@ -623,8 +650,9 @@ public final class TelegramStore {
     }
 
     private func fail(_ error: Swift.Error) {
-        errorMessage = error.localizedDescription
-        authState = .error(error.localizedDescription)
+        let text = TelegramErrorText.describe(error)
+        errorMessage = text
+        authState = .error(text)
     }
 }
 
@@ -709,6 +737,16 @@ enum TelegramModelMapper {
             } }
         default: return []
         }
+    }
+}
+
+enum TelegramHistory {
+    /// TDLib may return fewer messages than requested before the start of a chat, so only a page
+    /// that adds nothing marks the history as complete.
+    static func merge(page: [TelegramMessage], into current: [TelegramMessage]) -> (messages: [TelegramMessage], hasMore: Bool) {
+        let known = Set(current.map(\.id))
+        let additions = page.filter { !known.contains($0.id) }
+        return ((additions + current).sorted { $0.id < $1.id }, !additions.isEmpty)
     }
 }
 

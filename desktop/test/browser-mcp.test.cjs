@@ -19,6 +19,66 @@ function connectorRequest(fetch) {
   });
 }
 
+test('tools/list has a short protocol TTL while status and authentication stay live', { timeout: 8000 }, async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-schema-cache-'));
+  const connection = path.join(profile, 'connection.json');
+  const seen = [];
+  let online = true;
+  const host = http.createServer((req, res) => {
+    seen.push({ url: req.url, authorization: req.headers.authorization });
+    res.writeHead(online ? 200 : 401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(online ? { host: 'mac' } : { error: 'unauthorized' }));
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture' }));
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection] });
+  const client = new Client({ name: 'schema-cache-regression', version: '1' });
+  t.after(async () => {
+    await client.close().catch(() => {}); await transport.close().catch(() => {});
+    await new Promise(resolve => host.close(resolve)); fs.rmSync(profile, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+  const manifest = await client.listTools();
+  assert.equal(manifest.ttlMs, 60_000);
+  assert.equal(manifest._meta?.ttlMs, undefined);
+  assert.ok(manifest.tools.length > 0);
+  assert.deepEqual(seen, [], 'schema discovery does not probe or authenticate the host');
+  const first = await client.callTool({ name: 'cua_alans_way_status', arguments: {} });
+  assert.deepEqual(JSON.parse(first.content[0].text), { host: 'mac' });
+  assert.equal(first.ttlMs, undefined);
+  online = false;
+  const second = await client.callTool({ name: 'cua_alans_way_status', arguments: {} });
+  assert.equal(second.isError, true);
+  assert.match(second.content[0].text, /unauthorized/);
+  assert.equal(second.ttlMs, undefined);
+  assert.deepEqual(seen, [
+    { url: '/v1/status', authorization: 'Bearer fixture' },
+    { url: '/v1/status', authorization: 'Bearer fixture' },
+  ]);
+});
+
+for (const change of ['app version', 'desktop tool set']) test(`${change} changes expire from the schema cache within one minute`, async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/browser-mcp.cjs'), 'utf8');
+  let listTools;
+  const tools = [{ name: 'workspace_computer_action' }];
+  const sandbox = {
+    Server: class { setRequestHandler(_schema, handler) { listTools = handler; } }, ListToolsRequestSchema: {}, tools,
+  };
+  require('node:vm').runInNewContext(source.slice(source.indexOf('const server = new Server('), source.indexOf('server.setRequestHandler(CallToolRequestSchema')), sandbox);
+  const manifest = await listTools();
+  const cached = { tools: manifest.tools, ttl_ms: manifest.ttlMs, written_at: 1000 };
+  sandbox.tools = change === 'app version' ? [{ name: 'workspace_computer_action', description: 'Updated app schema' }] : [];
+  // Hermes mcp_schema_cache.py:68-72 checks age only, not version or env.
+  const read = now => (now - cached.written_at) * 1000 >= cached.ttl_ms ? null : cached;
+  assert.equal(read(1000), cached, 'a positive TTL allows lazy startup');
+  assert.equal(read(1059.999), cached, 'changes can remain stale until expiry');
+  assert.equal(read(1060), null, 'the next discovery must fetch the updated manifest');
+  const current = read(1060) || await listTools();
+  assert.equal(current.tools, sandbox.tools);
+  assert.ok(Number.isInteger(manifest.ttlMs) && manifest.ttlMs > 0 && manifest.ttlMs <= 60_000);
+});
+
 test('desktop busy is a clear tool error with holder and retry time', async () => {
   const request = connectorRequest(async () => ({ ok: false, status: 409, text: async () => JSON.stringify({ error: 'desktop_busy', holder: 'Agent A', retryAfter: 12 }) }));
   await assert.rejects(request('/v1/computer/7/action', 'POST', { action: 'click' }), error => {

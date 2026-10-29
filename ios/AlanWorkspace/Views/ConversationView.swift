@@ -19,6 +19,7 @@ struct ConversationView: View {
     @State private var pendingLaunch: TelegramMiniAppLaunch?
     @State private var showCallComputer = false
     @FocusState private var composerFocused: Bool
+    @ScaledMetric(relativeTo: .body) private var composerSize: CGFloat = 15
 
     private var messages: [TelegramMessage] { telegram.messagesByChat[chat.id] ?? [] }
 
@@ -162,7 +163,7 @@ struct ConversationView: View {
                 Image(systemName: "plus").font(.system(size: 20)).frame(width: 34, height: 43)
             }.accessibilityLabel("Attach a file")
             TextField("Message \(chat.title)", text: $draft, axis: .vertical)
-                .font(.system(size: 15)).lineLimit(1...6).focused($composerFocused)
+                .font(.system(size: composerSize)).lineLimit(1...6).focused($composerFocused)
                 .padding(.vertical, 12)
                 .accessibilityIdentifier("messageComposer")
             Button(action: send) {
@@ -235,13 +236,15 @@ private struct MessageBubble: View {
     let avatar: String
     let onAttachment: () -> Void
     let onButton: (TelegramButton) -> Void
+    @ScaledMetric(relativeTo: .body) private var textSize: CGFloat = 15
+    @ScaledMetric(relativeTo: .caption2) private var metaSize: CGFloat = 10
 
     var body: some View {
         VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 9) {
             if !message.isOutgoing {
                 HStack(spacing: 7) {
                     AgentPortrait(name: avatar, size: 23)
-                    Text(message.senderName).font(.system(size: 10, weight: .semibold)).foregroundStyle(WorkspaceTheme.secondary)
+                    Text(message.senderName).font(.system(size: metaSize, weight: .semibold)).foregroundStyle(WorkspaceTheme.secondary)
                 }
             }
             HStack {
@@ -252,11 +255,11 @@ private struct MessageBubble: View {
                     }
                     if !message.text.isEmpty {
                         Text(LocalizedStringKey(message.text))
-                            .font(.system(size: 15)).lineSpacing(5).textSelection(.enabled)
+                            .font(.system(size: textSize)).lineSpacing(5).textSelection(.enabled)
                             .tint(WorkspaceTheme.mint)
                     }
                     Text(message.date, format: .dateTime.hour().minute())
-                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(WorkspaceTheme.secondary)
+                        .font(.system(size: metaSize - 1, design: .monospaced)).foregroundStyle(WorkspaceTheme.secondary)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 .padding(15)
@@ -268,7 +271,7 @@ private struct MessageBubble: View {
                 HStack {
                     ForEach(row) { button in
                         Button { onButton(button) } label: {
-                            Text(button.title).font(.system(size: 13, weight: .medium)).frame(maxWidth: .infinity).padding(12)
+                            Text(button.title).font(.system(size: textSize - 2, weight: .medium)).frame(maxWidth: .infinity).padding(12)
                                 .background(WorkspaceTheme.raised, in: RoundedRectangle(cornerRadius: 12))
                         }
                     }

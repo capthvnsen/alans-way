@@ -12,6 +12,8 @@ const vm = require('node:vm');
 const { spawn } = require('node:child_process');
 const { HANDBACK_MS } = require('../src/core.cjs');
 const { screenshotClip } = require('../src/cdp.cjs');
+const { createMirrorPusher, toCdpCookie, toElectronCookies } = require('../src/vps-browser.cjs');
+const { continuedOnVm, requireAgentClaim } = require('../src/core.cjs');
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
@@ -112,6 +114,7 @@ function createStubCdp() {
         return {};
       case 'Network.setCookies':
         return params.cookies.some((c) => c.name === 'bad') ? { __error: 'Invalid cookie fields' } : {};
+      case 'Network.getCookies': return { cookies: server.cookies };
       case 'Page.captureScreenshot': return { data: PNG };
       case 'Page.getNavigationHistory': return { currentIndex: 0, entries: [] };
       case 'Runtime.evaluate': return { result: { value: stubEvaluate(pages, sessionId, params.expression, server.viewport) } };
@@ -125,6 +128,7 @@ function createStubCdp() {
     res.end();
   });
   server.calls = [];
+  server.cookies = [];
   server.pause = (matches) => {
     let entered, release;
     const gate = { matches, entered: new Promise(resolve => { entered = resolve; }), released: new Promise(resolve => { release = resolve; }), release };
@@ -1016,4 +1020,75 @@ for (const stop of ['cancel', 'deadline']) test(`a VM batch ${stop} preserves fi
   assert.equal(reply.results[1].code, stop === 'cancel' ? 'cancelled' : 'timeout');
   assert.match(reply.results[1].error, /remaining steps did not run/);
   assert.equal(host.stub.calls.filter(call => call.method === 'Emulation.setTouchEmulationEnabled').length, 1);
+});
+
+// Lid close mid-task, end to end against the real broker: the app's mirror
+// pusher, the router's restore call, the woken app's retire check and Move back.
+test('a task interrupted by host loss resumes on the VM, and the woken Mac retires its copy', async () => {
+  const host = await startHost();
+  const electronSid = { name: 'sid', value: 'crm-session', domain: '.crm.example', hostOnly: false, path: '/', secure: true, httpOnly: true, session: true, sameSite: 'lax' };
+  let macTabs = [{ id: 'mac-h', url: 'https://crm.example/deal/7', title: 'Deal 7', scroll: { x: 0, y: 300 },
+    drafts: [{ selector: '#note', tag: 'TEXTAREA', type: 'textarea', editable: false, value: 'half typed' }], cookies: [toCdpCookie(electronSid)] }];
+  const push = createMirrorPusher({ collect: async () => new Map([['bot-h', macTabs]]), push: (bot, tabs) => host.api('/v1/mirror', 'POST', { bot, tabs }, { human: true }) });
+  await push();
+  assert.deepEqual((await host.api('/v1/mirror/continued', 'GET', undefined, { human: true })).data, { bots: {} }, 'nothing has moved while the Mac is up');
+  const late = createMirrorPusher({ collect: async () => new Map([['bot-h', macTabs]]), push: (bot, tabs) => host.api('/v1/mirror', 'POST', { bot, tabs }, { human: true }) });
+
+  // The lid closes: the Mac stops pushing and the router restores for the bot.
+  const restored = await host.api('/v1/restore', 'POST', { bot: 'bot-h' }, { bot: 'bot-h' });
+  assert.equal(restored.status, 200);
+  const vmTab = restored.data.map['mac-h'];
+  assert.ok(vmTab, 'the in-flight Mac tab reopened on the VM');
+  assert.equal(restored.data.verification['mac-h'], 'ready');
+  const cookieCall = host.stub.calls.find((c) => c.method === 'Network.setCookies');
+  assert.equal(cookieCall.params.cookies[0].value, 'crm-session', 'the sign-in came along');
+  assert.ok(host.stub.calls.indexOf(cookieCall) < host.stub.calls.findIndex((c) => c.method === 'Page.navigate' && c.params.url === 'https://crm.example/deal/7'), 'before the page loaded');
+  assert.ok(host.stub.calls.some((c) => c.method === 'Runtime.evaluate' && c.params.expression.includes('half typed') && c.params.expression.includes('"y":300')), 'draft and scroll restored');
+  const snap = await host.api(`/v1/tabs/${vmTab}/snapshot`, 'GET', undefined, { bot: 'bot-h' });
+  assert.equal(snap.status, 200, 'the agent keeps working on the VM');
+  assert.equal(snap.data.tab.controller, 'agent');
+
+  // The Mac wakes: the app learns which tabs continued, the agent token cannot.
+  await late(); // a push in flight at sleep that lands on wake
+  assert.equal((await host.api('/v1/mirror/continued', 'GET', undefined, { bot: 'bot-h' })).status, 403);
+  const continued = (await host.api('/v1/mirror/continued', 'GET', undefined, { human: true })).data.bots;
+  assert.deepEqual(continued, { 'bot-h': { 'mac-h': vmTab } });
+  const macTab = { id: 'mac-h', controller: 'agent', botId: 'bot-h' };
+  const record = continuedOnVm(macTab, continued['bot-h']['mac-h']);
+  Object.assign(macTab, { controller: 'human', handoff: record });
+  assert.throws(() => requireAgentClaim(macTab, Date.now(), { autoTakeover: true }), new RegExp(`handoff_source: this task moved to the vps tab ${vmTab}`), 'an agent on the old Mac id is sent to the VM tab');
+  // The retired tab leaves the mirror, so a later lid close cannot replay it.
+  macTabs = [];
+  await push();
+  assert.deepEqual((await host.api('/v1/mirror/continued', 'GET', undefined, { human: true })).data, { bots: {} });
+
+  // Move back: the app holds the VM tab, then checkpoints it with its cookies.
+  host.stub.cookies = [{ name: 'sid', value: 'vm-session', domain: '.crm.example', path: '/', expires: -1, size: 1, httpOnly: true, secure: true, session: true, sameSite: 'Lax' },
+    { name: 'tracker', value: 'x', domain: '.ads.example', path: '/', expires: -1, size: 1, httpOnly: false, secure: true, session: true }];
+  assert.equal((await host.api(`/v1/tabs/${vmTab}/checkpoint`, 'POST', { includeCookies: true }, { human: true })).status, 409, 'the agent still holds it');
+  assert.equal((await host.api(`/v1/tabs/${vmTab}/control`, 'POST', { controller: 'human' }, { human: true })).status, 200);
+  const back = (await host.api(`/v1/tabs/${vmTab}/checkpoint`, 'POST', { includeDrafts: true, includeCookies: true }, { human: true })).data;
+  assert.equal(back.url, 'https://crm.example/deal/7');
+  assert.deepEqual(host.stub.calls.findLast((c) => c.method === 'Network.getCookies').params, { urls: ['https://crm.example/deal/7'] });
+  assert.deepEqual(toElectronCookies(back.cookies, back.url).map((c) => [c.name, c.value, c.domain]), [['sid', 'vm-session', '.crm.example']], 'only the page’s own sign-in comes back');
+  const asAgent = await host.api(`/v1/tabs/${vmTab}/checkpoint`, 'POST', { includeCookies: true }, { bot: 'bot-h' });
+  assert.ok(asAgent.status >= 400 && !asAgent.data.cookies, 'agents never read cookies through a checkpoint');
+  const plain = (await host.api(`/v1/tabs/${vmTab}/checkpoint`, 'POST', {}, { human: true })).data;
+  assert.equal(plain.cookies, undefined, 'cookies only when asked');
+});
+
+test('Move to VM sets the page’s sign-in cookies before the first load, for the app only', async () => {
+  const host = await startHost();
+  const cookies = [toCdpCookie({ name: 'sid', value: 'moved', domain: 'mail.example', hostOnly: true, path: '/', secure: true, httpOnly: true, session: true, sameSite: 'strict' })];
+  const opened = await host.api('/v1/tabs', 'POST', { url: 'https://mail.example/inbox', cookies }, { human: true });
+  assert.equal(opened.status, 201);
+  assert.equal(opened.data.signIns, 1);
+  const set = host.stub.calls.findIndex((c) => c.method === 'Network.setCookies' && c.params.cookies[0].value === 'moved');
+  assert.ok(set >= 0 && set < host.stub.calls.findIndex((c) => c.method === 'Page.navigate' && c.params.url === 'https://mail.example/inbox'));
+  assert.equal(host.stub.calls[set].params.cookies[0].url, 'https://mail.example/', 'a host-only cookie stays host-only');
+  const before = host.stub.calls.filter((c) => c.method === 'Network.setCookies').length;
+  const agent = await host.api('/v1/tabs', 'POST', { url: 'https://mail.example/other', cookies }, { bot: 'bot-a' });
+  assert.equal(agent.status, 201);
+  assert.equal(agent.data.signIns, undefined);
+  assert.equal(host.stub.calls.filter((c) => c.method === 'Network.setCookies').length, before, 'an agent cannot plant cookies');
 });

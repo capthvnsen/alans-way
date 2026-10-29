@@ -33,6 +33,7 @@ final class WorkspaceSettings {
     private let defaults: UserDefaults
     private var viewers: [String: String]
     private var avatars: [String: String]
+    private(set) var hasCompletedOnboarding: Bool
     static let availableAvatars = ["hermes", "athena", "apollo", "artemis", "zeus", "poseidon", "hades", "medusa", "faun", "minotaur"]
 
     init(defaults: UserDefaults = .standard) {
@@ -40,6 +41,12 @@ final class WorkspaceSettings {
         releaseChannel = ReleaseChannel(rawValue: defaults.string(forKey: "workspace.releaseChannel") ?? "") ?? .stable
         viewers = defaults.dictionary(forKey: "workspace.viewerURLs") as? [String: String] ?? [:]
         avatars = defaults.dictionary(forKey: "workspace.avatars") as? [String: String] ?? [:]
+        hasCompletedOnboarding = defaults.bool(forKey: "workspace.onboardingComplete")
+    }
+
+    func completeOnboarding() {
+        hasCompletedOnboarding = true
+        defaults.set(true, forKey: "workspace.onboardingComplete")
     }
 
     func avatar(for chatID: Int64) -> String { avatars[String(chatID)] ?? "hermes" }
