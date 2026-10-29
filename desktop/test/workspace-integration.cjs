@@ -687,9 +687,14 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({ status: 503,
   state = await invoke('settings', { primaryBotId: '' });
   assert.equal(state.primaryBotId, 'overseer-bot', 'With no explicit pick the overseer bot is the primary.');
   console.log('PASS: primary bot pins to the top with a PRIMARY badge, defaulting to the overseer.');
+  // The MCP child uses a distinct identity-bound fixture credential, never the broker file.
+  const actor = 'background-browser-regression', botToken = require('node:crypto').randomBytes(32).toString('hex');
+  const botConnection = path.join(profile, 'test-bot-connection.json');
+  fs.writeFileSync(path.join(profile, 'bot-credentials.json'), JSON.stringify({ bots: { [actor]: { uid: (process.getuid?.() ?? 0) + 1, token: botToken } } }), { mode: 0o600 });
+  fs.writeFileSync(botConnection, JSON.stringify({ url: connection.url, token: botToken, botId: actor }), { mode: 0o600 });
   await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, 'background-browser.cjs')], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', HERMES_WORKSPACE_CONNECTION: path.join(profile, 'connection.json') }, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', HERMES_WORKSPACE_CONNECTION: botConnection }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = ''; child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
     child.on('error', reject); child.on('exit', code => code === 0 ? (console.log(output.trim()), resolve()) : reject(new Error(output)));
