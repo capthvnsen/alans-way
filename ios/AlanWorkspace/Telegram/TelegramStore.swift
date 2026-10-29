@@ -426,6 +426,8 @@ public final class TelegramStore {
             upsert(value.message)
             errorMessage = "Telegram could not send that message. You can edit it and try again."
         case .updateDeleteMessages(let value):
+            // TDLib unloads closed chats' messages from memory; those were not deleted in Telegram.
+            guard !value.fromCache else { break }
             var messages = messagesByChat[value.chatId, default: []]
             let deleted = Set(value.messageIds)
             messages.removeAll { deleted.contains($0.id) }
