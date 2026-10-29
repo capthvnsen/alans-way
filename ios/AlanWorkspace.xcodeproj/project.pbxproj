@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		00739F3960B63B1ECA42F02B /* WorkspaceSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 811600DA355EAF826AC24E3C /* WorkspaceSettingsTests.swift */; };
+		062D5F6B7025E5D125D7A716 /* DiagnosticsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FD3F25D86FEDD20F7A4E815 /* DiagnosticsStoreTests.swift */; };
 		0E01E07670CD42DDDFE7048F /* TDLibKit in Frameworks */ = {isa = PBXBuildFile; productRef = C5F671911FF079BBFC04C910 /* TDLibKit */; };
 		1607CCAFA3E4F15CF501B892 /* TelegramStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4695E1A2C3D735F7BAD249F6 /* TelegramStore.swift */; };
 		270D178306AC87286B87AEAF /* TelegramMiniAppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F2A64E9623B56C19845E75 /* TelegramMiniAppView.swift */; };
@@ -19,6 +20,7 @@
 		7501752E4A01B396E9FEF9D7 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 332C8F5E93C0561DBF81EA6D /* PrivacyInfo.xcprivacy */; };
 		76729EC3A625BE34FE05F8B5 /* WorkspaceRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 388D4414D6FCBF28F43E6D08 /* WorkspaceRootView.swift */; };
 		81DE2CA72D8707A0BDB979D2 /* CallSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 699603DAEE4B2F036A206697 /* CallSheet.swift */; };
+		89774F1637FD84C5F23D4795 /* DiagnosticsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F492AAD368CE85E91F7ACB1 /* DiagnosticsStore.swift */; };
 		957893A4511CCBEA94D1E991 /* AlanWorkspaceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89C666E05FF981969BA6BC6B /* AlanWorkspaceApp.swift */; };
 		A394000E3BCA30523150BC45 /* WorkspaceTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96B5037979439E2A349C2237 /* WorkspaceTheme.swift */; };
 		AE7AD8C33467B7C1E8D46F67 /* ThirdPartyNotices.txt in Resources */ = {isa = PBXBuildFile; fileRef = 757F8CE9576A8AE2D81E61E8 /* ThirdPartyNotices.txt */; };
@@ -53,6 +55,7 @@
 
 /* Begin PBXFileReference section */
 		1B8781305D3F4E40930E8393 /* TelegramErrorText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramErrorText.swift; sourceTree = "<group>"; };
+		1FD3F25D86FEDD20F7A4E815 /* DiagnosticsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsStoreTests.swift; sourceTree = "<group>"; };
 		24F2A64E9623B56C19845E75 /* TelegramMiniAppView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramMiniAppView.swift; sourceTree = "<group>"; };
 		28295B1173C01ABBF7FA37B4 /* CallWebContentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallWebContentTests.swift; sourceTree = "<group>"; };
 		332C8F5E93C0561DBF81EA6D /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -72,6 +75,7 @@
 		96B5037979439E2A349C2237 /* WorkspaceTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceTheme.swift; sourceTree = "<group>"; };
 		9A045030A237B259347E9C37 /* OnboardingViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViews.swift; sourceTree = "<group>"; };
 		AE2EED5E62249066B47417DD /* OnboardingChecksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingChecksTests.swift; sourceTree = "<group>"; };
+		9F492AAD368CE85E91F7ACB1 /* DiagnosticsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsStore.swift; sourceTree = "<group>"; };
 		AFBF6A1C8690784EBDB03C36 /* TelegramModelMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramModelMapperTests.swift; sourceTree = "<group>"; };
 		ED9377B8855E3C402146A072 /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
 		EE5BAAC77B46FEEF2B680965 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -80,7 +84,7 @@
 		F7D8DC409B45AB214705888A /* AlanWorkspace.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AlanWorkspace.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC96F43107F9FE6A1832FF2E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		FF4D430361F8B365997DEB1A /* OnboardingChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingChecks.swift; sourceTree = "<group>"; };
-		"TEMP_3486FF7E-49DD-4611-BEF7-9BF5B42F48EC" /* Configuration.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configuration.xcconfig; sourceTree = "<group>"; };
+		"TEMP_002A382F-196C-4274-BDCD-79ED7A2D5B6D" /* Configuration.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configuration.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -127,6 +131,7 @@
 		6BCCADA69AF3C7563F4AC7D3 /* Support */ = {
 			isa = PBXGroup;
 			children = (
+				9F492AAD368CE85E91F7ACB1 /* DiagnosticsStore.swift */,
 				4B20C55068C0B8BD553B95CC /* WorkspaceSettings.swift */,
 				96B5037979439E2A349C2237 /* WorkspaceTheme.swift */,
 			);
@@ -166,6 +171,7 @@
 				4235538CCC550F10BC3EC573 /* CallOriginPolicyTests.swift */,
 				28295B1173C01ABBF7FA37B4 /* CallWebContentTests.swift */,
 				AE2EED5E62249066B47417DD /* OnboardingChecksTests.swift */,
+				1FD3F25D86FEDD20F7A4E815 /* DiagnosticsStoreTests.swift */,
 				AFBF6A1C8690784EBDB03C36 /* TelegramModelMapperTests.swift */,
 				811600DA355EAF826AC24E3C /* WorkspaceSettingsTests.swift */,
 			);
@@ -217,10 +223,10 @@
 			path = AlanWorkspace;
 			sourceTree = "<group>";
 		};
-		"TEMP_AF3BD4B1-DF0E-49C1-B9DA-CFFF4D5C26F7" /* ios */ = {
+		"TEMP_E4F0673F-A3D1-4A1A-BE2E-B917E318355D" /* ios */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_3486FF7E-49DD-4611-BEF7-9BF5B42F48EC" /* Configuration.xcconfig */,
+				"TEMP_002A382F-196C-4274-BDCD-79ED7A2D5B6D" /* Configuration.xcconfig */,
 			);
 			path = ios;
 			sourceTree = "<group>";
@@ -358,6 +364,7 @@
 				E386EEEEFB77893693F7D130 /* CallOriginPolicyTests.swift in Sources */,
 				FF1C1798B0652B7CAD923003 /* CallWebContentTests.swift in Sources */,
 				E15BD70AEA0296C7A6BC3B82 /* OnboardingChecksTests.swift in Sources */,
+				062D5F6B7025E5D125D7A716 /* DiagnosticsStoreTests.swift in Sources */,
 				309F19D03DC3422BDE3A6E77 /* TelegramModelMapperTests.swift in Sources */,
 				00739F3960B63B1ECA42F02B /* WorkspaceSettingsTests.swift in Sources */,
 			);
@@ -375,6 +382,7 @@
 				5551A5262C75F1E993B7FE64 /* OnboardingChecks.swift in Sources */,
 				B9DF5A289B09B55A6D3C0D44 /* OnboardingViews.swift in Sources */,
 				3D9C8EF741E323485CAF2CC6 /* TelegramErrorText.swift in Sources */,
+				89774F1637FD84C5F23D4795 /* DiagnosticsStore.swift in Sources */,
 				B727A0DF4C5C3F0182CDE634 /* TelegramKeychain.swift in Sources */,
 				270D178306AC87286B87AEAF /* TelegramMiniAppView.swift in Sources */,
 				E90E6DB1FC857EEA71519801 /* TelegramModels.swift in Sources */,
@@ -473,7 +481,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.21.13;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -487,7 +495,7 @@
 		};
 		46184AB5F451686C1A76CAED /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_3486FF7E-49DD-4611-BEF7-9BF5B42F48EC" /* Configuration.xcconfig */;
+			baseConfigurationReference = "TEMP_002A382F-196C-4274-BDCD-79ED7A2D5B6D" /* Configuration.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -514,7 +522,7 @@
 		};
 		4720CB03BE137C6103C524E6 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_3486FF7E-49DD-4611-BEF7-9BF5B42F48EC" /* Configuration.xcconfig */;
+			baseConfigurationReference = "TEMP_002A382F-196C-4274-BDCD-79ED7A2D5B6D" /* Configuration.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -588,7 +596,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.21.13;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

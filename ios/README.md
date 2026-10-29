@@ -26,9 +26,22 @@ The archive is `.build/AlanWorkspace.xcarchive`. It is not a signed IPA or a Tes
 
 `project.yml` is authoritative. Regenerate the project after adding source files. A local `DEVELOPMENT_TEAM` override can live in the ignored configuration file described below so regeneration retains it.
 
-## TestFlight internal testing
+## TODO FOR ALEX
 
-The upload script uses Apple's **TestFlight Internal Only** setting. Builds uploaded through this script cannot be distributed through external TestFlight or submitted for public App Store release. See [Apple's distribution documentation](https://developer.apple.com/documentation/xcode/distributing-your-app-for-beta-testing-and-releases).
+These need the Apple account and are not done by any script here.
+
+1. Find your 10-character Team ID at [developer.apple.com/account](https://developer.apple.com/account) under **Membership details**. Pass it as `APPLE_TEAM_ID=YOURTEAMID` when running `testflight.sh`. For Xcode device runs, put `DEVELOPMENT_TEAM = YOURTEAMID` in your ignored `LocalConfiguration.xcconfig`.
+2. Register the bundle ID `com.openalan.workspace` under **Certificates, Identifiers & Profiles > Identifiers** (Automatic signing can also create it on the first archive).
+3. In App Store Connect, create the iOS app: name **Alan's Workspace**, primary language **English (U.S.)**, bundle ID `com.openalan.workspace`, SKU `alans-workspace-ios`. Check that no matching app already exists.
+4. Answer the export-compliance (encryption) question for the first build. TDLib uses encryption for Telegram's protocol and the local database; decide whether the exemption applies. The project deliberately leaves `ITSAppUsesNonExemptEncryption` unset.
+5. In the app's TestFlight tab, create an internal group (team members) and an external group (invited testers). External groups also need the **Test Information** page filled in (feedback email, privacy policy URL: link [docs/privacy-policy-ios.md](../docs/privacy-policy-ios.md)) and pass Beta App Review.
+6. Upload: `APPLE_TEAM_ID=YOURTEAMID ./ios/scripts/testflight.sh` for internal testers, or add `--external` for a build external groups can receive. Then send testers [docs/ios-beta-testers.md](../docs/ios-beta-testers.md).
+
+## TestFlight testing
+
+By default the upload script uses Apple's **TestFlight Internal Only** setting. Those builds cannot be distributed through external TestFlight or submitted for public App Store release. `./ios/scripts/testflight.sh --external` uploads the same signed archive without that restriction, so the build can go to external tester groups after Beta App Review; it still does not submit an App Store version. See [Apple's distribution documentation](https://developer.apple.com/documentation/xcode/distributing-your-app-for-beta-testing-and-releases).
+
+`MARKETING_VERSION` in `project.yml` follows the project's shared `0.<Hermes minor>.<patch>` versioning (currently the desktop app's 0.21.13). App Store Connect accepts only numeric versions, so beta status comes from TestFlight rather than a `-beta` suffix. The export lets Xcode assign the build number on upload; `CURRENT_PROJECT_VERSION` stays `1` locally.
 
 Sign into the developer account in **Xcode > Settings > Accounts**. Register `com.openalan.workspace` for the selected developer team and create its iOS app record in App Store Connect. Suggested record values are **Alan's Workspace**, primary language **English (U.S.)**, and SKU **alans-workspace-ios**. Check for an existing matching app before creating another record. Set the ignored Telegram application credentials before uploading a build intended for testers who should only need to sign into Telegram.
 
@@ -40,7 +53,11 @@ The script regenerates the project, creates a signed archive, then uploads it. A
 
 After processing completes, verify the version/build and internal-only indicator in App Store Connect's TestFlight tab, then assign the build to the intended internal test group. This workflow does not submit an App Store version or create a public testing link. Apple may require [export-compliance information](https://developer.apple.com/help/app-store-connect/test-a-beta-version/provide-export-compliance-information-for-beta-builds/); the project leaves that declaration unset rather than assuming TDLib's encryption is exempt.
 
-The bundled privacy manifest declares app-local preferences, file metadata for the app's storage and document picker, and disk-space checks for local database/file storage. It is a required-reason API declaration, separate from any App Store privacy questionnaire.
+The bundled privacy manifest declares app-local preferences, file metadata for the app's storage and document picker, and disk-space checks for local database/file storage. It is a required-reason API declaration, separate from any App Store privacy questionnaire. What the app stores and sends is in the [iOS privacy policy](../docs/privacy-policy-ios.md).
+
+## Crash and hang diagnostics
+
+The app subscribes to Apple's MetricKit and keeps up to 20 diagnostic payloads (crashes, hangs, CPU and disk-write exceptions) in `Application Support/Diagnostics`. There is no third-party SDK and no automatic upload. **Workspace settings > Diagnostics** shares one JSON file with every retained payload through the share sheet, or deletes them. iOS delivers payloads on a later launch, typically within a day; on a device, Xcode's **Debug > Simulate MetricKit Payloads** produces a sample. Files are named in time order, so pruning reads no file timestamps and the privacy manifest needs no new entry. Since nothing leaves the device unless the person shares it, no collected data type is declared.
 
 ## First-run onboarding
 
