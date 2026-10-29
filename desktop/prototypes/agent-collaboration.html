@@ -46,7 +46,8 @@
   <aside aria-label="Prototype controls and desktop boundary">
     <h2>Shared task, separate authority</h2>
     <p>This page makes no network requests and cannot use the desktop. Room history exists only until reload.</p>
-    <p>In the proposed live version, Grok connects over Tailscale to workspace-mcp; Hermes uses its plugin. Each keeps its own provider thread.</p>
+    <p>In the proposed live version, Alan's Workspace shows the room; Alan's Plugin for Hermes and Alan's Plugin for Grok Bot share Alan's CU MCP over Tailscale. Each bot keeps its own provider thread.</p>
+    <p>Both plugins use one persona, text voice and proactivity config. An optional OpenPod adapter would carry room messages; CU MCP would enforce turns and the shared desktop lease. These connections are not implemented here.</p>
     <h2>VM desktop</h2>
     <p class="muted">Not connected. A task handoff carries intent, never a desktop lease or approval. A busy desktop stays busy until its existing lease permits input.</p>
     <h2>Simulate the assigned bot</h2>
