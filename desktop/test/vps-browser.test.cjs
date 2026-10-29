@@ -219,7 +219,8 @@ test('legacy sudo settings survive an app upgrade', () => {
 
 test('browser transport requires the explicit separate broker login', async () => {
   const { brokerTarget } = require('../src/vps-browser.cjs');
-  const config = { sshHost: 'agent@host.example', brokerSshHost: 'broker@host.example', scriptPath: '/app/host.cjs' };
+  const host = [100, 64, 0, 1].join('.');
+  const config = { sshHost: 'agent@'+host, brokerSshHost: 'broker@'+host, scriptPath: '/app/host.cjs' };
   assert.equal(brokerTarget(config), config.brokerSshHost);
   for (const over of [{ brokerSshHost: '' }, { brokerSshHost: 'host.example' }, { brokerSshHost: 'agent@other.example' }, { sshHost: 'host.example' }]) {
     assert.throws(() => brokerTarget({ ...config, ...over }));
