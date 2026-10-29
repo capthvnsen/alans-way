@@ -8,7 +8,7 @@ This repository ships two things with different boundaries: the desktop app in `
 
 ### Desktop app
 
-The desktop API listens on loopback and accepts a private broker bearer token or an identity-bound per-bot credential. `connection.json` in the app's data directory belongs to the human/broker OS user, never an untrusted bot. Export one connection per separate bot OS user with the [credential provisioner](desktop/docs/bot-credentials.md). Per-bot credentials cannot assert another bot or overseer ID; registry errors fail closed. The connector rejects credentials for another identity or a broker connection. Run the connector on the destination over tailnet SSH and keep the API on loopback. Browser-origin requests and non-loopback Host headers are refused.
+The desktop API listens on loopback and accepts a private broker bearer token or an identity-bound per-bot credential. `connection.json` in the app's data directory belongs to the human/broker OS user, never an untrusted bot. Export one connection per separate bot OS user with the [credential provisioner](desktop/docs/bot-auth.md). Per-bot credentials cannot assert another bot or overseer ID; registry errors fail closed. The connector rejects credentials for another identity or a broker connection. Run the connector on the destination over tailnet SSH and keep the API on loopback. Browser-origin requests and non-loopback Host headers are refused.
 
 The app's own window cannot navigate away from its page or open other windows, and its IPC bridge answers only that exact page. Closing the window on Windows and Linux hides it to the system tray, so the connector keeps running until you choose Quit.
 

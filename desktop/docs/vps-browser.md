@@ -1,4 +1,4 @@
-See [identity-bound credentials](bot-credentials.md) before configuring a broker.
+See [identity-bound credentials](bot-auth.md) before configuring a broker.
 The broker connection and app token must stay under a separate OS user; export
 only per-bot connections. Generic sudo request helpers are refused.
 

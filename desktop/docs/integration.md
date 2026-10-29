@@ -107,7 +107,7 @@ and accepts only VPS opens; it remains available when the Mac is offline.
 Its Chromium/CDP endpoints stay on loopback. See [VPS setup](vps-browser.md).
 Bot IDs are bound to individual bearer credentials before routing. The broker's
 `connection.json` and `app-token.json` remain under its separate OS user. Export
-only identity-bound connections to bot users with the [credential provisioner](bot-credentials.md).
+only identity-bound connections to bot users with the [credential provisioner](bot-auth.md).
 Do not grant generic sudo access to the SSH request helper; configure the
 app to SSH as the separate broker user with `sudo: false`. Keep Chromium CDP
 and desktop sockets inaccessible to bot users. Rotation/revocation of a bot
