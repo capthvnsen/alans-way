@@ -30,3 +30,16 @@ test('remote env transaction preserves content and refuses uncertain or conflict
   assert.notEqual(update(path.join(dir, 'absent', '.env')).status, 0);
   assert.notEqual(update(dir).status, 0);
 });
+
+
+test('profile inventory distinguishes bare installs from failed reads', { skip: process.platform === 'win32' }, t => {
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'env-profiles-'));t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+  const root=path.join(home,'.hermes');fs.mkdirSync(root);
+  const inventory=()=>spawnSync('sh',['-c',require('../src/env-write.cjs').profileInventoryCommand],{encoding:'utf8',env:{...process.env,HOME:home}});
+  assert.equal(inventory().status,0);assert.equal(inventory().stdout,'');
+  fs.mkdirSync(path.join(root,'profiles'));fs.mkdirSync(path.join(root,'profiles','personal'));
+  assert.equal(inventory().stdout,'personal\n');
+  fs.rmSync(path.join(root,'profiles'),{recursive:true});fs.writeFileSync(path.join(root,'profiles'),'invalid');
+  assert.notEqual(inventory().status,0);
+  fs.rmSync(root,{recursive:true});assert.notEqual(inventory().status,0);
+});

@@ -61,4 +61,18 @@ except Exception:
     sys.exit(1)
 `);
 
-module.exports = { command };
+// Listing the parent distinguishes absent profiles from an unreadable inventory.
+const profileInventoryCommand = 'python3 -c ' + shellQuote(String.raw`
+import os, sys
+try:
+    root = os.path.expanduser('~/.hermes')
+    entries = os.listdir(root)
+    if 'profiles' in entries:
+        for name in os.listdir(os.path.join(root, 'profiles')):
+            print(name)
+except Exception:
+    sys.stderr.write('Profile inventory unavailable.\n')
+    sys.exit(1)
+`);
+
+module.exports = { command, profileInventoryCommand };

@@ -17,6 +17,7 @@ const cloudStatus = require('./cloud-status.cjs');
 const cloudConnect = require('./cloud-connect.cjs');
 const cloudMigrate = require('./cloud-migrate.cjs');
 const cloudModel = require('./cloud-model.cjs');
+const { profileInventoryCommand } = require('./env-write.cjs');
 const { posixCommand } = require('./remote-shell.cjs');
 const cloudTelegram = require('./cloud-telegram.cjs');
 const { openUsernameScript } = require('./telegram-open.cjs');
@@ -1504,7 +1505,7 @@ async function telegramFirstName() {
 // One env write + a gateway restart, shared by the API-key, model and bot-token
 // steps. The value travels over ssh stdin so it never shows in a process list.
 async function cloudWriteEnv(host, key, value, tokenedProfiles) {
-  const profiles = await sshRun(host, 'ls ~/.hermes/profiles 2>/dev/null');
+  const profiles = await sshRun(host, profileInventoryCommand);
   if (profiles.code !== 0) return { ok: false, detail: 'Could not read the profile inventory; no credentials changed.' };
   const profile = key === 'TELEGRAM_BOT_TOKEN' ? cloudTelegram.untokenedProfile(profiles.out, tokenedProfiles) : cloudModel.chooseProfile(profiles.out);
   const envPath = cloudModel.envPathFor(profile);
