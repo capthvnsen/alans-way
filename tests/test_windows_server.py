@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+TAILNET = ".".join(map(str, (100, 64, 0, 1)))
+
 from hermes_companion import windows_server
 
 
@@ -178,14 +180,14 @@ class ConfigTests(unittest.TestCase):
         for root in ['C:\\', 'D:/']:
             with self.subTest(root=root):
                 self.assertEqual(validate_windows_path(root), root)
-                server = build_mcp_config('operator@private-pc', 'C:\\Python\\python.exe',
+                server = build_mcp_config('operator@' + TAILNET, 'C:\\Python\\python.exe',
                                           root, host_os='windows')['mcp_servers']['windows_companion']
                 self.assertIn("'" + root + "'", server['args'][-1])
 
     def test_windows_config_targets_windows_server_with_powershell_quoting(self):
         from hermes_companion.config import WINDOWS_TOOLS, build_mcp_config
         server = build_mcp_config(
-            'operator@private-pc', 'C:\\opt\\companion\\python.exe',
+            'operator@' + TAILNET, 'C:\\opt\\companion\\python.exe',
             'C:\\work\\approved dir', host_os='windows')['mcp_servers']['windows_companion']
         self.assertEqual(server['tools']['include'], list(WINDOWS_TOOLS))
         command = server['args'][-1]
@@ -198,21 +200,21 @@ class ConfigTests(unittest.TestCase):
         for python in ['/opt/python', 'C:\\\\server\\python', '${x}', 'python']:
             with self.subTest(python=python):
                 with self.assertRaises(ValueError):
-                    build_mcp_config('user@private-pc', python, 'C:\\ws', host_os='windows')
+                    build_mcp_config('user@' + TAILNET, python, 'C:\\ws', host_os='windows')
         for workspace in ['C:\\ws\\..\\x', 'C:/ok/../x', '\\\\share\\ws', '/srv/ws', 'C:${x}\\ws']:
             with self.subTest(workspace=workspace):
                 with self.assertRaises(ValueError):
-                    build_mcp_config('user@private-pc', 'C:\\python\\python.exe', workspace, host_os='windows')
+                    build_mcp_config('user@' + TAILNET, 'C:\\python\\python.exe', workspace, host_os='windows')
 
     def test_unknown_host_os_is_rejected(self):
         from hermes_companion.config import build_mcp_config
         with self.assertRaises(ValueError):
-            build_mcp_config('user@host', '/opt/python', '/srv/ws', host_os='linux')
+            build_mcp_config('user@' + TAILNET, '/opt/python', '/srv/ws', host_os='linux')
 
     def test_mac_config_is_unchanged(self):
         from hermes_companion.config import MAC_TOOLS, build_mcp_config
         server = build_mcp_config(
-            'operator@private-mac', '/opt/companion/python', '/srv/approved',
+            'operator@' + TAILNET, '/opt/companion/python', '/srv/approved',
             host_os='mac')['mcp_servers']['mac_companion']
         self.assertEqual(server['tools']['include'], list(MAC_TOOLS))
         self.assertIn('hermes_companion.mac_server', server['args'][-1])

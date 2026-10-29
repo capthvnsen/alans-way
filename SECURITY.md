@@ -38,3 +38,11 @@ The keeper lives under `hermes_companion.experimental`, is not wired into the CL
 ## Reporting
 
 For an exploitable vulnerability, use GitHub's private vulnerability reporting facility when enabled. If it is unavailable, open a minimal issue requesting a private reporting channel without exploit details, keys, raw logs, machine addresses or transcripts. Non-sensitive reproducible bugs may be reported publicly using synthetic fixtures.
+
+
+Python Companion MCP configuration accepts only explicit `user@Tailscale-IP`
+SSH targets. It disables SSH configuration, jump hosts, proxy commands and
+hostname canonicalization. Regenerate existing MCP fragments after migrating
+aliases/DNS names to literal tailnet IPs; previously copied configurations
+outside this repository are not rewritten. Configuration generation remains
+print-only and verification still requires its explicit CLI command.

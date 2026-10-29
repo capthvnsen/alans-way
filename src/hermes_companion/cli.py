@@ -220,7 +220,7 @@ def _parser() -> argparse.ArgumentParser:
         ("verify-mac", "explicitly verify one private SSH MCP connection; no config writes"),
     ):
         connection = commands.add_parser(name, help=help_text)
-        connection.add_argument("--mac-host", required=True, help="literal user@private-host")
+        connection.add_argument("--mac-host", required=True, help="user@literal-Tailscale-IP (no DNS name or SSH alias)")
         connection.add_argument("--mac-python", required=True, help="absolute remote Python path (POSIX or X:\\)")
         connection.add_argument("--workspace", required=True, help="absolute approved remote workspace")
         connection.add_argument("--host-os", choices=["mac", "windows"], default="mac",

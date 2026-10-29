@@ -3,21 +3,25 @@ import json
 import shlex
 import unittest
 
+TAILNET = ".".join(map(str, (100, 64, 0, 1)))
+
 
 class ConfigTests(unittest.TestCase):
     def test_generates_scoped_ssh_fragment(self):
         from hermes_companion.config import MAC_TOOLS, build_mcp_config
 
         config = build_mcp_config(
-            "operator@private-mac", "/opt/companion/bin/python", "/srv/approved workspace"
+            "operator@" + TAILNET, "/opt/companion/bin/python", "/srv/approved workspace"
         )
         server = json.loads(json.dumps(config))["mcp_servers"]["mac_companion"]
         self.assertEqual(server["command"], "ssh")
         self.assertEqual(server["args"][:-2], [
+            "-F", "none", "-o", "ProxyCommand=none", "-o", "ProxyJump=none",
+            "-o", "CanonicalizeHostname=no",
             "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
             "-o", "ConnectTimeout=5",
         ])
-        self.assertEqual(server["args"][-2], "operator@private-mac")
+        self.assertEqual(server["args"][-2], "operator@" + TAILNET)
         self.assertEqual(shlex.split(server["args"][-1]), [
             "/opt/companion/bin/python", "-m", "hermes_companion.mac_server",
             "--workspace", "/srv/approved workspace",
@@ -32,7 +36,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_offline_mac_has_bounded_native_connection_and_call_timeouts(self):
         from hermes_companion.config import build_mcp_config
-        server = build_mcp_config("operator@private-mac", "/opt/companion/python", "/srv/approved")["mcp_servers"]["mac_companion"]
+        server = build_mcp_config("operator@" + TAILNET, "/opt/companion/python", "/srv/approved")["mcp_servers"]["mac_companion"]
         self.assertEqual(server["connect_timeout"], 10)
         self.assertEqual(server["timeout"], 20)
         self.assertIs(server["lazy"], True)
@@ -59,7 +63,7 @@ class ConfigTests(unittest.TestCase):
         for path in paths:
             for field in ("python", "workspace"):
                 with self.subTest(field=field, path=path):
-                    args = ["user@private-mac", "/opt/python", "/srv/approved"]
+                    args = ["user@" + TAILNET, "/opt/python", "/srv/approved"]
                     args[1 if field == "python" else 2] = path
                     with self.assertRaises(ValueError):
                         build_mcp_config(*args)
@@ -69,7 +73,7 @@ class ConfigTests(unittest.TestCase):
 
         python = "/opt/my env/python';touch sentinel;#"
         workspace = "/srv/approved workspace; echo 'not executed'"
-        command = build_mcp_config("user@private-mac", python, workspace)[
+        command = build_mcp_config("user@" + TAILNET, python, workspace)[
             "mcp_servers"]["mac_companion"]["args"][-1]
         self.assertEqual(shlex.split(command), [python, "-m", "hermes_companion.mac_server",
                                                 "--workspace", workspace])
@@ -77,3 +81,13 @@ class ConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TailnetConfigTests(unittest.TestCase):
+    def test_tailnet_literals_only_including_ipv6(self):
+        from hermes_companion.config import validate_host
+        for host in ('user@'+TAILNET, 'user@[fd7a:115c:a1e0::1]', 'user@fd7a:115c:a1e0::1'):
+            self.assertEqual(validate_host(host), host)
+        for host in ('user@127.0.0.1','user@10.0.0.1','user@203.0.113.10','user@private-mac','user@host.ts.net','user@2001:db8::1','user@[fd7a:115c:a1e0::1]%en0','user@100.064.0.1'):
+            with self.subTest(host=host), self.assertRaises(ValueError):
+                validate_host(host)
