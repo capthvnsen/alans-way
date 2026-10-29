@@ -83,7 +83,7 @@ test('computer reads remain open and do not refresh the input lease', async t =>
   assert.equal((await request('/v1/computer/launch', 'b', 'POST')).status, 200);
 });
 
-test('missing identities fail closed and do not take or refresh a bot lease', async t => {
+test('identity-free API input is refused and cannot take or refresh a bot lease', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
   const { request } = computerRoutes();
   assert.equal((await request('/v1/computer/7/action', '', 'POST')).status, 400);
