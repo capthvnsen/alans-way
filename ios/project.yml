@@ -12,6 +12,7 @@ packages:
 settings:
   base:
     SWIFT_VERSION: '5.0'
+    WORKSPACE_RELEASE_CHANNEL: stable
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: '0.21.13'
     CURRENT_PROJECT_VERSION: '1'
@@ -23,6 +24,7 @@ targets:
     info:
       path: AlanWorkspace/Info.plist
       properties:
+        WorkspaceReleaseChannel: $(WORKSPACE_RELEASE_CHANNEL)
         TELEGRAM_API_ID: $(TELEGRAM_API_ID)
         TELEGRAM_API_HASH: $(TELEGRAM_API_HASH)
     sources:

@@ -79,6 +79,7 @@ struct AgentListView: View {
             .background(WorkspaceTheme.background)
             .toolbar(.hidden, for: .navigationBar)
             .refreshable { await refresh() }
+            .safeAreaInset(edge: .top, spacing: 0) { ConnectionBanner() }
             .task { await refresh() }
             .sheet(isPresented: $showSettings) { WorkspaceSettingsView() }
             .alert("Open a Telegram bot", isPresented: $showAddBot) {
@@ -101,6 +102,20 @@ struct AgentListView: View {
         guard !telegram.isInterfacePreview else { return }
         do { try await telegram.loadChats() }
         catch { errorText = error.localizedDescription }
+    }
+}
+
+/// Telegram queues messages while offline, so say so instead of letting them look sent.
+struct ConnectionBanner: View {
+    @Environment(TelegramStore.self) private var telegram
+
+    var body: some View {
+        if let status = telegram.connectionStatus {
+            Label(status, systemImage: "wifi.exclamationmark")
+                .font(.footnote).foregroundStyle(.orange)
+                .frame(maxWidth: .infinity).padding(8).background(WorkspaceTheme.surface)
+                .accessibilityIdentifier("connectionStatus")
+        }
     }
 }
 
@@ -135,6 +150,7 @@ private struct AgentRow: View {
 }
 
 struct WorkspaceSettingsView: View {
+    @Environment(WorkspaceSettings.self) private var settings
     @Environment(TelegramStore.self) private var telegram
     @Environment(\.dismiss) private var dismiss
     @State private var confirmLogOut = false
@@ -149,6 +165,15 @@ struct WorkspaceSettingsView: View {
                     Label("Existing Telegram conversations", systemImage: "bubble.left.and.bubble.right")
                     Label("Calls stay in the foreground", systemImage: "waveform")
                     Label("Computer access is set per agent", systemImage: "desktopcomputer")
+                }.listRowBackground(WorkspaceTheme.surface)
+                Section {
+                    Picker("Preferred channel", selection: Binding(get: { settings.releaseChannel }, set: { settings.releaseChannel = $0 })) {
+                        ForEach(ReleaseChannel.allCases) { channel in Text(channel.title).tag(channel) }
+                    }.accessibilityIdentifier("releaseChannel")
+                    Text("Current build: \(WorkspaceSettings.installedChannel.title) · \(WorkspaceSettings.installedVersion)")
+                        .font(.footnote).foregroundStyle(WorkspaceTheme.secondary)
+                } header: { Text("Release channel") } footer: {
+                    Text("Stable follows tagged releases. Nightly follows main and is less tested. This preference does not install or downgrade builds. TestFlight access must be arranged by Alex; use TestFlight to change builds. When returning to Stable, wait for a newer stable build.")
                 }.listRowBackground(WorkspaceTheme.surface)
                 Section {
                     Link("Telegram privacy policy", destination: URL(string: "https://telegram.org/privacy")!)
@@ -175,7 +200,7 @@ struct WorkspaceSettingsView: View {
                 } footer: {
                     Text("Apple’s MetricKit delivers crash and hang reports to the app. They stay on this device until you share them; nothing is uploaded automatically.")
                 }.listRowBackground(WorkspaceTheme.surface)
-                Section { Text("Alan’s Workspace · \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")").font(.footnote).foregroundStyle(WorkspaceTheme.secondary) }
+                Section { Text("Alan’s Workspace · \(WorkspaceSettings.installedVersion)").font(.footnote).foregroundStyle(WorkspaceTheme.secondary) }
                     .listRowBackground(WorkspaceTheme.surface)
             }
             .scrollContentBackground(.hidden).background(WorkspaceTheme.background)

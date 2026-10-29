@@ -18,6 +18,8 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>WorkspaceReleaseChannel</key>
+	<string>$(WORKSPACE_RELEASE_CHANNEL)</string>
 	<key>TELEGRAM_API_HASH</key>
 	<string>$(TELEGRAM_API_HASH)</string>
 	<key>TELEGRAM_API_ID</key>

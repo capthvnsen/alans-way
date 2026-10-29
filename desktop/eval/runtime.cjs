@@ -78,9 +78,22 @@ async function startStack({ connection, fixtureHost = 'fixture.example', fixture
   }).then((r) => r.json().catch(() => ({})));
   const tabs = async () => { const r = await raw('/v1/tabs'); return Array.isArray(r) ? r : r.tabs || []; };
   return {
-    dir, connFile, proxy, botId, tabs, raw,
+    dir, connFile, proxy, botId, tabs, raw, hostUrl: direct.url,
     // Evaluate in the task's first tab straight against the host (not counted as agent work).
-    pageEval: async (code, index = 0) => { const t = (await tabs())[index]; return t ? (await raw(`/v1/tabs/${t.id}/actions`, 'POST', { action: 'eval', code, epoch: t.epoch })).value : undefined; },
+    // The commit gate refuses eval on pages with timers or commit-like controls. Checks only read state, so the
+    // harness approves its own read-only check code with the test receipt; agent actions never get this.
+    pageEval: async (code, index = 0) => {
+      const t = (await tabs())[index]; if (!t) return undefined;
+      const body = { action: 'eval', code, epoch: t.epoch };
+      let r = await raw(`/v1/tabs/${t.id}/actions`, 'POST', body);
+      if (/commit_required/.test(r.error || '')) {
+        const { harnessApproval, bindApproval } = require('../test/approval-fixture.cjs');
+        const approved = { ...body, approval: harnessApproval(t) };
+        bindApproval(approved, await raw(`/v1/tabs/${t.id}/snapshot`));
+        r = await raw(`/v1/tabs/${t.id}/actions`, 'POST', approved);
+      }
+      return r.value;
+    },
     closeTabs: async () => { for (const t of await tabs()) await raw(`/v1/tabs/${t.id}`, 'DELETE', undefined, t.epoch).catch(() => {}); },
     stop: async () => { proxy.close(); for (const c of children) c.kill(); await wait(300); try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} },
   };

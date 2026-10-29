@@ -147,6 +147,21 @@ app.whenReady().then(async () => {
       assert.equal(await active(), 'settings-search'); assert.equal(await js('document.getElementById("settings-search").value'), 'update status');
     } finally { wc.send = send; send('workspace:state', real); }
   });
+  await check('release channel defaults to Stable, persists opt-in, and clearly waits for restart', async () => {
+    await search('release channel');
+    assert.equal(await js('document.getElementById("settings-release-channel").value'), 'stable');
+    assert.match(await js('document.querySelector("[data-settings-section=updates]").innerText'), /Current channel: Stable.*Installed v/);
+    await js('(() => { const select=document.getElementById("settings-release-channel"); select.value="nightly"; select.dispatchEvent(new Event("change", {bubbles:true})); })()');
+    await wait(() => js('workspace.getState()'), value => value.releaseChannel === 'nightly');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'))).releaseChannel, 'nightly');
+    assert.match(await js('document.querySelector("[data-settings-section=updates]").innerText'), /less tested/);
+    assert.match(await js('document.querySelector("[data-settings-section=updates]").innerText'), /Restart required/);
+    await close(); await open(); await search('update status');
+    assert.equal(await js('document.getElementById("settings-release-channel").value'), 'nightly');
+    await js('workspace.command("settings", {releaseChannel:"stable"})'); await frame();
+    assert.equal(JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'))).releaseChannel, 'stable');
+    assert.equal(await js('document.getElementById("settings-release-channel").value'), 'stable');
+  });
   await check('an explicit platform change isolates its viewer draft and returning restores it without saving', async () => {
     const current = await js('workspace.getState()'), original = current.remotePlatform;
     const alternate = original === 'mac' ? 'linux' : 'mac';

@@ -23,7 +23,21 @@ async function connectTools(stack) {
     tab: null, els: [],
     ref(rx, role) { const e = t.els.find((x) => rx.test(x.name || '') && (!role || x.role === role)); if (!e) throw new Error(`no element ${rx} in ${JSON.stringify(t.els.map((x) => x.role + ':' + x.name))}`); return e.ref; },
     async open(url) { const r = await t.raw('cua_alans_way_open', { url }); t.tab = { id: r.id, epoch: r.epoch }; return r; },
-    act: async (body) => { const r = await t.raw('cua_alans_way_action', { tabId: t.tab.id, epoch: t.tab.epoch, ...body }); if (r && r.elements) t.els = r.elements; return r; },
+    // fixtureOrigin: set by run.cjs for local fixtures only; there the oracle stands in for the person approving a gated action.
+    fixtureOrigin: null,
+    act: async (body) => {
+      let r;
+      try { r = await t.raw('cua_alans_way_action', { tabId: t.tab.id, epoch: t.tab.epoch, ...body }); } catch (e) { if (!/commit_required/.test(e.message) || !t.fixtureOrigin) throw e; r = await t.approve(body); }
+      if (r && r.elements) t.els = r.elements; return r;
+    },
+    async approve(body) {
+      const snap = await t.raw('cua_alans_way_snapshot', { tabId: t.tab.id });
+      if (new URL(snap.url).origin !== t.fixtureOrigin) throw new Error('approval simulation left the fixture');
+      const { harnessApproval, bindApproval } = require('../test/approval-fixture.cjs');
+      const reviewed = { tabId: t.tab.id, epoch: t.tab.epoch, ...body, approval: harnessApproval(t.tab) };
+      bindApproval(reviewed, snap);
+      return t.raw('cua_alans_way_action', reviewed);
+    },
     snapshot: async (a = {}) => { const r = await t.raw('cua_alans_way_snapshot', { tabId: t.tab.id, ...a }); if (r && r.elements) t.els = r.elements; return r; },
     screenshot: (a = {}) => t.raw('cua_alans_way_screenshot', { tabId: t.tab.id, ...a }),
     tools: async () => (await client.listTools()).tools.map((x) => x.name),

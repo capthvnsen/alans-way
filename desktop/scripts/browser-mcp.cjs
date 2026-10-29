@@ -157,7 +157,7 @@ const tools = [
 - click, type, select and friends take a ref, an exact name ({action:"click",name:"Next"}; role and row narrow it), a selector, or x,y. drag ends at toRef, toSelector, or toX,toY; press sends a key.
 - Consequential approval requires a fresh observed ref or unique exact name. If approval_invalid or page_changed reports a changed document/target, take a fresh snapshot, review it, and request a new approval; an old approval cannot move to a continued tab. approval_binding_unavailable requires updating the browser host/connector before approving again.
 - select takes the option by any of value, label, option, text or choice and answers matched; a miss lists the options.
-- wait takes a selector, text or url, and gone:true waits until it disappears. read returns {text} capped by maxChars (default 600). read with list:{selector,fields:{name:{type:"text"|"href",selector?}}} returns up to 100 items. batch runs up to 25 steps; its reply has results[] per step plus one final effect.
+- wait takes a selector, text or url, and gone:true waits until it disappears. read returns {text} capped by maxChars (default 600). read with list:{selector,fields:{name:{type:"text"|"href"|"attr",attr?,selector?}}} returns up to 100 items; attr reads class, id, title, alt, role, datetime or an aria- state/label (a star rating kept in a class name). batch runs up to 25 steps; its reply has results[] per step plus one final effect.
 - Observed search ref: batch[type(ref,"query"),press(Enter)].
 - opened[] lists tabs the action opened; dialogs[] says how JS dialogs were answered (a confirm or prompt is dismissed unless the action passed dialog:{accept:true, text}).
 - navigate, back, forward and reload move between pages. claim and release change control; claim returns a fresh epoch.
@@ -382,7 +382,8 @@ async function request(endpoint, method = 'GET', body, epoch, approvedConnection
   }
 }
 const server = new Server({ name: 'hermes-cua-alans-way', version: '0.1.0' }, { capabilities: { tools: {} } });
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+// shortcut: Hermes keys omit app version and env, so startup may reuse schemas for 60s; version the config if immediate invalidation is needed.
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools, ttlMs: 60_000 }));
 server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => calls.run(
   context(params._meta?.['alans-way/remainingMs'], extra.signal, params.name.startsWith('workspace_computer_') && params.name !== 'workspace_computer_action' ? READ_BUDGET_MS : Infinity), async () => {
   try {
