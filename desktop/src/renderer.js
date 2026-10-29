@@ -478,7 +478,10 @@ function render(next) {
   handoffButton.classList.toggle('hidden', !canHandoff);
   handoffButton.disabled = !canHandoff || handoffBusy;
   handoffButton.textContent = handoffBusy ? 'Moving…' : handedOff ? 'Move back' : `Move to ${remoteName()}`;
-  handoffButton.title = handedOff ? `Bring the ${remoteName()} copy of this page back to your ${thisComputer()}` : `Move ${agentName || 'the agent'}’s page to the ${remoteName()} desktop`;
+  handoffButton.title = `${handedOff ? `Bring the ${remoteName()} copy of this page back to your ${thisComputer()}` : `Move ${agentName || 'the agent'}’s page to the ${remoteName()} desktop`}. ${state.carrySignIns ? 'Its sign-in cookies go along over Tailscale; passwords and site storage stay.' : 'Sign-ins stay here (Settings › General).'}`;
+  // The VM resumed agent tabs while this computer slept; say so once.
+  const continued = state.continuedNotice;
+  if (continued && !resumeToasts.has(`continued:${continued.at}`)) { resumeToasts.add(`continued:${continued.at}`); toast(`${continued.count === 1 ? 'A task' : `${continued.count} tasks`} continued on the ${remoteName()} while this computer was away. Press Move back to bring ${continued.count === 1 ? 'it' : 'one'} here.`); }
   // The bot's note is plain text from the page side of the trust line: it
   // only ever reaches the DOM through textContent.
   const handbackTab = remote ? state.tabs.find(item => item.id === state.activeVpsTabId && item.host === 'vps') : tab;
@@ -1367,7 +1370,7 @@ const SETTINGS_SECTIONS = [
   { id: 'browser-connector', category: 'connections', title: 'This computer', description: 'Browser tabs and logins stay here.', words: 'browser connector local api pair connection token app data copy open details', mount: mountBrowserConnector },
   { id: 'agent-setup', category: 'connections', title: 'Agent machine', description: 'Your existing Hermes machine.', words: 'agent setup remote connection cloud setup server hermes ssh address gateway tailscale wizard connect migrate manual command update prompt copy save addresses run bot', mount: mountAgentSetup },
   { id: 'remote-desktop', category: 'connections', title: 'Remote desktop · Optional', description: 'Viewer only, separate from agent setup.', words: 'remote connection desktop preview vps vm novnc vnc tailscale watch macos linux viewer address save computer runs platform corner', mount: mountRemoteConnection },
-  { id: 'updates', category: 'support', title: 'Updates', description: 'Review version and update status for this app, Hermes and the agent plugin.', words: 'update status versions check refresh restart available errors hermes plugin', mount: mountSettingsUpdates },
+  { id: 'updates', category: 'support', title: 'Updates', description: 'Choose Stable or Nightly and review version and update status for this app, Hermes and the agent plugin.', words: 'update status versions check refresh restart available errors hermes plugin release channel stable nightly', mount: mountSettingsUpdates },
   { id: 'diagnostics', category: 'support', title: 'Diagnostics and help', description: 'Check this computer, your connection and the server. Copy a report or get help from the team.', words: 'diagnostics support help setup check troubleshoot error report discord', mount: mountSettingsDiagnostics },
 ];
 function settingsSearchText(value) { return value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim(); }
@@ -1712,10 +1715,12 @@ function openSettingsDetail(open) {
 function mountTabBehavior(body) {
   const links = settingsToggle(body, 'settings-auto-links', 'Open links sent in bot chats as tabs', 'autoOpenLinks');
   const takeover = settingsToggle(body, 'settings-auto-takeover', 'Let bots take over tabs automatically', 'autoTakeover');
+  const signIns = settingsToggle(body, 'settings-carry-sign-ins', 'Carry sign-ins when a task moves to the VM', 'carrySignIns');
   const detail = element('details', 'settings-details'); detail.append(element('summary', '', 'How tab control works'));
   detail.append(element('p', 'settings-note', 'Links open local tabs assigned to the bot, so both of you can see them. If this computer is unreachable, the bot opens its own copy on the remote desktop.'));
   detail.append(element('p', 'settings-note', 'Automatic takeover lets a bot take back a tab after you pause for 3 seconds. Take back keeps bots off it for a minute. A tab handed to you, or one you are recording, stays yours. With automatic takeover off, taking control blocks new agent actions on that tab. Remote desktop control uses the existing shared desktop and does not pause your bots.'));
-  body.append(detail); return () => { links(); takeover(); };
+  detail.append(element('p', 'settings-note', 'When this computer sleeps, or you press Move, a bot’s page continues on the VM. With sign-ins carried, the page’s own cookies go too (including session cookies), so the VM stays signed in. Passwords, site storage (localStorage, IndexedDB), partitioned cookies and the page’s memory never move. Cookies only travel over SSH to a VM on your Tailscale network; any other address gets the page without sign-ins.'));
+  body.append(detail); return () => { links(); takeover(); signIns(); };
 }
 function mountPrimaryBot(body) {
   const field = element('div', 'field'), label = element('label', '', 'Primary bot'), select = element('select'); select.id = 'primary-bot'; label.htmlFor = select.id; field.append(label, select); body.append(field);
@@ -1866,6 +1871,12 @@ function mountAgentSetup(body) {
   return refresh;
 }
 function mountSettingsUpdates(body) {
+  const channel = element('select', 'settings-select'); channel.id = 'settings-release-channel'; channel.setAttribute('aria-label', 'Release channel');
+  for (const [value, label] of [['stable', 'Stable (default)'], ['nightly', 'Nightly (less tested)']]) { const option = element('option', '', label); option.value = value; channel.append(option); }
+  const current = element('p', 'settings-note'), channelNote = element('p', 'settings-note', 'Nightly follows daily builds from main and is less tested. Channel changes apply after you quit and reopen the app. Returning to Stable waits for a newer stable version; it never downgrades.');
+  body.append(current, channel, channelNote); const channelStatus = settingsStatus(body);
+  channel.onchange = async () => { await runSettingsAction(channel, channelStatus, () => command('settings', { releaseChannel: channel.value }), 'Saving channel…', 'Channel saved. Quit and reopen the app to apply it.'); channel.value = state.releaseChannel || 'stable'; };
+
   const summary = element('p', 'settings-update-summary'), versions = element('p', 'settings-note settings-version-detail'), error = element('p', 'settings-note');
   summary.id = 'settings-update-summary'; summary.setAttribute('role', 'status'); body.append(summary, versions, error);
   settingsAction(body, 'Check for updates', 'versions-refresh', {}, { busy: 'Requesting update status…', success: 'Update check requested. New version information appears here when it is available.' });
@@ -1874,6 +1885,8 @@ function mountSettingsUpdates(body) {
   hermes.onclick = async () => { const reply = await runSettingsAction(hermes, status, () => api.command('hermes-update'), 'Updating Hermes on the agent machine. This can take a few minutes.'); if (reply.ok) { status.textContent = reply.result?.detail || 'The update returned no result.'; status.classList.toggle('error', !reply.result?.ok); } };
   return () => {
     const v = state.versions || {}, u = state.update || {}, run = state.updateAll || {};
+    channel.value = state.releaseChannel || 'stable';
+    current.textContent = `Current channel: ${state.activeReleaseChannel === 'nightly' ? 'Nightly (less tested)' : 'Stable'} · Installed v${state.version}${state.releaseChannel !== state.activeReleaseChannel ? ' · Restart required to apply selected channel' : ''}`;
     summary.textContent = run.busy || u.busy ? 'Updating…' : u.ready ? 'Restart is ready to finish the app update.' : v.hasUpdate || u.available ? 'Updates are available.' : v.tooltip ? 'No available updates reported.' : 'Version status has not been checked yet.';
     versions.textContent = v.tooltip || v.text || `Alan’s Workspace ${state.version || ''}`;
     error.textContent = u.error || run.summary || ''; error.classList.toggle('error', !!u.error);
@@ -2059,7 +2072,7 @@ $('handoff-button').onclick = async () => {
     const record = await command('handoff', back
       ? { id: back, destination: 'mac', includeDrafts: true }
       : { id: tab.id, destination: 'vps', includeDrafts: true });
-    if (record) toast(`${back ? `Moved back to your ${thisComputer()}` : `Moved to the ${remoteName()}`}.${record.verification && record.verification !== 'ready' ? ' Review the page before the agent continues.' : ''}`);
+    if (record) toast(`${back ? `Moved back to your ${thisComputer()}` : `Moved to the ${remoteName()}`}${record.signIns ? ` with ${record.signIns} sign-in cookie${record.signIns === 1 ? '' : 's'}` : record.signInsCarried ? '' : ', without sign-ins'}.${record.verification && record.verification !== 'ready' ? ' Review the page before the agent continues.' : ''}`);
   } finally { handoffBusy = false; render(state); }
 };
 $('ask-bot').onclick = () => command('share-page');

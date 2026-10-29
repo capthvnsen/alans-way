@@ -22,6 +22,18 @@ enum TelegramKeychain {
         return (apiID, apiHash)
     }
 
+    static func deleteCredentials() throws {
+        for account in [apiIDAccount, apiHashAccount] {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account
+            ]
+            let status = SecItemDelete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else { throw TelegramKeychainError(status) }
+        }
+    }
+
     static func databaseEncryptionKey() throws -> Data {
         if let key = try get(account: databaseKeyAccount) { return key }
         var key = Data(count: 32)

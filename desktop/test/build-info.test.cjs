@@ -130,3 +130,13 @@ test('no git or no origin/main is dev', () => {
 test('a tarball made by the install scripts is main without git', () => {
   assert.equal(run({ git: fakeGit({ broken: true }), tarball: true }).channel, 'main');
 });
+
+test('nightly workflow version stamp is a clean prerelease with commit provenance', () => {
+  const state = workflowState('0.21.6-nightly.20261028');
+  state.env.GITHUB_REF_NAME = 'nightly-20261028';
+  const info = run(state);
+  assert.equal(info.channel, 'prerelease');
+  assert.equal(info.version, '0.21.6-nightly.20261028');
+  assert.equal(info.dirty, false);
+  assert.equal(info.commit, 'abc1234');
+});

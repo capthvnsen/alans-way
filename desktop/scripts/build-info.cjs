@@ -9,6 +9,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { isDeepStrictEqual } = require('node:util');
 const { checkTag } = require('./check-version.cjs');
+const { nightlyBuild } = require('../src/release-channel.cjs');
 
 const ROOT = path.join(__dirname, '..', '..');
 
@@ -20,6 +21,8 @@ function tryGit(git, args) {
 // The release gate runs before npm version, but this script runs afterward.
 // Keep checkTag's gate rules intact; accept either the base or exact RC stamp.
 function buildTag(name, version) {
+  const day = /^nightly-(\d{8})$/.exec(name)?.[1];
+  if (day) return { ok: new RegExp(`^\\d+\\.\\d+\\.\\d+-nightly\\.${day}$`).test(version), version };
   const base = version.replace(/-rc\.(?:0|[1-9]\d*)$/, '');
   const tag = checkTag(name, base);
   return tag.ok && (version === base || version === tag.version) ? tag : { ok: false };
@@ -33,7 +36,8 @@ function onlyVersionStamp(status, git, readFile, tag) {
     return files.every(line => {
       const file = line.slice(3);
       const original = JSON.parse(tryGit(git, ['show', `HEAD:${file}`]));
-      if (!checkTag(`v${tag.version}`, original.version).ok) return false;
+      const day = /-nightly\.(\d{4})(\d{2})(\d{2})$/.exec(tag.version);
+      if (day ? nightlyBuild(original.version, new Date(`${day[1]}-${day[2]}-${day[3]}`)).version !== tag.version : !checkTag(`v${tag.version}`, original.version).ok) return false;
       const stamped = JSON.parse(readFile(file));
       original.version = tag.version;
       if (file.endsWith('package-lock.json') && original.packages?.['']) original.packages[''].version = tag.version;

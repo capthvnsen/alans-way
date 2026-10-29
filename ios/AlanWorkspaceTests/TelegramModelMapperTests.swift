@@ -104,6 +104,37 @@ final class TelegramModelMapperTests: XCTestCase {
         XCTAssertEqual(match?.absoluteString, "https://voice.example.test/call?ticket=once")
     }
 
+    func testOfflineAndReconnectingStatesAreShownButAWorkingConnectionIsNot() {
+        XCTAssertEqual(TelegramModelMapper.connectionStatus(.connectionStateWaitingForNetwork), "Waiting for network…")
+        XCTAssertEqual(TelegramModelMapper.connectionStatus(.connectionStateConnecting), "Connecting…")
+        XCTAssertEqual(TelegramModelMapper.connectionStatus(.connectionStateUpdating), "Updating…")
+        XCTAssertNil(TelegramModelMapper.connectionStatus(.connectionStateReady))
+    }
+
+    func testNetworkPathIsReportedToTelegramAsItsInterfaceType() {
+        XCTAssertEqual(TelegramModelMapper.networkType(satisfied: false, wifi: true, cellular: false), .networkTypeNone)
+        XCTAssertEqual(TelegramModelMapper.networkType(satisfied: true, wifi: true, cellular: true), .networkTypeWiFi)
+        XCTAssertEqual(TelegramModelMapper.networkType(satisfied: true, wifi: false, cellular: true), .networkTypeMobile)
+        XCTAssertEqual(TelegramModelMapper.networkType(satisfied: true, wifi: false, cellular: false), .networkTypeOther)
+    }
+
+    func testShortHistoryPageStillOffersEarlierMessages() {
+        // TDLib often answers the first history request with only the locally cached last message.
+        let pushed = text(id: 30)
+        let page = TelegramHistory.merge(page: [pushed], into: [pushed])
+        XCTAssertFalse(page.hasMore, "A page with nothing new means the start of the chat was reached.")
+
+        let short = TelegramHistory.merge(page: [text(id: 20), text(id: 30)], into: [pushed])
+        XCTAssertEqual(short.messages.map(\.id), [20, 30])
+        XCTAssertTrue(short.hasMore)
+
+        XCTAssertFalse(TelegramHistory.merge(page: [], into: short.messages).hasMore)
+    }
+
+    private func text(id: Int64) -> TelegramMessage {
+        TelegramMessage(id: id, chatID: 4, senderName: "Bot", isOutgoing: false, date: .distantPast, text: "\(id)")
+    }
+
     private func message(id: Int64, chatID: Int64, senderID: Int64, isOutgoing: Bool,
                          title: String, kind: TelegramButtonKind) -> TelegramMessage {
         TelegramMessage(id: id, chatID: chatID, senderID: senderID, senderName: "Bot",
