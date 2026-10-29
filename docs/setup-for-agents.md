@@ -1,9 +1,10 @@
 # Set up Alan's Workspace (instructions for an AI agent)
 
-You are setting up three pieces for a human: the **Alan's Workspace desktop
-app** (installed as `alans-way-localapp`) on their computer, the **VPS** that
-runs their Hermes gateway and a cloud browser, and the **Alan's Way Plugin**
-(`alans-way` from alans-way-agents). Work through the stages in order. Each stage ends
+This is the **Hermes installation path** through [Alan's Way's four products](../README.md#what-to-install): **Alan's Workspace** on the person's computer, **Alan's CU MCP** (`workspace-mcp`, the Node server at `desktop/scripts/browser-mcp.cjs`) on the tool host, and **Alan's Plugin for Hermes** (`alans-way` and its provider from `alans-way-agents`) on the existing gateway/VM. The VM is infrastructure, not another product. The server stays in this repo.
+
+For **Alan's Plugin for Grok Bot**, use the [Grok package status](../README.md#4-alans-plugin-for-grok-bot) and [remote-agent connector guide](../desktop/docs/remote-agents.md) instead. Grok Bot cannot load Hermes plugins. Both plugin products read one shared persona/voice/proactivity/identity config spec in the agents repo; its canonical path and the Grok package install path remain [TODOs](products.md#shared-config-contract). This guide does not install that package or a new shared config implementation.
+
+Work through the Hermes stages in order. Each stage ends
 with a check; do not continue past a failing check.
 
 This guide is written for a Mac as the user's computer. When it is a Windows

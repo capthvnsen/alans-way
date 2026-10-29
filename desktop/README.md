@@ -1,6 +1,10 @@
 # Alan’s Workspace
 
-A free Mac desktop workspace with your Telegram bot chats on the left, real local Chromium tabs on the right, and a live VPS desktop in the corner. The dark three-pane layout follows the supplied Grok Bot reference. This is a functional first release for testing with Hermes bots.
+A Mac desktop workspace with your Telegram bot chats on the left, real Chromium tabs on the right, and a live VM desktop in the corner. Existing Windows/Linux builds share this source tree. The [iOS app](../ios/README.md) and [lid-close handoff](docs/handoff.md) are also part of Alan's Workspace.
+
+This directory also houses **Alan's CU MCP** (`workspace-mcp`), the shared Node computer-use server at `scripts/browser-mcp.cjs`. It stays here and serves any compatible MCP client. The separate **Alan's Plugin for Hermes** (Python) and **Alan's Plugin for Grok Bot** (skill + settings) live in [alans-way-agents](https://github.com/capthvnsen/alans-way-agents); both read one shared persona/voice/proactivity/identity spec. Grok Bot cannot load Hermes plugins. See [what to install](../README.md#what-to-install), [product boundaries and outstanding package/spec paths](../docs/products.md), and [license coverage](../docs/licensing.md).
+
+Downloads and community: [openalan.com](https://openalan.com) · [Discord](https://discord.gg/jBQCPUsVE).
 
 ## Use it
 
@@ -21,6 +25,8 @@ Open **Alan’s Workspace** (listed as `alans-way-localapp`). The packaged bundl
 Local tabs share this app's browser profile, so cookies and login changes are shared between tabs and bots running in the app. This is separate from Chrome/Safari profiles and from the VPS browser. Your Telegram session is stored in a separate profile.
 
 ## Give Hermes the local browser tools
+
+This is the Hermes configuration example for **Alan's CU MCP**, not a requirement to install Hermes for every client. See the [generic MCP client example](../README.md#2-alans-cu-mcp) or [remote agents](docs/remote-agents.md) for Grok Bot and other clients. The `workspace-mcp` product name does not change the script path, existing tool names, or server keys in current Hermes configurations.
 
 Node 20+ is needed for the MCP connector; the desktop app itself includes its runtime. The connector is included in the installed app at:
 

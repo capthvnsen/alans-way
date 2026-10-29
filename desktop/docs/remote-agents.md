@@ -1,4 +1,8 @@
-# Use Alan's Workspace from any remote agent
+# Connect any remote agent to Alan's CU MCP
+
+**Alan's CU MCP** (`workspace-mcp`) is the shared Node computer-use product in `capthvnsen/alans-way`, with its server entry at `desktop/scripts/browser-mcp.cjs`. It stays there. **Alan's Workspace** is the app/host it controls. **Alan's Plugin for Hermes** and **Alan's Plugin for Grok Bot** live in [alans-way-agents](https://github.com/capthvnsen/alans-way-agents) and read one shared persona/voice/proactivity/identity config spec. Grok Bot's plugin is a skill + settings package; it cannot load Python Hermes plugins.
+
+This guide installs/configures the **CU MCP connection**, not the Grok skill/settings package. The published agents tree still needs a canonical Grok package install path and shared spec path; see [product boundaries and TODOs](../../docs/products.md). The router/setup scripts below currently ship under the existing agents repo's `alans-way/scripts/` path. That packaging does not require a generic MCP client to load a Hermes plugin. For local clients, use the [direct stdio example](../../README.md#2-alans-cu-mcp). Community: [Discord](https://discord.gg/jBQCPUsVE) · [openalan.com](https://openalan.com).
 
 Any MCP client can use the same Workspace browser (`cua_alans_way_*`) and the same computer use (`workspace_computer_*`) that Hermes uses, with the same failover to the VM browser when your computer sleeps. Grok Bot is the first non-Hermes client. Each agent gets its own bot ID, its own tabs and its own approval.
 
@@ -34,7 +38,7 @@ On the VM, as the user Hermes runs as:
 
 Remove an agent with `--remove --bot-id BOT_ID`; only its key line goes.
 
-**Grok Bot:** Settings → Add a custom connector → paste the JSON. Optional custom instruction: "Prefer the Alan's Workspace tools for the browser and for my Mac." To make Grok always use them, set Settings → Computer → Your computer → Never allow.
+**Grok Bot CU MCP connection:** Settings → Add a custom connector → paste the JSON. Optional custom instruction: "Prefer the Alan's Workspace tools for the browser and for my Mac." To make Grok always use them, set Settings → Computer → Your computer → Never allow. Installing the separate [Grok Bot skill/settings package](../../README.md#4-alans-plugin-for-grok-bot) remains an additional step once its package/install path is published.
 
 ## Setup (HTTP bridge)
 

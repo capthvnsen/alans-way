@@ -1,4 +1,6 @@
-# Deploy Hermes- Alan's way to another Hermes instance
+# Deploy Alan's Workspace and CU MCP with an existing Hermes instance
+
+This guide covers three of [Alan's Way's four products](../README.md#what-to-install): **Alan's Workspace**, **Alan's CU MCP** (`workspace-mcp`, the Node server that stays in `desktop/`), and **Alan's Plugin for Hermes** from `alans-way-agents`. **Alan's Plugin for Grok Bot** is a separate skill + settings package in that agents repo; Grok Bot cannot load Hermes plugins. Use [remote-agent setup](../desktop/docs/remote-agents.md) for its CU MCP connection and [product boundaries](products.md) for Grok package/shared config publication TODOs. Both plugins read one persona/voice/proactivity/identity config spec; this deployment guide does not define a second spec.
 
 This is a manual setup today, with a stock Hermes gateway and an optional Mac
 profile. It does not require a Hermes fork. Desktop packaging targets Apple
@@ -15,12 +17,12 @@ Linux VPS.
 2. Assign an existing or new Telegram bot through native messaging setup. Verify
    its numeric ID with `getMe` and keep a single active owner of its token. Follow
    [agent setup](agent-setup.md) for profile and connector identity rules.
-3. Install the [agent plugin](https://github.com/capthvnsen/alans-way-agents)
+3. Install [Alan's Plugin for Hermes](https://github.com/capthvnsen/alans-way-agents)
    on the gateway host using its documented configuration and native plugin
    registration. Start with manual status/handoff verification before enabling
    optional proactive behavior. Each installation has its own credentials and
    device trust; do not distribute a user's app data or Hermes state directory.
-4. Install Hermes- Alan's way on your computer. Sign into Telegram locally and choose the bot
+4. Install Alan's Workspace on your computer. Sign into Telegram locally and choose the bot
    visibility/order in Settings. App browser logins belong to that installation.
 5. Configure a verified SSH route over Tailscale from the VPS to that computer (the connect scripts add the VPS key restricted to the tailnet). Launch
    `desktop/scripts/browser-mcp.cjs` on the Mac with this profile's numeric bot ID,
@@ -39,10 +41,11 @@ Linux VPS.
    Give each profile its own matching Telegram ID. The browser profile shares
    live logins; the broker restricts normal tools to assigned/granted tabs.
 8. Verify a Telegram request and reply; bounded Mac and VPS tab actions; human
-   **Take control**; and, if used, the backend cross-host handoff checkpoint
-   with a fixture (the app exposes no handoff button; live tabs are not
-   migrated). This release has one shared VPS desktop. Mac/VPS authentication
-   and arbitrary live page state remain host-specific. A managed tab takeover
+   **Take control**; and, if used, lid-close continuation and **Move to VM / Move back**
+   following the [handoff guide](../desktop/docs/handoff.md). Handoff rebuilds pages;
+   it does not migrate a live Chromium session. Review **Carry sign-ins** and
+   its Tailscale-only cookie-transfer limits. This release has one shared VPS desktop.
+   A managed tab takeover
    blocks its browser connector; generic desktop automation is coordinated
    separately.
 
@@ -63,11 +66,10 @@ force-kill that can corrupt gateway state. If the program is stopped,
 `supervisorctl start <program>`.
 
 Chrome extensions are a separate browser capability. The current Electron app
-ships no extension installer or pinning bar. Electron supports a subset of
-Chrome APIs, and 1Password desktop pairing has its own browser-signing
-requirements. Check extension compatibility and license requirements before
-selecting a browser extension layer. Password-vault integration needs an actual
-user-authorized test, not a decorative toolbar button.
+has an extension installer and pinning controls; see the [desktop guide](../desktop/README.md).
+Compatibility remains extension-dependent, and 1Password desktop pairing has its
+own browser-signing requirements. Password-vault integration needs an actual
+user-authorized test.
 
 ## Reboot resilience
 

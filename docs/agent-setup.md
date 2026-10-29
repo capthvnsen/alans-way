@@ -8,7 +8,9 @@ token. Add specialists only when there is a clear independent role.
 
 ## Workspace behavior
 
-Install the [Alan's Way Plugin](https://github.com/capthvnsen/alans-way-agents)
+This is the **Alan's Plugin for Hermes** setup path. **Alan's Workspace** is the app and **Alan's CU MCP** (`workspace-mcp`) is the shared Node tool server in this repo; **Alan's Plugin for Grok Bot** is a separate skill/settings package in the agents repo. The plugins share one persona/voice/proactivity/identity config spec; package/spec publication paths remain [TODOs](products.md#shared-config-contract). See [all four products and installs](../README.md#what-to-install). Grok Bot cannot load Hermes plugins.
+
+Install [Alan's Plugin for Hermes](https://github.com/capthvnsen/alans-way-agents)
 on the gateway host — its bundled `workspace-operations` skill covers browser
 and handoff behavior for this release, including human takeover and the limits
 of execution handoff. A short pointer in the profile's user-managed `SOUL.md`
