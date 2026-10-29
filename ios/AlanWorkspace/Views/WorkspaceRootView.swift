@@ -2,12 +2,16 @@ import SwiftUI
 
 struct WorkspaceRootView: View {
     @Environment(TelegramStore.self) private var telegram
+    @Environment(WorkspaceSettings.self) private var settings
+    @State private var welcomeDismissed = false
 
     var body: some View {
         VStack(spacing: 0) {
             Group {
                 if telegram.authState == .ready {
-                    AgentListView()
+                    if settings.hasCompletedOnboarding { AgentListView() } else { OnboardingBotSetupView() }
+                } else if !settings.hasCompletedOnboarding && !welcomeDismissed {
+                    OnboardingWelcomeView { welcomeDismissed = true }
                 } else {
                     TelegramSignInView()
                 }
@@ -26,6 +30,7 @@ struct WorkspaceRootView: View {
 
 struct TelegramSignInView: View {
     @Environment(TelegramStore.self) private var telegram
+    @Environment(WorkspaceSettings.self) private var settings
     @State private var apiID = ""
     @State private var apiHash = ""
     @State private var phone = ""
@@ -42,7 +47,22 @@ struct TelegramSignInView: View {
         case .waitEmailAddress, .waitEmailCode: "Check your email"
         case .waitPassword: "One more step"
         case .waitPhoneNumber: "Bring your agents along."
-        default: "Your workspace,\nwherever you are."
+        case .closed: "Your workspace,\nwherever you are."
+        default: "Connect Telegram"
+        }
+    }
+
+    private var step: String {
+        switch telegram.authState {
+        case .configuring, .error: "STEP 1 OF 3 · TELEGRAM APP"
+        default: "STEP 2 OF 3 · SIGN IN"
+        }
+    }
+
+    private var showsAppCredentials: Bool {
+        switch telegram.authState {
+        case .configuring, .error: true
+        default: false
         }
     }
 
@@ -57,16 +77,19 @@ struct TelegramSignInView: View {
                     }
                     .padding(.top, 24)
 
-                    ZStack {
-                        Circle().fill(WorkspaceTheme.mint.opacity(0.035)).frame(width: 270, height: 270)
-                        Circle().stroke(WorkspaceTheme.mint.opacity(0.13), lineWidth: 0.5).frame(width: 265, height: 265)
-                        Image("hermes").resizable().scaledToFit().frame(height: 255)
+                    if !showsAppCredentials {
+                        ZStack {
+                            Circle().fill(WorkspaceTheme.mint.opacity(0.035)).frame(width: 270, height: 270)
+                            Circle().stroke(WorkspaceTheme.mint.opacity(0.13), lineWidth: 0.5).frame(width: 265, height: 265)
+                            Image("hermes").resizable().scaledToFit().frame(height: 255)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 10)
+                        .accessibilityHidden(true)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 10)
-                    .accessibilityHidden(true)
 
                     VStack(alignment: .leading, spacing: 12) {
+                        if !settings.hasCompletedOnboarding && telegram.authState != .closed { OnboardingStepLabel(text: step) }
                         Text(title).font(.system(size: 34, weight: .medium, design: .serif)).tracking(-0.7)
                         Text(explanation)
                             .font(.system(size: 15)).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(5)
@@ -93,14 +116,11 @@ struct TelegramSignInView: View {
                     .opacity(canSubmit ? 1 : 0.5)
                     .accessibilityIdentifier("signInContinue")
 
-                    if telegram.authState == .configuring || telegram.authState == .closed {
-                        VStack(alignment: .leading, spacing: 15) {
-                            feature("bubble.left.and.bubble.right", "Your existing Telegram conversations")
-                            feature("waveform", "Talk to the agent you already know")
-                            feature("desktopcomputer", "A window into your agent’s computer")
-                        }.padding(.top, 8)
-                        Link("Telegram developer setup", destination: URL(string: "https://my.telegram.org/apps")!)
-                            .font(.footnote).foregroundStyle(WorkspaceTheme.secondary)
+                    if telegram.authState == .waitPhoneNumber && !telegram.hasBundledCredentials {
+                        Button("Use different app credentials", action: resetCredentials)
+                            .font(.footnote).foregroundStyle(WorkspaceTheme.secondary).frame(maxWidth: .infinity)
+                            .disabled(busy)
+                            .accessibilityIdentifier("resetAppCredentials")
                     }
                     Spacer(minLength: 12)
                     Text("CONNECTED THROUGH TELEGRAM")
@@ -126,7 +146,7 @@ struct TelegramSignInView: View {
         case .waitEmailAddress: "Telegram requires a sign-in email for this account. Enter the email address you use with Telegram."
         case .waitEmailCode: "Enter the verification code Telegram sent to your email address."
         case .closed: "Sign in to Telegram again using the app credentials saved securely on this device."
-        default: "Chat, call, and watch your Hermes agents work. Connect your Telegram account to pick up where you left off."
+        default: "Telegram asks every app to use its own free API ID. Create one once, then sign in with your usual Telegram account."
         }
     }
 
@@ -156,18 +176,40 @@ struct TelegramSignInView: View {
                 .keyboardType(.numberPad).textContentType(.oneTimeCode).modifier(WorkspaceField())
                 .accessibilityIdentifier("telegramEmailCode")
         default:
-            VStack(alignment: .leading, spacing: 10) {
-                Text("CONNECT THIS BUILD").font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1.5)
-                    .foregroundStyle(WorkspaceTheme.secondary)
-                TextField("Telegram API ID", text: $apiID)
+            VStack(alignment: .leading, spacing: 12) {
+                instruction(1, "Open my.telegram.org and log in with your Telegram phone number.")
+                Link(destination: URL(string: "https://my.telegram.org/apps")!) {
+                    Label("Open my.telegram.org/apps", systemImage: "arrow.up.right.square")
+                        .font(.system(size: 14, weight: .medium))
+                }
+                .padding(.leading, 36)
+                .accessibilityIdentifier("telegramDeveloperLink")
+                instruction(2, "Choose API development tools and create an app. Any title works, such as Alan’s Workspace.")
+                instruction(3, "Copy App api_id and App api_hash here.")
+                TextField("App api_id", text: $apiID)
                     .keyboardType(.numberPad).modifier(WorkspaceField()).accessibilityIdentifier("telegramAPIID")
-                SecureField("Telegram API hash", text: $apiHash)
+                SecureField("App api_hash", text: $apiHash)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().modifier(WorkspaceField())
                     .accessibilityIdentifier("telegramAPIHash")
-                Text("For this private build, enter your Telegram app credentials. They are stored securely on this device.")
+                if !apiID.isEmpty && !apiHash.isEmpty, let problem = TelegramAppCredentials.problem(apiID: apiID, apiHash: apiHash) {
+                    Text(problem).font(.caption).foregroundStyle(.orange).accessibilityIdentifier("telegramCredentialHint")
+                }
+                Label("Saved only in this device’s Keychain. This is not your bot token; never share the API hash.", systemImage: "lock")
                     .font(.caption).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private func instruction(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("\(number)").font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .frame(width: 24, height: 24).background(WorkspaceTheme.surface, in: Circle())
+                .foregroundStyle(WorkspaceTheme.mint)
+            Text(text).font(.system(size: 14)).foregroundStyle(WorkspaceTheme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private var authError: String? {
@@ -183,7 +225,7 @@ struct TelegramSignInView: View {
         case .waitPassword: !password.isEmpty
         case .waitEmailAddress: email.contains("@")
         case .waitEmailCode: !emailCode.trimmingCharacters(in: .whitespaces).isEmpty
-        default: (Int32(apiID) ?? 0) > 0 && apiHash.trimmingCharacters(in: .whitespacesAndNewlines).count >= 16
+        default: TelegramAppCredentials.problem(apiID: apiID, apiHash: apiHash) == nil
         }
     }
 
@@ -192,10 +234,12 @@ struct TelegramSignInView: View {
         return telegram.authState == .configuring ? "Connect Telegram" : "Continue"
     }
 
-    private func feature(_ icon: String, _ text: String) -> some View {
-        HStack(spacing: 13) {
-            Image(systemName: icon).font(.system(size: 16)).frame(width: 22).foregroundStyle(WorkspaceTheme.mint)
-            Text(text).font(.system(size: 13)).foregroundStyle(WorkspaceTheme.secondary)
+    private func resetCredentials() {
+        busy = true; errorText = nil
+        Task {
+            defer { busy = false }
+            do { try await telegram.resetAppCredentials(); phone = "" }
+            catch { errorText = TelegramErrorText.describe(error) }
         }
     }
 
@@ -212,11 +256,11 @@ struct TelegramSignInView: View {
                 case .waitEmailAddress: try await telegram.submitEmailAddress(email)
                 case .waitEmailCode: try await telegram.submitEmailCode(emailCode); emailCode = ""
                 default:
-                    guard let id = Int32(apiID) else { return }
+                    guard let id = Int32(apiID.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
                     try await telegram.configure(apiID: id, apiHash: apiHash.trimmingCharacters(in: .whitespacesAndNewlines))
                     apiHash = ""
                 }
-            } catch { errorText = error.localizedDescription }
+            } catch { errorText = TelegramErrorText.describe(error) }
         }
     }
 }

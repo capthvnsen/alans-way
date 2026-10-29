@@ -17,6 +17,7 @@ public final class TelegramStore {
     public private(set) var errorMessage: String?
     public private(set) var isInterfacePreview = false
     public var currentUserID: Int64? { userID }
+    public var hasBundledCredentials: Bool { bundledCredentials() != nil }
 
     @ObservationIgnored private var manager: TDLibClientManager?
     @ObservationIgnored private var client: TDLibClient?
@@ -93,6 +94,24 @@ public final class TelegramStore {
             return
         }
         try startClient()
+    }
+
+    /// Discards saved app credentials before sign-in completes so a mistyped API ID or hash can be entered again.
+    public func resetAppCredentials() async throws {
+        guard authState != .ready else { return }
+        if let client {
+            // Destroying the unauthorized local database lets TDLib accept a different API ID.
+            _ = try await client.destroy()
+            let deadline = Date().addingTimeInterval(10)
+            while self.client != nil && Date() < deadline { try await Task.sleep(nanoseconds: 100_000_000) }
+            self.client = nil
+        }
+        try TelegramKeychain.deleteCredentials()
+        apiID = nil
+        apiHash = nil
+        waitingForParameters = false
+        parametersRequestInFlight = false
+        authState = .configuring
     }
 
     public func submitPhoneNumber(_ phone: String) async throws {
@@ -345,7 +364,8 @@ public final class TelegramStore {
     private func startClient() throws {
         guard let apiID, let apiHash else { throw TelegramStoreError.notConfigured }
         if client != nil { return }
-        let manager = TDLibClientManager()
+        // One manager for the app's lifetime: each runs its own td_receive loop, and TDLib aborts on concurrent receives.
+        let manager = self.manager ?? TDLibClientManager()
         self.manager = manager
         let newClient = manager.createClient { [weak self] data, client in
             guard let update = try? client.decoder.decode(Update.self, from: data) else { return }
@@ -388,7 +408,6 @@ public final class TelegramStore {
                 historyLoadedChatIDs.removeAll()
                 selectedChatID = nil
                 self.client = nil
-                self.manager = nil
                 waitingForParameters = false
                 parametersRequestInFlight = false
             default:
@@ -631,8 +650,9 @@ public final class TelegramStore {
     }
 
     private func fail(_ error: Swift.Error) {
-        errorMessage = error.localizedDescription
-        authState = .error(error.localizedDescription)
+        let text = TelegramErrorText.describe(error)
+        errorMessage = text
+        authState = .error(text)
     }
 }
 
