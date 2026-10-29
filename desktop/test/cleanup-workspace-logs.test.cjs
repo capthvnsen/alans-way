@@ -34,7 +34,6 @@ test('only confirmed connection refusal counts as offline; a live unauthorized b
 
 test('root apply rotates synthetic bot credentials and removes only known logs and broker tokens', { skip: process.platform !== 'linux' || process.getuid?.() !== 0 }, async t => {
   const { provision } = require('../scripts/bot-credential.cjs');
-  const { authorizeBot } = require('../src/bot-auth.cjs');
   const base = fs.mkdtempSync(path.join(os.tmpdir(),'cleanup-apply-'));fs.chmodSync(base,0o711);
   t.after(()=>fs.rmSync(base,{recursive:true,force:true}));
   const root=path.join(base,'broker'),exports=path.join(base,'exports'),uid=60000;
@@ -56,7 +55,9 @@ test('root apply rotates synthetic bot credentials and removes only known logs a
   // Registry owner is the synthetic broker, so verify revocation in that UID.
   const probe=`const {authorizeBot}=require(process.argv[1]);process.exit(authorizeBot(process.argv[2],require('node:fs').readFileSync(0,'utf8'),'a')?0:1);`;
   const {spawnSync}=require('node:child_process');
-  const check=token=>spawnSync(process.execPath,['-e',probe,require.resolve('../src/bot-auth.cjs'),registry],{uid,gid:uid,input:'Bearer '+token});
+  const modules=path.join(base,'modules');fs.mkdirSync(modules,{mode:0o755});
+  for(const name of ['bot-auth.cjs','core.cjs'])fs.copyFileSync(require.resolve('../src/'+name),path.join(modules,name));
+  const check=token=>spawnSync(process.execPath,['-e',probe,path.join(modules,'bot-auth.cjs'),registry],{uid,gid:uid,cwd:base,input:'Bearer '+token});
   assert.equal(check(old).status,1);
   const current=JSON.parse(fs.readFileSync(args.output)).token;assert.ok(current!==old,'bot credential rotated');assert.equal(check(current).status,0);
   assert.doesNotMatch(JSON.stringify(result),/synthetic/);
