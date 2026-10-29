@@ -37,7 +37,7 @@ CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ```
 
-Run the provisioner from `bot-credentials.md` for separate broker/bot users.
+Run the provisioner from [bot-auth.md](bot-auth.md) for separate broker/bot users.
 The egress installer does not create users, move profiles, configure DNS or
 start Chromium. Its apply mode loads a firewall service; this has not been
 run on a live workspace. Dry run never installs or changes anything.
