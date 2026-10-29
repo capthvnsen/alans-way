@@ -78,7 +78,7 @@ async function latestHostRelease(fetchImpl = fetch) {
 }
 
 function stableHostTarget(app, appUpdate, cache) {
-  const appTarget = appUpdate && isNewer(appUpdate, app) ? appUpdate : app;
+  const appTarget = appUpdate && compareVersions(appUpdate, app) === 1 ? appUpdate : app;
   return newestTag([`v${appTarget}`, `v${app}`]) || newestTag([`v${cache?.hostLatest}`]);
 }
 
@@ -118,7 +118,7 @@ function planSteps({ app, appUpdate = '', cache } = {}) {
     return comparison === null || comparison < 0;
   });
   if (!c.offline && (incomplete || c.pluginLatest && stale)) steps.push({ id: 'plugin', from: stale?.version || stale?.after || c.plugin || 'unverified', to: c.pluginLatest || 'latest' });
-  const appTarget = appUpdate && isNewer(appUpdate, app) ? appUpdate : app;
+  const appTarget = appUpdate && compareVersions(appUpdate, app) === 1 ? appUpdate : app;
   const hostTarget = stableHostTarget(app, appUpdate, c);
   if (c.where === 'server' && c.host && !c.offline && isNewer(hostTarget, c.host)) steps.push({ id: 'host', from: c.host, to: hostTarget });
   if (appTarget !== app) steps.push({ id: 'app', from: app, to: appTarget });

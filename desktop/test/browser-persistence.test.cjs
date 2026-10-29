@@ -272,7 +272,7 @@ for (const driver of ['electron-updater', 'self']) {
   test(`${driver} waits for browser storage before exiting into the update`, async () => {
     const events = [], drains = [];
     const context = vm.createContext({
-      updateDriver: driver, update: { tag: 'v1.0.1' }, isQuitting: false, path,
+      stagedAppVersion: () => '1.0.1', updateDriver: driver, update: { tag: 'v1.0.1' }, isQuitting: false, path,
       process: { execPath: '/fixture/Workspace.app/Contents/MacOS/Workspace' },
       savePreferences: () => events.push('tabs'),
       browserSessionStore: { save: async () => {} },
@@ -327,7 +327,7 @@ test('Mac self-update snapshots work done while the new bundle is being staged',
   let page = 'before staging';
   const saved = [];
   const context = vm.createContext({
-    updateDriver: 'self', update: { tag: 'v1.0.1' }, path, process: { execPath: '/fixture/Workspace.app/Contents/MacOS/Workspace' },
+    stagedAppVersion: () => '1.0.1', updateDriver: 'self', update: { tag: 'v1.0.1' }, path, process: { execPath: '/fixture/Workspace.app/Contents/MacOS/Workspace' },
     saveBrowserSession: async () => saved.push(page), app: { relaunch() {}, exit() {} },
     macUpdate: { installMacUpdate: async () => { page = 'after staging'; } },
   });
