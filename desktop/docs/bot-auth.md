@@ -1,5 +1,10 @@
 # Identity-bound bot connections
 
+Before migrating SSH settings, apply companion PR #273: it keeps the agent
+maintenance login separate from the browser broker login. Do not replace the
+agent account with the broker account in the legacy shared SSH field; that
+would direct Hermes configuration and environment writes to the wrong home.
+
 Run the desktop app / VPS broker and its SSH request helper as the human or
 broker OS user. Run each mutually untrusted bot as a different OS user, without
 sudo, broker groups, shared writable code or access to the broker's home.
