@@ -152,3 +152,32 @@ test('capture reports a plain failure when tools exist but cannot grab', () => {
   assert.equal(reply.code, 'failed');
   assert.match(reply.error, /Could not capture that window/);
 });
+
+// Hermes puts its bundled Python, which has no python3-gi, first on the PATH
+// of an MCP server's children (#220).
+test('the launcher ignores a python3 earlier on PATH when the system one exists', { skip: !fs.existsSync('/usr/bin/python3') }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vps-path-'));
+  fs.writeFileSync(path.join(dir, 'python3'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const launcher = path.join(__dirname, '../src/vps-computer.cjs');
+  const result = spawnSync(process.execPath, ['-e', `console.log(require(${JSON.stringify(launcher)}).python)`], {
+    encoding: 'utf8', env: { PATH: `${dir}:${process.env.PATH}` },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), '/usr/bin/python3');
+});
+
+test('a snapshot on the agent desktop fails loudly when python3-gi is missing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vps-nogi-'));
+  fs.mkdirSync(path.join(dir, 'gi'));
+  fs.writeFileSync(path.join(dir, 'gi', '__init__.py'), "raise ImportError('No module named gi')\n");
+  const input = '{"id":0,"cmd":"init","policy":{"exact":[],"contains":[]}}\n'
+    + `{"id":1,"cmd":"snapshot","pid":${process.pid}}\n`;
+  const result = spawnSync('python3', [script, 'serve'], {
+    encoding: 'utf8', input, env: { PATH: process.env.PATH, PYTHONPATH: dir, ALANS_WAY_AGENT_DESKTOP: '1' },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const reply = JSON.parse(result.stdout.trim().split('\n')[1]);
+  assert.equal(reply.ok, false, 'an empty tree must not pass for a working snapshot');
+  assert.equal(reply.code, 'needs_gi');
+  assert.match(reply.error, /python3-gi/);
+});

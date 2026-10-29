@@ -16,6 +16,10 @@ const SHORT_HREF = `(raw) => {
   } catch { return ''; }
 }`;
 const REFS_KEY = 'hw.refs';
+// Named attributes that carry what a page shows only through styling (a star
+// rating in a class name) or labels. No data-* or value-like names: those can
+// hold tokens or typed secrets.
+const READABLE_ATTR = /^(?:class|id|title|alt|role|datetime|aria-(?:label|current|checked|selected|pressed|expanded|disabled))$/;
 // Only selectors and typed fields enter this fixed reader; callers cannot supply code.
 function listReadExpression(body) {
   const invalid = message => { throw Object.assign(new Error(message), { status: 400 }); };
@@ -30,8 +34,9 @@ function listReadExpression(body) {
   if (!fields.length || fields.length > 10) invalid('list needs 1 to 10 fields.');
   for (const [name, field] of fields) {
     if (!/^[a-zA-Z][a-zA-Z0-9_]{0,39}$/.test(name) || !field || typeof field !== 'object' ||
-        !['text', 'href'].includes(field.type) || field.selector !== undefined && !selector(field.selector) ||
-        Object.keys(field).some(key => !['type', 'selector'].includes(key))) invalid('Each list field needs type text or href and an optional child selector.');
+        !['text', 'href', 'attr'].includes(field.type) || field.selector !== undefined && !selector(field.selector) ||
+        (field.type === 'attr') !== (field.attr !== undefined) || field.attr !== undefined && !READABLE_ATTR.test(field.attr) ||
+        Object.keys(field).some(key => !['type', 'selector', 'attr'].includes(key))) invalid('Each list field needs type text, href, or attr (class, id, title, alt, role, datetime, aria-label, aria-current, aria-checked, aria-selected, aria-pressed, aria-expanded or aria-disabled), and an optional child selector.');
   }
   const bound = (value, fallback, max, min) => {
     if (value === undefined) return fallback;
@@ -65,6 +70,7 @@ function listReadExpression(body) {
           const raw = el.getAttribute('href');
           if (raw) { try { const url = new URL(raw, el.baseURI); if (['http:', 'https:', 'mailto:'].includes(url.protocol) && !url.username && !url.password) value = url.href; } catch {} }
         }
+        if (el && field.type === 'attr') value = (el.getAttribute(field.attr) || '').replace(/\\s+/g, ' ').trim();
         if (value.length > o.maxFieldChars) truncated = true;
         item[name] = value.slice(0, o.maxFieldChars);
       }

@@ -11,6 +11,10 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { app, BrowserWindow, webContents, session, Notification } = require('electron');
+const { HANDBACK_MS } = require('../src/core.cjs');
+// The challenge fixtures name the real widget hosts: keep their frames off the network.
+app.commandLine.appendSwitch('host-resolver-rules', 'MAP *.google.com 127.0.0.1, MAP *.hcaptcha.com 127.0.0.1');
+const fixtures = path.join(__dirname, 'fixtures', 'challenges');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-captcha-'));
 process.env.HERMES_WORKSPACE_DATA = profile;
 process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
@@ -63,7 +67,12 @@ app.whenReady().then(async () => {
     return { status: res.status, data: await res.json() };
   };
 
-  server = http.createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end(pages[new URL(req.url, 'http://x').pathname] || '<title>frame</title>'); });
+  server = http.createServer((req, res) => {
+    const name = new URL(req.url, 'http://x').pathname;
+    const fixture = name.startsWith('/fixtures/') && path.join(fixtures, `${path.basename(name)}.html`);
+    res.setHeader('content-type', 'text/html');
+    res.end(fixture && fs.existsSync(fixture) ? fs.readFileSync(fixture) : pages[name] || '<title>frame</title>');
+  });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const tab = await invoke('create-tab', { url: `${base}/start` });
@@ -190,6 +199,45 @@ app.whenReady().then(async () => {
   await evaluate('document.getElementById("needs-you-give-back").click()');
   const manual = await waitFor(getState, state => state.tabs.find(item => item.id === tab.id).controller === 'agent');
   assert.equal(manual.tabs.find(item => item.id === tab.id).handback.resumed, undefined);
+
+  // The shared challenge fixtures, end to end: a reCAPTCHA puzzle open over a
+  // form is released to the person, they solve it (the token lands and the
+  // puzzle closes, as on recaptcha-solved), and the tab comes back by itself.
+  epoch = (await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' })).data.epoch;
+  const puzzle = await act({ action: 'navigate', url: `${base}/fixtures/recaptcha-challenge` });
+  assert.equal(puzzle.status, 200, JSON.stringify(puzzle.data));
+  assert.deepEqual([puzzle.data.challenge.kind, puzzle.data.challenge.blocking], ['recaptcha', true]);
+  assert.equal(puzzle.data.tab.controller, 'human');
+  assert.equal(puzzle.data.tab.handback.state, 'awaiting_human');
+  await new Promise(r => setTimeout(r, 3000));
+  assert.equal((await getState()).tabs.find(item => item.id === tab.id).controller, 'human', 'an unsolved puzzle keeps the tab with the person');
+  await evaluatePage(`(() => { document.querySelector('textarea[name="g-recaptcha-response"]').value = '03AFcWeA-solved-token'; document.querySelector('iframe[src*="bframe"]').closest('div[style*="z-index"]').remove(); })()`);
+  const solved = await waitFor(getState, state => state.tabs.find(item => item.id === tab.id).controller === 'agent', 15000, 'the give-back after the fixture puzzle');
+  const solvedTab = solved.tabs.find(item => item.id === tab.id);
+  assert.equal(solvedTab.handback.state, 'human_returned'); assert.equal(solvedTab.handback.resumed, 'auto');
+  assert.match((await act({ action: 'read' })).data.error, /^human_returned/, 'the bot is told the person gave the tab back');
+
+  // Timeout: a Cloudflare check nobody solves for 30 minutes stops holding the
+  // tab. The watch stands down (clearing it later gives nothing back on its own)
+  // and the bot may claim the tab again.
+  epoch = (await api(`/v1/tabs/${tab.id}`)).data.epoch;
+  const check = await act({ action: 'navigate', url: `${base}/fixtures/cloudflare` });
+  assert.equal(check.status, 200, JSON.stringify(check.data));
+  assert.deepEqual([check.data.challenge.kind, check.data.challenge.blocking], ['cloudflare', true]);
+  assert.equal(check.data.tab.handback.state, 'awaiting_human');
+  const realNow = Date.now;
+  Date.now = () => realNow() + HANDBACK_MS + 1000;
+  try {
+    await evaluatePage(`location.href = '/fixtures/plain'`);
+    await waitFor(() => evaluatePage('location.pathname === "/fixtures/plain" && document.readyState === "complete"').catch(() => false), Boolean);
+    await new Promise(r => setTimeout(r, 8000));
+    const lapsed = (await getState()).tabs.find(item => item.id === tab.id);
+    assert.equal(lapsed.controller, 'human', 'a lapsed hold is not handed back automatically');
+    assert.equal(lapsed.handback, null, 'the 30-minute hold has lapsed');
+    const reclaim = await api(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' });
+    assert.equal(reclaim.status, 200, JSON.stringify(reclaim.data));
+    assert.equal(reclaim.data.controller, 'agent');
+  } finally { Date.now = realNow; }
 
   console.log('PASS: a CAPTCHA is refused to the bot, handed to the human with a note, and handed back once it clears and the human stops typing.');
   server.close(); app.quit();

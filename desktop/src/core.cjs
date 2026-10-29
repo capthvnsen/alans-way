@@ -316,6 +316,14 @@ const TAKEOVER_GRACE_MS = 3000, TAKEOVER_MAX_MS = 10000;
 function takeoverDelay(lastInput, started, now = Date.now()) {
   return Math.max(0, Math.min((lastInput || 0) + TAKEOVER_GRACE_MS, started + TAKEOVER_MAX_MS) - now);
 }
+// A local agent tab the VM resumed from the mirror while this computer was
+// away: the same retired-source record a manual Move leaves, or null when the
+// tab is no longer the agent's copy to retire.
+function continuedOnVm(tab, destinationTabId, now = Date.now()) {
+  // Once retired for that VM tab, a human who gave the tab back to agents decided.
+  if (!tab || tab.controller !== 'agent' || tab.handoff?.phase === 'handed_off' || tab.handoff?.destinationTabId === destinationTabId || !/^[\w-]{1,100}$/.test(String(destinationTabId))) return null;
+  return { id: crypto.randomUUID(), phase: 'handed_off', sourceHost: 'mac', sourceTabId: tab.id, destinationHost: 'vps', destinationTabId, createdAt: now, automatic: true };
+}
 function reviewedHandoff(handoff) {
   return handoff && handoff.phase !== 'reviewed' ? { ...handoff, phase: 'reviewed', reviewedAt: Date.now() } : handoff;
 }
@@ -400,4 +408,4 @@ function hostShouldReload(mtime, started, inFlight) {
   return inFlight === 0 && Number(mtime) > Number(started);
 }
 
-module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, viewerUrl, cdpChallengeSafe };
+module.exports = { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, continuedOnVm, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, HANDBACK_REASONS, HANDBACK_MS, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, viewerUrl, cdpChallengeSafe };

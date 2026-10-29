@@ -1,0 +1,50 @@
+name: nightly
+
+on:
+  schedule:
+    - cron: '17 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.stamp.outputs.tag }}
+      version: ${{ steps.stamp.outputs.version }}
+      sha: ${{ steps.stamp.outputs.sha }}
+      published: ${{ steps.existing.outputs.published }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - id: stamp
+        run: |
+          node -e 'const fs=require("node:fs"); const {nightlyBuild}=require("./desktop/src/release-channel.cjs"); const b=nightlyBuild(require("./desktop/package.json").version); fs.appendFileSync(process.env.GITHUB_OUTPUT, "tag="+b.tag+"\nversion="+b.version+"\n");'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: existing
+        run: |
+          published=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft == false' 2>/dev/null || echo false)
+          echo "published=$published" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.stamp.outputs.tag }}
+
+  release:
+    needs: [prepare]
+    if: needs.prepare.outputs.published != 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      nightly_tag: ${{ needs.prepare.outputs.tag }}
+      nightly_version: ${{ needs.prepare.outputs.version }}
+      build_ref: ${{ needs.prepare.outputs.sha }}
+    secrets: inherit

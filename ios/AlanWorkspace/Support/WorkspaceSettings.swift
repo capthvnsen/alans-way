@@ -12,17 +12,41 @@ enum ViewerAddress {
     }
 }
 
+enum ReleaseChannel: String, CaseIterable, Identifiable {
+    case stable, nightly
+    var id: String { rawValue }
+    var title: String { self == .stable ? "Stable" : "Nightly (less tested)" }
+}
+
 @MainActor @Observable
 final class WorkspaceSettings {
+    var releaseChannel: ReleaseChannel {
+        didSet { defaults.set(releaseChannel.rawValue, forKey: "workspace.releaseChannel") }
+    }
+    static var installedVersion: String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        return "\(info["CFBundleShortVersionString"] as? String ?? "Unknown") (\(info["CFBundleVersion"] as? String ?? "Unknown"))"
+    }
+    static var installedChannel: ReleaseChannel {
+        ReleaseChannel(rawValue: Bundle.main.object(forInfoDictionaryKey: "WorkspaceReleaseChannel") as? String ?? "") ?? .stable
+    }
     private let defaults: UserDefaults
     private var viewers: [String: String]
     private var avatars: [String: String]
+    private(set) var hasCompletedOnboarding: Bool
     static let availableAvatars = ["hermes", "athena", "apollo", "artemis", "zeus", "poseidon", "hades", "medusa", "faun", "minotaur"]
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        releaseChannel = ReleaseChannel(rawValue: defaults.string(forKey: "workspace.releaseChannel") ?? "") ?? .stable
         viewers = defaults.dictionary(forKey: "workspace.viewerURLs") as? [String: String] ?? [:]
         avatars = defaults.dictionary(forKey: "workspace.avatars") as? [String: String] ?? [:]
+        hasCompletedOnboarding = defaults.bool(forKey: "workspace.onboardingComplete")
+    }
+
+    func completeOnboarding() {
+        hasCompletedOnboarding = true
+        defaults.set(true, forKey: "workspace.onboardingComplete")
     }
 
     func avatar(for chatID: Int64) -> String { avatars[String(chatID)] ?? "hermes" }
