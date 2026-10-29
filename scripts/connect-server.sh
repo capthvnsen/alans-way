@@ -42,16 +42,29 @@ case "$(uname -s)" in
   *) die "run this on your Mac or Linux computer (Windows: use the setup prompt in the README)";;
 esac
 
+is_tailnet_ip() {
+  case "$1" in
+    *[!0-9.]*) ;;
+    *) printf '%s' "$1" | awk -F. '{ ok = (NF == 4); for (i = 1; i <= 4 && ok; i++) if ($i !~ /^(0|[1-9][0-9]*)$/ || $i + 0 > 255) ok = 0; ok = ok && $1 == 100 && $2 >= 64 && $2 <= 127 } END { exit !ok }'; return;;
+  esac
+  case "$1" in
+    [fF][dD]7[aA]:115[cC]:[aA]1[eE]0:*) return 0;;
+  esac
+  return 1
+}
+
 if [ -z "$SERVER" ]; then
   has_tty || die "no terminal to ask in; pass --server user@host"
-  say "Your Hermes server's SSH address on Tailscale, e.g. root@hermes-vps (a .ts.net name or 100.x address)"
+  say "Your Hermes server's SSH address on Tailscale, e.g. root@100.x.y.z (a literal Tailscale IP)"
   printf 'Server: ' > /dev/tty
   read -r SERVER < /dev/tty || SERVER=""
 fi
 printf '%s' "$SERVER" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._@:-]*$' || die "bad server address: '$SERVER'"
 
+is_tailnet_ip "${SERVER#*@}" || die "use a literal Tailscale IP for the server, not a DNS name or SSH alias"
+
 TMPD="$(mktemp -d)"
-SSH="ssh -o ControlMaster=auto -o ControlPath=$TMPD/cm -o ControlPersist=300 -o ConnectTimeout=20"
+SSH="ssh -F none -o ProxyCommand=none -o ProxyJump=none -o CanonicalizeHostname=no -o ControlMaster=auto -o ControlPath=$TMPD/cm -o ControlPersist=300 -o ConnectTimeout=20"
 trap '$SSH -O exit "$SERVER" >/dev/null 2>&1 || true; rm -rf "$TMPD"' EXIT
 trap 'exit 130' INT TERM
 # Under curl | sh our stdin is the rest of this script, so every child that
@@ -116,9 +129,9 @@ bash \"\$d/setup.sh\" --mac-ssh $(q "$MAC_SSH") --host-os $OS$TZ_ARG \
 
 say ""
 say "Checking SSH both ways"
-$SSH "$SERVER" "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 $(q "$MAC_SSH") $(q "test -e $(q "$APP") && echo ok")" < /dev/null 2>/dev/null | grep -qx ok \
+$SSH "$SERVER" "ssh -F none -o ProxyCommand=none -o ProxyJump=none -o CanonicalizeHostname=no -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 $(q "$MAC_SSH") $(q "test -e $(q "$APP") && echo ok")" < /dev/null 2>/dev/null | grep -qx ok \
   || die "the server cannot log in to this computer as $MAC_SSH. Check Remote Login (Mac) or the SSH server (Linux) is on, then re-run."
-ssh -o ControlPath=none -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$VPS_SSH" true < /dev/null \
+ssh -F none -o ProxyCommand=none -o ProxyJump=none -o CanonicalizeHostname=no -o ControlPath=none -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$VPS_SSH" true < /dev/null \
   || die "this computer cannot log in to $VPS_SSH without a prompt. If the server uses Tailscale SSH, change its rule from \"check\" to \"accept\" in the Tailscale admin console, then re-run."
 
 say ""

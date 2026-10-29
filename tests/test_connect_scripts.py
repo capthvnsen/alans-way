@@ -195,11 +195,11 @@ class ScriptShapeTests(unittest.TestCase):
 # for the login shell, which would reset PATH and lose the fake curl. Like the
 # real ssh, it reads stdin, which under curl | sh is the rest of the script.
 FAKE_SSH = r"""#!/bin/sh
-while [ $# -gt 0 ]; do case "$1" in -o|-O) shift 2;; -t) shift;; *) break;; esac; done
+while [ $# -gt 0 ]; do case "$1" in -o|-O|-F) shift 2;; -t) shift;; *) break;; esac; done
 shift
 case "$*" in
   "") exit 0;;
-  "sh -s") cat >/dev/null; printf 'VPS_SSH=root@hermes-vps\nVPS_KEY=%s\nVPS_HOST_KEY=ssh-ed25519 AAAAhost\n' "$VPS_KEY";;
+  "sh -s") cat >/dev/null; printf 'VPS_SSH=root@100.64.0.1\nVPS_KEY=%s\nVPS_HOST_KEY=ssh-ed25519 AAAAhost\n' "$VPS_KEY";;
   test\ -e*) cat >/dev/null; echo ok;;
   true|exit) cat >/dev/null;;
   *) SHELL="$(dirname "$0")/lsh" sh -c "$*";;
@@ -248,7 +248,7 @@ class ConnectServerTests(unittest.TestCase):
             (tmp / "scripts/connect-server.sh").write_text((SCRIPTS / "connect-server.sh").read_text(encoding="utf-8"))
             if tags is not None:
                 (tmp / "tags.json").write_text(tags)
-            args = ["--server", "root@hermes-vps", "--", "--profile", "it's"]
+            args = ["--server", "root@100.64.0.1", "--", "--profile", "it's"]
             script = (tmp / "scripts/connect-server.sh").read_text()
             # A new session has no /dev/tty, as when an agent runs the script.
             result = subprocess.run(
@@ -259,7 +259,7 @@ class ConnectServerTests(unittest.TestCase):
             self.assertIn("Connected.", result.stdout)
             self.last = (tmp.joinpath("setup-url").read_text().strip(), result.stdout)
             self.assertNotIn("send it to your agent", result.stdout)
-            self.assertIn(f"--vps root@hermes-vps --vps-host-key ssh-ed25519 AAAAhost --vps-key {KEY}",
+            self.assertIn(f"--vps root@100.64.0.1 --vps-host-key ssh-ed25519 AAAAhost --vps-key {KEY}",
                           (tmp / "connect-args").read_text())
             self.assertEqual((tmp / "setup-args").read_text().splitlines(), [
                 "--mac-ssh", "me@my-mac.ts.net", "--host-os", "mac" if "Darwin" in subprocess.check_output(["uname", "-s"], text=True) else "linux",
@@ -298,3 +298,16 @@ class ConnectServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServerDestinationTests(unittest.TestCase):
+    def test_server_login_rejects_public_and_alias_targets_before_ssh(self):
+        text=(SCRIPTS / 'connect-server.sh').read_text()
+        helper=re.search(r'is_tailnet_ip\(\) \{.*?^}',text,re.S|re.M).group(0)
+        for host in ('127.0.0.1','192.168.1.2','203.0.113.10','server.ts.net','ssh-alias'):
+            self.assertNotEqual(sh(helper+"\nis_tailnet_ip '"+host+"'").returncode,0,host)
+        self.assertEqual(sh(helper+"\nis_tailnet_ip '"+'.'.join(map(str,[100,64,0,1]))+"'").returncode,0)
+        self.assertIn('is_tailnet_ip "${SERVER#*@}"',text)
+        for line in text.splitlines():
+            if 'ssh -' in line:
+                self.assertIn('-F none -o ProxyCommand=none -o ProxyJump=none -o CanonicalizeHostname=no',line)

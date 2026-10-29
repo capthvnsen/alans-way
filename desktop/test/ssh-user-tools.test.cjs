@@ -178,3 +178,17 @@ test('the OAuth SSH spawn also discovers a user-installed Hermes', async (t) => 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'oauth-found\n');
 });
+
+
+test('the nested agent path probe disables SSH aliases and quotes bracketed IPv6', async () => {
+  const section=source.slice(source.indexOf('function testAgentPath()'),source.indexOf('async function runSetupCheck'));
+  const {EventEmitter}=require('node:events');let sent;
+  const probe=vm.runInNewContext(section+';testAgentPath',{
+    prefs:{vpsBrowser:{sshHost:'agent@'+fixtureTailnet},macSshHost:'user@[fd7a:115c:a1e0::1]'},seedMacSshHost(){},HOST_LABEL:'mac',
+    isSshTarget:require('../src/core.cjs').isSshTarget,TAILNET_SSH_OPTIONS:require('../src/tailnet.cjs').SSH_OPTIONS,cloudMigrate:require('../src/cloud-migrate.cjs'),
+    spawn:(_file,args)=>{sent=args;const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();queueMicrotask(()=>child.emit('close',1));return child;},
+  });
+  await probe();const nested=sent.at(-1);
+  assert.match(nested,/ssh -F none -o ProxyCommand=none -o ProxyJump=none -o CanonicalizeHostname=no/);
+  assert.ok(nested.includes("'user@[fd7a:115c:a1e0::1]'"),'IPv6 brackets cannot expand as a shell glob');
+});

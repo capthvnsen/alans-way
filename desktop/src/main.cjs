@@ -1614,7 +1614,7 @@ function testAgentPath() {
   if (!isSshTarget(mac)) throw new Error('The saved SSH address for this computer is invalid. Re-enter it as user@Tailscale-IP.');
   return new Promise((resolve) => {
     const child = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host,
-      `ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new ${mac} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
+      `ssh ${TAILNET_SSH_OPTIONS.join(' ')} -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new ${cloudMigrate.shellQuote(mac)} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
     let out = '';
     child.stdout.on('data', chunk => { out += chunk; });
     child.stderr.on('data', chunk => { out += chunk; });
