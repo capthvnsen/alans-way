@@ -27,7 +27,13 @@ Repro:
 2. Agent A runs `workspace_computer_action`.
 3. Agent B immediately runs `workspace_computer_action`. It succeeds.
 
-The fix adds a file lease beside `connection.json` with the same rules as the Mac lease. The holder keeps it for 20 idle seconds, and a holder process that dies frees it at once. Test: `test/browser-mcp.test.cjs` `two agents on one in-process desktop share its lease`.
+The legacy fix adds a file lease beside `connection.json` with the same rules as the Mac lease. Updates are serialized with an exclusive lock and corrupt/unwritable storage fails closed. A crash during a lease update can require stopping connectors and manually clearing its stale lock. The holder keeps it for 20 idle seconds, and a holder process that dies frees it at once. Test: `test/browser-mcp.test.cjs` `two agents on one in-process desktop share its lease`.
+
+For mutually untrusted bots in separate OS users, use the identity-bound broker
+credentials in [#268](https://github.com/capthvnsen/alans-way/pull/268) and shared
+broker computer endpoint in [#272](https://github.com/capthvnsen/alans-way/pull/272).
+The latter refuses the old in-process fallback; a writable shared lease file is
+not an OS security boundary. No live desktop or service was changed.
 
 ### 2. A helper timeout has no `code`
 
