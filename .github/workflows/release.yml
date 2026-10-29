@@ -4,6 +4,17 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      nightly_tag:
+        type: string
+        default: ''
+      nightly_version:
+        type: string
+        default: ''
+      build_ref:
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -13,7 +24,7 @@ jobs:
   # whose installers are still building. A published release is never
   # re-uploaded into.
   draft:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || inputs.nightly_tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -21,21 +32,44 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - run: node desktop/scripts/check-version.cjs "$GITHUB_REF_NAME"
+          ref: ${{ inputs.build_ref || github.sha }}
+      - if: inputs.nightly_tag == ''
+        run: node desktop/scripts/check-version.cjs "$GITHUB_REF_NAME"
+      - if: inputs.nightly_tag != ''
+        run: |
+          node -e 'const {nightlyBuild}=require("./desktop/src/release-channel.cjs"); const b=nightlyBuild(require("./desktop/package.json").version,new Date(process.env.TAG.slice(8).replace(/(....)(..)(..)/,(_,y,m,d)=>[y,m,d].join("-")))); if(b.tag!==process.env.TAG || b.version!==process.env.VERSION) throw Error("Invalid nightly stamp")'
+        env:
+          TAG: ${{ inputs.nightly_tag }}
+          VERSION: ${{ inputs.nightly_version }}
       - run: |
           draft=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
           case "$draft" in
-            none) gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --title "$TAG" --generate-notes --verify-tag ;;
+            none)
+              if [ -n "$NIGHTLY_VERSION" ]; then
+                gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --prerelease --latest=false --title "$NIGHTLY_VERSION" --generate-notes --target "$BUILD_REF"
+              else
+                gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --title "$TAG" --generate-notes --verify-tag
+              fi ;;
+            true)
+              if [ -n "$NIGHTLY_VERSION" ]; then
+                target=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)
+                title=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json name --jq .name)
+                if [ "$target" != "$BUILD_REF" ] || [ "$title" != "$NIGHTLY_VERSION" ]; then
+                  echo "::error::Existing nightly draft belongs to another commit/version; leave it intact and wait for tomorrow's nightly"; exit 1
+                fi
+              fi ;;
             false) echo "::error::$TAG is already published; tag a new version instead"; exit 1 ;;
           esac
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.nightly_tag || github.ref_name }}
+          NIGHTLY_VERSION: ${{ inputs.nightly_version }}
+          BUILD_REF: ${{ inputs.build_ref || github.sha }}
 
   # Builds run every dependency's install scripts, so they get no write token.
   build:
     needs: [draft]
-    if: ${{ !cancelled() && (needs.draft.result == 'success' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ !cancelled() && (needs.draft.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.nightly_tag == '')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -61,6 +95,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ inputs.build_ref || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -70,19 +105,25 @@ jobs:
       # The suite has Mac/Linux-only tests; tests.yml covers the Windows driver.
       - if: runner.os == 'macOS'
         run: npm run check
-      - if: github.event_name == 'push'
+      - if: github.event_name == 'push' && inputs.nightly_tag == ''
         run: |
           version=$(node scripts/check-version.cjs "$GITHUB_REF_NAME")
           npm version "$version" --no-git-tag-version --allow-same-version
+      - if: inputs.nightly_tag != ''
+        run: npm version "$NIGHTLY_VERSION" --no-git-tag-version --allow-same-version
+        env:
+          NIGHTLY_VERSION: ${{ inputs.nightly_version }}
       # macOS signs when the signing secrets exist and stays ad-hoc otherwise,
-      # so forks build unchanged. Notarization only runs on tag builds.
+      # so forks build unchanged. Nightlies reuse the tagged-release signing path.
       - run: npm run ${{ matrix.script }}
         env:
+          GITHUB_REF_TYPE: ${{ inputs.nightly_tag != '' && 'tag' || github.ref_type }}
+          GITHUB_REF_NAME: ${{ inputs.nightly_tag || github.ref_name }}
           CSC_LINK: ${{ runner.os == 'macOS' && secrets.CSC_LINK || '' }}
           CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.CSC_KEY_PASSWORD || '' }}
-          APPLE_ID: ${{ runner.os == 'macOS' && github.event_name == 'push' && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ runner.os == 'macOS' && github.event_name == 'push' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && github.event_name == 'push' && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && (github.event_name == 'push' || inputs.nightly_tag != '') && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ runner.os == 'macOS' && (github.event_name == 'push' || inputs.nightly_tag != '') && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && (github.event_name == 'push' || inputs.nightly_tag != '') && secrets.APPLE_TEAM_ID || '' }}
       - if: runner.os == 'macOS'
         run: shasum -a 512 dist/OpenAlan-mac.dmg | cut -d' ' -f1 > dist/OpenAlan-mac.dmg.sha512
       - uses: actions/upload-artifact@v4
@@ -103,7 +144,7 @@ jobs:
 
   upload:
     needs: [build]
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || inputs.nightly_tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -124,18 +165,25 @@ jobs:
           for f in dist/OpenAlan-linux.AppImage dist/latest-linux.yml; do
             if [ -f "$f" ]; then files+=("$f"); else echo "::warning::$f missing; releasing without it"; fi
           done
-          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber -R "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" "${files[@]}" --clobber -R "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.nightly_tag || github.ref_name }}
 
   publish:
     needs: [upload]
     # Release candidates (tags with '-') stay drafts: never public, safe for testing.
-    if: github.event_name == 'push' && !contains(github.ref_name, '-')
+    if: inputs.nightly_tag != '' || (github.event_name == 'push' && !contains(github.ref_name, '-'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - run: gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft=false --latest
+      - run: |
+          if [ -n "$NIGHTLY_TAG" ]; then
+            gh release edit "$NIGHTLY_TAG" -R "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft=false --latest
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
+          NIGHTLY_TAG: ${{ inputs.nightly_tag }}

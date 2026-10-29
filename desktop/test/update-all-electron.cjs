@@ -40,6 +40,7 @@ const gate = () => {
 let successGates = null, checkFixture = null, appChecks = 0;
 require('../src/update-all.cjs').latestPluginTag = async () => '0.21.1';
 require('../src/update-all.cjs').latestHostRelease = async () => '0.21.6';
+require('../src/release-channel.cjs').checkLatest = async () => { appChecks++; return null; };
 require('../src/vm-update.cjs').createVmUpdater = () => ({
   checkVm: async (target) => {
     calls.push(`check ${target.id}`);
@@ -87,7 +88,7 @@ require('../src/mac-update.cjs').bundleLocation = () => null;
 require('../src/mac-update.cjs').isDeveloperIdSigned = () => true;
 require('../src/mac-update.cjs').updaterDriver = () => 'electron-updater';
 const stagedUpdater = new (require('node:events').EventEmitter)();
-stagedUpdater.checkForUpdates = async () => { appChecks++; return {}; };
+stagedUpdater.checkForUpdates = async () => ({});
 stagedUpdater.setFeedURL = () => {};
 stagedUpdater.quitAndInstall = () => { calls.push('install app'); throw new Error('Test must never install'); };
 require('electron-updater');
@@ -237,7 +238,8 @@ app.whenReady().then(async () => {
     `|Browser host: 0.21.3 → ${appVersion}`, `|Alan’s Workspace: ${version} → ${appVersion}`,
     'warn|Your bots restart briefly while the server updates.', '|The app update installs when you click Restart to finish.']);
   assert.equal(await text('update-all-go'), 'Update everything', 'confirmation comes before restart');
-  assert.equal(stagedUpdater.autoInstallOnAppQuit, true, 'installation is available before the run');
+  // Mac keeps Squirrel unstaged until explicit restart so a later channel change can cancel it.
+  assert.equal(stagedUpdater.autoInstallOnAppQuit, process.platform !== 'darwin', 'Stable preserves the platform install-on-quit policy before the run');
   await click('update-all-go');
   const successWork = () => calls.slice(start).filter((c) => !c.startsWith('check'));
   const assertHeld = async (states) => {
@@ -278,7 +280,24 @@ app.whenReady().then(async () => {
   assert.match(await text('update-all-copy'), /^Everything is updated\./);
   assert.equal(await text('update-all-go'), 'Restart to finish');
   assert.equal(await hidden('update-all-go'), false, 'restart is offered once the run finishes');
-  assert.equal(stagedUpdater.autoInstallOnAppQuit, true, 'installation hold is released after completion');
+  assert.equal(stagedUpdater.autoInstallOnAppQuit, process.platform !== 'darwin', 'Stable restores the platform install-on-quit policy after completion');
+
+  // Nightly opt-in waits for a new app session; neither stream may stage an installer meanwhile.
+  assert.equal((await evaluate('workspace.getState()')).releaseChannel, 'stable', 'Stable is the saved default');
+  await invoke('settings', { releaseChannel: 'nightly' });
+  const selectedNightly = await evaluate('workspace.getState()');
+  assert.equal(selectedNightly.activeReleaseChannel, 'stable');
+  assert.equal(selectedNightly.releaseChannel, 'nightly');
+  assert.equal(selectedNightly.update.ready, false, 'changing channel discards the staged Stable update');
+  assert.equal(stagedUpdater.autoInstallOnAppQuit, false, 'the previous stream cannot install on quit');
+  for (const candidate of [appVersion, `${appVersion}-nightly.20261028`]) stagedUpdater.emit('update-downloaded', { version: candidate });
+  assert.equal((await evaluate('workspace.getState()')).update.ready, false, 'late downloads cannot bypass the channel restart');
+  await invoke('settings', { releaseChannel: 'stable' });
+  stagedUpdater.emit('update-downloaded', { version: `${appVersion}-nightly.20261028` });
+  const stableAgain = await evaluate('workspace.getState()');
+  assert.equal(stableAgain.releaseChannel, 'stable');
+  assert.equal(stableAgain.update.ready, false, 'a Stable install never stages a Nightly installer');
+  assert.equal(stableAgain.versions.steps.some(step => step.id === 'app'), false);
 
   // A fresh server has Hermes but no plugin or host. Empty actions cannot
   // certify currency; the user can explicitly retry both version probes.
