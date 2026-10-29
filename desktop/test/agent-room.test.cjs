@@ -131,3 +131,17 @@ test('room handoff grants no desktop lease; existing lease still blocks the succ
   assert.equal(lease.take('grok', 'Grok Bot'), null);
   lease.release('grok');
 });
+
+test('a leading mention followed by punctuation still routes to that bot', () => {
+  for (const [text, bot] of [['@hermes, hi', 'hermes'], ['@grok: review this', 'grok'], ['@Hermes. Draft it', 'hermes'], ['@grok! check', 'grok'], ['@hermes,', 'hermes']]) {
+    const room = createAgentRoom();
+    const state = room.owner.post(text);
+    assert.equal(state.active.bot, bot, text);
+    assert.equal(state.messages.at(-1).to, bot, text);
+  }
+  const room = createAgentRoom();
+  assert.throws(() => room.owner.post('@hermes, @grok both'), { code: 'bad_recipient' });
+  assert.throws(() => room.owner.post('@bob, hi'), { code: 'bad_recipient' });
+  assert.throws(() => room.owner.post('@hermes;; hi'), { code: 'bad_recipient' });
+  assert.equal(room.state().messages.length, 0);
+});

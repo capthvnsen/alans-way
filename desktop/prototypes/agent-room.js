@@ -56,10 +56,12 @@ function createAgentRoom() {
     owner: Object.freeze({
       post(text) {
         checkText(text);
-        const mention = /^@([^\s]+)(?:\s|$)/.exec(text);
+        // A leading mention may be followed by one of , : . ! before whitespace or the end.
+        const mention = /^@([A-Za-z0-9_-]+)[,:.!]?(?:\s|$)/.exec(text);
+        if (!mention && text.startsWith('@')) fail('bad_recipient', 'Start with @hermes or @grok.');
         const to = mention ? mention[1].toLowerCase() : null;
         if (to !== null && !isBot(to)) fail('bad_recipient', 'Start with @hermes or @grok.');
-        if (to !== null && /^@(hermes|grok)(?:\s|$)/i.test(text.slice(mention[0].length).trimStart()))
+        if (to !== null && /^@(hermes|grok)[,:.!]?(?:\s|$)/i.test(text.slice(mention[0].length).trimStart()))
           fail('bad_recipient', 'Address one bot per message.');
         if (to !== null && paused) fail('paused', 'Resume the room before addressing a bot.');
         const row = append('alex', text, { to });
