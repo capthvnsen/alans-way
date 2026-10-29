@@ -13,9 +13,16 @@ Four products for working with your agents across your computer and a VM. Instal
 | **1. Alan's Workspace** | Mac desktop app with chat and a browser, iOS app, and lid-close VM handoff | [Mac download](https://openalan.com/download/mac) on your Mac; [iOS build/beta guide](ios/README.md) for your iPhone. Source: this repo, `desktop/`, `ios/`, and supporting `mobile/` code. [Install details](#1-alans-workspace) |
 | **2. Alan's CU MCP** | Shared Node computer-use server (`workspace-mcp`) that any MCP-capable agent can connect to | Use the server bundled with Workspace or install from this repo's `desktop/` source. Connect your agent's MCP client. [Install details](#2-alans-cu-mcp) |
 | **3. Alan's Plugin for Hermes** | Python plugin for stock Hermes, with Workspace integration and shared assistant settings | Install on the host running your Hermes gateway, from [alans-way-agents](https://github.com/capthvnsen/alans-way-agents). [Install details](#3-alans-plugin-for-hermes) |
-| **4. Alan's Plugin for Grok Bot** | Grok Bot skill + settings package using the same CU MCP and shared config spec | Install in Grok Bot from [alans-way-agents](https://github.com/capthvnsen/alans-way-agents); connect CU MCP separately. **Grok Bot cannot load Hermes plugins.** Package/install path is still a TODO in the published source. [Install details](#4-alans-plugin-for-grok-bot) |
+| **4. Alan's Plugin for Grok Bot** | Grok Bot skill + settings package using the same CU MCP and shared config spec | The `alans-way-grok-bot/` scaffold is pending [agents PR #157](https://github.com/capthvnsen/alans-way-agents/pull/157); connect CU MCP separately. **Grok Bot cannot load Hermes plugins.** [Install details](#4-alans-plugin-for-grok-bot) |
 
-The two plugins read **one shared config spec** for **persona, voice, proactivity, and identity**. That contract belongs in `alans-way-agents`; this repo supplies the app and computer-use service. The canonical spec path and Grok package publication still need to be settled; see [product boundaries and shared config](docs/products.md). Existing Hermes package names (`alans-way`, `alans-way-computer`) are implementation components of product 3, not additional products.
+The two plugins target **one shared config spec** for **persona, voice, proactivity, and identity**. That contract belongs in `alans-way-agents`; this repo supplies the app and computer-use service. The draft schema at `shared/config.schema.json` and Grok scaffold are pending [agents PR #157](https://github.com/capthvnsen/alans-way-agents/pull/157); see [product boundaries and shared config](docs/products.md) for implementation status. Existing Hermes package names (`alans-way`, `alans-way-computer`) are implementation components of product 3, not additional products.
+
+**Setting up Workspace with a Hermes agent?** Paste this prompt so it reads the full setup instructions:
+
+```text
+Set up Alan's Workspace. Repo: https://github.com/capthvnsen/alans-way
+Fetch https://raw.githubusercontent.com/capthvnsen/alans-way/main/docs/setup-prompt.md and follow the text block in it exactly. Do not modify Hermes. Never print secrets.
+```
 
 ## 1. Alan's Workspace
 
@@ -65,7 +72,7 @@ Configure your client's stdio MCP server entry, replacing the absolute paths and
 }
 ```
 
-The outer configuration shape depends on your client; stock Hermes uses `mcp_servers`. The installed connector requires Node 20+; source development uses Node 24. The app (or a configured VM browser host) must be running. Keep the whole checkout/bundle: the script imports sibling modules and the MCP SDK. Give each agent its own ID. The connector reads the local private connection file; do not copy its token into client JSON or share it in issues.
+The outer configuration shape depends on your client; stock Hermes uses `mcp_servers`. The installed connector requires Node 22.12+; development and CI use Node 24. The app (or a configured VM browser host) must be running. Keep the whole checkout/bundle: the script imports sibling modules and the MCP SDK. Give each agent its own ID. The connector reads the local private connection file; do not copy its token into client JSON or share it in issues.
 
 This exposes `cua_alans_way_*` browser tools and `workspace_computer_*` native tools. A generic MCP client can connect without loading a Hermes plugin. Remote routing, VM failover, and remote-agent provisioning currently use scripts in `alans-way-agents`; follow the [remote-agent guide](desktop/docs/remote-agents.md) for SSH over Tailscale and approvals. The optional Python companion CLI is a separate support tool, not this Node server.
 
@@ -91,7 +98,7 @@ Use the **Grok Bot skill + settings package** in [capthvnsen/alans-way-agents](h
 
 The existing connection path is documented in [remote agents](desktop/docs/remote-agents.md): provision the restricted SSH router on your VM, then in Grok Bot use **Settings → Add a custom connector** with the generated client JSON. That establishes computer use; it does not install the Grok skill/settings package.
 
-**TODO for Alex:** publish/identify the Grok Bot package directory, supported skill/settings install steps, and canonical shared config spec in `alans-way-agents`. Its inspected `main` still documents the older Hermes packages. Until those paths are published, follow the connector guide for CU MCP access and treat the full Grok package install as incomplete. Track the [known gaps](docs/products.md#shared-config-contract).
+**Pending [agents PR #157](https://github.com/capthvnsen/alans-way-agents/pull/157):** the Grok Bot scaffold is at [`alans-way-grok-bot/`](https://github.com/capthvnsen/alans-way-agents/tree/codex/hermes-shared-config-grok-scaffold/alans-way-grok-bot) and the shared draft schema is at [`shared/config.schema.json`](https://github.com/capthvnsen/alans-way-agents/blob/codex/hermes-shared-config-grok-scaffold/shared/config.schema.json). These are draft artifacts: native Grok Bot loading is unverified and the Hermes shared-config reader is not implemented. See [implementation status](docs/products.md#shared-config-contract).
 
 ## Contributing and support
 

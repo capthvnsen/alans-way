@@ -9,7 +9,7 @@
 | Alan's Workspace | `capthvnsen/alans-way`: `desktop/`, `ios/`, `mobile/` | Mac chat/browser UI, iOS app, viewer, browser state and lid-close VM handoff; `mobile/miniapp/` and `mobile/voice/` support iOS voice | Agent persona or a replacement agent runtime |
 | Alan's CU MCP (`workspace-mcp`) | `capthvnsen/alans-way`: `desktop/scripts/browser-mcp.cjs`, supporting `desktop/src/`, and VM browser hosts in `desktop/scripts/` | Shared Node MCP interface for browser/native computer use; host-side access and control policy | Hermes-only hooks or Grok Bot settings |
 | Alan's Plugin for Hermes | `capthvnsen/alans-way-agents`: existing `alans-way/`, `alans-way-computer/`, root setup scripts and `deploy/` | Python Hermes integration, hooks, skills, routing/provisioning adapters and reading shared config | Workspace UI or ownership of the shared CU MCP implementation |
-| Alan's Plugin for Grok Bot | `capthvnsen/alans-way-agents`: dedicated skill + settings package directory **TODO** | Grok Bot skill/settings integration and reading the same shared config | Loading a Hermes Python plugin; Grok Bot cannot do that |
+| Alan's Plugin for Grok Bot | `capthvnsen/alans-way-agents`: `alans-way-grok-bot/` scaffold, pending [PR #157](https://github.com/capthvnsen/alans-way-agents/pull/157) | Grok Bot skill/settings integration targeting the same shared config | Loading a Hermes Python plugin; Grok Bot cannot do that |
 
 The app and CU MCP share a source directory and release bundle today. That is packaging, not a fifth product or a reason to move the server. CU MCP stays at its existing path; `workspace-mcp` is its product/client-entry name, not a new binary or package.
 
@@ -31,15 +31,15 @@ Paths below are defaults, not instructions to copy user data or credentials betw
 | CU MCP from source | `<alans-way checkout>/desktop/scripts/browser-mcp.cjs`, with sibling modules and `desktop/node_modules/` | `cd desktop && npm ci`; Node 24 for development; connect over stdio locally or SSH |
 | CU MCP VM browser host | VM's checkout of this repo, `desktop/scripts/vps-browser-host.cjs` and `vps-chromium-host.cjs` | [VM browser guide](../desktop/docs/vps-browser.md), [macOS guest](mac-vm-guest.md); provision once per host, keep private endpoints private |
 | Hermes plugin components | Gateway host: `~/.hermes/plugins/alans-way/` and `~/.hermes/plugins/alans-way-computer/` by default | [Agents install guide](https://github.com/capthvnsen/alans-way-agents/blob/main/docs/install.md); native profiles can override `HERMES_HOME` |
-| Grok Bot package | Grok Bot's supported skill/settings location: **TODO** | Publish its package path and install steps in `alans-way-agents`; [existing connector setup](../desktop/docs/remote-agents.md) is a separate step |
-| Shared config | One spec owned in `alans-way-agents`; canonical source and local config paths: **TODO** | Resolve the contract below before documenting concrete filenames |
+| Grok Bot package | `alans-way-agents/alans-way-grok-bot/` scaffold, pending [PR #157](https://github.com/capthvnsen/alans-way-agents/pull/157) | Native Grok Bot install/loading is unverified; [existing connector setup](../desktop/docs/remote-agents.md) is a separate step |
+| Shared config | `alans-way-agents/shared/config.schema.json`; proposed user file `~/.config/alans-way/config.json`, pending [PR #157](https://github.com/capthvnsen/alans-way-agents/pull/157) | Draft contract; no Hermes reader or automatic loader is implemented by that PR |
 | Optional Python CLI | A Python virtual environment; `pip install -e '.[mcp]'` from this repo | [Contributing](../CONTRIBUTING.md#optional-python-companion-cli) |
 
 A local CU MCP connection reads the host's private `Hermes Workspace/connection.json` under platform app data (for example `~/Library/Application Support/` on Mac). Use `--connection` only for an explicitly configured alternate host file. Do not put connection files in Git or move their tokens into issue reports. Agent IDs identify routing/tab ownership; they do not provide authentication between mutually hostile clients sharing a host account.
 
 ## Shared config contract
 
-Both Alan's Plugin for Hermes and Alan's Plugin for Grok Bot read **one shared config spec** covering:
+Alan's Plugin for Hermes and Alan's Plugin for Grok Bot target **one shared config spec** covering:
 
 | Field area | Shared meaning |
 | --- | --- |
@@ -50,13 +50,9 @@ Both Alan's Plugin for Hermes and Alan's Plugin for Grok Bot read **one shared c
 
 Keep one authoritative definition in `alans-way-agents`, with adapters for each agent's capabilities. Do not create competing Hermes/Grok specs here. Agent-specific runtime settings and secrets remain in their native stores; the shared identity does not merge transcripts, sessions, bot tokens, or approvals. The app and CU MCP enforce their own access policy regardless of persona/proactivity settings.
 
-**Publication status checked 2026-10-29:** the inspected agents `main` at [`e749fc0`](https://github.com/capthvnsen/alans-way-agents/tree/e749fc0f677f22ecb4ad2da649d7da2ff8e4cf04) has the Hermes component directories and remote-agent connector scripts, but no dedicated Grok Bot package or canonical shared config spec identified in its tree/README. The four-product model above is the intended public contract; it is not evidence that those missing artifacts ship on that revision.
+**Pending [agents PR #157](https://github.com/capthvnsen/alans-way-agents/pull/157):** [`alans-way-grok-bot/`](https://github.com/capthvnsen/alans-way-agents/tree/codex/hermes-shared-config-grok-scaffold/alans-way-grok-bot) contains the skill/settings scaffold, and [`shared/config.schema.json`](https://github.com/capthvnsen/alans-way-agents/blob/codex/hermes-shared-config-grok-scaffold/shared/config.schema.json) defines the draft v1 schema. The proposed user config is `~/.config/alans-way/config.json`. These paths are in that draft PR, not a claim that they ship on `main`.
 
-**TODO for Alex:**
-
-- Identify/publish the Grok skill + settings directory and the supported install/uninstall procedure. A working MCP connector alone does not complete that package install.
-- Identify/publish the shared config spec's canonical filename, schema/version, local storage path, defaults, precedence with native settings, and unsupported-capability behavior for both readers. Do not invent a config file in this repo.
-- Include the standard MIT license, Copyright (c) 2026 Alex Hansen, when publishing the Grok package and shared spec. The license decision is settled; see [licensing and dependency notices](licensing.md).
+The [Grok package README](https://github.com/capthvnsen/alans-way-agents/blob/codex/hermes-shared-config-grok-scaffold/alans-way-grok-bot/README.md) and [shared contract](https://github.com/capthvnsen/alans-way-agents/blob/codex/hermes-shared-config-grok-scaffold/shared/README.md) describe the remaining work: native Grok Bot loading/installation is unverified, and Hermes does not yet read this format. The PR adds no automatic loader or scheduler. A working MCP connector remains separate from installing the Grok scaffold. Both artifacts use the decided MIT license; see [licensing and dependency notices](licensing.md).
 
 ## Where to contribute or report issues
 
