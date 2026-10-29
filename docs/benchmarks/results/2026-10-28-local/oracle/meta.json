@@ -1,0 +1,15 @@
+{
+  "mode": "oracle",
+  "repeat": 3,
+  "tasks": "fixture,public",
+  "model": null,
+  "provider": null,
+  "gitSha": "v0.21.13-1-g2e73067",
+  "node": "v26.7.0",
+  "platform": "darwin-arm64",
+  "label": "oracle-local",
+  "driver": "local",
+  "hostRttMs": 1,
+  "startedAt": "2026-10-28T04:50:39.134Z",
+  "finishedAt": "2026-10-28T04:52:18.269Z"
+}

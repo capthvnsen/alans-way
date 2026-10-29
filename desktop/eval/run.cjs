@@ -10,11 +10,14 @@
 //          --fixture-host H   host fixtures are served under and addressed by (default 127.0.0.1 with --connection or codex;
 //                             the shipped Mac app blocks loopback, so pass its LAN IP there)
 //          --repeat N         run each task N times (agents are noisy; use >=3 for real numbers)
+//          --label NAME       arm name in results and reports (default <mode>-<driver>)
+//          --driver D         local|remote; default remote when the host URL is not loopback (e.g. VPS -> Mac over Tailscale)
+// Writes results.jsonl and meta.json to --out; summarize with `node eval/report.cjs`.
 // See docs/agent-eval.md for the hermes-mode requirements.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { tasks } = require('./tasks.cjs');
 const { createFixtures } = require('./fixtures.cjs');
 const { startStack } = require('./runtime.cjs');
@@ -33,6 +36,14 @@ if (argv.includes('--list')) {
 }
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+function writeMeta(outDir, extra) {
+  const gitSha = (spawnSync('git', ['describe', '--always', '--dirty'], { cwd: __dirname, encoding: 'utf8' }).stdout || '').trim() || null;
+  fs.writeFileSync(path.join(outDir, 'meta.json'), JSON.stringify({
+    mode, repeat, tasks: sel || 'all', model: opt('model', process.env.EVAL_MODEL) || null, provider: opt('provider', process.env.EVAL_PROVIDER) || null,
+    gitSha, node: process.version, platform: `${process.platform}-${process.arch}`, ...extra, finishedAt: new Date().toISOString(),
+  }, null, 2) + '\n');
+}
+
 function classify(r) {
   if (r.ok) return r.overBudget ? 'over_budget' : null;
   if (r.timedOut) return 'timeout';
@@ -118,6 +129,7 @@ async function manual(picked, outDir) {
   const lines = require('node:readline').createInterface({ input: process.stdin })[Symbol.asyncIterator]();
   const rl = { question: async (q) => { process.stdout.write(q); const n = await lines.next(); return n.done ? '' : n.value; }, close() {} };
   const fixtures = await createFixtures(opt('fixture-host')); const rows = [];
+  const label = opt('label', 'manual'), startedAt = new Date().toISOString();
   console.log(`Fixture server on http://127.0.0.1:${fixtures.port}. Run each task in a FRESH browser/session of the tool under test.`);
   for (const task of picked) {
     if (task.tier === 'desktop') task.setup?.();
@@ -130,10 +142,11 @@ async function manual(picked, outDir) {
     const stack = { tabs: async () => [], pageEval: async () => undefined };
     const res = await task.check({ answer, fx: fixtures.state, stack });
     const [agentTurns, toolCalls] = turns.split(/\s+/).map(Number);
-    rows.push({ id: task.id, tier: task.tier, mode: 'manual', ok: !!res.ok, why: res.why, answer, wallMs, agentTurns: agentTurns || null, toolCalls: toolCalls || null, maxSteps: task.maxSteps });
+    rows.push({ id: task.id, tier: task.tier, mode: 'manual', label, driver: opt('driver', 'local'), ok: !!res.ok, why: res.why, answer, wallMs, agentTurns: agentTurns || null, toolCalls: toolCalls || null, maxSteps: task.maxSteps });
     console.log(res.ok ? 'PASS' : 'FAIL', res.why);
   }
   fs.writeFileSync(path.join(outDir, 'results.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  writeMeta(outDir, { label, driver: opt('driver', 'local'), startedAt });
   fixtures.close(); rl.close(); process.exit(0);
 }
 
@@ -143,14 +156,22 @@ async function manual(picked, outDir) {
   if (mode === 'manual') return manual(picked, outDir);
   const fixtures = await createFixtures(opt('fixture-host'));
   const stack = await startStack({ connection: opt('connection'), fixturePort: fixtures.port });
+  const startedAt = new Date().toISOString();
+  let hostRttMs = null;
+  const driver = opt('driver') || (/^(127\.|localhost$|\[::1\]$)/.test(new URL(stack.hostUrl).hostname) ? 'local' : 'remote');
+  const label = opt('label', `${mode}-${driver}`);
   const rows = [];
   let tools = null;
   try {
+    // Round trip to the browser host before any task: separates network distance (local vs VPS over Tailscale) from agent time.
+    const rtts = [];
+    for (let i = 0; i < 5; i++) { const t = Date.now(); await stack.tabs(); rtts.push(Date.now() - t); }
+    hostRttMs = rtts.sort((a, b) => a - b)[2];
     const home = mode === 'hermes' ? prepareHermesHome(stack) : null;
     if (mode !== 'hermes' && mode !== 'codex') tools = await connectTools(stack);
     for (const task of picked) for (let rep = 0; rep < repeat; rep++) {
-      if (mode !== 'hermes' && mode !== 'codex' && (!task.oracle || task.tier === 'desktop')) { rows.push({ id: task.id, tier: task.tier, skipped: task.tier === 'desktop' ? 'desktop needs a Mac with grants' : 'no oracle yet' }); continue; }
-      if (mode === 'hermes' && task.tier === 'desktop' && !opt('hermes-home') && !opt('connection')) { rows.push({ id: task.id, tier: task.tier, skipped: 'desktop needs --hermes-home with computer_use + a real app connection' }); continue; }
+      if (mode !== 'hermes' && mode !== 'codex' && (!task.oracle || task.tier === 'desktop')) { rows.push({ id: task.id, tier: task.tier, mode, label, driver, skipped: task.tier === 'desktop' ? 'desktop needs a Mac with grants' : 'no oracle yet' }); continue; }
+      if (mode === 'hermes' && task.tier === 'desktop' && !opt('hermes-home') && !opt('connection')) { rows.push({ id: task.id, tier: task.tier, mode, label, driver, skipped: 'desktop needs --hermes-home with computer_use + a real app connection' }); continue; }
       fixtures.reset(); await stack.closeTabs(); stack.proxy.takeLog(); task.setup?.();
       const fixtureHost = opt('fixture-host') || (opt('connection') || mode === 'codex' ? '127.0.0.1' : undefined);
       const fx = Object.assign(fixtures.state, { port: fixtures.port, ...(fixtureHost ? { host: fixtureHost } : {}) });
@@ -161,7 +182,7 @@ async function manual(picked, outDir) {
         agent = await runCodex(codexPrompt(task, fx), Math.max(180000, task.maxSteps * 30000), cdir);
         answer = agent.answer; fs.rmSync(cdir, { recursive: true, force: true });
       } else if (mode !== 'hermes') {
-        tools.resetMetrics(); tools.tab = null;
+        tools.resetMetrics(); tools.tab = null; tools.fixtureOrigin = task.tier === 'fixture' && task.start ? new URL(task.start(fx)).origin : null;
         try { if (task.start) await tools.open(task.start(fx)); answer = (mode === 'null' ? '' : await task.oracle(tools, fx, stack)) || ''; } catch (e) { error = e.message; }
       } else {
         agent = await runHermes(hermesPrompt(task, fx), task, home, Math.max(120000, task.maxSteps * 30000), stack);
@@ -173,7 +194,7 @@ async function manual(picked, outDir) {
       let res; try { res = await task.check({ answer, fx: fixtures.state, stack: mode === 'codex' ? codexStack(agent) : stack }); } catch (e) { res = { ok: false, why: 'check threw: ' + e.message }; }
       const toolCalls = mode === 'codex' ? agent.toolCalls : mode !== 'hermes' ? tools.metrics.calls : log.length;
       const row = {
-        id: task.id, tier: task.tier, mode, rep, ok: !!res.ok, why: String(res.why).slice(0, 200), answer: String(answer).slice(0, 200), reply: String(agent.out || agent.msg || '').slice(-400), error,
+        id: task.id, tier: task.tier, mode, label, driver, rep, ok: !!res.ok, why: String(res.why).slice(0, 200), answer: String(answer).slice(0, 200), reply: String(agent.out || agent.msg || '').slice(-400), error,
         wallMs, toolCalls, maxSteps: task.maxSteps, overBudget: toolCalls > task.maxSteps,
         httpCalls: log.length, httpErrors: log.filter((l) => l.status >= 400).length, respBytes: log.reduce((a, l) => a + l.bytes, 0),
         byTool: tools ? { ...tools.metrics.byTool } : undefined,
@@ -186,6 +207,7 @@ async function manual(picked, outDir) {
     }
   } finally {
     fs.writeFileSync(path.join(outDir, 'results.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+    writeMeta(outDir, { label, driver, hostRttMs, startedAt });
     await tools?.close().catch(() => {}); fixtures.close(); await stack.stop();
   }
   const ran = rows.filter((r) => !r.skipped), pass = ran.filter((r) => r.ok);
