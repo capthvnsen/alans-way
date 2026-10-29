@@ -7,6 +7,30 @@ const { authorizeBot, privateJson } = require('../src/bot-auth.cjs');
 const { provision } = require('../scripts/bot-credential.cjs');
 const vm = require('node:vm');
 const { isAuthorized } = require('../src/core.cjs');
+const { spawnSync } = require('node:child_process');
+
+test('root provisioning enforces real cross-UID file separation and rotates old tokens', { skip: process.platform !== 'linux' || process.getuid?.() !== 0 }, t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'credential-users-'));
+  fs.chmodSync(base, 0o711);
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const root = path.join(base, 'broker'), exported = path.join(base, 'exports');
+  fs.mkdirSync(root, { mode: 0o700 }); fs.mkdirSync(exported, { mode: 0o711 });
+  const brokerFile = path.join(root, 'connection.json');
+  fs.writeFileSync(brokerFile, JSON.stringify({ url: 'http://127.0.0.1:9465', token: 'synthetic-broker-token' }), { mode: 0o600 });
+  const args = { root, botId: 'a', uid: 60001, output: path.join(exported, 'a.json'), apply: true };
+  provision(args);
+  const old = JSON.parse(fs.readFileSync(args.output));
+  assert.equal(fs.statSync(args.output).uid, 60001);
+  assert.equal(fs.statSync(args.output).mode & 0o777, 0o600);
+  assert.notEqual(old.token, 'synthetic-broker-token');
+  assert.equal(authorizeBot(path.join(root, 'bot-credentials.json'), 'Bearer ' + old.token, 'a'), true);
+  const readAs = (uid, file) => spawnSync(process.execPath, ['-e', 'try { require("node:fs").readFileSync(process.argv[1]); } catch { process.exit(1); }', file], { uid, gid: uid }).status;
+  assert.equal(readAs(60001, args.output), 0);
+  assert.equal(readAs(60002, args.output), 1);
+  assert.equal(readAs(60001, brokerFile), 1);
+  provision(args);
+  assert.equal(authorizeBot(path.join(root, 'bot-credentials.json'), 'Bearer ' + old.token, 'a'), false);
+});
 
 test('the desktop API binds every route before trusting a bot header', { skip: !process.getuid }, t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-bot-auth-'));

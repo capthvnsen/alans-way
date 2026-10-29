@@ -32,6 +32,9 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
       - run: npm run check
+      - name: Verify credential ownership across OS users
+        if: runner.os == 'Linux'
+        run: sudo "$(command -v node)" --test test/bot-auth.test.cjs
 
   desktop-electron:
     runs-on: macos-latest
