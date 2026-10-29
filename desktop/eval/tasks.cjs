@@ -23,6 +23,8 @@ const get = async (url) => (await fetch(url, { headers: { 'user-agent': 'alans-w
 const has = (answer, ...needles) => { const a = String(answer || '').toLowerCase(); return needles.every((n) => a.includes(String(n).toLowerCase())); };
 const SANDBOX = path.join(os.tmpdir(), 'alans-way-eval-sandbox');
 const sh = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8' });
+// Public oracles avoid eval: the commit gate refuses it on pages with timers or commit-like controls (Donate, Add a comment).
+const infoboxBorn = async (t) => (await t.act({ action: 'read', list: { selector: '.infobox tr', fields: { row: { type: 'text' } } } })).items.map((i) => i.row).find((r) => /^Born/.test(r));
 
 const tasks = [
   // ---- Real public sites, no login ----
@@ -42,15 +44,15 @@ const tasks = [
     goal: () => 'Use the site search to find the article for Grace Hopper and report her exact date of birth.',
     check: ({ answer }) => ({ ok: /9 December 1906|December 9, 1906/i.test(answer || ''), why: answer }),
     maxSteps: 8, why: 'Search box with autocomplete, then extraction from a dense infobox; long page text exceeds the default snapshot cap.', oracle: async (t) => { await t.act({ action: 'navigate', url: 'https://en.wikipedia.org/wiki/Special:Search?search=Grace+Hopper&go=Go' }); await t.act({ action: 'wait', selector: '.infobox', timeout: 10000 });
-      return (await t.act({ action: 'eval', code: 'document.querySelector(".infobox").innerText.match(/Born[^]{0,120}/)[0]' })).value; },
+      return infoboxBorn(t); },
   },
   {
     id: 'pub-wiki-multihop', tier: 'public', title: 'Wikipedia multi-hop link',
     start: () => 'https://en.wikipedia.org/wiki/Ada_Lovelace',
     goal: () => 'Follow the link on this page to Charles Babbage (click it; do not type a URL) and report the year he was born.',
     check: async ({ answer, stack }) => { const u = ((await stack.tabs())[0] || {}).url || ''; return { ok: /1791/.test(answer || '') && /Charles_Babbage/.test(u), why: `${answer} @ ${u}` }; },
-    maxSteps: 8, why: 'Dozens of near-identical links; the page is long so the right link may be outside the first snapshot window.', oracle: async (t) => { const r = (await t.act({ action: 'eval', code: '(()=>{const a=[...document.querySelectorAll("#mw-content-text a[href=\\"https://en.wikipedia.org/wiki/Charles_Babbage\\"]")][0];a.scrollIntoView({block:"center"});const b=a.getBoundingClientRect();return {x:b.left+b.width/2,y:b.top+b.height/2}})()' })).value; await t.act({ action: 'click', x: r.x, y: r.y }); await t.act({ action: 'wait', selector: '.infobox', timeout: 10000 });
-      return (await t.act({ action: 'eval', code: 'document.querySelector(".infobox").innerText.match(/Born[^]{0,120}/)[0]' })).value; },
+    maxSteps: 8, why: 'Dozens of near-identical links; the page is long so the right link may be outside the first snapshot window.', oracle: async (t) => { await t.act({ action: 'click', selector: '#mw-content-text a[href$="/wiki/Charles_Babbage"]' }); await t.act({ action: 'wait', selector: '.infobox', timeout: 10000 });
+      return infoboxBorn(t); },
   },
   {
     id: 'pub-books-pagination', tier: 'public', title: 'Catalogue pagination',
@@ -58,14 +60,19 @@ const tasks = [
     goal: () => 'Using the Next button (not by editing the URL), go to page 3 of the catalogue and report the full title of the 5th book listed on that page.',
     check: async ({ answer }) => { const html = await get('https://books.toscrape.com/catalogue/page-3.html'); const t = [...html.matchAll(/<h3><a [^>]*title="([^"]+)"/g)][4]?.[1] || ''; return { ok: !!t && has(answer, t.replace(/&#39;/g, "'").replace(/&amp;/g, '&')), why: `expected "${t}" got "${answer}"` }; },
     maxSteps: 10, why: 'Titles are truncated in link text (full title only in an attribute); counting list position across a grid.', oracle: async (t) => { for (let i = 0; i < 2; i++) { await t.act({ action: 'click', selector: 'li.next a' }); await t.act({ action: 'wait', selector: 'li.previous', timeout: 8000 }); }
-      return (await t.act({ action: 'eval', code: 'document.querySelectorAll("article h3 a")[4].title' })).value; },
+      // Link text is truncated, so open the 5th book and read its full title.
+      const { items } = await t.act({ action: 'read', list: { selector: 'article.product_pod', fields: { href: { type: 'href', selector: 'h3 a' } } } });
+      await t.act({ action: 'navigate', url: items[4].href });
+      return (await t.act({ action: 'read', list: { selector: '.product_main h1', fields: { title: { type: 'text' } } } })).items[0].title; },
   },
   {
     id: 'pub-quotes-infinite-scroll', tier: 'public', title: 'Infinite scroll extraction',
     start: () => 'https://quotes.toscrape.com/scroll',
     goal: () => 'This page loads more quotes as you scroll. Load at least 30 quotes and report the author of the 25th quote.',
     check: async ({ answer }) => { const j = JSON.parse(await get('https://quotes.toscrape.com/api/quotes?page=3')); const a = j.quotes[4].author.name; return { ok: has(answer, a), why: `expected ${a} got ${answer}` }; },
-    maxSteps: 10, why: 'Content only exists after scrolling; the agent must scroll, wait for the lazy load, and count.', oracle: async (t) => (await t.act({ action: 'eval', code: `(async()=>{for(let i=0;i<20&&document.querySelectorAll('.quote').length<30;i++){scrollTo(0,document.body.scrollHeight);await new Promise(r=>setTimeout(r,500))}return document.querySelectorAll('.quote .author')[24].textContent})()` })).value,
+    maxSteps: 10, why: 'Content only exists after scrolling; the agent must scroll, wait for the lazy load, and count.', oracle: async (t) => {
+      for (let n = 20; n <= 30; n += 10) await t.act({ action: 'batch', steps: [{ action: 'scroll', y: 5000 }, { action: 'wait', selector: `.quote:nth-of-type(${n})`, timeout: 8000 }] });
+      return (await t.act({ action: 'read', list: { selector: '.quote', fields: { author: { type: 'text', selector: '.author' } } } })).items[24].author; },
   },
   {
     id: 'pub-js-prompt', tier: 'public', title: 'Native prompt dialog',
@@ -73,7 +80,7 @@ const tasks = [
     goal: () => 'Click the "prompt happen" link, type eval-42 into the prompt and accept it. Report the text the page then shows.',
     check: async ({ stack }) => { const r = await stack.pageEval('document.querySelector("#text")?.innerText'); return { ok: r === 'eval-42', why: String(r) }; },
     maxSteps: 8, why: 'The host dismisses confirm/prompt by default; the agent must read the dialog note and override window.prompt.',
-    oracle: async (t) => { await t.act({ action: 'eval', code: 'window.prompt=()=>"eval-42";1' }); await t.act({ action: 'click', selector: '#prompt' }); return (await t.act({ action: 'eval', code: 'document.querySelector("#text").innerText' })).value; },
+    oracle: async (t) => { await t.act({ action: 'click', selector: '#prompt', dialog: { accept: true, text: 'eval-42' } }); return (await t.act({ action: 'read', list: { selector: '#text', fields: { text: { type: 'text' } } } })).items[0]?.text; },
   },
   {
     id: 'pub-shadow-switch', tier: 'public', title: 'Web-component switch (shadow DOM)',
@@ -170,7 +177,7 @@ const tasks = [
     goal: () => 'Click "Confirm order" exactly once. The page is slow to become interactive. Report what the status line says.',
     check: ({ fx, answer }) => ({ ok: fx.reports.flaky?.clicks === 1, why: `${JSON.stringify(fx.reports.flaky)} ans=${answer}` }),
     maxSteps: 8, why: 'A loading overlay swallows clicks for 1.8s and the button is replaced twice (refs go stale); a double click would place two orders.',
-    oracle: async (t) => { await t.act({ action: 'wait', selector: '#ov', gone: true, timeout: 6000 }); await t.act({ action: 'click', selector: '#b' }); return (await t.act({ action: 'read' })).text; },
+    oracle: async (t) => { await t.act({ action: 'wait', selector: '#ov', gone: true, timeout: 6000 }); await t.act({ action: 'click', name: 'Confirm order' }); return (await t.act({ action: 'read' })).text; },
   },
   {
     id: 'fx-combobox-virtual', tier: 'fixture', title: 'Virtualized combobox',

@@ -116,12 +116,66 @@ test('a task handed back from the remote browser does not become a restorable us
     remoteRequest: async (_id, action) => action === 'checkpoint' ? { url: 'https://task.example/' } : {},
     createTab: options => { created = options; return { id: 'local-task', view: { webContents: {
       isLoading: () => false, getURL: () => options.url, executeJavaScript: async () => ({ verification: {}, restored: [], skipped: [] }),
-    } } }; }, restoreExpression() {}, savePreferences() {}, applyLayout() {}, broadcast() {},
+    } } }; }, restoreExpression() {}, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => false,
   });
   vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
   await context.handoffTab({ id: 'remote-task', destination: 'mac' });
   assert.equal(created.owner, 'bot');
   assert.equal(created.controller, 'human', 'handoff review must still require human control');
+});
+
+test('Move to VM and back carries the page’s sign-in, set before the destination loads', async () => {
+  const { toCdpCookie, toElectronCookies } = require('../src/vps-browser.cjs');
+  const events = [], requests = [];
+  const vmCookie = { name: 'sid', value: 'from-vm', domain: '.task.example', path: '/', expires: -1, httpOnly: true, secure: true, session: true, sameSite: 'Lax' };
+  const page = (url) => ({ isLoading: () => false, getURL: () => url, isDestroyed: () => false,
+    executeJavaScript: async (code) => String(code).includes('drafts.push') ? { url, title: 'Task', scroll: { x: 0, y: 0 }, drafts: [] } : { verification: 'ready', restored: 0, skipped: 0 } });
+  const macTab = { id: 'mac-task', botId: 'bot-a', controller: 'agent', owner: 'bot', queue: Promise.resolve(), view: { webContents: page('https://task.example/deal') } };
+  const context = vm.createContext({ tabs: new Map([['mac-task', macTab]]), vpsTabs: new Map([['vm-task', { id: 'vm-task', botId: 'bot-a', controller: 'agent' }]]),
+    HOST_LABEL: 'mac', crypto: { randomUUID: () => 'handoff-fixture' }, prefs: { handoffs: [] },
+    changeController: (id, controller) => { context.tabs.get(id).controller = controller; },
+    pageCookies: async (url) => [toCdpCookie({ name: 'sid', value: 'from-mac', domain: 'task.example', path: '/', secure: true, httpOnly: true, session: true })].filter(() => url.startsWith('https://task.example/')),
+    vpsBrowser: { request: async (route, method, body) => { requests.push([route, body]); return { id: 'vm-new', signIns: body.cookies?.length || 0 }; } },
+    remoteRequest: async (id, action, body) => { requests.push([`${id}/${action}`, body]); return action === 'checkpoint' ? { url: 'https://task.example/deal', title: 'Task', scroll: { x: 0, y: 0 }, drafts: [], cookies: [vmCookie, { ...vmCookie, name: 'ad', domain: '.ads.example' }] } : action === 'restore' ? { verification: 'ready', restored: 0, skipped: 0, tab: { id: 'vm-new' } } : {}; },
+    session: { fromPartition: () => ({ cookies: { set: async (cookie) => { events.push(['cookie', cookie.name, cookie.value]); } } }) },
+    toElectronCookies,
+    createTab: (options) => { events.push(['open', options.url]); return { id: 'mac-back', view: { webContents: page(options.url) } }; },
+    restoreExpression() {}, checkpointExpression: require('../src/browser-page.cjs').checkpointExpression, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => true,
+  });
+  vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
+  const out = await context.handoffTab({ id: 'mac-task', destination: 'vps' });
+  const open = requests.find(([route]) => route === '/v1/tabs')[1];
+  assert.equal(open.url, 'https://task.example/deal');
+  assert.equal(JSON.stringify(open.cookies.map((c) => c.value)), '["from-mac"]', 'the Mac sign-in rides on the VM tab open');
+  assert.equal(out.signIns, 1);
+  assert.equal(macTab.handoff.phase, 'handed_off', 'the Mac copy retires');
+  assert.ok(!requests.some(([route, body]) => route === 'vm-new/restore' && JSON.stringify(body).includes('from-mac')), 'cookies never ride in the restore checkpoint');
+  const back = await context.handoffTab({ id: 'vm-task', destination: 'mac' });
+  assert.deepEqual({ ...requests.find(([route]) => route === 'vm-task/checkpoint')[1] }, { includeDrafts: false, includeCookies: true });
+  assert.equal(JSON.stringify(events), JSON.stringify([['cookie', 'sid', 'from-vm'], ['open', 'https://task.example/deal']]), 'only the page’s own sign-in, before the page loads');
+  assert.equal(back.signIns, 1);
+});
+
+test('without consent or a tailnet path a Move carries no sign-ins, and a failed Move gives the tab back', async () => {
+  const requests = [];
+  const macTab = { id: 'mac-task', botId: 'bot-a', controller: 'agent', owner: 'bot', queue: Promise.resolve(), view: { webContents: { executeJavaScript: async () => ({ url: 'https://task.example/', drafts: [], scroll: { x: 0, y: 0 } }) } } };
+  let fail = false;
+  const context = vm.createContext({ tabs: new Map([['mac-task', macTab]]), vpsTabs: new Map(), HOST_LABEL: 'mac', crypto: { randomUUID: () => 'h' }, prefs: { handoffs: [] },
+    changeController: (id, controller) => { macTab.controller = controller; },
+    pageCookies: async () => { throw new Error('cookies must not be read'); },
+    vpsBrowser: { request: async (route, method, body) => { if (fail) throw new Error('VPS browser SSH unavailable.'); requests.push(body); return { id: 'vm-new' }; } },
+    remoteRequest: async () => ({ verification: 'ready', restored: 0, skipped: 0, tab: { id: 'vm-new' } }),
+    restoreExpression() {}, checkpointExpression: require('../src/browser-page.cjs').checkpointExpression, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => false,
+  });
+  vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
+  fail = true;
+  await assert.rejects(context.handoffTab({ id: 'mac-task', destination: 'vps' }), /SSH unavailable/);
+  assert.equal(macTab.controller, 'agent', 'the agent keeps its tab when the VM side never opened');
+  fail = false;
+  const out = await context.handoffTab({ id: 'mac-task', destination: 'vps' });
+  assert.equal(requests[0].cookies, undefined);
+  assert.equal(out.signIns, 0);
+  assert.equal(out.signInsCarried, false);
 });
 
 test('clicking a chat link already auto-opened by that message does not create another tab', () => {
@@ -218,7 +272,7 @@ for (const driver of ['electron-updater', 'self']) {
   test(`${driver} waits for browser storage before exiting into the update`, async () => {
     const events = [], drains = [];
     const context = vm.createContext({
-      updateDriver: driver, update: { tag: 'v1.0.1' }, isQuitting: false, path,
+      stagedAppVersion: () => '1.0.1', updateDriver: driver, update: { tag: 'v1.0.1' }, isQuitting: false, path,
       process: { execPath: '/fixture/Workspace.app/Contents/MacOS/Workspace' },
       savePreferences: () => events.push('tabs'),
       browserSessionStore: { save: async () => {} },
@@ -273,11 +327,30 @@ test('Mac self-update snapshots work done while the new bundle is being staged',
   let page = 'before staging';
   const saved = [];
   const context = vm.createContext({
-    updateDriver: 'self', update: { tag: 'v1.0.1' }, path, process: { execPath: '/fixture/Workspace.app/Contents/MacOS/Workspace' },
+    stagedAppVersion: () => '1.0.1', updateDriver: 'self', update: { tag: 'v1.0.1' }, path, process: { execPath: '/fixture/Workspace.app/Contents/MacOS/Workspace' },
     saveBrowserSession: async () => saved.push(page), app: { relaunch() {}, exit() {} },
     macUpdate: { installMacUpdate: async () => { page = 'after staging'; } },
   });
   vm.runInContext(section('async function restartIntoUpdate(', '\n// One "Update everything" step'), context);
   await context.restartIntoUpdate();
   assert.equal(saved.at(-1), 'after staging');
+});
+
+test('on wake the app retires each local tab the VM resumed, once, and tells the human', async () => {
+  const { continuedOnVm, requireAgentClaim } = require('../src/core.cjs');
+  const tabs = new Map([['mac-1', { id: 'mac-1', botId: 'bot-a', controller: 'agent' }], ['mac-2', { id: 'mac-2', botId: 'bot-b', controller: 'agent' }], ['mac-3', { id: 'mac-3', botId: 'bot-a', controller: 'human' }]]);
+  let saved = 0;
+  const context = vm.createContext({ tabs, prefs: { handoffs: [] }, continuedOnVm, Date, Object,
+    vpsBrowser: { request: async (route) => { assert.equal(route, '/v1/mirror/continued'); return { bots: { 'bot-a': { 'mac-1': 'vm-1', 'mac-3': 'vm-3', 'gone': 'vm-x' }, 'bot-c': { 'mac-2': 'vm-2' } } }; } },
+    changeController: (id, controller) => { tabs.get(id).controller = controller; }, savePreferences: () => { saved++; }, broadcast() {} });
+  vm.runInContext(section('let continuedCheckDue = true', '\nconst pushVpsMirror') + ';this.notice = () => continuedNotice;', context);
+  await context.retireContinuedTabs();
+  assert.equal(tabs.get('mac-1').controller, 'human');
+  assert.throws(() => requireAgentClaim(tabs.get('mac-1'), Date.now(), { autoTakeover: true }), /handoff_source: this task moved to the vps tab vm-1/);
+  assert.equal(tabs.get('mac-2').controller, 'agent', 'a map entry for another bot never retires this bot’s tab');
+  assert.equal(tabs.get('mac-3').handoff, undefined, 'a tab the human holds is left alone');
+  assert.equal(context.notice().count, 1);
+  assert.equal(saved, 1);
+  await context.retireContinuedTabs();
+  assert.equal(context.prefs.handoffs.length, 1, 'a second check retires nothing new');
 });

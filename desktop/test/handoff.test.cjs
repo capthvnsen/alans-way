@@ -14,7 +14,7 @@ function fixture({ activationFails = false, retirementFails = false, remote = fa
   };
   const context = vm.createContext({
     tabs: new Map(remote ? [] : [[source.id, source]]), vpsTabs: new Map(remote ? [[source.id, source]] : []), prefs: { handoffs: [] }, HOST_LABEL: 'mac',
-    crypto: { randomUUID: () => `move-${created}` }, checkpointExpression() {},
+    signInsTravel: async () => false, crypto: { randomUUID: () => `move-${created}` }, checkpointExpression() {},
     changeController: (_id, controller) => { source.controller = controller; },
     vpsBrowser: { request: async () => ({ id: `vm-${++created}`, botId: source.botId, controller: 'human' }) },
     createTab: () => { const target = { id: `mac-${++created}`, controller: 'human', view: { webContents: {

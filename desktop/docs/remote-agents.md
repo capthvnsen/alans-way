@@ -11,23 +11,25 @@ Everything after the router is the Hermes path, unchanged. The router and the se
 
 ## Transport
 
-| | SSH stdio (primary) | HTTP bridge (fallback) |
+| | SSH over Tailscale (primary) | HTTP bridge (fallback) |
 | --- | --- | --- |
-| Use when | The client can run a local command and open outbound SSH (port 22) | The client cannot hold an SSH session |
-| How | A dedicated key whose `authorized_keys` line is `restrict,command="<router>"`: it can start the router and nothing else | `remote-agent-bridge.cjs` on the VM serves MCP over HTTP at `/mcp`, one router per session, bearer token |
-| Exposure | sshd you already run | Loopback or private address only; you put a TLS proxy you control in front |
+| Use when | The client's computer is on your tailnet and can run a local command | The client can't join your tailnet or hold an SSH session |
+| How | Stdio over SSH to the VM's Tailscale name or `100.x` address. A dedicated key whose `authorized_keys` line is `restrict,command="<router>"` can start the router and nothing else | `remote-agent-bridge.cjs` on the VM serves MCP over HTTP at `/mcp`, one router per session, bearer token |
+| Exposure | The VM's existing sshd, reached only through your tailnet | Loopback or private address only; you put a TLS proxy you control in front |
 | Approval prompts in the client (browser `commit`) | Yes, if the client supports MCP elicitation | No: replies are plain JSON, so commit actions are refused |
 | Desktop approval gate | Yes (enforced by the app) | Yes (enforced by the app) |
 
-**SSH is primary**: no new server, no new port, smallest attack surface. **Grok Bot status (2026-10-26):** its computer reported that outbound SSH is still blocked, so Grok Bot needs the HTTP bridge. The bridge is off by default and still being finished in the plugin repo; until it ships, Grok Bot cannot reach the Workspace. Both transports start the same router with the same flags, so nothing below changes with the transport.
+**SSH over Tailscale is primary**: no new server, no new port, no public exposure, smallest attack surface. Tailscale is already how your computer and the VM talk. **Grok Bot status (2026-10-27):** Grok Bot's computer reaches the VM over SSH through Tailscale, tested 2026-10-26 and 2026-10-27 with all 14 Workspace tools. Use the HTTP bridge only for a client that can't join your tailnet; it ships in the plugin and is off by default. Both transports start the same router with the same flags, so nothing below changes with the transport.
+
+The key restriction is enforced by OpenSSH. If the VM has Tailscale's own SSH server turned on (`tailscale set --ssh`), it answers port 22 on the tailnet address and does not read `authorized_keys`, so the tailnet's SSH rules decide the login and the forced command does not apply. Turn it off on the VM with `tailscale set --ssh=false`; plain SSH over the tailnet still works.
 
 ## Setup (SSH)
 
 On the VM, as the user Hermes runs as:
 
 1. Run `sh ~/.hermes/plugins/alans-way/scripts/setup-remote-agent.sh --bot-id BOT_ID --bot-name "BOT NAME" --user VM_USER`. Pick a short `BOT_ID` such as `grok`. It must not be one of your Hermes bot IDs.
-2. Copy the printed client JSON. Its shape is [`remote-agent-connector.example.json`](remote-agent-connector.example.json): replace `VM_HOST` with the VM's address and `KEY_PATH` with where the private key lives on the client's computer.
-3. Give the client the private key through its own secret store. Never paste it into a chat.
+2. Copy the printed client JSON. Its shape is [`remote-agent-connector.example.json`](remote-agent-connector.example.json): replace the host (`HOST` in the printed JSON, `VM_HOST` in the example) with the VM's Tailscale name (`*.ts.net`) or `100.x` address, and `KEY_PATH` with where the private key lives on the client's computer.
+3. Put the client's computer on your tailnet and check that it can reach that name. Give the client the private key through its own secret store. Never paste it into a chat.
 4. Check without changing anything: `sh .../setup-remote-agent.sh --bot-id BOT_ID --print --probe` lists the tools through the forced command.
 
 Remove an agent with `--remove --bot-id BOT_ID`; only its key line goes.
@@ -36,7 +38,7 @@ Remove an agent with `--remove --bot-id BOT_ID`; only its key line goes.
 
 ## Setup (HTTP bridge)
 
-Only when SSH is not possible. On the VM:
+Only when the client can't join your tailnet or hold an SSH session. On the VM:
 
 ```sh
 (umask 077; openssl rand -hex 32 > ~/.alans-way-bridge-token)
@@ -87,7 +89,7 @@ Use Alan's Workspace: cua_alans_way_* for websites; workspace_computer_* for nat
 | `workspace_computer_action` missing from the tool list | The router was started without `HERMES_WORKSPACE_ALLOW_DESKTOP_ACTIONS=1`. Rerun `setup-remote-agent.sh`. |
 | `Configured browser unavailable` | Alan's Workspace is not running on that machine, or the VM browser host is down. |
 | `Permission denied (publickey)` | Wrong key path in the client JSON, or the key line was removed. Rerun setup. |
-| SSH hangs or times out from the client | The client's network blocks outbound SSH. Use the HTTP bridge. |
+| SSH hangs or times out from the client | The client's computer is not on your tailnet, or the host is a public address. Check `tailscale status` there and use the VM's Tailscale name. If the client can't join the tailnet, use the HTTP bridge. |
 | Commit actions return `approval_unavailable` | The client does not support MCP elicitation (always true over the HTTP bridge). Do those steps yourself. |
 | A `type` refused in a Save dialog | A folder path in the name field becomes part of the file name: press cmd+shift+g, type the folder, return, then the bare name. |
 

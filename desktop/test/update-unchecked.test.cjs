@@ -103,18 +103,18 @@ test('packaged Linux Check now reads app releases without staging an automatic i
   const requests = [], intervals = [];
   // Run the real release reader with a fixture HTTP boundary.
   const module = { exports: {} };
-  vm.runInNewContext(fs.readFileSync(require.resolve('../src/mac-update.cjs'), 'utf8'), {
-    module, require, fetch: async (url) => {
+  vm.runInNewContext(fs.readFileSync(require.resolve('../src/release-channel.cjs'), 'utf8'), {
+    module, require: require('node:module').createRequire(require.resolve('../src/release-channel.cjs')), AbortSignal, fetch: async (url) => {
       requests.push(url);
       if (offline) throw new Error('fixture offline');
-      return { ok: true, json: async () => ({ tag_name: release }) };
+      return { ok: true, json: async () => ({ tag_name: release, prerelease: false, draft: false }) };
     },
   });
   const source = fs.readFileSync(require.resolve('../src/main.cjs'), 'utf8');
   const start = source.indexOf("let updateDriver = 'none';");
   const end = source.indexOf('\nfunction cloudSession()', start);
-  const update = {}, context = { app: { isPackaged: true, getVersion: () => app }, prefs: { lastVersion: app }, update,
-    process: { platform: 'linux', execPath: '/fixture/alans-way' }, path: require('node:path'), macUpdate: module.exports,
+  const update = {}, context = { app: { isPackaged: true, getVersion: () => app }, prefs: { lastVersion: app, releaseChannel: 'stable' }, update,
+    process: { platform: 'linux', execPath: '/fixture/alans-way' }, path: require('node:path'), macUpdate: require('../src/mac-update.cjs'), releaseChannel: module.exports,
     mainLog: () => ({ write() {} }), savePreferences() {}, savePreferencesSoon() {}, broadcast() {},
     pendingUpdateDelivery: null, deliverPendingUpdateReport: require('../src/update-all.cjs').deliverPendingUpdateReport,
     saveUpdateReport() { assert.fail('there is no saved report to write'); },

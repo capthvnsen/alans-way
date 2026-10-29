@@ -305,7 +305,8 @@ def get_bus():
         try:
             import gi  # noqa: F401
         except ImportError:
-            fail('Desktop accessibility needs python3-gi.')
+            fail(f'Desktop accessibility needs python3-gi, which {sys.executable} cannot import. '
+                 'Install it with: sudo apt-get install -y python3-gi gir1.2-atspi-2.0', 'needs_gi')
         try:
             BUS = Bus()
         except Fail:
@@ -379,8 +380,9 @@ def check_app(pid):
         return None
     try:
         app = resolve_app(pid)
-    except Fail:
-        if not agent:
+    except Fail as exc:
+        # A missing python3-gi breaks every app, so it is not one AT-SPI cannot see.
+        if not agent or exc.code == 'needs_gi':
             raise
         app = None
     if not app and not agent:

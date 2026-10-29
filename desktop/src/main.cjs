@@ -7,7 +7,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
+const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, continuedOnVm, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
@@ -24,8 +24,7 @@ const macUpdate = require('./mac-update.cjs');
 const setupCheck = require('./setup-check.cjs');
 const { createLog } = require('./main-log.cjs');
 const { armQuitWatchdog } = require('./update-quit.cjs');
-const { githubFeed } = require('./win-update.cjs');
-const { PUBLISH } = require('../electron-builder.cjs');
+const releaseChannel = require('./release-channel.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
 const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, deliverPendingUpdateReport, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
@@ -35,7 +34,7 @@ const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { screenshotClip } = require('./cdp.cjs');
 const { listReadExpression, cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
-const { createVpsBrowser, backoffDelay, toCdpCookie, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
+const { createVpsBrowser, backoffDelay, toCdpCookie, toElectronCookies, isTailnetHost, resolveSshHostname, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createBrowserSessionStore } = require('./browser-session.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
@@ -180,7 +179,7 @@ const recordings = recorder.createRecordingStore(path.join(app.getPath('userData
 let pointerTimer, activityTimer, idleTimer, captchaTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -188,7 +187,9 @@ function readPreferences() {
   try {
     const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Preferences are not an object.');
-    return normalizePreferences(parsed, defaults);
+    const normalized = normalizePreferences(parsed, defaults);
+    normalized.releaseChannel = releaseChannel.normalizeChannel(normalized.releaseChannel);
+    return normalized;
   }
   catch {
     // Keep the unreadable file: the next save would otherwise erase every bot,
@@ -284,6 +285,9 @@ async function refreshVpsTabs() {
     });
     waitingVpsTabs = waiting;
     if(wasVps&&!vpsTabs.has(activeTabId)){prefs.remoteControl=false;activeTabId='home';applyLayout();}
+    // Before the mirror can push this computer's now-stale pages again.
+    // An older VM broker has no such route (404): nothing to retire there.
+    if (vpsBrowserStatus !== 'connected' || continuedCheckDue) await retireContinuedTabs().then(() => { continuedCheckDue = false; }, (error) => { continuedCheckDue = error.status !== 404; if (continuedCheckDue) logError('continued-tabs', error); });
     vpsBrowserStatus = 'connected'; vpsBrowserError = ''; vpsFailures = 0;
   }
   catch (error) { vpsBrowserStatus = 'disconnected'; vpsBrowserError = /^Invalid VPS browser/.test(error.message) ? error.message : ''; vpsFailures++; }
@@ -293,11 +297,42 @@ async function refreshVpsTabs() {
 // the page's cookies) so a failover can continue them signed in. Password
 // fields never leave: checkpointExpression skips them.
 const mirrorPages = new Map(), mirrorCapWarned = new Set();
+// Sign-in cookies cross only with the user's consent (Settings, on by default)
+// and only to a VM that ssh reaches over the tailnet.
+let tailnetCheck = { host: '', ok: Promise.resolve(false) };
+function signInsTravel() {
+  const host = prefs?.vpsBrowser?.sshHost || '';
+  if (prefs?.carrySignIns === false || !host) return Promise.resolve(false);
+  if (tailnetCheck.host !== host) {
+    // Only a yes is kept, so a slow ssh -G or an ssh config fix is retried.
+    const ok = resolveSshHostname(host).then(isTailnetHost);
+    tailnetCheck = { host, ok };
+    ok.then((yes) => { if (!yes && tailnetCheck.ok === ok) tailnetCheck = { host: '', ok }; });
+  }
+  return tailnetCheck.ok;
+}
+const pageCookies = async (url) => (await settleWithin(session.fromPartition('persist:browser').cookies.get({ url }), 2000, [])).slice(0, 100).map(toCdpCookie);
+// While this computer slept the VM may have resumed its agent tabs from the
+// mirror. Each local copy is retired like a manual Move so only one copy runs:
+// agents are told the VM tab to continue in, and the human gets Move back.
+let continuedCheckDue = true, continuedNotice = null;
+async function retireContinuedTabs() {
+  const { bots = {} } = await vpsBrowser.request('/v1/mirror/continued', 'GET', undefined, { human: true });
+  let moved = 0;
+  for (const [bot, map] of Object.entries(bots)) for (const [id, destinationTabId] of Object.entries(map || {})) {
+    const tab = tabs.get(id), record = tab?.botId === bot && continuedOnVm(tab, destinationTabId);
+    if (!record) continue;
+    changeController(id, 'human');
+    tab.handoff = record; prefs.handoffs = [record, ...prefs.handoffs].slice(0, 20); moved++;
+  }
+  if (moved) { continuedNotice = { count: moved, at: Date.now() }; savePreferences(); broadcast(); }
+}
 const pushVpsMirror = createMirrorPusher({
   bots: () => (prefs?.bots || []).map((bot) => bot.id),
   async collect() {
-    if (!prefs?.vpsBrowser?.sshHost || vpsBrowserStatus !== 'connected') return null;
-    const jar = session.fromPartition('persist:browser').cookies;
+    // A push before the retire check would hide what the VM resumed from it.
+    if (!prefs?.vpsBrowser?.sshHost || vpsBrowserStatus !== 'connected' || continuedCheckDue) return null;
+    const carry = await signInsTravel();
     const agentTabs = [...tabs.values()].filter((tab) => {
       const wc = tab.view?.webContents;
       return tab.controller === 'agent' && !tab.extensionPage && tab.botId !== 'shared' && wc && !wc.isDestroyed() && /^https?:\/\//.test(wc.getURL());
@@ -308,8 +343,7 @@ const pushVpsMirror = createMirrorPusher({
       const page = await settleWithin(wc.executeJavaScript(checkpointExpression(true)), 2000, null) || mirrorPages.get(tab.id);
       if (!page) return null;
       mirrorPages.set(tab.id, page);
-      const cookies = (await settleWithin(jar.get({ url: page.url }), 2000, [])).slice(0, 100).map(toCdpCookie);
-      return { botId: tab.botId, tab: { id: tab.id, ...page, cookies } };
+      return { botId: tab.botId, tab: { id: tab.id, ...page, cookies: carry ? await pageCookies(page.url) : [] } };
     }));
     for (const id of mirrorPages.keys()) if (!tabs.has(id)) mirrorPages.delete(id);
     const bots = new Map();
@@ -366,7 +400,7 @@ let uiStateRevision = 0, uiStateSignature = '';
 // A newer renderer time origin replaces the ledger; older origins stay fenced.
 const settingsWriteCallers = new WeakMap();
 const settingsWriteFields = {
-  autoOpenLinks: ['autoOpenLinks'], autoTakeover: ['autoTakeover'], preview: ['preview'],
+  autoOpenLinks: ['autoOpenLinks'], autoTakeover: ['autoTakeover'], carrySignIns: ['carrySignIns'], preview: ['preview'],
   addresses: ['macSshHost', 'vpsBrowser', 'remoteUrl'], viewer: ['remoteUrl'],
 };
 // Explicit same-value choices also advance their field. A delayed tracked write
@@ -389,7 +423,7 @@ function settingsWriteEntry(event, token, checking = false, payload) {
   if (!checking) {
     const keys = Object.keys(payload).filter(key => !['_settingsWrite', '_settingsContext', '_settingsBase'].includes(key)).sort();
     const expectedKeys = token.slot === 'addresses' ? ['macSshHost', 'vpsBrowser'] : token.slot === 'viewer' ? ['remoteUrl'] : [token.slot];
-    if (JSON.stringify(keys) !== JSON.stringify(expectedKeys) || (token.slot in { autoOpenLinks: 1, autoTakeover: 1, preview: 1 } && typeof payload[token.slot] !== 'boolean')) throw Error('Invalid Settings save fields.');
+    if (JSON.stringify(keys) !== JSON.stringify(expectedKeys) || (token.slot in { autoOpenLinks: 1, autoTakeover: 1, carrySignIns: 1, preview: 1 } && typeof payload[token.slot] !== 'boolean')) throw Error('Invalid Settings save fields.');
   }
   const record = { sequence: token.sequence, slot: token.slot, status: checking ? 'not-applied' : 'admitted', expected: payload };
   ledger.slots.set(token.slot, record);
@@ -434,10 +468,10 @@ function settingsWriteReceipt(entry) {
   return { settingsWrite: { status, detail: record?.detail || '' }, state: getState() };
 }
 function getState() {
-  const state = { name: app.getName(), version: app.getVersion(), build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
+  const state = { name: app.getName(), version: app.getVersion(), releaseChannel: prefs.releaseChannel, activeReleaseChannel, build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
     selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)).concat([...vpsTabs.values()]), cloud: cloudView(),
-    vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, macSshHost: prefs.macSshHost || '',
+    vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, continuedNotice, macSshHost: prefs.macSshHost || '',
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
     update: { available: update.available, ready: update.ready, busy: update.busy, error: update.error, justUpdatedFrom: update.justUpdatedFrom,
       popup: shouldShowUpdatePopup({ available: update.available, snoozedUntil: prefs.updateSnoozedUntil, now: Date.now(), busy: update.busy }),
@@ -450,7 +484,7 @@ function getState() {
     onboarding: shouldOnboard(prefs), inApplications: process.platform === 'darwin' && app.isPackaged ? setupCheck.inRouterApplications(process.execPath) : null,
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
-    autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false,
+    autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false, carrySignIns: prefs.carrySignIns !== false,
     activeTabId, activeVpsTabId, browserTabHost: activeTabId === 'vps' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (vpsTabs.has(activeVpsTabId) ? activeVpsTabId : tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     chatTarget, hermes: hermesSummary(),
@@ -1268,13 +1302,13 @@ async function probeVersions() {
 }
 // The app step in "Update everything" only plans for a build the updater
 // has staged (update-now has the same guard).
-const stagedAppVersion = () => (updateDriver === 'electron-updater' ? update.ready : updateDriver === 'self' && Boolean(update.tag)) ? update.available : '';
+const stagedAppVersion = () => prefs.releaseChannel === activeReleaseChannel && (updateDriver === 'electron-updater' ? update.ready : updateDriver === 'self' && Boolean(update.tag)) ? update.available : '';
 // Every update path takes its lock, then waits out a probe already in flight.
 const waitForVersionCheck = () => versionsProbe?.catch(() => {});
 // While "Update everything" runs, quitting must not install the staged app
 // build: the app would come back ahead of a half-updated server.
 function holdAppInstall(hold) {
-  if (updateDriver === 'electron-updater') require('electron-updater').autoUpdater.autoInstallOnAppQuit = !hold;
+  if (updateDriver === 'electron-updater') require('electron-updater').autoUpdater.autoInstallOnAppQuit = !hold && process.platform !== 'darwin' && prefs.releaseChannel === activeReleaseChannel;
 }
 const VERSIONS_EVERY_MS = 30 * 60 * 1000;
 const checkVersionsWhenIdle = () => {
@@ -1293,6 +1327,7 @@ async function saveBrowserSession() {
 }
 // Hands over only after both Chromium and the session-only sign-ins are saved.
 async function restartIntoUpdate() {
+  if (!stagedAppVersion()) throw new Error('Restart the app to apply your release channel before installing an update.');
   if (updateDriver === 'electron-updater') {
     await saveBrowserSession();
     // quitAndInstall closes windows without a before-quit, so the close
@@ -1332,8 +1367,10 @@ async function runUpdateStep(step, target) {
 }
 // Offline or rate-limited checks stay quiet for the user; only the first failure is logged, and the next check retries.
 let updateDriver = 'none';
+let activeReleaseChannel = 'stable';
 let appLatest = '', checkAppVersions = () => {};
 function startUpdates() {
+  activeReleaseChannel = prefs.releaseChannel;
   mainLog().write('app', `v${app.getVersion()} started from ${path.resolve(process.execPath, '../../..')}`);
   if (prefs.lastVersion && prefs.lastVersion !== app.getVersion()) update.justUpdatedFrom = prefs.lastVersion;
   if (prefs.lastVersion !== app.getVersion()) { prefs.lastVersion = app.getVersion(); savePreferences(); }
@@ -1351,25 +1388,41 @@ function startUpdates() {
   let check;
   if (updateDriver === 'electron-updater') {
     const { autoUpdater } = require('electron-updater');
-    autoUpdater.autoInstallOnAppQuit = true;
+    // Squirrel cannot unstage a Mac build after it fetches it; defer that until explicit restart.
+    autoUpdater.autoInstallOnAppQuit = process.platform !== 'darwin';
     const note = (text) => mainLog().write('updater', text);
     autoUpdater.on('checking-for-update', () => note('checking'));
     autoUpdater.on('update-available', (info) => { note(`available ${info?.version}`); appLatest = info?.version || ''; broadcast(); });
     autoUpdater.on('update-not-available', (info) => { note('none available'); appLatest = info?.version || ''; broadcast(); });
-    autoUpdater.on('update-downloaded', (info) => { note(`downloaded ${info.version}`); appLatest = info.version; update.available = info.version; update.ready = true; broadcast(); });
-    const feed = githubFeed(fs.existsSync(path.join(process.resourcesPath, 'app-update.yml')), PUBLISH);
-    if (feed) autoUpdater.setFeedURL(feed);
+    autoUpdater.on('update-downloaded', (info) => {
+      if (!releaseChannel.canUpdate(info.version, app.getVersion(), activeReleaseChannel, prefs.releaseChannel)) {
+        autoUpdater.autoInstallOnAppQuit = false; update.available = ''; update.ready = false; appLatest = ''; broadcast(); return;
+      }
+      note(`downloaded ${info.version}`); appLatest = info.version; update.available = info.version; update.ready = true; broadcast();
+    });
+    autoUpdater.autoDownload = false;
+    autoUpdater.allowDowngrade = false;
     let logged = false;
     const failed = (error) => { appLatest = ''; broadcast(); mainLog().write('updater error', String(error?.message || error)); if (!logged) { logged = true; logError('updater', error); } };
     autoUpdater.on('error', failed);
-    check = () => autoUpdater.checkForUpdates().catch(failed);
+    let checking;
+    check = () => checking ||= (async () => {
+      if (prefs.releaseChannel !== activeReleaseChannel) return;
+      const latest = await releaseChannel.checkLatest(activeReleaseChannel);
+      appLatest = latest?.version || ''; broadcast();
+      if (!latest || !releaseChannel.canUpdate(latest.version, app.getVersion(), activeReleaseChannel, prefs.releaseChannel)) return;
+      releaseChannel.configureUpdater(autoUpdater, activeReleaseChannel, latest.tag);
+      const result = await autoUpdater.checkForUpdates();
+      if (result?.updateInfo.version === latest.version && releaseChannel.canUpdate(latest.version, app.getVersion(), activeReleaseChannel, prefs.releaseChannel)) await autoUpdater.downloadUpdate();
+    })().catch(failed).finally(() => { checking = null; });
   } else {
     // Linux reads release evidence too, but only the Mac self-updater stages it.
     check = async () => {
       try {
-        const latest = await macUpdate.checkLatest();
+        if (prefs.releaseChannel !== activeReleaseChannel) return;
+        const latest = await releaseChannel.checkLatest(activeReleaseChannel);
         appLatest = latest?.version || '';
-        if (updateDriver === 'self' && latest && macUpdate.isNewer(latest.version, app.getVersion())) { update.available = latest.version; update.tag = latest.tag; broadcast(); }
+        if (updateDriver === 'self' && latest && releaseChannel.canUpdate(latest.version, app.getVersion(), activeReleaseChannel, prefs.releaseChannel)) { update.available = latest.version; update.tag = latest.tag; broadcast(); }
         broadcast();
       } catch { appLatest = ''; broadcast(); }
     };
@@ -1990,6 +2043,11 @@ function registerIpc() {
         // Stage this explicit choice until the actual private-file write succeeds.
         // Failed choices must not leak into broadcasts or later automatic saves.
         const next = { ...prefs };
+        if (Object.hasOwn(value, 'releaseChannel')) {
+          if (!['stable', 'nightly'].includes(value.releaseChannel)) throw new Error('Choose Stable or Nightly.');
+          if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) throw new Error('Wait for the current update to finish before changing channels.');
+          next.releaseChannel = value.releaseChannel;
+        }
         let followed = '', vpsChanged = false;
         if (typeof value.macSshHost === 'string' && value.macSshHost.trim() && !isSshTarget(value.macSshHost.trim())) throw new Error('Enter the Mac SSH address as user@host or host, with no spaces or symbols.');
         if (value.vpsBrowser && typeof value.vpsBrowser === 'object') {
@@ -2012,6 +2070,7 @@ function registerIpc() {
         if (typeof value.macSshHost === 'string') next.macSshHost = value.macSshHost.trim();
         if (typeof value.autoOpenLinks === 'boolean') next.autoOpenLinks = value.autoOpenLinks;
         if (typeof value.autoTakeover === 'boolean') next.autoTakeover = value.autoTakeover;
+        if (typeof value.carrySignIns === 'boolean') next.carrySignIns = value.carrySignIns;
         if (typeof value.primaryBotId === 'string') next.primaryBotId = next.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : next.primaryBotId;
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) next.locationDefault = value.locationDefault;
         if (Number.isFinite(value.chatWidth)) next.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
@@ -2019,6 +2078,10 @@ function registerIpc() {
           if (Object.hasOwn(value, field) || (field === 'remoteUrl' && value.vpsBrowser && typeof value.vpsBrowser === 'object')) settingsFieldRevisions[field]++;
         }
         persistSettingsPreferences(next);
+        if (Object.hasOwn(value, 'releaseChannel')) {
+          holdAppInstall(false);
+          if (prefs.releaseChannel !== activeReleaseChannel) { update.available = ''; update.tag = ''; update.ready = false; appLatest = ''; }
+        }
         if (vpsChanged) setTimeout(checkVersionsWhenIdle, 0);
         if (value.vpsBrowser && typeof value.vpsBrowser === 'object') { vpsBrowserStatus = 'connecting'; refreshVpsTabs(); }
         if (followed || typeof value.remoteUrl === 'string') remoteStatus = 'disconnected';
@@ -2128,11 +2191,11 @@ function registerIpc() {
         break;
       case 'update-now': {
         if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) break;
-        const autoUpdate = updateDriver === 'electron-updater';
-        const tag = autoUpdate ? `v${update.available}` : update.tag;
-        if (autoUpdate ? !update.ready : !tag) break;
+        if (!stagedAppVersion()) break;
+        const hostVersion = stableHostTarget(app.getVersion(), stagedAppVersion(), prefs.versionCache);
+        const tag = hostVersion ? `v${hostVersion}` : '';
         update.busy = true; update.error = ''; broadcast();
-        const targets = vmTargets(prefs);
+        const targets = tag ? vmTargets(prefs) : [];
         for (const target of targets) vmProgress[target.id] = { state: 'updating' };
         if (targets.length) broadcast();
         // Every saved VM first, then this app. A VM failure or timeout is
@@ -2245,7 +2308,7 @@ function registerIpc() {
         break;
       }
       case 'open-download-page': shell.openExternal(`https://openalan.com/download/${HOST_LABEL === 'windows' ? 'windows' : 'mac'}`); break;
-      case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/v${app.getVersion()}`); break;
+      case 'open-release-notes': shell.openExternal(`https://github.com/capthvnsen/alans-way/releases/tag/${app.getVersion().includes('-nightly.') ? `nightly-${app.getVersion().split('-nightly.')[1]}` : `v${app.getVersion()}`}`); break;
       case 'dismiss-bundle-warning': bundleWarningDismissed = true; broadcast(); break;
       case 'dismiss-updated': update.justUpdatedFrom = ''; break;
       case 'onboarding-done': prefs.onboarded = true; savePreferences(); break;
@@ -2625,14 +2688,33 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   if(handoffRequests.has(id))return handoffRequests.get(id);
   if(source.handoff?.phase==='handed_off')throw new Error('This page already moved. Continue at its destination or use Move back.');
   const work=(async()=>{
+  const wasController=source.controller;
   if(sourceHost==='mac') { changeController(id,'human'); await source.queue; }
   else await remoteRequest(id,'control',{controller:'human'});
-  const checkpoint=sourceHost==='mac'?await source.view.webContents.executeJavaScript(checkpointExpression(includeDrafts)):await remoteRequest(id,'checkpoint',{includeDrafts});
-  if(!/^https?:\/\//.test(checkpoint.url))throw new Error('Open a web page before handing it off.');
-  const handoff={id:crypto.randomUUID(),sourceHost,sourceTabId:id,destinationHost:dest,createdAt:Date.now(),note:String(note).slice(0,4000),phase:'review_required'};
-  let target,result;
+  // Sign-in cookies for the page's own URL ride along (see signInsTravel);
+  // site storage, page memory and passwords never do.
+  const carry=await signInsTravel();
+  let target,result,checkpoint,signIns=0;
+  try {
+    checkpoint=sourceHost==='mac'?await source.view.webContents.executeJavaScript(checkpointExpression(includeDrafts)):await remoteRequest(id,'checkpoint',{includeDrafts,includeCookies:carry});
+    if(!/^https?:\/\//.test(checkpoint.url))throw new Error('Open a web page before handing it off.');
+    const {cookies:remoteCookies,...page}=checkpoint;checkpoint=page;
+    if(dest==='vps') {
+      const cookies=carry?await pageCookies(checkpoint.url):[];
+      target=await vpsBrowser.request('/v1/tabs','POST',{url:checkpoint.url,...(cookies.length?{cookies}:{})},{botId:source.botId,human:true});vpsTabs.set(target.id,target);
+      signIns=target.signIns||0;
+    } else if(carry) {
+      const jar=session.fromPartition('persist:browser').cookies;
+      for(const cookie of toElectronCookies(remoteCookies,checkpoint.url))if(await jar.set(cookie).then(()=>true,()=>false))signIns++;
+    }
+  } catch(error) {
+    // Nothing exists on the other side yet: give the source back to whoever had it.
+    if(sourceHost==='mac'&&tabs.has(id)&&wasController==='agent')changeController(id,'agent','agent');
+    else if(sourceHost==='vps'&&wasController==='agent')await remoteRequest(id,'control',{controller:'agent'}).catch(()=>{});
+    throw error;
+  }
+  const handoff={id:crypto.randomUUID(),sourceHost,sourceTabId:id,destinationHost:dest,createdAt:Date.now(),note:String(note).slice(0,4000),phase:'review_required',signIns,signInsCarried:carry};
   if(dest==='vps') {
-    target=await vpsBrowser.request('/v1/tabs','POST',{url:checkpoint.url},{botId:source.botId,human:true});vpsTabs.set(target.id,target);
     result=await remoteRequest(target.id,'restore',{checkpoint,handoff});target=result.tab;
   } else {
     target=createTab({url:checkpoint.url,botId:source.botId,controller:'human',owner:source.owner || 'bot',activate:false});target.handoff=handoff;
@@ -3372,7 +3454,10 @@ function watchTelegram(wc) {
   wc.on('unresponsive', () => { clearTimeout(hangTimer); watchHang(); });
   wc.on('responsive', () => clearTimeout(hangTimer));
   const stuck = () => telegramStatus === 'offline' || telegramStatus === 'loading';
+  // Lid close: send the freshest mirror now, best effort (sleep may not wait).
+  powerMonitor.on('suspend', () => { clearTimeout(vpsMirrorDebounce); pushVpsMirror(); });
   powerMonitor.on('resume', () => {
+    continuedCheckDue = true; refreshVpsTabs();
     if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:remote-retry');
     const timer = setTimeout(() => { if (stuck()) telegramRecovery.now(); }, 3000); timer.unref?.();
   });
