@@ -85,6 +85,13 @@ app.on('web-contents-created', (_event, wc) => {
     }
     return /^(file:|about:|data:)/.test(url) ? original(url, ...args) : Promise.reject(block('loadURL', url));
   };
+  const originalFile = wc.loadFile.bind(wc);
+  wc.loadFile = (file, ...args) => {
+    if (file !== path.join(TARGET, 'src/remote.html')) return originalFile(file, ...args);
+    // Blocked noVNC connections otherwise race Settings snapshots with reconnect status updates.
+    journal.blocked.push({kind:'Remote viewer replaced with inert local document',target:file});
+    return original('data:text/html,'+encodeURIComponent('<!doctype html><title>Inert fixture viewer boundary</title><body>No service loaded.</body>'));
+  };
 });
 app.whenReady().then(() => secure(session.defaultSession));
 class InertTray extends EventEmitter { setToolTip() {} setContextMenu() {} setImage() {} destroy() {} }
@@ -378,6 +385,10 @@ async function run() {
     }
     await key('Enter');await settled(selector);assert.equal(await js(`document.activeElement===document.querySelector(${JSON.stringify(selector)})`),true);h.release();await sleep(60);
     if(spec.id!=='settings-preview')await click(spec.id==='remote-url'?'#settings-discard-viewer':'#settings-discard-addresses');
+  });
+  await test('external viewer stays inert throughout Settings checks',async()=>{
+    assert.ok(journal.blocked.some(b=>b.kind==='Remote viewer replaced with inert local document'));
+    assert.equal(journal.commands.some(c=>c.name==='remote-status'),false,'Viewer reconnect timers must not race Settings feedback assertions');
   });
 }
 app.whenReady().then(async()=>{
