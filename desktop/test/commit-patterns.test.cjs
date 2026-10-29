@@ -1,7 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { COMMIT_PATTERNS, isCommitName, plainName, normalizeName, looksLikeCommit, isActionUrl } = require('../src/commit-patterns.cjs');
 
@@ -107,14 +106,10 @@ test('the commit name list is the one the router was given', () => {
 });
 
 // The router (alans-way-agents PR #89) reads its own commit-patterns.json.
-// With a plugin checkout beside this repo, or ALANS_WAY_AGENTS pointing at
-// one, the two files must be the same and both sides must judge every name
-// and address the same way.
-function routerCheckout() {
-  const roots = [process.env.ALANS_WAY_AGENTS, path.resolve(__dirname, '../../../alans-way-agents'), path.join(os.homedir(), 'alans-way-agents')].filter(Boolean);
-  return roots.map((root) => path.join(root, 'alans-way/scripts')).find((dir) => fs.existsSync(path.join(dir, 'commit-patterns.json'))) || null;
-}
-const routerDir = routerCheckout();
+// Select the integration target explicitly; unrelated home/sibling checkouts
+// must not change the result of the local suite.
+const routerDir = process.env.ALANS_WAY_AGENTS
+  ? path.resolve(process.env.ALANS_WAY_AGENTS, 'alans-way/scripts') : null;
 test('the router copy is the same list and judges every name the same way', {
   skip: !routerDir && 'no alans-way-agents checkout with commit-patterns.json (set ALANS_WAY_AGENTS)',
 }, () => {
