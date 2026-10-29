@@ -89,6 +89,8 @@ VPS_SSH="$(val VPS_SSH "$TMPD/server")"
 case "$VPS_SSH" in missing) die "Tailscale is not installed on the server. Install it there (curl -fsSL https://tailscale.com/install.sh | sh), run 'sudo tailscale up', sign in with the same account as this computer, then re-run.";; esac
 case "$VPS_SSH" in *@) die "Tailscale is not connected on the server. Run 'sudo tailscale up' there, sign in with the same account as this computer, then re-run.";; esac
 
+is_tailnet_ip "${VPS_SSH#*@}" || die "the server returned a non-tailnet SSH destination"
+
 # The connect script prints MAC_* lines meant for pasting to an agent; this
 # script reads them itself, so the copy-me block is hidden.
 CONNECT=""; [ ! -f "$0" ] || CONNECT="$(cd "$(dirname "$0")" && pwd)/connect-$OS.sh"
@@ -99,6 +101,7 @@ ALANS_WAY_SKIP_CONNECT=1 sh "$CONNECT" $SKIP --vps "$VPS_SSH" \
   | tee "$TMPD/local" | sed '/^===== Copy/,/^===== end/d; /^(The names say/d'
 MAC_SSH="$(val MAC_SSH "$TMPD/local")"
 [ -n "$MAC_SSH" ] || die "connecting this computer stopped; the reason is above"
+is_tailnet_ip "${MAC_SSH#*@}" || die "the local connect script returned a non-tailnet SSH destination"
 
 TZ_ARG=""; [ -z "$(val MAC_TZ "$TMPD/local")" ] || TZ_ARG=" --timezone $(q "$(val MAC_TZ "$TMPD/local")")"
 

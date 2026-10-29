@@ -209,7 +209,7 @@ FAKE_CONNECT = r"""#!/bin/sh
 printf '%s\n' "$*" > "$HOME/connect-args"
 echo "connect: pinned"
 echo "===== Copy everything between these lines and send it to your agent ====="
-echo "MAC_SSH=me@my-mac.ts.net"
+echo "MAC_SSH=me@100.100.1.2"
 echo "MAC_TZ=America/Denver"
 echo "MAC_HOST_KEY=ssh-ed25519 AAAAmachost"
 echo "MAC_KEY=ssh-ed25519 AAAAmac me@mac"
@@ -262,7 +262,7 @@ class ConnectServerTests(unittest.TestCase):
             self.assertIn(f"--vps root@100.64.0.1 --vps-host-key ssh-ed25519 AAAAhost --vps-key {KEY}",
                           (tmp / "connect-args").read_text())
             self.assertEqual((tmp / "setup-args").read_text().splitlines(), [
-                "--mac-ssh", "me@my-mac.ts.net", "--host-os", "mac" if "Darwin" in subprocess.check_output(["uname", "-s"], text=True) else "linux",
+                "--mac-ssh", "me@100.100.1.2", "--host-os", "mac" if "Darwin" in subprocess.check_output(["uname", "-s"], text=True) else "linux",
                 "--timezone", "America/Denver", "--mac-key", "ssh-ed25519 AAAAmac me@mac",
                 "--mac-host-key", "ssh-ed25519 AAAAmachost", "--restart", "--profile", "it's"])
 
@@ -307,7 +307,8 @@ class ServerDestinationTests(unittest.TestCase):
         for host in ('127.0.0.1','192.168.1.2','203.0.113.10','server.ts.net','ssh-alias'):
             self.assertNotEqual(sh(helper+"\nis_tailnet_ip '"+host+"'").returncode,0,host)
         self.assertEqual(sh(helper+"\nis_tailnet_ip '"+'.'.join(map(str,[100,64,0,1]))+"'").returncode,0)
-        self.assertIn('is_tailnet_ip "${SERVER#*@}"',text)
+        for target in ('SERVER','VPS_SSH','MAC_SSH'):
+            self.assertIn('is_tailnet_ip "${'+target+'#*@}"',text)
         for line in text.splitlines():
             if 'ssh -' in line:
                 self.assertIn('-F none -o ProxyCommand=none -o ProxyJump=none -o CanonicalizeHostname=no',line)
