@@ -7,7 +7,7 @@
 // style announcement sits on the page the whole time and must stay out of
 // the text. Runs the real VPS host against a real headless Chromium; skipped
 // when no Chrome is found (set HERMES_TEST_CHROME).
-const { test, before, after } = require('node:test');
+const { test, before, after, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -291,6 +291,16 @@ const exited = (child) => new Promise((resolve) => {
   child.once('exit', () => { clearTimeout(force); resolve(); });
   child.kill();
 });
+// Retained pages (especially /busy) keep consuming CPU during later policy checks.
+afterEach(async () => {
+  if (!connection) return;
+  const { data } = await api('/v1/tabs');
+  for (const tab of data.tabs) {
+    const closed = await api(`/v1/tabs/${tab.id}`, 'DELETE', undefined, tab.epoch);
+    assert.equal(closed.status, 200, JSON.stringify(closed.data));
+  }
+});
+
 after(async () => {
   site?.close();
   await Promise.all([exited(host), exited(browser)]);

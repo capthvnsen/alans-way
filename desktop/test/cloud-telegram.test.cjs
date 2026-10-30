@@ -76,6 +76,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const cloudTelegram = require('../src/cloud-telegram.cjs');
+const { profileInventoryCommand } = require('../src/env-write.cjs');
 const main = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
 const finishSource = main.slice(main.indexOf('async function cloudFinishTelegram('), main.indexOf('// Local and remote probes for the connect step.'));
 function finishFixture({ send = { ok: true }, failure, destroyed = false } = {}) {
@@ -94,11 +95,10 @@ function remoteFinishFixture({ profiles = 'personal\nwork\n', writeCode = 0, set
   const prefs = { onboarded: false, cloud: { step: 'telegram', tokenedProfiles: ['personal'] }, vpsBrowser: { sshHost: 'user@192.0.2.10' } };
   const calls = [];
   const context = vm.createContext({
-    prefs, cloudTelegram, cloudModel: require('../src/cloud-model.cjs'), cloudConnect: require('../src/cloud-connect.cjs'),
+    prefs, cloudTelegram, profileInventoryCommand, cloudModel: require('../src/cloud-model.cjs'), cloudConnect: require('../src/cloud-connect.cjs'),
     sshRun: async (host, command, options) => {
       calls.push({ host, command, options });
-      if (command.startsWith('ls ')) return { code: 0, out: profiles };
-      if (command.startsWith('cat ')) return { code: 0, out: 'OTHER=value\n' };
+      if (command === profileInventoryCommand) return { code: 0, out: profiles };
       if (command.startsWith('set -eu')) return { code: setupCode, out: '' };
       return { code: 0, out: 'hermes-gateway RUNNING pid 123\n' };
     },
@@ -115,8 +115,10 @@ for (const [profiles, profile] of [['personal\nwork\n', 'work'], ['', 'default']
   test(`a saved bot configures exactly its ${profile} profile before restarting and sending /start`, async () => {
     const f = remoteFinishFixture({ profiles });
     assert.equal((await f.finish()).done, true);
-    assert.equal(f.calls[2].file, profile === 'default' ? '~/.hermes/.env' : '~/.hermes/profiles/work/.env');
-    assert.match(f.calls[2].value, /^OTHER=value\nTELEGRAM_BOT_TOKEN=/);
+    assert.equal(f.calls[0].command, profileInventoryCommand);
+    assert.equal(f.calls[1].file, profile === 'default' ? '~/.hermes/.env' : '~/.hermes/profiles/work/.env');
+    assert.equal(f.calls[1].value.key, 'TELEGRAM_BOT_TOKEN');
+    assert.equal(f.calls[1].value.value, TOKEN);
     const setup = f.calls.filter(call => call.command?.startsWith('set -eu'));
     assert.equal(setup.length, 1);
     assert.equal(setup[0].host, 'user@192.0.2.10');
@@ -129,9 +131,9 @@ for dir in "$HOME/alans-way-agents" "$HOME/.local/share/alans-way-agents"; do
 done
 echo 'The installed setup.sh was not found.' >&2
 exit 1`);
-    assert.equal(f.calls[3], setup[0], 'setup follows the successful write');
-    assert.match(f.calls[5].command, /^supervisorctl signal USR1/);
-    assert.equal(f.calls[6].start, true);
+    assert.equal(f.calls[2], setup[0], 'setup follows the successful write');
+    assert.match(f.calls[4].command, /^supervisorctl signal USR1/);
+    assert.equal(f.calls[5].start, true);
   });
 }
 
@@ -141,7 +143,7 @@ for (const writeCode of [1, -1]) {
     const result = await f.finish();
     assert.equal(result.done, false);
     assert.match(result.detail, /env file write/);
-    assert.equal(f.calls.length, 3);
+    assert.equal(f.calls.length, 2);
     assert.equal(f.prefs.cloud.step, 'telegram');
     assert.equal(f.prefs.onboarded, false);
   });
@@ -153,7 +155,7 @@ for (const setupCode of [1, -1, null]) {
     const result = await f.finish();
     assert.equal(result.done, false);
     assert.match(result.detail, /token was saved.*workspace browser setup failed/);
-    assert.equal(f.calls.length, 4, 'no gateway restart or /start on setup failure');
+    assert.equal(f.calls.length, 3, 'no gateway restart or /start on setup failure');
     assert.equal(f.prefs.cloud.step, 'telegram');
     assert.equal(f.prefs.onboarded, false);
   });
