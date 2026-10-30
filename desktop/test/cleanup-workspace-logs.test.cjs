@@ -56,7 +56,7 @@ test('root apply rotates synthetic bot credentials and removes only known logs a
   const probe=`const {authorizeBot}=require(process.argv[1]);process.exit(authorizeBot(process.argv[2],require('node:fs').readFileSync(0,'utf8'),'a')?0:1);`;
   const {spawnSync}=require('node:child_process');
   const modules=path.join(base,'modules');fs.mkdirSync(modules,{mode:0o755});
-  for(const name of ['bot-auth.cjs','core.cjs'])fs.copyFileSync(require.resolve('../src/'+name),path.join(modules,name));
+  for(const name of ['bot-auth.cjs','core.cjs','tailnet.cjs'])fs.copyFileSync(require.resolve('../src/'+name),path.join(modules,name));
   const check=token=>spawnSync(process.execPath,['-e',probe,path.join(modules,'bot-auth.cjs'),registry],{uid,gid:uid,cwd:base,input:'Bearer '+token});
   assert.equal(check(old).status,1);
   const current=JSON.parse(fs.readFileSync(args.output)).token;assert.ok(current!==old,'bot credential rotated');assert.equal(check(current).status,0);
