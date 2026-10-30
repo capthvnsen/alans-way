@@ -1,6 +1,6 @@
 # Security draft merge plan
 
-Reviewed 2026-10-30 against main `851f46377ac1f3d76ccb4784ae3f3f1e66bf46e1`.
+Reviewed 2026-10-30 against main `7cb8a4d4e3bbb5f7d399154c06c01d2b0c541425`.
 No PR was merged and no installed app, live account, SSH server, firewall or
 Tailscale ACL was changed. Source in alans-way-agents was read with `git show`
 at `296f6f099448f39d12b4a46425fca06bbd67e66c`; that repository was not edited.
@@ -53,11 +53,11 @@ it is not permission to bypass its pending CI or live rollout gates.
 | [#266](https://github.com/capthvnsen/alans-way/pull/266) | Blocked: macOS CI queued; source ready after rebase | Failed/unreadable/truncated env inputs no longer replace installed settings. A remote Python transaction preserves unrelated values, validates identity/content, serializes writes, and atomically replaces or exclusively creates. Missing profile directories on bare installs remain supported; inventory errors stop credential changes. No automatic state migration. |
 | [#267](https://github.com/capthvnsen/alans-way/pull/267) | Needs change made | Existing SSH aliases, config-selected keys, Hermes URLs and viewers retain a logged legacy transport. `HERMES_WORKSPACE_REQUIRE_TAILNET=1` explicitly selects literal tailnet destinations and proxy/config suppression after provisioning. Strict errors never fall back. Denied viewers remain saved and visible for repair, but are not dialed. Cookie transfer retains its independent tailnet/consent restrictions. |
 | [#268](https://github.com/capthvnsen/alans-way/pull/268) | Needs change made | Existing broker connection files keep working with a `Legacy broker credential` warning. Strict connectors opt in with an isolated export and `HERMES_WORKSPACE_REQUIRE_BOT_CREDENTIALS=1`. A mismatched bound identity always refuses; strict clients reject unbound files. New credential-bound desktop consent never inherits a legacy trust-list grant and requires reapproval after rotation. Existing legacy sudo transport remains until a separate broker is selected. |
-| [#271](https://github.com/capthvnsen/alans-way/pull/271) | Needs change made | No launch-time cleanup, scheduler, credential rotation or deletion. Default is a plan only; apply requires root, trusted paths and a stopped broker. Rotated credentials invalidate desktop Allow, including Always allow. Apply requires #246 log redaction first and reviewed restart/re-export instructions. Backups and provider/SSH credentials are outside this tool. |
+| [#271](https://github.com/capthvnsen/alans-way/pull/271) | Needs change made | No launch-time cleanup, scheduler, credential rotation or deletion. Default is a plan only; apply requires root, trusted paths and a stopped broker. Rotated credentials invalidate desktop Allow, including Always allow. Apply requires installed log redaction (#246, now on main) first and reviewed restart/re-export instructions. Backups and provider/SSH credentials are outside this tool. |
 | [#272](https://github.com/capthvnsen/alans-way/pull/272) | Needs change made | Broker receives computer routes and the shared lease. Identity-bound/strict clients never invoke an in-process helper if the endpoint is missing. An older VM host remains usable only through the labeled, unbound legacy connector until its broker is upgraded. The route extraction preserves credential-generation validation and pending-prompt revocation. Update broker before strict client cutover. |
 | [#273](https://github.com/capthvnsen/alans-way/pull/273) | Needs change made | An empty new broker field preserves the existing shared login, with a log/UI explanation. Agent settings and environment writes remain on the agent account. After provisioning, save the separate broker login and set `HERMES_WORKSPACE_REQUIRE_BROKER_SSH=1`; that opt-in also prevents clearing the field from restoring legacy transport. An invalid/unreachable selected broker never falls back. |
 | [#275](https://github.com/capthvnsen/alans-way/pull/275) | Needs change made | Installed connections and authorized keys are not automatically removed. New setup requires an explicit separately provisioned broker account; the unsafe combined wizard refuses before network/file mutations. Platform scripts name broad maintenance keys as administration keys, not runtime credentials. Review old keys manually and provision a separate restricted runtime key. Main's current four-product README/licensing is preserved. |
-| [#270](https://github.com/capthvnsen/alans-way/pull/270) | Blocked: macOS timing assertion failed; kernel CI passed | Installer is inert unless explicitly run with `--apply`. It creates no user, service or firewall during app upgrade. Requires distinct browser/broker UIDs, correct CDP ports, public DNS and browser service ordering; failed rules/service setup must prevent browser startup. Do not apply the UID rule to integrated Electron's shared browser/broker identity. |
+| [#270](https://github.com/capthvnsen/alans-way/pull/270) | Blocked: current-head CI queued; historical timing failure is under retry | Installer is inert unless explicitly run with `--apply`. It creates no user, service or firewall during app upgrade. Requires distinct browser/broker UIDs, correct CDP ports, public DNS and browser service ordering; failed rules/service setup must prevent browser startup. Do not apply the UID rule to integrated Electron's shared browser/broker identity. |
 | [#274](https://github.com/capthvnsen/alans-way/pull/274) | Needs change made | Copied MCP settings are never rewritten. Default print/verify commands preserve legacy SSH aliases/configuration and print an upgrade warning. `HERMES_WORKSPACE_REQUIRE_TAILNET=1` opts into literal tailnet destinations and SSH config/proxy suppression after key migration. A strict rejection never retries legacy. Read-only workspace scoping and conservative tool trust remain. |
 
 ## Exact target merge order
@@ -76,10 +76,11 @@ it is not permission to bypass its pending CI or live rollout gates.
 The nine security branches were rebased onto the pinned main directly or via
 their stated parent. After a parent merges, retarget its children to main and
 retain only their scoped commits; after #273 merges, do the same for #275.
-Do not squash a child's parent history into main twice. #241 can land as a
-separate documentation decision before these; #246/#249 remain separate QA
-fixes, not silently included in this stack. Do not claim all #250 findings are
-closed without those fixes and their verification.
+Do not squash a child's parent history into main twice. #241, #269, #246 and
+#249 are now on the pinned main, together with #264. Their architecture, CI
+deduplication, log redaction and VPS metadata redaction were preserved during
+the final rebase. The installed release still needs qualification before
+claiming all #250 findings are closed.
 
 A local combined verification branch applies the scoped diffs in exactly that
 order; it does not merge any PR. Independent drafts touch the same code, so
@@ -96,6 +97,8 @@ normal integration still requires the following reviewed resolutions:
   use broker readiness instead of automatic key authorization. Keep the new
   disabled-wizard tests rather than restoring its old network flow. Its VM
   fixtures must supply both broker and tailnet helpers.
+- Preserve main's `.map(redactTabForBot)` projection when combining broker
+  refresh changes with #249; no branch may restore unredacted VPS lists.
 - Keep both the broker-settings persistence fixture and the paused-viewer
   persistence fixture; neither replaces the other.
 
@@ -164,26 +167,28 @@ Local command results and current-head CI are recorded below. Counts overlap;
 they are not a unique-test total. Root/cross-UID and nftables namespace tests
 require Linux CI; local skips are not evidence those boundaries passed here.
 
-| Tree / scope | Exact command | Result |
+| Tree / scope | Exact command | Final result on current main |
 | --- | --- | --- |
-| #266 | `node --test desktop/test/env-write.test.cjs desktop/test/cloud-migration-flow.test.cjs desktop/test/speed-replies.test.cjs desktop/test/commit-patterns.test.cjs` | 78 pass, 0 fail, 2 skip. |
-| #266 Python | `PYTHONPATH=src python3 -m unittest tests.test_connect_scripts tests.test_config tests.test_verify -q` | 44 pass, 0 fail, 5 skip. |
-| #267 | `HERMES_WORKSPACE_REQUIRE_TAILNET=1 node --test desktop/test/tailnet.test.cjs desktop/test/core.test.cjs desktop/test/hermes-remote.test.cjs desktop/test/vps-browser.test.cjs desktop/test/server-setup.test.cjs desktop/test/ssh-user-tools.test.cjs` | 140 pass, 0 fail. Final probe-only rerun: 49 pass; final tailnet/reconnect rerun: 26 pass. |
-| #268 focused | `node --test desktop/test/bot-auth.test.cjs desktop/test/browser-mcp.test.cjs desktop/test/desktop-approval.test.cjs desktop/test/desktop-lease.test.cjs desktop/test/vps-browser.test.cjs` | 210 pass, 0 fail, 1 skip. Final auth-only rerun: 4 pass, 1 skip. |
-| #268 full | `cd desktop && npm run check` | 1,660 pass, 0 fail, 38 skip. |
-| #268 Python | `PYTHONPATH=src python3 -m unittest discover -s tests -q` | 154 pass, 0 fail, 23 skip. |
+| #266 | `node --test desktop/test/env-write.test.cjs desktop/test/cloud-migration-flow.test.cjs` | 31 pass, 0 fail. |
+| #267 | `HERMES_WORKSPACE_REQUIRE_TAILNET=1 node --test desktop/test/tailnet.test.cjs desktop/test/core.test.cjs desktop/test/hermes-remote.test.cjs desktop/test/vps-browser.test.cjs desktop/test/server-setup.test.cjs desktop/test/ssh-user-tools.test.cjs` | 140 pass, 0 fail. |
+| #268 | `node --test desktop/test/bot-auth.test.cjs desktop/test/browser-mcp.test.cjs desktop/test/desktop-approval.test.cjs desktop/test/desktop-lease.test.cjs desktop/test/vps-browser.test.cjs desktop/test/vps-host.test.cjs desktop/test/main-log.test.cjs` | 260 pass, 0 fail, 1 skip. |
 | #271 | `node --test desktop/test/cleanup-workspace-logs.test.cjs desktop/test/bot-auth.test.cjs` | 6 pass, 0 fail, 2 skip. |
-| #272 | `node --test desktop/test/browser-mcp.test.cjs desktop/test/desktop-approval.test.cjs desktop/test/desktop-lease.test.cjs desktop/test/vps-host.test.cjs` | 232 pass, 0 fail. |
-| #273 | `node --test desktop/test/vps-browser.test.cjs desktop/test/cloud-connect-flow.test.cjs desktop/test/vm-update.test.cjs desktop/test/ssh-user-tools.test.cjs` | 139 pass, 0 fail; final browser-only rerun: 20 pass. |
-| #275 | `node --test desktop/test/ssh-trust.test.cjs desktop/test/cloud-connect-flow.test.cjs desktop/test/vps-browser.test.cjs` and `PYTHONPATH=src python3 -m unittest tests.test_connect_scripts -q` | 46 JS and 25 Python pass, 0 fail. Final setup/trust rerun after fixture integration fixes: 26 pass. |
-| #270 | `PYTHONPATH=src python3 -m unittest tests.test_browser_egress -q` | 2 pass, 0 fail. The real Linux `kernel-filter` CI job passed on `f70f382`. |
+| #272 | `node --test desktop/test/browser-mcp.test.cjs desktop/test/desktop-approval.test.cjs desktop/test/desktop-lease.test.cjs desktop/test/vps-host.test.cjs` | 233 pass, 0 fail. |
+| #273 | `node --test desktop/test/vps-browser.test.cjs desktop/test/cloud-connect-flow.test.cjs desktop/test/vm-update.test.cjs desktop/test/ssh-user-tools.test.cjs desktop/test/vps-host.test.cjs` | 182 pass, 0 fail. |
+| #275 | `node --test desktop/test/ssh-trust.test.cjs desktop/test/cloud-connect-flow.test.cjs desktop/test/vps-browser.test.cjs` and `PYTHONPATH=src python3 -m unittest tests.test_connect_scripts -q` | 46 JS and 25 Python pass, 0 fail. |
+| #270 | `PYTHONPATH=src python3 -m unittest tests.test_browser_egress -q` | 2 pass, 0 fail. Historical Linux `kernel-filter` CI passed on the previous `f70f382` head; the current-head job is pending. |
 | #274 | `HERMES_WORKSPACE_REQUIRE_TAILNET=1 PYTHONPATH=src python3 -m unittest discover -s tests -q` | 156 pass, 0 fail, 23 skip. |
 | Combined Python | `HERMES_WORKSPACE_REQUIRE_TAILNET=1 PYTHONPATH=src python3 -m unittest discover -s tests -q` | 155 pass, 0 fail, 23 skip. |
-| Combined focused JS | `HERMES_WORKSPACE_REQUIRE_TAILNET=1 node --test desktop/test/{tailnet,env-write,bot-auth,cleanup-workspace-logs,browser-mcp,desktop-approval,desktop-lease,vps-browser,vps-host,cloud-connect-flow,ssh-trust,ssh-user-tools,vm-update}.test.cjs` | 386 pass, 0 fail, 2 skip. An earlier combined run found 3 fixture integration failures; those were fixed on #267/#275 and rerun. |
-| Combined full | `cd desktop && HERMES_WORKSPACE_REQUIRE_TAILNET=1 npm run check` | 1,675 pass, 0 fail, 39 skip. Syntax preflight initially caught unresolved markers in the local verification branch; they were resolved before this final run. |
-| Every pushed branch and combined tree | `python3 scripts/check_publication.py` | Passed before each push; combined publication passed for 531 tracked files. The checker explicitly is not a complete secret audit. |
+| Combined full desktop | `cd desktop && HERMES_WORKSPACE_REQUIRE_TAILNET=1 npm run check` | 1,680 pass, 0 fail, 39 skip. |
+| Every pushed branch and combined tree | `python3 scripts/check_publication.py` | Passed before each push; combined publication passed for 533 tracked files. The checker explicitly is not a complete secret audit. |
 
-Combined verification commit: `5f6062de985e9ed8b27786c4e5ce12e78714654d`
+The first combined run on the previous baseline found three fixture integration
+failures; fixes landed in #267/#275 and the focused rerun passed 386 tests with
+2 skips. A syntax preflight also caught unresolved markers in the private
+verification tree; they were resolved before successful full runs. The final
+full run above rechecked the combined changes plus main's newly landed fixes.
+
+Combined verification commit: `3db6b60fcde9d5476e075e007b849a46c257af25`
 on the retained local `reconcile-combined` branch, based on the pinned main.
 It is a scoped-diff simulation, not a published merge or a claim that GitHub
 will resolve the independent drafts automatically. Local Node was 26.7.0;
@@ -192,38 +197,39 @@ set; no dependency version was changed. Local GUI fixtures were not launched
 against installed app state; the new paused-viewer Electron assertion awaits CI.
 
 
-CI snapshot: **2026-10-30 17:24 UTC; not all green**. Actual current-head checks were inspected
+CI snapshot: **2026-10-30 17:36 UTC; not all green**. Current-head checks were inspected
 with `gh pr view <n> --json headRefOid,statusCheckRollup` and watched with
-`gh pr checks <n> --watch --interval 30` for every target. No pending job is
-counted as passed.
+`gh pr checks <n> --watch --interval 30` for every target. Pending jobs are
+not counted as passed.
 
 | PR | Current head | Checks at snapshot |
 | --- | --- | --- |
 | [#243 checks](https://github.com/capthvnsen/alans-way/pull/243/checks) | `470be5d` | 8 pass |
-| [#266 checks](https://github.com/capthvnsen/alans-way/pull/266/checks) | `2a3d0c7` | 5 pass, 4 pending |
-| [#267 checks](https://github.com/capthvnsen/alans-way/pull/267/checks) | `a4f1074` | 3 pass, 5 pending |
-| [#268 checks](https://github.com/capthvnsen/alans-way/pull/268/checks) | `a4dee2a` | 4 pass, 5 pending |
-| [#270 checks](https://github.com/capthvnsen/alans-way/pull/270/checks) | `f70f382` | 4 pass, 1 fail, 5 pending |
-| [#271 checks](https://github.com/capthvnsen/alans-way/pull/271/checks) | `612ec2a` | 3 pass, 6 pending |
-| [#272 checks](https://github.com/capthvnsen/alans-way/pull/272/checks) | `0d75a94` | 3 pass, 6 pending |
-| [#273 checks](https://github.com/capthvnsen/alans-way/pull/273/checks) | `a9c311b` | 3 pass, 6 pending |
-| [#274 checks](https://github.com/capthvnsen/alans-way/pull/274/checks) | `991742f` | 4 pass, 5 pending |
-| [#275 checks](https://github.com/capthvnsen/alans-way/pull/275/checks) | `45d6352` | 3 pass, 5 pending |
+| [#266 checks](https://github.com/capthvnsen/alans-way/pull/266/checks) | `620fd9d` | 8 pending |
+| [#267 checks](https://github.com/capthvnsen/alans-way/pull/267/checks) | `9d8d28d` | 8 pending |
+| [#268 checks](https://github.com/capthvnsen/alans-way/pull/268/checks) | `347e375` | 8 pending |
+| [#270 checks](https://github.com/capthvnsen/alans-way/pull/270/checks) | `67b3717` | 9 pending |
+| [#271 checks](https://github.com/capthvnsen/alans-way/pull/271/checks) | `86cd4d6` | 8 pending |
+| [#272 checks](https://github.com/capthvnsen/alans-way/pull/272/checks) | `cd2f601` | 8 pending |
+| [#273 checks](https://github.com/capthvnsen/alans-way/pull/273/checks) | `daa9178` | 8 pending |
+| [#274 checks](https://github.com/capthvnsen/alans-way/pull/274/checks) | `1a88fc4` | 8 pending |
+| [#275 checks](https://github.com/capthvnsen/alans-way/pull/275/checks) | `7528457` | 8 pending |
 
-#270 macOS desktop failed its unchanged parallel-restore wall-clock assertion:
-[failed job](https://github.com/capthvnsen/alans-way/actions/runs/41097213978/job/124205893772).
-Four nominal five-second waits took 19.365 seconds under CI load; its Linux
-kernel-filter job and the same local focused/combined tests passed. A targeted
-`gh run rerun 41097213978 --job 124205893772` was refused while the workflow
-still had queued jobs (`job ... cannot be rerun`); rerun that failed job after
-the workflow settles, and investigate if it repeats. Do not weaken its timing
-assertion merely to turn the PR green.
+On the previous #270 head `f70f382`, macOS desktop failed an unchanged
+[parallel-restore wall-clock assertion](https://github.com/capthvnsen/alans-way/actions/runs/41097213978/job/124205893772):
+four nominal five-second waits took 19.365 seconds under CI load. The same
+local focused/full runs passed. The initial targeted rerun was refused while
+that workflow still had queued jobs. After it settled,
+`gh run rerun 41097213978 --job 124205893772` succeeded in requesting attempt 2,
+which is queued. That historical retry is not counted as current-head CI;
+rebasing #270 onto current main also triggered a fresh full workflow.
 
-Four queued workflows for superseded #267/#275 heads were canceled to reduce
-backlog; current-head checks were retained. **Merge remains blocked until all
-current-head jobs pass, the new Electron assertion passes, and the final
-integration resolutions are verified.**
-
+Only superseded-head queued workflows were canceled to reduce backlog; the
+requested historical #270 retry and all current-head checks are retained.
+The coordinator explicitly owns CI follow-through after the agreed monitoring
+window. **Merge remains blocked until all current-head jobs pass, the new
+paused-viewer Electron assertion passes, and the integration resolutions are
+verified.**
 The verification boundary excludes live provisioning, installed Hermes/Grok
 smoke tests, SSH forced-command qualification, Tailscale ACL verification,
 physical sleep/wake, network namespace execution on this macOS host and a
