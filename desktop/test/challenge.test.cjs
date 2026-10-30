@@ -1,3 +1,5 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 // CAPTCHA and bot-check handling. The detector runs against fixture pages in a
 // real headless Chromium (skipped when no Chrome is found; set
 // HERMES_TEST_CHROME); the back-off, release note, resume watch and viewer
@@ -73,14 +75,14 @@ test('the watch hands back only after a challenge it saw has stayed clear about 
 });
 
 test('the viewer address keeps no password, token or fragment', () => {
-  assert.equal(viewerUrl('http://192.0.2.2:6080/vnc.html?autoconnect=1&password=hunter2&path=websockify#password=x'), 'http://192.0.2.2:6080/vnc.html?autoconnect=1&path=websockify');
-  assert.equal(viewerUrl('https://u:p@desk.example/vnc.html?token=abc&apiKey=1'), 'https://desk.example/vnc.html');
-  assert.equal(viewerUrl('http://desk.example/vnc.html?pw=1&sig=2&jwt=3&resize=scale'), 'http://desk.example/vnc.html?resize=scale', 'only noVNC settings survive');
+  assert.equal(viewerUrl(`http://${fixtureTailnet}:6080/vnc.html?autoconnect=1&password=hunter2&path=websockify#password=x`), `http://${fixtureTailnet}:6080/vnc.html?autoconnect=1&path=websockify`);
+  assert.equal(viewerUrl(`https://u:p@${fixtureTailnet}/vnc.html?token=abc&apiKey=1`), `https://${fixtureTailnet}/vnc.html`);
+  assert.equal(viewerUrl(`http://${fixtureTailnet}/vnc.html?pw=1&sig=2&jwt=3&resize=scale`), `http://${fixtureTailnet}/vnc.html?resize=scale`, 'only noVNC settings survive');
   // A token tucked inside an allowed setting is dropped with it.
-  assert.equal(viewerUrl('http://192.0.2.2:6080/vnc.html?autoconnect=1&path=websockify%3Ftoken%3DSECRET'), 'http://192.0.2.2:6080/vnc.html?autoconnect=1');
-  assert.equal(viewerUrl('http://192.0.2.2/vnc.html?path=ws%2Fx&host=a%40b&port=%2F%2Fevil.example&shared=1'), 'http://192.0.2.2/vnc.html?shared=1');
-  assert.equal(viewerUrl('http://192.0.2.2/vnc.html?resize=scale%3Dx'), 'http://192.0.2.2/vnc.html');
-  assert.equal(viewerUrl('ws://desk.example/websockify'), '');
+  assert.equal(viewerUrl(`http://${fixtureTailnet}:6080/vnc.html?autoconnect=1&path=websockify%3Ftoken%3DSECRET`), `http://${fixtureTailnet}:6080/vnc.html?autoconnect=1`);
+  assert.equal(viewerUrl(`http://${fixtureTailnet}/vnc.html?path=ws%2Fx&host=a%40b&port=%2F%2Fevil.example&shared=1`), `http://${fixtureTailnet}/vnc.html?shared=1`);
+  assert.equal(viewerUrl(`http://${fixtureTailnet}/vnc.html?resize=scale%3Dx`), `http://${fixtureTailnet}/vnc.html`);
+  assert.equal(viewerUrl(`ws://${fixtureTailnet}/websockify`), '');
   assert.equal(viewerUrl(''), '');
   assert.equal(viewerUrl(undefined), '');
 });

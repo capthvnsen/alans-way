@@ -1,3 +1,5 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 'use strict';
 const { fitWindow, resizeWindow } = require('./window-fixture.cjs');
 // Builder fixture boundary adapted from settings-switches-critic/runtime-harness.cjs.
@@ -252,10 +254,10 @@ async function run() {
     const keyName=field==='remote-url'?'remoteUrl':'macSshHost';
     const saveSelector=field==='remote-url'?'[data-settings-section="remote-desktop"] .primary-button':'#settings-save-addresses';
     const submit=()=>click(saveSelector);
-    const suffix=String(Date.now()), submitted=field==='remote-url'?`https://viewer-${suffix}.invalid/vnc.html`:`saved-${suffix}@computer.invalid`;
+    const suffix=String(Date.now()), submitted=field==='remote-url'?`https://${fixtureTailnet}/viewer-${suffix}.invalid/vnc.html`:`saved-${suffix}@${fixtureTailnet}`;
     await edit(field,submitted);const h=hold(keyName,phase),before=count(keyName);await submit();await until(()=>held.has(h.id));
     await edit(field,submitted);await reopen();await show(field);assert.equal(await val(field),submitted);
-    const later=field==='remote-url'?`https://draft-${suffix}.invalid/vnc.html`:`draft-${suffix}@computer.invalid`;
+    const later=field==='remote-url'?`https://${fixtureTailnet}/draft-${suffix}.invalid/vnc.html`:`draft-${suffix}@${fixtureTailnet}`;
     await edit(field,later);await recover(field+'-check-save');
     await until(()=>js(`document.getElementById(${JSON.stringify(field+'-check-save')}).hidden`));
     assert.equal(await js(`document.querySelector(${JSON.stringify(saveSelector)}).getAttribute('aria-busy')`),null);
@@ -273,16 +275,16 @@ async function run() {
     assert.match(await js('document.getElementById("settings-auto-links").parentElement.nextElementSibling.textContent'),/not applied|current value/);
   });
   await test('same-value input revisions stay dirty and explicit Discard restores disk without writing',async()=>{
-    await show('mac-ssh-host');const submitted=`same-${Date.now()}@computer.invalid`;await edit('mac-ssh-host',submitted);
+    await show('mac-ssh-host');const submitted=`same-${Date.now()}@${fixtureTailnet}`;await edit('mac-ssh-host',submitted);
     const h=hold('macSshHost','after');await click(saveFor('mac-ssh-host'));await until(()=>held.has(h.id));await edit('mac-ssh-host',submitted);
     h.release();await settled(saveFor('mac-ssh-host'));
     assert.equal(await js('document.getElementById("mac-ssh-host").dataset.dirty'),'true');assert.match(await text(),/Newer edits are not saved/);
-    const writes=(journal.persistence||[]).length;await edit('mac-ssh-host','discard-me@computer.invalid');await click('#settings-discard-addresses');
+    const writes=(journal.persistence||[]).length;await edit('mac-ssh-host',`discard-me@${fixtureTailnet}`);await click('#settings-discard-addresses');
     assert.equal(await val('mac-ssh-host'),disk().macSshHost);assert.equal((journal.persistence||[]).length,writes);
     assert.equal(await js('document.getElementById("mac-ssh-host").dataset.dirty'),undefined);
   });
   await test('two address fields own independent revisions across a successful reply',async()=>{
-    await show('mac-ssh-host');const mac=`pair-${Date.now()}@computer.invalid`;await edit('mac-ssh-host',mac);
+    await show('mac-ssh-host');const mac=`pair-${Date.now()}@${fixtureTailnet}`;await edit('mac-ssh-host',mac);
     const h=hold('macSshHost','after');await click(saveFor('mac-ssh-host'));await until(()=>held.has(h.id));
     await edit('vps-ssh-host','newer@agent.invalid');h.release();await settled(saveFor('mac-ssh-host'));
     assert.equal(await val('mac-ssh-host'),mac);assert.equal(await js('document.getElementById("mac-ssh-host").dataset.dirty'),undefined);
@@ -290,12 +292,12 @@ async function run() {
     assert.notEqual(disk().vpsBrowser.sshHost,'newer@agent.invalid');await click('#settings-discard-addresses');
   });
   for(const phase of ['before','after']) await test(`late ${phase} rejection after recovery cannot replace newer save or draft`,async()=>{
-    await show('mac-ssh-host');const a=`old-${Date.now()}@computer.invalid`,b=`new-${Date.now()}@computer.invalid`;await edit('mac-ssh-host',a);
+    await show('mac-ssh-host');const a=`old-${Date.now()}@${fixtureTailnet}`,b=`new-${Date.now()}@${fixtureTailnet}`;await edit('mac-ssh-host',a);
     const h=hold('macSshHost',phase);if(phase==='after')h.errorAfter='Lost reply after persistence';else h.errorBefore='Old request rejected before admission';
     await click(saveFor('mac-ssh-host'));await until(()=>held.has(h.id));await edit('mac-ssh-host',b);await recover('mac-ssh-host-check-save');await settled(saveFor('mac-ssh-host'));
     await click(saveFor('mac-ssh-host'));await settled(saveFor('mac-ssh-host'));assert.equal(disk().macSshHost,b);
-    await edit('mac-ssh-host','later-local@computer.invalid');const notice=await js('document.querySelector("#settings-save-addresses + .settings-action-status").textContent');h.release();await sleep(100);
-    assert.equal(disk().macSshHost,b);assert.equal(await val('mac-ssh-host'),'later-local@computer.invalid');assert.equal(await js('document.querySelector("#settings-save-addresses + .settings-action-status").textContent'),notice);await click('#settings-discard-addresses');
+    await edit('mac-ssh-host',`later-local@${fixtureTailnet}`);const notice=await js('document.querySelector("#settings-save-addresses + .settings-action-status").textContent');h.release();await sleep(100);
+    assert.equal(disk().macSshHost,b);assert.equal(await val('mac-ssh-host'),`later-local@${fixtureTailnet}`);assert.equal(await js('document.querySelector("#settings-save-addresses + .settings-action-status").textContent'),notice);await click('#settings-discard-addresses');
   });
   await test('rejected delivery before admission offers immediate checked recovery without false failure',async()=>{
     await show('settings-auto-links');const old=disk().autoOpenLinks,h=hold('autoOpenLinks','before');h.errorBefore='Injected delivery unavailable';
@@ -314,45 +316,45 @@ async function run() {
   await test('concurrent different switches and addresses keep independent pending ownership',async()=>{
     await show('settings-auto-links');const old=disk().autoOpenLinks,h=hold('autoOpenLinks','before');await click('#settings-auto-links');await until(()=>held.has(h.id));
     await click('#settings-auto-takeover');await settled('#settings-auto-takeover');const takeover=disk().autoTakeover;
-    await show('mac-ssh-host');await edit('mac-ssh-host',`concurrent-${Date.now()}@computer.invalid`);await click(saveFor('mac-ssh-host'));await settled(saveFor('mac-ssh-host'));
+    await show('mac-ssh-host');await edit('mac-ssh-host',`concurrent-${Date.now()}@${fixtureTailnet}`);await click(saveFor('mac-ssh-host'));await settled(saveFor('mac-ssh-host'));
     await reopen();await show('settings-auto-links');assert.equal(await attr('settings-auto-links','aria-busy'),'true');assert.equal(await attr('settings-auto-takeover','aria-busy'),null);
     h.release();await settled('#settings-auto-links');assert.equal(disk().autoOpenLinks,!old);assert.equal(disk().autoTakeover,takeover);
   });
   await test('reviewed bot contexts isolate drafts and newer shared addresses fence older work',async()=>{
-    await show('mac-ssh-host');await reviewBot('81001');const cedar=`cedar-${Date.now()}@computer.invalid`,maple=`maple-${Date.now()}@computer.invalid`;
+    await show('mac-ssh-host');await reviewBot('81001');const cedar=`cedar-${Date.now()}@${fixtureTailnet}`,maple=`maple-${Date.now()}@${fixtureTailnet}`;
     await edit('mac-ssh-host',cedar);const h=hold('macSshHost','before');await click(saveFor('mac-ssh-host'));await until(()=>held.has(h.id));
     await reviewBot('81002');assert.notEqual(await val('mac-ssh-host'),cedar);await edit('mac-ssh-host',maple);await click(saveFor('mac-ssh-host'));await settled(saveFor('mac-ssh-host'));assert.equal(disk().macSshHost,maple);
-    await edit('mac-ssh-host','maple-later@computer.invalid');await reviewBot('81001');h.release();await sleep(100);assert.equal(disk().macSshHost,maple);
-    await reviewBot('81002');assert.equal(await val('mac-ssh-host'),'maple-later@computer.invalid');await click('#settings-discard-addresses');await reviewBot('81001');
+    await edit('mac-ssh-host',`maple-later@${fixtureTailnet}`);await reviewBot('81001');h.release();await sleep(100);assert.equal(disk().macSshHost,maple);
+    await reviewBot('81002');assert.equal(await val('mac-ssh-host'),`maple-later@${fixtureTailnet}`);await click('#settings-discard-addresses');await reviewBot('81001');
   });
   await test('actual selected-bot change prevents a delayed address request entering the new context',async()=>{
-    await show('mac-ssh-host');const initial=await state(),old=disk().macSshHost,before=persists('macSshHost');await edit('mac-ssh-host','old-bot@computer.invalid');
+    await show('mac-ssh-host');const initial=await state(),old=disk().macSshHost,before=persists('macSshHost');await edit('mac-ssh-host',`old-bot@${fixtureTailnet}`);
     const h=hold('macSshHost','before');await click(saveFor('mac-ssh-host'));await until(()=>held.has(h.id));
     await command('open-bot',{id:'81002'});await sleep(60);assert.equal((await state()).selectedBotId,'81002');assert.equal(disk().selectedBotId,'81002');
-    await edit('mac-ssh-host','new-bot-draft@computer.invalid');h.release();await sleep(100);
-    assert.equal(disk().macSshHost,old);assert.equal(persists('macSshHost'),before);assert.equal(await val('mac-ssh-host'),'new-bot-draft@computer.invalid');
-    await command('open-bot',{id:initial.selectedBotId});await sleep(60);assert.equal(await val('mac-ssh-host'),'old-bot@computer.invalid');await click('#settings-discard-addresses');
+    await edit('mac-ssh-host',`new-bot-draft@${fixtureTailnet}`);h.release();await sleep(100);
+    assert.equal(disk().macSshHost,old);assert.equal(persists('macSshHost'),before);assert.equal(await val('mac-ssh-host'),`new-bot-draft@${fixtureTailnet}`);
+    await command('open-bot',{id:initial.selectedBotId});await sleep(60);assert.equal(await val('mac-ssh-host'),`old-bot@${fixtureTailnet}`);await click('#settings-discard-addresses');
   });
   await test('a later explicit viewer save fences the earlier address write that could move the viewer',async()=>{
-    await show('mac-ssh-host');const old=disk().macSshHost;await edit('mac-ssh-host','old-address@computer.invalid');const h=hold('macSshHost','before');await click(saveFor('mac-ssh-host'));await until(()=>held.has(h.id));
-    await show('remote-url');const newer=`https://new-viewer-${Date.now()}.invalid/vnc.html`;await edit('remote-url',newer);await click(saveFor('remote-url'));await settled(saveFor('remote-url'));assert.equal(disk().remoteUrl,newer);
+    await show('mac-ssh-host');const old=disk().macSshHost;await edit('mac-ssh-host',`old-address@${fixtureTailnet}`);const h=hold('macSshHost','before');await click(saveFor('mac-ssh-host'));await until(()=>held.has(h.id));
+    await show('remote-url');const newer=`https://${fixtureTailnet}/new-viewer-${Date.now()}.invalid/vnc.html`;await edit('remote-url',newer);await click(saveFor('remote-url'));await settled(saveFor('remote-url'));assert.equal(disk().remoteUrl,newer);
     h.release();await sleep(100);assert.equal(disk().macSshHost,old);assert.equal(disk().remoteUrl,newer);await show('mac-ssh-host');await click('#settings-discard-addresses');
   });
   await test('saved-target, host-label and platform contexts retain their own drafts',async()=>{
-    await show('remote-url');const initial=await state();await edit('remote-url','https://retained-context.invalid/vnc.html');
-    await command('settings',{macSshHost:'context-host@computer.invalid'});await sleep(60);assert.notEqual(await val('remote-url'),'https://retained-context.invalid/vnc.html');
-    await command('settings',{macSshHost:initial.macSshHost});await sleep(60);assert.equal(await val('remote-url'),'https://retained-context.invalid/vnc.html');
-    const actual=await state();wc.send('workspace:state',{...actual,uiStateRevision:actual.uiStateRevision+1,hostLabel:'fixture-other-host'});await sleep(50);assert.notEqual(await val('remote-url'),'https://retained-context.invalid/vnc.html');
-    wc.send('workspace:state',{...actual,uiStateRevision:actual.uiStateRevision+2});await sleep(50);assert.equal(await val('remote-url'),'https://retained-context.invalid/vnc.html');
+    await show('remote-url');const initial=await state();await edit('remote-url',`https://${fixtureTailnet}/retained-context.invalid/vnc.html`);
+    await command('settings',{macSshHost:`context-host@${fixtureTailnet}`});await sleep(60);assert.notEqual(await val('remote-url'),`https://${fixtureTailnet}/retained-context.invalid/vnc.html`);
+    await command('settings',{macSshHost:initial.macSshHost});await sleep(60);assert.equal(await val('remote-url'),`https://${fixtureTailnet}/retained-context.invalid/vnc.html`);
+    const actual=await state();wc.send('workspace:state',{...actual,uiStateRevision:actual.uiStateRevision+1,hostLabel:'fixture-other-host'});await sleep(50);assert.notEqual(await val('remote-url'),`https://${fixtureTailnet}/retained-context.invalid/vnc.html`);
+    wc.send('workspace:state',{...actual,uiStateRevision:actual.uiStateRevision+2});await sleep(50);assert.equal(await val('remote-url'),`https://${fixtureTailnet}/retained-context.invalid/vnc.html`);
     // Advance actual main revisions through real mutations past the synthetic label probe.
     for(let i=0;i<4;i++)await command('settings',{showBots:i%2===0});
-    await command('settings',{showBots:true});await command('settings',{remotePlatform:'mac'});await sleep(50);assert.notEqual(await val('remote-url'),'https://retained-context.invalid/vnc.html');
-    await command('settings',{remotePlatform:initial.remotePlatform});await sleep(50);assert.equal(await val('remote-url'),'https://retained-context.invalid/vnc.html');await click('#settings-discard-viewer');
+    await command('settings',{showBots:true});await command('settings',{remotePlatform:'mac'});await sleep(50);assert.notEqual(await val('remote-url'),`https://${fixtureTailnet}/retained-context.invalid/vnc.html`);
+    await command('settings',{remotePlatform:initial.remotePlatform});await sleep(50);assert.equal(await val('remote-url'),`https://${fixtureTailnet}/retained-context.invalid/vnc.html`);await click('#settings-discard-viewer');
   });
   await test('search, category and focused editable field survive a late confirmed reply',async()=>{
-    await show('mac-ssh-host');await edit('mac-ssh-host',`focus-${Date.now()}@computer.invalid`);const h=hold('macSshHost','after');await click(saveFor('mac-ssh-host'));await until(()=>held.has(h.id));
-    await search('viewer');await click('#remote-url');await edit('remote-url','https://local-focus.invalid/vnc.html');const focus=await js('document.activeElement.id');h.release();await sleep(90);
-    assert.equal(await js('document.activeElement.id'),focus);assert.equal(await val('settings-search'),'viewer');assert.equal(await val('remote-url'),'https://local-focus.invalid/vnc.html');
+    await show('mac-ssh-host');await edit('mac-ssh-host',`focus-${Date.now()}@${fixtureTailnet}`);const h=hold('macSshHost','after');await click(saveFor('mac-ssh-host'));await until(()=>held.has(h.id));
+    await search('viewer');await click('#remote-url');await edit('remote-url',`https://${fixtureTailnet}/local-focus.invalid/vnc.html`);const focus=await js('document.activeElement.id');h.release();await sleep(90);
+    assert.equal(await js('document.activeElement.id'),focus);assert.equal(await val('settings-search'),'viewer');assert.equal(await val('remote-url'),`https://${fixtureTailnet}/local-focus.invalid/vnc.html`);
     await search('');await show('remote-url');await click('#settings-discard-viewer');
   });
   await test('actual validation keeps invalid addresses editable and disk unchanged',async()=>{
@@ -374,7 +376,7 @@ async function run() {
   });
   for(const spec of [{id:'settings-preview',key:'preview',check:'settings-preview-check-save'}, {id:'mac-ssh-host',key:'macSshHost',check:'mac-ssh-host-check-save'}, {id:'remote-url',key:'remoteUrl',check:'remote-url-check-save'}]) await test(`${spec.id}: pending recovery geometry across four sizes`,async()=>{
     await show(spec.id);const selector=spec.id==='settings-preview'?'#'+spec.id:saveFor(spec.id);
-    if(spec.id==='mac-ssh-host')await edit(spec.id,'geometry@computer.invalid');if(spec.id==='remote-url')await edit(spec.id,'https://geometry.invalid/vnc.html');
+    if(spec.id==='mac-ssh-host')await edit(spec.id,`geometry@${fixtureTailnet}`);if(spec.id==='remote-url')await edit(spec.id,`https://${fixtureTailnet}/geometry.invalid/vnc.html`);
     const h=hold(spec.key,'before');await click(selector);await until(()=>held.has(h.id));await until(()=>js(`!document.getElementById(${JSON.stringify(spec.check)}).hidden`),7000);
     for(const [width,height] of [[1280,900],[1120,760],[1024,680],[840,520]]) {
       await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');const effective=await resizeWindow(win,width,height);await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width:effective.width,height:effective.height,deviceScaleFactor:1,mobile:false});

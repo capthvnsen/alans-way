@@ -1,3 +1,4 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizeUrl, agentPageUrl, faviconTarget, faviconQueue, redactTabForBot, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, continuedOnVm, isAuthorized, sanitizeBots, retargetMissingTab, needsContinuedEpoch, hostShouldReload, errorMessage, followVmRemoteUrl, handbackRequest, nextHandback, liveHandback, HANDBACK_MS, dialogAnswer, answerDialog } = require('../src/core.cjs');
@@ -62,9 +63,9 @@ test('the cdp allowlist denies storage, cookie, file and interception methods', 
     assert.equal(cdpMethodError(method), '', method);
 });
 test('existing noVNC links map to their websocket route', () => {
-  assert.equal(parseRemoteUrl('https://desktop.example:8445/vnc.html?view_only=true'), 'wss://desktop.example:8445/websockify');
-  assert.equal(parseRemoteUrl('https://desktop.example/view/vnc.html?path=socket'), 'wss://desktop.example/view/socket');
-  assert.equal(parseRemoteUrl('wss://desktop.example/ws'), 'wss://desktop.example/ws');
+  assert.equal(parseRemoteUrl(`https://${fixtureTailnet}:8445/vnc.html?view_only=true`), `wss://${fixtureTailnet}:8445/websockify`);
+  assert.equal(parseRemoteUrl(`https://${fixtureTailnet}/view/vnc.html?path=socket`), `wss://${fixtureTailnet}/view/socket`);
+  assert.equal(parseRemoteUrl(`wss://${fixtureTailnet}/ws`), `wss://${fixtureTailnet}/ws`);
   assert.throws(() => parseRemoteUrl('file:///etc/passwd'));
 });
 test('the noVNC address follows the agent VM when the SSH host moves', () => {
@@ -73,7 +74,7 @@ test('the noVNC address follows the agent VM when the SSH host moves', () => {
   assert.equal(followVmRemoteUrl('', 'root@10.0.0.2', ''), 'http://10.0.0.2:6080/vnc.html');
   assert.equal(followVmRemoteUrl('root@10.0.0.1', '10.0.0.2', 'http://10.0.0.1:9090/custom.html'), 'http://10.0.0.2:6080/vnc.html');
   // A remoteUrl pointing anywhere else is the user's and is left alone.
-  for (const other of ['https://desktop.example:8445/vnc.html', 'wss://other.example/ws'])
+  for (const other of [`https://${fixtureTailnet}:8445/vnc.html`, 'wss://other.example/ws'])
     assert.equal(followVmRemoteUrl('root@10.0.0.1', 'root@10.0.0.2', other), '', other);
   // Same host, with or without a user@ change, never rewrites; neither does clearing the VM.
   assert.equal(followVmRemoteUrl('root@10.0.0.1', 'me@10.0.0.1', ''), '');
@@ -112,8 +113,8 @@ test('API authentication rejects missing, truncated and different tokens', () =>
   for (const header of [undefined, 'paired-secret', 'Bearer paired', 'Bearer another-secret', 'Bearer', 'Basic cGFpcmVkLXNlY3JldA==']) assert.equal(isAuthorized(header, 'paired-secret'), false);
 });
 test('saved SSH addresses accept user@host or an alias and nothing a shell would interpret', () => {
-  for (const value of ['me@mac.example.ts.net', 'mymac', 'me@192.0.2.7', 'a_b-c.d']) assert.equal(isSshTarget(value), true, value);
-  for (const value of ['', 'mac; rm -rf ~', 'mac$(id)', 'mac`id`', '-oProxyCommand=id', 'me@mac other', 'mac\nid', 'mac|id', "mac'x", 'a@b@c', '-x@mac'])
+  for (const value of ['me@' + fixtureTailnet, fixtureTailnet, 'me@[fd7a:115c:a1e0::1]']) assert.equal(isSshTarget(value), true, value);
+  for (const value of ['me@mac.example.ts.net', 'mymac', 'me@192.0.2.7', 'a_b-c.d', '', 'mac; rm -rf ~', 'mac$(id)', 'mac`id`', '-oProxyCommand=id', 'me@mac other', 'mac\nid', 'mac|id', "mac'x", 'a@b@c', '-x@mac'])
     assert.equal(isSshTarget(value), false, JSON.stringify(value));
 });
 test('a handoff source and an unverified destination refuse agent claims until the human gives them over', () => {

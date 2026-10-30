@@ -1,3 +1,4 @@
+const { SSH_OPTIONS: TAILNET_SSH_OPTIONS } = require('./tailnet.cjs');
 'use strict';
 
 // Drives a release update on every saved agent machine over SSH, before the
@@ -15,7 +16,7 @@ const { compareVersions, normalizeVersion } = require('./update-version.cjs');
 const { redactReport } = require('./setup-check.cjs');
 
 const TAG_RE = /^v\d+\.\d+\.\d+$/;
-const SSH_OPTIONS = ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes'];
+const SSH_OPTIONS = [...TAILNET_SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes'];
 const VM_TIMEOUT_MS = 300000;
 // The check also asks Hermes for its version, `update --check` (a git fetch)
 // and gateway status, which took 15s on a live server.

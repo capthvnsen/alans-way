@@ -1,3 +1,4 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
 // Covers the settings "Update Hermes" button end to end: the cjs half that
 // pipes scripts/hermes-update.sh over ssh, and the script itself run against
 // a fake hermes binary and fixture profiles. No real hermes or VM is touched.
@@ -21,7 +22,7 @@ const readScript = (name) => {
   return SCRIPTS[name];
 };
 const vm = (over = {}) => ({
-  id: 'agent', label: 'VPS', sshHost: 'user@vm.example',
+  id: 'agent', label: 'VPS', sshHost: `user@${fixtureTailnet}`,
   scriptPath: '/home/user/.local/share/hermes-alans-way/app/desktop/scripts/vps-browser-host.cjs',
   sudo: false, ...over,
 });
@@ -60,8 +61,8 @@ test('the POSIX hermes-update script is piped over ssh stdin under the update ti
   assert.equal(calls.length, 1);
   const [call] = calls;
   assert.equal(call.bin, 'ssh');
-  assert.deepEqual(call.args.slice(0, -2), ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes']);
-  assert.equal(call.args.at(-2), 'user@vm.example');
+  assert.deepEqual(call.args.slice(0, -2), [...require('../src/tailnet.cjs').SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes']);
+  assert.equal(call.args.at(-2), `user@${fixtureTailnet}`);
   assert.match(call.args.at(-1), /timeout \d+ sh -s/, 'a remote-side cap bounds a run whose ssh dies');
   assert.equal(call.opts.input, posixCommand(SCRIPTS['hermes-update.sh']));
   assert.equal(call.opts.timeoutMs, HERMES_UPDATE_TIMEOUT_MS);

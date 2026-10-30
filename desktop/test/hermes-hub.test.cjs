@@ -1,3 +1,5 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 'use strict';
 // Behavioral tests for the main-process Hermes hub. Deps are injected fakes so
 // real hub logic — command allowlist, generation/session fencing, secrets
@@ -253,7 +255,7 @@ test('a late saved-history list cannot cross a backend change', { timeout: 3000 
   };
   try {
     const connecting = hub.command('connect'); await entered;
-    await hub.command('configure', { url: 'http://other.example:9119' });
+    await hub.command('configure', { url: `http://${fixtureTailnetOther}:9119` });
     release({ sessions: [{ id: 'old-history', title: 'Old backend' }] });
     await assert.rejects(connecting, { code: 'stale' });
     assert.deepEqual(hub.getState().storedSessions, []);
@@ -273,7 +275,7 @@ test('a late Resume cannot select a conversation after a backend change', { time
     const call = wire.call;
     wire.call = (method, params) => method === 'session.resume' ? pending : call(method, params);
     const resuming = hub.command('resume-session', { storedSessionId: 'stored-1', generation: hub.getState().generation });
-    await hub.command('configure', { url: 'http://other.example:9119' });
+    await hub.command('configure', { url: `http://${fixtureTailnetOther}:9119` });
     release({ session_id: 'old-runtime', session_key: 'stored-1' });
     await assert.rejects(resuming, { code: 'stale' });
     assert.equal(controllers.length, 0);
@@ -457,7 +459,7 @@ test('deliberate disconnect of a live conn never projects a false error', async 
 for (const command of ['answer-request', 'refuse-request']) test(`${command} requires the generation even before the renderer sees a reconnect`, async () => {
   const { hub, controllers } = fixture({ authRequired: false });
   try {
-    await hub.command('configure', { url: 'http://gw.test', localToken: 'fixture' });
+    await hub.command('configure', { url: `http://${fixtureTailnet}`, localToken: 'fixture' });
     await hub.command('connect'); await hub.command('select', { sessionId: 's-1' });
     const old = hub.getState().generation;
     await hub.command('disconnect'); await hub.command('connect');
@@ -474,11 +476,11 @@ for (const command of ['answer-request', 'refuse-request']) test(`${command} req
 test('profile changes retire sessions, controllers and uncertain sends before reconnect', async () => {
   const { hub, wire, controllers } = fixture({ authRequired: false });
   try {
-    await hub.command('configure', { url: 'http://gw.test', profile: 'profile-A', localToken: 'fixture' });
+    await hub.command('configure', { url: `http://${fixtureTailnet}`, profile: 'profile-A', localToken: 'fixture' });
     await hub.command('connect'); await hub.command('select', { sessionId: 's-1' });
     const generation = hub.getState().generation;
     controllers[0].lastSend = { text: 'A-only pending text', outcome: 'inflight', target: { sessionId: 's-1', sessionKey: 'k-1' } };
-    await hub.command('configure', { url: 'http://gw.test', profile: 'profile-B', localToken: 'fixture' });
+    await hub.command('configure', { url: `http://${fixtureTailnet}`, profile: 'profile-B', localToken: 'fixture' });
     assert.equal(wire.state, 'closed'); assert.equal(controllers[0].phase, 'disposed');
     assert.equal(hub.getState().generation, generation + 1);
     assert.deepEqual(hub.getState().sessions, []); assert.equal(hub.getState().conversation, null);
@@ -491,7 +493,7 @@ test('profile changes retire sessions, controllers and uncertain sends before re
 test('review acknowledgement is allowlisted and fenced to the rendered connection and session', async () => {
   const { hub, controllers } = fixture({ authRequired: false });
   try {
-    await hub.command('configure', { url: 'http://gw.test', localToken: 'fixture' });
+    await hub.command('configure', { url: `http://${fixtureTailnet}`, localToken: 'fixture' });
     await hub.command('connect'); await hub.command('select', { sessionId: 's-1' });
     controllers[0].phase = 'review'; const generation = hub.getState().generation;
     await assert.rejects(hub.command('acknowledge-review', { sessionId: 's-1' }), e => e.code === 'stale_generation');

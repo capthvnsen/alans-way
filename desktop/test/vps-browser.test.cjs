@@ -1,3 +1,4 @@
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 const test = require('node:test');
 const { posixCommand } = require('../src/remote-shell.cjs');
 const assert = require('node:assert/strict');
@@ -180,15 +181,15 @@ test('an unchanged mirror is resent once an hour so the VM never ages it out', a
 test('sign-ins only travel to a tailnet address or MagicDNS name', async () => {
   // Built at runtime: the publication check keeps literal tailnet addresses out of the repo.
   const cgnat = (...rest) => ['100', ...rest].join('.');
-  for (const host of [cgnat(64, 0, 1), 'me@' + cgnat(101, 102, 103), cgnat(127, 255, 255), 'fd7a:115c:a1e0::1', '[fd7a:115c:a1e0:ab12::5]', 'vm.tail1234.ts.net', 'root@orgo.tailnet-x.ts.net'])
+  for (const host of [cgnat(64, 0, 1), 'me@' + cgnat(101, 102, 103), cgnat(127, 255, 255), 'fd7a:115c:a1e0::1', '[fd7a:115c:a1e0:ab12::5]'])
     assert.equal(isTailnetHost(host), true, host);
-  for (const host of ['', '203.0.113.7', cgnat(63, 255, 255), cgnat(128, 0, 1), cgnat(64, 0, 256), cgnat('064', 0, 1), cgnat(64, '01', 1), '10.0.0.5', 'vm.example.com', 'ts.net.evil.com', 'fd7a:115c:a1e1::1', 'orgo'])
+  for (const host of ['vm.tail1234.ts.net', 'root@orgo.tailnet-x.ts.net', '', '203.0.113.7', cgnat(63, 255, 255), cgnat(128, 0, 1), cgnat(64, 0, 256), cgnat('064', 0, 1), cgnat(64, '01', 1), '10.0.0.5', 'vm.example.com', 'ts.net.evil.com', 'fd7a:115c:a1e1::1', 'orgo'])
     assert.equal(isTailnetHost(host), false, host);
   assert.equal(sshResolvedHostname(`user root\nhostname ${cgnat(88, 1, 2)}\nport 22\n`), cgnat(88, 1, 2));
   assert.equal(sshResolvedHostname('port 22'), '');
   const seen = [];
-  assert.equal(await resolveSshHostname('orgo', async (args) => { seen.push(args); return 'hostname orgo.tail1.ts.net\n'; }), 'orgo.tail1.ts.net');
-  assert.deepEqual(seen, [['-G', 'orgo']]);
+  assert.equal(await resolveSshHostname(cgnat(64, 0, 1), async (args) => { seen.push(args); return 'hostname orgo.tail1.ts.net\n'; }), 'orgo.tail1.ts.net');
+  assert.deepEqual(seen, [[...require('../src/tailnet.cjs').SSH_OPTIONS, '-G', cgnat(64, 0, 1)]]);
   assert.equal(await resolveSshHostname('-oProxyCommand=x', async () => { throw new Error('never run'); }), '', 'an option-shaped host never reaches ssh');
 });
 

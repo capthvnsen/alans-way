@@ -1,3 +1,4 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
 const { resizeWindow } = require('./window-fixture.cjs');
 // Real Settings renderer/main + disposable local storage. External work is held
 // at the named IPC seam. Trusted Chromium input; no OS focus/permission calls.
@@ -11,7 +12,7 @@ assert.ok(profile, 'Use test/run-electron.cjs for disposable storage.');
 const boundaries = require('./settings-fixture-boundaries.cjs')();
 prepareFixture(profile);
 const bots = Array.from({ length: 9 }, (_, i) => ({ id: String(72000 + i), name: `Round two researcher ${i + 1} — a long independent settings identity`, username: `round2_${i + 1}_bot` }));
-fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, bots, selectedBotId: bots[0].id, hidden: [], remoteUrl: '', macSshHost: 'local@fixture.invalid', vpsBrowser: { enabled: false, sshHost: 'agent@fixture.invalid' } }));
+fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, bots, selectedBotId: bots[0].id, hidden: [], remoteUrl: '', macSshHost: `local@${fixtureTailnet}`, vpsBrowser: { enabled: false, sshHost: `agent@${fixtureTailnet}` } }));
 const seams = new Map(), calls = [];
 const handle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, handler) => handle(channel, channel === 'workspace:command' ? async (event, name, value) => {
@@ -148,11 +149,11 @@ app.whenReady().then(async () => {
     await click('#settings-category-connections'); await reach('#settings-test-path'); const gate = hold('test-agent-path');
     await key('Enter'); await wait(gate.entered); await reach('#mac-ssh-host');
     await js('document.getElementById("mac-ssh-host").select()');
-    await wc.debugger.sendCommand('Input.insertText', { text: 'round2-draft@local.invalid' });
+    await wc.debugger.sendCommand('Input.insertText', { text: `round2-draft@${fixtureTailnet}` });
     gate.release({ result: { ok: true, detail: 'Round2 response after field movement.' } });
     await wait(body, text => text.includes('Addresses or bot changed. Check the saved path again.'));
     assert.equal((await active()).id, 'mac-ssh-host');
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'round2-draft@local.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `round2-draft@${fixtureTailnet}`);
   });
   for (const failure of [false, true]) await check(`pending ${failure ? 'rejection' : 'success'} respects category and search transitions`, async () => {
     await search('agent setup'); await reach('#settings-test-path'); const gate = hold('test-agent-path');
@@ -285,22 +286,22 @@ app.whenReady().then(async () => {
       await wc.debugger.sendCommand('Input.insertText', { text }); await frame();
     };
     try {
-      for (const reply of [{ result: { host: 'user@server-a.invalid', stage: 'done', ok: true, detail: 'Connected to server A.' } }, { error: 'Server A failed.' }]) {
-        await address('user@server-a.invalid');
+      for (const reply of [{ result: { host: `user@${fixtureTailnet}`, stage: 'done', ok: true, detail: 'Connected to server A.' } }, { error: 'Server A failed.' }]) {
+        await address(`user@${fixtureTailnet}`);
         const gate = hold('cloud-connect');
         await click('#onboarding .primary-button'); await wait(gate.entered);
-        await address('user@server-b.invalid');
+        await address(`user@${fixtureTailnetOther}`);
         await js('state = {...state, cloud: {...state.cloud, existingModel: {provider:"fixture",model:"model-a"}, modelDetected:true}}; renderOnboarding(true); true');
-        assert.equal(await js('document.getElementById("ob-diy-host")?.value'), 'user@server-b.invalid', 'model metadata must preserve the address draft');
+        assert.equal(await js('document.getElementById("ob-diy-host")?.value'), `user@${fixtureTailnetOther}`, 'model metadata must preserve the address draft');
         const before = count('cloud-goto');
         gate.release(reply);
         await pause(150); await frame();
-        assert.equal(await js('document.getElementById("ob-diy-host")?.value'), 'user@server-b.invalid');
+        assert.equal(await js('document.getElementById("ob-diy-host")?.value'), `user@${fixtureTailnetOther}`);
         assert.doesNotMatch(await js('document.getElementById("onboarding").innerText'), /Connected to server A|Server A failed/);
         assert.doesNotMatch(await js('document.getElementById("toast").innerText'), /Server A failed/);
         assert.equal(count('cloud-goto'), before, 'an edited address cannot accept the old result');
       }
-      seams.set('cloud-connect', async () => ({ host: 'user@server-b.invalid', stage: 'done', ok: true, detail: 'Connected to server B.' }));
+      seams.set('cloud-connect', async () => ({ host: `user@${fixtureTailnetOther}`, stage: 'done', ok: true, detail: 'Connected to server B.' }));
       seams.set('cloud-model-detect', async () => ({ detail: '' }));
       await click('#onboarding .primary-button');
       await wait(() => calls.some(call => call.name === 'cloud-goto' && call.value.step === 'model'));

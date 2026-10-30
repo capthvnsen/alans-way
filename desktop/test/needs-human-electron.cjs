@@ -158,8 +158,9 @@ app.whenReady().then(async () => {
   await invoke('close-tab', { id: second.id });
   assert.equal(shown[1].closed, true, 'closing the tab dismisses its notification');
 
+  const fixtureHost = require('./tailnet-fixture.cjs').ip;
   const refreshVm = async () => {
-    await invoke('settings', { vpsBrowser: { sshHost: 'fixture@192.0.2.1' } });
+    await invoke('settings', { vpsBrowser: { sshHost: `fixture@${fixtureHost}`, brokerSshHost: `browser-broker@${fixtureHost}`, scriptPath: '/fixture/browser-host.cjs' } });
     return getState();
   };
   remoteTabs.set(remoteTab.id, { ...remoteTab, handback: null, controller: 'agent' });

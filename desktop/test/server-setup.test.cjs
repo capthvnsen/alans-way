@@ -1,8 +1,9 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createServerSetup, parseSetupPlan, setupCommand } = require('../src/server-setup.cjs');
-const plan = { repoRef: 'a'.repeat(40), desktopRef: 'b'.repeat(40), args: ['--bot-id', '123456789', '--mac-ssh', 'you@computer.example', '--host-os', 'mac', '--timezone', 'America/Denver', '--bind', '--proactive', 'yes'] };
+const plan = { repoRef: 'a'.repeat(40), desktopRef: 'b'.repeat(40), args: ['--bot-id', '123456789', '--mac-ssh', `you@${fixtureTailnet}`, '--host-os', 'mac', '--timezone', 'America/Denver', '--bind', '--proactive', 'yes'] };
 
 test('setup accepts every supported public key type and keeps comments on user keys only', () => {
   const blob = 'A'.repeat(20);
@@ -29,13 +30,13 @@ test('setup rejects malformed key blobs, options, control characters and extra l
 test('a reviewed setup plan runs over pinned SSH outside the gateway', async () => {
   const calls = [];
   const setup = createServerSetup({ run: async (...args) => { calls.push(args); return { code: 0, out: 'setup: fixture passed\nRestarting the gateway in 10s, detached', err: '' }; } });
-  const result = await setup('you@server.example', JSON.stringify(plan));
+  const result = await setup(`you@${fixtureTailnet}`, JSON.stringify(plan));
   assert.equal(result.ok, true);
   assert.match(result.detail, /restart|Restart/);
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'ssh');
-  assert.deepEqual(calls[0][1].slice(0, -2), ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes']);
-  assert.equal(calls[0][1].at(-2), 'you@server.example');
+  assert.deepEqual(calls[0][1].slice(0, -2), [...require('../src/tailnet.cjs').SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes']);
+  assert.equal(calls[0][1].at(-2), `you@${fixtureTailnet}`);
   assert.match(calls[0][1].at(-1), /sh -s/);
   const payload = calls[0][2].input;
   assert.match(payload, /git rev-parse HEAD/);
@@ -54,7 +55,7 @@ test('setup rejects unpinned sources, arbitrary flags and invalid SSH before spa
     { ...plan, args: [...plan.args, '--dev-plugin-install'] }, { ...plan, args: [...plan.args, '--restart'] },
     { ...plan, args: [...plan.args, '--config', '/etc/other'] }, { ...plan, args: ['--bot-id'] },
     { ...plan, args: [...plan.args, '--profile', '../other'] }, { ...plan, extra: 'unknown' }];
-  for (const input of invalidPlans) assert.equal((await setup('you@server.example', typeof input === 'string' ? input : JSON.stringify(input))).ok, false);
+  for (const input of invalidPlans) assert.equal((await setup(`you@${fixtureTailnet}`, typeof input === 'string' ? input : JSON.stringify(input))).ok, false);
   assert.equal((await setup('-oProxyCommand=bad', JSON.stringify(plan))).ok, false);
   assert.equal(calls, 0);
 });
@@ -71,7 +72,7 @@ test('values remain shell data; profiles and explicit desktop opt-in survive', (
 
 test('failed checks and restart deferral remain visible, with output redacted', async () => {
   const setup = createServerSetup({ run: async () => ({ code: 1, out: 'FAIL required check\nhttps://name:password@example.invalid/report?token=secret', err: '' }) });
-  const result = await setup('you@server.example', JSON.stringify(plan));
+  const result = await setup(`you@${fixtureTailnet}`, JSON.stringify(plan));
   assert.equal(result.ok, false);
   assert.match(result.detail, /FAIL required check/);
   assert.doesNotMatch(result.detail, /password|token=secret/);
@@ -79,7 +80,7 @@ test('failed checks and restart deferral remain visible, with output redacted', 
 
 test('a thrown or timed-out SSH operation cannot report setup success', async () => {
   for (const run of [async () => { throw new Error('spawn failed'); }, async () => ({ code: null, out: '', err: '' })]) {
-    const result = await createServerSetup({ run })('you@server.example', JSON.stringify(plan));
+    const result = await createServerSetup({ run })(`you@${fixtureTailnet}`, JSON.stringify(plan));
     assert.equal(result.ok, false);
     assert.ok(result.detail);
   }
@@ -116,7 +117,7 @@ test('IANA single-component aliases and Etc zones reach mocked SSH intact', asyn
   const setup = createServerSetup({ run: async (...args) => { calls.push(args); return { code: 0, out: 'fixture passed', err: '' }; } });
   for (const timezone of ['UTC', 'Etc/UTC', 'Etc/GMT+12', 'Etc/GMT-14', 'America/Argentina/Buenos_Aires', 'GMT0', 'CST6CDT']) {
     const args = [...plan.args]; args[args.indexOf('--timezone') + 1] = timezone;
-    assert.equal((await setup('you@server.example', JSON.stringify({ ...plan, args }))).ok, true, timezone);
+    assert.equal((await setup(`you@${fixtureTailnet}`, JSON.stringify({ ...plan, args }))).ok, true, timezone);
     assert.ok(calls.at(-1)[2].input.includes(`'--timezone' '${timezone}'`));
   }
   assert.equal(calls.length, 7);
@@ -127,7 +128,7 @@ test('Hermes profile IDs accept the full 1 to 64 character boundary', async () =
   const setup = createServerSetup({ run: async (...args) => { calls.push(args); return { code: 0, out: 'fixture passed', err: '' }; } });
   for (const profile of ['a', '0', 'work_1-test', 'default', 'a'.repeat(63), 'a'.repeat(64)]) {
     const input = { ...plan, args: [...plan.args, '--profile', profile] };
-    assert.equal((await setup('you@server.example', JSON.stringify(input))).ok, true, profile);
+    assert.equal((await setup(`you@${fixtureTailnet}`, JSON.stringify(input))).ok, true, profile);
     assert.ok(calls.at(-1)[2].input.includes(`'--profile' '${profile}'`));
   }
   assert.equal(calls.length, 6);
@@ -144,7 +145,7 @@ test('timezone and profile formats reject invalid boundaries and shell metachara
       const args = [...plan.args];
       if (option === '--timezone') args[args.indexOf(option) + 1] = value;
       else args.push(option, value);
-      assert.equal((await setup('you@server.example', JSON.stringify({ ...plan, args }))).ok, false, `${option}: ${JSON.stringify(value)}`);
+      assert.equal((await setup(`you@${fixtureTailnet}`, JSON.stringify({ ...plan, args }))).ok, false, `${option}: ${JSON.stringify(value)}`);
     }
   }
   assert.equal(calls, 0);

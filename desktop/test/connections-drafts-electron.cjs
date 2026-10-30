@@ -1,3 +1,5 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 const { resizeWindow } = require('./window-fixture.cjs');
 // Real Electron Settings + main persistence/copy; external work is blocked.
 // Run with: node test/run-electron.cjs test/connections-round2-electron.cjs
@@ -105,7 +107,7 @@ app.whenReady().then(async () => {
     assert.equal(savedStateChecks().at(-1).resultStatus, expected);
   };
   const saveRemote = () => click('[data-settings-section=remote-desktop] .primary-button');
-  const check = async (name, fn) => { if (process.env.CONNECTIONS_CASE && !name.includes(process.env.CONNECTIONS_CASE)) return; try { await call('settings', { macSshHost: `local${results.length}@fixture.invalid`, vpsBrowser: { enabled: false, sshHost: `agent${results.length}@fixture.invalid` }, remoteUrl: '', preview: false }); await call('open-bot', { id: bots[0].id }); await open(); await fn(); results.push({ name, pass: true }); console.log('PASS:', name); } catch (error) { results.push({ name, pass: false, error: error.stack }); console.error('FAIL:', name, error.message); await shot('failure-' + results.length); } finally { for (const gate of gates) gate.release(); gates.length = 0; seams.clear(); await frame(); } };
+  const check = async (name, fn) => { if (process.env.CONNECTIONS_CASE && !name.includes(process.env.CONNECTIONS_CASE)) return; try { await call('settings', { macSshHost: `local${results.length}@${fixtureTailnet}`, vpsBrowser: { enabled: false, sshHost: `agent${results.length}@${fixtureTailnet}` }, remoteUrl: '', preview: false }); await call('open-bot', { id: bots[0].id }); await open(); await fn(); results.push({ name, pass: true }); console.log('PASS:', name); } catch (error) { results.push({ name, pass: false, error: error.stack }); console.error('FAIL:', name, error.message); await shot('failure-' + results.length); } finally { for (const gate of gates) gate.release(); gates.length = 0; seams.clear(); await frame(); } };
   server = http.createServer((_req, res) => res.end('<!doctype html><title>Inert loopback viewer fixture</title>'));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const url = `http://127.0.0.1:${server.address().port}/vnc.html`;
   await resizeWindow(win, 1280, 800); await frame();
@@ -113,9 +115,9 @@ app.whenReady().then(async () => {
   await check('close and reopen retains an unsaved address without auto-saving', async () => {
     await disclose('#settings-agent-details');
     const before = disk().macSshHost;
-    await fill('#mac-ssh-host', 'unsaved@draft.invalid');
+    await fill('#mac-ssh-host', `unsaved@${fixtureTailnet}`);
     await click('#modal-close'); await open(); await disclose('#settings-agent-details');
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'unsaved@draft.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `unsaved@${fixtureTailnet}`);
     assert.equal(await js('document.getElementById("mac-ssh-host").dataset.dirty'), 'true');
     assert.equal(disk().macSshHost, before);
     await click('#mac-ssh-host'); await shot('retained-draft');
@@ -123,9 +125,9 @@ app.whenReady().then(async () => {
 
   await check('category and metadata search retain private drafts; explicit discard survives reopen', async () => {
     await disclose('#settings-agent-details'); const saved = disk().macSshHost;
-    await fill('#mac-ssh-host', 'private-round2@draft.invalid');
+    await fill('#mac-ssh-host', `private-round2@${fixtureTailnet}`);
     await click('#settings-category-general'); await search('ssh address');
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'private-round2@draft.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `private-round2@${fixtureTailnet}`);
     await search('private-round2'); assert.equal(await js('document.getElementById("settings-empty").hidden'), false);
     await search('ssh address'); await click('#settings-discard-addresses');
     assert.equal(await js('document.getElementById("mac-ssh-host").value'), saved);
@@ -135,59 +137,59 @@ app.whenReady().then(async () => {
     assert.notEqual(await js('document.getElementById("mac-ssh-host").dataset.dirty'), 'true');
   });
   await check('close/reopen during actual Save blocks repeats, retains later per-field revisions and permits one explicit later save', async () => {
-    await disclose('#settings-agent-details'); await fill('#mac-ssh-host', 'submitted@fixture.invalid'); await fill('#vps-ssh-host', 'agent-submitted@fixture.invalid');
+    await disclose('#settings-agent-details'); await fill('#mac-ssh-host', `submitted@${fixtureTailnet}`); await fill('#vps-ssh-host', `agent-submitted@${fixtureTailnet}`);
     const gate = holdSave('macSshHost'); await click('#settings-save-addresses'); await wait(() => gate.entered);
-    await fill('#mac-ssh-host', 'later@draft.invalid');
+    await fill('#mac-ssh-host', `later@${fixtureTailnet}`);
     // Same value, new input revision must remain dirty as in the inherited guard.
-    await fill('#vps-ssh-host', 'agent-submitted@fixture.invalid');
+    await fill('#vps-ssh-host', `agent-submitted@${fixtureTailnet}`);
     await click('#modal-close'); await open(); await disclose('#settings-agent-details');
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'later@draft.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `later@${fixtureTailnet}`);
     assert.equal(await js('document.getElementById("settings-save-addresses").getAttribute("aria-busy")'), 'true');
     const before = calls.filter(c => c.name === 'settings' && 'macSshHost' in c.value).length;
     await click('#settings-save-addresses'); await key('Enter'); await click('#settings-discard-addresses');
     assert.equal(calls.filter(c => c.name === 'settings' && 'macSshHost' in c.value).length, before);
     gate.release(); await idle('#settings-save-addresses');
-    assert.equal(disk().macSshHost, 'submitted@fixture.invalid');
+    assert.equal(disk().macSshHost, `submitted@${fixtureTailnet}`);
     for (const id of ['mac-ssh-host', 'vps-ssh-host']) assert.equal(await js(`document.getElementById(${JSON.stringify(id)}).dataset.dirty`), 'true');
     assert.match(await js('document.querySelector("#settings-save-addresses + p").textContent'), /Newer edits are not saved/);
     await shot('pending-reopen-later-edits');
     await click('#settings-save-addresses'); await idle('#settings-save-addresses');
-    assert.equal(disk().macSshHost, 'later@draft.invalid');
+    assert.equal(disk().macSshHost, `later@${fixtureTailnet}`);
     assert.equal(calls.filter(c => c.name === 'settings' && 'macSshHost' in c.value).length, before + 1);
     await open(); await disclose('#settings-agent-details');
     assert.notEqual(await js('document.getElementById("mac-ssh-host").dataset.dirty'), 'true');
     assert.match(await js('document.querySelector("#settings-save-addresses + p").textContent'), /Addresses saved/);
   });
   await check('save completes while closed; submitted fields become saved without clearing a later edit', async () => {
-    await disclose('#settings-agent-details'); await fill('#mac-ssh-host', 'closed-save@fixture.invalid');
+    await disclose('#settings-agent-details'); await fill('#mac-ssh-host', `closed-save@${fixtureTailnet}`);
     const gate = holdSave('macSshHost'); await click('#settings-save-addresses'); await wait(() => gate.entered);
-    await fill('#vps-ssh-host', 'closed-later@draft.invalid'); await click('#modal-close');
+    await fill('#vps-ssh-host', `closed-later@${fixtureTailnet}`); await click('#modal-close');
     gate.release(); await pause(100); await open(); await disclose('#settings-agent-details');
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'closed-save@fixture.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `closed-save@${fixtureTailnet}`);
     assert.notEqual(await js('document.getElementById("mac-ssh-host").dataset.dirty'), 'true');
-    assert.equal(await js('document.getElementById("vps-ssh-host").value'), 'closed-later@draft.invalid');
+    assert.equal(await js('document.getElementById("vps-ssh-host").value'), `closed-later@${fixtureTailnet}`);
     assert.equal(await js('document.getElementById("vps-ssh-host").dataset.dirty'), 'true');
   });
   await check('rejected delivery preserves the reopened draft and checks saved truth before the next explicit save', async () => {
-    await disclose('#settings-agent-details'); await fill('#mac-ssh-host', 'persisted-rejected@fixture.invalid');
+    await disclose('#settings-agent-details'); await fill('#mac-ssh-host', `persisted-rejected@${fixtureTailnet}`);
     const gate = holdSave('macSshHost'); await click('#settings-save-addresses'); await wait(() => gate.entered);
-    await fill('#mac-ssh-host', 'after-rejection@draft.invalid'); await open(); await disclose('#settings-agent-details');
+    await fill('#mac-ssh-host', `after-rejection@${fixtureTailnet}`); await open(); await disclose('#settings-agent-details');
     gate.release('Fixture: IPC reply rejected after actual persistence.');
     await wait(() => js('!document.getElementById("mac-ssh-host-check-save").hidden'));
-    assert.equal(disk().macSshHost, 'persisted-rejected@fixture.invalid');
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'after-rejection@draft.invalid');
+    assert.equal(disk().macSshHost, `persisted-rejected@${fixtureTailnet}`);
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `after-rejection@${fixtureTailnet}`);
     assert.match(await js('document.querySelector("#settings-save-addresses + p").textContent'), /could not be confirmed.*later edits are kept/);
     const writes = addressWrites();
     await click('#settings-save-addresses'); await click('#settings-discard-addresses');
     assert.equal(addressWrites(), writes);
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'after-rejection@draft.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `after-rejection@${fixtureTailnet}`);
     await addressRecovery('saved');
     assert.equal(addressWrites(), writes);
-    assert.equal(disk().macSshHost, 'persisted-rejected@fixture.invalid');
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'after-rejection@draft.invalid');
+    assert.equal(disk().macSshHost, `persisted-rejected@${fixtureTailnet}`);
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `after-rejection@${fixtureTailnet}`);
     assert.equal(await js('document.getElementById("mac-ssh-host").dataset.dirty'), 'true');
     await shot('rejected-save-recovery'); await click('#settings-save-addresses'); await idle('#settings-save-addresses');
-    assert.equal(disk().macSshHost, 'after-rejection@draft.invalid');
+    assert.equal(disk().macSshHost, `after-rejection@${fixtureTailnet}`);
     assert.equal(addressWrites(), writes + 1);
   });
   await check('pre-write rejection and malformed input retain drafts without writing saved addresses', async () => {
@@ -195,17 +197,17 @@ app.whenReady().then(async () => {
     await fill('#mac-ssh-host', 'invalid host'); await click('#settings-save-addresses'); await idle('#settings-save-addresses');
     assert.equal(disk().macSshHost, before); await open(); await disclose('#settings-agent-details');
     assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'invalid host');
-    await fill('#mac-ssh-host', 'unwritten@draft.invalid');
+    await fill('#mac-ssh-host', `unwritten@${fixtureTailnet}`);
     let release, entered = false;
     seams.set('settings', () => { entered = true; return new Promise((_resolve, reject) => { release = () => reject(Error('Fixture: not delivered to main.')); }); });
     await click('#settings-save-addresses'); await wait(() => entered); await click('#modal-close');
     release(); seams.delete('settings'); await pause(50); await open(); await disclose('#settings-agent-details');
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'unwritten@draft.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `unwritten@${fixtureTailnet}`);
     assert.equal(disk().macSshHost, before);
     await wait(() => js('!document.getElementById("mac-ssh-host-check-save").hidden'));
     const writes = addressWrites();
     await click('#settings-discard-addresses');
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'unwritten@draft.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `unwritten@${fixtureTailnet}`);
     assert.equal(addressWrites(), writes);
     await addressRecovery('not-applied');
     assert.equal(addressWrites(), writes);
@@ -216,32 +218,32 @@ app.whenReady().then(async () => {
   const selectReviewed = async id => { await js(`document.getElementById('settings-setup-bot').value=${JSON.stringify(id)};document.getElementById('settings-setup-bot').dispatchEvent(new Event('change',{bubbles:true}));true`); await frame(); };
   await check('scripted bot selection and saved-host changes isolate drafts and restore only their original context', async () => {
     await disclose('#settings-agent-details'); const original = disk();
-    await fill('#mac-ssh-host', 'bot-one-only@draft.invalid'); await selectReviewed(bots[1].id);
+    await fill('#mac-ssh-host', `bot-one-only@${fixtureTailnet}`); await selectReviewed(bots[1].id);
     assert.equal(await js('document.getElementById("mac-ssh-host").value'), original.macSshHost);
-    await fill('#mac-ssh-host', 'bot-two-only@draft.invalid'); await selectReviewed(bots[0].id);
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'bot-one-only@draft.invalid');
-    await call('settings', { macSshHost: 'external-local@fixture.invalid', vpsBrowser: { enabled: false, sshHost: 'external-agent@fixture.invalid' } }); await frame();
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'external-local@fixture.invalid');
+    await fill('#mac-ssh-host', `bot-two-only@${fixtureTailnet}`); await selectReviewed(bots[0].id);
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `bot-one-only@${fixtureTailnet}`);
+    await call('settings', { macSshHost: `external-local@${fixtureTailnet}`, vpsBrowser: { enabled: false, sshHost: `external-agent@${fixtureTailnet}` } }); await frame();
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `external-local@${fixtureTailnet}`);
     await call('settings', { macSshHost: original.macSshHost, vpsBrowser: original.vpsBrowser }); await frame();
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'bot-one-only@draft.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `bot-one-only@${fixtureTailnet}`);
     await call('open-bot', { id: bots[1].id }); await frame();
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'bot-two-only@draft.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `bot-two-only@${fixtureTailnet}`);
     await open(); await disclose('#settings-agent-details');
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'bot-two-only@draft.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `bot-two-only@${fixtureTailnet}`);
   });
   await check('late older Save cannot overwrite newer UI state or place its draft into another saved host context', async () => {
-    await disclose('#settings-agent-details'); await fill('#mac-ssh-host', 'old-save@fixture.invalid');
+    await disclose('#settings-agent-details'); await fill('#mac-ssh-host', `old-save@${fixtureTailnet}`);
     const gate = holdSave('macSshHost'); await click('#settings-save-addresses'); await wait(() => gate.entered);
-    await fill('#mac-ssh-host', 'old-context-draft@draft.invalid');
-    await call('settings', { macSshHost: 'new-context@fixture.invalid', preview: true }); await frame();
+    await fill('#mac-ssh-host', `old-context-draft@${fixtureTailnet}`);
+    await call('settings', { macSshHost: `new-context@${fixtureTailnet}`, preview: true }); await frame();
     const revision = await js('state.uiStateRevision'); await open(); await disclose('#settings-agent-details');
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'new-context@fixture.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `new-context@${fixtureTailnet}`);
     gate.release(); await pause(100); await frame();
-    assert.equal(await js('state.macSshHost'), 'new-context@fixture.invalid'); assert.equal(await js('state.preview'), true);
+    assert.equal(await js('state.macSshHost'), `new-context@${fixtureTailnet}`); assert.equal(await js('state.preview'), true);
     assert.ok(await js('state.uiStateRevision') >= revision);
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'new-context@fixture.invalid');
-    await call('settings', { macSshHost: 'old-save@fixture.invalid', preview: false }); await frame();
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'old-context-draft@draft.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `new-context@${fixtureTailnet}`);
+    await call('settings', { macSshHost: `old-save@${fixtureTailnet}`, preview: false }); await frame();
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `old-context-draft@${fixtureTailnet}`);
     assert.equal(await js('document.getElementById("mac-ssh-host").dataset.dirty'), 'true');
   });
   await check('viewer draft and pending save survive reopen, later edits, explicit save and discard', async () => {
@@ -268,7 +270,7 @@ app.whenReady().then(async () => {
           'text/plain': 'Connections clipboard fixture', 'text/html': '<b>Connections clipboard fixture</b>', [custom]: new Blob([Buffer.from([0, 1, 254, 255])]),
         })]);
         if (initial === 'native-url') await clipboard.write([new electron.ClipboardItem({
-          'text/plain': 'https://fixture.invalid/',
+          'text/plain': `https://${fixtureTailnet}/fixture.invalid/`,
           'electron application/osclipboard;format="public.url"': new Blob(['https://fixture.invalid/']),
           'electron application/osclipboard;format="public.url-name"': new Blob(['Fixture bookmark']),
         })]);
@@ -315,13 +317,13 @@ app.whenReady().then(async () => {
   await check('late IPC-only path reply after reopen cannot verify a newer draft', async () => {
     let release, entered = false; seams.set('test-agent-path', () => { entered = true; return new Promise(resolve => { release = resolve; }); });
     await click('#settings-test-path'); await wait(() => entered); await open(); await disclose('#settings-agent-details');
-    await fill('#mac-ssh-host', 'not-checked@draft.invalid'); release({ ok: true, detail: 'OLD_PATH_RESULT' }); await frame(); await pause(50);
+    await fill('#mac-ssh-host', `not-checked@${fixtureTailnet}`); release({ ok: true, detail: 'OLD_PATH_RESULT' }); await frame(); await pause(50);
     assert.doesNotMatch(await js('document.getElementById("settings-content").innerText'), /OLD_PATH_RESULT|SSH path checked/);
-    assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'not-checked@draft.invalid');
+    assert.equal(await js('document.getElementById("mac-ssh-host").value'), `not-checked@${fixtureTailnet}`);
   });
   for (const size of [[1280, 800], [1120, 800], [1024, 800], [840, 800]]) await check(`${size.join('x')}: trusted forward/reverse keyboard routes keep focus visible and drafts recoverable`, async () => {
     win.setMinimumSize(0, 0); await resizeWindow(win, ...size); await frame();
-    await click('#settings-enter-addresses'); await fill('#mac-ssh-host', 'keyboard@draft.invalid');
+    await click('#settings-enter-addresses'); await fill('#mac-ssh-host', `keyboard@${fixtureTailnet}`);
     await disclose('#settings-connector-details'); await disclose('#settings-remote-details');
     await click('#settings-category-connections'); const samples = [];
     for (const reverse of [false, true]) for (let n = 0; n < 30; n++) {

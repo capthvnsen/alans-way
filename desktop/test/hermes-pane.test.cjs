@@ -1,3 +1,5 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 'use strict';
 // Pane-level regression for renderer.js renderHermesSetup: a dropped socket
 // with an established selected conversation must keep the conversation
@@ -79,7 +81,7 @@ function harness(h, { chatTarget = 'hermes' } = {}) {
   return { setup, convo, calls, renders, ctx };
 }
 
-const target = { label: 'gw.example', url: 'https://gw.example', profile: 'default' };
+const target = { label: `${fixtureTailnet}`, url: `https://${fixtureTailnet}`, profile: 'default' };
 const sel = { sessionId: 's-1', sessionKey: 'k1' };
 
 test('a dropped socket with an established selection keeps the conversation surface', () => {

@@ -1,3 +1,4 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
 const { test } = require('node:test');
 const { posixCommand } = require('../src/remote-shell.cjs');
 const assert = require('node:assert/strict');
@@ -13,7 +14,7 @@ const readScript = (name) => {
   return SCRIPTS[name];
 };
 const vm = (over = {}) => ({
-  id: 'agent', label: 'VPS', sshHost: 'user@vm.example',
+  id: 'agent', label: 'VPS', sshHost: `user@${fixtureTailnet}`,
   scriptPath: '/home/user/.local/share/hermes-alans-way/app/desktop/scripts/vps-browser-host.cjs',
   sudo: false, ...over,
 });
@@ -36,9 +37,9 @@ function fakeRun(respond) {
 }
 
 test('vmTargets lists the saved agent machine once an ssh host exists', () => {
-  const targets = vmTargets({ vpsBrowser: { sshHost: 'u@h.example', scriptPath: '/x/h.cjs', sudo: true }, remotePlatform: 'mac' });
+  const targets = vmTargets({ vpsBrowser: { sshHost: `u@${fixtureTailnet}`, scriptPath: '/x/h.cjs', sudo: true }, remotePlatform: 'mac' });
   assert.equal(targets.length, 1);
-  assert.equal(targets[0].sshHost, 'u@h.example');
+  assert.equal(targets[0].sshHost, `u@${fixtureTailnet}`);
   assert.equal(targets[0].label, 'Mac VM');
   assert.equal(vmTargets({}).length, 0);
   assert.equal(vmTargets({ vpsBrowser: {} }).length, 0);
@@ -74,8 +75,8 @@ test('the bundled POSIX script is piped over ssh stdin with the tag as its only 
   assert.equal(calls.length, 1);
   const [call] = calls;
   assert.equal(call.bin, 'ssh');
-  assert.deepEqual(call.args.slice(0, -2), ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes']);
-  assert.equal(call.args.at(-2), 'user@vm.example');
+  assert.deepEqual(call.args.slice(0, -2), [...require('../src/tailnet.cjs').SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes']);
+  assert.equal(call.args.at(-2), `user@${fixtureTailnet}`);
   assert.match(call.args.at(-1), /sh -s -- v0\.3\.2/);
   assert.match(call.args.at(-1), /timeout \d+ sh -s/, 'a remote-side cap bounds a run whose ssh dies');
   assert.equal(call.opts.input, posixCommand(SCRIPTS['vm-update.sh']));
@@ -111,20 +112,20 @@ test('every saved VM updates in parallel under one timeout cap, before the app u
     order.push(`start:${host}`);
   });
   const updater = createVmUpdater({ run, readScript });
-  const targets = [vm({ id: 'a', sshHost: 'user@a.example' }), vm({ id: 'b', sshHost: 'user@b.example' })];
+  const targets = [vm({ id: 'a', sshHost: `user@${fixtureTailnet}` }), vm({ id: 'b', sshHost: `user@${fixtureTailnetOther}` })];
   const done = updater.updateAppAndVms({
     tag: 'v0.3.2', targets,
     applyAppUpdate: async () => { order.push('app'); return 'relaunch'; },
   });
-  for (const deadline = Date.now() + 5000; !(order.includes('start:user@a.example') && order.includes('start:user@b.example'));) {
+  for (const deadline = Date.now() + 5000; !(order.includes(`start:user@${fixtureTailnet}`) && order.includes(`start:user@${fixtureTailnetOther}`));) {
     assert.ok(Date.now() < deadline, 'the VM updates never fanned out');
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  assert.deepEqual([...order].sort(), ['start:user@a.example', 'start:user@b.example']);
-  assert.equal(gates['user@a.example'].opts.timeoutMs, VM_TIMEOUT_MS);
-  assert.equal(gates['user@b.example'].opts.timeoutMs, VM_TIMEOUT_MS);
-  gates['user@a.example'].resolve({ code: 0, out: okLine(), err: '' });
-  gates['user@b.example'].resolve({ code: 0, out: JSON.stringify({ ok: false, version: '0.3.1', error: 'disk full' }), err: '' });
+  assert.deepEqual([...order].sort(), [`start:user@${fixtureTailnet}`, `start:user@${fixtureTailnetOther}`]);
+  assert.equal(gates[`user@${fixtureTailnet}`].opts.timeoutMs, VM_TIMEOUT_MS);
+  assert.equal(gates[`user@${fixtureTailnetOther}`].opts.timeoutMs, VM_TIMEOUT_MS);
+  gates[`user@${fixtureTailnet}`].resolve({ code: 0, out: okLine(), err: '' });
+  gates[`user@${fixtureTailnetOther}`].resolve({ code: 0, out: JSON.stringify({ ok: false, version: '0.3.1', error: 'disk full' }), err: '' });
   const result = await done;
   assert.equal(order.at(-1), 'app', 'the app update still runs after a VM failure');
   assert.equal(result.app, 'relaunch');
@@ -161,7 +162,7 @@ test('a VM that stays busy is skipped with a retry reason', async () => {
 });
 
 test('ssh-level failures become per-VM errors, never a throw', async () => {
-  const { run } = fakeRun({ code: 255, out: '', err: 'ssh: connect to host vm.example port 22: timed out' });
+  const { run } = fakeRun({ code: 255, out: '', err: `ssh: connect to host ${fixtureTailnet} port 22: timed out` });
   const updater = createVmUpdater({ run, readScript });
   const result = await updater.updateVm(vm(), 'v0.3.2');
   assert.equal(result.ok, false);
@@ -450,9 +451,9 @@ test('doctorVm never runs against a Windows server', async () => {
 });
 
 test('doctorVm turns an unreachable server into an error result', async () => {
-  const { run } = fakeRun({ code: 255, out: '', err: 'ssh: connect to host vm.example port 22: Connection refused' });
+  const { run } = fakeRun({ code: 255, out: '', err: `ssh: connect to host ${fixtureTailnet} port 22: Connection refused` });
   const result = await createVmUpdater({ run, readScript }).doctorVm(vm());
-  assert.deepEqual(result, { ok: false, error: 'The server check stopped without a report: ssh: connect to host vm.example port 22: Connection refused' });
+  assert.deepEqual(result, { ok: false, error: `The server check stopped without a report: ssh: connect to host ${fixtureTailnet} port 22: Connection refused` });
 });
 
 test('doctorVm says when the server check ran out of time or stopped without a report', async () => {

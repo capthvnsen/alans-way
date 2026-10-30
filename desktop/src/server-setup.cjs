@@ -1,3 +1,4 @@
+const { SSH_OPTIONS: TAILNET_SSH_OPTIONS } = require('./tailnet.cjs');
 'use strict';
 const { spawn } = require('node:child_process');
 const { isSshTarget } = require('./core.cjs');
@@ -35,7 +36,7 @@ function parseSetupPlan(text) {
     if (FLAGS.has(name)) continue;
     const pattern = VALUES[name], value = plan.args[++i];
     // Match the entire value: $ alone also matches before a trailing newline.
-    if (!pattern || typeof value !== 'string' || value.length > 4096 || pattern.exec(value)?.[0] !== value)
+    if ((name === '--mac-ssh' && !isSshTarget(value)) || !pattern || typeof value !== 'string' || value.length > 4096 || pattern.exec(value)?.[0] !== value)
       throw new Error('The setup plan contains an unsupported option or value. Ask your bot to correct it.');
   }
   for (const key of ['--bot-id', '--mac-ssh', '--host-os', '--timezone', '--proactive'])
@@ -72,7 +73,7 @@ function createServerSetup({ run = runSsh } = {}) {
       // POSIX gateway hosts only; this command also works in Git Bash when
       // it is the SSH login shell. Do not guess a Windows sshd shell.
       const remote = "if command -v timeout >/dev/null 2>&1; then exec timeout 880 sh -s; elif command -v perl >/dev/null 2>&1; then exec perl -e 'alarm 880; exec @ARGV' sh -s; else echo 'Setup needs timeout or perl on the server.' >&2; exit 1; fi";
-      const result = await run('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host.trim(), remote],
+      const result = await run('ssh', [...TAILNET_SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=yes', host.trim(), remote],
         { input: setupCommand(plan), timeoutMs: 900000 });
       const output = redactReport([result.out, result.err].filter(Boolean).join('\n')).trim();
       return { ok: result.code === 0 && Boolean(output), detail: output || 'The SSH setup did not return a report. Check the connection and retry.',

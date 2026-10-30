@@ -399,7 +399,7 @@ app.whenReady().then(async () => {
   // The Move button appears only for agent-owned tabs while the VM browser is
   // connected, and on the retired local copy it offers the way back. Both
   // clicks drive the real handoff IPC and SSH transport to a controlled failure.
-  const fixtureHost = [100, 64, 0, 1].join('.');
+  const fixtureHost = require('./tailnet-fixture.cjs').ip;
   const sshBin = path.join(profile, 'handoff-bin');
   fs.mkdirSync(sshBin);
   fs.writeFileSync(path.join(sshBin, 'ssh'), `#!/usr/bin/env node
@@ -676,7 +676,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({ status: 503,
   console.log('PASS: favicons come only from the page origin and fetch without browser cookies.');
   // The saved VPS ssh target is validated like the Mac one — a stored option
   // injection can no longer reach ssh argv.
-  await assert.rejects(invoke('settings', { vpsBrowser: { sshHost: '-oProxyCommand=touch /tmp/hs-pwn', scriptPath: '/x' } }), /user@host/);
+  await assert.rejects(invoke('settings', { vpsBrowser: { sshHost: '-oProxyCommand=touch /tmp/hs-pwn', scriptPath: '/x' } }), /user@Tailscale-IP/);
   console.log('PASS: settings rejects a non-host VPS SSH target.');
   // The designated primary bot pins to the top of the sidebar with a PRIMARY
   // badge; with no explicit pick the overseer bot is the primary.

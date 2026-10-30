@@ -1,3 +1,5 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 const { resizeWindow } = require('./window-fixture.cjs');
 // Real Electron Settings + main persistence/copy; external work is blocked.
 // Run with: node test/run-electron.cjs test/connections-journey-electron.cjs
@@ -132,28 +134,28 @@ app.whenReady().then(async () => {
     const before = calls.filter(c => c.name === 'settings' && 'remoteUrl' in c.value).length; await saveRemote(); await idle('[data-settings-section=remote-desktop] .primary-button'); assert.equal(disk().remoteUrl, url + '?unsaved=two'); assert.equal(calls.filter(c => c.name === 'settings' && 'remoteUrl' in c.value).length - before, 1);
   });
   await check('new SSH drafts survive a real pending address save independently for both fields', async () => {
-    await disclose('#settings-agent-details'); await fill('#vps-ssh-host', 'first@127.0.0.1'); await fill('#mac-ssh-host', 'local@127.0.0.1');
+    await disclose('#settings-agent-details'); await fill('#vps-ssh-host', `first@${fixtureTailnet}`); await fill('#mac-ssh-host', `local@${fixtureTailnet}`);
     const save = '#settings-save-addresses', selector = await js('document.querySelector("#settings-save-addresses")?"#settings-save-addresses":null') || '[data-settings-section=agent-setup] button';
     // On the original UI Save addresses is the first button in this section.
     const gate = holdSave('macSshHost'); await click(selector); await wait(() => gate.entered);
-    await fill('#vps-ssh-host', 'second@127.0.0.1'); await fill('#mac-ssh-host', 'newlocal@127.0.0.1'); gate.release(); await idle(selector);
+    await fill('#vps-ssh-host', `second@${fixtureTailnet}`); await fill('#mac-ssh-host', `newlocal@${fixtureTailnet}`); gate.release(); await idle(selector);
     await call('settings', { showBots: false }); await frame();
-    assert.equal(await js('document.getElementById("vps-ssh-host").value'), 'second@127.0.0.1'); assert.equal(await js('document.getElementById("mac-ssh-host").value'), 'newlocal@127.0.0.1');
+    assert.equal(await js('document.getElementById("vps-ssh-host").value'), `second@${fixtureTailnet}`); assert.equal(await js('document.getElementById("mac-ssh-host").value'), `newlocal@${fixtureTailnet}`);
     assert.equal(await js('document.getElementById("vps-ssh-host").dataset.dirty'), 'true'); assert.equal(await js('document.getElementById("mac-ssh-host").dataset.dirty'), 'true');
-    assert.equal(disk().vpsBrowser.sshHost, 'first@127.0.0.1'); const before = calls.length; await click(selector); await idle(selector);
-    assert.equal(disk().vpsBrowser.sshHost, 'second@127.0.0.1'); assert.equal(disk().macSshHost, 'newlocal@127.0.0.1'); assert.equal(calls.slice(before).filter(c => c.name === 'settings').length, 1);
+    assert.equal(disk().vpsBrowser.sshHost, `first@${fixtureTailnet}`); const before = calls.length; await click(selector); await idle(selector);
+    assert.equal(disk().vpsBrowser.sshHost, `second@${fixtureTailnet}`); assert.equal(disk().macSshHost, `newlocal@${fixtureTailnet}`); assert.equal(calls.slice(before).filter(c => c.name === 'settings').length, 1);
   });
   await check('held successful path reply cannot verify a newly edited host (IPC-intercepted SSH result)', async () => {
-    await call('settings', { macSshHost: 'local@127.0.0.1', vpsBrowser: { enabled: false, sshHost: 'agent@127.0.0.1' } }); await disclose('#settings-agent-details'); let release, entered = false;
+    await call('settings', { macSshHost: `local@${fixtureTailnet}`, vpsBrowser: { enabled: false, sshHost: `agent@${fixtureTailnet}` } }); await disclose('#settings-agent-details'); let release, entered = false;
     seams.set('test-agent-path', () => { entered = true; return new Promise(resolve => { release = resolve; }); });
     const before = calls.filter(c => c.name === 'test-agent-path').length;
     await click('#settings-test-path'); await wait(() => entered); await key('Enter'); await click('#settings-test-path');
-    await fill('#vps-ssh-host', 'changed@127.0.0.1');
+    await fill('#vps-ssh-host', `changed@${fixtureTailnet}`);
     release({ ok: true, detail: 'HELD_OLD_SUCCESS: fixture says the old path passed.' }); await idle('#settings-test-path');
     await call('settings', { showBots: true }); await frame();
     const text = await js('document.querySelector("[data-settings-section=agent-setup]").innerText'); await shot('stale-host-reply');
     assert.doesNotMatch(text, /HELD_OLD_SUCCESS/); assert.match(text, /changed|save.*address/i); assert.equal(calls.filter(c => c.name === 'test-agent-path').length - before, 1);
-    assert.equal(await js('document.activeElement.id'), 'vps-ssh-host'); assert.equal(await js('document.getElementById("vps-ssh-host").value'), 'changed@127.0.0.1');
+    assert.equal(await js('document.activeElement.id'), 'vps-ssh-host'); assert.equal(await js('document.getElementById("vps-ssh-host").value'), `changed@${fixtureTailnet}`);
   });
   if (phase.startsWith('red')) return;
   await check('blank and malformed addresses and viewer URLs use real validation and retain drafts', async () => {
@@ -172,7 +174,7 @@ app.whenReady().then(async () => {
     await fill('#remote-url', ''); await saveRemote(); await idle('[data-settings-section=remote-desktop] .primary-button'); assert.equal(disk().remoteUrl, ''); await shot('validation-and-empty');
   });
   await check('existing configured route has one primary check and truthful retry after refused, offline and slow outcomes (IPC-intercepted)', async () => {
-    await call('settings', { macSshHost: 'local@127.0.0.1', vpsBrowser: { sshHost: 'agent@127.0.0.1' } });
+    await call('settings', { macSshHost: `local@${fixtureTailnet}`, vpsBrowser: { sshHost: `agent@${fixtureTailnet}` } });
     assert.equal(await js('document.querySelector("[data-settings-section=agent-setup] .primary-button").id'), 'settings-test-path');
     assert.match(await js('document.getElementById("settings-agent-summary").textContent'), /Addresses saved.*not checked/);
     for (const detail of ['Connection refused (IPC fixture).', 'Agent machine offline (IPC fixture).']) {
@@ -198,10 +200,10 @@ app.whenReady().then(async () => {
     const formats = before.items.flatMap(item => item.types);
     try {
       await click('#settings-copy-setup-prompt'); await idle('#settings-copy-setup-prompt'); const prompt = await clipboard.readText();
-      assert.match(prompt, /https:\/\/openalan.com\/agent-prompt/); assert.match(prompt, new RegExp('BOT_ID=' + bots[1].id)); assert.match(prompt, /MAC_SSH=local@127\.0\.0\.1/);
+      assert.match(prompt, /https:\/\/openalan.com\/agent-prompt/); assert.match(prompt, new RegExp('BOT_ID=' + bots[1].id)); assert.ok(prompt.includes('MAC_SSH=local@' + fixtureTailnet));
       assert.match(await js('document.getElementById("settings-copy-setup-prompt").nextElementSibling.textContent'), /journey_second_bot.*Hermes chat/);
       await disclose('#settings-agent-details'); await click('#settings-copy-setup-notes'); await idle('#settings-copy-setup-notes'); const notes = await clipboard.readText();
-      assert.match(notes, /BOT_ID=74002/); assert.match(notes, /MAC_SSH=local@127\.0\.0\.1/); assert.match(notes, /review notes.*not shell commands/); assert.doesNotMatch(notes, /curl|raw\.githubusercontent|--restart/);
+      assert.match(notes, /BOT_ID=74002/); assert.ok(notes.includes('MAC_SSH=local@' + fixtureTailnet)); assert.match(notes, /review notes.*not shell commands/); assert.doesNotMatch(notes, /curl|raw\.githubusercontent|--restart/);
       assert.match(await js('document.getElementById("settings-copy-setup-notes").nextElementSibling.textContent'), /Review notes copied.*Hermes chat/);
       await disclose('#settings-connector-details'); await click('[data-settings-section=browser-connector] button'); await idle('[data-settings-section=browser-connector] button'); const connector = JSON.parse(await clipboard.readText());
       assert.match(connector.url, /^http:\/\/127\.0\.0\.1:/); assert.equal(typeof connector.token, 'string'); assert.ok(connector.token.length > 10);

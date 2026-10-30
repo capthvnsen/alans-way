@@ -1,3 +1,4 @@
+const { ip: fixtureTailnet } = require('./tailnet-fixture.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -26,7 +27,7 @@ case "$*" in
 esac
 `, { mode: 0o700 });
     const sshRun = vm.runInNewContext(`${sshSource}\nsshRun`, {
-      posixCommand,
+      posixCommand, isSshTarget: require('../src/core.cjs').isSshTarget, TAILNET_SSH_OPTIONS: require('../src/tailnet.cjs').SSH_OPTIONS,
       localRun: async (file, args, options) => {
         assert.equal(file, 'ssh');
         assert.equal(options.timeoutMs, 8000);
@@ -36,7 +37,7 @@ esac
         return { code: result.status, out: result.stdout, err: result.stderr };
       },
     });
-    const result = await sshRun('fixture.invalid', cloudModel.existingModelCommand(), { timeoutMs: 8000 });
+    const result = await sshRun(fixtureTailnet, cloudModel.existingModelCommand(), { timeoutMs: 8000 });
     assert.deepEqual(cloudModel.parseExistingModel(result), { provider: 'openrouter', model: 'anthropic/claude-sonnet-5.5' });
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
@@ -144,7 +145,7 @@ test('POSIX browser Node calls and updater payloads use the shared PATH', async 
       return { code: 0, out: '{"ok":true,"version":"0.21.7"}\n', err: '' };
     },
   });
-  const guest = { sshHost: 'fixture.invalid', scriptPath: '/fixture/host.cjs' };
+  const guest = { sshHost: fixtureTailnet, scriptPath: '/fixture/host.cjs' };
   await updater.checkVm(guest);
   await updater.doctorVm(guest);
   await updater.hermesUpdateVm(guest);
@@ -163,11 +164,11 @@ test('the OAuth SSH spawn also discovers a user-installed Hermes', async (t) => 
   assert.ok(start > 0 && end > start);
   let command;
   const run = vm.runInNewContext(`(async () => { switch ('cloud-model-subscribe') { ${source.slice(start, end)} } })`, {
-    prefs: { vpsBrowser: { sshHost: 'fixture.invalid' } },
-    modelAuthChild: null, cloudModel, posixCommand,
+    prefs: { vpsBrowser: { sshHost: fixtureTailnet } },
+    modelAuthChild: null, cloudModel, posixCommand, isSshTarget: require('../src/core.cjs').isSshTarget, TAILNET_SSH_OPTIONS: require('../src/tailnet.cjs').SSH_OPTIONS,
     spawn: (bin, args) => {
       assert.equal(bin, 'ssh');
-      assert.equal(args.at(-2), 'fixture.invalid');
+      assert.equal(args.at(-2), fixtureTailnet);
       command = args.at(-1);
       return Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
     },
@@ -176,4 +177,19 @@ test('the OAuth SSH spawn also discovers a user-installed Hermes', async (t) => 
   const result = f.run(command);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'oauth-found\n');
+});
+
+
+test('the nested agent path probe disables SSH aliases and quotes bracketed IPv6', async () => {
+  const section=source.slice(source.indexOf('function testAgentPath()'),source.indexOf('async function runSetupCheck'));
+  const {EventEmitter}=require('node:events');let sent;
+  const probe=vm.runInNewContext(section+';testAgentPath',{
+    checkBrokerSetup: () => ({ ok: true }), brokerTarget: cfg => cfg.brokerSshHost || cfg.sshHost,
+    prefs:{vpsBrowser:{sshHost:'agent@'+fixtureTailnet},macSshHost:'user@[fd7a:115c:a1e0::1]'},seedMacSshHost(){},HOST_LABEL:'mac',
+    isSshTarget:require('../src/core.cjs').isSshTarget,TAILNET_SSH_OPTIONS:require('../src/tailnet.cjs').SSH_OPTIONS,cloudMigrate:require('../src/cloud-migrate.cjs'),
+    spawn:(_file,args)=>{sent=args;const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();queueMicrotask(()=>child.emit('close',1));return child;},
+  });
+  await probe();const nested=sent.at(-1);
+  assert.match(nested,/ssh -F none -o ProxyCommand=none -o ProxyJump=none -o CanonicalizeHostname=no/);
+  assert.ok(nested.includes("'user@[fd7a:115c:a1e0::1]'"),'IPv6 brackets cannot expand as a shell glob');
 });

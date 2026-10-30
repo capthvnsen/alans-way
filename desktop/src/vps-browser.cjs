@@ -26,7 +26,7 @@ const asciiJson = (value) => JSON.stringify(value).replace(/[\u007f-\uffff]/g, (
 // another local user plant a socket at a guessable name).
 function controlPath(host) {
   const base = os.tmpdir().length > 60 ? '/tmp' : os.tmpdir();
-  const dir = path.join(base, 'hw-ssh-' + (process.getuid ? process.getuid() : 'u'));
+  const dir = path.join(base, 'hw-tailnet-ssh-' + (process.getuid ? process.getuid() : 'u'));
   try {
     fs.mkdirSync(dir, { mode: 0o700, recursive: true });
     if (process.getuid && fs.statSync(dir).uid !== process.getuid()) return '';
@@ -38,7 +38,7 @@ function controlPath(host) {
 // 5s poll stops paying a full handshake and remote start each time.
 function sshArgs(host, command, platform = process.platform) {
   const socket = platform === 'win32' ? '' : controlPath(host);
-  return ['-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=6',
+  return [...SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=6',
     '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2',
     ...(socket ? ['-o', 'ControlMaster=auto', '-o', 'ControlPersist=120', '-o', 'ControlPath=' + socket] : []),
     host, command];
@@ -74,22 +74,16 @@ function toElectronCookies(cookies, pageUrl) {
   });
 }
 // Sign-in cookies only travel to a VM reached over the tailnet: a Tailscale
-// address (100.64.0.0/10, fd7a:115c:a1e0::/48) or a MagicDNS name. sshHost can
-// be an ~/.ssh/config alias, so callers pass ssh -G's resolved hostname.
-function isTailnetHost(value) {
-  const host = String(value || '').trim().replace(/^[^@]*@/, '').replace(/^\[|\]$/g, '').toLowerCase();
-  // No leading zeros: inet_aton would read 100.064.x.x as octal.
-  const v4 = /^100\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$/.exec(host);
-  if (v4) return Number(v4[1]) >= 64 && Number(v4[1]) <= 127 && Number(v4[2]) <= 255 && Number(v4[3]) <= 255;
-  return /^fd7a:115c:a1e0:/.test(host) || /^[a-z0-9-]+(\.[a-z0-9-]+)*\.ts\.net\.?$/.test(host);
-}
+// address (100.64.0.0/10, fd7a:115c:a1e0::/48). SSH config aliases and DNS
+// names are refused; callers may still inspect ssh -G for diagnostics.
+const { isTailnetHost, SSH_OPTIONS } = require('./tailnet.cjs');
 const sshResolvedHostname = (configText) => (/^hostname\s+(\S+)\s*$/m.exec(String(configText || '')) || [])[1] || '';
 // Resolves the hostname ssh will actually dial for sshHost; '' when ssh -G fails.
 function resolveSshHostname(sshHost, run = (args) => new Promise((resolve) => {
   execFile('ssh', args, { timeout: 3000 }, (error, stdout) => resolve(error ? '' : stdout));
 })) {
   if (!isSshTarget(sshHost)) return Promise.resolve('');
-  return run(['-G', sshHost]).then(sshResolvedHostname);
+  return run([...SSH_OPTIONS, '-G', sshHost]).then(sshResolvedHostname);
 }
 // collect() resolves to Map<bot, tabs[]> for the agent-controlled tabs now,
 // or null while there is nothing to mirror to (VM not configured or offline).

@@ -43,3 +43,26 @@ test('profile inventory distinguishes bare installs from failed reads', { skip: 
   assert.notEqual(inventory().status,0);
   fs.rmSync(root,{recursive:true});assert.notEqual(inventory().status,0);
 });
+
+test('SSH env writes retain the destination gate, SSH policy and atomic JSON transaction', async () => {
+  const { EventEmitter } = require('node:events');
+  const source = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
+  const calls = [];
+  const sshWrite = require('node:vm').runInNewContext(source.match(/function sshWrite\([^]*?\n}/)[0] + ';sshWrite', {
+    isSshTarget: host => host === 'allowed', TAILNET_SSH_OPTIONS: ['-o', 'ProxyCommand=none'],
+    require: () => ({ command }),
+    spawn: (file, args) => {
+      const call = { file, args }; calls.push(call);
+      const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), stdin: new EventEmitter() });
+      child.stdin.end = data => { call.input = JSON.parse(data); queueMicrotask(() => child.emit('close', 0)); };
+      return child;
+    },
+  });
+  assert.equal((await sshWrite('denied', '~/.hermes/.env', { key: 'TELEGRAM_BOT_TOKEN', value: 'fixture' })).code, -1);
+  assert.equal(calls.length, 0, 'denied destinations never spawn SSH');
+  assert.equal((await sshWrite('allowed', '~/.hermes/.env', { key: 'TELEGRAM_BOT_TOKEN', value: 'fixture' })).code, 0);
+  assert.equal(calls[0].file, 'ssh');
+  assert.deepEqual(Array.from(calls[0].args.slice(0, 2)), ['-o', 'ProxyCommand=none']);
+  assert.equal(calls[0].args.at(-1), command);
+  assert.deepEqual(calls[0].input, { path: '~/.hermes/.env', key: 'TELEGRAM_BOT_TOKEN', value: 'fixture' });
+});
