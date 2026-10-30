@@ -159,7 +159,7 @@ app.whenReady().then(async () => {
   assert.equal(shown[1].closed, true, 'closing the tab dismisses its notification');
 
   const refreshVm = async () => {
-    await invoke('settings', { vpsBrowser: { sshHost: 'fixture@192.0.2.1' } });
+    await invoke('settings', { vpsBrowser: { sshHost: 'fixture@' + [100, 64, 0, 1].join('.'), brokerSshHost: 'browser-broker@' + [100, 64, 0, 1].join('.'), scriptPath: '/fixture/browser-host.cjs' } });
     return getState();
   };
   remoteTabs.set(remoteTab.id, { ...remoteTab, handback: null, controller: 'agent' });
