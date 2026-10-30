@@ -95,7 +95,7 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
         state.waiter = null;
         try { state.proc.kill('SIGKILL'); } catch { /* already gone */ }
         state.die('Computer helper timed out.');
-        reject(Object.assign(new Error('Computer helper timed out.'), { timedOut: true }));
+        reject(Object.assign(new Error('Computer helper timed out.'), { timedOut: true, code: 'timeout' }));
       }, Math.ceil(remainingMs(request.timeoutMs || timeoutMs)));
       state.waiter = { id, resolve, reject, timer };
       const { timeoutMs: _ignored, ...wire } = request;
@@ -110,7 +110,7 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
     checkCall();
     return new Promise((resolve, reject) => {
       let out = '', err = '';
-      const timer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* gone */ } reject(new Error('Computer helper timed out.')); }, Math.ceil(remainingMs(request.timeoutMs || timeoutMs)));
+      const timer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* gone */ } reject(Object.assign(new Error('Computer helper timed out.'), { code: 'timeout' })); }, Math.ceil(remainingMs(request.timeoutMs || timeoutMs)));
       proc.stdout.setEncoding('utf8');
       proc.stderr.setEncoding('utf8');
       proc.stdout.on('data', (chunk) => { out += chunk; });
