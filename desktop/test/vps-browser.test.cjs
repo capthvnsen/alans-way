@@ -222,8 +222,25 @@ test('browser transport requires the explicit separate broker login', async () =
   const host = [100, 64, 0, 1].join('.');
   const config = { sshHost: 'agent@'+host, brokerSshHost: 'broker@'+host, scriptPath: '/app/host.cjs' };
   assert.equal(brokerTarget(config), config.brokerSshHost);
-  for (const over of [{ brokerSshHost: '' }, { brokerSshHost: 'host.example' }, { brokerSshHost: 'agent@other.example' }, { sshHost: 'host.example' }]) {
+  for (const over of [{ brokerSshHost: 'host.example' }, { brokerSshHost: 'agent@other.example' }, { sshHost: 'host.example' }]) {
     assert.throws(() => brokerTarget({ ...config, ...over }));
     await assert.rejects(createVpsBrowser({ getConfig: () => ({ ...config, ...over }) }).request('/v1/status'));
+  }
+});
+
+
+test('an installed shared login is preserved until broker separation is selected', () => {
+  const { brokerTarget } = require('../src/vps-browser.cjs');
+  const host = process.env.HERMES_WORKSPACE_REQUIRE_TAILNET === '1' ? require('./tailnet-fixture.cjs').ip : 'host.example';
+  const config = { sshHost: 'agent@' + host, scriptPath: '/app/host.cjs' };
+  assert.equal(brokerTarget(config), config.sshHost);
+  assert.throws(() => brokerTarget({ ...config, brokerSshHost: 'agent@other.example' }), /different OS users/);
+  const prior = process.env.HERMES_WORKSPACE_REQUIRE_BROKER_SSH;
+  try {
+    process.env.HERMES_WORKSPACE_REQUIRE_BROKER_SSH = '1';
+    assert.throws(() => brokerTarget(config), /separate browser broker/);
+  } finally {
+    if (prior === undefined) delete process.env.HERMES_WORKSPACE_REQUIRE_BROKER_SSH;
+    else process.env.HERMES_WORKSPACE_REQUIRE_BROKER_SSH = prior;
   }
 });

@@ -137,8 +137,17 @@ const settleWithin = (promise, ms, fallback) => new Promise((resolve) => {
   promise.then((value) => { clearTimeout(timer); resolve(value); }, () => { clearTimeout(timer); resolve(fallback); });
 });
 const backoffDelay = (failures) => Math.min(60000, 5000 * 2 ** Math.min(failures, 4));
+let legacyBrokerWarned = false;
 function brokerTarget(cfg) {
   const host = cfg?.brokerSshHost || '';
+  if (!host && process.env.HERMES_WORKSPACE_REQUIRE_BROKER_SSH !== '1') {
+    if (!cfg?.scriptPath || !isSshTarget(cfg?.sshHost)) throw new Error('Configure the VPS browser connection in Settings.');
+    if (!legacyBrokerWarned) {
+      legacyBrokerWarned = true;
+      console.error('Legacy shared browser SSH login: provision a separate broker OS user, save its login in Settings, then set HERMES_WORKSPACE_REQUIRE_BROKER_SSH=1. Bot isolation is not enabled.');
+    }
+    return cfg.sshHost;
+  }
   const agentUser = (cfg?.sshHost || '').split('@');
   if (!host || !cfg?.scriptPath) throw new Error('Configure a separate browser broker SSH login in Settings.');
   if (!isSshTarget(host) || !host.includes('@') || agentUser.length !== 2 || host.split('@')[0] === agentUser[0])

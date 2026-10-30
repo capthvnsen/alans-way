@@ -270,7 +270,7 @@ function isVpsTarget(id, host) {
   return remote;
 }
 async function refreshVpsTabs() {
-  if (!prefs?.vpsBrowser?.brokerSshHost || vpsRefreshBusy) return;
+  if (!(prefs?.vpsBrowser?.brokerSshHost || prefs?.vpsBrowser?.sshHost) || vpsRefreshBusy) return;
   vpsRefreshBusy = true;
   try {
     const wasVps = vpsTabs.has(activeTabId);
@@ -304,7 +304,7 @@ const mirrorPages = new Map(), mirrorCapWarned = new Set();
 // and only to a VM that ssh reaches over the tailnet.
 let tailnetCheck = { host: '', ok: Promise.resolve(false) };
 function signInsTravel() {
-  const host = prefs?.vpsBrowser?.brokerSshHost || '';
+  const host = (prefs?.vpsBrowser?.brokerSshHost || prefs?.vpsBrowser?.sshHost) || '';
   if (prefs?.carrySignIns === false || !host) return Promise.resolve(false);
   if (tailnetCheck.host !== host) {
     // Only a yes is kept, so a slow ssh -G or an ssh config fix is retried.
@@ -334,7 +334,7 @@ const pushVpsMirror = createMirrorPusher({
   bots: () => (prefs?.bots || []).map((bot) => bot.id),
   async collect() {
     // A push before the retire check would hide what the VM resumed from it.
-    if (!prefs?.vpsBrowser?.brokerSshHost || vpsBrowserStatus !== 'connected' || continuedCheckDue) return null;
+    if (!(prefs?.vpsBrowser?.brokerSshHost || prefs?.vpsBrowser?.sshHost) || vpsBrowserStatus !== 'connected' || continuedCheckDue) return null;
     const carry = await signInsTravel();
     const agentTabs = [...tabs.values()].filter((tab) => {
       const wc = tab.view?.webContents;
@@ -361,7 +361,7 @@ const pushVpsMirror = createMirrorPusher({
   push: (bot, mirrorTabs) => vpsBrowser.request('/v1/mirror', 'POST', { bot, tabs: mirrorTabs }, { human: true, botId: bot }),
 });
 function scheduleVpsMirror() {
-  if (!prefs?.vpsBrowser?.brokerSshHost) return;
+  if (!(prefs?.vpsBrowser?.brokerSshHost || prefs?.vpsBrowser?.sshHost)) return;
   clearTimeout(vpsMirrorDebounce);
   vpsMirrorDebounce = setTimeout(pushVpsMirror, 1500);
   vpsMirrorDebounce.unref();
@@ -3116,7 +3116,7 @@ function startApi() {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
         // The 5s timer already keeps vpsTabs warm; a blocking SSH refresh here
         // cost seconds on a read-only list call. Serve the cache, refresh async.
-        if(prefs.vpsBrowser?.brokerSshHost)refreshVpsTabs();
+        if(prefs.vpsBrowser?.brokerSshHost || prefs.vpsBrowser?.sshHost)refreshVpsTabs();
         return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage && !tab.localPdf).map(tab => describeTab(tab, true)).concat([...vpsTabs.values()].map(redactTabForBot)).filter((tab) => overseer || tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
       }
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {

@@ -103,3 +103,14 @@ remove that override before using the normal helper. The helper checkout must
 be readable and executable by the broker, and unwritable by bots. Agent update
 and setup commands continue to use the agent account; broker service maintenance
 must be performed separately by its administrator.
+
+
+An installed `vpsBrowser.sshHost` remains the labeled legacy browser transport
+while `brokerSshHost` is empty. Agent configuration/environment writes continue
+to use `sshHost`; selecting the broker never repoints those writes. Only after
+separate accounts and broker access are provisioned, enter `brokerSshHost` and
+set `HERMES_WORKSPACE_REQUIRE_BROKER_SSH=1` in the app launcher. An invalid or
+unreachable selected broker fails closed, without trying the agent login.
+The environment opt-in also prevents accidentally clearing the broker field
+from re-enabling the legacy route. No account, ACL or existing preference is
+automatically rewritten during upgrade.
