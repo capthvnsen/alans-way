@@ -91,7 +91,7 @@ const BUILD = readBuildInfo(path.join(ROOT, '..', 'build-info.json'));
 // down the connector every bot depends on. The log file helps when a Windows
 // user reports a silent failure.
 function logError(label, error) {
-  try { console.error(`${label}: ${error?.stack || error}`); } catch {}
+  try { console.error(setupCheck.redactReport(`${label}: ${error?.stack || error}`)); } catch {}
   mainLog().write(label, String(error?.stack || error));
 }
 let mainLogger;
@@ -1512,6 +1512,10 @@ async function cloudWriteEnv(host, key, value, tokenedProfiles) {
   // error text into setEnvValue or the write would clobber the real .env.
   const write = await sshWrite(host, envPath, cloudModel.setEnvValue(current.code === 0 ? current.out : '', key, value));
   if (write.code !== 0) return { ok: false, detail: 'The computer refused the env file write.' };
+  if (key === 'TELEGRAM_BOT_TOKEN') {
+    const setup = await sshRun(host, cloudTelegram.workspaceSetupCommand(profile), { timeoutMs: 300000 });
+    if (setup.code !== 0) return { ok: false, detail: 'The bot token was saved, but workspace browser setup failed. Check the computer setup and try again.' };
+  }
   const status = await sshRun(host, 'supervisorctl status 2>/dev/null');
   await sshRun(host, cloudModel.gatewayRestartCommand(status.out), { timeoutMs: 30000 });
   return { ok: true, profile };
@@ -3116,7 +3120,7 @@ function startApi() {
         // The 5s timer already keeps vpsTabs warm; a blocking SSH refresh here
         // cost seconds on a read-only list call. Serve the cache, refresh async.
         if(prefs.vpsBrowser?.sshHost)refreshVpsTabs();
-        return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage && !tab.localPdf).map(tab => describeTab(tab, true)).concat([...vpsTabs.values()]).filter((tab) => overseer || tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
+        return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage && !tab.localPdf).map(tab => describeTab(tab, true)).concat([...vpsTabs.values()].map(redactTabForBot)).filter((tab) => overseer || tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
       }
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
@@ -3157,6 +3161,7 @@ function startApi() {
       // Session 0 and see no windows. Same verbs the MCP connector wraps.
       const computerMatch = /^\/v1\/computer\/(apps|launch|\d{1,10})(?:\/(snapshot|screenshot|action|menu))?$/.exec(url.pathname);
       if (computerMatch) {
+        if (!botId || botId.length > 100) return send(400, { error: 'X-Hermes-Bot is required and must be at most 100 characters.' });
         let agentName = nameForBot(botId);
         if (!agentName) try { agentName = decodeURIComponent(String(req.headers['x-hermes-bot-name'] || '')).replace(/\p{C}/gu, '').slice(0, 80); } catch { /* the bot ID names it instead */ }
         const controller = new AbortController();
@@ -3217,7 +3222,7 @@ function startApi() {
             throw Object.assign(new Error('approval_binding_unavailable: the remote browser could not confirm document and target checks. Update the remote browser host and workspace connector, reconnect, take a fresh snapshot, and request approval again. No action was sent.'), { status: 403 });
         }
         const result=await vpsBrowser.request(url.pathname+url.search,req.method,body,{botId,botName:nameForBot(botId),epoch:Number(req.headers['x-control-epoch'])});
-        const remote=result.tab || (result.id?result:null);if(remote)vpsTabs.set(remote.id,remote);if(req.method==='DELETE')vpsTabs.delete(match[1]);broadcast();return send(200,result);
+        const remote=result.tab || (result.id?result:null);if(remote)vpsTabs.set(remote.id,remote);if(req.method==='DELETE')vpsTabs.delete(match[1]);broadcast();return send(200,result.tab ? { ...result, tab: redactTabForBot(result.tab) } : result.id ? redactTabForBot(result) : result);
       }
       if (!tab || tab.extensionPage || tab.localPdf) return send(404, { error: 'Tab not found.' });
       // Shared tabs are claimable by any known bot via POST control; the
