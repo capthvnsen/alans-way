@@ -105,26 +105,14 @@ SSH alias to the private VPS broker. The native VPS MCP connector uses
 `browser-mcp.cjs --connection /private/browser/connection.json --bot-id ID`
 and accepts only VPS opens; it remains available when the Mac is offline.
 Its Chromium/CDP endpoints stay on loopback. See [VPS setup](vps-browser.md).
-Browser IDs are trusted routing identities, not a security boundary against
-an agent with the host user's shell access. Overseer IDs share that model:
-anyone holding `connection.json` can assert an overseer bot ID, so keep the
-list short.
+Bot IDs are bound to individual bearer credentials before routing. The broker's
+`connection.json` and `app-token.json` remain under its separate OS user. Export
+only identity-bound connections to bot users with the [credential provisioner](bot-credentials.md).
+Do not grant generic sudo access to the SSH request helper; configure the
+app to SSH as the separate broker user with `sudo: false`. Keep Chromium CDP
+and desktop sockets inaccessible to bot users. Rotation/revocation of a bot
+credential takes effect on the next request.
 
-The VPS broker keeps two tokens. `connection.json` carries the agent token,
-which never grants human operations: a request with `X-Hermes-Human: 1` and the
-agent token gets 403. Human-only operations (`control` for another bot, `grant`,
-`human-actions`, `checkpoint`, `restore`, `activate`, listing every bot's tabs)
-and `POST /v1/mirror` need the app token, which the broker writes to
-`app-token.json` (mode 0600) or to the absolute path in `config.json`'s
-`appTokenFile`. The app's SSH `request` helper reads it automatically for those
-calls. The app token only separates the human from the agent when the broker
-and the app's SSH login run as a different user than the agent, with
-`appTokenFile` pointing somewhere the agent user cannot read (and `sudo` set in
-the VPS settings). In the common single-user setup the agent can read the file,
-so the split guards against forged headers and mistakes, not a hostile agent
-with shell access. Per-tab ownership and control epochs are cooperative policy
-for agents, not a cryptographic boundary between callers that already share a
-token. Restart the app or host to rotate both tokens.
 
 Agent navigation is held to the same address rules everywhere: `open`,
 `navigate`, `cdp Page.navigate`, redirects, pop-ups, frames, workers and

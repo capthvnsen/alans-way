@@ -1,3 +1,7 @@
+See [identity-bound credentials](bot-credentials.md) before configuring a broker.
+The broker connection and app token must stay under a separate OS user; export
+only per-bot connections. Generic sudo request helpers are refused.
+
 # Native VPS browser host
 
 This optional add-on leaves stock Hermes unchanged. One graphical Chromium
@@ -100,7 +104,7 @@ WantedBy=multi-user.target
 ```
 
 Reload systemd and enable/start both units through your normal service setup.
-The broker writes private `connection.json` (the agent token), `app-token.json`
+The broker writes private `connection.json` (the private broker token), `app-token.json`
 (the human/app token), `tabs.json` and `mirror.json` in its data directory.
 Never commit these files. Restarting only the broker reconnects existing live
 targets, increments control epochs and keeps each tab with whoever held it

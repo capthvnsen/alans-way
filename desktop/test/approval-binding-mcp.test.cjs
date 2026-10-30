@@ -23,7 +23,7 @@ for (const capable of [false, true]) test(`approved MCP dispatch requires positi
   });
   await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
   const connection = path.join(temp, 'connection.json');
-  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture' }));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture', botId: 'fixture' }));
   const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection, '--tab-map', '{"old":"next"}'] });
   const client = new Client({ name: 'approval-contract', version: '1' });
   t.after(async () => {

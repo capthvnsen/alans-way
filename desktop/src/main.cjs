@@ -1,4 +1,5 @@
 const { SSH_OPTIONS: TAILNET_SSH_OPTIONS } = require('./tailnet.cjs');
+const { authorizeBot, registryFile } = require('./bot-auth.cjs');
 const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, Notification, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
 const { ACCELERATORS } = require('./workspace-shortcuts.cjs');
 const fs = require('node:fs');
@@ -3087,7 +3088,7 @@ function startApi() {
   apiServer = http.createServer(async (req, res) => {
     const send = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
     // No browser-origin requests or CORS: this endpoint is for the paired native connector.
-    if (req.headers.origin || !hostAllowed(req.headers.host, apiPort) || !isAuthorized(req.headers.authorization, API_TOKEN)) return send(401, { error: 'Unauthorized' });
+    if (req.headers.origin || !hostAllowed(req.headers.host, apiPort) || !(isAuthorized(req.headers.authorization, API_TOKEN) || authorizeBot(registryFile(app.getPath('userData')), req.headers.authorization, String(req.headers['x-hermes-bot'] || '')))) return send(401, { error: 'Unauthorized' });
     try {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');

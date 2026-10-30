@@ -95,23 +95,7 @@ for (const [shell, shellArgs] of [
       assert.equal(fs.existsSync(path.join(f.home, 'injected')), false);
     });
   }
-  test(`${shell}: sudo resolves user Node before resetting PATH`, options, (t) => {
-    const f = remoteFixture(t, shell, shellArgs);
-    const { remoteCommand } = require('../src/vps-browser.cjs');
-    f.tool(path.join(f.home, '.local/bin'), 'node', 'node-found');
-    fs.mkdirSync(f.env.PATH, { recursive: true });
-    fs.writeFileSync(path.join(f.env.PATH, 'sudo'), `#!/bin/sh
-[ "$1" = -n ] || exit 98
-shift
-PATH=/fixture-empty-secure-path
-export PATH
-exec "$@"
-`, { mode: 0o700 });
-    const result = f.run(remoteCommand({ scriptPath: '/fixture/my host.cjs', sudo: true }));
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, 'node-found\n');
-    assert.equal(fs.existsSync(path.join(f.home, 'injected')), false);
-  });
+
 }
 
 test('PATH preserves the selected CLI, ignores non-executables, and never reads shell profiles', (t) => {
