@@ -330,14 +330,16 @@ All numbers are **chosen launch targets; current attainment is UNVERIFIED**. Def
 
 Extend [browser-bench.cjs](../../desktop/scripts/browser-bench.cjs), [agent-eval.md](../agent-eval.md), [cross-host-electron.cjs](../../desktop/test/cross-host-electron.cjs), [approval tests](../../desktop/test/approval-binding-mcp.test.cjs) and agents router/provider suites with real sleep/wake and production clients. Fixture counts are not hardware measurements; a single-VM SLO is not failure immunity.
 
-## Open questions for Alex
+## Launch decisions (2026-10-30)
 
-These do not reopen the architecture choice; they select launch acceptance scope.
+Alex delegated these to the project lead on 2026-10-30. They select launch acceptance scope and do not reopen the architecture choice.
 
-1. Which production Grok computer/setup hook should be retained across hibernation/recreation, and can distinct Bots have isolated credentials rather than one shared account principal? Current durable identity behavior is **UNVERIFIED**.
-2. Must the actual Grok thread render in the left pane for launch, or is a clearly partial activity/link view acceptable temporarily? No supported embedding interface was verified.
-3. Which sites/accounts and held-out Mac/browser tasks define acceptance, and should newly onboarded users explicitly opt in before cookies/drafts move? Choose explicit consent for new users and preserve reviewed existing consent during migration.
-4. Are the chosen latency/availability targets the launch bar, including the deliberate choice to pause writes during a VM authority failure? A stricter uptime target would require a separately justified standby design.
+1. **Grok identity.** Hermes and Grok Bot each get their own principal and OpenSSH key. Bots under one Grok account share that account's principal until a live test shows Grok can hold separate credentials per Bot; a Grok principal never inherits Hermes grants. The setup hook kept across hibernation/recreation is whichever one survives it in the first live Grok smoke test, recorded there.
+2. **Grok thread in the left pane.** Not required for launch. A clearly partial activity view with a link to the real Grok thread is acceptable. Native embedding waits for a supported Grok interface.
+3. **Acceptance tasks and consent.** The 25 held-out tasks in `desktop/eval/tasks.cjs` ([agent-eval.md section 2](../agent-eval.md#2-the-held-out-task-set-25)) define acceptance, run through both Hermes and Grok Bot. Newly onboarded users opt in explicitly before cookies or drafts move; reviewed existing consent is preserved during migration.
+4. **Targets.** The acceptance metrics above are the launch bar, including pausing writes during a VM authority failure. No standby design for v1.
+5. **One identity model.** The security drafts #266–#275 implement steps 1 and 2 of this migration. Their per-bot credentials are this document's principals, not a second model; reconcile any difference in those PRs, not here.
+6. **Scope.** The agent collaboration room (#262, alans-way-agents #156) is parked until step 3 is qualified.
 
 ## Source ledger
 
