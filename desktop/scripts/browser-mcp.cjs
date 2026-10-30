@@ -3,15 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { calls, context, remainingMs, checkCall, READ_BUDGET_MS } = require('../src/call-budget.cjs');
-// Computer drivers are per-OS. An SSH-spawned process cannot drive the
-// desktop: on Windows it sits in Session 0, and on macOS TCC credits
-// Accessibility and Screen Recording to the SSH session, not the app. So when
-// the connected app advertises computer use, these tools go through its
-// loopback API on every OS. The in-process driver is only for a host with no
-// computer endpoint (the VM's own browser host, whose desktop is this one).
-const localDriver = process.platform === 'darwin' ? '../src/computer.cjs'
-  : process.platform === 'win32' ? null
-  : '../src/vps-computer.cjs';
+// Desktop tools run in the authenticated broker; bots never inherit its desktop sockets.
 const { connectorReplaced } = require('../src/connector-reload.cjs');
 const { omitIcons } = require('../src/omit-icons.cjs');
 const { retargetMissingTab, normalizeHost } = require('../src/core.cjs');
@@ -23,8 +15,6 @@ const watched = [
   path.join(__dirname, '..', 'src', 'call-budget.cjs'),
   path.join(__dirname, '..', 'src', 'computer-policy.cjs'),
 ];
-if (process.platform !== 'win32')
-  watched.push(path.join(__dirname, '..', 'src', process.platform === 'darwin' ? 'computer.cjs' : 'vps-computer.cjs'));
 const fileMtime = (file) => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } };
 const started = Object.fromEntries(watched.map((file) => [file, fileMtime(file)]));
 const reloadIfReplaced = () => {
@@ -323,23 +313,17 @@ async function approvalHostConnection() {
   return Array.isArray(status?.capabilities) && status.capabilities.includes('approval-binding-v1') ? key : null;
 }
 let hostChoice = { key: '', app: false };
-// null means use the app's API; otherwise the in-process driver. Decided per
-// connection (url + token), so an app restart or a host switch is re-checked.
+// Require a broker endpoint, cached per connection identity. No desktop
+// sockets or helper processes are available to an untrusted connector.
 async function computerService() {
   let key = '';
   try { const connection = JSON.parse(fs.readFileSync(file, 'utf8')); key = connectionKey(connection); } catch { /* requestOnce reports it */ }
   if (!key || hostChoice.key !== key || !hostChoice.app) {
     const status = await requestOnce('/v1/status');
     const capabilities = Array.isArray(status && status.capabilities) ? status.capabilities : [];
-    const agentDesktop = capabilities.includes('agent-desktop');
-    // The helper inherits this and reads it at spawn; only the agent's own VM host advertises it.
-    const changed = agentDesktop !== (process.env.ALANS_WAY_AGENT_DESKTOP === '1');
-    if (agentDesktop) process.env.ALANS_WAY_AGENT_DESKTOP = '1';
-    else delete process.env.ALANS_WAY_AGENT_DESKTOP;
-    if (changed && localDriver && hostChoice.key) require(localDriver).close();
     hostChoice = { key, windowBinding: capabilities.includes('computer-window-v1'), launch: capabilities.includes('computer-launch-v1'), app: capabilities.includes('computer') || capabilities.includes('computer-v2'), host: typeof status.host === 'string' ? status.host : '' };
   }
-  return hostChoice.app || !localDriver ? null : require(localDriver).service;
+  if (!hostChoice.app) throw new Error('Computer broker unavailable. Update the host; untrusted connectors cannot drive the desktop in-process.');
 }
 // The app leases its desktop per bot; an in-process driver's desktop is shared
 // by every agent's connector on this machine, so they lease it through a file.
@@ -409,8 +393,8 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => cal
     if (['cua_alans_way_action', 'cua_alans_way_snapshot', 'cua_alans_way_screenshot', 'cua_alans_way_close'].includes(params.name)
         && (typeof args.tabId !== 'string' || !args.tabId.trim()))
       throw new Error('Pass a nonempty tabId from cua_alans_way_tabs before using this tool. No request was sent.');
-    const computer = params.name.startsWith('workspace_computer_') ? await computerService() : null;
-    if (params.name.startsWith('workspace_computer_') && args.windowId !== undefined && !computer && !hostChoice.windowBinding)
+    if (params.name.startsWith('workspace_computer_')) await computerService();
+    if (params.name.startsWith('workspace_computer_') && args.windowId !== undefined && !hostChoice.windowBinding)
       throw new Error('This host cannot select a window. Update it before retrying.');
     const tabPath = `/v1/tabs/${encodeURIComponent(args.tabId || '')}`;
     switch (params.name) {
@@ -450,23 +434,19 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => cal
         result = await request(tabPath, 'DELETE', undefined, args.epoch);
         break;
       case 'workspace_computer_apps':
-        result = { ...(hostChoice.host ? { host: hostChoice.host } : {}), ...(computer ? { apps: await computer.apps() } : await request('/v1/computer/apps')) };
+        result = { ...(hostChoice.host ? { host: hostChoice.host } : {}), ...await request('/v1/computer/apps') };
         break;
       case 'workspace_computer_launch':
-        if (!hostChoice.launch || (computer && !computer.launch)) throw new Error('This host cannot open apps by name. Use a Mac host that supports it.');
+        if (!hostChoice.launch) throw new Error('This host cannot open apps by name. Use a Mac host that supports it.');
         if (args.app === undefined && args.path === undefined) throw new Error('Give app, path or both.');
-        result = computer ? await computer.launch(args.app, args.path) : await request('/v1/computer/launch', 'POST', { app: args.app, path: args.path });
+        result = await request('/v1/computer/launch', 'POST', { app: args.app, path: args.path });
         break;
       case 'workspace_computer_snapshot':
-        result = computer
-          ? await computer.snapshot(botId, args.pid, { since: args.since, menubar: args.menubar, windowId: args.windowId, delta: args.delta === true })
-          : await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/snapshot?${new URLSearchParams({
+        result = await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/snapshot?${new URLSearchParams({
             ...(Number.isInteger(args.since) ? { since: args.since } : {}), ...(args.delta === true ? { delta: '1' } : {}), ...(args.menubar ? { menubar: '1' } : {}), ...(args.windowId !== undefined ? { windowId: args.windowId } : {}) })}`);
         break;
       case 'workspace_computer_screenshot': {
-        const shot = computer
-          ? await computer.screenshot(args.pid, args.maxWidth, { windowId: args.windowId, bot: botId })
-          : await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/screenshot${Number.isInteger(args.maxWidth) || args.windowId !== undefined ? `?${new URLSearchParams({ ...(Number.isInteger(args.maxWidth) ? { maxWidth: args.maxWidth } : {}), ...(args.windowId !== undefined ? { windowId: args.windowId } : {}) })}` : ''}`);
+        const shot = await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/screenshot${Number.isInteger(args.maxWidth) || args.windowId !== undefined ? `?${new URLSearchParams({ ...(Number.isInteger(args.maxWidth) ? { maxWidth: args.maxWidth } : {}), ...(args.windowId !== undefined ? { windowId: args.windowId } : {}) })}` : ''}`);
         return { content: [
           { type: 'image', data: shot.image, mimeType: 'image/jpeg' },
           { type: 'text', text: JSON.stringify({
@@ -478,15 +458,11 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => cal
         ] };
       }
       case 'workspace_computer_menu':
-        result = computer
-          ? await leased(() => computer.menu(args.pid, args.path))
-          : await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/menu?${new URLSearchParams({ path: JSON.stringify(args.path || []) })}`);
+        result = await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/menu?${new URLSearchParams({ path: JSON.stringify(args.path || []) })}`);
         break;
       case 'workspace_computer_action': {
         const { pid, ...body } = args;
-        result = computer
-          ? await leased(() => computer.action(botId, pid, body))
-          : await request(`/v1/computer/${encodeURIComponent(String(pid))}/action`, 'POST', body);
+        result = await request(`/v1/computer/${encodeURIComponent(String(pid))}/action`, 'POST', body);
         break;
       }
       case 'cua_alans_way_action': {

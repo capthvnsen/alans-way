@@ -1,31 +1,21 @@
 // Runs the app's real /v1/computer route table from main.cjs against fakes,
 // so tests can drive leases and approvals without Electron or a Mac helper.
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
 const { createDesktopLease } = require('../src/computer.cjs');
 const { createDesktopApproval } = require('../src/desktop-approval.cjs');
-const { calls, context, READ_BUDGET_MS } = require('../src/call-budget.cjs');
 
 function computerRoutes(driver = {}, { approval = createDesktopApproval({ ask: async () => true, trusted: () => true }) } = {}) {
   const seen = [];
-  const source = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
-  const routes = source.slice(source.indexOf('const computerMatch ='), source.indexOf("const match = /^\\/v1\\/tabs"));
-  assert.ok(routes.includes('hostComputer.action'), 'exercise the actual computer route table');
-  const route = vm.runInNewContext(`async (req, res) => {
-    const url = new URL(req.url, 'http://127.0.0.1');
-    const botId = req.headers['x-hermes-bot'] || '';
-    const send = (status, body) => ({status, body});
-    ${routes}
-  }`, {
-    approvalIdentity: () => undefined, registryFile: () => '', app: { getPath: () => '' }, API_TOKEN: 'synthetic',
-    URL, AbortController, process: { platform: 'darwin' },
-    calls, context, READ_BUDGET_MS,
+  const handle = require('../src/computer-http.cjs').createComputerRoutes({
     readJson: async req => req.body || {}, intParam: () => undefined,
     desktopLease: createDesktopLease(), desktopApproval: approval, nameForBot: id => id === 'a' ? 'Agent A' : '',
     hostComputer: { ...Object.fromEntries(['apps', 'launch', 'snapshot', 'screenshot', 'menu', 'action'].map(verb => [verb, async () => { seen.push(verb); return { ok: true }; }])), ...driver },
   });
+  const route = async (req, res) => {
+    let result;
+    await handle(req, res, new URL(req.url, 'http://127.0.0.1'), req.headers['x-hermes-bot'] || '', (status, body) => { result = { status, body }; });
+    return result;
+  };
+
   return {
     seen,
     route,

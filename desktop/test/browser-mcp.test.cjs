@@ -1067,46 +1067,29 @@ test('the app computer service accepts expect_host without changing the action',
   assert.deepEqual(seen[2], seen[0]);
 });
 
-test('computer tools use the in-process driver when the connected host has no computer endpoint', { timeout: 8000 }, async (t) => {
-  const { client, seen } = await computerHost(t, ['tabs', 'snapshot']);
-  const text = (await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text;
-  assert.match(text, /in-process-marker/);
-  assert.doesNotMatch(text, /app-api-marker/);
-  assert.match(text, /"agentDesktop":""/);
-  assert.match((await client.callTool({ name: 'workspace_computer_action', arguments: { pid: 1, action: 'press', ref: 'a', generation: 1 } })).content[0].text, /in-process-marker/);
-  assert.ok(seen.every((entry) => !entry.line.startsWith('GET /v1/computer') && !entry.line.startsWith('POST /v1/computer')));
+test('untrusted connectors cannot fall back to a desktop helper when the broker lacks computer routes', { timeout: 8000 }, async t => {
+  for (const capabilities of [['tabs', 'snapshot'], ['tabs', 'agent-desktop']]) {
+    const { client, seen } = await computerHost(t, capabilities);
+    for (const [name, args] of [['workspace_computer_apps', {}], ['workspace_computer_action', { pid: 1, action: 'key', key: 'Enter' }]]) {
+      const reply = await client.callTool({ name, arguments: args });
+      assert.equal(reply.isError, true);
+      assert.match(reply.content[0].text, /Computer broker unavailable/);
+      assert.doesNotMatch(reply.content[0].text, /in-process-marker/);
+    }
+    assert.ok(seen.every(entry => entry.line === 'GET /v1/status'));
+  }
 });
 
-test('two agents on one in-process desktop share its lease, and reads stay open', { timeout: 8000 }, async (t) => {
-  const hermes = await computerHost(t, ['tabs', 'agent-desktop'], undefined, { botName: 'Hermes' });
-  const grok = await computerHost(t, ['tabs', 'agent-desktop'], undefined, { botId: 'grok', botName: 'Grok Bot', profile: hermes.profile });
-  const act = (client) => client.callTool({ name: 'workspace_computer_action', arguments: { pid: 1, action: 'key', key: 'Enter' } });
-  assert.equal((await act(hermes.client)).isError, undefined);
-  const busy = await act(grok.client);
-  assert.equal(busy.isError, true);
-  assert.match(busy.content[0].text, /^desktop_busy: The (VM desktop|Mac) is being used by Hermes; try again in (19|20) s\. Reads still work\..*Nothing was sent\.$/);
-  assert.match((await grok.client.callTool({ name: 'workspace_computer_menu', arguments: { pid: 1, path: ['File'] } })).content[0].text, /^desktop_busy:/);
-  assert.match((await grok.client.callTool({ name: 'workspace_computer_snapshot', arguments: { pid: 1 } })).content[0].text, /in-process-marker/);
-  assert.equal((await act(hermes.client)).isError, undefined, 'the holder keeps acting');
-});
-
-test('the in-process driver is told it owns the desktop when the host says agent-desktop', { timeout: 8000 }, async (t) => {
-  const { client } = await computerHost(t, ['tabs', 'agent-desktop']);
-  assert.match((await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text, /"agentDesktop":"1"/);
-});
-
-test('the agent-desktop flag follows the host and restarts the helper when it changes', { timeout: 8000 }, async (t) => {
-  const capabilities = ['tabs', 'agent-desktop'];
+test('a changed connection rechecks broker computer support without inheriting desktop authority', { timeout: 8000 }, async t => {
+  const capabilities = ['tabs', 'computer'];
   const { client, profile } = await computerHost(t, capabilities);
-  const apps = async () => JSON.parse((await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text).apps[0];
-  assert.equal((await apps()).agentDesktop, '1');
+  assert.equal((await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).isError, undefined);
   capabilities.length = 0;
-  capabilities.push('tabs');
-  const connection = JSON.parse(fs.readFileSync(path.join(profile, 'connection.json'), 'utf8'));
-  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ ...connection, token: 'other-token' }));
-  const after = await apps();
-  assert.equal(after.agentDesktop, '');
-  assert.equal(after.closed, '1');
+  const file = path.join(profile, 'connection.json');
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file)), token: 'other-token' }));
+  const reply = await client.callTool({ name: 'workspace_computer_apps', arguments: {} });
+  assert.equal(reply.isError, true);
+  assert.match(reply.content[0].text, /Computer broker unavailable/);
 });
 
 test('a named step sent to a host from before name targets says to act by ref', { timeout: 8000 }, async (t) => {

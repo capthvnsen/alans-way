@@ -208,7 +208,7 @@ async function startHost({ env = {}, config = {}, tabs, targets, mirror, now, au
       return emit.call(this, event, ...args);
     };
   `);
-  const child = spawn(process.execPath, [...(now !== undefined ? ['--require', clockScript] : []), ...(auditActions ? ['--require', auditScript] : []), path.join(__dirname, '../scripts/vps-browser-host.cjs'), 'serve'], {
+  const child = spawn(process.execPath, ['--require', path.join(__dirname, 'fake-computer-service.cjs'), ...(now !== undefined ? ['--require', clockScript] : []), ...(auditActions ? ['--require', auditScript] : []), path.join(__dirname, '../scripts/vps-browser-host.cjs'), 'serve'], {
     env: { ...process.env, HERMES_VPS_BROWSER_DATA: dir, ...env },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -651,6 +651,23 @@ test('per-bot credentials cannot impersonate an owner, overseer or human', async
   assert.equal((await host.api('/v1/tabs', 'GET', undefined, { bot: 'isolated', token, human: true })).status, 403);
   fs.writeFileSync(path.join(host.dir, 'bot-credentials.json'), JSON.stringify({ bots: {} }));
   assert.equal((await host.api('/v1/tabs', 'GET', undefined, { bot: 'isolated', token })).status, 401);
+});
+
+test('VM desktop tools use the authenticated broker and one lease across bot users', async () => {
+  const host = await startHost();
+  const a = 'a'.repeat(64), b = 'b'.repeat(64);
+  fs.writeFileSync(path.join(host.dir, 'bot-credentials.json'), JSON.stringify({ bots: {
+    a: { token: a, uid: process.getuid() + 1 }, b: { token: b, uid: process.getuid() + 2 },
+  } }), { mode: 0o600 });
+  const actor = (bot, token) => ({ bot, token });
+  assert.equal((await host.api('/v1/status', 'GET', undefined, actor('a', a))).data.capabilities.includes('computer'), true);
+  const apps = await host.api('/v1/computer/apps', 'GET', undefined, actor('a', a));
+  assert.equal(apps.status, 200);
+  assert.equal(apps.data.apps[0].name, 'in-process-marker', 'the fake helper runs in the broker process');
+  assert.equal((await host.api('/v1/computer/1/action', 'POST', { action: 'key', key: 'Enter' }, actor('a', a))).status, 200);
+  assert.equal((await host.api('/v1/computer/1/action', 'POST', { action: 'key', key: 'Enter' }, actor('b', b))).status, 409);
+  assert.equal((await host.api('/v1/computer/1/snapshot', 'GET', undefined, actor('b', b))).status, 200);
+  assert.equal((await host.api('/v1/computer/1/action', 'POST', {}, actor('b', a))).status, 401);
 });
 
 test('request mode sends the app token only for human and mirror operations', async () => {

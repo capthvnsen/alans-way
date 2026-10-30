@@ -92,7 +92,7 @@ async function read(req, limit = 150000) {
 }
 async function request(input) {
   const c = privateJson(connectionFile);
-  if (!/^\/v1\/(status|tabs|mirror|restore)(\/|$)/.test(input.path)) throw new Error('Invalid browser operation.');
+  if (!/^\/v1\/(status|tabs|mirror|restore|computer)(\/|$)/.test(input.path)) throw new Error('Invalid browser operation.');
   if (c.botId && (c.botId !== input.botId || input.human || input.path.startsWith('/v1/mirror'))) throw new Error('Bot credentials cannot request another identity or human operations.');
   const token = input.human || input.path.startsWith('/v1/mirror') ? privateJson(appTokenFile()).token : c.token;
   const response = await fetch(c.url + input.path, {
@@ -140,6 +140,12 @@ async function serve() {
   // The Mac shell forwards each bot's display name so the in-page agent cursor
   // shows it instead of a generic "Agent" inside the streamed desktop.
   const botNames = new Map();
+  process.env.ALANS_WAY_AGENT_DESKTOP = '1';
+  const desktop = require(process.platform === 'darwin' ? '../src/computer.cjs' : '../src/vps-computer.cjs');
+  const computerRoutes = require('../src/computer-http.cjs').createComputerRoutes({
+    hostComputer: desktop.service, desktopLease: require('../src/computer-helper.cjs').createDesktopLease(),
+    nameForBot: id => botNames.get(id) || id, readJson: read, intParam,
+  });
   let persistQueue = Promise.resolve();
   const describe = (t) => ({
     id: t.id,
@@ -957,13 +963,11 @@ async function serve() {
         platform: process.platform,
         protocol: 1,
         session: 'shared-vps',
-        capabilities: ['tabs', 'snapshot', 'screenshot', 'background-input', 'control-epochs', 'checkpoint', 'agent-desktop', 'name-targets', 'commit-check', ...(agentInputModule.APPROVAL_BINDING_VERSION === 1 ? ['approval-binding-v1'] : [])],
+        capabilities: ['computer', 'computer-v2', ...(process.platform === 'darwin' ? ['computer-window-v1', 'computer-launch-v1', 'computer-open-v1'] : []), 'tabs', 'snapshot', 'screenshot', 'background-input', 'control-epochs', 'checkpoint', 'agent-desktop', 'name-targets', 'commit-check', ...(agentInputModule.APPROVAL_BINDING_VERSION === 1 ? ['approval-binding-v1'] : [])],
         tabCount: tabs.size,
         browserUp: cdp.socket.readyState === 1,
         busy: [...tabs.values()].some((t) => (t.pendingActions || 0) > 0 || input.isDispatching(t)),
       });
-    if (cdp.socket.readyState !== 1)
-      return send(503, { error: 'VPS Chromium disconnected. Inspect task state before retrying.' });
     try {
       const botId = String(req.headers['x-hermes-bot'] || ''),
         human = req.headers['x-hermes-human'] === '1',
@@ -974,6 +978,8 @@ async function serve() {
         const botName = decodeURIComponent(String(req.headers['x-hermes-bot-name'] || '')).slice(0, 80);
         if (botId && botName) botNames.set(botId, botName);
       } catch {}
+      if (await computerRoutes(req, res, url, botId, send)) return;
+      if (cdp.socket.readyState !== 1) return send(503, { error: 'VPS Chromium disconnected. Inspect task state before retrying.' });
       if (url.pathname === '/v1/tabs' && req.method === 'GET')
         return send(200, {
           tabs: [...tabs.values()]

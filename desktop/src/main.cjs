@@ -3072,7 +3072,7 @@ async function readJson(req) {
   catch { throw Object.assign(new Error('Invalid JSON.'), { status: 400 }); }
 }
 function startApi() {
-  const desktopLease = process.platform === 'darwin' ? require('./computer.cjs').createDesktopLease() : null;
+  const desktopLease = require('./computer-helper.cjs').createDesktopLease();
   const desktopApproval = require('./desktop-approval.cjs').createDesktopApproval({
     trusted: (id, generation) => generation ? prefs.desktopTrustedBots.includes(JSON.stringify([id, generation])) : isOverseer(id) || prefs.bots.some((bot) => bot.id === id) || prefs.desktopTrustedBots.includes(id),
     ask: async (name, id, signal, generation) => {
@@ -3085,6 +3085,7 @@ function startApi() {
       return response > 0;
     },
   });
+  const computerRoutes = require('./computer-http.cjs').createComputerRoutes({ hostComputer, desktopLease, desktopApproval, nameForBot, readJson, intParam, identityFor: (req, botId) => approvalIdentity(registryFile(app.getPath('userData')), req.headers.authorization, botId, API_TOKEN) });
   apiServer = http.createServer(async (req, res) => {
     const send = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
     // No browser-origin requests or CORS: this endpoint is for the paired native connector.
@@ -3153,56 +3154,7 @@ function startApi() {
       // Host computer use is served here so an SSH-spawned connector never
       // drives the desktop itself — on Windows that process would sit in
       // Session 0 and see no windows. Same verbs the MCP connector wraps.
-      const computerMatch = /^\/v1\/computer\/(apps|launch|\d{1,10})(?:\/(snapshot|screenshot|action|menu))?$/.exec(url.pathname);
-      if (computerMatch) {
-        if (!botId || botId.length > 100) return send(400, { error: 'X-Hermes-Bot is required and must be at most 100 characters.' });
-        const identity = approvalIdentity(registryFile(app.getPath('userData')), req.headers.authorization, botId, API_TOKEN);
-        let agentName = nameForBot(botId);
-        if (!agentName) try { agentName = decodeURIComponent(String(req.headers['x-hermes-bot-name'] || '')).replace(/\p{C}/gu, '').slice(0, 80); } catch { /* the bot ID names it instead */ }
-        const controller = new AbortController();
-        res.on('close', () => { if (!res.writableFinished) controller.abort(); });
-        return await calls.run(context(req.headers['x-alans-way-remaining-ms'] === undefined ? undefined : Number(req.headers['x-alans-way-remaining-ms']), controller.signal, req.method === 'GET' ? READ_BUDGET_MS : Infinity), async () => {
-          if (!hostComputer) return send(400, { error: 'Computer use is not available on this host.' });
-          if (computerMatch[1] === 'apps') {
-            if (computerMatch[2] || req.method !== 'GET') return send(405, { error: 'Use GET /v1/computer/apps.' });
-            return send(200, { apps: await hostComputer.apps() });
-          }
-          if (computerMatch[1] === 'launch') {
-            if (computerMatch[2] || req.method !== 'POST') return send(405, { error: 'Use POST /v1/computer/launch.' });
-            if (!hostComputer.launch) return send(400, { error: 'Opening an app by name is only supported on Mac.' });
-            const body = await readJson(req);
-            const refused = await desktopApproval?.check(botId, agentName, identity);
-            if (refused) return send(403, refused);
-            const busy = desktopLease?.take(botId, agentName);
-            if (busy) return send(409, busy);
-            try { return send(200, await hostComputer.launch(body.app, body.path)); }
-            finally { desktopLease?.release(botId); }
-          }
-          const pid = Number(computerMatch[1]);
-          if (!Number.isInteger(pid) || pid < 0) return send(400, { error: 'App pid must be a non-negative integer.' });
-          if (req.method === 'GET' && computerMatch[2] === 'snapshot')
-            return send(200, await hostComputer.snapshot(botId, pid, { since: intParam(url, 'since', 0, Number.MAX_SAFE_INTEGER), delta: url.searchParams.get('delta') === '1', menubar: url.searchParams.get('menubar') === '1', windowId: intParam(url, 'windowId', 1, 0xffffffff) }));
-          if (req.method === 'GET' && computerMatch[2] === 'screenshot')
-            return send(200, await hostComputer.screenshot(pid, intParam(url, 'maxWidth', 1, 10000), { windowId: intParam(url, 'windowId', 1, 0xffffffff), bot: botId }));
-          if (req.method === 'GET' && computerMatch[2] === 'menu') {
-            let menuPath; try { menuPath = JSON.parse(url.searchParams.get('path') || '[]'); } catch { throw Object.assign(new Error('path must be a JSON array of menu titles.'), { status: 400 }); }
-            const busy = desktopLease?.take(botId, agentName);
-            if (busy) return send(409, busy);
-            try { return send(200, await hostComputer.menu(pid, menuPath)); }
-            finally { desktopLease?.release(botId); }
-          }
-          if (req.method === 'POST' && computerMatch[2] === 'action') {
-            const body = await readJson(req);
-            const refused = await desktopApproval?.check(botId, agentName, identity);
-            if (refused) return send(403, refused);
-            const busy = desktopLease?.take(botId, agentName);
-            if (busy) return send(409, busy);
-            try { return send(200, await hostComputer.action(botId, pid, body)); }
-            finally { desktopLease?.release(botId); }
-          }
-          return send(405, { error: 'Method not supported.' });
-        });
-      }
+      if (await computerRoutes(req, res, url, botId, send)) return;
       const match = /^\/v1\/tabs\/([\w-]+)(?:\/(snapshot|screenshot|actions|control))?$/.exec(url.pathname);
       const tab = match && tabs.get(match[1]);
       if(match&&!tab&&isVpsTab(match[1])){
