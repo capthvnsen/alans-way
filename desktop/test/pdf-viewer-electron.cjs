@@ -8,7 +8,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { pathToFileURL } = require('node:url');
 const electron = require('electron');
-const { selectPdfPage } = require('./pdf-viewer-controls.cjs');
+const { selectPdfPage, zoomPdfIn } = require('./pdf-viewer-controls.cjs');
 const scratch = process.env.PDF_FIXTURE_SCRATCH || require('node:os').tmpdir();
 function buildPdf() {
   const parts = ['%PDF-1.4\n'], offsets = [0];
@@ -411,8 +411,7 @@ if (typeof electron === 'string') {
     await viewer.executeJavaScript("window.top.postMessage({workspacePdfDrop:true,files:[new File(['%PDF-'], 'forged.pdf')]}, '*')");
     await new Promise(r => setTimeout(r, 100));
     check('viewer relay rejects page-created File', (await state()).tabs.length, beforeForgedViewer);
-    const zoomBefore = await viewer.executeJavaScript("document.querySelector('pdf-viewer').viewport_.getZoom()");
-    await viewer.executeJavaScript("document.querySelector('pdf-viewer').shadowRoot.querySelector('viewer-toolbar').shadowRoot.querySelector('[title=\"Zoom in\"]').click()");
+    const zoomBefore = await zoomPdfIn(viewer, waitFor);
     await waitFor(() => viewer.executeJavaScript("document.querySelector('pdf-viewer').viewport_.getZoom()"), n => n > zoomBefore);
     check('viewer zoom changes scale', true);
     await selectPdfPage(viewer, 2, waitFor);

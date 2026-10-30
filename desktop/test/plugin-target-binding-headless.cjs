@@ -129,8 +129,13 @@ async function startClient(elicitation = true) {
   const profile = path.join(temp, 'profile');
   browser = child(chrome, ['--headless=new', ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []), '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-sandbox', '--disable-background-networking', 'about:blank']);
   const portFile = path.join(profile, 'DevToolsActivePort');
-  await until(() => fs.existsSync(portFile) || (browser.exitCode !== null && assert.fail(browser.stderrText())), 'Chromium startup');
-  cdpPort = fs.readFileSync(portFile, 'utf8').split('\n')[0];
+  // Chrome creates the file before writing its port; existence is not readiness.
+  cdpPort = await until(() => {
+    assert.equal(browser.exitCode, null, browser.stderrText());
+    if (!fs.existsSync(portFile)) return false;
+    const [port, endpoint] = fs.readFileSync(portFile, 'utf8').split('\n');
+    return /^[1-9]\d*$/.test(port) && Number(port) <= 65535 && endpoint?.startsWith('/devtools/browser/') && port;
+  }, 'Chromium startup');
   await until(() => fetch(`http://127.0.0.1:${cdpPort}/json/version`).then(r => r.ok, () => false), 'Chromium CDP');
   cdp = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
   const hostData = path.join(temp, 'host'); fs.mkdirSync(hostData);

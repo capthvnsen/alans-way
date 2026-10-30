@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const vm = require('node:vm');
-const { selectPdfPage } = require('./pdf-viewer-controls.cjs');
+const { selectPdfPage, zoomPdfIn } = require('./pdf-viewer-controls.cjs');
 
 function fixture() {
   const changes = [];
@@ -54,4 +54,26 @@ test('unexpected viewer script errors remain failures', async () => {
   const f = fixture();
   f.viewer.executeJavaScript = async () => { throw new Error('fixture frame detached'); };
   await assert.rejects(selectPdfPage(f.viewer, 2, read => read()), /fixture frame detached/);
+});
+
+test('zoom waits for loaded PDF and enabled, settled toolbar before clicking once', async () => {
+  const f = fixture();
+  let clicks = 0;
+  const button = { disabled: true, click() { clicks++; } };
+  f.toolbar.shadowRoot.querySelector = () => button;
+  f.pdf.viewport_ = { getZoom: () => 0.75 };
+  f.pdf.loadState_ = 'loading';
+  const zoom = await zoomPdfIn(f.viewer, async read => {
+    assert.equal(await read(), false);
+    f.pdf.loadState_ = 'success';
+    assert.equal(await read(), false);
+    button.disabled = false;
+    f.toolbar.isUpdatePending = true;
+    assert.equal(await read(), false);
+    assert.equal(clicks, 0);
+    f.toolbar.isUpdatePending = false;
+    return read();
+  });
+  assert.equal(zoom, 0.75);
+  assert.equal(clicks, 1);
 });

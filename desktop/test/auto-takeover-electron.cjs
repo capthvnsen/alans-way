@@ -24,6 +24,7 @@ let server;
 app.whenReady().then(async () => {
   const win = await waitFor(() => BrowserWindow.getAllWindows()[0], win => !!win);
   const wc = win.webContents;
+  win.setFocusable(false);
   const telegram = webContents.getAllWebContents().find(item => item.session === session.fromPartition('persist:telegram'));
   if (telegram) { telegram.stop(); await telegram.loadURL('about:blank'); }
   const evaluate = code => wc.executeJavaScript(code);
@@ -43,9 +44,12 @@ app.whenReady().then(async () => {
   const banner = () => evaluate('document.getElementById("takeover-banner").classList.contains("hidden") ? "" : document.getElementById("takeover-text").textContent');
   const controller = async id => (await getState()).tabs.find(item => item.id === id).controller;
   const humanTypes = async (pageWc, text) => {
-    pageWc.focus();
+    // Establish renderer/input focus without competing for the desktop keyboard.
+    if (!pageWc.debugger.isAttached()) pageWc.debugger.attach('1.3');
+    await pageWc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
+    const before = await pageWc.executeJavaScript('document.getElementById("q").focus(); document.getElementById("q").value');
     for (const key of text) { pageWc.sendInputEvent({ type: 'keyDown', keyCode: key }); pageWc.sendInputEvent({ type: 'char', keyCode: key }); pageWc.sendInputEvent({ type: 'keyUp', keyCode: key }); }
-    await sleep(100);
+    await waitFor(() => pageWc.executeJavaScript('document.getElementById("q").value'), value => value === before + text);
   };
 
   server = http.createServer((req, res) => res.end(`<title>${req.url.slice(1) || 'form'}</title><input id="q" autofocus><select id="pick"><option>Red</option></select><a id="go" href="/next">Next</a>`));
