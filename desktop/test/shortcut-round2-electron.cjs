@@ -70,6 +70,12 @@ app.whenReady().then(async () => {
   };
   const rows = () => js('[...document.querySelectorAll("[data-shortcut]")].map(n=>n.dataset.shortcut)');
   const scroll = () => js('document.getElementById("shortcut-results").scrollTop');
+  const scrollKey = async name => {
+    // A row can be visible before its native keyboard scroll animation ends.
+    await js("window.round2ScrollEnded = false; document.getElementById('shortcut-results').addEventListener('scrollend', () => { window.round2ScrollEnded = true; }, { once: true })");
+    await key(name);
+    await wait(() => js('window.round2ScrollEnded'));
+  };
   const unavailable = () => js('[...document.querySelectorAll(".shortcut-unavailable")].map(n=>n.closest("[data-shortcut]").dataset.shortcut)');
   await js('window.round2Keys=[];document.addEventListener("keydown",e=>round2Keys.push({key:e.key,trusted:e.isTrusted}),true)');
   const queries = [
@@ -91,14 +97,14 @@ app.whenReady().then(async () => {
     await check(`${width}x${height}: Tab enters results; navigation reaches last row and returns to opener`, async () => {
       assert.deepEqual(await js('[innerWidth,innerHeight]'), [effective.width, effective.height]);
       await key('Tab'); assert.equal(await active(), 'shortcut-results', 'Tab from Search must enter the results');
-      const start = await scroll(); await key('ArrowDown'); await wait(scroll, top => top > start);
-      const arrow = await scroll(); await key('PageDown'); await wait(scroll, top => top > arrow);
-      await key('End'); await wait(() => js('(() => {const r=document.getElementById("shortcut-results"),last=document.querySelector("[data-shortcut=dialog-close]");return last.getBoundingClientRect().bottom<=r.getBoundingClientRect().bottom})()'));
+      const start = await scroll(); await scrollKey('ArrowDown'); await wait(scroll, top => top > start);
+      const arrow = await scroll(); await scrollKey('PageDown'); await wait(scroll, top => top > arrow);
+      await scrollKey('End'); await wait(() => js('(() => {const r=document.getElementById("shortcut-results"),last=document.querySelector("[data-shortcut=dialog-close]");return last.getBoundingClientRect().bottom<=r.getBoundingClientRect().bottom})()'));
       const end = await scroll(); await shot(`browse-${width}x${height}-end`);
       const geometry = await js('(() => {const c=document.querySelector(".shortcut-card"),r=document.getElementById("shortcut-results");return {width:innerWidth,height:innerHeight,client:r.clientHeight,scroll:r.scrollHeight,top:r.scrollTop,overflow:c.scrollWidth>c.clientWidth}})()');
       observations.viewports.push(geometry); assert.equal(geometry.overflow, false);
-      await key('ArrowUp'); await wait(scroll, top => top < end);
-      await key('PageUp'); await key('Home'); await wait(scroll, top => top === 0);
+      await scrollKey('ArrowUp'); await wait(scroll, top => top < end);
+      await scrollKey('PageUp'); await scrollKey('Home'); await wait(scroll, top => top === 0);
       await key('Tab', true); assert.equal(await active(), 'shortcut-search');
       await key('Tab', true); assert.equal(await active(), 'shortcut-close');
       await key('Tab', true); assert.equal(await active(), 'shortcut-results');
