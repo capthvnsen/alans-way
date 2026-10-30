@@ -1,3 +1,4 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
 require('./window-fixture.cjs');
 // Run: npx electron test/update-all-electron.cjs
 // The bottom bar's versions and the "Update everything" dialog, end to end in
@@ -11,13 +12,13 @@ const path = require('node:path');
 const { app, BrowserWindow, webContents, session } = require('electron');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-update-all-'));
 process.env.HERMES_WORKSPACE_DATA = profile;
-// A saved server address makes the probe target the server; .invalid never
-// resolves, so the browser host connection fails fast and quietly.
+// A saved server address makes the probe target the server; browser transport stays offline.
+require('../src/vps-browser.cjs').createVpsBrowser = () => ({ request: async () => { throw new Error('Fixture browser offline.'); } });
 fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, versionCache: { hermes: '0.21.6' },
   pendingUpdateReport: { runId: 'previous-run', targetVersion: require('../package.json').version, attempts: 0,
-    target: { id: 'agent', label: 'VPS', sshHost: 'tester@vm.invalid', scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs', sudo: false },
+    target: { id: 'agent', label: 'VPS', sshHost: `tester@${fixtureTailnet}`, scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs', sudo: false },
     rows: [{ id: 'app', from: '0.21.0', to: require('../package.json').version, state: 'done' }] },
-  bots: [{ id: '4242', isBot: true, name: 'Scout' }], selectedBotId: '4242', vpsBrowser: { sshHost: 'tester@vm.invalid', scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs' } }));
+  bots: [{ id: '4242', isBot: true, name: 'Scout' }], selectedBotId: '4242', vpsBrowser: { sshHost: `tester@${fixtureTailnet}`, scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs' } }));
 process.env.HERMES_WORKSPACE_PORT = String(19000 + Math.floor(Math.random() * 10000));
 
 // main.cjs destructures these at load, so patching the exports first swaps
@@ -273,7 +274,7 @@ app.whenReady().then(async () => {
   const pending = JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8')).pendingUpdateReport;
   assert.ok(pending.runId);
   assert.equal(pending.targetVersion, appVersion);
-  assert.deepEqual(pending.target, { id: 'agent', label: 'VPS', sshHost: 'tester@vm.invalid', scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs', sudo: false });
+  assert.deepEqual(pending.target, { id: 'agent', label: 'VPS', sshHost: `tester@${fixtureTailnet}`, scriptPath: '/srv/app/desktop/scripts/vps-browser-host.cjs', sudo: false });
   assert.equal(pending.attempts, 0);
   assert.deepEqual(pending.rows.map(row => [row.id, row.state]), [['app', 'done']]);
   assert.match(await text('update-all-copy'), /Your bot messaged you on Telegram\. Your bot will report the app version when the app starts again\./);
@@ -343,12 +344,12 @@ app.whenReady().then(async () => {
   const setupPlan = JSON.stringify({ repoRef: 'a'.repeat(40), desktopRef: 'b'.repeat(40), args: [] });
   await evaluate(`document.querySelector('[aria-label="Server setup plan"]').value = ${JSON.stringify(setupPlan)}`);
   const setupButton = '[...document.querySelectorAll("button")].find(b => b.textContent === "Finish setup and restart my bot")';
-  await evaluate(`document.getElementById('vps-ssh-host').value = 'tester@unsaved.invalid'; ${setupButton}.click()`);
+  await evaluate(`document.getElementById('vps-ssh-host').value = 'tester@${fixtureTailnetOther}'; ${setupButton}.click()`);
   await waitFor(() => evaluate('document.getElementById("modal-body").textContent'), text => text.includes('Save address changes before running setup.'));
   assert.equal(setupCalls.length, 0, 'unsaved addresses cannot run setup against the previous host');
-  await evaluate(`document.getElementById('vps-ssh-host').value = 'tester@vm.invalid'; ${setupButton}.click()`);
+  await evaluate(`document.getElementById('vps-ssh-host').value = 'tester@${fixtureTailnet}'; ${setupButton}.click()`);
   await waitFor(() => setupCalls.length, n => n === 1, 5000, 'the SSH setup handoff');
-  assert.deepEqual(setupCalls[0], { host: 'tester@vm.invalid', plan: setupPlan });
+  assert.deepEqual(setupCalls[0], { host: `tester@${fixtureTailnet}`, plan: setupPlan });
   assert.equal(await evaluate(`${setupButton}.disabled`), true);
   assert.equal((await invoke('server-setup', { plan: setupPlan })).ok, false, 'setup cannot overlap itself');
   assert.equal(setupCalls.length, 1);

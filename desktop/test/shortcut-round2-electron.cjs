@@ -1,3 +1,4 @@
+const { ip: fixtureTailnet } = require('./tailnet-fixture.cjs');
 const { resizeWindow } = require('./window-fixture.cjs');
 // Focused UI regressions. Runs the actual source app with disposable storage.
 // No native focus, OS permission, accelerator, or editing acceptance is implied.
@@ -12,7 +13,7 @@ assert.ok(profile, 'Run through test/run-electron.cjs for disposable storage.');
 prepareFixture(profile);
 process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false,
-  macSshHost: 'fixture@local.invalid', bots: [{ id: '401', name: 'Research', isBot: true }], selectedBotId: '401' }));
+  macSshHost: `fixture@${fixtureTailnet}`, bots: [{ id: '401', name: 'Research', isBot: true }], selectedBotId: '401' }));
 require('../src/main.cjs');
 const out = process.env.SHORTCUT_EVIDENCE_DIR ? path.resolve(process.env.SHORTCUT_EVIDENCE_DIR) : fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'shortcut-round2-'));
 fs.mkdirSync(out, { recursive: true });

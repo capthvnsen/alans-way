@@ -399,7 +399,7 @@ app.whenReady().then(async () => {
   // The Move button appears only for agent-owned tabs while the VM browser is
   // connected, and on the retired local copy it offers the way back. Both
   // clicks drive the real handoff IPC and SSH transport to a controlled failure.
-  const fixtureHost = [100, 64, 0, 1].join('.');
+  const fixtureHost = require('./tailnet-fixture.cjs').ip;
   const sshBin = path.join(profile, 'handoff-bin');
   fs.mkdirSync(sshBin);
   fs.writeFileSync(path.join(sshBin, 'ssh'), `#!/usr/bin/env node

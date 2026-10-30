@@ -1,3 +1,4 @@
+const { ip: fixtureTailnet } = require('./tailnet-fixture.cjs');
 const { resizeWindow } = require('./window-fixture.cjs');
 // Actual renderer + main, disposable data, trusted Chromium keys. No OS focus lease.
 const assert = require('node:assert/strict');
@@ -11,7 +12,7 @@ assert.ok(profile, 'Use test/run-electron.cjs for disposable storage.');
 const boundaries = require('./settings-fixture-boundaries.cjs')();
 prepareFixture(profile);
 const bots = Array.from({ length: 24 }, (_, i) => ({ id: String(9000 + i), name: i % 5 === 0 ? `Research ${i + 1} — a long bot name across multiple workspaces` : `Research ${i + 1}`, username: `settings_fixture_${i + 1}_bot`, isBot: true }));
-fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, bots, selectedBotId: bots[0].id, hidden: [bots[23].id], remoteUrl: '', macSshHost: 'fixture@local.invalid', vpsBrowser: { enabled: false, sshHost: 'agent@fixture.invalid' } }));
+fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, bots, selectedBotId: bots[0].id, hidden: [bots[23].id], remoteUrl: '', macSshHost: `fixture@${fixtureTailnet}`, vpsBrowser: { enabled: false, sshHost: `agent@${fixtureTailnet}` } }));
 const responses = new Map(), calls = [];
 const realHandle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, handler) => realHandle(channel, channel === 'workspace:command' ? async (event, name, value) => {
@@ -103,7 +104,7 @@ app.whenReady().then(async () => {
     await wait(() => js('document.querySelector("[data-settings-section=remote-desktop] .settings-action-status").textContent'), s => /http\(s\)/.test(s));
     assert.equal(await js('document.getElementById("remote-url").value'), 'file:///invalid-remote');
     assert.equal((await js('workspace.getState()')).remoteUrl, '');
-    const url = 'http://127.0.0.1:9/vnc.html?token=SettingsSecretMarker';
+    const url = `http://${fixtureTailnet}:9/vnc.html?token=SettingsSecretMarker`;
     await replace('#remote-url', url); await press('[data-settings-section=remote-desktop] .primary-button');
     await wait(() => js('workspace.getState()'), s => s.remoteUrl === url);
     await search('SettingsSecretMarker'); assert.equal(await js('document.getElementById("settings-empty").hidden'), false, 'Secret field values are not searchable');
