@@ -199,6 +199,7 @@ const tools = [
 ];
 // Keep the two request strings separate even when either contains a delimiter.
 const connectionKey = connection => JSON.stringify([String(connection.url), String(connection.token)]);
+const desktopBusyText = (data, machine = 'Mac') => `desktop_busy: The ${machine} is being used by ${data.holder}; try again in ${data.retryAfter} s. Reads still work. A lease ends after 20 idle seconds, so another agent can take the ${machine} between your calls: once it is free, take a fresh workspace_computer_snapshot before acting. Nothing was sent.`;
 async function requestOnce(endpoint, method = 'GET', body, epoch, approvedConnection) {
   checkCall();
   let connection;
@@ -248,7 +249,7 @@ async function requestOnce(endpoint, method = 'GET', body, epoch, approvedConnec
   }
   if (!response.ok) {
     if (response.status === 409 && data?.error === 'desktop_busy')
-      throw failure(`desktop_busy: The Mac is being used by ${data.holder}; try again in ${data.retryAfter} s. Reads still work. A lease ends after 20 idle seconds, so another agent can take the Mac between your calls: once it is free, take a fresh workspace_computer_snapshot before acting. Nothing was sent.`, 'http-json', response.status, { code: data.error });
+      throw failure(desktopBusyText(data), 'http-json', response.status, { code: data.error });
     if (response.status === 403 && data?.error === 'desktop_approval_required')
       throw failure(`desktop_approval_required: ${data.name} needs the user's OK to use apps on their computer, and the prompt from Alan's Workspace there was not answered in time. Ask the user to click Allow (or Always allow) in that prompt on their computer, then retry this call. Nothing was sent.`, 'http-json', response.status, { code: data.error });
     if (response.status === 403 && data?.error === 'desktop_approval_denied')
@@ -333,6 +334,16 @@ async function computerService() {
     hostChoice = { key, windowBinding: capabilities.includes('computer-window-v1'), launch: capabilities.includes('computer-launch-v1'), app: capabilities.includes('computer') || capabilities.includes('computer-v2'), host: typeof status.host === 'string' ? status.host : '' };
   }
   return hostChoice.app || !localDriver ? null : require(localDriver).service;
+}
+// The app leases its desktop per bot; an in-process driver's desktop is shared
+// by every agent's connector on this machine, so they lease it through a file.
+let desktopLease;
+async function leased(run) {
+  desktopLease ||= require('../src/computer-helper.cjs').createFileDesktopLease(path.join(path.dirname(file), 'desktop-lease.json'));
+  const busy = desktopLease.take(botId, decodeURIComponent(botName) || botId);
+  if (busy) throw Object.assign(new Error(desktopBusyText(busy, process.platform === 'darwin' ? 'Mac' : 'VM desktop')), { code: 'desktop_busy' });
+  try { return await run(); }
+  finally { desktopLease.release(botId); }
 }
 async function request(endpoint, method = 'GET', body, epoch, approvedConnection) {
   try {
@@ -462,13 +473,13 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => cal
       }
       case 'workspace_computer_menu':
         result = computer
-          ? await computer.menu(args.pid, args.path)
+          ? await leased(() => computer.menu(args.pid, args.path))
           : await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/menu?${new URLSearchParams({ path: JSON.stringify(args.path || []) })}`);
         break;
       case 'workspace_computer_action': {
         const { pid, ...body } = args;
         result = computer
-          ? await computer.action(botId, pid, body)
+          ? await leased(() => computer.action(botId, pid, body))
           : await request(`/v1/computer/${encodeURIComponent(String(pid))}/action`, 'POST', body);
         break;
       }

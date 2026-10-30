@@ -939,8 +939,7 @@ test('a named action on a host without name-targets is refused before it is sent
   assert.equal(seen.filter((entry) => entry.line === 'GET /v1/status').length, 1, 'the capability answer is cached');
 });
 
-async function computerHost(t, capabilities, hostLabel) {
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
+async function computerHost(t, capabilities, hostLabel, { botId = 'mcp-test', botName, profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-')) } = {}) {
   const seen = [];
   const host = http.createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk;
@@ -955,7 +954,7 @@ async function computerHost(t, capabilities, hostLabel) {
   fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: ['-r', path.join(__dirname, 'fake-computer-service.cjs'), path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')],
+    args: ['-r', path.join(__dirname, 'fake-computer-service.cjs'), path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', botId, ...(botName ? ['--bot-name', botName] : []), '--connection', path.join(profile, 'connection.json')],
     env: { ...process.env },
   });
   const client = new Client({ name: 'browser-mcp-test', version: '1' });
@@ -1060,6 +1059,19 @@ test('computer tools use the in-process driver when the connected host has no co
   assert.match(text, /"agentDesktop":""/);
   assert.match((await client.callTool({ name: 'workspace_computer_action', arguments: { pid: 1, action: 'press', ref: 'a', generation: 1 } })).content[0].text, /in-process-marker/);
   assert.ok(seen.every((entry) => !entry.line.startsWith('GET /v1/computer') && !entry.line.startsWith('POST /v1/computer')));
+});
+
+test('two agents on one in-process desktop share its lease, and reads stay open', { timeout: 8000 }, async (t) => {
+  const hermes = await computerHost(t, ['tabs', 'agent-desktop'], undefined, { botName: 'Hermes' });
+  const grok = await computerHost(t, ['tabs', 'agent-desktop'], undefined, { botId: 'grok', botName: 'Grok Bot', profile: hermes.profile });
+  const act = (client) => client.callTool({ name: 'workspace_computer_action', arguments: { pid: 1, action: 'key', key: 'Enter' } });
+  assert.equal((await act(hermes.client)).isError, undefined);
+  const busy = await act(grok.client);
+  assert.equal(busy.isError, true);
+  assert.match(busy.content[0].text, /^desktop_busy: The (VM desktop|Mac) is being used by Hermes; try again in (19|20) s\. Reads still work\..*Nothing was sent\.$/);
+  assert.match((await grok.client.callTool({ name: 'workspace_computer_menu', arguments: { pid: 1, path: ['File'] } })).content[0].text, /^desktop_busy:/);
+  assert.match((await grok.client.callTool({ name: 'workspace_computer_snapshot', arguments: { pid: 1 } })).content[0].text, /in-process-marker/);
+  assert.equal((await act(hermes.client)).isError, undefined, 'the holder keeps acting');
 });
 
 test('the in-process driver is told it owns the desktop when the host says agent-desktop', { timeout: 8000 }, async (t) => {

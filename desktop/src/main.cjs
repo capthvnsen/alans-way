@@ -3157,6 +3157,7 @@ function startApi() {
       // Session 0 and see no windows. Same verbs the MCP connector wraps.
       const computerMatch = /^\/v1\/computer\/(apps|launch|\d{1,10})(?:\/(snapshot|screenshot|action|menu))?$/.exec(url.pathname);
       if (computerMatch) {
+        if (!botId || botId.length > 100) return send(400, { error: 'X-Hermes-Bot is required and must be at most 100 characters.' });
         let agentName = nameForBot(botId);
         if (!agentName) try { agentName = decodeURIComponent(String(req.headers['x-hermes-bot-name'] || '')).replace(/\p{C}/gu, '').slice(0, 80); } catch { /* the bot ID names it instead */ }
         const controller = new AbortController();
