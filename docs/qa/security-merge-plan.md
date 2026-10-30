@@ -50,14 +50,14 @@ it is not permission to bypass its pending CI or live rollout gates.
 | PR | Verdict | Existing install / rollout behavior |
 | --- | --- | --- |
 | [#243](https://github.com/capthvnsen/alans-way/pull/243) | Ready, unchanged | Missing/oversized identity is refused before computer approval, leases or driver access. Normal named Hermes/Grok requests remain compatible. A header under a shared credential is still legacy identity; #268 supplies authenticated principals. Branch history was not rewritten because force-push permission covers `security-*` only. |
-| [#266](https://github.com/capthvnsen/alans-way/pull/266) | Blocked: macOS CI queued; source ready after rebase | Failed/unreadable/truncated env inputs no longer replace installed settings. A remote Python transaction preserves unrelated values, validates identity/content, serializes writes, and atomically replaces or exclusively creates. Missing profile directories on bare installs remain supported; inventory errors stop credential changes. No automatic state migration. |
+| [#266](https://github.com/capthvnsen/alans-way/pull/266) | Blocked: coordinator canceled CI; source ready after rebase | Failed/unreadable/truncated env inputs no longer replace installed settings. A remote Python transaction preserves unrelated values, validates identity/content, serializes writes, and atomically replaces or exclusively creates. Missing profile directories on bare installs remain supported; inventory errors stop credential changes. No automatic state migration. |
 | [#267](https://github.com/capthvnsen/alans-way/pull/267) | Needs change made | Existing SSH aliases, config-selected keys, Hermes URLs and viewers retain a logged legacy transport. `HERMES_WORKSPACE_REQUIRE_TAILNET=1` explicitly selects literal tailnet destinations and proxy/config suppression after provisioning. Strict errors never fall back. Denied viewers remain saved and visible for repair, but are not dialed. Cookie transfer retains its independent tailnet/consent restrictions. |
 | [#268](https://github.com/capthvnsen/alans-way/pull/268) | Needs change made | Existing broker connection files keep working with a `Legacy broker credential` warning. Strict connectors opt in with an isolated export and `HERMES_WORKSPACE_REQUIRE_BOT_CREDENTIALS=1`. A mismatched bound identity always refuses; strict clients reject unbound files. New credential-bound desktop consent never inherits a legacy trust-list grant and requires reapproval after rotation. Existing legacy sudo transport remains until a separate broker is selected. |
 | [#271](https://github.com/capthvnsen/alans-way/pull/271) | Needs change made | No launch-time cleanup, scheduler, credential rotation or deletion. Default is a plan only; apply requires root, trusted paths and a stopped broker. Rotated credentials invalidate desktop Allow, including Always allow. Apply requires installed log redaction (#246, now on main) first and reviewed restart/re-export instructions. Backups and provider/SSH credentials are outside this tool. |
 | [#272](https://github.com/capthvnsen/alans-way/pull/272) | Needs change made | Broker receives computer routes and the shared lease. Identity-bound/strict clients never invoke an in-process helper if the endpoint is missing. An older VM host remains usable only through the labeled, unbound legacy connector until its broker is upgraded. The route extraction preserves credential-generation validation and pending-prompt revocation. Update broker before strict client cutover. |
 | [#273](https://github.com/capthvnsen/alans-way/pull/273) | Needs change made | An empty new broker field preserves the existing shared login, with a log/UI explanation. Agent settings and environment writes remain on the agent account. After provisioning, save the separate broker login and set `HERMES_WORKSPACE_REQUIRE_BROKER_SSH=1`; that opt-in also prevents clearing the field from restoring legacy transport. An invalid/unreachable selected broker never falls back. |
 | [#275](https://github.com/capthvnsen/alans-way/pull/275) | Needs change made | Installed connections and authorized keys are not automatically removed. New setup requires an explicit separately provisioned broker account; the unsafe combined wizard refuses before network/file mutations. Platform scripts name broad maintenance keys as administration keys, not runtime credentials. Review old keys manually and provision a separate restricted runtime key. Main's current four-product README/licensing is preserved. |
-| [#270](https://github.com/capthvnsen/alans-way/pull/270) | Blocked: current-head CI queued; historical timing failure is under retry | Installer is inert unless explicitly run with `--apply`. It creates no user, service or firewall during app upgrade. Requires distinct browser/broker UIDs, correct CDP ports, public DNS and browser service ordering; failed rules/service setup must prevent browser startup. Do not apply the UID rule to integrated Electron's shared browser/broker identity. |
+| [#270](https://github.com/capthvnsen/alans-way/pull/270) | Blocked: coordinator canceled CI; historical timing retry is unverified | Installer is inert unless explicitly run with `--apply`. It creates no user, service or firewall during app upgrade. Requires distinct browser/broker UIDs, correct CDP ports, public DNS and browser service ordering; failed rules/service setup must prevent browser startup. Do not apply the UID rule to integrated Electron's shared browser/broker identity. |
 | [#274](https://github.com/capthvnsen/alans-way/pull/274) | Needs change made | Copied MCP settings are never rewritten. Default print/verify commands preserve legacy SSH aliases/configuration and print an upgrade warning. `HERMES_WORKSPACE_REQUIRE_TAILNET=1` opts into literal tailnet destinations and SSH config/proxy suppression after key migration. A strict rejection never retries legacy. Read-only workspace scoping and conservative tool trust remain. |
 
 ## Exact target merge order
@@ -176,7 +176,7 @@ require Linux CI; local skips are not evidence those boundaries passed here.
 | #272 | `node --test desktop/test/browser-mcp.test.cjs desktop/test/desktop-approval.test.cjs desktop/test/desktop-lease.test.cjs desktop/test/vps-host.test.cjs` | 233 pass, 0 fail. |
 | #273 | `node --test desktop/test/vps-browser.test.cjs desktop/test/cloud-connect-flow.test.cjs desktop/test/vm-update.test.cjs desktop/test/ssh-user-tools.test.cjs desktop/test/vps-host.test.cjs` | 182 pass, 0 fail. |
 | #275 | `node --test desktop/test/ssh-trust.test.cjs desktop/test/cloud-connect-flow.test.cjs desktop/test/vps-browser.test.cjs` and `PYTHONPATH=src python3 -m unittest tests.test_connect_scripts -q` | 46 JS and 25 Python pass, 0 fail. |
-| #270 | `PYTHONPATH=src python3 -m unittest tests.test_browser_egress -q` | 2 pass, 0 fail. Historical Linux `kernel-filter` CI passed on the previous `f70f382` head; the current-head job is pending. |
+| #270 | `PYTHONPATH=src python3 -m unittest tests.test_browser_egress -q` | 2 pass, 0 fail. Historical Linux `kernel-filter` CI passed on the previous `f70f382` head; the current-head job is unverified after coordinator cancellation. |
 | #274 | `HERMES_WORKSPACE_REQUIRE_TAILNET=1 PYTHONPATH=src python3 -m unittest discover -s tests -q` | 156 pass, 0 fail, 23 skip. |
 | Combined Python | `HERMES_WORKSPACE_REQUIRE_TAILNET=1 PYTHONPATH=src python3 -m unittest discover -s tests -q` | 155 pass, 0 fail, 23 skip. |
 | Combined full desktop | `cd desktop && HERMES_WORKSPACE_REQUIRE_TAILNET=1 npm run check` | 1,680 pass, 0 fail, 39 skip. |
@@ -197,39 +197,48 @@ set; no dependency version was changed. Local GUI fixtures were not launched
 against installed app state; the new paused-viewer Electron assertion awaits CI.
 
 
-CI snapshot: **2026-10-30 17:36 UTC; not all green**. Current-head checks were inspected
-with `gh pr view <n> --json headRefOid,statusCheckRollup` and watched with
-`gh pr checks <n> --watch --interval 30` for every target. Pending jobs are
-not counted as passed.
+Final CI handoff: **2026-10-30 17:44 UTC; canceled by the coordinator and unverified**.
+The coordinator canceled queued security-stack and merge-plan workflows to
+reserve runners for an urgent production hotfix, instructed this worker to
+stop, and owns reruns. No workflow was rerun after that instruction. The
+report-only final commit uses `[skip ci]` to avoid re-queuing work.
 
-| PR | Current head | Checks at snapshot |
+Before handoff, current-head checks were read with
+`gh pr view <n> --json headRefOid,statusCheckRollup` and watched with
+`gh pr checks <n> --watch --interval 30` for every target. The last API snapshot
+below still showed queued/in-progress states as cancellation was propagating;
+these are not passing suites.
+
+| PR | Current head | Final disposition and last observed API state |
 | --- | --- | --- |
-| [#243 checks](https://github.com/capthvnsen/alans-way/pull/243/checks) | `470be5d` | 8 pass |
-| [#266 checks](https://github.com/capthvnsen/alans-way/pull/266/checks) | `620fd9d` | 8 pending |
-| [#267 checks](https://github.com/capthvnsen/alans-way/pull/267/checks) | `9d8d28d` | 8 pending |
-| [#268 checks](https://github.com/capthvnsen/alans-way/pull/268/checks) | `347e375` | 8 pending |
-| [#270 checks](https://github.com/capthvnsen/alans-way/pull/270/checks) | `67b3717` | 9 pending |
-| [#271 checks](https://github.com/capthvnsen/alans-way/pull/271/checks) | `86cd4d6` | 8 pending |
-| [#272 checks](https://github.com/capthvnsen/alans-way/pull/272/checks) | `cd2f601` | 8 pending |
-| [#273 checks](https://github.com/capthvnsen/alans-way/pull/273/checks) | `daa9178` | 8 pending |
-| [#274 checks](https://github.com/capthvnsen/alans-way/pull/274/checks) | `1a88fc4` | 8 pending |
-| [#275 checks](https://github.com/capthvnsen/alans-way/pull/275/checks) | `7528457` | 8 pending |
-
+| [#243 checks](https://github.com/capthvnsen/alans-way/pull/243/checks) | `470be5d` | Unchanged; 8 checks passed |
+| [#266 checks](https://github.com/capthvnsen/alans-way/pull/266/checks) | `620fd9d` | Coordinator canceled; unverified (8 queued) |
+| [#267 checks](https://github.com/capthvnsen/alans-way/pull/267/checks) | `9d8d28d` | Coordinator canceled; unverified (1 success, 7 queued) |
+| [#268 checks](https://github.com/capthvnsen/alans-way/pull/268/checks) | `347e375` | Coordinator canceled; unverified (2 in_progress, 4 queued, 2 success) |
+| [#270 checks](https://github.com/capthvnsen/alans-way/pull/270/checks) | `67b3717` | Coordinator canceled; unverified (9 queued) |
+| [#271 checks](https://github.com/capthvnsen/alans-way/pull/271/checks) | `86cd4d6` | Coordinator canceled; unverified (8 queued) |
+| [#272 checks](https://github.com/capthvnsen/alans-way/pull/272/checks) | `cd2f601` | Coordinator canceled; unverified (8 queued) |
+| [#273 checks](https://github.com/capthvnsen/alans-way/pull/273/checks) | `daa9178` | Coordinator canceled; unverified (8 queued) |
+| [#274 checks](https://github.com/capthvnsen/alans-way/pull/274/checks) | `1a88fc4` | Coordinator canceled; unverified (8 queued) |
+| [#275 checks](https://github.com/capthvnsen/alans-way/pull/275/checks) | `7528457` | Coordinator canceled; unverified (8 queued) |
 On the previous #270 head `f70f382`, macOS desktop failed an unchanged
 [parallel-restore wall-clock assertion](https://github.com/capthvnsen/alans-way/actions/runs/41097213978/job/124205893772):
 four nominal five-second waits took 19.365 seconds under CI load. The same
 local focused/full runs passed. The initial targeted rerun was refused while
 that workflow still had queued jobs. After it settled,
 `gh run rerun 41097213978 --job 124205893772` succeeded in requesting attempt 2,
-which is queued. That historical retry is not counted as current-head CI;
+which was still queued at handoff and is unverified. That historical retry
+is not counted as current-head CI;
 rebasing #270 onto current main also triggered a fresh full workflow.
 
-Only superseded-head queued workflows were canceled to reduce backlog; the
-requested historical #270 retry and all current-head checks are retained.
-The coordinator explicitly owns CI follow-through after the agreed monitoring
-window. **Merge remains blocked until all current-head jobs pass, the new
+The worker first canceled only superseded-head workflows to reduce backlog.
+The coordinator later canceled current-head CI for the urgent hotfix and ended
+the monitoring window. Local watchers were stopped. **Merge remains blocked
+until the coordinator reruns all current-head jobs successfully, the new
 paused-viewer Electron assertion passes, and the integration resolutions are
-verified.**
+verified.** Reconciliation and the report are delivered; the original all-green
+CI acceptance condition is explicitly not satisfied at handoff.
+
 The verification boundary excludes live provisioning, installed Hermes/Grok
 smoke tests, SSH forced-command qualification, Tailscale ACL verification,
 physical sleep/wake, network namespace execution on this macOS host and a
