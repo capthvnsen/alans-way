@@ -105,6 +105,25 @@ test('the first successful connect clears every known bot that has no agent tabs
   assert.equal(pushed.length, 3, 'and each bot is cleared only once');
 });
 
+test('unchanged mirrors refresh before expiry and retry after sleep or a network drop', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
+  let online = true, failNext = false;
+  const pushed = [];
+  const run = createMirrorPusher({
+    collect: async () => online ? new Map([['a', [{ id: 'task', url: 'https://task.example/' }]]]) : null,
+    push: async () => { if (failNext) { failNext = false; throw new Error('network down'); } pushed.push(Date.now()); },
+  });
+  await run();
+  t.mock.timers.tick(3600000 - 1); await run();
+  assert.equal(pushed.length, 1);
+  t.mock.timers.tick(1); failNext = true; await run(); await run();
+  assert.equal(pushed.length, 2, 'an unchanged mirror is refreshed hourly and failed refreshes retry');
+  online = false; t.mock.timers.tick(25 * 3600000); await run();
+  assert.equal(pushed.length, 2);
+  online = true; await run();
+  assert.equal(pushed.length, 3, 'Tailscale reconnect refreshes an expired unchanged mirror');
+});
+
 test('mirror payloads share cookies across tabs and drop the oldest tabs past the cap', () => {
   const cookie = (name, domain = '.a.example') => ({ name, value: 'x'.repeat(100), domain, path: '/' });
   const tab = (id, cookies) => ({ id, url: 'https://a.example/' + id, cookies });

@@ -93,8 +93,9 @@ function resolveSshHostname(sshHost, run = (args) => new Promise((resolve) => {
 }
 // collect() resolves to Map<bot, tabs[]> for the agent-controlled tabs now,
 // or null while there is nothing to mirror to (VM not configured or offline).
-// Only a bot whose tabs changed is pushed, and a bot that lost all its agent
-// tabs is cleared once so a stale mirror cannot resurrect them. On the first
+// Changed tabs are pushed at once; unchanged tabs refresh hourly before the
+// host's 24h expiry. A bot that lost all its agent tabs is cleared once so a
+// stale mirror cannot resurrect them. On the first
 // successful connect every bot in bots() is cleared the same way, which also
 // wipes mirrors left on the VM by an earlier app session.
 // An unchanged mirror is still resent every refreshMs so the VM's 24 hour

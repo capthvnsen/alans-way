@@ -937,6 +937,24 @@ test('stale mirror entries are pruned at startup and never restored', async () =
   assert.deepEqual(Object.keys((await host.api('/v1/restore', 'POST', { bot: 'bot-new' }, { bot: 'bot-new' })).data.map), ['m1']);
 });
 
+test('an unchanged mirror refresh keeps it live without replaying the checkpoint over VM work', async () => {
+  const host = await startHost({ now: 1000 });
+  const body = { bot: 'bot-refresh', tabs: [{ id: 'mac-refresh', url: 'https://task.example/', scroll: { x: 0, y: 0 }, drafts: [], cookies: [] }] };
+  const push = () => host.api('/v1/mirror', 'POST', body, { human: true });
+  const restore = () => host.api('/v1/restore', 'POST', { bot: body.bot }, { bot: body.bot });
+  await push();
+  const first = await restore();
+  const navigations = () => host.stub.calls.filter(c => c.method === 'Page.navigate').length;
+  const before = navigations();
+  host.setNow(1000 + 25 * 3600000);
+  await push();
+  assert.deepEqual((await restore()).data.map, first.data.map);
+  assert.equal(navigations(), before, 'refreshing an unchanged checkpoint must not navigate or replay drafts');
+  const stored = JSON.parse(fs.readFileSync(path.join(host.dir, 'mirror.json'))).bots[body.bot];
+  assert.equal(stored.updatedAt, 1000, 'checkpoint revision stays unchanged');
+  assert.equal(stored.refreshedAt, 1000 + 25 * 3600000, 'liveness is tracked independently');
+});
+
 test('a newer mirror is re-applied to the tab a previous restore opened', async () => {
   const host = await startHost();
   const tab = (url, y) => ({ id: 'mac-n', url, title: '', scroll: { x: 0, y }, drafts: [], cookies: [] });
