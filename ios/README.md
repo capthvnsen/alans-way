@@ -1,5 +1,9 @@
 # Alan's Workspace for iOS
 
+The iOS app is part of **Alan's Workspace**, one of [Alan's Way's four products](../README.md#what-to-install). Its source stays in `ios/`; voice support stays in [`mobile/`](../mobile/README.md). Alan's CU MCP is the separate Node server in `desktop/`; the Hermes and Grok Bot plugin products and their shared persona/voice/proactivity/identity spec belong in [alans-way-agents](https://github.com/capthvnsen/alans-way-agents). See [boundaries and publication TODOs](../docs/products.md) and [license coverage](../docs/licensing.md).
+
+**Install:** use an existing [beta invitation](../docs/ios-beta-testers.md) or build with Xcode below. This repo does not provide a public App Store install link. Community: [Discord](https://discord.gg/jBQCPUsVE) · [openalan.com](https://openalan.com).
+
 A native SwiftUI companion for existing Hermes bots. Telegram carries the normal chat across devices. The conversation header opens an authenticated Telegram voice Mini App inside the app, with the selected agent's avatar and the same gateway session. The computer button opens the agent's configured HTTPS desktop viewer.
 
 ## Build and run
@@ -69,7 +73,7 @@ A new install walks beta testers through three steps:
 
 The completion flag is the `workspace.onboardingComplete` preference. A tester who signs out later sees the sign-in screens without the welcome. UI tests override the flag with the launch arguments `-workspace.onboardingComplete YES` or `NO`.
 
-TODO (Alex): set the Apple Team ID and create the App Store Connect record before the first TestFlight upload. See [TestFlight internal testing](#testflight-internal-testing).
+TODO (Alex): set the Apple Team ID and create the App Store Connect record before the first TestFlight upload. See [TestFlight testing](#testflight-testing).
 
 ## Telegram account setup
 

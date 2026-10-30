@@ -1,5 +1,7 @@
 # Mobile distribution notices
 
-The voice Mini App, Hermes gateway plugin, and reused desktop avatar artwork in this directory are distributed under GPL-3.0-or-later; see [LICENSE](LICENSE). Retain the matching source and notices when distributing them.
+Copyright (c) 2026 Alex Hansen.
 
-The Python broker depends on aiohttp under Apache-2.0 and its separately distributed dependencies. Preserve installed dependency notices in deployed environments.
+The voice Mini App, Hermes gateway voice plugin, and reused Alan's Workspace avatar artwork in this directory are licensed under the MIT License; see [LICENSE](LICENSE). Retain the copyright and license notice when distributing them.
+
+The Python broker depends on aiohttp under Apache-2.0 and its separately distributed dependencies. Preserve installed dependency notices in deployed environments; third-party copyrights and terms are unchanged.

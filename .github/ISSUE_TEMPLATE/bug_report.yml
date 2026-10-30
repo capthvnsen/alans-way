@@ -2,6 +2,21 @@ name: Bug report
 description: Something doesn't work the way the docs say it should.
 labels: [bug]
 body:
+  - type: dropdown
+    id: products
+    attributes:
+      label: Affected products
+      description: Select all that apply. Maintainers apply the matching product labels; plugin implementation belongs in capthvnsen/alans-way-agents.
+      multiple: true
+      options:
+        - Alan's Workspace (Mac / iOS / VM handoff)
+        - Alan's CU MCP (workspace-mcp / Node server)
+        - Alan's Plugin for Hermes (agents repo)
+        - Alan's Plugin for Grok Bot (agents repo)
+        - Shared config / multiple products
+        - Unsure / supporting tools
+    validations:
+      required: true
   - type: markdown
     attributes:
       value: |
@@ -27,6 +42,6 @@ body:
     id: env
     attributes:
       label: Environment
-      description: App version, macOS version, Hermes version (`hermes --version`), VPS OS, and the output of `./setup.sh --verify` if the VPS side is involved (redact hosts).
+      description: Relevant app/package revision, OS, MCP client and Node version for CU MCP, Hermes version for its plugin, or Grok Bot version for its package. Name local vs VM execution. Redact private details; do not paste raw verification output.
     validations:
       required: true

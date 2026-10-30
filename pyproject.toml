@@ -9,7 +9,7 @@ description = "Hermes- Alan's way: private Mac tools and a desktop for stock Her
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-authors = [{name = "hermes-companion contributors"}]
+authors = [{name = "Alex Hansen"}]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3",

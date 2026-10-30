@@ -1,6 +1,8 @@
 {
   "name": "hermes-telegram-voice-miniapp",
   "private": true,
+  "license": "MIT",
+  "author": "Alex Hansen",
   "type": "module",
   "scripts": { "test": "node --test" }
 }

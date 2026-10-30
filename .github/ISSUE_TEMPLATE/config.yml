@@ -5,4 +5,13 @@ contact_links:
     about: Report privately. Please do not open a public issue.
   - name: Setup guide
     url: https://openalan.com
-    about: Start here if you are installing Alan's Way for the first time.
+    about: Alan's Way website and downloads.
+  - name: What to install
+    url: https://github.com/capthvnsen/alans-way#what-to-install
+    about: Choose Workspace, CU MCP, the Hermes plugin, or the Grok Bot package.
+  - name: Discord community
+    url: https://discord.gg/jBQCPUsVE
+    about: Setup help, questions, and community discussion.
+  - name: Agent plugin issues
+    url: https://github.com/capthvnsen/alans-way-agents/issues
+    about: Hermes plugin, Grok Bot skill/settings package, router adapters, and shared config.

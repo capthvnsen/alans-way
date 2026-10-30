@@ -149,6 +149,8 @@ On `human_has_control`, wait for an explicit release. On `stale_control_epoch`, 
 
 ## Browser task handoff
 
+For current lid-close continuation, **Move to VM / Move back**, and optional Tailscale-only sign-in transfer, use [the handoff guide](handoff.md). The manual checkpoint API below is a narrower mechanism; its limitations do not describe the newer UI/mirror handoff path.
+
 Control handoff keeps the same live tab on its execution host. For a Mac tab, the VPS agent drives the Mac through MCP, retaining that tab's cookies, uploads, JavaScript state, and open dialogs. It remains dependent on the Mac being awake.
 
 The backend cross-host handoff helper creates a checkpoint with source
@@ -162,18 +164,19 @@ identified as credentials, codes or payment details are excluded. Arbitrary
 field classification is imperfect, so transferring text drafts is opt-in.
 Cookies, files, JavaScript memory and open dialogs are not migrated.
 
-The Mac UI displays only local browser tabs and one VPS desktop viewer.
-Individual VPS tabs, VPS tab creation, and cross-host handoff controls are
-not exposed in the app. The checkpoint/restore plumbing is retained for
-the later Companion integration and its opt-in integration test.
+The Mac UI displays local browser tabs and one VPS desktop viewer. It offers
+Move to VM / Move back and retires source tabs resumed on the VM; see
+[the handoff guide](handoff.md) for current UI and mirror behavior.
 
 Live login changes are shared within each host's single browser profile.
-Mac/VPS authentication remains independent. The broker creates separate VPS
+The manual checkpoint path does not copy authentication; the mirror/UI path
+can carry page-scoped cookies with consent over Tailscale. Other storage remains
+host-specific. The broker creates separate VPS
 windows and agent-owned tab targets on one desktop. All desktop agents and the
 human still see that shared desktop stream. Broker restart reattaches live
 managed targets under human control with incremented epochs; browser exit
-loses those live targets. Automatic agent resumption after a cross-host
-handoff is not yet connected to the companion's task event system.
+loses those live targets. Automatic lid-close restore can resume mirrored
+agent-controlled tabs; it does not replay an uncertain action or migrate page memory.
 
 ## Shared repository
 
@@ -243,7 +246,7 @@ and [1Password browser requirements](https://support.1password.com/additional-br
 Run `npm run test:extensions` for the generated MV3 fixture and
 `npm run test:web-store` for the real public 1Password package. Each uses an
 isolated profile; the latter requires network access and uses no account.
-The desktop distribution is GPL-3.0-or-later; the Python addon stays MIT.
+Alan's Way source is MIT, Copyright (c) 2026 Alex Hansen. The current extension dependency still selects its own GPL license; preserve its notices and distribution obligations. See [licensing](../../docs/licensing.md).
 
 ## Mac desktop input lease
 

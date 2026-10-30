@@ -4,7 +4,8 @@
   "version": "0.21.13",
   "description": "A Telegram, local Chromium and remote desktop workspace for Hermes agents.",
   "private": true,
-  "license": "GPL-3.0-or-later",
+  "license": "MIT",
+  "author": "Alex Hansen",
   "main": "src/main.cjs",
   "scripts": {
     "start": "electron .",

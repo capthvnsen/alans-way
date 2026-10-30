@@ -2,6 +2,24 @@ name: Feature request
 description: Suggest something your agents or you should be able to do.
 labels: [enhancement]
 body:
+  - type: dropdown
+    id: products
+    attributes:
+      label: Affected products
+      description: Select all that apply. Maintainers apply the matching product labels; plugin implementation belongs in capthvnsen/alans-way-agents.
+      multiple: true
+      options:
+        - Alan's Workspace (Mac / iOS / VM handoff)
+        - Alan's CU MCP (workspace-mcp / Node server)
+        - Alan's Plugin for Hermes (agents repo)
+        - Alan's Plugin for Grok Bot (agents repo)
+        - Shared config / multiple products
+        - Unsure / supporting tools
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: Please leave out credentials, connection files, private addresses, transcripts, and raw logs.
   - type: textarea
     id: problem
     attributes:
