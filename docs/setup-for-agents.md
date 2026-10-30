@@ -134,9 +134,12 @@ Provision their identity-bound MCP exports as described in
 SSH login and provision its access manually. **Check saved path** now tests
 broker-to-computer SSH; it does not grant or prove bot access.
 
-The platform connect scripts accept `--broker-key` (`-BrokerKey` on Windows)
+The platform connect scripts accept `--broker-admin-key` (`-BrokerAdminKey` on Windows)
 only for a public key controlled by that trusted broker account. They still
-grant shell access to the target human account, so never supply an agent key.
+grant a broad administration shell to the target human account. This is a
+maintenance credential, never the restricted runtime Mac key required by
+architecture PR #241; provision that separate forced-command adapter before
+runtime cutover. Never supply an agent key.
 The old `--vps-key`/`-VpsKey` arguments are refused. Review existing authorized
 keys and revoke old agent/shared keys separately; the app does not remove keys
 without provenance. No key should be copied from a bot account.

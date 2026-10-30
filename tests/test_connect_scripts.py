@@ -134,7 +134,7 @@ class ScriptShapeTests(unittest.TestCase):
         header = text.split("[CmdletBinding()]")[0]
         for old in ("--vps", "--vps-host-key", "--vps-key"):
             self.assertNotIn(old, header + text.split("param(")[1].split(")")[0])
-        for flag in ("-Vps ", "-VpsHostKey ", "-BrokerKey "):
+        for flag in ("-Vps ", "-VpsHostKey ", "-BrokerAdminKey "):
             self.assertIn(flag, header)
         self.assertIn('from="100.64.0.0/10,fd7a:115c:a1e0::/48"', text)
 
@@ -210,10 +210,10 @@ class ConnectServerTests(unittest.TestCase):
     def test_installers_require_an_explicit_broker_key_not_the_legacy_agent_key(self):
         for name in ('connect-mac.sh','connect-linux.sh'):
             text=(SCRIPTS/name).read_text()
-            self.assertIn('--broker-key)',text)
+            self.assertIn('--broker-admin-key)',text)
             self.assertNotIn('--vps-key)',text)
         text=(SCRIPTS/'connect-windows.ps1').read_text()
-        self.assertIn('[string]$BrokerKey',text)
+        self.assertIn('[string]$BrokerAdminKey',text)
         self.assertNotIn('[string]$VpsKey',text)
 
 if __name__ == '__main__':

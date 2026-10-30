@@ -1576,6 +1576,7 @@ function sshWrite(host, remotePath, content, { timeoutMs = 15000 } = {}) {
 // SSH access is provisioned by an administrator; never install an agent key
 // into the human account, where it could read every broker credential.
 function checkBrokerSetup() {
+  if (!prefs.vpsBrowser?.brokerSshHost) return { ok: false, detail: 'Legacy browser transport is still enabled. Provision a separate broker OS account and save its login before setup can continue.' };
   if (/^root@/i.test(prefs.vpsBrowser?.sshHost || '')) return { ok: false, detail: 'Run Hermes bots under a separate non-root OS account, then save that agent SSH login in Settings.' };
   try { brokerTarget(prefs.vpsBrowser); }
   catch { return { ok: false, detail: 'Configure a separate broker SSH login in Settings and provision its access manually. Agent keys must never authorize the human account.' }; }
