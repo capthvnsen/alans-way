@@ -89,6 +89,95 @@ function finishFixture({ send = { ok: true }, failure, destroyed = false } = {})
   });
   return { prefs, saved, finish: () => finish('fixture-token', 'fresh_bot') };
 }
+
+function remoteFinishFixture({ profiles = 'personal\nwork\n', writeCode = 0, setupCode = 0 } = {}) {
+  const prefs = { onboarded: false, cloud: { step: 'telegram', tokenedProfiles: ['personal'] }, vpsBrowser: { sshHost: 'user@192.0.2.10' } };
+  const calls = [];
+  const context = vm.createContext({
+    prefs, cloudTelegram, cloudModel: require('../src/cloud-model.cjs'), cloudConnect: require('../src/cloud-connect.cjs'),
+    sshRun: async (host, command, options) => {
+      calls.push({ host, command, options });
+      if (command.startsWith('ls ')) return { code: 0, out: profiles };
+      if (command.startsWith('cat ')) return { code: 0, out: 'OTHER=value\n' };
+      if (command.startsWith('set -eu')) return { code: setupCode, out: '' };
+      return { code: 0, out: 'hermes-gateway RUNNING pid 123\n' };
+    },
+    sshWrite: async (host, file, value) => { calls.push({ host, file, value }); return { code: writeCode }; },
+    telegramView: { webContents: { isDestroyed: () => false, executeJavaScript: async () => { calls.push({ start: true }); return { ok: true }; } } },
+    savePreferences() {}, broadcast() {},
+  });
+  vm.runInContext(main.slice(main.indexOf('async function cloudWriteEnv('), main.indexOf('// Minted or pasted')), context);
+  vm.runInContext(finishSource, context);
+  return { prefs, calls, finish: () => context.cloudFinishTelegram(TOKEN, 'fresh_bot') };
+}
+
+for (const [profiles, profile] of [['personal\nwork\n', 'work'], ['', 'default']]) {
+  test(`a saved bot configures exactly its ${profile} profile before restarting and sending /start`, async () => {
+    const f = remoteFinishFixture({ profiles });
+    assert.equal((await f.finish()).done, true);
+    assert.equal(f.calls[2].file, profile === 'default' ? '~/.hermes/.env' : '~/.hermes/profiles/work/.env');
+    assert.match(f.calls[2].value, /^OTHER=value\nTELEGRAM_BOT_TOKEN=/);
+    const setup = f.calls.filter(call => call.command?.startsWith('set -eu'));
+    assert.equal(setup.length, 1);
+    assert.equal(setup[0].host, 'user@192.0.2.10');
+    assert.equal(setup[0].options.timeoutMs, 300000);
+    assert.equal(setup[0].command, `set -eu
+for dir in "$HOME/alans-way-agents" "$HOME/.local/share/alans-way-agents"; do
+  if [ -f "$dir/setup.sh" ]; then
+    exec sh "$dir/setup.sh" '--non-interactive' '--skip-browser' '--skip-plugin' '--skip-services' '--profile' '${profile}' </dev/null
+  fi
+done
+echo 'The installed setup.sh was not found.' >&2
+exit 1`);
+    assert.equal(f.calls[3], setup[0], 'setup follows the successful write');
+    assert.match(f.calls[5].command, /^supervisorctl signal USR1/);
+    assert.equal(f.calls[6].start, true);
+  });
+}
+
+for (const writeCode of [1, -1]) {
+  test(`a failed token write (${writeCode}) never runs setup or completes onboarding`, async () => {
+    const f = remoteFinishFixture({ writeCode });
+    const result = await f.finish();
+    assert.equal(result.done, false);
+    assert.match(result.detail, /env file write/);
+    assert.equal(f.calls.length, 3);
+    assert.equal(f.prefs.cloud.step, 'telegram');
+    assert.equal(f.prefs.onboarded, false);
+  });
+}
+
+for (const setupCode of [1, -1, null]) {
+  test(`a failed or timed-out setup (${setupCode}) reaches the existing onboarding error UI`, async () => {
+    const f = remoteFinishFixture({ setupCode });
+    const result = await f.finish();
+    assert.equal(result.done, false);
+    assert.match(result.detail, /token was saved.*workspace browser setup failed/);
+    assert.equal(f.calls.length, 4, 'no gateway restart or /start on setup failure');
+    assert.equal(f.prefs.cloud.step, 'telegram');
+    assert.equal(f.prefs.onboarded, false);
+  });
+}
+
+test('the installed setup receives the pinned argv literally, and a missing script fails', (t) => {
+  const os = require('node:os');
+  const { spawnSync } = require('node:child_process');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-telegram-setup-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const profile = "work' $(touch marker)";
+  const invoke = () => spawnSync('sh', ['-c', cloudTelegram.workspaceSetupCommand(profile)], { env: { ...process.env, HOME: home }, encoding: 'utf8', cwd: home });
+  assert.notEqual(invoke().status, 0);
+  for (const dir of ['alans-way-agents', '.local/share/alans-way-agents']) {
+    const script = path.join(home, dir, 'setup.sh');
+    fs.mkdirSync(path.dirname(script), { recursive: true });
+    fs.writeFileSync(script, 'printf "%s\\n" "$@" > "$HOME/argv"\n');
+    assert.equal(invoke().status, 0);
+    assert.deepEqual(fs.readFileSync(path.join(home, 'argv'), 'utf8').trim().split('\n'),
+      ['--non-interactive', '--skip-browser', '--skip-plugin', '--skip-services', '--profile', profile]);
+    assert.equal(fs.existsSync(path.join(home, 'marker')), false);
+    fs.unlinkSync(script);
+  }
+});
 for (const [name, options] of [
   ['open failure', { send: { ok: false, error: 'Could not open @fresh_bot.' } }],
   ['missing composer', { send: { ok: false, error: 'No message box.' } }],
