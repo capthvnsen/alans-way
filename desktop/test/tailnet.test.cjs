@@ -20,3 +20,22 @@ test('all saved destinations require literal tailnet addresses, including IPv6 e
   assert.equal(viewerUrl(`http://${ip}/vnc.html?host=203.0.113.7`), `http://${ip}/vnc.html`);
   assert.deepEqual(SSH_OPTIONS.slice(0, 2), ['-F', 'none']);
 });
+
+
+test('legacy installs retain aliases and viewers; explicit enforcement never falls back', () => {
+  const { spawnSync } = require('node:child_process');
+  const script = `const assert = require('node:assert/strict');
+    const { isSshTarget, parseRemoteUrl } = require('./src/core.cjs');
+    const { SSH_OPTIONS } = require('./src/tailnet.cjs');
+    const strict = process.env.HERMES_WORKSPACE_REQUIRE_TAILNET === '1';
+    assert.equal(isSshTarget('user@saved-alias'), !strict);
+    assert.equal(isSshTarget('user@host;command'), false);
+    if (strict) assert.throws(() => parseRemoteUrl('https://viewer.example/vnc.html'));
+    else assert.equal(parseRemoteUrl('https://viewer.example/vnc.html'), 'wss://viewer.example/websockify');
+    assert.equal(SSH_OPTIONS.includes('none'), strict);`;
+  for (const value of ['', '1']) {
+    const result = spawnSync(process.execPath, ['-e', script], { cwd: require('node:path').join(__dirname, '..'), env: { ...process.env, HERMES_WORKSPACE_REQUIRE_TAILNET: value }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    if (!value) assert.match(result.stderr, /Legacy workspace transport/);
+  }
+});

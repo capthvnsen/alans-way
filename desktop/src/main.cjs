@@ -471,7 +471,7 @@ function settingsWriteReceipt(entry) {
 }
 function getState() {
   const state = { name: app.getName(), version: app.getVersion(), releaseChannel: prefs.releaseChannel, activeReleaseChannel, build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
-    selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: (() => { try { parseRemoteUrl(prefs.remoteUrl); return prefs.remoteUrl; } catch { return ''; } })(),
+    selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, savedRemoteUrl: prefs.remoteUrl, remoteUrl: (() => { try { parseRemoteUrl(prefs.remoteUrl); return prefs.remoteUrl; } catch { return ''; } })(),
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)).concat([...vpsTabs.values()]), cloud: cloudView(),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, continuedNotice, macSshHost: prefs.macSshHost || '',
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
@@ -3623,7 +3623,7 @@ else {
       const image = avatarStore.imageFor(request.url);
       return image ? new Response(image.data, { headers: { 'Content-Type': image.mime, 'Cache-Control': 'private, max-age=3600' } }) : new Response('', { status: 404 });
     });
-    try { parseRemoteUrl(prefs.remoteUrl); } catch { prefs.remoteUrl = ''; }
+    try { parseRemoteUrl(prefs.remoteUrl); } catch { logError('viewer-policy', new Error('Saved viewer is paused; update its address in Settings. The saved address is preserved.')); }
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
     // A connector copy setup.sh left behind runs ahead of the app's own and
     // nothing else updates it; once the app is newer, drop it.

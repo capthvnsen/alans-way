@@ -1757,8 +1757,8 @@ function settingsConnectionDetails(body, id, label, search) {
 function mountRemoteConnection(body) {
   const connection = element('p', 'connection-state'); body.append(connection);
   const advanced = settingsConnectionDetails(body, 'settings-remote-details', 'Viewer address and preview', /remote connection|viewer|novnc|vnc|preview|remote desktop|remote computer|platform|linux|macos/i);
-  const input = settingsField(advanced.content, 'remote-url', 'Viewer address', state.remoteUrl, 'https://your-server/vnc.html or wss://…');
-  advanced.content.append(element('p', 'settings-note', 'Use an existing noVNC viewer address. A private machine may need Tailscale. Saving an address does not verify a connection; preview starts in watch mode.'));
+  const input = settingsField(advanced.content, 'remote-url', 'Viewer address', state.savedRemoteUrl ?? state.remoteUrl, 'https://your-server/vnc.html or wss://…');
+  advanced.content.append(element('p', 'settings-note', 'Existing installs keep their legacy transport until tailnet enforcement is enabled by the administrator. Provision pinned tailnet addresses and SSH keys first; enforcement pauses incompatible saved addresses without deleting them. Saving an address does not verify a connection; preview starts in watch mode.'));
   const save = settingsSaveFields(advanced.content, 'Save connection', [input], () => ({ remoteUrl: input.value.trim() }), { primary: true, busy: 'Saving connection…', success: 'Viewer address saved. Connection status is shown above.', draftScope: () => ['viewer', state.selectedBotId || '', state.hostLabel, state.vpsBrowser?.sshHost || '', state.macSshHost || ''], saved: () => [state.remoteUrl || ''] });
   const row = element('div', 'setting-row'), label = element('span', '', 'Remote computer runs'), os = element('select'); os.id = 'settings-remote-platform'; os.setAttribute('aria-label', 'Remote computer runs');
   for (const [value, name] of [['linux', 'Linux'], ['mac', 'macOS']]) { const option = element('option', '', name); option.value = value; os.append(option); }

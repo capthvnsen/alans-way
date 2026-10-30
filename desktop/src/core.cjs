@@ -1,4 +1,4 @@
-const { isTailnetHost, tailnetUrl } = require('./tailnet.cjs');
+const { requireTailnet, isTailnetHost, tailnetUrl } = require('./tailnet.cjs');
 const crypto = require('node:crypto');
 
 function normalizeUrl(value) {
@@ -169,7 +169,9 @@ function followVmRemoteUrl(previousSshHost, sshHost, remoteUrl) {
 // Saved SSH addresses are interpolated into a remote shell command, so only
 // [user@]Tailscale-IP is accepted; DNS and SSH aliases cannot redirect it.
 function isSshTarget(value) {
-  return typeof value === 'string' && value.length <= 200 && /^(?:[A-Za-z0-9][A-Za-z0-9._-]*@)?(?:[0-9.]+|\[[0-9a-fA-F:]+\])$/.test(value) && isTailnetHost(value);
+  return typeof value === 'string' && value.length <= 200 && (requireTailnet
+    ? /^(?:[A-Za-z0-9][A-Za-z0-9._-]*@)?(?:[0-9.]+|\[[0-9a-fA-F:]+\])$/.test(value) && isTailnetHost(value)
+    : /^(?:[A-Za-z0-9][A-Za-z0-9._-]*@)?[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value));
 }
 
 // Which machine a browser tab runs on: 'computer' is the user's own machine,

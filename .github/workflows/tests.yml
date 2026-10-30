@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  HERMES_WORKSPACE_REQUIRE_TAILNET: "1"
+
 permissions:
   contents: read
 

@@ -1,5 +1,7 @@
 'use strict';
 const net = require('node:net');
+const requireTailnet = process.env.HERMES_WORKSPACE_REQUIRE_TAILNET === '1';
+if (!requireTailnet) console.error('Legacy workspace transport: tailnet enforcement is not enabled. Provision pinned tailnet addresses and SSH keys before setting HERMES_WORKSPACE_REQUIRE_TAILNET=1.');
 
 function isTailnetAddress(value) {
   const host = String(value || '').replace(/^\[|\]$/g, '');
@@ -17,8 +19,8 @@ function isTailnetHost(value) {
 function tailnetUrl(url) {
   const host = url.hostname.replace(/^\[|\]$/g, '');
   // Existing fixture opt-in also covers loopback CDP; never set it on a service.
-  return isTailnetAddress(host) || (process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK === '1' && ['127.0.0.1', '::1', 'localhost'].includes(host));
+  return !requireTailnet || isTailnetAddress(host) || (process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK === '1' && ['127.0.0.1', '::1', 'localhost'].includes(host));
 }
 
-const SSH_OPTIONS = ['-F', 'none', '-o', 'ProxyCommand=none', '-o', 'ProxyJump=none', '-o', 'CanonicalizeHostname=no'];
-module.exports = { isTailnetAddress, isTailnetHost, tailnetUrl, SSH_OPTIONS };
+const SSH_OPTIONS = requireTailnet ? ['-F', 'none', '-o', 'ProxyCommand=none', '-o', 'ProxyJump=none', '-o', 'CanonicalizeHostname=no'] : [];
+module.exports = { requireTailnet, isTailnetAddress, isTailnetHost, tailnetUrl, SSH_OPTIONS };
