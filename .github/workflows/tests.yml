@@ -34,7 +34,7 @@ jobs:
       - run: npm run check
       - name: Verify credential ownership across OS users
         if: runner.os == 'Linux'
-        run: sudo "$(command -v node)" --test test/bot-auth.test.cjs
+        run: sudo "$(command -v node)" --test test/bot-auth.test.cjs test/cleanup-workspace-logs.test.cjs
 
   desktop-electron:
     runs-on: macos-latest
