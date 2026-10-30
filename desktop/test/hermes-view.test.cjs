@@ -153,6 +153,35 @@ test('renders transcript; hostile markup stays literal text, never elements', as
   assert.ok(root.findAll((n) => n.className.includes('hermes-tool')).length === 1);
 });
 
+test('tool start and completion repaint while streamed text stays unchanged', async () => {
+  const initial = baseState({ conversation: { ...baseState().conversation,
+    turn: { text: 'Working', tools: [] } } });
+  const s = view(initial); await tick();
+  try {
+    const tool = { name: 'terminal', status: 'running' };
+    s.rec.emit({ ...initial, conversation: { ...initial.conversation,
+      turn: { text: 'Working', tools: [tool] } } });
+    assert.match(s.transcript.textContent, /terminal · running/);
+    s.rec.emit({ ...initial, conversation: { ...initial.conversation,
+      turn: { text: 'Working', tools: [{ ...tool, status: 'complete' }] } } });
+    assert.match(s.transcript.textContent, /terminal · complete/);
+    assert.doesNotMatch(s.transcript.textContent, /terminal · running/);
+  } finally { s.v.dispose(); }
+});
+
+test('bounded transcript replacement repaints even when row count stays constant', async () => {
+  const initial = baseState({ conversation: { ...baseState().conversation,
+    transcript: [{ role: 'assistant', text: 'Earlier reply', status: 'complete' }] } });
+  const s = view(initial); await tick();
+  try {
+    s.rec.emit({ ...initial, conversation: { ...initial.conversation, transcriptDropped: 1,
+      transcript: [{ role: 'assistant', text: 'Current reply', status: 'complete' }] } });
+    assert.match(s.transcript.textContent, /Current reply/);
+    assert.match(s.transcript.textContent, /1 older entry not shown/);
+    assert.doesNotMatch(s.transcript.textContent, /Earlier reply/);
+  } finally { s.v.dispose(); }
+});
+
 test('send captures session+generation; the send ack clears the draft once, admission pushes stay inert', async () => {
   const rec = makeApi(baseState());
   const root = new FakeNode('div');
