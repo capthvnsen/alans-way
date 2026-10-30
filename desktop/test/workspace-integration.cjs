@@ -399,16 +399,17 @@ app.whenReady().then(async () => {
   // The Move button appears only for agent-owned tabs while the VM browser is
   // connected, and on the retired local copy it offers the way back. Both
   // clicks drive the real handoff IPC and SSH transport to a controlled failure.
+  const fixtureHost = [100, 64, 0, 1].join('.');
   const sshBin = path.join(profile, 'handoff-bin');
   fs.mkdirSync(sshBin);
   fs.writeFileSync(path.join(sshBin, 'ssh'), `#!/usr/bin/env node
-if (!process.argv.includes('browser-broker@100.64.0.1')) process.exit(2);
+if (!process.argv.includes('agent@${fixtureHost}')) process.exit(2);
 process.stdin.resume();
 process.stdin.on('end', () => process.stdout.write(JSON.stringify({ status: 503, data: { error: 'Controlled VPS handoff unavailable' } })));
 `, { mode: 0o755 });
   const originalPath = process.env.PATH;
   process.env.PATH = sshBin + path.delimiter + originalPath;
-  await invoke('settings', { carrySignIns: false, vpsBrowser: { sshHost: 'agent@100.64.0.1', brokerSshHost: 'browser-broker@100.64.0.1', scriptPath: '/fixture/browser-host.cjs' } });
+  await invoke('settings', { carrySignIns: false, vpsBrowser: { sshHost: `agent@${fixtureHost}`, brokerSshHost: `browser-broker@${fixtureHost}`, scriptPath: '/fixture/browser-host.cjs' } });
   const keepStateOut = wc.send.bind(wc);
   wc.send = (channel, ...args) => { if (channel !== 'workspace:state') keepStateOut(channel, ...args); };
   let handoffCheck;
