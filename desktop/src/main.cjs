@@ -91,7 +91,7 @@ const BUILD = readBuildInfo(path.join(ROOT, '..', 'build-info.json'));
 // down the connector every bot depends on. The log file helps when a Windows
 // user reports a silent failure.
 function logError(label, error) {
-  try { console.error(`${label}: ${error?.stack || error}`); } catch {}
+  try { console.error(setupCheck.redactReport(`${label}: ${error?.stack || error}`)); } catch {}
   mainLog().write(label, String(error?.stack || error));
 }
 let mainLogger;
