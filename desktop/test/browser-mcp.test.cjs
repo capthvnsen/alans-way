@@ -966,10 +966,11 @@ async function computerHost(t, capabilities, hostLabel, { botId = 'mcp-test', bo
       : JSON.stringify({ generation: 4, via: 'app-api-marker' }));
   });
   await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
-  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 }));
+  const connection = path.join(profile, botId === 'mcp-test' ? 'connection.json' : `${botId}-connection.json`);
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId, protocol: 1 }));
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: ['-r', path.join(__dirname, 'fake-computer-service.cjs'), path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', botId, ...(botName ? ['--bot-name', botName] : []), '--connection', path.join(profile, 'connection.json')],
+    args: ['-r', path.join(__dirname, 'fake-computer-service.cjs'), path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', botId, ...(botName ? ['--bot-name', botName] : []), '--connection', connection],
     env: { ...process.env },
   });
   const client = new Client({ name: 'browser-mcp-test', version: '1' });
