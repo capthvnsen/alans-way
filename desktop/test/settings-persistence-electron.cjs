@@ -132,6 +132,14 @@ app.whenReady().then(async()=>{
 async function fieldStatus(id) { return js(`(()=>{const e=$(${JSON.stringify(id)});return {value:e.value,dirty:e.dataset.dirty,status:(e.id==='remote-url'?e.closest('.settings-section-body').querySelector('button.primary-button'):$('settings-save-addresses')).nextElementSibling.textContent}})()`); }
 async function run(){
  BrowserWindow.prototype.showInactive.call(win);await resizeWindow(win,1440,900,{mode:'bounds'});await sleep(120);
+ await scenario('a policy-paused saved viewer remains visible for repair', async()=>{
+  const before=await js('JSON.stringify(state)');
+  try {
+   await js("state={...state,remoteUrl:'',savedRemoteUrl:'http://203.0.113.7/vnc.html'};");
+   await mount('viewer');
+   await assert('paused viewer remains editable',async()=>eq((await fieldStatus('remote-url')).value,'http://203.0.113.7/vnc.html','saved viewer address'));
+  } finally { await js(`state=${before};settingsDrafts.clear();`); }
+ });
  await legacyFailureRecovery();
  for(const [slot,id,query] of [['autoOpenLinks','settings-auto-links','takeover'],['autoTakeover','settings-auto-takeover','takeover'],['preview','settings-preview','viewer']]){
   await scenario(slot+' actual failed write then explicit choice',async()=>{
