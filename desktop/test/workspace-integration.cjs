@@ -676,7 +676,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({ status: 503,
   console.log('PASS: favicons come only from the page origin and fetch without browser cookies.');
   // The saved VPS ssh target is validated like the Mac one — a stored option
   // injection can no longer reach ssh argv.
-  await assert.rejects(invoke('settings', { vpsBrowser: { sshHost: '-oProxyCommand=touch /tmp/hs-pwn', scriptPath: '/x' } }), /user@host/);
+  await assert.rejects(invoke('settings', { vpsBrowser: { sshHost: '-oProxyCommand=touch /tmp/hs-pwn', scriptPath: '/x' } }), /user@Tailscale-IP/);
   console.log('PASS: settings rejects a non-host VPS SSH target.');
   // The designated primary bot pins to the top of the sidebar with a PRIMARY
   // badge; with no explicit pick the overseer bot is the primary.
