@@ -3,10 +3,10 @@
 const { createDesktopLease } = require('../src/computer.cjs');
 const { createDesktopApproval } = require('../src/desktop-approval.cjs');
 
-function computerRoutes(driver = {}, { approval = createDesktopApproval({ ask: async () => true, trusted: () => true }) } = {}) {
+function computerRoutes(driver = {}, { approval = createDesktopApproval({ ask: async () => true, trusted: () => true }), identityFor } = {}) {
   const seen = [];
   const handle = require('../src/computer-http.cjs').createComputerRoutes({
-    readJson: async req => req.body || {}, intParam: () => undefined,
+    identityFor, readJson: async req => req.body || {}, intParam: () => undefined,
     desktopLease: createDesktopLease(), desktopApproval: approval, nameForBot: id => id === 'a' ? 'Agent A' : '',
     hostComputer: { ...Object.fromEntries(['apps', 'launch', 'snapshot', 'screenshot', 'menu', 'action'].map(verb => [verb, async () => { seen.push(verb); return { ok: true }; }])), ...driver },
   });

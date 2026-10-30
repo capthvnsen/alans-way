@@ -1232,3 +1232,19 @@ test('Mac text selection and advertised actions have schemas and reach the compu
     assert.deepEqual(seen.filter((entry) => entry.line.endsWith('/action')).at(-1).body, forwarded);
   }
 });
+
+
+test('only the labeled legacy connector retains an older VM desktop driver', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/browser-mcp.cjs'), 'utf8');
+  const code = source.slice(source.indexOf('let hostChoice ='), source.indexOf('async function request(endpoint'));
+  const marker = { legacy: true };
+  const check = (connection, strict) => require('node:vm').runInNewContext(code + ';computerService()', {
+    fs: { readFileSync: () => JSON.stringify(connection) }, file: 'fixture', connectionKey: JSON.stringify,
+    requestOnce: async () => ({ capabilities: ['tabs', 'agent-desktop'] }),
+    process: { env: { HERMES_WORKSPACE_REQUIRE_BOT_CREDENTIALS: strict ? '1' : '' } },
+    localDriver: 'fixture-driver', require: () => ({ service: marker, close() {} }),
+  });
+  assert.equal(await check({ token: 'legacy' }, false), marker);
+  await assert.rejects(check({ token: 'bound', botId: 'grok' }, false), /Computer broker unavailable/);
+  await assert.rejects(check({ token: 'legacy' }, true), /Computer broker unavailable/);
+});
