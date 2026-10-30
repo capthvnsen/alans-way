@@ -19,6 +19,8 @@ credentials. It never reads raw log contents or prints tokens. Unknown files,
 symlinks, changed files and uncertain service state refuse the operation.
 Configuration/credential files must be private and broker-owned.
 
+Rotation also invalidates credential-bound desktop Allow, including Always allow;
+review and approve each principal again on its next desktop input.
 Start the broker manually afterwards. If the loopback port changed, re-run the
 credential provisioner to update exported URLs. If a run fails after some bot
 rotations, already rotated credentials remain valid and the old logs remain
