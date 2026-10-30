@@ -954,7 +954,7 @@ test('a named action on a host without name-targets is refused before it is sent
   assert.equal(seen.filter((entry) => entry.line === 'GET /v1/status').length, 1, 'the capability answer is cached');
 });
 
-async function computerHost(t, capabilities, hostLabel, { botId = 'mcp-test', botName, profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-')) } = {}) {
+async function computerHost(t, capabilities, hostLabel, { botId = 'mcp-test', botName, legacy = false, profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-')) } = {}) {
   const seen = [];
   const host = http.createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk;
@@ -967,7 +967,7 @@ async function computerHost(t, capabilities, hostLabel, { botId = 'mcp-test', bo
   });
   await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
   const connection = path.join(profile, botId === 'mcp-test' ? 'connection.json' : `${botId}-connection.json`);
-  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId, protocol: 1 }));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', ...(!legacy ? { botId } : {}), protocol: 1 }));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ['-r', path.join(__dirname, 'fake-computer-service.cjs'), path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', botId, ...(botName ? ['--bot-name', botName] : []), '--connection', connection],
@@ -1065,6 +1065,48 @@ test('the app computer service accepts expect_host without changing the action',
   assert.equal(seen.length, 3);
   assert.deepEqual(seen[1], seen[0]);
   assert.deepEqual(seen[2], seen[0]);
+});
+
+test('computer tools use the in-process driver when the connected host has no computer endpoint', { timeout: 8000 }, async (t) => {
+  const { client, seen } = await computerHost(t, ['tabs', 'snapshot'], undefined, { legacy: true });
+  const text = (await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text;
+  assert.match(text, /in-process-marker/);
+  assert.doesNotMatch(text, /app-api-marker/);
+  assert.match(text, /"agentDesktop":""/);
+  assert.match((await client.callTool({ name: 'workspace_computer_action', arguments: { pid: 1, action: 'press', ref: 'a', generation: 1 } })).content[0].text, /in-process-marker/);
+  assert.ok(seen.every((entry) => !entry.line.startsWith('GET /v1/computer') && !entry.line.startsWith('POST /v1/computer')));
+});
+
+test('two agents on one in-process desktop share its lease, and reads stay open', { timeout: 8000 }, async (t) => {
+  const hermes = await computerHost(t, ['tabs', 'agent-desktop'], undefined, { botName: 'Hermes', legacy: true });
+  const grok = await computerHost(t, ['tabs', 'agent-desktop'], undefined, { botId: 'grok', botName: 'Grok Bot', legacy: true, profile: hermes.profile });
+  const act = (client) => client.callTool({ name: 'workspace_computer_action', arguments: { pid: 1, action: 'key', key: 'Enter' } });
+  assert.equal((await act(hermes.client)).isError, undefined);
+  const busy = await act(grok.client);
+  assert.equal(busy.isError, true);
+  assert.match(busy.content[0].text, /^desktop_busy: The (VM desktop|Mac) is being used by Hermes; try again in (19|20) s\. Reads still work\..*Nothing was sent\.$/);
+  assert.match((await grok.client.callTool({ name: 'workspace_computer_menu', arguments: { pid: 1, path: ['File'] } })).content[0].text, /^desktop_busy:/);
+  assert.match((await grok.client.callTool({ name: 'workspace_computer_snapshot', arguments: { pid: 1 } })).content[0].text, /in-process-marker/);
+  assert.equal((await act(hermes.client)).isError, undefined, 'the holder keeps acting');
+});
+
+test('the in-process driver is told it owns the desktop when the host says agent-desktop', { timeout: 8000 }, async (t) => {
+  const { client } = await computerHost(t, ['tabs', 'agent-desktop'], undefined, { legacy: true });
+  assert.match((await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text, /"agentDesktop":"1"/);
+});
+
+test('the agent-desktop flag follows the host and restarts the helper when it changes', { timeout: 8000 }, async (t) => {
+  const capabilities = ['tabs', 'agent-desktop'];
+  const { client, profile } = await computerHost(t, capabilities, undefined, { legacy: true });
+  const apps = async () => JSON.parse((await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text).apps[0];
+  assert.equal((await apps()).agentDesktop, '1');
+  capabilities.length = 0;
+  capabilities.push('tabs');
+  const connection = JSON.parse(fs.readFileSync(path.join(profile, 'connection.json'), 'utf8'));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ ...connection, token: 'other-token' }));
+  const after = await apps();
+  assert.equal(after.agentDesktop, '');
+  assert.equal(after.closed, '1');
 });
 
 test('untrusted connectors cannot fall back to a desktop helper when the broker lacks computer routes', { timeout: 8000 }, async t => {

@@ -484,13 +484,13 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => cal
       }
       case 'workspace_computer_menu':
         result = computer
-          ? await computer.menu(args.pid, args.path)
+          ? await leased(() => computer.menu(args.pid, args.path))
           : await request(`/v1/computer/${encodeURIComponent(String(args.pid))}/menu?${new URLSearchParams({ path: JSON.stringify(args.path || []) })}`);
         break;
       case 'workspace_computer_action': {
         const { pid, ...body } = args;
         result = computer
-          ? await computer.action(botId, pid, body)
+          ? await leased(() => computer.action(botId, pid, body))
           : await request(`/v1/computer/${encodeURIComponent(String(pid))}/action`, 'POST', body);
         break;
       }
