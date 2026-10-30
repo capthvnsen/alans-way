@@ -18,6 +18,18 @@ test('desktop input takes, refreshes and expires a lease by bot ID', t => {
   assert.deepEqual(take('a'), { error: 'desktop_busy', holder: 'b', retryAfter: 20 });
 });
 
+test('an idle lease expires across sleep and an old holder cannot release the new lease', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
+  const lease = createDesktopLease();
+  assert.equal(lease.take('a'), null); lease.release('a');
+  t.mock.timers.tick(24 * 3600000);
+  assert.equal(lease.take('b'), null, 'wake must not retain an expired idle owner');
+  lease.release('a');
+  assert.equal(lease.take('c').error, 'desktop_busy', 'a delayed old-holder release cannot free active input');
+  lease.release('b'); t.mock.timers.tick(20000);
+  assert.equal(lease.take('c'), null);
+});
+
 for (const [endpoint, method] of [['launch', 'POST'], ['7/menu', 'GET'], ['7/action', 'POST']]) {
   test(`${endpoint} keeps the lease until all holder requests complete, then expires after 20 idle seconds`, async t => {
     t.mock.timers.enable({ apis: ['Date'], now: 0 });
