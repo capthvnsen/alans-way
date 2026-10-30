@@ -1,3 +1,4 @@
+const { SSH_OPTIONS: TAILNET_SSH_OPTIONS } = require('./tailnet.cjs');
 const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, Notification, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
 const { ACCELERATORS } = require('./workspace-shortcuts.cjs');
 const fs = require('node:fs');
@@ -470,7 +471,7 @@ function settingsWriteReceipt(entry) {
 }
 function getState() {
   const state = { name: app.getName(), version: app.getVersion(), releaseChannel: prefs.releaseChannel, activeReleaseChannel, build: BUILD, buildBadge: describeBuild(BUILD), bots: avatarStore.publicBots().map(bot => ({ ...bot, activity: activity.get(bot.id), hue: botAccent(bot.id).hue })), order: prefs.order, hidden: prefs.hidden,
-    selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: prefs.remoteUrl,
+    selectedBotId: prefs.selectedBotId, settingsFieldRevisions: { ...settingsFieldRevisions }, chatWidth: prefs.chatWidth, preview: prefs.preview, previewPos: prefs.previewPos, showBots: prefs.showBots, showBrowser: prefs.showBrowser, remoteUrl: (() => { try { parseRemoteUrl(prefs.remoteUrl); return prefs.remoteUrl; } catch { return ''; } })(),
     remoteStatus, remoteControl: prefs.remoteControl === true, telegramStatus, tabs: [...tabs.values()].map(tab => describeTab(tab)).concat([...vpsTabs.values()]), cloud: cloudView(),
     vpsBrowser: prefs.vpsBrowser, vpsBrowserStatus, vpsBrowserError, handoffs: prefs.handoffs, continuedNotice, macSshHost: prefs.macSshHost || '',
     platform: process.platform, hostLabel: HOST_LABEL, remotePlatform: prefs.remotePlatform || 'linux',
@@ -1554,12 +1555,14 @@ function localRun(file, args, { timeoutMs = 10000 } = {}) {
 // ask). The wizard assigns the ssh host itself, so =yes would fail every new
 // peer with "Host key verification failed."
 function sshRun(host, remote, { timeoutMs = 15000 } = {}) {
-  return localRun('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, posixCommand(remote)], { timeoutMs });
+  if (!isSshTarget(host)) return Promise.resolve({ code: -1, out: '', err: 'Use a literal Tailscale IP address.' });
+  return localRun('ssh', [...TAILNET_SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, posixCommand(remote)], { timeoutMs });
 }
 // Env values travel only on stdin; the remote transaction preserves the file.
 function sshWrite(host, remotePath, content, { timeoutMs = 15000 } = {}) {
+  if (!isSshTarget(host)) return Promise.resolve({ code: -1, out: '', err: 'Use a literal Tailscale IP address.' });
   return new Promise((resolve) => {
-    const child = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, require('./env-write.cjs').command], { timeout: timeoutMs });
+    const child = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, require('./env-write.cjs').command], { timeout: timeoutMs });
     let out = '', err = '';
     child.stdout.on('data', (chunk) => { out = (out + chunk).slice(-20000); });
     child.stderr.on('data', (chunk) => { err = (err + chunk).slice(-20000); });
@@ -1606,11 +1609,11 @@ function testAgentPath() {
   const host = (prefs.vpsBrowser?.sshHost || '').trim();
   const mac = (prefs.macSshHost || '').trim();
   if (!host) throw new Error('Save a VPS browser SSH host first.');
-  if (!isSshTarget(host)) throw new Error('The saved VPS SSH address is invalid. Re-enter it as user@host or host.');
+  if (!isSshTarget(host)) throw new Error('The saved VPS SSH address is invalid. Re-enter it as user@Tailscale-IP.');
   if (!mac) throw new Error(`Enter this ${HOST_LABEL === 'windows' ? 'PC' : 'computer'}’s SSH address as your VPS reaches it.`);
-  if (!isSshTarget(mac)) throw new Error('The saved SSH address for this computer is invalid. Re-enter it as user@host or host.');
+  if (!isSshTarget(mac)) throw new Error('The saved SSH address for this computer is invalid. Re-enter it as user@Tailscale-IP.');
   return new Promise((resolve) => {
-    const child = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host,
+    const child = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host,
       `ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new ${mac} 'echo AGENT_PATH_OK'`], { timeout: 30000 });
     let out = '';
     child.stdout.on('data', chunk => { out += chunk; });
@@ -1644,7 +1647,7 @@ async function runSetupCheck() {
   };
   const connection = { addresses: { server: serverHost, computer: computerHost }, reach: null, back: null };
   let server = null;
-  if (serverHost && !isSshTarget(serverHost)) connection.reach = { ok: false, detail: 'The saved address is invalid. Re-enter it as user@host or host.' };
+  if (serverHost && !isSshTarget(serverHost)) connection.reach = { ok: false, detail: 'The saved address is invalid. Re-enter it as user@Tailscale-IP.' };
   else if (serverHost) {
     const probe = await sshRun(serverHost, 'echo CHECK_OK');
     connection.reach = probe.code === 0 && probe.out.includes('CHECK_OK')
@@ -1749,7 +1752,7 @@ function cloudConnectRun(diyHost) {
 async function cloudConnectOnce(diyHost, pending) {
   const cloud = { ...prefs.cloud };
   if (diyHost) {
-    if (!isSshTarget(diyHost)) throw new Error('Enter the server SSH address as user@host or host, with no spaces or symbols.');
+    if (!isSshTarget(diyHost)) throw new Error('Enter the server SSH address as user@Tailscale-IP.');
     cloud.diy = true;
     cloud.step = 'connect';
     prefs.cloud = cloud;
@@ -2047,10 +2050,10 @@ function registerIpc() {
           next.releaseChannel = value.releaseChannel;
         }
         let followed = '', vpsChanged = false;
-        if (typeof value.macSshHost === 'string' && value.macSshHost.trim() && !isSshTarget(value.macSshHost.trim())) throw new Error('Enter the Mac SSH address as user@host or host, with no spaces or symbols.');
+        if (typeof value.macSshHost === 'string' && value.macSshHost.trim() && !isSshTarget(value.macSshHost.trim())) throw new Error('Enter the Mac SSH address as user@Tailscale-IP.');
         if (value.vpsBrowser && typeof value.vpsBrowser === 'object') {
           const sshHost = String(value.vpsBrowser.sshHost || '').trim();
-          if (sshHost && !isSshTarget(sshHost)) throw new Error('Enter the VPS SSH address as user@host or host, with no spaces or symbols.');
+          if (sshHost && !isSshTarget(sshHost)) throw new Error('Enter the VPS SSH address as user@Tailscale-IP.');
           const scriptPath = String(value.vpsBrowser.scriptPath || '').trim();
           if (scriptPath && checkScriptPath(scriptPath)) throw new Error(checkScriptPath(scriptPath));
           // When the VM's SSH address moves to a different host, the noVNC
@@ -2484,8 +2487,9 @@ function registerIpc() {
         if (!host) throw new Error('Connect to the computer first.');
         // The OAuth flow prints a URL once; it opens in the user's browser here
         // while the remote waits, and cloud-model-check polls for the result.
+        if (!isSshTarget(host)) throw new Error('Use a literal Tailscale IP address.');
         if (!modelAuthChild) {
-          modelAuthChild = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, posixCommand(cloudModel.authLoginCommand())]);
+          modelAuthChild = spawn('ssh', [...TAILNET_SSH_OPTIONS, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', host, posixCommand(cloudModel.authLoginCommand())]);
           let seen = '', opened = false;
           const feed = (chunk) => {
             seen = (seen + chunk).slice(-20000);

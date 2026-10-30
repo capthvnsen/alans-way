@@ -1,3 +1,5 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 const { resizeWindow } = require('./window-fixture.cjs');
 // Real Electron Settings + main persistence/copy; external work is blocked.
 // Run with: node test/run-electron.cjs test/connections-journey-electron.cjs

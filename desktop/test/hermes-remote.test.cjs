@@ -1,3 +1,5 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 'use strict';
 // Connector tests against a real local HTTP server faking the public auth
 // contract + a minimal RFC6455 echo server for connectSocket. The assertions
@@ -162,10 +164,10 @@ test('ws-ticket uses the bearer token; connectSocket adapts frames to wire strea
 
 test('path prefixes survive; credentials in URLs are refused', async () => {
   const remote = createHermesRemote();
-  const base = remote.normalizeBaseUrl('https://gw.example/hermes/');
-  assert.equal(remote.wsUrl({ base, ticket: 't' }), 'wss://gw.example/hermes/api/ws?ticket=t');
-  assert.throws(() => remote.normalizeBaseUrl('https://u:p@gw.example'), /credentials/);
-  assert.throws(() => remote.normalizeBaseUrl('ftp://gw.example'), /http/);
+  const base = remote.normalizeBaseUrl(`https://${fixtureTailnet}/hermes/`);
+  assert.equal(remote.wsUrl({ base, ticket: 't' }), `wss://${fixtureTailnet}/hermes/api/ws?ticket=t`);
+  assert.throws(() => remote.normalizeBaseUrl(`https://u:p@${fixtureTailnet}`), /credentials/);
+  assert.throws(() => remote.normalizeBaseUrl(`ftp://${fixtureTailnet}`), /http/);
 });
 
 test('public WebSocket adapter delivers separate and coalesced deltas before completion', { timeout: 5000 }, async () => {

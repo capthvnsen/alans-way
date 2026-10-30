@@ -1,3 +1,4 @@
+const { ip: fixtureTailnet } = require('./tailnet-fixture.cjs');
 // Runs the real scripts/vps-browser-host.cjs broker against a stub CDP socket.
 // No Chromium launches; the fixture answers just enough DevTools protocol to
 // exercise the overseer role and the human-controlled read gate end to end.
@@ -453,13 +454,13 @@ test('handed-off tabs refuse agent claims until the human gives them over', asyn
 });
 
 test('a VPS release with a reason waits for the human, then give-back or 30 minutes reopens it', async () => {
-  const host = await startHost({ now: 1000, config: { viewerUrl: 'http://192.0.2.1:6080/vnc.html' }, env: { HERMES_OVERSEER_BOT_IDS: 'overseer-1' } });
+  const host = await startHost({ now: 1000, config: { viewerUrl: `http://${fixtureTailnet}:6080/vnc.html` }, env: { HERMES_OVERSEER_BOT_IDS: 'overseer-1' } });
   const api = host.api;
   const tab = (await api('/v1/tabs', 'POST', { url: 'https://login.example/' })).data;
   const control = (body, human = false) => api(`/v1/tabs/${tab.id}/control`, 'POST', body, { human });
   const asked = await control({ controller: 'human', reason: 'captcha', note: 'Solve the puzzle' });
   assert.equal(asked.status, 200);
-  assert.deepEqual(asked.data.handback, { state: 'awaiting_human', reason: 'captcha', note: 'Solve the puzzle', botId: 'bot-a', since: 1000, viewerUrl: 'http://192.0.2.1:6080/vnc.html' });
+  assert.deepEqual(asked.data.handback, { state: 'awaiting_human', reason: 'captcha', note: 'Solve the puzzle', botId: 'bot-a', since: 1000, viewerUrl: `http://${fixtureTailnet}:6080/vnc.html` });
   assert.equal((await control({ controller: 'human', reason: 'nope' })).status, 400);
   for (const body of [{ controller: 'human' }, { controller: 'human', reason: 'login' }]) {
     host.setNow(2000);

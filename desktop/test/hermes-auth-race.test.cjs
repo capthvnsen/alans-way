@@ -1,3 +1,5 @@
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
 'use strict';
 // Auth-race fencing tests for the Hermes hub — F3 class: asynchronous
 // credential work that resolves AFTER the backend target / auth context moved

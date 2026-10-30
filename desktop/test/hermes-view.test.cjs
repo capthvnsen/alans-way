@@ -1,3 +1,5 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 'use strict';
 // Renderer view tests on a minimal DOM — the goal is behavior (draft
 // survival, hostile text staying literal, request fencing), not layout.
@@ -112,7 +114,7 @@ function makeApi(initial) {
 const baseState = (over = {}) => ({
   status: 'ready',
   generation: 7,
-  target: { url: 'https://gw.example', label: 'gw.example', profile: 'default', authRequired: true },
+  target: { url: `https://${fixtureTailnet}`, label: `${fixtureTailnet}`, profile: 'default', authRequired: true },
   principal: { userId: 'agent', provider: 'basic' },
   sessions: [{ sessionId: 's-1', sessionKey: 'k1', title: 'One' }],
   selected: { sessionId: 's-1', sessionKey: 'k1', title: 'One' },
@@ -741,7 +743,7 @@ test('an admitted lastSend under another target cannot clear this target\'s stor
   textarea.dispatchEvent(new FakeEvent('input'));   // stored under gw.example|default|s-1
   // Reconfigure to a different target: different label/profile and selection.
   const stB = baseState({
-    target: { url: 'https://other.example', label: 'other.example', profile: 'alt', authRequired: true },
+    target: { url: `https://${fixtureTailnetOther}`, label: 'other.example', profile: 'alt', authRequired: true },
     sessions: [{ sessionId: 's-9', sessionKey: 'k9', title: 'Nine' }],
     selected: { sessionId: 's-9', sessionKey: 'k9', title: 'Nine' },
   });
@@ -1130,7 +1132,7 @@ function realStack({ holdSubmits = false, onSubmit = null } = {}) {
 }
 
 async function realBoot(s) {
-  await s.api.command('configure', { url: 'http://gw.test:9119', localToken: 'tok' });
+  await s.api.command('configure', { url: `http://${fixtureTailnet}:9119`, localToken: 'tok' });
   await s.api.command('connect', {});
   const a = await s.api.command('new-session', {});
   const b = await s.api.command('new-session', {});
@@ -1182,7 +1184,7 @@ test('saved history resume through the real wire hydrates the transcript and ena
     { role: 'user', text: 'A story' }, { role: 'assistant', text: 'Saved lighthouse reply.' },
   ] }];
   try {
-    await s.api.command('configure', { url: 'http://gw.test:9119', localToken: 'fixture' });
+    await s.api.command('configure', { url: `http://${fixtureTailnet}:9119`, localToken: 'fixture' });
     await s.api.command('connect', {}); s.delivered();
     const before = await s.api.getState();
     assert.deepEqual(before.sessions, []);
@@ -1415,7 +1417,7 @@ test('a switched target or selection never inherits the retained conversation', 
   // A different target drops the retained copy outright.
   const stB = baseState({
     status: 'disconnected',
-    target: { url: 'https://other.example', label: 'other.example', profile: 'alt' },
+    target: { url: `https://${fixtureTailnetOther}`, label: 'other.example', profile: 'alt' },
     sessions: [], conversation: null, error: null,
     selected: { sessionId: 's-9', sessionKey: 'k9', title: 'Nine' },
   });
@@ -1426,7 +1428,7 @@ test('a switched target or selection never inherits the retained conversation', 
   // URL is still a different target and inherits nothing.
   const stTwin = baseState({
     status: 'disconnected',
-    target: { url: 'https://twin.internal', label: 'gw.example', profile: 'default' },
+    target: { url: `https://${fixtureTailnetOther}`, label: `${fixtureTailnet}`, profile: 'default' },
     sessions: [], conversation: null, error: null,
     selected: { sessionId: 's-1', sessionKey: 'k1', title: 'Twin' },
   });
@@ -1548,11 +1550,11 @@ const reviewInput = root => root.findAll(n => n.tagName === 'INPUT')[0];
 const editReview = (node, text) => { node.value = text; node.dispatchEvent(new FakeEvent('input')); };
 
 for (const field of ['url', 'sessionKey']) test(`message drafts are isolated by exact ${field}`, async () => {
-  const a = baseState({ target: { url: 'http://gw.example', label: 'gw.example', profile: 'default' } });
+  const a = baseState({ target: { url: `http://${fixtureTailnet}`, label: `${fixtureTailnet}`, profile: 'default' } });
   const s = view(a); await tick();
   try {
     editReview(s.textarea, 'private unsent draft');
-    const b = field === 'url' ? { ...a, target: { ...a.target, url: 'https://gw.example' } }
+    const b = field === 'url' ? { ...a, target: { ...a.target, url: `https://${fixtureTailnet}` } }
       : { ...a, selected: { ...a.selected, sessionKey: 'other-stored-session' } };
     s.rec.emit({ ...b, generation: 8 });
     assert.equal(s.textarea.value, '');
@@ -1567,7 +1569,7 @@ for (const boundary of ['backend', 'profile', 'session']) test(`answer drafts do
   try {
     editReview(reviewInput(s.root), 'A-only-secret-draft');
     const b = { ...a, generation: 8, target: { ...a.target }, selected: { ...a.selected } };
-    if (boundary === 'backend') b.target.url = 'https://other.example';
+    if (boundary === 'backend') b.target.url = `https://${fixtureTailnetOther}`;
     if (boundary === 'profile') b.target.profile = 'other';
     if (boundary === 'session') b.selected.sessionKey = 'other-key';
     s.rec.emit({ ...b, status: 'disconnected', conversation: null });
@@ -1672,7 +1674,7 @@ for (const action of ['Allow once', 'Refuse']) test(`stale ${action} cannot cros
     connectSocket: async () => { gw = fakeGateway(); setImmediate(() => gw.ready()); return { input: gw.input, output: gw.output, socket: gw.socket }; } };
   const hub = createHermesHub({ remote }); let v;
   try {
-    await hub.command('configure', { url: 'http://gw.test', localToken: 'fixture' }); await hub.command('connect'); await hub.command('new-session');
+    await hub.command('configure', { url: `http://${fixtureTailnet}`, localToken: 'fixture' }); await hub.command('connect'); await hub.command('new-session');
     gw.request('reused-id', 'approval', { session_id: 'sess-1', description: 'Old action', choices: ['once', 'deny'] });
     const old = hub.getState(), calls = [], root = new FakeNode('div');
     v = createHermesView({ root, api: { getState: async () => old, onState: () => () => {}, command: (name, value) => { calls.push({ name, value }); return hub.command(name, value); } } });

@@ -1,3 +1,4 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -19,10 +20,10 @@ const connectSource = source.slice(start, end);
 
 function fixture({ diy = true, resume = false, step = 'connect', failure, probe, model = null, tokenedProfiles = [],
   inventory = tokenedProfiles.map(name => name === '*' ? '/fixture/.hermes/.env' : `/fixture/.hermes/profiles/${name}/.env`).join('\n') } = {}) {
-  const host = diy ? 'user@server.example' : 'root@192.0.2.7';
+  const host = diy ? `user@${fixtureTailnet}` : 'root@192.0.2.7';
   const prefs = {
     onboarded: false,
-    macSshHost: 'user@computer.example',
+    macSshHost: `user@${fixtureTailnet}`,
     ...(diy && !resume ? {} : {
       cloud: { step, tokenedProfiles, ...(diy ? { diy: true } : { sessionEnc: 'fixture-session', computerName: 'alan-fixture' }) },
       vpsBrowser: { sshHost: host },
@@ -50,7 +51,7 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, probe,
     },
     sshRun: async (target, command, options) => {
       commands.push(command);
-      assert.ok([host, 'user@new.invalid'].includes(target));
+      assert.ok([host, `user@${fixtureTailnetOther}`].includes(target));
       if (command === require('../src/cloud-migrate.cjs').profilesWithTokenCommand()) {
         calls.push('tokens');
         assert.equal(options.timeoutMs, 8000);
@@ -79,7 +80,7 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, probe,
       return { code: 0, out: JSON.stringify({ state: failure === 'failed' ? 'failed' : 'ready', step: 'paired' }) };
     },
     authorizeComputerKey: async (target) => {
-      assert.ok([host, 'user@new.invalid'].includes(target));
+      assert.ok([host, `user@${fixtureTailnetOther}`].includes(target));
       calls.push('authorize');
       return { ok: failure !== 'authorize', detail: 'fixture authorization failure' };
     },
@@ -101,22 +102,22 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, probe,
 
 test('Connect B starts its own request while A is pending and discards A even on failure', async () => {
   let release;
-  const f = fixture({ probe: target => target === 'user@new.invalid'
+  const f = fixture({ probe: target => target === `user@${fixtureTailnetOther}`
     ? { code: 0, out: 'CONNECT_OK\n' } : new Promise(resolve => { release = resolve; }) });
   const first = f.requestConnect();
-  const next = f.requestConnect('user@new.invalid');
+  const next = f.requestConnect(`user@${fixtureTailnetOther}`);
   await new Promise(setImmediate);
   assert.equal(f.calls.filter(call => call === 'ssh').length, 2, 'different addresses cannot share a pending connection');
   const second = await next;
-  assert.equal(second.host, 'user@new.invalid');
+  assert.equal(second.host, `user@${fixtureTailnetOther}`);
   assert.equal(second.ok, true);
   assert.equal(f.prefs.cloud.step, 'connect', 'the renderer must accept the address before advancing');
   release({ code: 1, out: '' });
   const stale = await first;
-  assert.equal(stale.host, 'user@server.example');
+  assert.equal(stale.host, `user@${fixtureTailnet}`);
   assert.equal(stale.cancelled, true);
   assert.equal(stale.detail, '');
-  assert.equal(f.prefs.vpsBrowser.sshHost, 'user@new.invalid');
+  assert.equal(f.prefs.vpsBrowser.sshHost, `user@${fixtureTailnetOther}`);
   assert.equal(f.calls.filter(call => call === 'authorize').length, 1);
 });
 
@@ -124,7 +125,7 @@ test('changing the saved address cancels Connect before interpreting an old SSH 
   let release;
   const f = fixture({ probe: () => new Promise(resolve => { release = resolve; }) });
   const first = f.requestConnect();
-  f.prefs.vpsBrowser.sshHost = 'user@new.invalid';
+  f.prefs.vpsBrowser.sshHost = `user@${fixtureTailnetOther}`;
   release({ code: 1, out: '' });
   const result = await first;
   assert.equal(result.cancelled, true);
@@ -137,7 +138,7 @@ test('DIY bot-chat discards both inventory reads when the saved host changes', a
   const f = fixture({ resume: true, step: 'model', inventory: kind => new Promise(resolve => { pending[kind] = resolve; }) });
   const result = f.command('cloud-goto', { step: 'bot-chat' });
   assert.deepEqual(Object.keys(pending).sort(), ['profiles', 'tokens']);
-  f.prefs.vpsBrowser.sshHost = 'user@new.invalid';
+  f.prefs.vpsBrowser.sshHost = `user@${fixtureTailnetOther}`;
   pending.tokens({ code: 0, out: '/fixture/.hermes/profiles/old/.env\n' });
   pending.profiles({ code: 0, out: 'old\n' });
   await result;

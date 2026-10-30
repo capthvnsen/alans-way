@@ -1,3 +1,4 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -193,12 +194,12 @@ const { tailscaleSshHost } = require('../src/shell-support.cjs');
 
 test('tailscaleSshHost derives user@tailnet-ip and refuses unusable answers', () => {
   const args = [];
-  const run = (file, argv) => { args.push([file, argv]); return '192.0.2.42\n'; };
-  assert.equal(tailscaleSshHost({ platform: 'linux', username: 'me', run }), 'me@192.0.2.42');
+  const run = (file, argv) => { args.push([file, argv]); return `${fixtureTailnet}\n`; };
+  assert.equal(tailscaleSshHost({ platform: 'linux', username: 'me', run }), `me@${fixtureTailnet}`);
   assert.deepEqual(args[0][1], ['ip', '-4']);
   // Only a clean IPv4 line counts as the tailnet address.
   for (const out of ['', 'not an ip\n', '999.1.2.3\n', '192.0.2.42 trailing\n', '10.0.0.1\n']) {
-    const expected = /^\d+\.\d+\.\d+\.\d+$/.test(out.trim()) && !out.includes('999') ? 'me@' + out.trim() : '';
+    const expected = '';
     assert.equal(tailscaleSshHost({ platform: 'linux', username: 'me', run: () => out }), expected, JSON.stringify(out));
   }
   assert.equal(tailscaleSshHost({ platform: 'linux', username: 'me', run: () => { throw new Error('no cli'); } }), '');
@@ -207,15 +208,15 @@ test('tailscaleSshHost derives user@tailnet-ip and refuses unusable answers', ()
 
 test('tailscaleSshHost probes the bundled CLI before PATH', () => {
   const seen = [];
-  const run = (file) => { seen.push(file); return '192.0.2.42\n'; };
-  assert.equal(tailscaleSshHost({ platform: 'darwin', username: 'me', run, exists: () => true }), 'me@192.0.2.42');
+  const run = (file) => { seen.push(file); return `${fixtureTailnet}\n`; };
+  assert.equal(tailscaleSshHost({ platform: 'darwin', username: 'me', run, exists: () => true }), `me@${fixtureTailnet}`);
   assert.equal(seen[0], '/Applications/Tailscale.app/Contents/MacOS/Tailscale');
   // With the app bundle missing, the PATH name is tried instead.
   seen.length = 0;
   tailscaleSshHost({ platform: 'darwin', username: 'me', run, exists: () => false });
   assert.deepEqual(seen, ['tailscale']);
   seen.length = 0;
-  assert.equal(tailscaleSshHost({ platform: 'win32', username: 'me', programFiles: 'C:\\Program Files', run, exists: () => true }), 'me@192.0.2.42');
+  assert.equal(tailscaleSshHost({ platform: 'win32', username: 'me', programFiles: 'C:\\Program Files', run, exists: () => true }), `me@${fixtureTailnet}`);
   assert.equal(seen[0], 'C:\\Program Files\\Tailscale\\tailscale.exe');
 });
 

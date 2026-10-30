@@ -1,3 +1,4 @@
+const { ip: fixtureTailnet } = require('./tailnet-fixture.cjs');
 // Runs the real VPS browser host against a real headless Chromium to prove the
 // agent URL barrier holds for redirects, userinfo, pop-ups, frames, workers and
 // subresources. Skipped when no Chrome is found (set HERMES_TEST_CHROME).
@@ -664,7 +665,7 @@ test('real Chromium: input aimed at a CAPTCHA on a page with a commit control is
 });
 
 test('real Chromium: a CAPTCHA on a VM tab is refused to the bot, handed to the person with the viewer, and handed back once it clears', { skip: skipNoChrome, timeout: 60000 }, async () => {
-  const h = await spawnHost({ ALANS_WAY_VIEWER_URL: 'http://192.0.2.9:6080/vnc.html?autoconnect=1&password=hunter2' });
+  const h = await spawnHost({ ALANS_WAY_VIEWER_URL: `http://${fixtureTailnet}:6080/vnc.html?autoconnect=1&password=hunter2` });
   const ha = (route, method, body, opts) => h.api(route, method, body, { bot: 'own-bot', ...opts });
   let tab = (await ha('/v1/tabs', 'POST', { url: `http://test.example:${pa}/captcha-form` })).data;
   const snap = await ha(`/v1/tabs/${tab.id}/snapshot`);
@@ -702,7 +703,7 @@ test('real Chromium: a CAPTCHA on a VM tab is refused to the bot, handed to the 
   assert.equal(gated.data.tab.handback.state, 'awaiting_human');
   assert.equal(gated.data.tab.handback.reason, 'captcha');
   assert.match(gated.data.tab.handback.note, /Google "unusual traffic" check on test\.example/);
-  assert.equal(gated.data.tab.handback.viewerUrl, 'http://192.0.2.9:6080/vnc.html?autoconnect=1');
+  assert.equal(gated.data.tab.handback.viewerUrl, `http://${fixtureTailnet}:6080/vnc.html?autoconnect=1`);
   assert.equal(JSON.stringify(gated.data).includes('hunter2'), false);
   const claim = await ha(`/v1/tabs/${tab.id}/control`, 'POST', { controller: 'agent' });
   assert.equal(claim.status, 409);

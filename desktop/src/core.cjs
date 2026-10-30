@@ -1,3 +1,4 @@
+const { isTailnetHost, tailnetUrl } = require('./tailnet.cjs');
 const crypto = require('node:crypto');
 
 function normalizeUrl(value) {
@@ -139,6 +140,7 @@ function parseRemoteUrl(value) {
   if (!['https:', 'http:', 'wss:', 'ws:'].includes(url.protocol) || url.username || url.password) {
     throw new Error('Use an http(s) noVNC URL or ws(s) desktop connection.');
   }
+  if (!tailnetUrl(url)) throw new Error('Use a literal Tailscale IP address for the desktop connection.');
   if (url.protocol === 'https:' || url.protocol === 'http:') {
     const remotePath = url.searchParams.get('path') || 'websockify';
     const prefix = url.pathname.endsWith('/') ? url.pathname : url.pathname.slice(0, url.pathname.lastIndexOf('/') + 1);
@@ -165,9 +167,9 @@ function followVmRemoteUrl(previousSshHost, sshHost, remoteUrl) {
 }
 
 // Saved SSH addresses are interpolated into a remote shell command, so only
-// [user@]host (or an ~/.ssh/config alias) is accepted.
+// [user@]Tailscale-IP is accepted; DNS and SSH aliases cannot redirect it.
 function isSshTarget(value) {
-  return typeof value === 'string' && value.length <= 200 && /^(?:[A-Za-z0-9][A-Za-z0-9._-]*@)?[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value);
+  return typeof value === 'string' && value.length <= 200 && /^(?:[A-Za-z0-9][A-Za-z0-9._-]*@)?(?:[0-9.]+|\[[0-9a-fA-F:]+\])$/.test(value) && isTailnetHost(value);
 }
 
 // Which machine a browser tab runs on: 'computer' is the user's own machine,
@@ -263,9 +265,10 @@ function viewerUrl(value) {
   try {
     const url = new URL(String(value || ''));
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    if (!tailnetUrl(url)) return '';
     url.username = ''; url.password = ''; url.hash = '';
     for (const [key, value] of [...url.searchParams]) {
-      if (!VIEWER_PARAMS.has(key) || /[?=@]|\/\//.test(value) || (key === 'path' && value !== 'websockify')) url.searchParams.delete(key);
+      if ((key === 'host' && !isTailnetHost(value)) || !VIEWER_PARAMS.has(key) || /[?=@]|\/\//.test(value) || (key === 'path' && value !== 'websockify')) url.searchParams.delete(key);
     }
     return url.href;
   } catch { return ''; }

@@ -1,3 +1,5 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 const { resizeWindow } = require('./window-fixture.cjs');
 // Real Electron Settings + main persistence/copy; external work is blocked.
 // Run with: node test/run-electron.cjs test/connections-round2-electron.cjs
@@ -268,7 +270,7 @@ app.whenReady().then(async () => {
           'text/plain': 'Connections clipboard fixture', 'text/html': '<b>Connections clipboard fixture</b>', [custom]: new Blob([Buffer.from([0, 1, 254, 255])]),
         })]);
         if (initial === 'native-url') await clipboard.write([new electron.ClipboardItem({
-          'text/plain': 'https://fixture.invalid/',
+          'text/plain': `https://${fixtureTailnet}/fixture.invalid/`,
           'electron application/osclipboard;format="public.url"': new Blob(['https://fixture.invalid/']),
           'electron application/osclipboard;format="public.url-name"': new Blob(['Fixture bookmark']),
         })]);

@@ -1,3 +1,5 @@
+const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 'use strict';
 const { resizeWindow } = require('./window-fixture.cjs');
 // Builder regression: guarded runtime scaffold adapted after the sealed Settings critic judgement.
@@ -16,7 +18,7 @@ process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 app.getVersion = () => JSON.parse(fs.readFileSync(path.join(snapshot, 'package.json'), 'utf8')).version;
 const prefsFile = path.join(profile, 'preferences.json');
 const originalRead = fs.readFileSync.bind(fs), originalRename = fs.renameSync.bind(fs);
-const initial = { onboarded:true, bots:[{id:'101',name:'Fixture Alpha',username:'fixture_alpha_bot'},{id:'202',name:'Fixture Beta',username:'fixture_beta_bot'}], order:['101','202'], hidden:[], selectedBotId:'101', macSshHost:'fixture@computer-a', vpsBrowser:{sshHost:'fixture@server-a',scriptPath:'',sudo:false}, remoteUrl:'http://server-a:6080/vnc.html', remotePlatform:'linux', autoOpenLinks:true,autoTakeover:true,preview:false, savedTabs:[], lastVersion:'0.21.6' };
+const initial = { onboarded:true, bots:[{id:'101',name:'Fixture Alpha',username:'fixture_alpha_bot'},{id:'202',name:'Fixture Beta',username:'fixture_beta_bot'}], order:['101','202'], hidden:[], selectedBotId:'101', macSshHost:`fixture@${fixtureTailnet}`, vpsBrowser:{sshHost:`fixture@${fixtureTailnet}`,scriptPath:'',sudo:false}, remoteUrl:`http://${fixtureTailnet}/server-a:6080/vnc.html`, remotePlatform:'linux', autoOpenLinks:true,autoTakeover:true,preview:false, savedTabs:[], lastVersion:'0.21.6' };
 fs.writeFileSync(prefsFile, JSON.stringify(initial));
 const output = { mode:process.env.SETTINGS_PERSISTENCE_PHASE||'target', snapshot, started:new Date().toISOString(), provenance:{}, boundary:[], attempts:[], assertions:[], transitions:[], diskWrites:[], dispatches:[], stateReads:[], publications:[], responsiveness:[], screenshots:[] };
 for (const f of ['src/main.cjs','src/preload.cjs','src/preload.bundle.cjs','src/index.html','src/renderer.js','src/style.css']) output.provenance[f] = crypto.createHash('sha256').update(originalRead(path.join(snapshot,f))).digest('hex');
@@ -143,42 +145,42 @@ async function run(){
    await assert(slot+' one next explicit choice changes disk exactly once',async()=>eq([writes(slot)-n,transitions(slot,t),disk()[slot],(await element(id)).checked],[2,1,!old,String(!old)],'next explicit choice'));
   });
  }
- for(const spec of [{slot:'addresses',field:'macSshHost',id:'mac-ssh-host',save:'settings-save-addresses',query:'ssh address',value:'fixture@failed-address',later:'fixture@newer-address'}, {slot:'viewer',field:'remoteUrl',id:'remote-url',save:'round2-viewer-save',query:'viewer',value:'http://failed-viewer.invalid/vnc.html',later:'http://newer-viewer.invalid/vnc.html'}]){
+ for(const spec of [{slot:'addresses',field:'macSshHost',id:'mac-ssh-host',save:'settings-save-addresses',query:'ssh address',value:`failed@${fixtureTailnet}`,later:`newer@${fixtureTailnet}`}, {slot:'viewer',field:'remoteUrl',id:'remote-url',save:'round2-viewer-save',query:'viewer',value:`http://${fixtureTailnet}/failed-viewer.invalid/vnc.html`,later:`http://${fixtureTailnet}/newer-viewer.invalid/vnc.html`}]){
   await scenario(spec.slot+' actual failure preserves later revisions',async()=>{
    await mount(spec.query);if(spec.slot==='viewer')await js(`$('remote-url').closest('.settings-section-body').querySelector('button.primary-button').id='${spec.save}'`);
    const old=disk()[spec.field],n=writes(spec.slot),t=output.transitions.length,a=failedRenameAttempts;
    await input(spec.id,spec.value);const c=hold('settings',spec.slot);failWrite=true;await activate(spec.save);await until(()=>c.persisted,'failed address reply');failWrite=false;
-   await input(spec.id,spec.value);if(spec.slot==='addresses')await input('vps-ssh-host','fixture@later-server');else await input(spec.id,spec.later);
+   await input(spec.id,spec.value);if(spec.slot==='addresses')await input('vps-ssh-host',`fixture-later-server@${fixtureTailnet}`);else await input(spec.id,spec.later);
    c.release();await sleep(120);
-   await assert(spec.slot+' failed write leaves actual saved state and newer draft intact',async()=>{const f=await fieldStatus(spec.id),s=await js('workspace.getState()');eq([failedRenameAttempts-a,disk()[spec.field],s[spec.field],transitions(spec.field,t),f.value,f.dirty],[2,old,old,0,spec.slot==='viewer'?spec.later:spec.value,'true'],'failed draft');if(spec.slot==='addresses') { const later=await fieldStatus('vps-ssh-host');eq([later.value,later.dirty],['fixture@later-server','true'],'independent later field'); }if(!/could not be saved|could not save|save failed/i.test(f.status))throw Error('Missing failure detail '+f.status);return f;});
+   await assert(spec.slot+' failed write leaves actual saved state and newer draft intact',async()=>{const f=await fieldStatus(spec.id),s=await js('workspace.getState()');eq([failedRenameAttempts-a,disk()[spec.field],s[spec.field],transitions(spec.field,t),f.value,f.dirty],[2,old,old,0,spec.slot==='viewer'?spec.later:spec.value,'true'],'failed draft');if(spec.slot==='addresses') { const later=await fieldStatus('vps-ssh-host');eq([later.value,later.dirty],[`fixture-later-server@${fixtureTailnet}`,'true'],'independent later field'); }if(!/could not be saved|could not save|save failed/i.test(f.status))throw Error('Missing failure detail '+f.status);return f;});
    await capture('failed-'+spec.slot+'-draft');
    await activate(spec.save);await sleep(120);
-   await assert(spec.slot+' next explicit save persists intended draft once',()=>{eq([writes(spec.slot)-n,transitions(spec.field,t),disk()[spec.field]],[2,1,spec.slot==='viewer'?spec.later:spec.value],'explicit draft save');if(spec.slot==='addresses')eq([disk().vpsBrowser.sshHost,transitions('vpsBrowser',t)],['fixture@later-server',1],'later server saved once');});
+   await assert(spec.slot+' next explicit save persists intended draft once',()=>{eq([writes(spec.slot)-n,transitions(spec.field,t),disk()[spec.field]],[2,1,spec.slot==='viewer'?spec.later:spec.value],'explicit draft save');if(spec.slot==='addresses')eq([disk().vpsBrowser.sshHost,transitions('vpsBrowser',t)],[`fixture-later-server@${fixtureTailnet}`,1],'later server saved once');});
   });
  }
  await scenario('failed read after persistence preserves a newer draft until explicit check',async()=>{
   await mount('viewer');await js(`$('remote-url').closest('.settings-section-body').querySelector('button.primary-button').id='round2-viewer-save'`);
-  const c=hold('settings','viewer');const n=writes('viewer'),t=output.transitions.length;await input('remote-url','http://read-failure.invalid/vnc.html');failRead=true;await activate('round2-viewer-save');await until(()=>c.persisted,'unknown receipt');
-  await input('remote-url','http://later-read-draft.invalid/vnc.html');c.release();await sleep(120);
-  await assert('read failure keeps pending and later draft',async()=>eq([(await element('round2-viewer-save')).disabled,(await fieldStatus('remote-url')).value,writes('viewer')-n],['true','http://later-read-draft.invalid/vnc.html',1],'unknown remains pending'));
+  const c=hold('settings','viewer');const n=writes('viewer'),t=output.transitions.length;await input('remote-url',`http://${fixtureTailnet}/read-failure.invalid/vnc.html`);failRead=true;await activate('round2-viewer-save');await until(()=>c.persisted,'unknown receipt');
+  await input('remote-url',`http://${fixtureTailnet}/later-read-draft.invalid/vnc.html`);c.release();await sleep(120);
+  await assert('read failure keeps pending and later draft',async()=>eq([(await element('round2-viewer-save')).disabled,(await fieldStatus('remote-url')).value,writes('viewer')-n],['true',`http://${fixtureTailnet}/later-read-draft.invalid/vnc.html`,1],'unknown remains pending'));
   await activate('remote-url-check-save');await assert('failed explicit read keeps recovery actionable',async()=>eq([(await element('remote-url-check-save')).hidden,(await element('round2-viewer-save')).disabled],[false,'true'],'read failed recovery'));
   failRead=false;await activate('remote-url-check-save');await sleep(100);
-  await assert('second explicit read recovers without losing newer draft or replay',async()=>eq([(await element('round2-viewer-save')).disabled,(await fieldStatus('remote-url')).value,(await fieldStatus('remote-url')).dirty,writes('viewer')-n,transitions('remoteUrl',t)],['false','http://later-read-draft.invalid/vnc.html','true',1,1],'recovery preserves draft'));
+  await assert('second explicit read recovers without losing newer draft or replay',async()=>eq([(await element('round2-viewer-save')).disabled,(await fieldStatus('remote-url')).value,(await fieldStatus('remote-url')).dirty,writes('viewer')-n,transitions('remoteUrl',t)],['false',`http://${fixtureTailnet}/later-read-draft.invalid/vnc.html`,'true',1,1],'recovery preserves draft'));
   await activate('settings-discard-viewer');
  });
  await scenario('clean churn bounds bookkeeping while dirty pending and mounted groups survive',async()=>{
-  await mount('ssh address');await input('mac-ssh-host','fixture@retained-dirty');
-  await mount('viewer');await js(`$('remote-url').closest('.settings-section-body').querySelector('button.primary-button').id='round2-viewer-save'`);await input('remote-url','http://pending-churn.invalid/vnc.html');const c=hold('settings','viewer');await activate('round2-viewer-save');await until(()=>c.persisted,'pending churn save');
-  const before=await js('settingsDrafts.size');for(let i=0;i<16;i++)await explicit({remoteUrl:`http://churn-${i}.invalid/vnc.html`});
+  await mount('ssh address');await input('mac-ssh-host',`fixture-retained-dirty@${fixtureTailnet}`);
+  await mount('viewer');await js(`$('remote-url').closest('.settings-section-body').querySelector('button.primary-button').id='round2-viewer-save'`);await input('remote-url',`http://${fixtureTailnet}/pending-churn.invalid/vnc.html`);const c=hold('settings','viewer');await activate('round2-viewer-save');await until(()=>c.persisted,'pending churn save');
+  const before=await js('settingsDrafts.size');for(let i=0;i<16;i++)await explicit({remoteUrl:`http://${fixtureTailnet}/churn-${i}.invalid/vnc.html`});
   const after=await js('settingsDrafts.size');
   await assert('sixteen clean targets retain bounded inactive bookkeeping',()=>{if(after-before>2)throw Error('draft growth '+before+' -> '+after);return {before,after};});
-  await assert('pending and other mounted group dirty draft survive clean eviction',()=>js(`(()=>{const drafts=[...settingsDrafts.values()];if(!drafts.some(d=>d.pending)||!drafts.some(d=>d.values.includes('fixture@retained-dirty')&&d.dirty.some(Boolean)))throw Error('Lost protected draft');return drafts.length})()`));
-  c.release();await sleep(100);await explicit({remoteUrl:'http://pending-churn.invalid/vnc.html'});await mount('viewer');await activate('settings-discard-viewer');await mount('ssh address');
-  await assert('another mounted group retains its dirty input after churn',async()=>eq((await fieldStatus('mac-ssh-host')).value,'fixture@retained-dirty','mounted address draft'));await activate('settings-discard-addresses');
+  await assert('pending and other mounted group dirty draft survive clean eviction',()=>js(`(()=>{const drafts=[...settingsDrafts.values()];if(!drafts.some(d=>d.pending)||!drafts.some(d=>d.values.includes('fixture-retained-dirty@${fixtureTailnet}')&&d.dirty.some(Boolean)))throw Error('Lost protected draft');return drafts.length})()`));
+  c.release();await sleep(100);await explicit({remoteUrl:`http://${fixtureTailnet}/pending-churn.invalid/vnc.html`});await mount('viewer');await activate('settings-discard-viewer');await mount('ssh address');
+  await assert('another mounted group retains its dirty input after churn',async()=>eq((await fieldStatus('mac-ssh-host')).value,`fixture-retained-dirty@${fixtureTailnet}`,'mounted address draft'));await activate('settings-discard-addresses');
  });
  await scenario('saving into a previously dirty target never overwrites its separate draft',async()=>{
   await mount('viewer');await js(`$('remote-url').closest('.settings-section-body').querySelector('button.primary-button').id='round2-viewer-save'`);
-  const a='http://collision-a.invalid/vnc.html',b='http://collision-b.invalid/vnc.html',kept='http://collision-kept-draft.invalid/vnc.html';
+  const a=`http://${fixtureTailnet}/collision-a.invalid/vnc.html`,b=`http://${fixtureTailnet}/collision-b.invalid/vnc.html`,kept=`http://${fixtureTailnet}/collision-kept-draft.invalid/vnc.html`;
   await explicit({remoteUrl:b});await input('remote-url',kept);await explicit({remoteUrl:a});await input('remote-url',b);const t=output.transitions.length;await activate('round2-viewer-save');await sleep(120);
   await assert('destination target dirty draft survives a different draft saving into it',async()=>eq([disk().remoteUrl,(await fieldStatus('remote-url')).value,(await fieldStatus('remote-url')).dirty,transitions('remoteUrl',t)],[b,kept,'true',1],'destination draft collision'));
   await activate('settings-discard-viewer');
@@ -220,20 +222,20 @@ async function legacyFailureRecovery() {
  });
  await scenario('failed legacy addresses retain dirty and independent pending drafts until one explicit save',async()=>{
   await mount('viewer');await js(`$('remote-url').closest('.settings-section-body').querySelector('button.primary-button').id='round3-viewer-save'`);
-  await input('remote-url','http://round3-pending.invalid/vnc.html');const pending=hold('settings','viewer');await activate('round3-viewer-save');await until(()=>pending.persisted,'independent pending viewer');
-  await input('remote-url','http://round3-kept-viewer-draft.invalid/vnc.html');await mount('ssh address');
+  await input('remote-url',`http://${fixtureTailnet}/round3-pending.invalid/vnc.html`);const pending=hold('settings','viewer');await activate('round3-viewer-save');await until(()=>pending.persisted,'independent pending viewer');
+  await input('remote-url',`http://${fixtureTailnet}/round3-kept-viewer-draft.invalid/vnc.html`);await mount('ssh address');
   // Both a same-value edit revision and an independently edited field survive.
-  const saved=disk();await input('mac-ssh-host',saved.macSshHost);await input('vps-ssh-host','fixture@round3-new-server');await sleep(150);
+  const saved=disk();await input('mac-ssh-host',saved.macSshHost);await input('vps-ssh-host',`fixture-round3-new-server@${fixtureTailnet}`);await sleep(150);
   const a=failedRenameAttempts,t=output.transitions.length,w=output.diskWrites.length,n=writes('addresses'),r=output.stateReads.length,d=output.dispatches.length;
-  await failedLegacy({macSshHost:'fixture@round3-failed-mac',vpsBrowser:{sshHost:'fixture@round3-failed-server',scriptPath:'',sudo:false}});await sleep(150);
+  await failedLegacy({macSshHost:`fixture-round3-failed-mac@${fixtureTailnet}`,vpsBrowser:{sshHost:`fixture-round3-failed-server@${fixtureTailnet}`,scriptPath:'',sudo:false}});await sleep(150);
   await assert('failed legacy addresses preserve saved truth, same-value dirty revision and independent pending draft',async()=>{
    eq([failedRenameAttempts-a,output.diskWrites.length-w,disk().macSshHost,disk().vpsBrowser.sshHost],[2,0,saved.macSshHost,saved.vpsBrowser.sshHost],'failed address truth');
-   eq([(await fieldStatus('mac-ssh-host')).value,(await fieldStatus('mac-ssh-host')).dirty,(await fieldStatus('vps-ssh-host')).value,(await fieldStatus('vps-ssh-host')).dirty],[saved.macSshHost,'true','fixture@round3-new-server','true'],'dirty address drafts');
-   if(!await js(`[...settingsDrafts.values()].some(d=>d.pending&&d.values.includes('http://round3-kept-viewer-draft.invalid/vnc.html')&&d.dirty.some(Boolean))`))throw Error('Lost independent pending viewer draft');
+   eq([(await fieldStatus('mac-ssh-host')).value,(await fieldStatus('mac-ssh-host')).dirty,(await fieldStatus('vps-ssh-host')).value,(await fieldStatus('vps-ssh-host')).dirty],[saved.macSshHost,'true',`fixture-round3-new-server@${fixtureTailnet}`,'true'],'dirty address drafts');
+   if(!await js(`[...settingsDrafts.values()].some(d=>d.pending&&d.values.includes('http://${fixtureTailnet}/round3-kept-viewer-draft.invalid/vnc.html')&&d.dirty.some(Boolean))`))throw Error('Lost independent pending viewer draft');
   });
   await activate('settings-save-addresses');
   await assert('failed legacy addresses next single tracked save persists current fields once without refresh',()=>{
-   eq([writes('addresses')-n,output.diskWrites.length-w,transitions('vpsBrowser',t),disk().macSshHost,disk().vpsBrowser.sshHost,output.stateReads.length-r],[1,1,1,saved.macSshHost,'fixture@round3-new-server',0],'next address choice');
+   eq([writes('addresses')-n,output.diskWrites.length-w,transitions('vpsBrowser',t),disk().macSshHost,disk().vpsBrowser.sshHost,output.stateReads.length-r],[1,1,1,saved.macSshHost,`fixture-round3-new-server@${fixtureTailnet}`,0],'next address choice');
    eq(output.dispatches.slice(d).map(x=>x.name),['settings','settings'],'no unrelated command');eq(output.dispatches.at(-1).reply.settingsWrite.status,'saved','address receipt');
   });
   pending.release();await sleep(100);await mount('viewer');await activate('settings-discard-viewer');
