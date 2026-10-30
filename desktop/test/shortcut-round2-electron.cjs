@@ -33,6 +33,7 @@ app.whenReady().then(async () => {
   wc.debugger.attach('1.3');
   // Chromium focus emulation makes DOM keys testable without taking OS focus.
   await wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
+  win.setFocusable(false);
   const frame = () => js('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))');
   const focus = selector => js(`document.querySelector(${JSON.stringify(selector)}).focus()`);
   const active = () => js('document.activeElement.id');
