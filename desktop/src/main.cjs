@@ -1512,6 +1512,10 @@ async function cloudWriteEnv(host, key, value, tokenedProfiles) {
   // error text into setEnvValue or the write would clobber the real .env.
   const write = await sshWrite(host, envPath, cloudModel.setEnvValue(current.code === 0 ? current.out : '', key, value));
   if (write.code !== 0) return { ok: false, detail: 'The computer refused the env file write.' };
+  if (key === 'TELEGRAM_BOT_TOKEN') {
+    const setup = await sshRun(host, cloudTelegram.workspaceSetupCommand(profile), { timeoutMs: 300000 });
+    if (setup.code !== 0) return { ok: false, detail: 'The bot token was saved, but workspace browser setup failed. Check the computer setup and try again.' };
+  }
   const status = await sshRun(host, 'supervisorctl status 2>/dev/null');
   await sshRun(host, cloudModel.gatewayRestartCommand(status.out), { timeoutMs: 30000 });
   return { ok: true, profile };
