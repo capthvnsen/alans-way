@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
 const { createLog } = require('../src/main-log.cjs');
 const { armQuitWatchdog } = require('../src/update-quit.cjs');
 const { buildReport, redactReport } = require('../src/setup-check.cjs');
@@ -26,6 +27,31 @@ test('the log rotates past the cap and keeps exactly one old file', () => {
   assert.ok(fs.statSync(log.file).size <= 200);
   assert.match(log.tail(1), /line: 39$/);
   assert.match(fs.readFileSync(`${log.file}.old`, 'utf8'), /line: \d+\n$/);
+});
+
+test('logs redact secrets before either current or rotated files reach disk', () => {
+  const log = createLog(tmp(), { maxBytes: 1 });
+  const detail = 'Authorization: Bearer synthetic.log.token https://example.test/path?ticket=synthetic-ticket';
+  log.write('error', detail);
+  log.write('password=synthetic-password', detail);
+  const text = fs.readFileSync(log.file, 'utf8') + fs.readFileSync(`${log.file}.old`, 'utf8');
+  assert.doesNotMatch(text, /synthetic[.-]/);
+  assert.match(text, /\[removed\]/);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(log.file).mode & 0o777, 0o600);
+});
+
+test('main-process errors redact secrets before printing to stderr', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
+  const printed = [], logged = [];
+  const logError = vm.runInNewContext(`(${source.slice(source.indexOf('function logError('), source.indexOf('\nlet mainLogger;'))})`, {
+    console: { error: line => printed.push(line) }, setupCheck: { redactReport },
+    mainLog: () => ({ write: (...args) => logged.push(args) }),
+  });
+  logError('Authorization: Bearer synthetic-label', new Error('https://example.test/path?ticket=synthetic-error'));
+  assert.equal(printed.length, 1);
+  assert.doesNotMatch(printed[0], /synthetic[.-]/);
+  assert.match(printed[0], /\[removed\]/);
+  assert.equal(logged.length, 1, 'the file logger still receives the error for its own redaction');
 });
 
 test('logging into an unwritable place never throws', () => {

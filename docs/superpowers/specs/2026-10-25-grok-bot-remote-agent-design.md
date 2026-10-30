@@ -54,7 +54,7 @@ Builder settles with a live check: how the private key reaches the Bot's compute
 
 ### Setup: one generic script
 
-A script in `alans-way-agents` (next to `setup-workspace.sh`, reusing its helpers), working for any remote agent, named generically (e.g. `setup-remote-agent.sh --bot-id grok --bot-name "Grok Bot"`):
+An operator-run script in `alans-way-agents` at `scripts/setup-remote-agent.sh` (outside the installed plugin), working for any remote agent, named generically (e.g. `sh scripts/setup-remote-agent.sh --bot-id grok --bot-name "Grok Bot"`):
 
 1. Generate a dedicated ed25519 key for that bot ID.
 2. Install the forced-command `authorized_keys` line for it. Mac SSH, host OS and state-file flags are copied from the existing Hermes `workspace_browser` block when present, else taken from flags.

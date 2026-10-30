@@ -202,6 +202,60 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
   return { request, close };
 }
 
+// Legacy same-user connectors serialize lease updates; broker-hosted computer
+// routes are required when bots run under separate OS identities.
+function createFileDesktopLease(file, idleMs = 20000, actingMs = 120000) {
+  let active = 0;
+  const busy = () => ({ error: 'desktop_busy', holder: 'Desktop lease unavailable', retryAfter: 1 });
+  const read = () => {
+    let fd;
+    try {
+      fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.size > 4096) throw Error('Invalid lease');
+      const holder = JSON.parse(fs.readFileSync(fd, 'utf8'));
+      if (!holder || typeof holder.botId !== 'string' || typeof holder.name !== 'string' || !Number.isInteger(holder.pid) || holder.pid <= 0 || ![holder.actingUntil, holder.expiresAt].some(Number.isFinite)) throw Error('Invalid lease');
+      return holder;
+    } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    finally { if (fd !== undefined) fs.closeSync(fd); }
+  };
+  const write = (holder) => {
+    const temp = `${file}.${crypto.randomUUID()}.tmp`;
+    try { fs.writeFileSync(temp, JSON.stringify(holder), { flag: 'wx', mode: 0o600 }); fs.renameSync(temp, file); }
+    finally { fs.rmSync(temp, { force: true }); }
+  };
+  const locked = (operation) => {
+    let fd;
+    try { fd = fs.openSync(`${file}.lock`, 'wx', 0o600); return operation(); }
+    catch { return busy(); }
+    finally { if (fd !== undefined) { fs.closeSync(fd); fs.unlinkSync(`${file}.lock`); } }
+  };
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
+  return {
+    take(botId, name) {
+      return locked(() => {
+        if (!botId) return busy();
+        const holder = read(), now = Date.now();
+        if (holder && (holder.botId !== botId || (holder.pid !== process.pid && holder.actingUntil > now && alive(holder.pid)))) {
+          const acting = holder.actingUntil > now && alive(holder.pid);
+          if (acting || holder.expiresAt > now)
+            return { error: 'desktop_busy', holder: holder.name, retryAfter: acting ? idleMs / 1000 : Math.ceil((holder.expiresAt - now) / 1000) };
+        }
+        write({ botId, name: name || botId, pid: process.pid, actingUntil: now + actingMs });
+        active++;
+        return null;
+      });
+    },
+    release(botId) {
+      if (active <= 0 || --active > 0) return;
+      locked(() => {
+        const holder = read();
+        if (holder?.botId === botId && holder.pid === process.pid) write({ botId, name: holder.name, pid: process.pid, expiresAt: Date.now() + idleMs });
+      });
+    },
+  };
+}
+
 // A build is current when the source it was built from is byte-identical, not
 // when mtimes happen to line up: checkouts and packaging reshuffle those.
 const sourceHash = (source) => crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex');
@@ -460,4 +514,4 @@ function createComputer({ command, env, nativeMac = false }) {
   return { driver, service: createComputerService(driver), close: () => driver.close() };
 }
 
-module.exports = { createHelper, createComputer, createComputerService, normalizeStep, normalizeKey, binaryCurrent, recordBuild };
+module.exports = { createHelper, createComputer, createComputerService, createFileDesktopLease, normalizeStep, normalizeKey, binaryCurrent, recordBuild };

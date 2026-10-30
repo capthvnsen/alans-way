@@ -5,6 +5,7 @@
 'use strict';
 
 const { openUsernameScript } = require('./telegram-open.cjs');
+const { shellQuote } = require('./cloud-migrate.cjs');
 
 const TOKEN_PATTERN = /\d{6,}:[A-Za-z0-9_-]{30,}/;
 const TOKEN_STRICT = /^\d{6,}:[A-Za-z0-9_-]{30,}$/;
@@ -59,6 +60,21 @@ async function validateToken(token, fetchImpl = globalThis.fetch) {
 function untokenedProfile(lsOutput, tokenedProfiles) {
   const taken = new Set(Array.isArray(tokenedProfiles) ? tokenedProfiles : []);
   return String(lsOutput || '').split('\n').map((line) => line.trim()).filter(Boolean).sort().find((name) => !taken.has(name)) || '';
+}
+
+// vm-update's installed setup locations; only configure this profile, leaving
+// the live browser, plugins and service definitions in place (including Orgo).
+function workspaceSetupCommand(profile) {
+  // setup.sh reads --profile default as profiles/default, not the root home.
+  const args = ['--non-interactive', '--skip-browser', '--skip-plugin', '--skip-services', ...(profile && profile !== 'default' ? ['--profile', profile] : [])];
+  return `set -eu
+for dir in "$HOME/alans-way-agents" "$HOME/.local/share/alans-way-agents"; do
+  if [ -f "$dir/setup.sh" ]; then
+    exec sh "$dir/setup.sh" ${args.map(shellQuote).join(' ')} </dev/null
+  fi
+done
+echo 'The installed setup.sh was not found.' >&2
+exit 1`;
 }
 
 // The whole conversation runs inside the page: resolve the bot, type in
@@ -131,4 +147,4 @@ function sendMessageScript(handle, text) {
   return { ok: true }; })()`;
 }
 
-module.exports = { TOKEN_PATTERN, parseBotFatherReply, botName, botUsername, retryUsername, validateToken, untokenedProfile, botFatherScript, sendMessageScript };
+module.exports = { TOKEN_PATTERN, parseBotFatherReply, botName, botUsername, retryUsername, validateToken, untokenedProfile, workspaceSetupCommand, botFatherScript, sendMessageScript };
