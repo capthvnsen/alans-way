@@ -398,8 +398,17 @@ app.whenReady().then(async () => {
   console.log('PASS: explicit takeover seals control and page metadata until the human hands the tab back.');
   // The Move button appears only for agent-owned tabs while the VM browser is
   // connected, and on the retired local copy it offers the way back. Both
-  // clicks drive the real handoff IPC; with no VM configured the fixture
-  // surfaces the main-process error through the toast.
+  // clicks drive the real handoff IPC and SSH transport to a controlled failure.
+  const sshBin = path.join(profile, 'handoff-bin');
+  fs.mkdirSync(sshBin);
+  fs.writeFileSync(path.join(sshBin, 'ssh'), `#!/usr/bin/env node
+if (!process.argv.includes('browser-broker@100.64.0.1')) process.exit(2);
+process.stdin.resume();
+process.stdin.on('end', () => process.stdout.write(JSON.stringify({ status: 503, data: { error: 'Controlled VPS handoff unavailable' } })));
+`, { mode: 0o755 });
+  const originalPath = process.env.PATH;
+  process.env.PATH = sshBin + path.delimiter + originalPath;
+  await invoke('settings', { carrySignIns: false, vpsBrowser: { sshHost: 'agent@100.64.0.1', brokerSshHost: 'browser-broker@100.64.0.1', scriptPath: '/fixture/browser-host.cjs' } });
   const keepStateOut = wc.send.bind(wc);
   wc.send = (channel, ...args) => { if (channel !== 'workspace:state') keepStateOut(channel, ...args); };
   let handoffCheck;
@@ -432,10 +441,14 @@ app.whenReady().then(async () => {
       render(real);
       return { up, down, human, internal, back, movedBack, forwardToast, backToast };
     })()`);
-  } finally { wc.send = keepStateOut; }
+  } finally {
+    wc.send = keepStateOut;
+    await invoke('settings', { vpsBrowser: {}, carrySignIns: true });
+    process.env.PATH = originalPath;
+  }
   assert.equal(handoffCheck.up.hidden, false, 'agent tab shows the move control');
   assert.match(handoffCheck.up.text, /^Move to /);
-  assert.match(handoffCheck.forwardToast, /Configure the VPS browser connection/, `the click reached the handoff IPC: ${handoffCheck.forwardToast}`);
+  assert.match(handoffCheck.forwardToast, /Controlled VPS handoff unavailable/, `the click reached the handoff IPC and SSH fixture: ${handoffCheck.forwardToast}`);
   assert.equal(handoffCheck.down.hidden, true, 'hidden while the VM browser is not connected');
   assert.equal(handoffCheck.human.hidden, true, 'hidden for a human-owned tab');
   assert.equal(handoffCheck.internal.hidden, true, 'hidden for an internal page that cannot checkpoint');
