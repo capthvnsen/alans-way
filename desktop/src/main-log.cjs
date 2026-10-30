@@ -4,6 +4,7 @@
 // logging must never be the reason the app misbehaves.
 const fs = require('node:fs');
 const path = require('node:path');
+const { redactReport } = require('./setup-check.cjs');
 
 const MAX_BYTES = 1000000;
 
@@ -12,9 +13,9 @@ function createLog(dir, { maxBytes = MAX_BYTES, now = () => new Date() } = {}) {
   function write(label, detail = '') {
     try {
       fs.mkdirSync(dir, { recursive: true });
-      const line = `${now().toISOString()} ${label}${detail ? `: ${detail}` : ''}\n`;
+      const line = redactReport(`${now().toISOString()} ${label}${detail ? `: ${detail}` : ''}\n`);
       if (fs.existsSync(file) && fs.statSync(file).size + line.length > maxBytes) fs.renameSync(file, `${file}.old`);
-      fs.appendFileSync(file, line);
+      fs.appendFileSync(file, line, { mode: 0o600 });
     } catch {}
   }
   function tail(lines = 100) {

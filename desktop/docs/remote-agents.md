@@ -2,7 +2,7 @@
 
 **Alan's CU MCP** (`workspace-mcp`) is the shared Node computer-use product in `capthvnsen/alans-way`, with its server entry at `desktop/scripts/browser-mcp.cjs`. It stays there. **Alan's Workspace** is the app/host it controls. **Alan's Plugin for Hermes** and **Alan's Plugin for Grok Bot** live in [alans-way-agents](https://github.com/capthvnsen/alans-way-agents) and read one shared persona/voice/proactivity/identity config spec. Grok Bot's plugin is a skill + settings package; it cannot load Python Hermes plugins.
 
-This guide installs/configures the **CU MCP connection**, not the Grok skill/settings package. The published agents tree still needs a canonical Grok package install path and shared spec path; see [product boundaries and TODOs](../../docs/products.md). The router/setup scripts below currently ship under the existing agents repo's `alans-way/scripts/` path. That packaging does not require a generic MCP client to load a Hermes plugin. For local clients, use the [direct stdio example](../../README.md#2-alans-cu-mcp). Community: [Discord](https://discord.gg/jBQCPUsVE) · [openalan.com](https://openalan.com).
+This guide installs/configures the **CU MCP connection**, not the Grok skill/settings package. The published agents tree still needs a canonical Grok package install path and shared spec path; see [product boundaries and TODOs](../../docs/products.md). The router and bridge ship under the agents repo's `alans-way/scripts/`; the operator-run SSH setup tool lives at repository-level `scripts/setup-remote-agent.sh`, outside the installed plugin. That packaging does not require a generic MCP client to load a Hermes plugin. For local clients, use the [direct stdio example](../../README.md#2-alans-cu-mcp). Community: [Discord](https://discord.gg/jBQCPUsVE) · [openalan.com](https://openalan.com).
 
 Any MCP client can use the same Workspace browser (`cua_alans_way_*`) and the same computer use (`workspace_computer_*`) that Hermes uses, with the same failover to the VM browser when your computer sleeps. Grok Bot is the first non-Hermes client. Each agent gets its own bot ID, its own tabs and its own approval.
 
@@ -11,7 +11,7 @@ MCP client ──transport──▶ VM: workspace-router.cjs ──ssh──▶ 
                                      └── computer offline ──▶ VM browser host (mirrored tabs)
 ```
 
-Everything after the router is the Hermes path, unchanged. The router and the setup script ship with the Alan's Way plugin ([`capthvnsen/alans-way-agents`](https://github.com/capthvnsen/alans-way-agents)); the app enforces the desktop lease and the approval gate.
+Everything after the router is the Hermes path, unchanged. The router ships with the Alan's Way plugin; the SSH setup tool runs from a checkout of [`capthvnsen/alans-way-agents`](https://github.com/capthvnsen/alans-way-agents); the app enforces the desktop lease and the approval gate.
 
 ## Transport
 
@@ -29,12 +29,12 @@ The key restriction is enforced by OpenSSH. If the VM has Tailscale's own SSH se
 
 ## Setup (SSH)
 
-On the VM, as the user Hermes runs as:
+On the VM, as the user Hermes runs as, from an `alans-way-agents` checkout:
 
-1. Run `sh ~/.hermes/plugins/alans-way/scripts/setup-remote-agent.sh --bot-id BOT_ID --bot-name "BOT NAME" --user VM_USER`. Pick a short `BOT_ID` such as `grok`. It must not be one of your Hermes bot IDs.
+1. Run `sh scripts/setup-remote-agent.sh --bot-id BOT_ID --bot-name "BOT NAME" --user VM_USER`. Pick a short `BOT_ID` such as `grok`. It must not be one of your Hermes bot IDs.
 2. Copy the printed client JSON. Its shape is [`remote-agent-connector.example.json`](remote-agent-connector.example.json): replace the host (`HOST` in the printed JSON, `VM_HOST` in the example) with the VM's Tailscale name (`*.ts.net`) or `100.x` address, and `KEY_PATH` with where the private key lives on the client's computer.
 3. Put the client's computer on your tailnet and check that it can reach that name. Give the client the private key through its own secret store. Never paste it into a chat.
-4. Check without changing anything: `sh .../setup-remote-agent.sh --bot-id BOT_ID --print --probe` lists the tools through the forced command.
+4. Check without changing anything: `sh scripts/setup-remote-agent.sh --bot-id BOT_ID --print --probe` lists the tools through the forced command.
 
 Remove an agent with `--remove --bot-id BOT_ID`; only its key line goes.
 

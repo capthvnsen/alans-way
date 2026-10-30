@@ -635,21 +635,27 @@ def refuse_password_focus(bus, target):
             apps = [(dest, path) for dest, path, _ in registry_apps(bus)]
         else:
             apps = [target.app]
-        roots = [root for app in apps for root in children_of(bus, app)]
     except Exception:
         if anywhere:
             return
         raise
+    roots = []
+    for app in apps:
+        try:
+            roots += children_of(bus, app)
+        except Exception:
+            # One hung app must not switch the check off for every other app on the screen.
+            if not anywhere:
+                raise
     rule = ([1 << STATE_FOCUSED, 0], 1, {}, 1, [0, 0, 0, 0], 1, [], 1, False)
     args = bus.v('((aiia{ss}iaiiasib)uib)', (rule, 1, 8, True))
     got = bus.many([(d, p, 'org.a11y.atspi.Collection', 'GetMatches', args, '(a(so))') for d, p in roots])
-    if any(isinstance(item, Exception) for item in got):
-        if anywhere:
-            return
+    if not anywhere and any(isinstance(item, Exception) for item in got):
         walk = walk_app(target.pid, target.app, store=False)
         hit = any(e['role'] in PASSWORD and e['ref'] in walk['focused'] for e in walk['elements'])
     else:
-        refs = [tuple(ref) for item in got for ref in item[0]]
+        # shortcut: on the screen, an app without Collection is not checked; walk it if that matters.
+        refs = [tuple(ref) for item in got if not isinstance(item, Exception) for ref in item[0]]
         hit = any(not isinstance(role, Exception) and role[0] in PASSWORD
                   for role in bus.many([(d, p, A, 'GetRoleName', None, '(s)') for d, p in refs]))
     if hit:
@@ -1652,6 +1658,33 @@ def cmd_selftest(req):
         finally:
             del os.environ['ALANS_WAY_AGENT_DESKTOP']
             POLICY.update(saved)
+    finally:
+        globals().update(saved_fns)
+
+    class GuardBus:
+        def v(self, _signature, values):
+            return values
+
+        def many(self, calls):
+            return [RuntimeError('no Collection') if method == 'GetMatches' and path == '/odd'
+                    else ([('d', '/field')],) if method == 'GetMatches' else ('password text',)
+                    for _dest, path, _iface, method, _args, _reply in calls]
+
+    def windows(_bus, app):
+        if app[1] == '/hung':
+            fail('The app stopped responding.', 'unresponsive')
+        return [('d', '/odd' if app[1] == '/plain' else '/win')]
+    saved_fns = {name: globals()[name] for name in ('get_bus', 'registry_apps', 'children_of')}
+    globals().update(get_bus=GuardBus, children_of=windows)
+    try:
+        for others, label in ((['/plain'], 'an app without Collection'), (['/hung'], 'a hung app')):
+            globals()['registry_apps'] = lambda _bus, others=others: [('d', path, n) for n, path in enumerate(others + ['/login'])]
+            try:
+                refuse_password_focus(None, Target(0, None, None))
+                refused = None
+            except Fail as exc:
+                refused = exc.code
+            check(refused == 'off_limits', f'{label} does not switch off the screen password check for the others')
     finally:
         globals().update(saved_fns)
     return {'ok': True, 'checks': checks}

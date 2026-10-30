@@ -663,12 +663,7 @@
         };
       }
       state = next;
-      const sig = JSON.stringify([next.status, next.generation, next.target, next.selected,
-        next.sessions, next.storedSessions, next.storedSessionsError,
-        next.conversation?.transcript?.length, next.conversation?.turn?.text?.length,
-        next.conversation?.pendingRequests, next.conversation?.requestOutcomes, next.error,
-        next.conversation?.statusLine, next.conversation?.errors,
-        next.conversation?.lastSend?.outcome, next.conversation?.phase, next.uncertain]);
+      const sig = JSON.stringify(next);
       // Draft clearing is origin-aware and ack-driven — see dispatchSend. A
       // delivered lastSend (fresh, replayed, or hydrated) only drives the
       // durable rejected/uncertain warning in renderComposer; it never spends

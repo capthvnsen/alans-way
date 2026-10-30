@@ -706,7 +706,17 @@ test('a frame that never loads ends the wait and the snapshot says loading', { s
 test('custom elements and ARIA widgets in shadow roots become refs that toggle', { skip: !chrome && 'no Chrome found (set HERMES_TEST_CHROME)', timeout: 60000 }, async () => {
   const tab = (await api('/v1/tabs', 'POST', { url: `http://bench.example:${port}/widgets` })).data;
   assert.ok(tab.id, `tab did not open: ${stderr}`);
-  const snap = (await api(`/v1/tabs/${tab.id}/snapshot?maxElements=300`)).data;
+  const direct = await CDP.connect(`http://127.0.0.1:${cdpPort}`);
+  const page = await direct.page(tab.targetId);
+  // Pin the renderer clock: this tests shadow traversal, not the 200ms CPU budget.
+  await page.executeJavaScript('window.widgetNow = performance.now; performance.now = () => 0');
+  let snap;
+  try { snap = (await api(`/v1/tabs/${tab.id}/snapshot?maxElements=300`)).data; }
+  finally {
+    await page.executeJavaScript('performance.now = window.widgetNow; delete window.widgetNow');
+    direct.socket.close();
+  }
+  assert.equal(snap.truncated.elements, false, 'the semantic fixture must collect all controls');
   const sw = snap.elements.find((e) => e.role === 'switch' && /Notifications/.test(e.name || ''));
   assert.ok(sw, `shadow switch missing past 80 shadow roots: ${JSON.stringify(snap.elements)}`);
   assert.match(sw.name, /off/);

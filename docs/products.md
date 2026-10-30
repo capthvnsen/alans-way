@@ -13,7 +13,7 @@
 
 The app and CU MCP share a source directory and release bundle today. That is packaging, not a fifth product or a reason to move the server. CU MCP stays at its existing path; `workspace-mcp` is its product/client-entry name, not a new binary or package.
 
-The VM router (`alans-way/scripts/workspace-router.cjs`), `setup-remote-agent.sh`, and optional HTTP bridge currently live in `alans-way-agents`. They adapt remote clients to this repo's CU MCP/host implementation. A generic MCP client does not need the Hermes Python runtime to speak MCP. Existing provisioning instructions may use a Hermes plugin installation path; that does not make the Grok package a Hermes plugin.
+The VM router (`alans-way/scripts/workspace-router.cjs`), the repository-level operator tool `scripts/setup-remote-agent.sh` (outside the installed plugin), and optional HTTP bridge currently live in `alans-way-agents`. They adapt remote clients to this repo's CU MCP/host implementation. A generic MCP client does not need the Hermes Python runtime to speak MCP. Existing provisioning instructions may use a Hermes plugin installation path; that does not make the Grok package a Hermes plugin.
 
 Supporting code in this repo is not another product: `src/hermes_companion/` is the optional Python file-tools/diagnostics CLI, `scripts/` contains install/connect/verification tools, `tests/` tests the Python/support tools, and `desktop/test/` and `ios/*Tests/` test Workspace/CU MCP. `mobile/voice/` is a separate installable Hermes voice bridge supporting Workspace iOS, not the main Alan's Plugin for Hermes product from the agents repo.
 

@@ -294,8 +294,8 @@ async function run() {
     const h=hold('macSshHost',phase);if(phase==='after')h.errorAfter='Lost reply after persistence';else h.errorBefore='Old request rejected before admission';
     await click(saveFor('mac-ssh-host'));await until(()=>held.has(h.id));await edit('mac-ssh-host',b);await recover('mac-ssh-host-check-save');await settled(saveFor('mac-ssh-host'));
     await click(saveFor('mac-ssh-host'));await settled(saveFor('mac-ssh-host'));assert.equal(disk().macSshHost,b);
-    await edit('mac-ssh-host','later-local@computer.invalid');const notice=await text();h.release();await sleep(100);
-    assert.equal(disk().macSshHost,b);assert.equal(await val('mac-ssh-host'),'later-local@computer.invalid');assert.equal(await text(),notice);await click('#settings-discard-addresses');
+    await edit('mac-ssh-host','later-local@computer.invalid');const notice=await js('document.querySelector("#settings-save-addresses + .settings-action-status").textContent');h.release();await sleep(100);
+    assert.equal(disk().macSshHost,b);assert.equal(await val('mac-ssh-host'),'later-local@computer.invalid');assert.equal(await js('document.querySelector("#settings-save-addresses + .settings-action-status").textContent'),notice);await click('#settings-discard-addresses');
   });
   await test('rejected delivery before admission offers immediate checked recovery without false failure',async()=>{
     await show('settings-auto-links');const old=disk().autoOpenLinks,h=hold('autoOpenLinks','before');h.errorBefore='Injected delivery unavailable';
