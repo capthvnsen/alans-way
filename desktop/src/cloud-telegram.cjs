@@ -65,7 +65,8 @@ function untokenedProfile(lsOutput, tokenedProfiles) {
 // vm-update's installed setup locations; only configure this profile, leaving
 // the live browser, plugins and service definitions in place (including Orgo).
 function workspaceSetupCommand(profile) {
-  const args = ['--non-interactive', '--skip-browser', '--skip-plugin', '--skip-services', '--profile', profile || 'default'];
+  // setup.sh reads --profile default as profiles/default, not the root home.
+  const args = ['--non-interactive', '--skip-browser', '--skip-plugin', '--skip-services', ...(profile && profile !== 'default' ? ['--profile', profile] : [])];
   return `set -eu
 for dir in "$HOME/alans-way-agents" "$HOME/.local/share/alans-way-agents"; do
   if [ -f "$dir/setup.sh" ]; then

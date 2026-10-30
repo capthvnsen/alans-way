@@ -124,7 +124,7 @@ for (const [profiles, profile] of [['personal\nwork\n', 'work'], ['', 'default']
     assert.equal(setup[0].command, `set -eu
 for dir in "$HOME/alans-way-agents" "$HOME/.local/share/alans-way-agents"; do
   if [ -f "$dir/setup.sh" ]; then
-    exec sh "$dir/setup.sh" '--non-interactive' '--skip-browser' '--skip-plugin' '--skip-services' '--profile' '${profile}' </dev/null
+    exec sh "$dir/setup.sh" '--non-interactive' '--skip-browser' '--skip-plugin' '--skip-services'${profile === 'default' ? '' : ` '--profile' '${profile}'`} </dev/null
   fi
 done
 echo 'The installed setup.sh was not found.' >&2
