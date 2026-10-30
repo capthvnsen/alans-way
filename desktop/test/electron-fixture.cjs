@@ -19,16 +19,18 @@ function quitFixture(...servers) {
   for (const server of servers) { server?.closeAllConnections(); server?.close(); }
   const deadline = setTimeout(() => { console.error('Electron fixture did not finish teardown within 10s.'); app.exit(1); }, 10000);
   deadline.unref();
-  // Main's before-quit listener saves pending URLs first. Destroy the fixture
-  // views afterwards: unload handlers and attached debuggers must not keep a
-  // successful suite running until the CI step is killed.
-  app.once('before-quit', () => {
+  // Main defers quit while saving browser sessions; keep its views alive until
+  // that drain finishes, then destroy unload handlers and attached debuggers.
+  const destroyViews = event => {
+    if (event.defaultPrevented) return;
+    app.removeListener('before-quit', destroyViews);
     for (const contents of webContents.getAllWebContents()) {
       if (contents.isDestroyed()) continue;
       if (contents.debugger.isAttached()) contents.debugger.detach();
       contents.destroy();
     }
-  });
+  };
+  app.on('before-quit', destroyViews);
   app.quit();
 }
 

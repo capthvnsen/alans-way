@@ -90,7 +90,7 @@ if (typeof electron === 'string') {
   const Module = require('node:module'), load = Module._load;
   Module._load = function(request, ...args) {
     const value = load.call(this, request, ...args);
-    return request === 'electron' ? { ...value, safeStorage: { isEncryptionAvailable: () => false } } : value;
+    return request === 'electron' ? { ...value, safeStorage: { isAsyncEncryptionAvailable: async () => false } } : value;
   };
   const { prepareFixture, quitFixture } = require('./electron-fixture.cjs');
   prepareFixture(process.env.HERMES_WORKSPACE_DATA);
@@ -119,7 +119,7 @@ if (typeof electron === 'string') {
       assert.deepEqual(current.tabs.map(tab => tab.url), expected);
       assert.ok(current.tabs.every(tab => !tab.internal && tab.url !== 'about:blank' && !tab.url.endsWith('/newtab.html')));
     } else if (phase === 'selection') {
-      const current = await waitFor(state, value => value.tabs.length === 15 && value.tabs.slice(0, 14).every(tab => tab.url.startsWith(`${base}/user-`)));
+      const current = await waitFor(state, value => value.tabs.length === 15 && value.tabs[14].internal && value.tabs.slice(0, 14).every(tab => tab.url.startsWith(`${base}/user-`)));
       assert.deepEqual(current.tabs.slice(0, 14).map(tab => tab.url), Array.from({ length: 14 }, (_, i) => `${base}/user-${i}`));
       assert.equal(current.activeTabId, current.tabs[12].id);
       assert.ok(current.tabs.every(tab => tab.owner === 'user' && tab.controller === 'human'));
@@ -139,14 +139,6 @@ if (typeof electron === 'string') {
       const page = await waitFor(() => webContents.getAllWebContents().find(item => item.getURL() === `${base}/fast`), Boolean);
       page.executeJavaScript(`void window.open(${JSON.stringify(`${base}/hang-popup`)})`).catch(() => {});
       await waitFor(state, value => value.tabs.length === 2);
-    }
-    if (phase === 'navigate') {
-      app.once('before-quit', event => {
-        event.preventDefault();
-        win.destroy();
-        for (const contents of webContents.getAllWebContents()) if (!contents.isDestroyed()) contents.stop();
-        setTimeout(() => app.exit(0), 100);
-      });
     }
     quitFixture();
   }).catch(error => { console.error(error.stack); app.exit(1); });

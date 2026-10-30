@@ -14,4 +14,19 @@ async function selectPdfPage(viewer, page, waitFor) {
   })()`));
 }
 
-module.exports = { selectPdfPage };
+// PDF load completion replaces the initial viewport zoom, even after a click.
+async function zoomPdfIn(viewer, waitFor) {
+  const { zoom } = await waitFor(() => viewer.executeJavaScript(`(() => {
+    const pdf = document.querySelector('pdf-viewer');
+    const toolbar = pdf?.shadowRoot?.querySelector('viewer-toolbar');
+    const button = toolbar?.shadowRoot?.querySelector('[title="Zoom in"]');
+    if (pdf?.loadState_ !== 'success' || pdf.isUpdatePending || toolbar?.isUpdatePending ||
+        !button || button.disabled) return false;
+    const zoom = pdf.viewport_.getZoom();
+    button.click();
+    return { zoom };
+  })()`));
+  return zoom;
+}
+
+module.exports = { selectPdfPage, zoomPdfIn };

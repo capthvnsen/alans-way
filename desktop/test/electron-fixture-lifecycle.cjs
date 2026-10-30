@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-test('fixture quit destroys debugger views even when a page refuses unload', { timeout: 80000 }, async () => {
+for (const deferred of [false, true]) test(`fixture quit destroys debugger views after ${deferred ? 'deferred' : 'ordinary'} quit`, { timeout: 80000 }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fixture-quit-'));
   const profile = path.join(dir, 'profile');
   fs.mkdirSync(profile);
@@ -19,6 +19,18 @@ test('fixture quit destroys debugger views even when a page refuses unload', { t
       await win.loadURL('data:text/html,<button>fixture</button>');
       win.webContents.debugger.attach('1.3');
       await win.webContents.executeJavaScript('window.onbeforeunload = () => false; true', true);
+      if (${deferred}) {
+        let ready = false;
+        app.on('before-quit', event => {
+          if (ready) return;
+          event.preventDefault();
+          setTimeout(() => {
+            if (win.isDestroyed()) return app.exit(2);
+            ready = true;
+            app.quit();
+          }, 50);
+        });
+      }
       quitFixture();
     }).catch(error => { console.error(error); app.exit(1); });
   `);
