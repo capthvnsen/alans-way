@@ -184,6 +184,7 @@ test('the nested agent path probe disables SSH aliases and quotes bracketed IPv6
   const section=source.slice(source.indexOf('function testAgentPath()'),source.indexOf('async function runSetupCheck'));
   const {EventEmitter}=require('node:events');let sent;
   const probe=vm.runInNewContext(section+';testAgentPath',{
+    checkBrokerSetup: () => ({ ok: true }), brokerTarget: cfg => cfg.brokerSshHost || cfg.sshHost,
     prefs:{vpsBrowser:{sshHost:'agent@'+fixtureTailnet},macSshHost:'user@[fd7a:115c:a1e0::1]'},seedMacSshHost(){},HOST_LABEL:'mac',
     isSshTarget:require('../src/core.cjs').isSshTarget,TAILNET_SSH_OPTIONS:require('../src/tailnet.cjs').SSH_OPTIONS,cloudMigrate:require('../src/cloud-migrate.cjs'),
     spawn:(_file,args)=>{sent=args;const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();queueMicrotask(()=>child.emit('close',1));return child;},
