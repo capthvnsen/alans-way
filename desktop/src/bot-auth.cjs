@@ -20,10 +20,18 @@ function authorizeBot(file, authorization, botId) {
     const bots = privateJson(file).bots;
     const record = bots?.[botId];
     if (!record || Object.values(bots).filter(item => (item?.token === record.token || item?.uid === record.uid)).length !== 1) return false;
-    return !!record && Number.isInteger(record.uid) && record.uid >= 0 && record.uid !== process.getuid?.()
+    return !!record && Number.isInteger(record.uid) && record.uid > 0 && record.uid !== process.getuid?.()
       && typeof record.token === 'string' && /^[a-f0-9]{64}$/.test(record.token) && isAuthorized(authorization, record.token);
   } catch { return false; }
 }
 
+function approvalIdentity(file, authorization, botId, brokerToken) {
+  if (isAuthorized(authorization, brokerToken)) return undefined;
+  return {
+    generation: require('node:crypto').createHash('sha256').update(String(authorization || '')).digest('hex'),
+    valid: () => authorizeBot(file, authorization, botId),
+  };
+}
+
 function registryFile(root) { return path.join(root, 'bot-credentials.json'); }
-module.exports = { privateJson, authorizeBot, registryFile };
+module.exports = { privateJson, authorizeBot, approvalIdentity, registryFile };

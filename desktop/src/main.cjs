@@ -1,5 +1,5 @@
 const { SSH_OPTIONS: TAILNET_SSH_OPTIONS } = require('./tailnet.cjs');
-const { authorizeBot, registryFile } = require('./bot-auth.cjs');
+const { authorizeBot, approvalIdentity, registryFile } = require('./bot-auth.cjs');
 const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, Notification, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
 const { ACCELERATORS } = require('./workspace-shortcuts.cjs');
 const fs = require('node:fs');
@@ -3074,14 +3074,14 @@ async function readJson(req) {
 function startApi() {
   const desktopLease = process.platform === 'darwin' ? require('./computer.cjs').createDesktopLease() : null;
   const desktopApproval = require('./desktop-approval.cjs').createDesktopApproval({
-    trusted: (id) => isOverseer(id) || prefs.bots.some((bot) => bot.id === id) || prefs.desktopTrustedBots.includes(id),
-    ask: async (name, id, signal) => {
+    trusted: (id, generation) => generation ? prefs.desktopTrustedBots.includes(JSON.stringify([id, generation])) : isOverseer(id) || prefs.bots.some((bot) => bot.id === id) || prefs.desktopTrustedBots.includes(id),
+    ask: async (name, id, signal, generation) => {
       app.dock?.bounce('critical');
       const { response } = await dialog.showMessageBox({ type: 'question', signal, buttons: ['Deny', 'Allow', 'Always allow'], defaultId: 0, cancelId: 0,
         message: `Let ${name} use the apps on this computer?`,
-        detail: `The agent "${name}" (ID ${id}) wants to click, type and press keys in your apps through Alan's Workspace. Allow lasts until it has been idle for 30 minutes. Hermes bots in your Workspace never ask.` });
+        detail: `The agent "${name}" (ID ${id}) wants to click, type and press keys in your apps through Alan's Workspace. Allow lasts until it has been idle for 30 minutes. Identity-bound credentials require a fresh Allow after rotation; legacy Workspace trust is not imported.` });
       if (signal.aborted) return null;
-      if (response === 2) { prefs.desktopTrustedBots = [...new Set([...prefs.desktopTrustedBots, id])]; savePreferences(); }
+      if (response === 2) { prefs.desktopTrustedBots = [...new Set([...prefs.desktopTrustedBots, generation ? JSON.stringify([id, generation]) : id])]; savePreferences(); }
       return response > 0;
     },
   });
@@ -3156,6 +3156,7 @@ function startApi() {
       const computerMatch = /^\/v1\/computer\/(apps|launch|\d{1,10})(?:\/(snapshot|screenshot|action|menu))?$/.exec(url.pathname);
       if (computerMatch) {
         if (!botId || botId.length > 100) return send(400, { error: 'X-Hermes-Bot is required and must be at most 100 characters.' });
+        const identity = approvalIdentity(registryFile(app.getPath('userData')), req.headers.authorization, botId, API_TOKEN);
         let agentName = nameForBot(botId);
         if (!agentName) try { agentName = decodeURIComponent(String(req.headers['x-hermes-bot-name'] || '')).replace(/\p{C}/gu, '').slice(0, 80); } catch { /* the bot ID names it instead */ }
         const controller = new AbortController();
@@ -3170,7 +3171,7 @@ function startApi() {
             if (computerMatch[2] || req.method !== 'POST') return send(405, { error: 'Use POST /v1/computer/launch.' });
             if (!hostComputer.launch) return send(400, { error: 'Opening an app by name is only supported on Mac.' });
             const body = await readJson(req);
-            const refused = await desktopApproval?.check(botId, agentName);
+            const refused = await desktopApproval?.check(botId, agentName, identity);
             if (refused) return send(403, refused);
             const busy = desktopLease?.take(botId, agentName);
             if (busy) return send(409, busy);
@@ -3192,7 +3193,7 @@ function startApi() {
           }
           if (req.method === 'POST' && computerMatch[2] === 'action') {
             const body = await readJson(req);
-            const refused = await desktopApproval?.check(botId, agentName);
+            const refused = await desktopApproval?.check(botId, agentName, identity);
             if (refused) return send(403, refused);
             const busy = desktopLease?.take(botId, agentName);
             if (busy) return send(409, busy);

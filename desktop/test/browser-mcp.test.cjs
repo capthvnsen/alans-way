@@ -10,20 +10,28 @@ const { calls, context, remainingMs, checkCall, READ_BUDGET_MS } = require('../s
 const { performance } = require('node:perf_hooks');
 const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
 
-function connectorRequest(fetch, connection = { url: 'http://127.0.0.1:9', token: 'fixture', botId: 'fixture' }) {
+function connectorRequest(fetch, connection = { url: 'http://127.0.0.1:9', token: 'fixture', botId: 'fixture' }, env = {}) {
   const source = fs.readFileSync(path.join(__dirname, '../scripts/browser-mcp.cjs'), 'utf8');
   return require('node:vm').runInNewContext(source.slice(source.indexOf('const connectionKey ='), source.indexOf('let hostCaps =')) + '\nrequestOnce;', {
+    legacyCredentialWarned: false, process: { env, stderr: { write() {} } },
     fs: { readFileSync: () => JSON.stringify(connection) },
     file: 'fixture', botId: 'fixture', botName: '', URL, fetch, calls, remainingMs, checkCall, READ_BUDGET_MS,
     AbortSignal: { timeout: (ms) => ({ deadline: Date.now() + ms }) },
   });
 }
 
-test('a connector refuses broker credentials and credentials bound to another bot', async () => {
+test('a strict connector refuses broker credentials and credentials bound to another bot', async () => {
   for (const botId of [undefined, 'overseer']) {
-    const request = connectorRequest(() => assert.fail('credentials must be rejected before HTTP'), { url: 'http://127.0.0.1:9', token: 'synthetic', ...(botId ? { botId } : {}) });
+    const request = connectorRequest(() => assert.fail('credentials must be rejected before HTTP'), { url: 'http://127.0.0.1:9', token: 'synthetic', ...(botId ? { botId } : {}) }, { HERMES_WORKSPACE_REQUIRE_BOT_CREDENTIALS: '1' });
     await assert.rejects(request('/v1/status'), /Provision a per-bot connection file/);
   }
+});
+
+test('legacy credentials keep installed connectors working but never select another bound identity', async () => {
+  const connection = { url: 'http://127.0.0.1:9', token: 'synthetic' };
+  const fetch = async () => ({ ok: true, text: async () => JSON.stringify({ legacy: true }) });
+  assert.equal((await connectorRequest(fetch, connection)('/v1/status')).legacy, true);
+  await assert.rejects(connectorRequest(fetch, { ...connection, botId: 'other' })('/v1/status'), /another bot/);
 });
 
 test('tools/list has a short protocol TTL while status and authentication stay live', { timeout: 8000 }, async (t) => {

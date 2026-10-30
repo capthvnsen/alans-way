@@ -198,13 +198,18 @@ const tools = [
     inputSchema: objectSchema({ action: { type: 'string', enum: ['list', 'get'] }, id: { type: 'string', description: 'For get: the recording id from list.' } }, ['action']), annotations: { readOnlyHint: true } },
 ];
 // Keep the two request strings separate even when either contains a delimiter.
+let legacyCredentialWarned = false;
 const connectionKey = connection => JSON.stringify([String(connection.url), String(connection.token), String(connection.botId)]);
 const desktopBusyText = (data, machine = 'Mac') => `desktop_busy: The ${machine} is being used by ${data.holder}; try again in ${data.retryAfter} s. Reads still work. A lease ends after 20 idle seconds, so another agent can take the ${machine} between your calls: once it is free, take a fresh workspace_computer_snapshot before acting. Nothing was sent.`;
 async function requestOnce(endpoint, method = 'GET', body, epoch, approvedConnection) {
   checkCall();
   let connection;
   try { connection = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw new Error('Configured browser unavailable: start its app or browser host first.'); }
-  if (connection.botId !== botId) throw new Error('Configured credentials belong to another bot or the broker. Provision a per-bot connection file.');
+  if ((connection.botId !== undefined && connection.botId !== botId) || (process.env.HERMES_WORKSPACE_REQUIRE_BOT_CREDENTIALS === '1' && connection.botId !== botId)) throw new Error('Configured credentials belong to another bot or the broker. Provision a per-bot connection file.');
+  if (connection.botId === undefined && !legacyCredentialWarned) {
+    legacyCredentialWarned = true;
+    process.stderr.write('Legacy broker credential: provision an isolated per-bot connection, then set HERMES_WORKSPACE_REQUIRE_BOT_CREDENTIALS=1. This route does not isolate bots.\n');
+  }
   const url = new URL(connection.url);
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !connection.token) throw new Error('Invalid local browser connection file.');
   if (approvedConnection && approvedConnection !== connectionKey(connection))

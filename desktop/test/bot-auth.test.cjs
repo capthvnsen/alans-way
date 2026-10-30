@@ -87,3 +87,18 @@ test('provisioning is dry-run by default and rejects same-user exports', { skip:
   assert.throws(() => provision({ ...args, uid: process.getuid() }), /separate/);
   assert.throws(() => provision({ ...args, output: path.join(root, 'a.json') }), /Export outside/);
 });
+
+test('desktop identity binds Allow to a credential generation and rechecks revocation', { skip: !process.getuid }, t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'allow-identity-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'registry.json'), token = 'd'.repeat(64);
+  fs.writeFileSync(file, JSON.stringify({ bots: { a: { uid: process.getuid() + 1, token } } }), { mode: 0o600 });
+  const { approvalIdentity } = require('../src/bot-auth.cjs');
+  const identity = approvalIdentity(file, 'Bearer ' + token, 'a', 'synthetic-broker');
+  assert.equal(identity.valid(), true);
+  assert.notEqual(identity.generation, token);
+  assert.notEqual(identity.generation, approvalIdentity(file, 'Bearer ' + 'e'.repeat(64), 'a', 'synthetic-broker').generation);
+  assert.equal(approvalIdentity(file, 'Bearer synthetic-broker', 'a', 'synthetic-broker'), undefined);
+  fs.writeFileSync(file, JSON.stringify({ bots: {} }));
+  assert.equal(identity.valid(), false);
+});

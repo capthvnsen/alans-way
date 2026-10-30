@@ -1,5 +1,32 @@
 # Identity-bound bot connections
 
+## Upgrade staging and the architecture principal
+
+A nightly upgrade preserves existing connection files and SSH settings. A
+connector using a broker file logs **Legacy broker credential**; that existing
+shared-user route has no hostile-agent isolation and receives no new trust.
+After provisioning an isolated export, select it with `--connection` and set
+`HERMES_WORKSPACE_REQUIRE_BOT_CREDENTIALS=1` in that connector's launcher.
+Strict clients refuse broker files and other bot identities without fallback;
+malformed, revoked or unreadable registries always deny identity-bound calls.
+Legacy sudo transport remains only until a separate broker login is selected.
+
+The operator-assigned immutable `botId` in `bot-credentials.json` **is the
+principal** of architecture PR #241, sections 3/6/9 and launch decision 5.
+The token is its temporary local bearer credential, not a second identity.
+Map the eventual restricted OpenSSH key fingerprint to that same principal;
+never derive identity from display names, headers or Tailscale device identity.
+Grok Bots share their account principal until separate credential storage is
+proved; they never inherit Hermes's principal or Allow.
+
+Desktop Allow for an identity-bound credential is keyed to its principal and
+credential fingerprint on this app/device. Legacy trusted-bot lists are not
+imported. Rotation requires another owner Allow, including Always allow;
+revocation while a prompt is pending refuses input. The registry is reread
+on every request. Full signed host grants, canonical revisioned JSON profiles,
+active-session revocation and restricted OpenSSH 2222 ingress remain rollout
+gates; this preparatory PR does not claim those architecture gates passed.
+
 Before migrating SSH settings, apply companion PR #273: it keeps the agent
 maintenance login separate from the browser broker login. Do not replace the
 agent account with the broker account in the legacy shared SSH field; that
@@ -36,7 +63,7 @@ Apply requires root to assign file ownership. Exports are 0600 and owned by the
 specific bot user. Existing exports must already belong to that identity.
 Run the connector as that bot user with `--bot-id bot-a --connection
 /var/lib/alan-connections/bot-a.json`, or set `HERMES_WORKSPACE_CONNECTION` to
-that path. A connector refuses a broker file or a different bot's file.
+that path. A strict connector refuses a broker file; every connector refuses a different bot's file.
 
 Use the same process for the desktop app's data directory under its human OS
 user. Do not run an untrusted shell as that user. A token boundary cannot protect
