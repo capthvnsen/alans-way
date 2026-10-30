@@ -102,3 +102,18 @@ test('the agent display name comes from the app, else the connector header', asy
   await request('/v1/computer/7/action', 'bidi', 'POST', { 'x-hermes-bot-name': encodeURIComponent('Evil\u202Esremreh\u0007 Bot') });
   assert.deepEqual(asked.map(item => item.name), ['Grok Bot', 'odd', 'Evilsremreh Bot']);
 });
+
+
+test('credential rotation requires a new Allow and revocation during a prompt blocks input', async () => {
+  const { approval, asked } = gate([true, false]);
+  assert.equal(await approval.check('grok', 'Grok', { generation: 'first' }), null);
+  assert.equal((await approval.check('grok', 'Grok', { generation: 'rotated' })).error, 'desktop_approval_denied');
+  assert.equal(asked.length, 2);
+  let finish, valid = true;
+  const pending = createDesktopApproval({ trusted: () => false, ask: () => new Promise(resolve => { finish = resolve; }) });
+  const request = pending.check('grok', 'Grok', { generation: 'first', valid: () => valid });
+  await new Promise(resolve => setImmediate(resolve));
+  valid = false; finish(true);
+  assert.equal((await request).error, 'credential_revoked');
+  assert.equal((await pending.check('grok', 'Grok', { generation: 'first', valid: () => valid })).error, 'credential_revoked');
+});

@@ -56,8 +56,11 @@ async function connect(t, command, args, env = {}) {
   return { client, call };
 }
 
-const direct = (t, app, botId, botName) => connect(t, process.execPath,
-  [connector, '--bot-id', botId, ...(botName ? ['--bot-name', botName] : [])], { HERMES_WORKSPACE_CONNECTION: app.connection });
+const direct = (t, app, botId, botName) => {
+  const connection = path.join(app.dir, 'bot-' + require('node:crypto').createHash('sha256').update(botId).digest('hex') + '.json');
+  fs.writeFileSync(connection, JSON.stringify({ ...JSON.parse(fs.readFileSync(app.connection)), botId }));
+  return connect(t, process.execPath, [connector, '--bot-id', botId, ...(botName ? ['--bot-name', botName] : [])], { HERMES_WORKSPACE_CONNECTION: connection });
+};
 
 test('a raw connector client sees client-neutral tools that advertise expect_host', { timeout: 15000 }, async t => {
   const app = await fakeApp(t);

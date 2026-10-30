@@ -150,7 +150,7 @@ async function startClient(elicitation = true) {
     const reply = await fetch(connection.url + req.url, { method: req.method, headers: { ...req.headers, host: new URL(connection.url).host }, ...(body ? { body } : {}) });
     const output = await reply.text(); record.response = { status: reply.status, body: JSON.parse(output) }; res.writeHead(reply.status, { 'Content-Type': 'application/json' }); res.end(output);
   });
-  fs.writeFileSync(path.join(temp, 'proxy-connection.json'), JSON.stringify({ ...connection, url: `http://127.0.0.1:${await listen(proxy)}` }));
+  fs.writeFileSync(path.join(temp, 'proxy-connection.json'), JSON.stringify({ ...connection, botId: 'binding-bot', url: `http://127.0.0.1:${await listen(proxy)}` }));
   await startClient();
   await runCase('ref', { ref: true }, /commit_required/, { zeroForward: true });
   const names = ['Buy it again', ' Buy it again ', 'BUY IT AGAIN', 'Buy  it again', 'Buy\tit again', 'Buy\u00a0it again', 'Buy\u2003it again'];

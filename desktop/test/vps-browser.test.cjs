@@ -23,7 +23,7 @@ test('script paths are absolute Unix or Windows paths from a small safe alphabet
 test('POSIX browser commands add user tools; Windows keeps its native command', () => {
   assert.equal(remoteCommand({ scriptPath: '/opt/hermes app/h.cjs' }), posixCommand('node "/opt/hermes app/h.cjs" request'));
   assert.equal(remoteCommand({ scriptPath: 'C:\\Users\\a b\\h.cjs' }), 'node "C:\\Users\\a b\\h.cjs" request');
-  assert.equal(remoteCommand({ scriptPath: '/x/h.cjs', sudo: true }), posixCommand('_alan_node=$(command -v node) && sudo -n "$_alan_node" "/x/h.cjs" request'));
+  assert.throws(() => remoteCommand({ scriptPath: '/x/h.cjs', sudo: true, brokerSshHost: 'broker@host.example' }), /separate broker SSH user/);
 });
 
 test('requests are sent as ASCII so no shell re-encodes them', () => {
@@ -144,9 +144,8 @@ test('settleWithin gives up on a hung promise', async () => {
   assert.equal(await settleWithin(Promise.reject(new Error('x')), 30, 'late'), 'late');
 });
 
-test('sudo is never prepended for a Windows drive path', () => {
-  assert.equal(remoteCommand({ scriptPath: 'C:\\h.cjs', sudo: true }), 'node "C:\\h.cjs" request');
-  assert.equal(remoteCommand({ scriptPath: '/h.cjs', sudo: true }), posixCommand('_alan_node=$(command -v node) && sudo -n "$_alan_node" "/h.cjs" request'));
+test('provisioned broker sudo request helpers are refused on every platform', () => {
+  for (const scriptPath of ['C:/h.cjs', '/h.cjs']) assert.throws(() => remoteCommand({ scriptPath, sudo: true, brokerSshHost: 'broker@host.example' }), /separate broker SSH user/);
 });
 
 test('the mirror cap is measured on the escaped payload that is actually sent', () => {
@@ -211,4 +210,9 @@ test('cookies moved back from the VM are limited to the page they belong to', ()
   assert.deepEqual(toElectronCookies([{ ...base, name: 'sid', domain: 'shop.example' }], 'http://shop.example/'), [], 'a Secure cookie never lands on an http page');
   assert.deepEqual(toElectronCookies([{ ...base, name: 'sid', domain: 'shop.example' }], 'file:///etc/passwd'), []);
   assert.deepEqual(toElectronCookies('nope', 'https://shop.example/'), []);
+});
+
+
+test('legacy sudo settings survive an app upgrade', () => {
+  assert.match(remoteCommand({ scriptPath: '/app/host.cjs', sudo: true }), /sudo -n/);
 });

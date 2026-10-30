@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Add-on browser host. Stock Hermes connects through MCP; its runtime is unchanged.
+const { authorizeBot, privateJson, registryFile: botRegistryFile } = require('../src/bot-auth.cjs');
 const { calls, context, remainingMs, checkCall } = require('../src/call-budget.cjs');
 const fs = require('node:fs'),
   path = require('node:path'),
@@ -23,6 +24,8 @@ const configFile = path.join(root, 'config.json'),
   connectionFile = path.join(root, 'connection.json'),
   registryFile = path.join(root, 'tabs.json'),
   mirrorFile = path.join(root, 'mirror.json');
+// Both broker tokens belong to the broker OS user. Export only identity-bound
+// bot connections with bot-credential.cjs to separate bot OS users.
 // The app token authorizes human-only operations. It lives outside the agent's
 // connection file; config.appTokenFile can move it somewhere the agent user
 // cannot read (see the setup notes for running the broker under another user).
@@ -88,9 +91,10 @@ async function read(req, limit = 150000) {
   return JSON.parse(Buffer.concat(chunks).toString() || '{}');
 }
 async function request(input) {
-  const c = JSON.parse(fs.readFileSync(connectionFile));
+  const c = privateJson(connectionFile);
   if (!/^\/v1\/(status|tabs|mirror|restore)(\/|$)/.test(input.path)) throw new Error('Invalid browser operation.');
-  const token = input.human || input.path.startsWith('/v1/mirror') ? JSON.parse(fs.readFileSync(appTokenFile())).token : c.token;
+  if (c.botId && (c.botId !== input.botId || input.human || input.path.startsWith('/v1/mirror'))) throw new Error('Bot credentials cannot request another identity or human operations.');
+  const token = input.human || input.path.startsWith('/v1/mirror') ? privateJson(appTokenFile()).token : c.token;
   const response = await fetch(c.url + input.path, {
     method: input.method || 'GET',
     headers: {
@@ -940,7 +944,7 @@ async function serve() {
       res.end(JSON.stringify(data));
     };
     const isApp = isAuthorized(req.headers.authorization, appToken);
-    if (req.headers.origin || !(isApp || isAuthorized(req.headers.authorization, token)))
+    if (req.headers.origin || !(isApp || isAuthorized(req.headers.authorization, token) || authorizeBot(botRegistryFile(root), req.headers.authorization, String(req.headers['x-hermes-bot'] || ''))))
       return send(401, { error: 'Unauthorized' });
     const url = new URL(req.url, 'http://127.0.0.1');
     // Status must answer even while Chromium is down: it is the liveness,

@@ -19,6 +19,7 @@ function computerRoutes(driver = {}, { approval = createDesktopApproval({ ask: a
     const send = (status, body) => ({status, body});
     ${routes}
   }`, {
+    approvalIdentity: () => undefined, registryFile: () => '', app: { getPath: () => '' }, API_TOKEN: 'synthetic',
     URL, AbortController, process: { platform: 'darwin' },
     calls, context, READ_BUDGET_MS,
     readJson: async req => req.body || {}, intParam: () => undefined,

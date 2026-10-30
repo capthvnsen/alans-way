@@ -79,7 +79,7 @@ app.whenReady().then(async () => {
   });
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
   const connection = path.join(profile, 'fault-proxy.json');
-  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${proxy.address().port}`, token: 'isolated-fixture' }));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${proxy.address().port}`, token: 'isolated-fixture', botId: '4242' }));
   await connect(connection);
   const original = data(await call('open-original', 'cua_alans_way_open', { url: base + '?original' }));
   const continued = data(await call('open-continued', 'cua_alans_way_open', { url: base + '?continued' }));

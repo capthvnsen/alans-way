@@ -14,7 +14,7 @@ const checkScriptPath = (value) => SCRIPT_PATH.test(value) ? '' : 'Invalid VPS b
 // sudo is POSIX-only, so a Windows drive path never gets it.
 const remoteCommand = (cfg) => {
   const windows = /^[A-Za-z]:/.test(cfg.scriptPath);
-  // Resolve Node before sudo's secure_path removes user install locations.
+  if (cfg.sudo && (cfg.brokerSshHost || process.env.HERMES_WORKSPACE_REQUIRE_BOT_CREDENTIALS === '1')) throw new Error('Use the separate broker SSH user; generic sudo request helpers are refused.');
   const node = cfg.sudo && !windows ? '_alan_node=$(command -v node) && sudo -n "$_alan_node"' : 'node';
   const command = node + ' "' + cfg.scriptPath + '" request';
   return windows ? command : posixCommand(command);

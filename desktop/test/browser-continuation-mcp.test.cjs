@@ -22,7 +22,7 @@ test('approval-bearing control calls never follow a missing tab into a continuat
   });
   const first = serve('first'), second = serve('second');
   await Promise.all([first, second].map(host => new Promise(resolve => host.listen(0, '127.0.0.1', resolve))));
-  const original = { url: `http://127.0.0.1:${first.address().port}`, token: 'a'.repeat(64) };
+  const original = { url: `http://127.0.0.1:${first.address().port}`, token: 'a'.repeat(64), botId: 'fixture' };
   fs.writeFileSync(connection, JSON.stringify(original));
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection,
@@ -88,7 +88,7 @@ test('continuation requires a known missing-tab rejection, never an uncertain ac
   });
   await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
   const connection = path.join(profile, 'connection.json');
-  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture' }));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture', botId: 'fixture' }));
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection, '--tab-map', '{"old":"next"}'] });
   const client = new Client({ name: 'continuation-regression', version: '1' });

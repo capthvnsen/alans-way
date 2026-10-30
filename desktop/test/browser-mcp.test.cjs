@@ -10,14 +10,29 @@ const { calls, context, remainingMs, checkCall, READ_BUDGET_MS } = require('../s
 const { performance } = require('node:perf_hooks');
 const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
 
-function connectorRequest(fetch) {
+function connectorRequest(fetch, connection = { url: 'http://127.0.0.1:9', token: 'fixture', botId: 'fixture' }, env = {}) {
   const source = fs.readFileSync(path.join(__dirname, '../scripts/browser-mcp.cjs'), 'utf8');
   return require('node:vm').runInNewContext(source.slice(source.indexOf('const connectionKey ='), source.indexOf('let hostCaps =')) + '\nrequestOnce;', {
-    fs: { readFileSync: () => JSON.stringify({ url: 'http://127.0.0.1:9', token: 'fixture' }) },
+    legacyCredentialWarned: false, process: { env, stderr: { write() {} } },
+    fs: { readFileSync: () => JSON.stringify(connection) },
     file: 'fixture', botId: 'fixture', botName: '', URL, fetch, calls, remainingMs, checkCall, READ_BUDGET_MS,
     AbortSignal: { timeout: (ms) => ({ deadline: Date.now() + ms }) },
   });
 }
+
+test('a strict connector refuses broker credentials and credentials bound to another bot', async () => {
+  for (const botId of [undefined, 'overseer']) {
+    const request = connectorRequest(() => assert.fail('credentials must be rejected before HTTP'), { url: 'http://127.0.0.1:9', token: 'synthetic', ...(botId ? { botId } : {}) }, { HERMES_WORKSPACE_REQUIRE_BOT_CREDENTIALS: '1' });
+    await assert.rejects(request('/v1/status'), /Provision a per-bot connection file/);
+  }
+});
+
+test('legacy credentials keep installed connectors working but never select another bound identity', async () => {
+  const connection = { url: 'http://127.0.0.1:9', token: 'synthetic' };
+  const fetch = async () => ({ ok: true, text: async () => JSON.stringify({ legacy: true }) });
+  assert.equal((await connectorRequest(fetch, connection)('/v1/status')).legacy, true);
+  await assert.rejects(connectorRequest(fetch, { ...connection, botId: 'other' })('/v1/status'), /another bot/);
+});
 
 test('tools/list has a short protocol TTL while status and authentication stay live', { timeout: 8000 }, async (t) => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-schema-cache-'));
@@ -30,7 +45,7 @@ test('tools/list has a short protocol TTL while status and authentication stay l
     res.end(JSON.stringify(online ? { host: 'mac' } : { error: 'unauthorized' }));
   });
   await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
-  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture' }));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture', botId: 'fixture' }));
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection] });
   const client = new Client({ name: 'schema-cache-regression', version: '1' });
@@ -106,7 +121,7 @@ test('open optionally includes a bounded snapshot and keeps its tab receipt when
   });
   await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
   const connection = path.join(profile, 'connection.json');
-  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture' }));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture', botId: 'fixture' }));
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection] });
   const client = new Client({ name: 'open-observation-regression', version: '1' });
@@ -231,7 +246,7 @@ for (const computer of [false, true]) for (const stop of ['deadline', 'cancel'])
     entered();
   });
   await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
-  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture' }));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture', botId: 'fixture' }));
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection] });
   const client = new Client({ name: 'call-budget-test', version: '1' });
@@ -264,7 +279,7 @@ for (const computer of [false, true]) for (const stop of ['deadline', 'cancel'])
 test('public recovery guidance limits retries to reads and preserves uncertain mutation review', { timeout: 8000 }, async (t) => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-recovery-guidance-'));
   const connection = path.join(profile, 'connection.json');
-  fs.writeFileSync(connection, JSON.stringify({ url: 'http://127.0.0.1:9', token: 'fixture' }));
+  fs.writeFileSync(connection, JSON.stringify({ url: 'http://127.0.0.1:9', token: 'fixture', botId: 'fixture' }));
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection],
     env: { ELECTRON_RUN_AS_NODE: '1' } });
@@ -329,7 +344,7 @@ test('control changes require a controller and epoch receipt and never replay un
     else res.end(reply);
   });
   await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
-  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture' }));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture', botId: 'fixture' }));
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'fixture', '--connection', connection,
       '--tab-map', '{"old":"next"}'] });
@@ -410,8 +425,8 @@ for (const action of ['claim', 'release']) test(`approval-bearing ${action} pins
   await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${host.address().port}`;
   const token = 'a'.repeat(64);
-  fs.writeFileSync(connection, JSON.stringify({ url, token }));
-  replacement = { url, token: 'b'.repeat(64) };
+  fs.writeFileSync(connection, JSON.stringify({ url, token, botId: 'mcp-test' }));
+  replacement = { url, token: 'b'.repeat(64), botId: 'mcp-test' };
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', connection] });
   const client = new Client({ name: 'control-identity-regression', version: '1' });
@@ -444,8 +459,8 @@ test('approved forwarding distinguishes URL and token pairs containing separator
   });
   await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${host.address().port}`;
-  fs.writeFileSync(connection, JSON.stringify({ url: `${origin}/a`, token: 'b|c' }));
-  replacement = { url: `${origin}/a|b`, token: 'c' };
+  fs.writeFileSync(connection, JSON.stringify({ url: `${origin}/a`, token: 'b|c', botId: 'mcp-test' }));
+  replacement = { url: `${origin}/a|b`, token: 'c', botId: 'mcp-test' };
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', connection] });
   const client = new Client({ name: 'connection-identity-regression', version: '1' });
@@ -478,7 +493,7 @@ test('snapshot proof recovers from an initially unsupported host without restart
   });
   await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
   const connection = path.join(profile, 'connection.json');
-  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 }));
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', connection] });
   const client = new Client({ name: 'capability-recovery-regression', version: '1' });
@@ -521,7 +536,7 @@ test('browser MCP rejects unusable action receipts as uncertain without replay',
   });
   await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
   const connection = path.join(profile, 'connection.json');
-  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 }));
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', connection, '--tab-map', '{"t1":"vm1"}'] });
   const client = new Client({ name: 'browser-receipt-regression', version: '1' });
@@ -581,7 +596,7 @@ test('browser MCP reports a response-body disconnect without replaying uncertain
   });
   await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
   const connectionFile = path.join(profile, 'connection.json');
-  fs.writeFileSync(connectionFile, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  fs.writeFileSync(connectionFile, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 }));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', connectionFile],
@@ -616,7 +631,7 @@ test('browser MCP preserves supported action receipts, API errors and empty read
   });
   await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
   const connection = path.join(profile, 'connection.json');
-  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 }));
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', connection] });
   const client = new Client({ name: 'browser-receipt-compatibility', version: '1' });
@@ -664,7 +679,7 @@ test('browser MCP exposes close and reports non-JSON host errors cleanly', { tim
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
   const bad = http.createServer((_req, res) => { res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('upstream timeout from proxy'); });
   await new Promise((resolve) => bad.listen(0, '127.0.0.1', resolve));
-  const connection = { url: `http://127.0.0.1:${bad.address().port}`, token: 'fixture-token', protocol: 1 };
+  const connection = { url: `http://127.0.0.1:${bad.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 };
   fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify(connection));
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -701,7 +716,7 @@ test('open rejects an unrecognized host instead of dropping it', { timeout: 8000
     res.end('{"id":"t1"}');
   });
   await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
-  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 }));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')],
@@ -735,7 +750,7 @@ test('the recordings tool is read-only and asks the app for this bot only', { ti
     res.end(req.url === '/v1/recordings' ? '{"recordings":[]}' : '{"id":"rec-12345678","steps":[]}');
   });
   await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
-  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 }));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')],
@@ -768,7 +783,7 @@ test('browser tool results omit favicon images', { timeout: 8000 }, async (t) =>
     res.end(JSON.stringify({ tabs: [{ id: 't', title: 'Inbox', url: 'https://a.example/', epoch: 3, favicon: icon }] }));
   });
   await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
-  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 }));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')],
@@ -800,7 +815,7 @@ test('a --tab-map retargets each missing Mac tab onto its own VM tab', { timeout
     res.end(JSON.stringify(known ? { url: 'https://vm.example/', elements: [] } : { error: 'Tab not found.' }));
   });
   await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
-  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 }));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json'),
@@ -834,7 +849,7 @@ async function statusFromLinuxConnection(t, configure) {
   delete env.XDG_CONFIG_HOME;
   const base = configure({ home, env });
   fs.mkdirSync(path.join(base, 'Hermes Workspace'), { recursive: true });
-  fs.writeFileSync(path.join(base, 'Hermes Workspace', 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  fs.writeFileSync(path.join(base, 'Hermes Workspace', 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 }));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ['-r', path.join(__dirname, 'fake-linux-platform.cjs'), path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test'],
@@ -874,7 +889,7 @@ test('browser MCP exposes select, double click, right click and drag, and forwar
     res.end(JSON.stringify(req.url.endsWith('/control') ? { id: 't', controller: received.controller, epoch: 3 } : { dispatched: true }));
   });
   await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
-  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 }));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')],
@@ -913,7 +928,7 @@ test('a named action on a host without name-targets is refused before it is sent
     res.end(req.url === '/v1/status' ? '{"capabilities":["tabs","snapshot"]}' : '{"dispatched":true}');
   });
   await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
-  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 }));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')],
@@ -951,10 +966,11 @@ async function computerHost(t, capabilities, hostLabel, { botId = 'mcp-test', bo
       : JSON.stringify({ generation: 4, via: 'app-api-marker' }));
   });
   await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
-  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  const connection = path.join(profile, botId === 'mcp-test' ? 'connection.json' : `${botId}-connection.json`);
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId, protocol: 1 }));
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: ['-r', path.join(__dirname, 'fake-computer-service.cjs'), path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', botId, ...(botName ? ['--bot-name', botName] : []), '--connection', path.join(profile, 'connection.json')],
+    args: ['-r', path.join(__dirname, 'fake-computer-service.cjs'), path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', botId, ...(botName ? ['--bot-name', botName] : []), '--connection', connection],
     env: { ...process.env },
   });
   const client = new Client({ name: 'browser-mcp-test', version: '1' });
@@ -1097,7 +1113,7 @@ test('a named step sent to a host from before name targets says to act by ref', 
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-'));
   const old = http.createServer((_req, res) => { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Provide a fresh element reference, selector, or viewport x and y coordinates.' })); });
   await new Promise((resolve) => old.listen(0, '127.0.0.1', resolve));
-  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${old.address().port}`, token: 'fixture-token', protocol: 1 }));
+  fs.writeFileSync(path.join(profile, 'connection.json'), JSON.stringify({ url: `http://127.0.0.1:${old.address().port}`, token: 'fixture-token', botId: 'mcp-test', protocol: 1 }));
   const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'mcp-test', '--connection', path.join(profile, 'connection.json')], env: { ...process.env } });
   const client = new Client({ name: 'browser-mcp-test', version: '1' });
   t.after(async () => { await client.close().catch(() => {}); await transport.close().catch(() => {}); await new Promise((resolve) => old.close(resolve)); fs.rmSync(profile, { recursive: true, force: true }); });
@@ -1126,7 +1142,7 @@ test('a cropped browser screenshot reaches the host and returns its coordinate m
   });
   await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
   const connection = path.join(profile, 'connection.json');
-  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', protocol: 1 }));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId: 'crop-test', protocol: 1 }));
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', 'crop-test', '--connection', connection] });
   const client = new Client({ name: 'browser-crop-test', version: '1' });

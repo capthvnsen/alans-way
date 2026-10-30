@@ -641,6 +641,18 @@ test('the agent token cannot claim to be the human or touch the mirror', async (
   assert.equal(stranger.status, 401);
 });
 
+test('per-bot credentials cannot impersonate an owner, overseer or human', async () => {
+  const host = await startHost();
+  const token = 'c'.repeat(64);
+  fs.writeFileSync(path.join(host.dir, 'bot-credentials.json'), JSON.stringify({ bots: { isolated: { token, uid: process.getuid() + 1 } } }), { mode: 0o600 });
+  assert.equal((await host.api('/v1/tabs', 'GET', undefined, { bot: 'isolated', token })).status, 200);
+  for (const bot of ['bot-a', 'overseer-1', '']) for (const route of ['/v1/status', '/v1/tabs', '/v1/restore'])
+    assert.equal((await host.api(route, 'GET', undefined, { bot, token })).status, 401);
+  assert.equal((await host.api('/v1/tabs', 'GET', undefined, { bot: 'isolated', token, human: true })).status, 403);
+  fs.writeFileSync(path.join(host.dir, 'bot-credentials.json'), JSON.stringify({ bots: {} }));
+  assert.equal((await host.api('/v1/tabs', 'GET', undefined, { bot: 'isolated', token })).status, 401);
+});
+
 test('request mode sends the app token only for human and mirror operations', async () => {
   const run = (input) => new Promise((resolve) => {
     const child = spawn(process.execPath, [path.join(__dirname, '../scripts/vps-browser-host.cjs'), 'request'], { env: { ...process.env, HERMES_VPS_BROWSER_DATA: main.dir } });
