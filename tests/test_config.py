@@ -91,3 +91,24 @@ class TailnetConfigTests(unittest.TestCase):
         for host in ('user@127.0.0.1','user@10.0.0.1','user@203.0.113.10','user@private-mac','user@host.ts.net','user@2001:db8::1','user@[fd7a:115c:a1e0::1]%en0','user@100.064.0.1'):
             with self.subTest(host=host), self.assertRaises(ValueError):
                 validate_host(host)
+
+
+class LegacyUpgradeTests(unittest.TestCase):
+    def test_existing_aliases_keep_working_until_enforcement_is_selected(self):
+        import os
+        import subprocess
+        import sys
+        script = """
+from hermes_companion.config import build_mcp_config
+args = build_mcp_config('user@saved-alias', '/opt/python', '/srv/approved')['mcp_servers']['mac_companion']['args']
+assert '-F' not in args
+assert args[-2] == 'user@saved-alias'
+try:
+    build_mcp_config('user@host;command', '/opt/python', '/srv/approved')
+except ValueError:
+    pass
+else:
+    raise AssertionError('shell syntax accepted')
+"""
+        result = subprocess.run([sys.executable, '-c', script], env={**os.environ, 'HERMES_WORKSPACE_REQUIRE_TAILNET': '0'}, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)

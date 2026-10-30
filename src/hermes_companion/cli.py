@@ -15,7 +15,7 @@ import tempfile
 from collections.abc import Sequence
 
 from . import __version__
-from .config import MAC_TOOLS, WINDOWS_TOOLS, build_mcp_config, validate_absolute_path, validate_windows_path
+from .config import REQUIRE_TAILNET, MAC_TOOLS, WINDOWS_TOOLS, build_mcp_config, validate_absolute_path, validate_windows_path
 
 _HOST_SPEC = {
     "mac": {"tools": MAC_TOOLS, "execution_host": "mac", "system": "Darwin", "server_key": "mac_companion"},
@@ -220,7 +220,7 @@ def _parser() -> argparse.ArgumentParser:
         ("verify-mac", "explicitly verify one private SSH MCP connection; no config writes"),
     ):
         connection = commands.add_parser(name, help=help_text)
-        connection.add_argument("--mac-host", required=True, help="user@literal-Tailscale-IP (no DNS name or SSH alias)")
+        connection.add_argument("--mac-host", required=True, help="user@host (literal Tailscale IP when enforcement is enabled)")
         connection.add_argument("--mac-python", required=True, help="absolute remote Python path (POSIX or X:\\)")
         connection.add_argument("--workspace", required=True, help="absolute approved remote workspace")
         connection.add_argument("--host-os", choices=["mac", "windows"], default="mac",
@@ -265,6 +265,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             label = "Windows" if windows else "Mac"
             print(f"hermes-companion: {label} server unavailable or failed; requires the matching host OS and the optional MCP SDK", file=sys.stderr)
             return 1
+    if args.command in ("mcp-config", "verify-mac") and not REQUIRE_TAILNET:
+        print("Legacy Companion SSH transport: provision pinned tailnet addresses and keys before setting HERMES_WORKSPACE_REQUIRE_TAILNET=1; configuration is not rewritten.", file=sys.stderr)
     if args.command == "verify-mac":
         try:
             report = verify_mac(args.mac_host, args.mac_python, args.workspace, host_os=args.host_os,

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import ipaddress
+import os
 import shlex
 import unicodedata
 
@@ -21,9 +22,11 @@ WINDOWS_TOOLS = (
     "windows_workspace_read_file",
     "windows_workspace_list",
 )
-SSH_OPTIONS = (
+REQUIRE_TAILNET = os.environ.get("HERMES_WORKSPACE_REQUIRE_TAILNET") == "1"
+SSH_OPTIONS = ((
     "-F", "none", "-o", "ProxyCommand=none", "-o", "ProxyJump=none",
     "-o", "CanonicalizeHostname=no",
+) if REQUIRE_TAILNET else ()) + (
     "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
     "-o", "ConnectTimeout=5",
 )
@@ -32,6 +35,11 @@ SSH_OPTIONS = (
 def validate_host(value: str) -> str:
     """Accept an explicit user and literal tailnet IP, with no SSH aliases."""
     user = r"[A-Za-z_][A-Za-z0-9_.-]*"
+    if not REQUIRE_TAILNET:
+        label = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+        if not isinstance(value, str) or not re.fullmatch(rf"{user}@{label}(?:\.{label})*", value):
+            raise ValueError("--mac-host must be a literal user@host with no options or shell syntax")
+        return value
     match = re.fullmatch(rf"{user}@([^@\s]+)", value) if isinstance(value, str) else None
     try:
         host = match[1] if match else ""
