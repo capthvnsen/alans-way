@@ -256,6 +256,26 @@ function createFileDesktopLease(file, idleMs = 20000, actingMs = 120000) {
   };
 }
 
+function createDesktopLease() {
+  let holder;
+  return {
+    take(botId, name) {
+      if (!botId) return null;
+      const now = Date.now();
+      if (holder && holder.botId !== botId && (holder.active || holder.expiresAt > now))
+        return { error: 'desktop_busy', holder: holder.name, retryAfter: holder.active ? 20 : Math.ceil((holder.expiresAt - now) / 1000) };
+      if (!holder || holder.botId !== botId) holder = { botId, active: 0 };
+      holder.name = name || botId;
+      holder.active++;
+      return null;
+    },
+    release(botId) {
+      if (!botId || holder?.botId !== botId) return;
+      if (--holder.active === 0) holder.expiresAt = Date.now() + 20000;
+    },
+  };
+}
+
 // A build is current when the source it was built from is byte-identical, not
 // when mtimes happen to line up: checkouts and packaging reshuffle those.
 const sourceHash = (source) => crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex');
@@ -514,4 +534,4 @@ function createComputer({ command, env, nativeMac = false }) {
   return { driver, service: createComputerService(driver), close: () => driver.close() };
 }
 
-module.exports = { createHelper, createComputer, createComputerService, createFileDesktopLease, normalizeStep, normalizeKey, binaryCurrent, recordBuild };
+module.exports = { createDesktopLease, createHelper, createComputer, createComputerService, createFileDesktopLease, normalizeStep, normalizeKey, binaryCurrent, recordBuild };

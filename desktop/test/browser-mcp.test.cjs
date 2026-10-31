@@ -954,7 +954,7 @@ test('a named action on a host without name-targets is refused before it is sent
   assert.equal(seen.filter((entry) => entry.line === 'GET /v1/status').length, 1, 'the capability answer is cached');
 });
 
-async function computerHost(t, capabilities, hostLabel, { botId = 'mcp-test', botName, profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-')) } = {}) {
+async function computerHost(t, capabilities, hostLabel, { botId = 'mcp-test', botName, legacy = false, profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-browser-mcp-')) } = {}) {
   const seen = [];
   const host = http.createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk;
@@ -967,7 +967,7 @@ async function computerHost(t, capabilities, hostLabel, { botId = 'mcp-test', bo
   });
   await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
   const connection = path.join(profile, botId === 'mcp-test' ? 'connection.json' : `${botId}-connection.json`);
-  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', botId, protocol: 1 }));
+  fs.writeFileSync(connection, JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, token: 'fixture-token', ...(!legacy ? { botId } : {}), protocol: 1 }));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ['-r', path.join(__dirname, 'fake-computer-service.cjs'), path.join(__dirname, '../scripts/browser-mcp.cjs'), '--bot-id', botId, ...(botName ? ['--bot-name', botName] : []), '--connection', connection],
@@ -1068,7 +1068,7 @@ test('the app computer service accepts expect_host without changing the action',
 });
 
 test('computer tools use the in-process driver when the connected host has no computer endpoint', { timeout: 8000 }, async (t) => {
-  const { client, seen } = await computerHost(t, ['tabs', 'snapshot']);
+  const { client, seen } = await computerHost(t, ['tabs', 'snapshot'], undefined, { legacy: true });
   const text = (await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text;
   assert.match(text, /in-process-marker/);
   assert.doesNotMatch(text, /app-api-marker/);
@@ -1078,8 +1078,8 @@ test('computer tools use the in-process driver when the connected host has no co
 });
 
 test('two agents on one in-process desktop share its lease, and reads stay open', { timeout: 8000 }, async (t) => {
-  const hermes = await computerHost(t, ['tabs', 'agent-desktop'], undefined, { botName: 'Hermes' });
-  const grok = await computerHost(t, ['tabs', 'agent-desktop'], undefined, { botId: 'grok', botName: 'Grok Bot', profile: hermes.profile });
+  const hermes = await computerHost(t, ['tabs', 'agent-desktop'], undefined, { botName: 'Hermes', legacy: true });
+  const grok = await computerHost(t, ['tabs', 'agent-desktop'], undefined, { botId: 'grok', botName: 'Grok Bot', legacy: true, profile: hermes.profile });
   const act = (client) => client.callTool({ name: 'workspace_computer_action', arguments: { pid: 1, action: 'key', key: 'Enter' } });
   assert.equal((await act(hermes.client)).isError, undefined);
   const busy = await act(grok.client);
@@ -1091,13 +1091,13 @@ test('two agents on one in-process desktop share its lease, and reads stay open'
 });
 
 test('the in-process driver is told it owns the desktop when the host says agent-desktop', { timeout: 8000 }, async (t) => {
-  const { client } = await computerHost(t, ['tabs', 'agent-desktop']);
+  const { client } = await computerHost(t, ['tabs', 'agent-desktop'], undefined, { legacy: true });
   assert.match((await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text, /"agentDesktop":"1"/);
 });
 
 test('the agent-desktop flag follows the host and restarts the helper when it changes', { timeout: 8000 }, async (t) => {
   const capabilities = ['tabs', 'agent-desktop'];
-  const { client, profile } = await computerHost(t, capabilities);
+  const { client, profile } = await computerHost(t, capabilities, undefined, { legacy: true });
   const apps = async () => JSON.parse((await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).content[0].text).apps[0];
   assert.equal((await apps()).agentDesktop, '1');
   capabilities.length = 0;
@@ -1107,6 +1107,31 @@ test('the agent-desktop flag follows the host and restarts the helper when it ch
   const after = await apps();
   assert.equal(after.agentDesktop, '');
   assert.equal(after.closed, '1');
+});
+
+test('untrusted connectors cannot fall back to a desktop helper when the broker lacks computer routes', { timeout: 8000 }, async t => {
+  for (const capabilities of [['tabs', 'snapshot'], ['tabs', 'agent-desktop']]) {
+    const { client, seen } = await computerHost(t, capabilities);
+    for (const [name, args] of [['workspace_computer_apps', {}], ['workspace_computer_action', { pid: 1, action: 'key', key: 'Enter' }]]) {
+      const reply = await client.callTool({ name, arguments: args });
+      assert.equal(reply.isError, true);
+      assert.match(reply.content[0].text, /Computer broker unavailable/);
+      assert.doesNotMatch(reply.content[0].text, /in-process-marker/);
+    }
+    assert.ok(seen.every(entry => entry.line === 'GET /v1/status'));
+  }
+});
+
+test('a changed connection rechecks broker computer support without inheriting desktop authority', { timeout: 8000 }, async t => {
+  const capabilities = ['tabs', 'computer'];
+  const { client, profile } = await computerHost(t, capabilities);
+  assert.equal((await client.callTool({ name: 'workspace_computer_apps', arguments: {} })).isError, undefined);
+  capabilities.length = 0;
+  const file = path.join(profile, 'connection.json');
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file)), token: 'other-token' }));
+  const reply = await client.callTool({ name: 'workspace_computer_apps', arguments: {} });
+  assert.equal(reply.isError, true);
+  assert.match(reply.content[0].text, /Computer broker unavailable/);
 });
 
 test('a named step sent to a host from before name targets says to act by ref', { timeout: 8000 }, async (t) => {
@@ -1248,4 +1273,20 @@ test('Mac text selection and advertised actions have schemas and reach the compu
     const { pid, ...forwarded } = body;
     assert.deepEqual(seen.filter((entry) => entry.line.endsWith('/action')).at(-1).body, forwarded);
   }
+});
+
+
+test('only the labeled legacy connector retains an older VM desktop driver', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/browser-mcp.cjs'), 'utf8');
+  const code = source.slice(source.indexOf('let hostChoice ='), source.indexOf('async function request(endpoint'));
+  const marker = { legacy: true };
+  const check = (connection, strict) => require('node:vm').runInNewContext(code + ';computerService()', {
+    fs: { readFileSync: () => JSON.stringify(connection) }, file: 'fixture', connectionKey: JSON.stringify,
+    requestOnce: async () => ({ capabilities: ['tabs', 'agent-desktop'] }),
+    process: { env: { HERMES_WORKSPACE_REQUIRE_BOT_CREDENTIALS: strict ? '1' : '' } },
+    localDriver: 'fixture-driver', require: () => ({ service: marker, close() {} }),
+  });
+  assert.equal(await check({ token: 'legacy' }, false), marker);
+  await assert.rejects(check({ token: 'bound', botId: 'grok' }, false), /Computer broker unavailable/);
+  await assert.rejects(check({ token: 'legacy' }, true), /Computer broker unavailable/);
 });

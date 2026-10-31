@@ -72,9 +72,23 @@ files from another process with the same OS identity.
 Protect Chromium's unauthenticated CDP port from all users except the broker,
 and use a separate browser OS user with no credentials. Keep its Xauthority,
 session bus and desktop sockets inaccessible to bots; never use `xhost +`.
+The VPS broker serves the same authenticated `/v1/computer` routes and shared
+desktop lease as the app. Give the broker access to the isolated desktop
+session; bot connectors do not receive those sockets or launch helpers.
+Update older hosts before using desktop tools: connectors fail closed when
+the host lacks a computer endpoint. This replaces the legacy per-connector
+file lease with one authoritative broker lease.
 The browser egress installer supplies the network rules for a Linux browser
 user. This provisioning utility does not configure Windows account ACLs.
 
 No service is restarted, user created, firewall installed, or credential
 changed by a dry run. Services and OS separation must be configured before
 exporting credentials to bots.
+
+
+Computer broker upgrades must precede strict connector upgrades. A legacy
+connection without `botId` keeps the previous in-process desktop path when an
+older VM host has no computer endpoint, under the legacy credential warning.
+An identity-bound connection or strict launcher never uses that path, including
+after broker failure. Its operator must update the broker first and verify
+`computer`/`computer-v2` before enabling strict credentials.

@@ -339,6 +339,11 @@ async function computerService() {
     if (changed && localDriver && hostChoice.key) require(localDriver).close();
     hostChoice = { key, windowBinding: capabilities.includes('computer-window-v1'), launch: capabilities.includes('computer-launch-v1'), app: capabilities.includes('computer') || capabilities.includes('computer-v2'), host: typeof status.host === 'string' ? status.host : '' };
   }
+  if (!hostChoice.app) {
+    const connection = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (connection.botId !== undefined || process.env.HERMES_WORKSPACE_REQUIRE_BOT_CREDENTIALS === '1')
+      throw new Error('Computer broker unavailable. Update the host; untrusted connectors cannot drive the desktop in-process.');
+  }
   return hostChoice.app || !localDriver ? null : require(localDriver).service;
 }
 // The app leases its desktop per bot; an in-process driver's desktop is shared

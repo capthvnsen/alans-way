@@ -3,7 +3,7 @@
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createComputer, binaryCurrent, recordBuild } = require('./computer-helper.cjs');
+const { createComputer, binaryCurrent, recordBuild, createDesktopLease } = require('./computer-helper.cjs');
 
 const source = path.join(__dirname, '..', 'scripts', 'mac-computer.swift');
 const binary = path.join(__dirname, '..', 'scripts', 'mac-computer');
@@ -68,26 +68,6 @@ async function pickHelper({ binary, source, bundled, exists, current, compile })
 }
 
 const compile = makeCompile({ hasDevTools, build });
-
-function createDesktopLease() {
-  let holder;
-  return {
-    take(botId, name) {
-      if (!botId) return null;
-      const now = Date.now();
-      if (holder && holder.botId !== botId && (holder.active || holder.expiresAt > now))
-        return { error: 'desktop_busy', holder: holder.name, retryAfter: holder.active ? 20 : Math.ceil((holder.expiresAt - now) / 1000) };
-      if (!holder || holder.botId !== botId) holder = { botId, active: 0 };
-      holder.name = name || botId;
-      holder.active++;
-      return null;
-    },
-    release(botId) {
-      if (!botId || holder?.botId !== botId) return;
-      if (--holder.active === 0) holder.expiresAt = Date.now() + 20000;
-    },
-  };
-}
 
 // Packaging builds the helper ahead of time (scripts/build-computer.cjs); this
 // is the fallback for a checkout that was never packaged or a Mac without the

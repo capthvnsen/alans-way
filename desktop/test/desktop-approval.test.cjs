@@ -117,3 +117,11 @@ test('credential rotation requires a new Allow and revocation during a prompt bl
   assert.equal((await request).error, 'credential_revoked');
   assert.equal((await pending.check('grok', 'Grok', { generation: 'first', valid: () => valid })).error, 'credential_revoked');
 });
+
+
+test('extracted broker routes reject a revoked principal before the driver', async () => {
+  const { approval } = gate([true]);
+  const { request, seen } = computerRoutes({}, { approval, identityFor: () => ({ generation: 'revoked', valid: () => false }) });
+  assert.equal((await request('/v1/computer/7/action', 'grok', 'POST')).body.error, 'credential_revoked');
+  assert.deepEqual(seen, []);
+});
