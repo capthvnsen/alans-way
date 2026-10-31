@@ -8,6 +8,8 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from hermes_companion.config import REQUIRE_TAILNET
+
 TAILNET = ".".join(map(str, (100, 64, 0, 1)))
 
 
@@ -40,7 +42,10 @@ class CLITests(unittest.TestCase):
                 "--mac-python", "/opt/companion/bin/python", "--workspace", "/srv/approved",
             ])
         self.assertEqual(status, 0)
-        self.assertEqual(err, "")
+        if REQUIRE_TAILNET:
+            self.assertEqual(err, "")
+        else:
+            self.assertTrue(err.startswith("Legacy Companion SSH transport:"))
         self.assertEqual(json.loads(out)["mcp_servers"]["mac_companion"]["command"], "ssh")
 
     def test_module_entry_point(self):
@@ -116,7 +121,10 @@ class CLITests(unittest.TestCase):
             ])
         self.assertEqual(status, 0)
         self.assertEqual(json.loads(out), safe_report)
-        self.assertEqual(err, "")
+        if REQUIRE_TAILNET:
+            self.assertEqual(err, "")
+        else:
+            self.assertTrue(err.startswith("Legacy Companion SSH transport:"))
         verify.assert_called_once_with("operator@" + TAILNET, "/opt/python", "/srv/approved",
                                        host_os="mac", read_path=None, request_timeout=10.0, overall_timeout=30.0)
 

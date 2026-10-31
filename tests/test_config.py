@@ -3,6 +3,8 @@ import json
 import shlex
 import unittest
 
+from hermes_companion.config import REQUIRE_TAILNET
+
 TAILNET = ".".join(map(str, (100, 64, 0, 1)))
 
 
@@ -15,9 +17,10 @@ class ConfigTests(unittest.TestCase):
         )
         server = json.loads(json.dumps(config))["mcp_servers"]["mac_companion"]
         self.assertEqual(server["command"], "ssh")
-        self.assertEqual(server["args"][:-2], [
+        self.assertEqual(server["args"][:-2], ([
             "-F", "none", "-o", "ProxyCommand=none", "-o", "ProxyJump=none",
             "-o", "CanonicalizeHostname=no",
+        ] if REQUIRE_TAILNET else []) + [
             "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
             "-o", "ConnectTimeout=5",
         ])
@@ -84,6 +87,7 @@ if __name__ == "__main__":
 
 
 class TailnetConfigTests(unittest.TestCase):
+    @unittest.skipUnless(REQUIRE_TAILNET, "strict tailnet policy is opt-in")
     def test_tailnet_literals_only_including_ipv6(self):
         from hermes_companion.config import validate_host
         for host in ('user@'+TAILNET, 'user@[fd7a:115c:a1e0::1]', 'user@fd7a:115c:a1e0::1'):
