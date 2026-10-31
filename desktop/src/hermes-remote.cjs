@@ -21,6 +21,7 @@ const http = require('node:http');
 const https = require('node:https');
 const crypto = require('node:crypto');
 const { PassThrough, Writable } = require('node:stream');
+const { createNativeLogin, NativeLoginError } = require('./hermes-native-login.cjs');
 
 class RemoteError extends Error {
   constructor(code, message, extra) {
@@ -212,6 +213,56 @@ function createHermesRemote() {
         throw httpFail(token, 'POST /auth/native/token');
       }
       return this._tokens(token.json);
+    },
+
+    // Generic browser OAuth uses the backend's existing RFC 8252 broker. No
+    // provider password or browser cookie crosses into this process.
+    async signInBrowser({ base, provider, openAuthUrl, signal, timeoutMs }) {
+      // Revalidate the public entry point, including callers supplying a base
+      // object directly. Apply the same destination policy BEFORE opening a
+      // callback listener or handing any URL to the system browser.
+      let origin;
+      try { origin = new URL(base?.origin); }
+      catch { throw new RemoteError('bad_url', 'A valid backend URL is required.'); }
+      if (origin.origin !== base.origin || !tailnetUrl(origin)) {
+        throw new RemoteError('bad_url', 'Use an admitted backend origin for browser sign-in.');
+      }
+      let canonical;
+      try { canonical = typeof base.prefix === 'string' && normalizeBaseUrl(`${base.origin}${base.prefix}`); }
+      catch { throw new RemoteError('bad_url', 'A valid backend path prefix is required.'); }
+      if (!canonical || canonical.prefix !== base.prefix) {
+        throw new RemoteError('bad_url', 'A valid backend path prefix is required.');
+      }
+      if (origin.protocol !== 'https:' && !(origin.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(origin.hostname))) {
+        throw new RemoteError('bad_url', 'Browser sign-in requires HTTPS or literal loopback HTTP.');
+      }
+      if (typeof openAuthUrl !== 'function') throw new RemoteError('browser_unavailable', 'The sign-in browser could not be opened.');
+      const verifier = b64url(crypto.randomBytes(32)), state = b64url(crypto.randomBytes(32));
+      let callback;
+      try {
+        callback = await createNativeLogin({ state, signal, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+        if (signal?.aborted) throw new NativeLoginError('aborted');
+        const query = new URLSearchParams({ provider, code_challenge: sha256b64url(verifier),
+          code_challenge_method: 'S256', redirect_uri: callback.redirectUri, state });
+        const authorize = `${base.origin}${joinPath(base.prefix, '/auth/native/authorize')}?${query}`;
+        // A slow browser opener cannot hold a cancelled callback alive. Its
+        // rejection is always observed and never exposes the authorization URL.
+        Promise.resolve().then(() => { if (!signal?.aborted) return openAuthUrl(authorize); })
+          .catch(() => callback.cancel('browser_unavailable'));
+        const code = await callback.code;
+        const response = await requestJson({ ...base, method: 'POST', route: '/auth/native/token',
+          body: { code, code_verifier: verifier }, signal });
+        const json = response.json;
+        if (response.status !== 200 || !isPlainObject(json) || typeof json.access_token !== 'string' || !json.access_token ||
+            typeof json.refresh_token !== 'string' || !json.refresh_token || json.provider !== provider ||
+            typeof json.user_id !== 'string' || !json.user_id) {
+          throw new RemoteError('auth_failed', 'The backend could not complete browser sign-in.');
+        }
+        return this._tokens(json);
+      } catch (error) {
+        if (error instanceof NativeLoginError) throw new RemoteError(error.code, error.message);
+        throw error;
+      } finally { callback?.cancel(); }
     },
 
     async refresh({ base, refreshToken, provider = '', signal }) {

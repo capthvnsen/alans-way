@@ -2186,7 +2186,7 @@ function renderHermesSetup(h) {
     && (hermesSetupForced || needsInput || (h.status !== 'ready' && !h.selected));
   setup.classList.toggle('hidden', !needsSetup);
   convo.classList.toggle('hidden', !!needsSetup);
-  const renderedKey = JSON.stringify([h.status, h.target?.url, h.target?.profile, hermesSetupForced]);
+  const renderedKey = JSON.stringify([h.status, h.target?.url, h.target?.profile, h.providers, !!h.signInPending, hermesSetupForced]);
   if (!needsSetup) return;
   const updateError = () => {
     const error = setup.querySelector('.hermes-setup-error');
@@ -2224,25 +2224,51 @@ function renderHermesSetup(h) {
     }));
   } else {
     if (h.status === 'needs_signin') {
-      const user = element('input', 'settings-input hermes-field');
-      user.placeholder = 'Username';
-      user.setAttribute('aria-label', 'Username');
-      user.autocomplete = 'username';
-      const pass = element('input', 'settings-input hermes-field');
-      pass.type = 'password';
-      pass.placeholder = 'Password';
-      pass.setAttribute('aria-label', 'Password');
-      pass.autocomplete = 'current-password';
-      card.append(user, pass);
-      card.append(setupButton('Sign in and connect', async () => {
-        try {
-          // An unchanged target is already probed and needs credentials.
-          // Reconfiguring it would hide this form before sign-in settles.
-          const unchanged = urlInput.value === h.target?.url && profileInput.value === (h.target?.profile || '');
-          const r = unchanged || await hermesCommand('configure', { url: urlInput.value, profile: profileInput.value });
-          if (r) await hermesCommand('sign-in', { username: user.value, password: pass.value });
-        } finally { pass.value = ''; }
-      }));
+      // Provider capabilities come from the backend probe. Unknown metadata
+      // must not turn into a guessed password form or browser authorization.
+      const providers = Array.isArray(h.providers) ? h.providers : [];
+      const browserProviders = providers.filter(p => p.browser === true);
+      const passwordProviders = providers.filter(p => p.password === true);
+      const prepareSignIn = async () => {
+        const unchanged = urlInput.value === h.target?.url && profileInput.value === (h.target?.profile || '');
+        if (unchanged) return true;
+        // Capabilities belong to the original target. Probe the edited target
+        // before offering its own methods on the next state push.
+        const configured = await hermesCommand('configure', { url: urlInput.value, profile: profileInput.value });
+        if (configured) await hermesCommand('connect');
+        return false;
+      };
+      if (h.signInPending) {
+        card.append(element('p', 'settings-note', 'Finish signing in in your browser, then return here.'));
+        card.append(setupButton('Cancel sign-in', () => hermesCommand('cancel-sign-in')));
+      } else {
+        for (const provider of browserProviders) {
+          card.append(setupButton(`Continue with ${provider.displayName || provider.name} in browser`, async () => {
+            if (await prepareSignIn()) await hermesCommand('sign-in-browser', { provider: provider.name });
+          }));
+        }
+        if (passwordProviders.length) {
+          const user = element('input', 'settings-input hermes-field');
+          user.placeholder = 'Username';
+          user.setAttribute('aria-label', 'Username');
+          user.autocomplete = 'username';
+          const pass = element('input', 'settings-input hermes-field');
+          pass.type = 'password';
+          pass.placeholder = 'Password';
+          pass.setAttribute('aria-label', 'Password');
+          pass.autocomplete = 'current-password';
+          card.append(user, pass);
+          for (const provider of passwordProviders) card.append(setupButton(passwordProviders.length === 1
+            ? 'Sign in and connect' : `Sign in with ${provider.displayName || provider.name}`, async () => {
+              try {
+                if (await prepareSignIn()) await hermesCommand('sign-in', { provider: provider.name, username: user.value, password: pass.value });
+              } finally { pass.value = ''; }
+          }));
+        }
+        if (!browserProviders.length && !passwordProviders.length) {
+          card.append(element('p', 'settings-note', 'No supported sign-in method was advertised by this backend. Check the backend address and authentication configuration.'));
+        }
+      }
     } else {
       card.append(setupButton('Save and connect', async () => {
         const r = await hermesCommand('configure', { url: urlInput.value, profile: profileInput.value });
