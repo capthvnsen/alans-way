@@ -8,6 +8,10 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from hermes_companion.config import REQUIRE_TAILNET
+
+TAILNET = ".".join(map(str, (100, 64, 0, 1)))
+
 
 class CLITests(unittest.TestCase):
     def invoke(self, argv):
@@ -34,11 +38,14 @@ class CLITests(unittest.TestCase):
     def test_config_command_outputs_only_json_without_connecting(self):
         with patch("subprocess.Popen", side_effect=AssertionError("no subprocess")):
             status, out, err = self.invoke([
-                "mcp-config", "--mac-host", "operator@private-mac",
+                "mcp-config", "--mac-host", "operator@" + TAILNET,
                 "--mac-python", "/opt/companion/bin/python", "--workspace", "/srv/approved",
             ])
         self.assertEqual(status, 0)
-        self.assertEqual(err, "")
+        if REQUIRE_TAILNET:
+            self.assertEqual(err, "")
+        else:
+            self.assertTrue(err.startswith("Legacy Companion SSH transport:"))
         self.assertEqual(json.loads(out)["mcp_servers"]["mac_companion"]["command"], "ssh")
 
     def test_module_entry_point(self):
@@ -109,31 +116,34 @@ class CLITests(unittest.TestCase):
                        "read_performed": False, "full_integration_ready": False}
         with patch("hermes_companion.cli.verify_mac", return_value=safe_report) as verify:
             status, out, err = self.invoke([
-                "verify-mac", "--mac-host", "operator@private-mac", "--mac-python", "/opt/python",
+                "verify-mac", "--mac-host", "operator@" + TAILNET, "--mac-python", "/opt/python",
                 "--workspace", "/srv/approved",
             ])
         self.assertEqual(status, 0)
         self.assertEqual(json.loads(out), safe_report)
-        self.assertEqual(err, "")
-        verify.assert_called_once_with("operator@private-mac", "/opt/python", "/srv/approved",
+        if REQUIRE_TAILNET:
+            self.assertEqual(err, "")
+        else:
+            self.assertTrue(err.startswith("Legacy Companion SSH transport:"))
+        verify.assert_called_once_with("operator@" + TAILNET, "/opt/python", "/srv/approved",
                                        host_os="mac", read_path=None, request_timeout=10.0, overall_timeout=30.0)
 
     def test_verify_cli_optional_read_and_timeout_arguments(self):
         with patch("hermes_companion.cli.verify_mac", return_value={"read_performed": True}) as verify:
             status, out, err = self.invoke([
-                "verify-mac", "--mac-host", "operator@private-mac", "--mac-python", "/opt/python",
+                "verify-mac", "--mac-host", "operator@" + TAILNET, "--mac-python", "/opt/python",
                 "--workspace", "/srv/approved", "--read", "fixture.txt",
                 "--request-timeout", "2", "--overall-timeout", "8",
             ])
         self.assertEqual(status, 0)
-        verify.assert_called_once_with("operator@private-mac", "/opt/python", "/srv/approved",
+        verify.assert_called_once_with("operator@" + TAILNET, "/opt/python", "/srv/approved",
                                        host_os="mac", read_path="fixture.txt", request_timeout=2.0, overall_timeout=8.0)
 
     def test_verify_cli_failure_is_nonzero_without_private_diagnostics(self):
         from hermes_companion.cli import VerificationError
         with patch("hermes_companion.cli.verify_mac", side_effect=VerificationError("Mac connection verification failed")):
             status, out, err = self.invoke([
-                "verify-mac", "--mac-host", "operator@private-mac", "--mac-python", "/opt/python",
+                "verify-mac", "--mac-host", "operator@" + TAILNET, "--mac-python", "/opt/python",
                 "--workspace", "/srv/approved",
             ])
         self.assertEqual(status, 1)

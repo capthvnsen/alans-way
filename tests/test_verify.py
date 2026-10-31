@@ -14,6 +14,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+TAILNET = ".".join(map(str, (100, 64, 0, 1)))
+
 from hermes_companion.config import MAC_TOOLS, build_mcp_config
 
 
@@ -76,7 +78,7 @@ class VerifyTests(unittest.TestCase):
     def run_verification(self, sdk, **kwargs):
         from hermes_companion.cli import verify_mac
         with patch("hermes_companion.cli._load_sdk", return_value=sdk):
-            return verify_mac("operator@private-mac", "/opt/python", "/srv/approved", **kwargs)
+            return verify_mac("operator@" + TAILNET, "/opt/python", "/srv/approved", **kwargs)
 
     def test_validates_tools_and_mac_status_without_reading_any_file(self):
         sdk, calls, transport = self.sdk()
@@ -90,7 +92,7 @@ class VerifyTests(unittest.TestCase):
         self.assertFalse(report["read_performed"])
         self.assertEqual(calls, ["initialize", "list_tools", ("mac_device_status", {})])
         params = transport["params"]
-        expected = build_mcp_config("operator@private-mac", "/opt/python", "/srv/approved")["mcp_servers"]["mac_companion"]
+        expected = build_mcp_config("operator@" + TAILNET, "/opt/python", "/srv/approved")["mcp_servers"]["mac_companion"]
         self.assertEqual((params.command, params.args), (expected["command"], expected["args"]))
         self.assertEqual(params.env["SSH_AUTH_SOCK"], "/safe/agent.sock")
         self.assertNotIn("API_TOKEN", params.env)
@@ -115,7 +117,7 @@ class VerifyTests(unittest.TestCase):
                      "a\\file", "a/./file", "", ".", "a\x00file"]:
             with self.subTest(path=path), patch("hermes_companion.cli._load_sdk") as loader:
                 with self.assertRaises(ValueError):
-                    verify_mac("operator@private-mac", "/opt/python", "/srv/approved", read_path=path)
+                    verify_mac("operator@" + TAILNET, "/opt/python", "/srv/approved", read_path=path)
                 loader.assert_not_called()
 
     def test_invalid_timeouts_fail_before_loading_sdk(self):
@@ -124,7 +126,7 @@ class VerifyTests(unittest.TestCase):
             for value in [0, -1, float("inf"), float("nan"), 100000, True]:
                 with self.subTest(key=key, value=value), patch("hermes_companion.cli._load_sdk") as loader:
                     with self.assertRaises(ValueError):
-                        verify_mac("operator@private-mac", "/opt/python", "/srv/approved", **{key: value})
+                        verify_mac("operator@" + TAILNET, "/opt/python", "/srv/approved", **{key: value})
                     loader.assert_not_called()
 
     def test_unknown_identity_stops_before_requested_read(self):
@@ -172,7 +174,7 @@ class VerifyTests(unittest.TestCase):
         from hermes_companion.cli import verify_mac, VerificationError
         with patch("hermes_companion.cli._load_sdk", side_effect=ImportError("SECRET")):
             with self.assertRaises(VerificationError) as caught:
-                verify_mac("operator@private-mac", "/opt/python", "/srv/approved")
+                verify_mac("operator@" + TAILNET, "/opt/python", "/srv/approved")
         self.assertNotIn("SECRET", str(caught.exception))
         self.assertIn("[mcp]", str(caught.exception))
 
@@ -214,7 +216,7 @@ class RealVerifierProtocolTests(unittest.TestCase):
     def invoke(self, **kwargs):
         from hermes_companion.cli import verify_mac
         with patch.dict(os.environ, {"PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", "")}):
-            return verify_mac("operator@private-mac", sys.executable, str(self.workspace), **kwargs)
+            return verify_mac("operator@" + TAILNET, sys.executable, str(self.workspace), **kwargs)
 
     @unittest.skipUnless(platform.system() == "Darwin", "real successful Mac verification requires Darwin")
     def test_real_sdk_verifies_actual_server_and_opt_in_fixture(self):
@@ -223,7 +225,7 @@ class RealVerifierProtocolTests(unittest.TestCase):
         self.install_shim(
             "import os, shlex, sys\n"
             f"assert sys.argv[1:-2] == {list(SSH_OPTIONS)!r}\n"
-            "assert sys.argv[-2] == 'operator@private-mac'\n"
+            f"assert sys.argv[-2] == 'operator@{TAILNET}'\n"
             f"os.environ['PYTHONPATH'] = {source!r}\n"
             "tokens = shlex.split(sys.argv[-1])\n"
             "os.execv(tokens[0], tokens)\n"

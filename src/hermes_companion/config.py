@@ -7,6 +7,8 @@ No Hermes runtime imports, config writes, subprocesses, or network discovery.
 from __future__ import annotations
 
 import re
+import ipaddress
+import os
 import shlex
 import unicodedata
 
@@ -20,18 +22,36 @@ WINDOWS_TOOLS = (
     "windows_workspace_read_file",
     "windows_workspace_list",
 )
-SSH_OPTIONS = (
+REQUIRE_TAILNET = os.environ.get("HERMES_WORKSPACE_REQUIRE_TAILNET") == "1"
+SSH_OPTIONS = ((
+    "-F", "none", "-o", "ProxyCommand=none", "-o", "ProxyJump=none",
+    "-o", "CanonicalizeHostname=no",
+) if REQUIRE_TAILNET else ()) + (
     "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
     "-o", "ConnectTimeout=5",
 )
 
 
 def validate_host(value: str) -> str:
-    """Accept a literal user@hostname/IPv4 or SSH alias, never SSH options."""
+    """Accept an explicit user and literal tailnet IP, with no SSH aliases."""
     user = r"[A-Za-z_][A-Za-z0-9_.-]*"
-    label = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
-    if not isinstance(value, str) or not re.fullmatch(rf"{user}@{label}(?:\.{label})*", value):
-        raise ValueError("--mac-host must be a literal user@host with no options or shell syntax")
+    if not REQUIRE_TAILNET:
+        label = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+        if not isinstance(value, str) or not re.fullmatch(rf"{user}@{label}(?:\.{label})*", value):
+            raise ValueError("--mac-host must be a literal user@host with no options or shell syntax")
+        return value
+    match = re.fullmatch(rf"{user}@([^@\s]+)", value) if isinstance(value, str) else None
+    try:
+        host = match[1] if match else ""
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]
+        if "%" in host:
+            raise ValueError()
+        address = ipaddress.ip_address(host)
+        if address not in ipaddress.ip_network("100.64.0.0/10") and address not in ipaddress.ip_network("fd7a:115c:a1e0::/48"):
+            raise ValueError()
+    except ValueError:
+        raise ValueError("--mac-host must be user@Tailscale-IP; DNS names, SSH aliases and public addresses are refused") from None
     return value
 
 
