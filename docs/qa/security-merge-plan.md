@@ -1,4 +1,45 @@
-# Security draft merge plan
+# Security merge plan and execution receipt
+
+## Execution receipt — 2026-10-31
+
+The ten security PRs below were rebased onto current main and squash-merged
+in the planned order after every current-head check passed. This receipt
+supersedes the historical canceled-CI handoff below; that snapshot is retained
+for provenance. The plan PR #277 is merged last after its own fresh CI passes.
+
+| PR | Squash merge | Validated head | Passing CI |
+| --- | --- | --- | --- |
+| #243 | [`f0daa21`](https://github.com/capthvnsen/alans-way/commit/f0daa21732c5e84771c802dbfa2a5d69a3acfdba) | `727ee1e` | [tests 41117326067](https://github.com/capthvnsen/alans-way/actions/runs/41117326067) |
+| #266 | [`ec6e555`](https://github.com/capthvnsen/alans-way/commit/ec6e555b98263934a0fd8046462219129d72017c) | `1368455` | [tests 41122864222](https://github.com/capthvnsen/alans-way/actions/runs/41122864222) |
+| #267 | [`55f4026`](https://github.com/capthvnsen/alans-way/commit/55f40260dccdd1b8d5c11373d84d3e4359e21af7) | `6365f1c` | [tests 41129083648](https://github.com/capthvnsen/alans-way/actions/runs/41129083648) |
+| #268 | [`b878fcc`](https://github.com/capthvnsen/alans-way/commit/b878fccd82ac498f562232765eed7226fac21e6d) | `57b3347` | [tests 41132808886](https://github.com/capthvnsen/alans-way/actions/runs/41132808886) |
+| #271 | [`10be549`](https://github.com/capthvnsen/alans-way/commit/10be5493a0482bd4a1e3e5f3de3a59ebf3fcbe9b) | `6dd1ce2` | [tests 41135626598](https://github.com/capthvnsen/alans-way/actions/runs/41135626598) |
+| #272 | [`acf1b79`](https://github.com/capthvnsen/alans-way/commit/acf1b796fb3a644bda1f8a08c034584b8a7560ce) | `4932b35` | [tests 41138670037](https://github.com/capthvnsen/alans-way/actions/runs/41138670037) |
+| #273 | [`f588ced`](https://github.com/capthvnsen/alans-way/commit/f588cedc7d99c085bff8a2c9566777a6bceecd07) | `f875697` | [tests 41154440442](https://github.com/capthvnsen/alans-way/actions/runs/41154440442) |
+| #275 | [`f3ecbf8`](https://github.com/capthvnsen/alans-way/commit/f3ecbf8d67c6f1af02de2828d4e10c2ec5fc4049) | `fcd4564` | [tests 41155977514](https://github.com/capthvnsen/alans-way/actions/runs/41155977514) |
+| #270 | [`04b13c6`](https://github.com/capthvnsen/alans-way/commit/04b13c613e47c09c62c07b9d2ac6fc2086a998bf) | `5f324ff` | [tests 41157493400](https://github.com/capthvnsen/alans-way/actions/runs/41157493400) |
+| #274 | [`b0049a7`](https://github.com/capthvnsen/alans-way/commit/b0049a72bf80451c7dba784d7758b0b64045c608) | `7e7c258` | [tests 41158728678](https://github.com/capthvnsen/alans-way/actions/runs/41158728678) |
+
+Every listed test workflow passed all eight checks. #270 also passed the
+[ninth kernel-filter check](https://github.com/capthvnsen/alans-way/actions/runs/41157493290)
+in a disposable Linux network namespace. Main push workflows were confirmed
+to start after each merge. The paused-viewer and broker persistence Electron
+scenarios, Linux cross-UID credential checks and cleanup fixture checks passed.
+
+Integration preserved atomic environment writes, tailnet transport options,
+legacy desktop leases, credential-generation consent and VPS list redaction.
+Small fixture fixes covered Telegram atomic writes, bot connection isolation,
+cleanup module dependencies and both Python legacy/strict expectations.
+Unrelated timing failures received one targeted failed-job retry each; no
+security assertion or runtime policy was weakened. Windows
+`hermes-update-ps1.test.cjs` synthetic update-budget timing remains an observed
+flake: main run 41138320078 passed its single retry without a code change.
+
+No strict flag was enabled on an installation, provisioning was not run, and
+no live machine, SSH key, firewall or Tailscale ACL was changed. Legacy remains
+the default. Live architecture qualification and rollout gates below remain.
+
+## Pre-merge review — 2026-10-30
 
 Reviewed 2026-10-30 against main `7cb8a4d4e3bbb5f7d399154c06c01d2b0c541425`.
 No PR was merged and no installed app, live account, SSH server, firewall or
