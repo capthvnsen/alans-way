@@ -13,6 +13,8 @@ test('setup never imports an agent SSH key and probes only a pre-provisioned bro
   const prefs = { vpsBrowser: { sshHost: 'agent@'+ip, brokerSshHost: 'broker@'+ip, scriptPath: '/app/host.cjs' }, macSshHost: 'human@'+ip };
   const sent = [];
   const scope = vm.runInNewContext(funcs+';({checkBrokerSetup,testAgentPath})', {
+    TAILNET_SSH_OPTIONS: source.includes('TAILNET_SSH_OPTIONS') ? require('../src/tailnet.cjs').SSH_OPTIONS : [],
+    cloudMigrate: require('../src/cloud-migrate.cjs'),
     prefs, brokerTarget, isSshTarget, HOST_LABEL:'mac', seedMacSshHost(){},
     localRun(){throw Error('No local shell/key write is allowed');},
     sshRun(){throw Error('No remote agent key may be fetched');},
