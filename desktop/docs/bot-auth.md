@@ -36,8 +36,9 @@ Run the desktop app / VPS broker and its SSH request helper as the human or
 broker OS user. Run each mutually untrusted bot as a different OS user, without
 sudo, broker groups, shared writable code or access to the broker's home.
 Both `connection.json` and `app-token.json` are broker credentials. Never copy
-either file to a bot. The VPS settings must use the broker's SSH login with
-`sudo: false`; generic sudo request helpers are refused.
+either file to a bot. Settings keep the agent login in `vpsBrowser.sshHost` and the separate broker
+login in `vpsBrowser.brokerSshHost`, with explicit different usernames and
+`sudo: false`. Existing shared-login settings fail closed until migrated; generic sudo request helpers are refused.
 
 The broker's private `bot-credentials.json` binds each random token to one bot
 ID and OS UID. Desktop and VPS APIs verify that binding before routing, grants,
@@ -51,9 +52,10 @@ checkout for the broker and SSH helper. For example, after creating separate
 `alan-broker` and `alan-bot-a` OS accounts and starting the isolated broker:
 
 ```sh
+# Set BROKER_HOME to the isolated broker account’s home directory.
 sudo install -d -m 0711 -o alan-broker /var/lib/alan-connections
 sudo node /opt/alans-way/desktop/scripts/bot-credential.cjs \
-  --root /var/lib/alan-broker/browser --broker-uid "$(id -u alan-broker)" \
+  --root "$BROKER_HOME/.local/share/hermes-alans-way/browser" --broker-uid "$(id -u alan-broker)" \
   --bot-id bot-a --uid "$(id -u alan-bot-a)" \
   --output /var/lib/alan-connections/bot-a.json
 ```
@@ -92,3 +94,23 @@ older VM host has no computer endpoint, under the legacy credential warning.
 An identity-bound connection or strict launcher never uses that path, including
 after broker failure. Its operator must update the broker first and verify
 `computer`/`computer-v2` before enabling strict credentials.
+
+Use the broker account's default data directory for both its service and SSH
+helper: Linux `~/.local/share/hermes-alans-way/browser`, macOS
+`~/Library/Application Support/hermes-alans-way/browser`. A service-only
+`HERMES_VPS_BROWSER_DATA` override does not reach independent SSH sessions;
+remove that override before using the normal helper. The helper checkout must
+be readable and executable by the broker, and unwritable by bots. Agent update
+and setup commands continue to use the agent account; broker service maintenance
+must be performed separately by its administrator.
+
+
+An installed `vpsBrowser.sshHost` remains the labeled legacy browser transport
+while `brokerSshHost` is empty. Agent configuration/environment writes continue
+to use `sshHost`; selecting the broker never repoints those writes. Only after
+separate accounts and broker access are provisioned, enter `brokerSshHost` and
+set `HERMES_WORKSPACE_REQUIRE_BROKER_SSH=1` in the app launcher. An invalid or
+unreachable selected broker fails closed, without trying the agent login.
+The environment opt-in also prevents accidentally clearing the broker field
+from re-enabling the legacy route. No account, ACL or existing preference is
+automatically rewritten during upgrade.

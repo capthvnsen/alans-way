@@ -37,7 +37,7 @@ function fakeRun(respond) {
 }
 
 test('vmTargets lists the saved agent machine once an ssh host exists', () => {
-  const targets = vmTargets({ vpsBrowser: { sshHost: `u@${fixtureTailnet}`, scriptPath: '/x/h.cjs', sudo: true }, remotePlatform: 'mac' });
+  const targets = vmTargets({ vpsBrowser: { sshHost: `u@${fixtureTailnet}`, brokerSshHost: `broker@${fixtureTailnet}`, scriptPath: '/x/h.cjs', sudo: true }, remotePlatform: 'mac' });
   assert.equal(targets.length, 1);
   assert.equal(targets[0].sshHost, `u@${fixtureTailnet}`);
   assert.equal(targets[0].label, 'Mac VM');

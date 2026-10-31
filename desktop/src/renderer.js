@@ -1529,7 +1529,7 @@ function pruneSettingsDrafts() {
 let settingsWriteSequence = 0;
 const SETTINGS_SAVE_WAIT_MS = 5000;
 function settingsWriteContext() {
-  return { bot: state.selectedBotId || '', host: state.hostLabel, platform: state.remotePlatform || 'linux', mac: state.macSshHost || '', vps: state.vpsBrowser?.sshHost || '' };
+  return { bot: state.selectedBotId || '', host: state.hostLabel, platform: state.remotePlatform || 'linux', mac: state.macSshHost || '', vps: state.vpsBrowser?.sshHost || '', broker: state.vpsBrowser?.brokerSshHost || '' };
 }
 function settingsWriteFeedback(owner, busy) {
   if (!owner.pending) return owner.notice || '';
@@ -1759,7 +1759,7 @@ function mountRemoteConnection(body) {
   const advanced = settingsConnectionDetails(body, 'settings-remote-details', 'Viewer address and preview', /remote connection|viewer|novnc|vnc|preview|remote desktop|remote computer|platform|linux|macos/i);
   const input = settingsField(advanced.content, 'remote-url', 'Viewer address', state.savedRemoteUrl ?? state.remoteUrl, 'https://your-server/vnc.html or wss://…');
   advanced.content.append(element('p', 'settings-note', 'Existing installs keep their legacy transport until tailnet enforcement is enabled by the administrator. Provision pinned tailnet addresses and SSH keys first; enforcement pauses incompatible saved addresses without deleting them. Saving an address does not verify a connection; preview starts in watch mode.'));
-  const save = settingsSaveFields(advanced.content, 'Save connection', [input], () => ({ remoteUrl: input.value.trim() }), { primary: true, busy: 'Saving connection…', success: 'Viewer address saved. Connection status is shown above.', draftScope: () => ['viewer', state.selectedBotId || '', state.hostLabel, state.vpsBrowser?.sshHost || '', state.macSshHost || ''], saved: () => [state.savedRemoteUrl ?? state.remoteUrl ?? ''] });
+  const save = settingsSaveFields(advanced.content, 'Save connection', [input], () => ({ remoteUrl: input.value.trim() }), { primary: true, busy: 'Saving connection…', success: 'Viewer address saved. Connection status is shown above.', draftScope: () => ['viewer', state.selectedBotId || '', state.hostLabel, state.vpsBrowser?.sshHost || '', state.vpsBrowser?.brokerSshHost || '', state.macSshHost || ''], saved: () => [state.savedRemoteUrl ?? state.remoteUrl ?? ''] });
   const row = element('div', 'setting-row'), label = element('span', '', 'Remote computer runs'), os = element('select'); os.id = 'settings-remote-platform'; os.setAttribute('aria-label', 'Remote computer runs');
   for (const [value, name] of [['linux', 'Linux'], ['mac', 'macOS']]) { const option = element('option', '', name); option.value = value; os.append(option); }
   row.append(label, os); advanced.content.append(row); const status = settingsStatus(advanced.content);
@@ -1794,9 +1794,11 @@ function mountAgentSetup(body) {
   const advanced = settingsConnectionDetails(body, 'settings-agent-details', 'Addresses and manual setup', /ssh|address|manual|command|update|wizard|cloud|gateway|tailscale/i);
   advanced.content.append(element('p', 'settings-note', 'Follow the agent’s restart instructions. Its final report should include installed revisions, checks, warnings and unfinished steps. Enter its verified server and computer SSH addresses, Save addresses, then Check saved path (SSH only). Follow its browser task to verify setup.'));
   const vps = settingsField(advanced.content, 'vps-ssh-host', 'Agent machine SSH address', state.vpsBrowser?.sshHost, 'you@your-agent-machine');
+  const broker = settingsField(advanced.content, 'vps-broker-ssh-host', 'Browser broker SSH address (after separate OS user is provisioned)', state.vpsBrowser?.brokerSshHost, 'broker@tailnet-address');
+  advanced.content.append(element('p', 'settings-note', 'An empty broker address keeps the existing legacy shared login; it does not isolate bots. Provision a separate broker account before selecting it. A selected broker never falls back to the agent login.'));
   const local = settingsField(advanced.content, 'mac-ssh-host', 'This computer’s SSH address', state.macSshHost, 'you@your-computer');
   advanced.content.append(element('p', 'settings-note', 'Use this computer’s address as reached from the agent machine. These addresses are shared by your bots; setup instructions are specific to the bot selected above.'));
-  const save = settingsSaveFields(advanced.content, 'Save addresses', [local, vps], () => ({ macSshHost: local.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim() } }), { success: 'Addresses saved. Check the saved path next.', draftScope: () => ['agent', reviewedBotId, state.hostLabel], saved: () => [state.macSshHost || '', state.vpsBrowser?.sshHost || ''] }); save.id = 'settings-save-addresses';
+  const save = settingsSaveFields(advanced.content, 'Save addresses', [local, vps, broker], () => ({ macSshHost: local.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim(), brokerSshHost: broker.value.trim() } }), { success: 'Addresses saved. Check the saved path next.', draftScope: () => ['agent', reviewedBotId, state.hostLabel], saved: () => [state.macSshHost || '', state.vpsBrowser?.sshHost || '', state.vpsBrowser?.brokerSshHost || ''] }); save.id = 'settings-save-addresses';
   appendServerSetup(advanced.content, () => {
     if (local.value.trim() !== (state.macSshHost || '') || vps.value.trim() !== (state.vpsBrowser?.sshHost || ''))
       throw Error('Save address changes before running setup.');
@@ -1807,7 +1809,7 @@ function mountAgentSetup(body) {
     epoch++; checked = false;
     if (result.textContent) { result.classList.remove('error'); result.textContent = 'Addresses or bot changed. Check the saved path again.'; }
   };
-  for (const input of [local, vps]) for (const event of ['input', 'change']) input.addEventListener(event, () => { invalidate(); refresh(); });
+  for (const input of [local, vps, broker]) for (const event of ['input', 'change']) input.addEventListener(event, () => { invalidate(); refresh(); });
   const copy = async (button, status, name, kind) => {
     const id = reviewedBotId, target = botName(), started = epoch;
     const reply = await runSettingsAction(button, status, () => {
@@ -1854,7 +1856,7 @@ function mountAgentSetup(body) {
       for (const item of state.bots) { const option = element('option', '', item.username ? `${item.name} · @${item.username}` : item.name); option.value = item.id; botSelect.append(option); }
     }
     if (!bot()) reviewedBotId = state.bots[0]?.id || ''; botSelect.value = reviewedBotId; botSelect.disabled = !state.bots.length;
-    const next = JSON.stringify([reviewedBotId, bot()?.name, bot()?.username, state.vpsBrowser?.sshHost || '', state.macSshHost || '']);
+    const next = JSON.stringify([reviewedBotId, bot()?.name, bot()?.username, state.vpsBrowser?.sshHost || '', state.vpsBrowser?.brokerSshHost || '', state.macSshHost || '']);
     if (scope && scope !== next) invalidate(); scope = next;
     save.refreshDraft();
     const addresses = !!state.vpsBrowser?.sshHost && !!state.macSshHost;
