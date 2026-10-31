@@ -1,0 +1,23 @@
+name: browser-egress
+
+on:
+  pull_request:
+    paths: ['scripts/browser_egress.py', 'tests/*browser_egress*', '.github/workflows/browser-egress.yml']
+  push:
+    branches: [main]
+    paths: ['scripts/browser_egress.py', 'tests/*browser_egress*', '.github/workflows/browser-egress.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kernel-filter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y nftables iproute2
+      - run: python3 -m unittest tests.test_browser_egress -v
+      - name: Verify filtering in a disposable network namespace
+        run: sudo unshare --net python3 tests/browser_egress_kernel.py
