@@ -114,3 +114,18 @@ unreachable selected broker fails closed, without trying the agent login.
 The environment opt-in also prevents accidentally clearing the broker field
 from re-enabling the legacy route. No account, ACL or existing preference is
 automatically rewritten during upgrade.
+
+Automatic agent-key authorization of the human account is disabled. Configure
+broker SSH access manually, then check the saved broker path. Review and revoke
+previously authorized agent/shared keys separately. The legacy combined SSH
+wizard refuses to run; platform installers require an explicitly named broker administration
+key. Native control of a broker/human GUI (especially Terminal) conveys that
+account's authority: untrusted bots need a separately owned desktop/session.
+
+
+The platform scripts' `--broker-admin-key` (`-BrokerAdminKey` on Windows)
+authorizes a broad **administration shell**, never the architecture runtime
+key. Do not export it to bots or use it in a runtime connector. The restricted
+OpenSSH 2222 listener and forced-command runtime Mac adapter must be provisioned
+separately before strict rollout. New setup stops with instructions when the
+separate broker login is missing; installed legacy connectors keep running.

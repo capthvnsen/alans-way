@@ -1,4 +1,7 @@
 #!/bin/sh
+# shortcut: the combined wizard is disabled until it provisions separate broker and bot identities.
+printf '%s\n' 'connect-server: legacy agent-to-human SSH trust is disabled. Provision separate broker/bot OS accounts and per-bot credentials; see desktop/docs/bot-auth.md.' >&2
+exit 1
 # connect-server.sh — connect this computer to the server that runs your Hermes
 # gateway, driven from here. Run it on your Mac or Linux computer:
 #

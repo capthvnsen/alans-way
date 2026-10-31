@@ -17,6 +17,11 @@ Four products for working with your agents across your computer and a VM. Instal
 
 The two plugins target **one shared config spec** for **persona, voice, proactivity, and identity**. That contract belongs in `alans-way-agents`; this repo supplies the app and computer-use service. The draft schema at `shared/config.schema.json` and Grok scaffold are pending [agents PR #157](https://github.com/capthvnsen/alans-way-agents/pull/157); see [product boundaries and shared config](docs/products.md) for implementation status. Existing Hermes package names (`alans-way`, `alans-way-computer`) are implementation components of product 3, not additional products.
 
+Existing installs retain their labeled legacy connections during the security
+migration. New SSH trust requires administrator provisioning of separate
+broker and bot accounts; the old combined connection wizard is disabled.
+See [the credential upgrade guide](desktop/docs/bot-auth.md).
+
 **Setting up Workspace with a Hermes agent?** Paste this prompt so it reads the full setup instructions:
 
 ```text

@@ -102,12 +102,7 @@ while [ "$i" -lt 30 ]; do
       .then((r) => r.json()).then((s) => { if (!s.version) process.exit(1); console.log(s.host + " " + s.version); })
       .catch(() => process.exit(1));' "$CONN" 2>/dev/null)"; then
     say "install-mac: running — local browser API answers ($STATUS)"
-    # connect-mac.sh runs this installer itself and sets the skip flag.
-    if [ -z "${ALANS_WAY_SKIP_CONNECT:-}" ] && (: < /dev/tty) 2>/dev/null; then
-      printf 'Connect your Hermes server now? [Y/n] ' > /dev/tty
-      read -r reply < /dev/tty || reply=n
-      case "$reply" in n|N|no) say "Later: sh $DIR/scripts/connect-server.sh";; *) exec sh "$DIR/scripts/connect-server.sh";; esac
-    fi
+    say 'install-mac: provision separate broker/bot accounts before connecting agents; see desktop/docs/bot-auth.md'
     exit 0
   fi
   sleep 1; i=$((i + 1))

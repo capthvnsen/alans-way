@@ -134,7 +134,7 @@ class ScriptShapeTests(unittest.TestCase):
         header = text.split("[CmdletBinding()]")[0]
         for old in ("--vps", "--vps-host-key", "--vps-key"):
             self.assertNotIn(old, header + text.split("param(")[1].split(")")[0])
-        for flag in ("-Vps ", "-VpsHostKey ", "-VpsKey "):
+        for flag in ("-Vps ", "-VpsHostKey ", "-BrokerAdminKey "):
             self.assertIn(flag, header)
         self.assertIn('from="100.64.0.0/10,fd7a:115c:a1e0::/48"', text)
 
@@ -190,113 +190,33 @@ class ScriptShapeTests(unittest.TestCase):
         self.assertTrue((SCRIPTS / "connect-linux.sh").stat().st_mode & 0o111)
 
 
-# A fake ssh runs the remote command locally with sh, so the quoting that
-# connect-server.sh builds goes through a real shell round trip. lsh stands in
-# for the login shell, which would reset PATH and lose the fake curl. Like the
-# real ssh, it reads stdin, which under curl | sh is the rest of the script.
-FAKE_SSH = r"""#!/bin/sh
-while [ $# -gt 0 ]; do case "$1" in -o|-O|-F) shift 2;; -t) shift;; *) break;; esac; done
-shift
-case "$*" in
-  "") exit 0;;
-  "sh -s") cat >/dev/null; printf 'VPS_SSH=root@100.64.0.1\nVPS_KEY=%s\nVPS_HOST_KEY=ssh-ed25519 AAAAhost\n' "$VPS_KEY";;
-  test\ -e*) cat >/dev/null; echo ok;;
-  true|exit) cat >/dev/null;;
-  *) SHELL="$(dirname "$0")/lsh" sh -c "$*";;
-esac
-"""
-FAKE_CONNECT = r"""#!/bin/sh
-printf '%s\n' "$*" > "$HOME/connect-args"
-echo "connect: pinned"
-echo "===== Copy everything between these lines and send it to your agent ====="
-echo "MAC_SSH=me@100.100.1.2"
-echo "MAC_TZ=America/Denver"
-echo "MAC_HOST_KEY=ssh-ed25519 AAAAmachost"
-echo "MAC_KEY=ssh-ed25519 AAAAmac me@mac"
-echo "===== end ====="
-"""
-
-
-FAKE_CURL = r"""#!/bin/sh
-case "$2" in
-  *api.github.com*) cat "$HOME/tags.json" 2>/dev/null || exit 22;;
-  *connect-*) cp "$HOME/connect.sh" "$4";;
-  *) echo "$2" > "$HOME/setup-url"; cp "$HOME/setup.sh" "$4";;
-esac
-"""
-TAGS = '[{"name":"v0.9.0"},{"name":"v0.21.0"},{"name":"v0.7.0"},{"name":"nightly"},{"name":"v0.21.0-rc.1"}]'
-RAW = "https://raw.githubusercontent.com/capthvnsen/alans-way-agents"
-
 
 class ConnectServerTests(unittest.TestCase):
-    def test_server_setup_gets_this_computers_values_through_the_quoting(self):
-        for piped in (False, True):
-            with self.subTest(piped=piped):
-                self.run_wizard(piped)
-
-    def run_wizard(self, piped, tags=None, extra_env=None):
+    def test_legacy_combined_wizard_refuses_before_network_or_file_mutation(self):
+        import os
         with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            for name, body in (("bin/ssh", FAKE_SSH), ("bin/curl", FAKE_CURL),
-                               ("bin/lsh", '#!/bin/sh\nexec sh -c "$2"\n'),
-                               ("scripts/connect-mac.sh", FAKE_CONNECT), ("scripts/connect-linux.sh", FAKE_CONNECT),
-                               ("connect.sh", FAKE_CONNECT),
-                               ("setup.sh", '#!/bin/sh\nprintf "%s\\n" "$@" > "$HOME/setup-args"\necho "  warn No TELEGRAM_BOT_TOKEN found"\necho "  no Telegram DM sessions yet."\n')):
-                (tmp / name).parent.mkdir(parents=True, exist_ok=True)
-                (tmp / name).write_text(body, encoding="utf-8")
-                (tmp / name).chmod(0o755)
-            (tmp / "scripts/connect-server.sh").write_text((SCRIPTS / "connect-server.sh").read_text(encoding="utf-8"))
-            if tags is not None:
-                (tmp / "tags.json").write_text(tags)
-            args = ["--server", "root@100.64.0.1", "--", "--profile", "it's"]
-            script = (tmp / "scripts/connect-server.sh").read_text()
-            # A new session has no /dev/tty, as when an agent runs the script.
-            result = subprocess.run(
-                ["sh", "-s", "--", *args] if piped else ["sh", str(tmp / "scripts/connect-server.sh"), *args],
-                env={"HOME": str(tmp), "PATH": f"{tmp}/bin:/usr/bin:/bin", "VPS_KEY": KEY, **(extra_env or {})}, cwd=tmp,
-                input=script if piped else "", capture_output=True, text=True, check=False, start_new_session=True)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("Connected.", result.stdout)
-            self.last = (tmp.joinpath("setup-url").read_text().strip(), result.stdout)
-            self.assertNotIn("send it to your agent", result.stdout)
-            self.assertIn(f"--vps root@100.64.0.1 --vps-host-key ssh-ed25519 AAAAhost --vps-key {KEY}",
-                          (tmp / "connect-args").read_text())
-            self.assertEqual((tmp / "setup-args").read_text().splitlines(), [
-                "--mac-ssh", "me@100.100.1.2", "--host-os", "mac" if "Darwin" in subprocess.check_output(["uname", "-s"], text=True) else "linux",
-                "--timezone", "America/Denver", "--mac-key", "ssh-ed25519 AAAAmac me@mac",
-                "--mac-host-key", "ssh-ed25519 AAAAmachost", "--restart", "--profile", "it's"])
+            marker=Path(tmp)/'called'
+            for command in ('ssh','curl'):
+                stub=Path(tmp)/command
+                stub.write_text('#!/bin/sh\ntouch "'+str(marker)+'"\n')
+                stub.chmod(0o700)
+            env={**os.environ,'PATH':tmp+os.pathsep+os.environ.get('PATH','')}
+            for args in ([],['--server','untrusted@host']):
+                result=subprocess.run(['sh',str(SCRIPTS/'connect-server.sh'),*args],capture_output=True,text=True,env=env)
+                self.assertNotEqual(result.returncode,0)
+                self.assertIn('legacy agent-to-human SSH trust is disabled',result.stderr)
+                self.assertFalse(marker.exists())
 
-    def test_setup_is_fetched_at_the_newest_release_tag(self):
-        self.run_wizard(False, tags=TAGS)
-        self.assertEqual(self.last[0], f"{RAW}/v0.21.0/setup.sh")
-        self.assertNotIn("WARNING", self.last[1])
+    def test_installers_require_an_explicit_broker_key_not_the_legacy_agent_key(self):
+        for name in ('connect-mac.sh','connect-linux.sh'):
+            text=(SCRIPTS/name).read_text()
+            self.assertIn('--broker-admin-key)',text)
+            self.assertNotIn('--vps-key)',text)
+        text=(SCRIPTS/'connect-windows.ps1').read_text()
+        self.assertIn('[string]$BrokerAdminKey',text)
+        self.assertNotIn('[string]$VpsKey',text)
 
-    def test_without_a_tag_it_falls_back_to_main_with_a_warning(self):
-        self.run_wizard(False, tags='[{"name":"nightly"}]')
-        self.assertEqual(self.last[0], f"{RAW}/main/setup.sh")
-        self.assertIn("WARNING", self.last[1])
-        self.run_wizard(True)
-        self.assertEqual(self.last[0], f"{RAW}/main/setup.sh")
-
-    def test_the_ref_can_be_overridden(self):
-        self.run_wizard(False, tags=TAGS, extra_env={"ALANS_WAY_AGENTS_REF": "release/plugin-0.8.0"})
-        self.assertEqual(self.last[0], f"{RAW}/release/plugin-0.8.0/setup.sh")
-
-    def test_connected_ends_with_the_steps_still_to_do(self):
-        self.run_wizard(False, tags=TAGS)
-        tail = self.last[1].split("Connected.")[1]
-        self.assertIn("Sign in to Telegram", tail)
-        self.assertIn("Test agent path", tail)
-        self.assertLess(tail.index("hermes gateway setup"), tail.index("Sign in to Telegram"))
-        self.assertGreater(tail.index("setup.sh --bind"), tail.index("Test agent path"))
-        self.assertIn("1. On the server, create your Telegram bot", tail)
-
-    def test_connect_mac_keeps_the_installer_from_asking(self):
-        self.assertIn("ALANS_WAY_SKIP_CONNECT=1 sh", (SCRIPTS / "connect-mac.sh").read_text(encoding="utf-8"))
-        self.assertIn("ALANS_WAY_SKIP_CONNECT", (SCRIPTS / "install-mac.sh").read_text(encoding="utf-8"))
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()
 
 

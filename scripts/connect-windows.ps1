@@ -5,7 +5,7 @@
 #   powershell -ExecutionPolicy Bypass -File connect-windows.ps1 `
 #     -Vps root@<vps-tailscale-ip> `
 #     -VpsHostKey 'ssh-ed25519 AAAA...' `
-#     -VpsKey 'ssh-ed25519 AAAA... root@vps'
+#     -BrokerAdminKey 'ssh-ed25519 AAAA... broker@vps'
 #
 # It installs or upgrades the Alan's Workspace app, lets that key log in to this PC
 # over SSH (only from your Tailscale network), pins the remote host key so
@@ -24,7 +24,7 @@
 param(
   [string]$Vps = '',
   [string]$VpsHostKey = '',
-  [string]$VpsKey = '',
+  [string]$BrokerAdminKey = '',
   [switch]$SkipInstall
 )
 Set-StrictMode -Version Latest
@@ -37,15 +37,15 @@ function Say([string]$m) { Write-Host $m }
 function Die([string]$m) { Write-Host "connect-windows: $m" -ForegroundColor Red; exit 1 }
 
 if ($env:OS -notmatch 'Windows') { Die 'run this on your Windows PC' }
-if (-not $Vps -or -not $VpsHostKey -or -not $VpsKey) {
-  Die 'needs -Vps, -VpsHostKey and -VpsKey; ask your setup agent for the full command'
+if (-not $Vps -or -not $VpsHostKey -or -not $BrokerAdminKey) {
+  Die 'needs -Vps, -VpsHostKey and -BrokerAdminKey; obtain the key from the separately provisioned trusted broker OS account'
 }
 
 # Strict shapes: these values land in authorized_keys and known_hosts.
 if ($Vps -notmatch '^([A-Za-z0-9._-]+@)?[A-Za-z0-9.:-]+$') { Die 'bad -Vps (expected user@host)' }
 $keyRe = '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/]+=*'
 if ($VpsHostKey -notmatch "$keyRe`$") { Die "bad -VpsHostKey (expected 'ssh-ed25519 AAAA...')" }
-if ($VpsKey -notmatch "$keyRe( [A-Za-z0-9@._-]+)?`$") { Die "bad -VpsKey (expected 'ssh-ed25519 AAAA... comment')" }
+if ($BrokerAdminKey -notmatch "$keyRe( [A-Za-z0-9@._-]+)?`$") { Die "bad -BrokerAdminKey (expected 'ssh-ed25519 AAAA... comment')" }
 $VpsHost = ($Vps -split '@')[-1]
 
 # Tailscale addresses are 100.64.0.0/10 (100.64.0.0 to 100.127.255.255) and
@@ -150,10 +150,10 @@ if ($userIsAdmin) {
 # example an earlier unrestricted one) is replaced, so re-running tightens an
 # old install and never duplicates the line.
 $fromTailnet = 'from="100.64.0.0/10,fd7a:115c:a1e0::/48"'
-$keyBlob = ($VpsKey -split ' ')[1]
+$keyBlob = ($BrokerAdminKey -split ' ')[1]
 $kept = @(Get-Content $keysFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -and (($_ -split '\s+') -notcontains $keyBlob) })
-[System.IO.File]::WriteAllLines($keysFile, [string[]]($kept + "$fromTailnet $VpsKey"), (New-Object System.Text.UTF8Encoding($false)))
-Say "connect-windows: the agent machine's key can log in to this PC, from your tailnet only ($keysFile)"
+[System.IO.File]::WriteAllLines($keysFile, [string[]]($kept + "$fromTailnet $BrokerAdminKey"), (New-Object System.Text.UTF8Encoding($false)))
+Say "connect-windows: the trusted broker account's key can log in to this PC, from your tailnet only ($keysFile)"
 
 $knownHosts = "$HOME\.ssh\known_hosts"
 if (-not (Test-Path $knownHosts)) { New-Item -ItemType File -Path $knownHosts | Out-Null }
@@ -233,10 +233,10 @@ $tz = $tzMap[[System.TimeZoneInfo]::Local.Id]
 if (-not $tz) { $tz = [System.TimeZoneInfo]::Local.Id; Say "connect-windows: WARNING — '$tz' has no IANA mapping in this script; pass the IANA name to your agent manually." }
 
 Say ''
-Say '===== Copy everything between these lines and send it to your agent ====='
-Say "MAC_SSH=$env:USERNAME@$pcIp"
+Say '===== Trusted broker setup only: give these values to the human administrator ====='
+Say "BROKER_COMPUTER_SSH=$env:USERNAME@$pcIp"
 Say "MAC_TZ=$tz"
 Say "MAC_HOST_KEY=$pcHostKey"
 Say "MAC_KEY=$(((Get-Content "$HOME\.ssh\id_ed25519.pub") -split ' ')[0..1] -join ' ') $env:USERNAME@pc"
 Say '===== end ====='
-Say '(The names say MAC_* for connector compatibility — the values describe this PC.)'
+Say '(Use a separate bot account and per-bot connection file for agent access.)'
