@@ -192,10 +192,10 @@ PC_HOST_KEY="$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null || 
 TZ_NAME="$(timedatectl show -p Timezone --value 2>/dev/null || readlink /etc/localtime | sed 's#.*zoneinfo/##')"
 
 say ""
-say "===== Copy everything between these lines and send it to your agent ====="
-say "MAC_SSH=$(whoami)@$PC_IP"
+say "===== Trusted broker setup only: give these values to the human administrator ====="
+say "BROKER_COMPUTER_SSH=$(whoami)@$PC_IP"
 say "MAC_TZ=$TZ_NAME"
 say "MAC_HOST_KEY=$PC_HOST_KEY"
 say "MAC_KEY=$(cut -d' ' -f1,2 "$HOME/.ssh/id_ed25519.pub") $(whoami)@linux"
 say "===== end ====="
-say "(The names say MAC_* for connector compatibility: the values describe this computer.)"
+say "(Use a separate bot account and per-bot connection file for agent access.)"

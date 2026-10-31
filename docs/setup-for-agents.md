@@ -219,9 +219,11 @@ human.
 
 ## Stage 4 — Prove it end to end
 
-1. In the app: **Settings → Agent setup**, enter the VPS SSH address and
-   `MAC_SSH`, click **Save addresses**, then **Test agent path**. Success text
-   is "VPS reaches this Mac over ssh" (or "this PC" on Windows).
+1. In the app: **Settings → Agent setup**, save the separate non-root agent
+   and broker SSH logins, plus the trusted computer login for the broker.
+   Click **Test broker path**. This checks broker access only; do not use the
+   bot-only `MAC_SSH` from Stage 3 for this field or grant that bot login access
+   to the human account. Verify the bot connection file separately as in Stage 3.
 2. **Human step — tell them:** "In the Alan's Workspace app, message your bot:
    *Open example.com in the workspace browser and tell me the page title.*"
    Expect a tab with the bot's named cursor to appear on the right and the bot

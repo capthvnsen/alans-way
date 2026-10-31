@@ -135,8 +135,8 @@ MAC_HOST_KEY="$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null ||
 [ -n "$MAC_HOST_KEY" ] || die "could not read this Mac's SSH host key"
 
 say ""
-say "===== Copy everything between these lines and send it to your agent ====="
-say "MAC_SSH=$(whoami)@$MAC_IP"
+say "===== Trusted broker setup only: give these values to the human administrator ====="
+say "BROKER_COMPUTER_SSH=$(whoami)@$MAC_IP"
 say "MAC_TZ=$(readlink /etc/localtime | sed 's#.*zoneinfo/##')"
 say "MAC_HOST_KEY=$MAC_HOST_KEY"
 say "MAC_KEY=$(cut -d' ' -f1,2 "$HOME/.ssh/id_ed25519.pub") $(whoami)@mac"

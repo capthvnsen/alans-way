@@ -1736,7 +1736,7 @@ async function cloudConnectOnce(diyHost, pending) {
     cloud.diy = true;
     cloud.step = 'connect';
     prefs.cloud = cloud;
-    setServerConfig({ ...(prefs.vpsBrowser || {}), brokerSshHost: '', sshHost: diyHost });
+    setServerConfig({ ...(prefs.vpsBrowser || {}), brokerSshHost: diyHost === prefs.vpsBrowser?.sshHost ? prefs.vpsBrowser.brokerSshHost || '' : '', sshHost: diyHost });
     savePreferences();
   }
   prefs.cloud = cloud;
@@ -1784,8 +1784,10 @@ async function cloudConnectOnce(diyHost, pending) {
   const name = cloud.computerName || cloudComputer?.computer_name || '';
   const peer = status.code === 0 ? cloudConnect.findPeer(status.out, name) : null;
   if (!peer) return { stage: 'pairing', ok: false, detail: url ? 'Waiting for the computer to join your tailnet. Finish the pairing page, then check again.' : 'Waiting for the computer to join your tailnet…' };
-  const sshHost = `root@${peer.ip}`;
-  if (setServerConfig({ ...(prefs.vpsBrowser || {}), brokerSshHost: '', sshHost })) savePreferences();
+  const savedHost = (prefs.vpsBrowser?.sshHost || '').trim();
+  const savedIp = savedHost.slice(savedHost.lastIndexOf('@') + 1).replace(/^\[|\]$/g, '').toLowerCase();
+  const sshHost = savedHost.includes('@') && savedIp === peer.ip.toLowerCase() ? savedHost : `root@${peer.ip}`;
+  if (setServerConfig({ ...(prefs.vpsBrowser || {}), brokerSshHost: sshHost === savedHost ? prefs.vpsBrowser.brokerSshHost || '' : '', sshHost })) savePreferences();
   pending.host = host = sshHost;
   const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
   if (!current()) return cancelled;

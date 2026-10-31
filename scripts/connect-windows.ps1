@@ -233,10 +233,10 @@ $tz = $tzMap[[System.TimeZoneInfo]::Local.Id]
 if (-not $tz) { $tz = [System.TimeZoneInfo]::Local.Id; Say "connect-windows: WARNING — '$tz' has no IANA mapping in this script; pass the IANA name to your agent manually." }
 
 Say ''
-Say '===== Copy everything between these lines and send it to your agent ====='
-Say "MAC_SSH=$env:USERNAME@$pcIp"
+Say '===== Trusted broker setup only: give these values to the human administrator ====='
+Say "BROKER_COMPUTER_SSH=$env:USERNAME@$pcIp"
 Say "MAC_TZ=$tz"
 Say "MAC_HOST_KEY=$pcHostKey"
 Say "MAC_KEY=$(((Get-Content "$HOME\.ssh\id_ed25519.pub") -split ' ')[0..1] -join ' ') $env:USERNAME@pc"
 Say '===== end ====='
-Say '(The names say MAC_* for connector compatibility — the values describe this PC.)'
+Say '(Use a separate bot account and per-bot connection file for agent access.)'

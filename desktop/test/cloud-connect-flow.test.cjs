@@ -18,9 +18,10 @@ const end = source.indexOf('\nasync function claimWithToken(', start);
 assert.ok(end > start);
 const connectSource = source.slice(start, end);
 
-function fixture({ diy = true, resume = false, step = 'connect', failure, probe, model = null, tokenedProfiles = [],
+function fixture({ diy = true, resume = false, step = 'connect', failure, probe, realBrokerSetup = false, model = null, tokenedProfiles = [],
   inventory = tokenedProfiles.map(name => name === '*' ? '/fixture/.hermes/.env' : `/fixture/.hermes/profiles/${name}/.env`).join('\n') } = {}) {
-  const host = diy ? `user@${fixtureTailnet}` : 'root@192.0.2.7';
+  const peerIp = realBrokerSetup ? fixtureTailnet : '192.0.2.7';
+  const host = realBrokerSetup ? `agent@${peerIp}` : diy ? `user@${fixtureTailnet}` : `root@${peerIp}`;
   const prefs = {
     onboarded: false,
     macSshHost: `user@${fixtureTailnet}`,
@@ -29,6 +30,8 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, probe,
       vpsBrowser: { sshHost: host },
     }),
   };
+  if (realBrokerSetup) prefs.vpsBrowser = { sshHost: host, brokerSshHost: `broker@${peerIp}`, scriptPath: '/app/host.cjs' };
+  const readiness = vm.runInNewContext(source.slice(source.indexOf('function checkBrokerSetup()'), source.indexOf('function testAgentPath()')) + ';checkBrokerSetup', { prefs, brokerTarget: require('../src/vps-browser.cjs').brokerTarget });
   const calls = [];
   const commands = [];
   const savedSteps = [];
@@ -47,7 +50,7 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, probe,
       assert.equal(cli, 'fixture-tailscale');
       assert.deepEqual(args, ['status', '--json']);
       calls.push('pairing');
-      return { code: 0, out: JSON.stringify({ Peer: { fixture: { HostName: 'alan-fixture', TailscaleIPs: ['192.0.2.7'], Online: true } } }) };
+      return { code: 0, out: JSON.stringify({ Peer: { fixture: { HostName: 'alan-fixture', TailscaleIPs: [peerIp], Online: true } } }) };
     },
     sshRun: async (target, command, options) => {
       commands.push(command);
@@ -82,7 +85,7 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, probe,
     checkBrokerSetup: () => {
       assert.ok([host, `user@${fixtureTailnetOther}`].includes(prefs.vpsBrowser.sshHost));
       calls.push('authorize');
-      return { ok: failure !== 'authorize', detail: 'fixture authorization failure' };
+      return realBrokerSetup ? readiness() : { ok: failure !== 'authorize', detail: 'fixture authorization failure' };
     },
     testAgentPath: async () => {
       calls.push('path');
@@ -289,4 +292,24 @@ test('a new DIY connection clears the previous completed model review', async ()
   await f.connect();
   assert.equal(f.prefs.cloud.step, 'model');
   assert.equal(nextCloudStep(f.prefs, 'model'), 'telegram', 'a new connection still needs bot setup');
+});
+
+for (const diy of [true, false]) {
+  test(`${diy ? 'DIY retry' : 'hosted discovery'} preserves a provisioned non-root agent and separate broker`, async () => {
+    const f = fixture({ diy, realBrokerSetup: true });
+    const config = { ...f.prefs.vpsBrowser };
+    const result = await f.connect();
+    assert.equal(result.ok, true, result.detail);
+    assert.deepEqual({ ...f.prefs.vpsBrowser }, config);
+    assert.ok(f.calls.includes('path'));
+  });
+}
+
+test('changing the DIY host discards the previous broker and fails readiness', async () => {
+  const f = fixture({ realBrokerSetup: true });
+  const result = await f.requestConnect('user@new.invalid');
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, 'path');
+  assert.equal(f.prefs.vpsBrowser.brokerSshHost, '');
+  assert.ok(!f.calls.includes('path'));
 });
