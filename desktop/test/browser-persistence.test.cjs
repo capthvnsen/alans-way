@@ -118,7 +118,7 @@ test('a task handed back from the remote browser does not become a restorable us
       isLoading: () => false, getURL: () => options.url, executeJavaScript: async () => ({ verification: {}, restored: [], skipped: [] }),
     } } }; }, restoreExpression() {}, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => false,
   });
-  vm.runInContext(section('async function handoffTab(', '\n// History navigation has no promise.'), context);
+  vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
   await context.handoffTab({ id: 'remote-task', destination: 'mac' });
   assert.equal(created.owner, 'bot');
   assert.equal(created.controller, 'human', 'handoff review must still require human control');
@@ -142,7 +142,7 @@ test('Move to VM and back carries the page’s sign-in, set before the destinati
     createTab: (options) => { events.push(['open', options.url]); return { id: 'mac-back', view: { webContents: page(options.url) } }; },
     restoreExpression() {}, checkpointExpression: require('../src/browser-page.cjs').checkpointExpression, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => true,
   });
-  vm.runInContext(section('async function handoffTab(', '\n// History navigation has no promise.'), context);
+  vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
   const out = await context.handoffTab({ id: 'mac-task', destination: 'vps' });
   const open = requests.find(([route]) => route === '/v1/tabs')[1];
   assert.equal(open.url, 'https://task.example/deal');
@@ -167,7 +167,7 @@ test('without consent or a tailnet path a Move carries no sign-ins, and a failed
     remoteRequest: async () => ({ verification: 'ready', restored: 0, skipped: 0, tab: { id: 'vm-new' } }),
     restoreExpression() {}, checkpointExpression: require('../src/browser-page.cjs').checkpointExpression, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => false,
   });
-  vm.runInContext(section('async function handoffTab(', '\n// History navigation has no promise.'), context);
+  vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
   fail = true;
   await assert.rejects(context.handoffTab({ id: 'mac-task', destination: 'vps' }), /SSH unavailable/);
   assert.equal(macTab.controller, 'agent', 'the agent keeps its tab when the VM side never opened');

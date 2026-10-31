@@ -2659,6 +2659,7 @@ async function navigateVps(id,url) {
   await remoteRequest(id,'control',{controller:'human'});
   await remoteRequest(id,'human-actions',{action:'navigate',url:normalizeUrl(url)});
 }
+const handoffRequests = new Map();
 async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   const source=tabs.get(id) || vpsTabs.get(id); if(!source)throw new Error('Source tab not found.');
   const sourceHost=tabs.has(id)?'mac':'vps';
@@ -2666,6 +2667,9 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   // stays accepted as the compat wire name for the user's own computer.
   const dest=destination===HOST_LABEL?'mac':destination;
   if(!['mac','vps'].includes(dest)||dest===sourceHost)throw new Error('Choose the other computer.');
+  if(handoffRequests.has(id))return handoffRequests.get(id);
+  if(source.handoff?.phase==='handed_off')throw new Error('This page already moved. Continue at its destination or use Move back.');
+  const work=(async()=>{
   const wasController=source.controller;
   if(sourceHost==='mac') { changeController(id,'human'); await source.queue; }
   else await remoteRequest(id,'control',{controller:'human'});
@@ -2701,14 +2705,19 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
     result=await target.view.webContents.executeJavaScript(restoreExpression(checkpoint));
   }
   const record={...handoff,destinationTabId:target.id,verification:result.verification,restoredDrafts:result.restored,skippedDrafts:result.skipped};
-  if(dest==='mac')target.handoff=record;
-  else {target.handoff=record;vpsTabs.set(target.id,target);}
   const retired={id:record.id,phase:'handed_off',sourceHost,destinationHost:dest,destinationTabId:target.id,createdAt:record.createdAt};
   if(sourceHost==='mac')source.handoff=retired;
   else record.sourceRetired=await remoteRequest(id,'control',{controller:'human',handoff:retired}).then(()=>true,()=>false);
+  if(record.sourceRetired===false)record.verification='review_required';
+  if(dest==='mac')target.handoff=record;
+  else {target.handoff=record;vpsTabs.set(target.id,target);}
   prefs.remoteControl=false; prefs.handoffs=[record,...prefs.handoffs].slice(0,20);activeTabId=dest==='vps'?'vps':target.id;
-  if(dest==='vps')await remoteRequest(target.id,'activate',{});
-  savePreferences();applyLayout();broadcast();return record;
+  savePreferences();applyLayout();broadcast();
+  if(dest==='vps')await remoteRequest(target.id,'activate',{}).catch(error=>logError('handoff activate',error));
+  return record;
+  })();
+  handoffRequests.set(id,work);
+  try{return await work;}finally{handoffRequests.delete(id);}
 }
 // History navigation has no promise. Listeners go on before the trigger so a
 // fast (cached or same-document) navigation cannot finish unobserved.
