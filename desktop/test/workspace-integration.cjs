@@ -403,7 +403,7 @@ app.whenReady().then(async () => {
   const sshBin = path.join(profile, 'handoff-bin');
   fs.mkdirSync(sshBin);
   fs.writeFileSync(path.join(sshBin, 'ssh'), `#!/usr/bin/env node
-if (!process.argv.includes('agent@${fixtureHost}')) process.exit(2);
+if (!process.argv.includes('browser-broker@${fixtureHost}')) process.exit(2);
 process.stdin.resume();
 process.stdin.on('end', () => process.stdout.write(JSON.stringify({ status: 503, data: { error: 'Controlled VPS handoff unavailable' } })));
 `, { mode: 0o755 });
