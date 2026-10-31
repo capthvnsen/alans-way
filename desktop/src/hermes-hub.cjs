@@ -37,12 +37,13 @@ function createHermesHub(deps = {}) {
   const createController = deps.createController || (({ wire, identity }) => new HermesConversation({ wire, identity }));
   const notify = typeof deps.notify === 'function' ? deps.notify : () => {};
   const persist = typeof deps.persist === 'function' ? deps.persist : () => {};
+  const openAuthUrl = typeof deps.openAuthUrl === 'function' ? deps.openAuthUrl : null;
 
   const hub = new EventEmitter();
   const state = {
     status: 'unconfigured', error: null,
     base: null, profile: '',
-    authRequired: null, authFlows: [], providers: [],
+    authRequired: null, authFlows: [], providers: [], signInPending: false,
     principal: null,                    // {userId, provider} — display only
     tokens: null,                       // private; never projected
     localToken: '',                     // private; loopback-only credential
@@ -109,6 +110,7 @@ function createHermesHub(deps = {}) {
   }
   function invalidateAuth() {
     state.authSeq++;
+    state.signInPending = false;
     cancelPendingAuth();
   }
 
@@ -296,6 +298,41 @@ function createHermesHub(deps = {}) {
     return entry.controller;
   }
 
+  async function signIn(v, browser = false) {
+    if (!state.base) throw new HubError('unconfigured', 'Configure a backend first.');
+    const requested = asString(v.provider, 200);
+    const candidates = state.providers.filter(p => browser ? p.supports_password === false : p.supports_password === true);
+    const provider = requested ? candidates.find(p => p.name === requested) : candidates.length === 1 ? candidates[0] : null;
+    if (!provider) throw new HubError(browser ? 'no_browser_provider' : 'no_password_provider',
+      browser ? 'Choose an available browser sign-in provider.' : 'This backend offers no matching username/password sign-in.');
+    if (browser && (!state.authRequired || !state.authFlows.includes('native_pkce'))) {
+      throw new HubError('auth_flow_unsupported', 'This backend does not support native browser sign-in.');
+    }
+    invalidateAuth();
+    const fence = { seq: state.authSeq, base: state.base, profile: state.profile };
+    const ctl = new AbortController();
+    pendingAuth.add(ctl); state.signInPending = browser;
+    setStatus('needs_signin');
+    let tokens;
+    try {
+      tokens = browser ? await remote.signInBrowser({ base: fence.base, provider: provider.name, openAuthUrl, signal: ctl.signal })
+        : await remote.signIn({ base: fence.base, provider: provider.name,
+          username: asString(v.username, 1000), password: asString(v.password, 1000), signal: ctl.signal });
+    } catch (e) {
+      if (!authCurrent(fence)) throw staleAuth();
+      const error = !browser && e.code === 'auth_failed' && /^POST \/auth\/password-login: Invalid credentials\.?$/i.test(e.message)
+        ? new HubError('auth_failed', 'Wrong username or password.') : e;
+      setStatus('needs_signin', error); throw error;
+    } finally {
+      pendingAuth.delete(ctl);
+      if (authCurrent(fence)) { state.signInPending = false; changed(); }
+    }
+    if (!authCurrent(fence)) throw staleAuth();
+    state.tokens = tokens; state.principal = { userId: tokens.userId, provider: tokens.provider };
+    save(); changed();
+    return commands.connect();
+  }
+
   // ── command surface (the ONLY methods IPC may reach) ──────────────────────
   const commands = {
     // Configure or re-point at a backend. URL/profile changes retire the
@@ -318,41 +355,14 @@ function createHermesHub(deps = {}) {
     async 'probe'() { await probe(); return { ok: true, authRequired: state.authRequired }; },
 
     async 'sign-in'(v) {
-      if (!state.base) throw new HubError('unconfigured', 'Configure a backend first.');
-      const provider = asString(v.provider, 200) || state.providers.find((p) => p.supports_password)?.name || '';
-      if (!provider) throw new HubError('no_password_provider', 'This backend offers no username/password sign-in. Use its own sign-in (e.g. browser OAuth) is not supported by this surface.');
-      // This attempt supersedes every older pending sign-in; the fence is
-      // checked BEFORE the minted tokens may mutate state, persist, or feed
-      // the refresh/ticket chain of a possibly different target. The bump
-      // also cancels whatever older credential work is still in flight.
-      invalidateAuth();
-      const fence = { seq: state.authSeq, base: state.base, profile: state.profile };
-      const ctl = new AbortController();
-      pendingAuth.add(ctl);
-      setStatus('needs_signin');
-      let tokens;
-      try {
-        tokens = await remote.signIn({
-          base: fence.base, provider,
-          username: asString(v.username, 1000), password: asString(v.password, 1000),
-          signal: ctl.signal,
-        });
-      } catch (e) {
-        // An aborted/superseded sign-in reports 'stale' regardless of which
-        // transport error the cancellation surfaced as.
-        if (!authCurrent(fence)) throw staleAuth();
-        const error = e.code === 'auth_failed' && /^POST \/auth\/password-login: Invalid credentials\.?$/i.test(e.message)
-          ? new HubError('auth_failed', 'Wrong username or password.') : e;
-        setStatus('needs_signin', error);
-        throw error;
-      } finally {
-        pendingAuth.delete(ctl);
-      }
-      if (!authCurrent(fence)) throw staleAuth();
-      state.tokens = tokens;
-      state.principal = { userId: tokens.userId, provider: tokens.provider };
-      save(); changed();
-      return commands.connect();
+      return signIn(v);
+    },
+
+    async 'sign-in-browser'(v) { return signIn(v, true); },
+
+    async 'cancel-sign-in'() {
+      if (pendingAuth.size) { invalidateAuth(); setStatus('needs_signin'); }
+      return { ok: true };
     },
 
     async 'connect'() {
@@ -607,8 +617,9 @@ function createHermesHub(deps = {}) {
       generation: state.generation,
       target: state.base ? { label: state.base.label, url: `${state.base.origin}${state.base.prefix}`, profile: state.profile } : null,
       authRequired: state.authRequired,
+      signInPending: state.signInPending,
       authFlows: [...state.authFlows],
-      providers: state.providers.map((p) => ({ name: p.name, displayName: asString(p.display_name || p.name, 200), password: p.supports_password === true })),
+      providers: state.providers.map((p) => ({ name: p.name, displayName: asString(p.display_name || p.name, 200), password: p.supports_password === true, browser: state.authRequired === true && state.authFlows.includes('native_pkce') && p.supports_password === false })),
       principal: state.principal,
       sessions: state.sessions.map((s) => ({ ...s, selected: sel?.sessionId === s.id })),
       storedSessions: state.storedSessions.map(s => ({ ...s })),
