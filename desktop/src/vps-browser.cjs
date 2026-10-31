@@ -137,16 +137,23 @@ const settleWithin = (promise, ms, fallback) => new Promise((resolve) => {
   promise.then((value) => { clearTimeout(timer); resolve(value); }, () => { clearTimeout(timer); resolve(fallback); });
 });
 const backoffDelay = (failures) => Math.min(60000, 5000 * 2 ** Math.min(failures, 4));
+function brokerTarget(cfg) {
+  const host = cfg?.brokerSshHost || '';
+  const agentUser = (cfg?.sshHost || '').split('@');
+  if (!host || !cfg?.scriptPath) throw new Error('Configure a separate browser broker SSH login in Settings.');
+  if (!isSshTarget(host) || !host.includes('@') || agentUser.length !== 2 || host.split('@')[0] === agentUser[0])
+    throw new Error('Use explicit, different OS users for the agent and browser broker SSH logins.');
+  return host;
+}
 function createVpsBrowser({ getConfig }) {
   async function request(route, method = 'GET', body, { botId = '', botName = '', human = false, epoch } = {}) {
     const cfg = getConfig();
-    if (!cfg?.sshHost || !cfg.scriptPath) throw new Error('Configure the VPS browser connection in Settings.');
-    if (!isSshTarget(cfg.sshHost)) throw new Error('Invalid VPS browser SSH settings.');
+    const host = brokerTarget(cfg);
     const pathProblem = checkScriptPath(cfg.scriptPath);
     if (pathProblem) throw new Error(pathProblem);
     const cmd = remoteCommand(cfg);
     return new Promise((resolve, reject) => {
-      const child = spawn('ssh', sshArgs(cfg.sshHost, cmd), { stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn('ssh', sshArgs(host, cmd), { stdio: ['pipe', 'pipe', 'pipe'] });
       let output = '',
         stderr = '',
         size = 0,
@@ -189,4 +196,4 @@ function createVpsBrowser({ getConfig }) {
   }
   return { request };
 }
-module.exports = { createVpsBrowser, remoteCommand, asciiJson, checkScriptPath, sshArgs, backoffDelay, toCdpCookie, toElectronCookies, isTailnetHost, sshResolvedHostname, resolveSshHostname, createMirrorPusher, prepareMirrorTabs, settleWithin };
+module.exports = { brokerTarget, createVpsBrowser, remoteCommand, asciiJson, checkScriptPath, sshArgs, backoffDelay, toCdpCookie, toElectronCookies, isTailnetHost, sshResolvedHostname, resolveSshHostname, createMirrorPusher, prepareMirrorTabs, settleWithin };

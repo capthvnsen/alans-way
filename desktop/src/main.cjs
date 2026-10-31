@@ -270,7 +270,7 @@ function isVpsTarget(id, host) {
   return remote;
 }
 async function refreshVpsTabs() {
-  if (!prefs?.vpsBrowser?.sshHost || vpsRefreshBusy) return;
+  if (!prefs?.vpsBrowser?.brokerSshHost || vpsRefreshBusy) return;
   vpsRefreshBusy = true;
   try {
     const wasVps = vpsTabs.has(activeTabId);
@@ -304,7 +304,7 @@ const mirrorPages = new Map(), mirrorCapWarned = new Set();
 // and only to a VM that ssh reaches over the tailnet.
 let tailnetCheck = { host: '', ok: Promise.resolve(false) };
 function signInsTravel() {
-  const host = prefs?.vpsBrowser?.sshHost || '';
+  const host = prefs?.vpsBrowser?.brokerSshHost || '';
   if (prefs?.carrySignIns === false || !host) return Promise.resolve(false);
   if (tailnetCheck.host !== host) {
     // Only a yes is kept, so a slow ssh -G or an ssh config fix is retried.
@@ -334,7 +334,7 @@ const pushVpsMirror = createMirrorPusher({
   bots: () => (prefs?.bots || []).map((bot) => bot.id),
   async collect() {
     // A push before the retire check would hide what the VM resumed from it.
-    if (!prefs?.vpsBrowser?.sshHost || vpsBrowserStatus !== 'connected' || continuedCheckDue) return null;
+    if (!prefs?.vpsBrowser?.brokerSshHost || vpsBrowserStatus !== 'connected' || continuedCheckDue) return null;
     const carry = await signInsTravel();
     const agentTabs = [...tabs.values()].filter((tab) => {
       const wc = tab.view?.webContents;
@@ -361,7 +361,7 @@ const pushVpsMirror = createMirrorPusher({
   push: (bot, mirrorTabs) => vpsBrowser.request('/v1/mirror', 'POST', { bot, tabs: mirrorTabs }, { human: true, botId: bot }),
 });
 function scheduleVpsMirror() {
-  if (!prefs?.vpsBrowser?.sshHost) return;
+  if (!prefs?.vpsBrowser?.brokerSshHost) return;
   clearTimeout(vpsMirrorDebounce);
   vpsMirrorDebounce = setTimeout(pushVpsMirror, 1500);
   vpsMirrorDebounce.unref();
@@ -435,7 +435,7 @@ function settingsWriteEntry(event, token, checking = false, payload) {
     record.status = 'not-applied'; record.detail = 'A newer choice was made. Review the current saved value before saving again.';
   }
   if (!checking && ['addresses', 'viewer'].includes(token.slot)) {
-    const current = { bot: prefs.selectedBotId || '', host: HOST_LABEL, platform: prefs.remotePlatform || 'linux', mac: prefs.macSshHost || '', vps: prefs.vpsBrowser?.sshHost || '' };
+    const current = { bot: prefs.selectedBotId || '', host: HOST_LABEL, platform: prefs.remotePlatform || 'linux', mac: prefs.macSshHost || '', vps: prefs.vpsBrowser?.sshHost || '', broker: prefs.vpsBrowser?.brokerSshHost || '' };
     if (JSON.stringify(payload._settingsContext) !== JSON.stringify(current)) {
       record.status = 'not-applied'; record.detail = 'The connection changed. Review its saved addresses before saving again.';
     }
@@ -464,7 +464,7 @@ function settingsWriteReceipt(entry) {
   if (record?.expected && status !== 'failed') {
     const keys = record.slot === 'addresses' ? ['macSshHost', 'vpsBrowser'] : record.slot === 'viewer' ? ['remoteUrl'] : [record.slot];
     // Compare persisted values, never an optimistic renderer or in-memory flag.
-    const value = (source, key) => key === 'vpsBrowser' ? [source.vpsBrowser?.sshHost || '', source.vpsBrowser?.scriptPath || '', source.vpsBrowser?.sudo === true] : source[key];
+    const value = (source, key) => key === 'vpsBrowser' ? [source.vpsBrowser?.sshHost || '', source.vpsBrowser?.brokerSshHost || '', source.vpsBrowser?.scriptPath || '', source.vpsBrowser?.sudo === true] : source[key];
     const matches = keys.every(key => JSON.stringify(value(saved, key)) === JSON.stringify(value(record.expected, key)));
     if (status !== 'not-applied') status = matches ? 'saved' : 'changed';
   }
@@ -1670,7 +1670,7 @@ async function runSetupCheck() {
 // Every server-address save drops evidence from the previous machine.
 function setServerConfig(config, target = prefs) {
   const changed = config.sshHost !== target.vpsBrowser?.sshHost;
-  target.vpsBrowser = config;
+  target.vpsBrowser = { ...config, brokerSshHost: Object.hasOwn(config, 'brokerSshHost') ? config.brokerSshHost : changed ? '' : target.vpsBrowser?.brokerSshHost || '' };
   if (changed) {
     target.versionCache = {};
     if (target.cloud) {
@@ -1757,7 +1757,7 @@ async function cloudConnectOnce(diyHost, pending) {
     cloud.diy = true;
     cloud.step = 'connect';
     prefs.cloud = cloud;
-    setServerConfig({ ...(prefs.vpsBrowser || {}), sshHost: diyHost });
+    setServerConfig({ ...(prefs.vpsBrowser || {}), brokerSshHost: '', sshHost: diyHost });
     savePreferences();
   }
   prefs.cloud = cloud;
@@ -1806,7 +1806,7 @@ async function cloudConnectOnce(diyHost, pending) {
   const peer = status.code === 0 ? cloudConnect.findPeer(status.out, name) : null;
   if (!peer) return { stage: 'pairing', ok: false, detail: url ? 'Waiting for the computer to join your tailnet. Finish the pairing page, then check again.' : 'Waiting for the computer to join your tailnet…' };
   const sshHost = `root@${peer.ip}`;
-  if (setServerConfig({ ...(prefs.vpsBrowser || {}), sshHost })) savePreferences();
+  if (setServerConfig({ ...(prefs.vpsBrowser || {}), brokerSshHost: '', sshHost })) savePreferences();
   pending.host = host = sshHost;
   const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
   if (!current()) return cancelled;
@@ -2055,12 +2055,14 @@ function registerIpc() {
         if (value.vpsBrowser && typeof value.vpsBrowser === 'object') {
           const sshHost = String(value.vpsBrowser.sshHost || '').trim();
           if (sshHost && !isSshTarget(sshHost)) throw new Error('Enter the VPS SSH address as user@Tailscale-IP.');
+          const brokerSshHost = String(value.vpsBrowser.brokerSshHost || '').trim();
+          if (brokerSshHost && (!isSshTarget(brokerSshHost) || !brokerSshHost.includes('@') || !sshHost.includes('@') || brokerSshHost.split('@')[0] === sshHost.split('@')[0])) throw new Error('Use explicit, different OS users for agent and browser broker SSH logins.');
           const scriptPath = String(value.vpsBrowser.scriptPath || '').trim();
           if (scriptPath && checkScriptPath(scriptPath)) throw new Error(checkScriptPath(scriptPath));
           // When the VM's SSH address moves to a different host, the noVNC
           // viewer follows unless remoteUrl was deliberately pointed elsewhere.
           followed = followVmRemoteUrl(next.vpsBrowser.sshHost, sshHost, next.remoteUrl);
-          vpsChanged = setServerConfig({sshHost,scriptPath,sudo:value.vpsBrowser.sudo===true}, next); if(!sshHost)next.vmUpdates={};
+          vpsChanged = setServerConfig({sshHost,brokerSshHost,scriptPath,sudo:brokerSshHost ? false : value.vpsBrowser.sudo===true}, next); if(!sshHost)next.vmUpdates={};
           if (followed) { next.remoteUrl = followed; next.remoteControl = false; }
         }
         if (Number.isFinite(value.agentIdleMinutes)) next.agentIdleMinutes = Math.max(1, Math.min(240, value.agentIdleMinutes));
@@ -3114,7 +3116,7 @@ function startApi() {
         if (!botId || botId.length > 100) throw Object.assign(new Error('X-Hermes-Bot is required.'), { status: 400 });
         // The 5s timer already keeps vpsTabs warm; a blocking SSH refresh here
         // cost seconds on a read-only list call. Serve the cache, refresh async.
-        if(prefs.vpsBrowser?.sshHost)refreshVpsTabs();
+        if(prefs.vpsBrowser?.brokerSshHost)refreshVpsTabs();
         return send(200, { tabs: [...tabs.values()].filter(tab => !tab.extensionPage && !tab.localPdf).map(tab => describeTab(tab, true)).concat([...vpsTabs.values()].map(redactTabForBot)).filter((tab) => overseer || tab.botId === botId || (tab.allowedBots ?? []).includes(botId)) });
       }
       if (url.pathname === '/v1/tabs' && req.method === 'POST') {

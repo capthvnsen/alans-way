@@ -140,6 +140,15 @@ async function run(){
    await assert('paused viewer remains editable',async()=>eq((await fieldStatus('remote-url')).value,'http://203.0.113.7/vnc.html','saved viewer address'));
   } finally { await js(`state=${before};settingsDrafts.clear();`); }
  });
+ await scenario('separate broker address saves and survives failed replacement and discard', async()=>{
+  await mount('ssh address');await input('vps-broker-ssh-host','broker@server-a');await activate('settings-save-addresses');
+  await assert('broker address persists with the agent address unchanged',()=>eq([disk().vpsBrowser.sshHost,disk().vpsBrowser.brokerSshHost],['fixture@server-a','broker@server-a'],'roles saved'));
+  await input('vps-broker-ssh-host','broker@later-server');failWrite=true;await activate('settings-save-addresses');await sleep(180);failWrite=false;
+  await assert('failed broker address save retains private disk and editable draft',async()=>eq([disk().vpsBrowser.brokerSshHost,(await fieldStatus('vps-broker-ssh-host')).value],['broker@server-a','broker@later-server'],'failed broker save'));
+  await mount('viewer');await mount('ssh address');await assert('broker draft survives reopening',async()=>eq((await fieldStatus('vps-broker-ssh-host')).value,'broker@later-server','retained broker draft'));
+  await activate('settings-discard-addresses');await assert('broker discard restores saved login',async()=>eq((await fieldStatus('vps-broker-ssh-host')).value,'broker@server-a','discarded broker draft'));
+  await explicit({vpsBrowser:{sshHost:'fixture@server-a',brokerSshHost:'',scriptPath:'',sudo:false}});
+ });
  await legacyFailureRecovery();
  for(const [slot,id,query] of [['autoOpenLinks','settings-auto-links','takeover'],['autoTakeover','settings-auto-takeover','takeover'],['preview','settings-preview','viewer']]){
   await scenario(slot+' actual failed write then explicit choice',async()=>{

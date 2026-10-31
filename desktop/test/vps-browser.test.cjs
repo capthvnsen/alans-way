@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { createVpsBrowser, remoteCommand, asciiJson, sshArgs, backoffDelay, toCdpCookie, toElectronCookies, isTailnetHost, sshResolvedHostname, resolveSshHostname, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('../src/vps-browser.cjs');
 
 test('VPS SSH failures include a bounded stderr tail', async () => {
-  const browser = createVpsBrowser({ getConfig: () => ({ sshHost: '127.0.0.1', scriptPath: '/nonexistent/vps-browser-host.cjs', sudo: false }) });
+  const browser = createVpsBrowser({ getConfig: () => ({ sshHost: 'agent@127.0.0.1', brokerSshHost: 'broker@127.0.0.1', scriptPath: '/nonexistent/vps-browser-host.cjs', sudo: false }) });
   await assert.rejects(
     () => browser.request('/v1/status'),
     (error) => error.message.includes('VPS browser SSH unavailable') && /127\.0\.0\.1|Connection refused|connect/i.test(error.message),
@@ -13,7 +13,7 @@ test('VPS SSH failures include a bounded stderr tail', async () => {
 });
 
 test('script paths are absolute Unix or Windows paths from a small safe alphabet', async () => {
-  const via = (scriptPath) => createVpsBrowser({ getConfig: () => ({ sshHost: '127.0.0.1', scriptPath }) }).request('/v1/status');
+  const via = (scriptPath) => createVpsBrowser({ getConfig: () => ({ sshHost: 'agent@127.0.0.1', brokerSshHost: 'broker@127.0.0.1', scriptPath }) }).request('/v1/status');
   for (const scriptPath of ['C:\\Users\\a b\\h.cjs', 'd:/tools/h.cjs', '/home/user/.hermes/h.cjs', '/opt/my app/h-1_2.cjs'])
     await assert.rejects(via(scriptPath), (error) => !/Invalid VPS browser/.test(error.message), scriptPath);
   for (const scriptPath of ['relative/h.cjs', 'C:h.cjs', "/x/it's.cjs", '/x/$(id).cjs', '/x/`id`.cjs', '/x/a"b.cjs', '/x/a;b.cjs', '/x/a&b.cjs', '/x/a%PATH%.cjs', '/x/h.cjs\\', '/x/\u00e9.cjs', '/x/a\nb.cjs'])
@@ -215,4 +215,14 @@ test('cookies moved back from the VM are limited to the page they belong to', ()
 
 test('legacy sudo settings survive an app upgrade', () => {
   assert.match(remoteCommand({ scriptPath: '/app/host.cjs', sudo: true }), /sudo -n/);
+});
+
+test('browser transport requires the explicit separate broker login', async () => {
+  const { brokerTarget } = require('../src/vps-browser.cjs');
+  const config = { sshHost: 'agent@host.example', brokerSshHost: 'broker@host.example', scriptPath: '/app/host.cjs' };
+  assert.equal(brokerTarget(config), config.brokerSshHost);
+  for (const over of [{ brokerSshHost: '' }, { brokerSshHost: 'host.example' }, { brokerSshHost: 'agent@other.example' }, { sshHost: 'host.example' }]) {
+    assert.throws(() => brokerTarget({ ...config, ...over }));
+    await assert.rejects(createVpsBrowser({ getConfig: () => ({ ...config, ...over }) }).request('/v1/status'));
+  }
 });
