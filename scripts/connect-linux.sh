@@ -6,7 +6,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-linux.sh | sh -s -- \
 #     --vps root@<vps-tailscale-ip> \
 #     --vps-host-key 'ssh-ed25519 AAAA...' \
-#     --vps-key 'ssh-ed25519 AAAA... root@vps'
+#     --broker-key 'ssh-ed25519 AAAA... broker@vps'
 #
 # It checks Tailscale and the systemd SSH server, builds and installs the
 # Alan's Workspace app (skip with --skip-install), lets that VPS key log in to this
@@ -20,6 +20,7 @@ REPO_URL="https://github.com/capthvnsen/alans-way"
 DIR="${ALANS_WAY_DIR:-$HOME/alans-way}"
 APP_NAME="alans-way-localapp"
 DEST="$HOME/.local/share/$APP_NAME"
+# Only a trusted broker key may authorize this human account; never use a bot key.
 VPS="" VPS_HOST_KEY="" VPS_KEY="" SKIP_INSTALL=0
 
 die() { printf 'connect-linux: %s\n' "$*" >&2; exit 1; }
@@ -29,7 +30,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --vps) VPS="${2:-}"; shift 2;;
     --vps-host-key) VPS_HOST_KEY="${2:-}"; shift 2;;
-    --vps-key) VPS_KEY="${2:-}"; shift 2;;
+    --broker-key) VPS_KEY="${2:-}"; shift 2;;
     --skip-install) SKIP_INSTALL=1; shift;;
     -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     *) die "unknown arg: $1";;
@@ -39,13 +40,13 @@ done
 [ "$(uname -s)" = Linux ] || die "run this on your Linux computer"
 [ "$(uname -m)" = x86_64 ] || die "Alan's Workspace for Linux only comes as a 64-bit Intel/AMD (x86_64) build, and this computer is $(uname -m)."
 [ -n "$VPS" ] && [ -n "$VPS_HOST_KEY" ] && [ -n "$VPS_KEY" ] \
-  || die "needs --vps, --vps-host-key and --vps-key; ask your setup agent for the full command"
+  || die "needs --vps, --vps-host-key and --broker-key; obtain the key from the separately provisioned trusted broker OS account"
 
 # Strict shapes: these values land in authorized_keys and known_hosts.
 printf '%s' "$VPS" | grep -Eq '^([A-Za-z0-9._-]+@)?[A-Za-z0-9.:-]+$' || die "bad --vps (expected user@host)"
 KEY_RE='^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/]+=*'
 printf '%s' "$VPS_HOST_KEY" | grep -Eq "$KEY_RE\$" || die "bad --vps-host-key (expected 'ssh-ed25519 AAAA...')"
-printf '%s' "$VPS_KEY" | grep -Eq "$KEY_RE( [A-Za-z0-9@._-]+)?\$" || die "bad --vps-key (expected 'ssh-ed25519 AAAA... comment')"
+printf '%s' "$VPS_KEY" | grep -Eq "$KEY_RE( [A-Za-z0-9@._-]+)?\$" || die "bad --broker-key (expected 'ssh-ed25519 AAAA... comment')"
 VPS_HOST="${VPS#*@}"
 
 # --- tailnet helpers begin (tests/test_connect_scripts.py runs this block)

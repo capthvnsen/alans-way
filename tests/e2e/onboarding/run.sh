@@ -1,4 +1,6 @@
 #!/bin/bash
+printf '%s\n' 'Legacy shared-account onboarding harness is retired; migrate it to isolated per-bot/broker accounts before running.' >&2
+exit 1
 # Onboarding e2e: a fresh "Orgo-like" server container (supervisord, real
 # Hermes, real sshd) and a fresh "user computer" container (Linux, real sshd).
 # Runs scripts/connect-server.sh from the computer, then the server doctor

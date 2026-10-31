@@ -79,8 +79,8 @@ function fixture({ diy = true, resume = false, step = 'connect', failure, probe,
       calls.push('state');
       return { code: 0, out: JSON.stringify({ state: failure === 'failed' ? 'failed' : 'ready', step: 'paired' }) };
     },
-    authorizeComputerKey: async (target) => {
-      assert.ok([host, `user@${fixtureTailnetOther}`].includes(target));
+    checkBrokerSetup: () => {
+      assert.ok([host, `user@${fixtureTailnetOther}`].includes(prefs.vpsBrowser.sshHost));
       calls.push('authorize');
       return { ok: failure !== 'authorize', detail: 'fixture authorization failure' };
     },

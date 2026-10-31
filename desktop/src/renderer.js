@@ -1797,7 +1797,7 @@ function mountAgentSetup(body) {
   const broker = settingsField(advanced.content, 'vps-broker-ssh-host', 'Browser broker SSH address (after separate OS user is provisioned)', state.vpsBrowser?.brokerSshHost, 'broker@tailnet-address');
   advanced.content.append(element('p', 'settings-note', 'An empty broker address keeps the existing legacy shared login; it does not isolate bots. Provision a separate broker account before selecting it. A selected broker never falls back to the agent login.'));
   const local = settingsField(advanced.content, 'mac-ssh-host', 'This computer’s SSH address', state.macSshHost, 'you@your-computer');
-  advanced.content.append(element('p', 'settings-note', 'Use this computer’s address as reached from the agent machine. These addresses are shared by your bots; setup instructions are specific to the bot selected above.'));
+  advanced.content.append(element('p', 'settings-note', 'Use this computer’s address as reached from the trusted broker. Agent accounts must not have shell access to the human account. These addresses are shared by your bots; setup instructions are specific to the bot selected above.'));
   const save = settingsSaveFields(advanced.content, 'Save addresses', [local, vps, broker], () => ({ macSshHost: local.value.trim(), vpsBrowser: { ...state.vpsBrowser, sshHost: vps.value.trim(), brokerSshHost: broker.value.trim() } }), { success: 'Addresses saved. Check the saved path next.', draftScope: () => ['agent', reviewedBotId, state.hostLabel], saved: () => [state.macSshHost || '', state.vpsBrowser?.sshHost || '', state.vpsBrowser?.brokerSshHost || ''] }); save.id = 'settings-save-addresses';
   appendServerSetup(advanced.content, () => {
     if (local.value.trim() !== (state.macSshHost || '') || vps.value.trim() !== (state.vpsBrowser?.sshHost || ''))
@@ -1836,7 +1836,7 @@ function mountAgentSetup(body) {
     }
     const started = epoch;
     checked = false; refresh();
-    const reply = await runSettingsAction(test, result, () => api.command('test-agent-path'), 'Checking the saved SSH path to this computer…');
+    const reply = await runSettingsAction(test, result, () => api.command('test-agent-path'), 'Checking the saved broker SSH path to this computer…');
     if (reply.stale || !result.isConnected) return;
     if (started !== epoch) { result.classList.remove('error'); result.textContent = 'Addresses or bot changed. Check the saved path again.'; return; }
     if (reply.ok) {

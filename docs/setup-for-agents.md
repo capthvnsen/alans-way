@@ -123,72 +123,37 @@ required: every SSH address is a tailnet name or IP).
    with the same account the VPS uses." (Skip if `tailscale status` already
    works on both machines.)
 
-Both directions use pinned keys: the browser tools connect VPS → Mac, and the
-app's **Test agent path** and VPS browser connect Mac → VPS, all with
-`BatchMode=yes` and `StrictHostKeyChecking=yes`. On the VPS, collect its
-address and public keys:
+SSH account setup is now an administrator task. Never collect a bot/agent
+account's public key and install it into the human account: that grants access
+to broker credentials regardless of API token binding. The combined
+`connect-server.sh` wizard refuses this legacy flow.
 
-```sh
-[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
-VPS_SSH="$(whoami)@$(tailscale ip -4 | head -1)"
-VPS_KEY="$(cut -d' ' -f1,2 ~/.ssh/id_ed25519.pub) $(whoami)@vps"
-VPS_HOST_KEY="$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)"
-```
+Create mutually untrusted bots as separate non-root OS users without sudo.
+Provision their identity-bound MCP exports as described in
+[bot-auth.md](../desktop/docs/bot-auth.md). Configure the app's separate broker
+SSH login and provision its access manually. **Check saved path** now tests
+broker-to-computer SSH; it does not grant or prove bot access.
 
-On the user's computer (yourself, or **human step** — have them paste it into
-Terminal on a Mac, or elevated PowerShell on Windows):
+The platform connect scripts accept `--broker-key` (`-BrokerKey` on Windows)
+only for a public key controlled by that trusted broker account. They still
+grant shell access to the target human account, so never supply an agent key.
+The old `--vps-key`/`-VpsKey` arguments are refused. Review existing authorized
+keys and revoke old agent/shared keys separately; the app does not remove keys
+without provenance. No key should be copied from a bot account.
 
-```sh
-# macOS
-curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-mac.sh | sh -s -- \
-  --vps "$VPS_SSH" --vps-host-key "$VPS_HOST_KEY" --vps-key "$VPS_KEY"
-```
-
-```powershell
-# Windows (from a clone of this repo)
-powershell -ExecutionPolicy Bypass -File scripts\connect-windows.ps1 `
-  -Vps "$VPS_SSH" -VpsHostKey "$VPS_HOST_KEY" -VpsKey "$VPS_KEY"
-```
-
-```sh
-# Linux (builds and installs the app itself; needs Node 22.12+ and git)
-curl -fsSL https://raw.githubusercontent.com/capthvnsen/alans-way/main/scripts/connect-linux.sh | sh -s -- \
-  --vps "$VPS_SSH" --vps-host-key "$VPS_HOST_KEY" --vps-key "$VPS_KEY"
-```
-
-Each script checks connectivity and its SSH server, installs or upgrades the
-app (skip with `--skip-install`/`-SkipInstall` if stage 1 just ran),
-authorizes the VPS key (only from your tailnet: the line in
-`authorized_keys` carries `from="100.64.0.0/10,fd7a:115c:a1e0::/48"`), pins the
-VPS host key and prints `MAC_SSH`, `MAC_TZ`, `MAC_HOST_KEY` and `MAC_KEY`. Back on
-the VPS, trust the computer with those values:
-
-```sh
-grep -qxF "${MAC_SSH#*@} $MAC_HOST_KEY" ~/.ssh/known_hosts 2>/dev/null || echo "${MAC_SSH#*@} $MAC_HOST_KEY" >> ~/.ssh/known_hosts
-grep -qxF "$MAC_KEY" ~/.ssh/authorized_keys 2>/dev/null || echo "$MAC_KEY" >> ~/.ssh/authorized_keys
-```
-
-**Check, from the VPS:**
-
-```sh
-# macOS target
-timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" 'test -x /Applications/alans-way-localapp.app/Contents/MacOS/alans-way-localapp && echo MAC_OK'
-# Linux target
-timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" 'test -x "$HOME/.local/share/alans-way-localapp/alans-way-localapp" && echo MAC_OK'
-# Windows target (PowerShell is the sshd default shell after connect-windows.ps1)
-timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" 'if (Test-Path "$env:LOCALAPPDATA\Programs\alans-way-localapp\alans-way-localapp.exe") { "MAC_OK" }'
-# either OS
-timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$MAC_SSH" "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes '$VPS_SSH' echo VPS_OK"
-```
-
-Expect `MAC_OK`, then `VPS_OK`. The VPS runs the browser connector with the
-app's own runtime, so the host needs no Node on its SSH PATH. If `MAC_OK` is
-missing, the app is not installed — repeat stage 1. On Windows, desktop
-control additionally requires the app to be running: SSH sessions cannot
-reach the interactive desktop, so `workspace_computer_*` calls go through the
-app's loopback API.
+Native control of a human GUI (including Terminal) is privileged human-account
+access. Use a separate controlled desktop/session for untrusted bots; a token
+boundary alone cannot isolate an app that runs in the broker's session.
 
 ## Stage 3 — VPS: Hermes plugin and cloud browser
+
+Before continuing, an administrator must provision this bot's own non-root
+SSH account on the controlled computer, with its identity-bound connection
+file. Set `MAC_SSH` to that bot account's literal tailnet login and `MAC_TZ` to
+the computer's timezone. It must not be the human/broker login from the saved
+broker-path check. Use a plugin version that passes the per-bot connection
+file explicitly; if that migration is not available, stop here rather than
+falling back to a shared broker credential or human SSH account.
 
 On the VPS:
 

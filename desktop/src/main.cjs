@@ -37,7 +37,7 @@ const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { screenshotClip } = require('./cdp.cjs');
 const { listReadExpression, cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
-const { createVpsBrowser, backoffDelay, toCdpCookie, toElectronCookies, isTailnetHost, resolveSshHostname, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
+const { brokerTarget, createVpsBrowser, backoffDelay, toCdpCookie, toElectronCookies, isTailnetHost, resolveSshHostname, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createBrowserSessionStore } = require('./browser-session.cjs');
 const { createDownloadStore } = require('./download-store.cjs');
@@ -1573,43 +1573,22 @@ function sshWrite(host, remotePath, content, { timeoutMs = 15000 } = {}) {
     child.stdin.end(JSON.stringify({ path: remotePath, ...content }));
   });
 }
-// scripts/connect-mac.sh keeps its authorized_keys editor between "tailnet
-// helpers" markers; read the real script (the packaged app carries it as an
-// extra resource) so the wizard installs keys exactly the way the script does.
-function connectMacHelpers() {
-  const candidates = [path.join(ROOT, '..', '..', 'scripts', 'connect-mac.sh')];
-  try { if (app.isPackaged) candidates.unshift(path.join(process.resourcesPath, 'connect-mac.sh')); } catch {}
-  for (const file of candidates) {
-    try {
-      const block = cloudConnect.tailnetHelpers(fs.readFileSync(file, 'utf8'));
-      if (block) return block;
-    } catch {}
-  }
-  return '';
-}
-// The computer must ssh back into this machine for AGENT_PATH_OK: ensure it
-// has a keypair, then authorize its public key here restricted to the tailnet.
-// While there, fill in this machine's ssh address when it is derivable, so the
-// path check can actually run in the claimed flow.
-async function authorizeComputerKey(host) {
-  if (process.platform === 'win32') return { ok: true };
-  const pub = await sshRun(host, cloudConnect.ensureKeypairCommand());
-  const key = pub.code === 0 ? cloudConnect.publicKeyLine(pub.out) : '';
-  if (!key) return { ok: false, detail: 'The computer did not produce an SSH key to authorize here.' };
-  const helpers = connectMacHelpers();
-  if (!helpers) return { ok: false, detail: 'The connect helper script is missing, so the computer key cannot be authorized on this computer.' };
-  const run = await localRun('sh', ['-c', cloudConnect.authorizeKeyCommand(helpers), 'sh', key]);
-  if (run.code !== 0) return { ok: false, detail: 'Could not authorize the computer key on this computer.' };
-  seedMacSshHost();
-  savePreferencesSoon();
+// SSH access is provisioned by an administrator; never install an agent key
+// into the human account, where it could read every broker credential.
+function checkBrokerSetup() {
+  if (/^root@/i.test(prefs.vpsBrowser?.sshHost || '')) return { ok: false, detail: 'Run Hermes bots under a separate non-root OS account, then save that agent SSH login in Settings.' };
+  try { brokerTarget(prefs.vpsBrowser); }
+  catch { return { ok: false, detail: 'Configure a separate broker SSH login in Settings and provision its access manually. Agent keys must never authorize the human account.' }; }
   return { ok: true };
 }
 // The saved VPS SSH path check, shared by Settings and the connect step.
 function testAgentPath() {
   seedMacSshHost();
-  const host = (prefs.vpsBrowser?.sshHost || '').trim();
+  const ready = checkBrokerSetup();
+  if (!ready.ok) return Promise.resolve(ready);
+  const host = brokerTarget(prefs.vpsBrowser);
   const mac = (prefs.macSshHost || '').trim();
-  if (!host) throw new Error('Save a VPS browser SSH host first.');
+  if (!host) throw new Error('Save the broker SSH login first.');
   if (!isSshTarget(host)) throw new Error('The saved VPS SSH address is invalid. Re-enter it as user@Tailscale-IP.');
   if (!mac) throw new Error(`Enter this ${HOST_LABEL === 'windows' ? 'PC' : 'computer'}’s SSH address as your VPS reaches it.`);
   if (!isSshTarget(mac)) throw new Error('The saved SSH address for this computer is invalid. Re-enter it as user@Tailscale-IP.');
@@ -1621,7 +1600,7 @@ function testAgentPath() {
     child.stderr.on('data', chunk => { out += chunk; });
     child.on('error', () => resolve({ ok: false, detail: 'Could not start ssh. Check local ssh access.' }));
     child.on('close', code => resolve(out.includes('AGENT_PATH_OK')
-      ? { ok: true, detail: `VPS reaches this ${HOST_LABEL === 'mac' ? 'Mac' : HOST_LABEL === 'windows' ? 'PC' : 'computer'} over ssh, so agents can route here.` }
+      ? { ok: true, detail: `The trusted broker reaches this ${HOST_LABEL === 'mac' ? 'Mac' : HOST_LABEL === 'windows' ? 'PC' : 'computer'} over SSH. Per-bot transport must be provisioned separately.` }
       : out.includes('Tailscale SSH requires an additional check')
         ? { ok: false, detail: 'Tailscale SSH on the VPS wants a browser check for this login, which unattended agents cannot pass. In the Tailscale admin console → Access controls, change the SSH rule for this user from "check" to "accept".' }
         : { ok: false, detail: `Path check failed (exit ${code}). ${out.trim().slice(0, 300)}` }));
@@ -1774,7 +1753,7 @@ async function cloudConnectOnce(diyHost, pending) {
     const remote = cloudConnect.parseComputerState((await sshRun(sshHost, cloudConnect.sshReadCommand('/var/lib/alan/state.json'))).out);
     if (!current()) return cancelled;
     if (remote?.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the server failed.' };
-    const back = await authorizeComputerKey(sshHost);
+    const back = checkBrokerSetup();
     if (!current()) return cancelled;
     if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
     if ((prefs.macSshHost || '').trim()) {
@@ -1813,7 +1792,7 @@ async function cloudConnectOnce(diyHost, pending) {
   if (!remote) return { stage: 'state', ok: false, detail: 'The computer joined Tailscale. Waiting for its setup to finish…' };
   if (remote.state === 'failed') return { stage: 'failed', ok: false, detail: remote.error || 'The setup on the computer failed.' };
   if (remote.state !== 'ready' && remote.step !== 'paired') return { stage: 'state', ok: false, detail: 'The computer is still finishing its setup…' };
-  const back = await authorizeComputerKey(sshHost);
+  const back = checkBrokerSetup();
   if (!current()) return cancelled;
   if (!back.ok) return { stage: 'path', ok: false, detail: back.detail };
   if ((prefs.macSshHost || '').trim()) {

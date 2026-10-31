@@ -114,3 +114,10 @@ unreachable selected broker fails closed, without trying the agent login.
 The environment opt-in also prevents accidentally clearing the broker field
 from re-enabling the legacy route. No account, ACL or existing preference is
 automatically rewritten during upgrade.
+
+Automatic agent-key authorization of the human account is disabled. Configure
+broker SSH access manually, then check the saved broker path. Review and revoke
+previously authorized agent/shared keys separately. The legacy combined SSH
+wizard refuses to run; platform installers require an explicitly named broker
+key. Native control of a broker/human GUI (especially Terminal) conveys that
+account's authority: untrusted bots need a separately owned desktop/session.
