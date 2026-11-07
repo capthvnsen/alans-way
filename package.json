@@ -1,0 +1,34 @@
+{
+  "name": "alans-way-workspace-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Alan's CU MCP: a stdio MCP server for browser and computer use through Alan's Workspace",
+  "license": "MIT",
+  "author": "Alex Hansen",
+  "repository": "github:capthvnsen/alans-way",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "bin": {
+    "workspace-mcp": "desktop/scripts/browser-mcp.cjs"
+  },
+  "files": [
+    "desktop/LICENSE",
+    "desktop/scripts/browser-mcp.cjs",
+    "desktop/scripts/mac-computer.swift",
+    "desktop/scripts/vps-computer.py",
+    "desktop/src/call-budget.cjs",
+    "desktop/src/computer-helper.cjs",
+    "desktop/src/computer-policy.cjs",
+    "desktop/src/computer-snapshot.cjs",
+    "desktop/src/computer.cjs",
+    "desktop/src/connector-reload.cjs",
+    "desktop/src/core.cjs",
+    "desktop/src/omit-icons.cjs",
+    "desktop/src/tailnet.cjs",
+    "desktop/src/vps-computer.cjs"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.0"
+  }
+}
