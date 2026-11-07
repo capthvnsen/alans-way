@@ -78,7 +78,7 @@ for (const change of ['app version', 'desktop tool set']) test(`${change} change
   let listTools;
   const tools = [{ name: 'workspace_computer_action' }];
   const sandbox = {
-    Server: class { setRequestHandler(_schema, handler) { listTools = handler; } }, ListToolsRequestSchema: {}, tools,
+    Server: class { setRequestHandler(_schema, handler) { listTools = handler; } }, ListToolsRequestSchema: {}, tools, VERSION: 'fixture',
   };
   require('node:vm').runInNewContext(source.slice(source.indexOf('const server = new Server('), source.indexOf('server.setRequestHandler(CallToolRequestSchema')), sandbox);
   const manifest = await listTools();
