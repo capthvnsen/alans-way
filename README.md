@@ -45,9 +45,15 @@ For native Mac app control, grant **Alan's Workspace (`alans-way-localapp`)** Ac
 
 ## 2. Alan's CU MCP
 
-`workspace-mcp` is the product name for the shared Node computer-use server. **It stays here**, at [`desktop/scripts/browser-mcp.cjs`](desktop/scripts/browser-mcp.cjs), using supporting code in `desktop/src/`. There is no separate `workspace-mcp/` directory or npm package to install in this tree.
+`workspace-mcp` is the product name for the shared Node computer-use server. **It stays here**, at [`desktop/scripts/browser-mcp.cjs`](desktop/scripts/browser-mcp.cjs), using supporting code in `desktop/src/`.
 
-Use the copy bundled in the Mac app:
+Install it on its own with Node 22.12+ (see the [install guide](docs/cu-mcp.md) for client snippets and health checks):
+
+```sh
+npm install -g github:capthvnsen/alans-way
+```
+
+Or use the copy bundled in the Mac app:
 
 ```text
 /Applications/alans-way-localapp.app/Contents/Resources/app/scripts/browser-mcp.cjs
