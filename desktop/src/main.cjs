@@ -1,4 +1,4 @@
-const { SSH_OPTIONS: TAILNET_SSH_OPTIONS } = require('./tailnet.cjs');
+const { SSH_OPTIONS: TAILNET_SSH_OPTIONS, hermesWebappUrl } = require('./tailnet.cjs');
 const { authorizeBot, approvalIdentity, registryFile } = require('./bot-auth.cjs');
 const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, Notification, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
 const { ACCELERATORS } = require('./workspace-shortcuts.cjs');
@@ -102,7 +102,7 @@ const mainLog = () => mainLogger ||= createLog(path.join(app.getPath('userData')
 process.on('uncaughtException', (error) => logError('uncaughtException', error));
 process.on('unhandledRejection', (reason) => logError('unhandledRejection', reason));
 const TELEGRAM = 'https://web.telegram.org/a/';
-let win, backgroundWindow, telegramView, remoteView, apiServer, prefs, layout = {}, apiPort = 0, tray, telegramRecovery;
+let win, backgroundWindow, telegramView, remoteView, webappView, apiServer, prefs, layout = {}, apiPort = 0, tray, telegramRecovery;
 let obscuredFocus = null;
 let extensionStore, extensionHost, extensionPopup, extensionPopupTabId, extensionActiveContentsId;
 let registeringExtensionTab = false;
@@ -159,7 +159,7 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
   canRequest: (wc) => {
     const tab = [...tabs.values()].find(item => item.view.webContents === wc);
     if (layout.obscured) return false;
-    return tab ? tab.id === activeTabId && tab.controller === 'human' : wc === telegramView?.webContents;
+    return tab ? tab.id === activeTabId && tab.controller === 'human' : wc === telegramView?.webContents || wc === webappView?.webContents;
   },
   prompt: async (origin, permissions) => {
     const answer = await dialog.showMessageBox(win, { type: 'question', buttons: ['Block for this site', 'Allow for this site'], defaultId: 0, cancelId: 0,
@@ -182,7 +182,7 @@ const recordings = recorder.createRecordingStore(path.join(app.getPath('userData
 let pointerTimer, activityTimer, idleTimer, captchaTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', hermesWebappUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -490,7 +490,7 @@ function getState() {
     autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false, carrySignIns: prefs.carrySignIns !== false,
     activeTabId, activeVpsTabId, browserTabHost: activeTabId === 'vps' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (vpsTabs.has(activeVpsTabId) ? activeVpsTabId : tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
-    chatTarget, hermes: hermesSummary(),
+    chatTarget, hermes: hermesSummary(), hermesWebapp: !!hermesWebappUrl(prefs.hermesWebappUrl),
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
     fullscreen: !!win && !win.isDestroyed() && win.isFullScreen(), api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
   // One authority orders native IPC reads, command replies and broadcasts by
@@ -566,6 +566,7 @@ function applyLayout() {
   const active = tabs.get(activeTabId)?.view.webContents;
   if (active && active.id !== extensionActiveContentsId) { extensionActiveContentsId = active.id; extensionHost?.selectTab(active); }
   fit(telegramView, layout.telegram);
+  fit(webappView, layout.webapp);
   for (const tab of tabs.values()) {
     const foreground = activeTabId === tab.id && layout.browser?.width > 0 && layout.browser?.height > 0 && !layout.obscured;
     const host = foreground ? win : backgroundHost(layout.browser?.width || 900, layout.browser?.height || 700);
@@ -595,6 +596,33 @@ function openTelegramLink(value, activate = true) {
   const tab = createTab({ url, activate });
   recentLinkTabs.set(url, { tabId: tab.id, at: Date.now() });
   if (recentLinkTabs.size > 50) recentLinkTabs.delete(recentLinkTabs.keys().next().value);
+}
+// The Hermes Webapp in the chat pane. No preload and its own partition: a signed-in
+// session can run shell commands on its host, so it never holds a Workspace bridge
+// or the browser's cookies, and its own host's links open as human Browser tabs.
+function showWebapp() {
+  const target = hermesWebappUrl(prefs.hermesWebappUrl);
+  if (!target) throw new Error('Set a valid Hermes Webapp address first.');
+  chatTarget = 'webapp';
+  if (webappView) return;
+  webappView = new WebContentsView({ webPreferences: { partition: 'persist:hermes-webapp', navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  webappView.setBackgroundColor('#09090a');
+  const contents = webappView.webContents, { origin } = new URL(target);
+  sitePermissions.install(contents.session, 'browser');
+  const toBrowser = (url) => { try { if (new URL(url).origin !== origin) openTelegramLink(url); } catch {} };
+  // shortcut: Webapp New Window and session pop-outs are refused here and so do nothing; allow same-origin child windows when embedding ships.
+  contents.setWindowOpenHandler(({ url }) => { toBrowser(url); return { action: 'deny' }; });
+  // shortcut: keeps password sign-in only, because leaving the origin breaks Nous OAuth; allowlist the provider if that is ever needed.
+  const stay = (event, url) => {
+    if (!event.isMainFrame) return;
+    try { if (new URL(url).origin === origin) return; } catch {}
+    event.preventDefault();
+    toBrowser(url);
+  };
+  contents.on('will-navigate', stay);
+  contents.on('will-redirect', stay);
+  win.contentView.addChildView(webappView);
+  contents.loadURL(target).catch(() => {});
 }
 function configureContents(contents, isTelegram = false) {
   contents.setWindowOpenHandler((details) => {
@@ -1321,7 +1349,7 @@ const checkVersionsWhenIdle = () => {
 const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs) });
 async function saveBrowserSession() {
   savePreferences();
-  await Promise.all(['persist:browser', 'persist:telegram'].map(async partition => {
+  await Promise.all(['persist:browser', 'persist:telegram', ...(webappView ? ['persist:hermes-webapp'] : [])].map(async partition => {
     const target = session.fromPartition(partition);
     target.flushStorageData();
     await target.cookies.flushStore();
@@ -1859,7 +1887,7 @@ function registerIpc() {
       const wasObscured = !!layout.obscured;
       if (next.obscured && !wasObscured) {
         const focused = webContents.getFocusedWebContents();
-        obscuredFocus = focused === telegramView?.webContents || focused === tabs.get(activeTabId)?.view.webContents ? focused : null;
+        obscuredFocus = focused === telegramView?.webContents || focused === webappView?.webContents || focused === tabs.get(activeTabId)?.view.webContents ? focused : null;
         win.webContents.focus();
       }
       layout = next;
@@ -1867,7 +1895,7 @@ function registerIpc() {
       if (!next.obscured && wasObscured) {
         const target = obscuredFocus;
         obscuredFocus = null;
-        if (target && !target.isDestroyed() && (target === telegramView?.webContents || target === tabs.get(activeTabId)?.view.webContents)) target.focus();
+        if (target && !target.isDestroyed() && (target === telegramView?.webContents || target === webappView?.webContents || target === tabs.get(activeTabId)?.view.webContents)) target.focus();
       }
     } catch {}
   });
@@ -2010,6 +2038,7 @@ function registerIpc() {
       case 'open-bot': await openBot(String(value.id)); break;
       case 'show-telegram': chatTarget = 'telegram'; broadcast(); break;
       case 'show-hermes': chatTarget = 'hermes'; broadcast(); break;
+      case 'show-webapp': showWebapp(); broadcast(); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
       case 'bot-sort': if (['recent', 'alpha', 'manual'].includes(value.mode)) { prefs.botSort = value.mode; savePreferences(); } break;
       case 'hide-bot':

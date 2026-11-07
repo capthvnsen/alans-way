@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { isTailnetAddress, SSH_OPTIONS } = require('../src/tailnet.cjs');
+const { isTailnetAddress, hermesWebappUrl, SSH_OPTIONS } = require('../src/tailnet.cjs');
 const { isSshTarget, parseRemoteUrl, viewerUrl } = require('../src/core.cjs');
 const { normalizeBaseUrl } = require('../src/hermes-remote.cjs');
 const { ip } = require('./tailnet-fixture.cjs');
@@ -37,5 +37,22 @@ test('legacy installs retain aliases and viewers; explicit enforcement never fal
     const result = spawnSync(process.execPath, ['-e', script], { cwd: require('node:path').join(__dirname, '..'), env: { ...process.env, HERMES_WORKSPACE_REQUIRE_TAILNET: value }, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     if (!value) assert.match(result.stderr, /Legacy workspace transport/);
+  }
+});
+
+test('the Hermes Webapp pane loads only Tailscale Serve names', () => {
+  for (const url of ['https://vm.tail1234.ts.net/', 'https://vm.tail1234.ts.net/hermes/']) assert.equal(hermesWebappUrl(url), url);
+  assert.equal(hermesWebappUrl('  HTTPS://VM.tail1234.TS.NET '), 'https://vm.tail1234.ts.net/');
+  const refused = ['', null, 'not a url', 'http://vm.tail1234.ts.net/', 'https://ts.net/', 'https://evil-ts.net/', 'https://vm.ts.net.evil.example/', 'https://127.0.0.1:9120/', 'http://127.0.0.2:9120/',
+    `http://${ip}:9120/`, 'file:///etc/passwd', 'https://user:pw@vm.tail1234.ts.net/', 'https://vm.tail1234.ts.net/?ticket=x'];
+  const loopback = process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK;
+  try {
+    delete process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK;
+    for (const url of [...refused, 'http://127.0.0.1:9120/', 'http://localhost:9120/']) assert.equal(hermesWebappUrl(url), '', String(url));
+    process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
+    assert.equal(hermesWebappUrl('http://127.0.0.1:9120/'), 'http://127.0.0.1:9120/');
+    for (const url of [...refused, 'http://127.0.0.1:9120/webapp/launch#ticket=x']) assert.equal(hermesWebappUrl(url), '', String(url));
+  } finally {
+    if (loopback === undefined) delete process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK; else process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = loopback;
   }
 });

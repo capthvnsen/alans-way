@@ -412,14 +412,16 @@ function render(next) {
   // Hermes DOM surface. When the Hermes pane is up the slot collapses and its
   // reported rect goes zero — main then hides the Telegram view for us.
   const hermesActive = state.chatTarget === 'hermes';
-  $('telegram-slot').classList.toggle('hidden', hermesActive);
-  $('telegram-note').classList.toggle('hidden', hermesActive);
+  const webappActive = state.chatTarget === 'webapp', telegramActive = !hermesActive && !webappActive;
+  $('webapp-slot').classList.toggle('hidden', !webappActive);
+  $('telegram-slot').classList.toggle('hidden', !telegramActive);
+  $('telegram-note').classList.toggle('hidden', !telegramActive);
   $('hermes-pane').classList.toggle('hidden', !hermesActive);
   const hermesSelected = hermesActive && state.hermes?.sessions?.find((s) => s.selected);
-  $('chat-title').textContent = hermesActive
+  $('chat-title').textContent = webappActive ? 'Hermes Webapp' : hermesActive
     ? (hermesSelected?.title || `Hermes${state.hermes?.target ? ` · ${state.hermes.target.label}` : ''}`)
     : (bot?.name || 'Telegram');
-  $('chat-avatar').style.display = hermesActive ? 'none' : '';
+  $('chat-avatar').style.display = telegramActive ? '' : 'none';
   window.HermesAvatars.paint($('chat-avatar'), bot || { id: '', name: 'Telegram' }, state);
   $('chat-avatar').title = bot ? `Customize ${bot.name} avatar` : 'Select a bot to customize its avatar';
   renderHermes();
@@ -954,7 +956,7 @@ function rect(id) {
 }
 function scheduleLayout() {
   cancelAnimationFrame(resizeFrame);
-  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: dialogStack.length > 0 || !$('tabs-panel').classList.contains('hidden') || !$('status-panel').classList.contains('hidden') }));
+  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), webapp: focusMode ? null : rect('webapp-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: dialogStack.length > 0 || !$('tabs-panel').classList.contains('hidden') || !$('status-panel').classList.contains('hidden') }));
 }
 // The mini VM window is anchored bottom-right until dragged; its saved offset
 // is relative to the workspace pane and clamped so it can never get lost.
@@ -2127,7 +2129,14 @@ function renderHermes() {
   // The Telegram row is the way back — always present while a Hermes target is
   // showing, so a bot-less workspace is never stranded on the Hermes pane.
   list.innerHTML = '';
-  if (state.chatTarget === 'hermes') {
+  if (state.hermesWebapp) {
+    const row = element('div', `bot-row hermes-row${state.chatTarget === 'webapp' ? ' selected' : ''}`);
+    const open = element('button', 'bot-open', 'Hermes Webapp');
+    open.onclick = () => command('show-webapp');
+    row.append(open);
+    list.append(row);
+  }
+  if (state.chatTarget !== 'telegram') {
     const back = element('div', 'bot-row hermes-row');
     const open = element('button', 'bot-open', '← Telegram');
     open.onclick = () => command('show-telegram');

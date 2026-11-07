@@ -272,7 +272,7 @@ for (const driver of ['electron-updater', 'self']) {
   test(`${driver} waits for browser storage before exiting into the update`, async () => {
     const events = [], drains = [];
     const context = vm.createContext({
-      stagedAppVersion: () => '1.0.1', updateDriver: driver, update: { tag: 'v1.0.1' }, isQuitting: false, path,
+      webappView: null, stagedAppVersion: () => '1.0.1', updateDriver: driver, update: { tag: 'v1.0.1' }, isQuitting: false, path,
       process: { execPath: '/fixture/Workspace.app/Contents/MacOS/Workspace' },
       savePreferences: () => events.push('tabs'),
       browserSessionStore: { save: async () => {} },
@@ -310,7 +310,7 @@ test('shutdown retains session-only sign-ins in encrypted form without changing 
   }]));
   const safeStorage = { isAsyncEncryptionAvailable: async () => true, getSelectedStorageBackend: () => 'gnome_libsecret',
     encryptStringAsync: async text => { assert.ok(text.includes('fixture-session')); return Buffer.from('encrypted-fixture'); } };
-  const context = vm.createContext({ prefs, session: { fromPartition: name => sessions.get(name) }, safeStorage, savePreferences() {}, persistSettingsPreferences() {},
+  const context = vm.createContext({ webappView: null, prefs, session: { fromPartition: name => sessions.get(name) }, safeStorage, savePreferences() {}, persistSettingsPreferences() {},
     WebContentsView: class { constructor() { this.webContents = { destroy() {}, debugger: { attach() {}, sendCommand: async () => ({ cookies }) } }; } },
     createBrowserSessionStore: require('node:fs').existsSync(path.join(__dirname, '../src/browser-session.cjs')) ? require('../src/browser-session.cjs').createBrowserSessionStore : undefined,
     process: { platform: 'darwin' }, Buffer,

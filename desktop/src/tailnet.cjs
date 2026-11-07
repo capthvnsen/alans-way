@@ -22,5 +22,20 @@ function tailnetUrl(url) {
   return !requireTailnet || isTailnetAddress(host) || (process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK === '1' && ['127.0.0.1', '::1', 'localhost'].includes(host));
 }
 
+// The Hermes Webapp address the chat pane may load, or '' when refused. A Webapp
+// session can run shell commands on its host, so only Tailscale Serve's HTTPS
+// names qualify: certificate-bound, and the view holds no Workspace bridge, so
+// rebinding one gains nothing. Loopback is a fixture opt-in: a real loopback
+// Webapp accepts only one-use links, which this saved address cannot carry.
+function hermesWebappUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    if (url.username || url.password || url.search || url.hash) return '';
+    const host = url.hostname.toLowerCase();
+    const allowed = url.protocol === 'https:' ? host.endsWith('.ts.net') : process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK === '1' && url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(host);
+    return allowed ? url.href : '';
+  } catch { return ''; }
+}
+
 const SSH_OPTIONS = requireTailnet ? ['-F', 'none', '-o', 'ProxyCommand=none', '-o', 'ProxyJump=none', '-o', 'CanonicalizeHostname=no'] : [];
-module.exports = { requireTailnet, isTailnetAddress, isTailnetHost, tailnetUrl, SSH_OPTIONS };
+module.exports = { requireTailnet, isTailnetAddress, isTailnetHost, tailnetUrl, hermesWebappUrl, SSH_OPTIONS };
