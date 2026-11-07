@@ -1,0 +1,247 @@
+# Hermes Webapp in the Workspace chat pane
+
+Status: spike, 2026-11-06. An opt-in prototype is in the tree, off by default.
+Hermes facts below were read from the `v0.23.0` tag and exercised against commit
+`355a4175` (`v0.23.0-10`), whose version string still reports `0.22.7`.
+
+## Recommendation
+
+Load the Webapp in a dedicated `WebContentsView`, reached through Tailscale Serve,
+with dashboard password sign-in kept in its own persistent partition. The agent's
+browser and computer-use tools need no change: they never travel through the chat
+surface.
+
+Keep Telegram and the native Hermes pane until phase 2 settles whether the Webapp
+can replace the native pane.
+
+## What was tried
+
+| Check | Result | How |
+|---|---|---|
+| Real sign-in form in the pane, over HTTPS with a `.ts.net` name | Works | Real Workspace and real gateway, through a local stand-in for Tailscale Serve |
+| Backend connects after sign-in | Works; the page reports the backend version and moves on to provider setup | Same |
+| Sign-in survives a Workspace restart | Works; a second launch with the same profile skipped the form | Same, two processes |
+| Agent `POST /v1/tabs` foregrounds a tab while the Webapp shows | Works; chat target stays `webapp` | Same, and in the Electron test |
+| Bare loopback URL | Fails by design; shows "Run hermes webapp on this computer" | Same |
+| Real `tailscale serve` | **Not run** | Would have changed the tailnet |
+| A real chat turn or agent tool call from the Webapp | **Not run** | The test gateway had no model provider |
+| Full workspace layout at chat-pane width with live sessions | **Not assessed** | Only sign-in and setup screens were seen, at 488 px wide |
+| One-use link in the view | **Not run** | Behaviour below comes from source |
+
+## Which embedding primitive
+
+| Option | Verdict |
+|---|---|
+| `iframe` | Impossible. Webapp pages send `frame-ancestors 'none'` (`hermes_cli/webapp_page_policy.py`; confirmed on a live response). |
+| `<webview>` | Refused by `lockDown()` in `main.cjs` on the bridge-bearing pages. Reversing that widens the shell page's attack surface for no gain. |
+| `BrowserView` | Deprecated by Electron. |
+| **`WebContentsView`** | Chosen. Telegram already works this way, so bounds, hiding under overlays and teardown are all existing code. |
+
+The view has no preload and uses partition `persist:hermes-webapp`. This matters:
+Hermes warns that a signed-in Webapp user can run arbitrary commands as the Hermes
+OS account. So the view must not hold the Workspace bridge, must not share cookies
+with the Browser pane, and browser-pane pages must not be able to read its cookies.
+
+## Authentication over Tailscale
+
+Hermes has two sign-in modes, and which one you get depends only on the address.
+
+| | Private mode | Gated mode |
+|---|---|---|
+| When | Loopback bind with no non-loopback `public_url` | `host: 0.0.0.0`, or a non-loopback `public_url` |
+| Credential | One-use link, 60 seconds, exchanged for a token in **`sessionStorage`** | HttpOnly `__Host-` cookies; refresh token lasts 30 days |
+| Survives app restart | No, needs a fresh link every launch | Yes (verified) |
+| Secure context | Yes, loopback counts | Yes over HTTPS |
+
+The Hermes configuration docs say `public_url` turns on sign-in "even on a loopback
+host". On the tested commit a *loopback* `public_url` did not: the gateway stayed in
+private mode and issued a one-use link. A `.ts.net` `public_url` engaged the gate.
+
+### Chosen: Tailscale Serve plus password sign-in
+
+On the Hermes host, as the Hermes OS user:
+
+```bash
+tailscale serve --bg --https=443 http://127.0.0.1:9120
+hermes config set webapp.enabled true
+hermes config set webapp.public_url https://<machine>.<tailnet>.ts.net
+hermes config set dashboard.basic_auth.username <name>
+hermes config set dashboard.basic_auth.password_hash '<hash>'
+hermes webapp --build-only
+hermes gateway restart
+```
+
+`webapp.host` stays `127.0.0.1`, so nothing listens on the machine's other
+interfaces. Do not use `tailscale funnel`. Generate the hash with
+`python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('PW'))"`.
+That form puts the password in shell history, so setup should prompt for it instead.
+
+The user signs in once inside the pane. The Workspace stores no password.
+
+The native pane's sign-in cannot be reused. Hermes keeps the two apart on purpose
+(`hermes_cli/webapp_sign_in.py`): native tokens are bearer tokens, and browser
+logins are cookies bound to the browser credential. `hermes webapp --sign-out`
+ends the browser login only.
+
+### Rejected
+
+- **`host: 0.0.0.0` on a tailnet IP.** `webapp.host` accepts only loopback or
+  wildcard values, so a wildcard bind also listens on a VM's public interface. It
+  is plain HTTP too, which turns off the microphone, clipboard read, notifications
+  and the bot screen.
+- **SSH tunnel plus one-use link for remote hosts.** It needs no dashboard password,
+  but needs a fresh ticket every launch, read from a remote command's stdout. On
+  Linux the ticket is also only redeemable over a connection owned by the Hermes OS
+  user, and recent commits deliberately separated the Workspace's SSH logins from
+  that account. It would undo that separation.
+- **Reading `webapp/session-token`.** It is a long-lived credential for every tab.
+  Moving it to another machine defeats the one-use link design.
+
+### Conflict with tailnet enforcement
+
+`tailnet.cjs` otherwise demands literal `100.x` addresses to rule out DNS rebinding,
+and `hermes-remote.cjs` refuses `*.ts.net` under `HERMES_WORKSPACE_REQUIRE_TAILNET`.
+The new `hermesWebappUrl()` is a deliberate, narrow exception: HTTPS only, and only
+`.ts.net` names. The certificate binds the name, and the view holds no bridge, so a
+rebind gains nothing. The check does not prove the name is on *your* tailnet, so the
+dashboard password is still what guards access.
+
+**Decision needed:** whether that exception is acceptable. The stricter alternative
+is resolving the name in main and requiring a `100.64.0.0/10` answer before loading.
+It is more code and does not stop a later re-resolve.
+
+## How agent tools keep driving the right-hand pane
+
+They already do, because the two paths share nothing:
+
+```text
+Webapp view ── WebSocket ──> gateway ── agent turn
+                                          │ MCP tool call
+                                          v
+                           workspace-mcp (browser-mcp.cjs --bot-id <id>)
+                                          │ HTTP + X-Hermes-Bot
+                                          v
+                           Workspace API ──> Browser pane tabs
+```
+
+The approval dialogs, takeover and blocked-address rules live in the main process
+and do not depend on which chat is showing.
+
+Links get the same treatment. `window.open` and off-origin navigations from the
+Webapp open as human tabs in the Browser pane, using the code path Telegram links
+already use. URL previews inside the Webapp are subframes and are left alone.
+
+Three real gaps remain:
+
+1. **Bot mapping.** Tabs are filtered by `selectedBotId`, and the Webapp can switch
+   profile without the Workspace knowing. An agent on another profile opens a tab
+   the user cannot see. Selecting a bot also resets the chat to Telegram, which
+   throws the user out of the Webapp. Phase 1 fixes this by storing a Hermes profile
+   on each bot and loading `/?profile=<name>`, which the Webapp already supports,
+   with one view per profile. The view has no bridge, so it cannot report a switch
+   made inside the Webapp. The Browser pane may need to follow the most recent agent
+   tab in this mode.
+2. **Two browsers for one agent.** Hermes has its own preview Browser and bot screen
+   beside the Workspace pane. Which one the agent uses is decided by toolsets and
+   skills, not by the chat surface, so this is unchanged. Users will still see two
+   places a page can appear. Phase 2 should hide or document the preview rail.
+3. **Telegram-only assumptions.** `selectAgent`, `workspace:bot-activity` and
+   `alans-way` proactivity all assume Telegram. Proactive check-ins still go to the
+   bound Telegram chat. Whether a Webapp turn counts as `desktop` for the texting
+   voice was not checked.
+
+## The prototype
+
+Off unless `hermesWebappUrl` is set in the Workspace's `preferences.json`. There is
+no Settings row yet. Nothing is created and no request is made until the user clicks
+the **Hermes Webapp** row.
+
+- `src/tailnet.cjs`: `hermesWebappUrl()`, the address check.
+- `src/main.cjs`: `showWebapp()`, layout, focus restore, session flush, and site
+  permission prompts through the existing `sitePermissions`.
+- `src/renderer.js`, `src/index.html`: the slot, title and sidebar row.
+- `test/webapp-embed-electron.cjs`: `npm run test:webapp-embed`.
+
+Known limits, also marked in the code:
+
+- Webapp **New Window** and session pop-outs do nothing.
+- **Nous sign-in does not work**, because leaving the origin is refused. Password
+  sign-in only.
+- Loopback is a test opt-in, since a saved address cannot carry a one-use link.
+- No Settings UI and no per-profile views.
+- The chat pane maxes out at 680 px, and this UI was built for a full window.
+
+## Plan
+
+**Phase 1: usable for one person.**
+Settings row and a connection check. Per-bot profile mapping and one view per
+profile. Same-origin child windows. A clear retry page when the host is unreachable.
+Run the real `tailscale serve` path and a real turn with a tool call.
+
+**Phase 2: decide on the native pane.**
+Use it daily and compare it with `hermes-view.js`, `hermes-hub.cjs` and friends. The
+Webapp brings Capabilities, Artifacts, scheduled jobs, files, Git review and the
+terminal. If it wins, delete the native pane and its tests rather than maintain both.
+That is the real payoff of this work. Consider letting the chat pane widen, or a
+focus mode that hides the Browser pane.
+
+**Phase 3: first-run setup.**
+Have the `workspace-setup` skill run the host steps above, prompting for the password
+without echoing it. Raise `requires_hermes` to `>=0.23.0`.
+
+## Risks
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Webapp access equals shell access on the host | High | No bridge, own partition, HTTPS only, sign-in required, Funnel never used. A strong password is the last line, because anyone on the tailnet can reach the form. The password provider has no MFA. |
+| Tailscale Serve headers differ from the stand-in | Medium: sign-in fails | The stand-in sends `X-Forwarded-Proto: https` and keeps `Host`. Sign-in depends on both. Test the real thing first in phase 1. |
+| Upstream auth or CSP changes | Medium | Hermes moves fast, with several releases this month. Pin a minimum version and keep the Electron test. The contract is plain HTTP and cookies, not private APIs. |
+| `hermes update` fails to rebuild the bundle | Medium: pane shows "unavailable" | Hermes reports it and `hermes webapp` rebuilds it. Surface it in the connection check. |
+| Gateway restart ends terminals and running work | Low | Applies to every Hermes surface. Hermes refuses to restart during a running chat in Web Access; the plain command path was not checked. |
+| Workspace shortcuts do not fire with focus in the view | Low | The tab-level `before-input-event` handler is not attached here, and Hermes has its own keybinds. Decide which shortcuts must win in phase 1. |
+| Narrow-pane layout may be poor with live sessions | Medium | Not assessed. Phase 2 decides. |
+| Build takes minutes and needs Node on the host | Low | `--build-only` during setup, and `hermes update` keeps it current. |
+
+## What should become Desktop plugins
+
+The SDK's rules decide most of this. A plugin is **not sandboxed**: it runs with full
+app authority in the renderer. The docs say not to treat the pipeline as a trust
+boundary and never to mount a raw `<webview>`. `SandboxedFrame` has an opaque origin,
+so it holds no sign-ins. In the Webapp, plugins come from the **gateway host's**
+folder, so they run wherever Hermes runs, not on the user's Mac.
+
+So a plugin cannot own anything that is a security boundary or needs Electron views.
+It also cannot call the Workspace API directly: that API rejects any request with an
+`Origin` header and its token must stay out of renderers.
+
+Ship these as one unified package, adding `desktop/plugin.js` to `alans-way`. The host
+copies the desktop half itself, including on headless hosts, which suits a VM gateway.
+
+| Feature | Plugin? | Surface | Notes |
+|---|---|---|---|
+| Proactivity settings: idle time, active hours, pause, bound chat | **Yes, first** | `ctx.registerSettingsPage`, `plugin_api.py` | Already agent-side, and today means editing JSON or using commands. Best first plugin: valuable, no Workspace dependency. |
+| Texting voice and shared persona | **Yes** | Same settings page | Replaces `/tone` and `~/.config/alans-way/config.json` editing. |
+| "Agent is using your browser" indicator | **Yes** | `ctx.onEvent` on `tool.start` / `tool.progress` / `tool.complete`, `STATUSBAR_AREAS` | Needs only gateway events. Match on the Alan's Way MCP tool names. |
+| Cross-bot asks | **Later** | Session row decorations or a transcript directive | Useful once several bots are in daily use in the Webapp. |
+| Doctor and setup status | **Later** | Settings sub-page, `plugin_api.py` | Reports what the host can see. It cannot see the Mac's Workspace. |
+| Recordings list | **Later, if at all** | Pane | Data lives in the Workspace, so it would go through the MCP tool. Recording itself stays in the Workspace. |
+| Browser pane, tabs, extensions, downloads, site permissions | **No** | | Needs Electron views and sign-ins. |
+| Agent control, takeover, approvals, address barriers | **No** | | Security boundaries belong in the main process. |
+| Computer-use helper, Mac permissions | **No** | | Native, on the user's machine. The gateway host may be elsewhere. |
+| Telegram pane, cloud onboarding, updater, VM viewer | **No** | | Workspace shell concerns. The first needs its preload. |
+| iOS app, voice broker | **No** | | Different clients. |
+
+`ctx.preview.executeJavaScript` looks tempting as a route to the right-hand pane, but
+it targets Hermes's own preview tab, not the Workspace's. `ctx.socket` is a no-op on
+OAuth remotes, so plugins need a polling fallback.
+
+## Open questions
+
+1. Is the `.ts.net` exception to literal-address enforcement acceptable?
+2. Is a dashboard password acceptable, given it has no MFA and any tailnet device can
+   reach the form? The alternative is OAuth/OIDC, which needs the origin allowlist the
+   prototype lacks.
+3. Is the goal to replace the native Hermes pane, or to offer the Webapp beside it?
+   This decides how much phase 1 is worth.
+4. Should bot selection stay primary in this mode, or should Hermes profiles replace
+   the bot list when the Webapp is showing?
