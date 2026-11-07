@@ -31,9 +31,12 @@ can replace the native pane.
 | Both surfaces keep their page state across switches | Works; no reload | Electron test, with fixture pages |
 | Bare loopback URL | Fails by design; shows "Run hermes webapp on this computer" | Same |
 | Real `tailscale serve` | **Not run** | Would have changed the tailnet |
-| A real chat turn or agent tool call from the Webapp | **Not run** | The test gateway had no model provider |
+| Live VM, Hermes `0.23.0`, no sign-in, SSH tunnel to `127.0.0.1:9120` (2026-11-07) | Pane loads after pasting a one-use link; "Backend ready" | Branch app on the real Workspace profile |
+| Real chat turn on that VM | Works; reply arrived from the VM's model | Same |
+| Agent browser tool from a Hermes Desktop chat | Works; `example.com` opened in the right-hand pane after 26 s, chat stayed on Hermes Desktop | Same; VM agent via `workspace-router` over SSH to this Mac |
+| Switch to Telegram and back on the real profile | Same views, page state and transcript kept, still signed in | Same |
+| Agent computer-use tools | **Not run** | They drive the Mac's desktop, not the pane, and would send a screenshot of the real screen to the model |
 | Full workspace layout at chat-pane width with live sessions | **Not assessed** | Only sign-in and setup screens were seen, at 488 px wide |
-| One-use link in the view | **Not run** | Behaviour below comes from source |
 
 ## Which embedding primitive
 
@@ -96,11 +99,12 @@ ends the browser login only.
   wildcard values, so a wildcard bind also listens on a VM's public interface. It
   is plain HTTP too, which turns off the microphone, clipboard read, notifications
   and the bot screen.
-- **SSH tunnel plus one-use link for remote hosts.** It needs no dashboard password,
-  but needs a fresh ticket every launch, read from a remote command's stdout. On
-  Linux the ticket is also only redeemable over a connection owned by the Hermes OS
-  user, and recent commits deliberately separated the Workspace's SSH logins from
-  that account. It would undo that separation.
+- **SSH tunnel plus one-use link as the main path.** It needs no dashboard password,
+  but needs a fresh link every launch. On Linux the link is also only redeemable over a
+  connection owned by the Hermes OS user. That held on the live VM only because both the
+  gateway and the tunnel run as root, and recent commits deliberately moved the
+  Workspace's own SSH logins off the Hermes account. It is supported (paste the link),
+  but not recommended.
 - **Reading `webapp/session-token`.** It is a long-lived credential for every tab.
   Moving it to another machine defeats the one-use link design.
 
@@ -108,8 +112,8 @@ ends the browser login only.
 
 `tailnet.cjs` otherwise demands literal `100.x` addresses to rule out DNS rebinding,
 and `hermes-remote.cjs` refuses `*.ts.net` under `HERMES_WORKSPACE_REQUIRE_TAILNET`.
-The new `hermesWebappUrl()` is a deliberate, narrow exception: HTTPS only, and only
-`.ts.net` names. The certificate binds the name, and the view holds no bridge, so a
+The new `hermesWebappUrl()` is a deliberate, narrow exception: HTTPS `.ts.net` names, or
+plain HTTP on `127.0.0.1` / `localhost` (this machine, or an SSH tunnel). The certificate binds the name, and the view holds no bridge, so a
 rebind gains nothing. The check does not prove the name is on *your* tailnet, so the
 dashboard password is still what guards access.
 
@@ -187,6 +191,7 @@ another service at that address does not pass. The endpoint stays public in gate
 | `unconfigured` | Add an address in Settings | No address saved |
 | `checking` | Checking the address | Probe running |
 | `unreachable` | Can't reach it; run `hermes webapp --status`. **Try again**, **Open Settings** | `webapp.enabled` off, no sign-in provider, or gateway down (all refuse the connection, observed), or gateway still starting (503, observed), or Serve not set up |
+| `needs-link` | Paste box for the link from `hermes webapp --no-open` | `/api/status` reports `auth_required: false` (loopback, no sign-in) |
 | `sign-in` | The Hermes sign-in form, in the pane | No valid cookie yet |
 | `ready` | Hermes Desktop | Signed in |
 
@@ -215,8 +220,9 @@ Known limits, also marked in the code:
 - Webapp **New Window** and session pop-outs do nothing.
 - **Nous sign-in does not work**, because leaving the origin is refused. Password
   sign-in only.
-- Loopback is a test opt-in, since a saved address cannot carry a one-use link. So Hermes
-  on this same Mac also needs a `.ts.net` address.
+- A no-sign-in Hermes (loopback, or through an SSH tunnel) needs a pasted one-use link
+  after every Workspace restart, because Hermes keeps that sign-in in the view's
+  `sessionStorage`. Switching surfaces keeps it.
 - A gateway that stops *after* the view has loaded shows the Webapp's own offline state,
   not this help. Reachability is not re-checked on a timer.
 - Onboarding still assumes Telegram. A new user sees it before this setting matters.

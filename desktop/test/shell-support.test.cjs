@@ -228,7 +228,7 @@ test('always-allowed desktop agents stay a list of bot ID strings', () => {
 
 test('resolveChatSurface keeps Telegram until Hermes Desktop answers, and an explicit choice always stands', () => {
   for (const status of ['unconfigured', 'checking', 'unreachable']) assert.equal(resolveChatSurface('', status), 'telegram', status);
-  for (const status of ['reachable', 'sign-in', 'ready']) assert.equal(resolveChatSurface('', status), 'hermes-desktop', status);
+  for (const status of ['reachable', 'needs-link', 'sign-in', 'ready']) assert.equal(resolveChatSurface('', status), 'hermes-desktop', status);
   assert.equal(resolveChatSurface('telegram', 'ready'), 'telegram');
   assert.equal(resolveChatSurface('hermes-desktop', 'unconfigured'), 'hermes-desktop');
   assert.equal(resolveChatSurface('bogus', 'unconfigured'), 'telegram');

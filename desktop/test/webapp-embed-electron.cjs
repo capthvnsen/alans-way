@@ -43,6 +43,15 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
     res.end(`<!doctype html><title>${req.url === '/login' ? 'Sign in' : 'Webapp fixture'}</title><main>Webapp</main>`);
   }, 'localhost');
   const address = `http://localhost:${server.address().port}/`, origin = address.slice(0, -1);
+  // A loopback Hermes without sign-in, as reached through an SSH tunnel.
+  const launches = [];
+  const privateServer = await listen((req, res) => {
+    if (req.url === '/api/status') { res.setHeader('Content-Type', 'application/json'); return res.end('{"version":"0.23.0","auth_required":false}'); }
+    if (req.url === '/webapp/launch') { res.setHeader('Content-Type', 'text/html'); return res.end('<script>fetch("/ticket?" + location.hash.slice(8)).then(() => { sessionStorage.signedIn = "yes"; location.replace("/"); })</script>'); }
+    if (req.url.startsWith('/ticket?')) { launches.push(req.url.slice(8)); return res.end(); }
+    res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><title>Private webapp</title>');
+  }, '127.0.0.1');
+  const privateAddress = `http://127.0.0.1:${privateServer.address().port}`;
   const prefsFile = path.join(profile, 'preferences.json');
   fs.writeFileSync(prefsFile, JSON.stringify({ onboarded: true, preview: false,
     bots: [{ id: '4242', isBot: true, name: 'Embed fixture' }], selectedBotId: '4242' }));
@@ -166,12 +175,31 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
   await until(async () => { const now = await state(); return now.activeTabId === created.id && now.chatTarget === 'webapp'; }, 'agent tab foregrounds beside the webapp');
   assert.equal(view.isDestroyed(), false);
 
-  // Changing the address replaces the view; clearing it falls back to the help.
-  await settings({ hermesWebappUrl: '' });
+  // A Webapp without sign-in opens from a pasted one-use link; changing the address replaces the view.
+  const ticket = 'T'.repeat(43);
+  await settings({ hermesWebappUrl: `${privateAddress}/` });
   await until(() => view.isDestroyed(), 'old view closed');
+  await statusIs('needs-link');
+  await helpSays('hermes webapp --no-open');
+  assert.equal(webappViews().length, 0, 'no view until a link arrives');
+  await assert.rejects(run(`workspace.command('webapp-link', { url: 'http://127.0.0.1:9120/webapp/launch#ticket=short' })`), /one-use link/);
+  await run(`(() => { document.getElementById('webapp-link').value = 'http://127.0.0.1:9120/webapp/launch#ticket=${ticket}'; [...document.querySelectorAll('#webapp-help button')].find(button => button.textContent === 'Open').click(); })()`);
+  await statusIs('ready');
+  const linked = await until(() => webappViews()[0], 'linked view');
+  await until(() => linked.getURL() === `${privateAddress}/` && !linked.isLoading(), 'linked webapp');
+  assert.deepEqual(launches, [ticket], 'the host printed port is rebased onto the saved address');
+  assert.equal(await linked.executeJavaScript('sessionStorage.signedIn'), 'yes');
+  assert.equal(JSON.stringify(saved()).includes(ticket), false, 'the link is never saved');
+  await settings({ chatSurface: 'telegram' });
+  await settings({ chatSurface: 'hermes-desktop' });
+  assert.equal(await linked.executeJavaScript('sessionStorage.signedIn'), 'yes', 'switching keeps the link sign-in');
+
+  // Clearing the address falls back to the help.
+  await settings({ hermesWebappUrl: '' });
+  await until(() => linked.isDestroyed(), 'linked view closed');
   await helpSays('no address yet');
   console.log('webapp embed: ok');
-  quitFixture(server, other);
+  quitFixture(server, other, privateServer);
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

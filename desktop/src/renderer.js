@@ -2148,6 +2148,7 @@ function webappStatusText() {
   const url = state.hermesWebappUrl;
   return { unconfigured: 'Hermes Desktop has no address yet. Add it in Settings under Chat surface.',
     checking: `Checking ${url}…`, reachable: `Opening ${url}…`, unreachable: `Can't reach ${url}. ${WEBAPP_HOST_CHECK}`,
+    'needs-link': 'This Hermes has no sign-in, so it opens only with a one-use link. On the Hermes host, run hermes webapp --no-open and paste the link in the chat pane within 60 seconds. You need a new link each time Workspace restarts.',
     'sign-in': 'Sign in inside the chat pane with your Hermes dashboard username and password.', ready: 'Connected and signed in.' }[state.webappStatus] || '';
 }
 function renderWebappHelp() {
@@ -2155,6 +2156,13 @@ function renderWebappHelp() {
   if (help.dataset.key === key) return;
   help.dataset.key = key;
   help.replaceChildren(element('h2', '', 'Hermes Desktop'), element('p', 'settings-note', webappStatusText()));
+  if (state.webappStatus === 'needs-link') {
+    const link = element('input'); link.id = 'webapp-link'; link.autocomplete = 'off'; link.spellcheck = false;
+    link.placeholder = 'http://127.0.0.1:9120/webapp/launch#ticket=…'; link.setAttribute('aria-label', 'One-use link');
+    const open = element('button', 'primary-button', 'Open');
+    open.onclick = () => command('webapp-link', { url: link.value }).finally(() => { link.value = ''; });
+    help.append(link, open);
+  }
   if (state.webappStatus === 'unreachable') {
     const retry = element('button', 'primary-button', 'Try again');
     retry.onclick = () => command('webapp-retry');

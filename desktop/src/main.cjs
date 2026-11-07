@@ -604,7 +604,23 @@ function openTelegramLink(value, activate = true) {
 // bridge or the browser's cookies, and its own host's links open as human Browser tabs.
 const surfaceTarget = () => resolveChatSurface(prefs.chatSurface, webappStatus) === 'hermes-desktop' ? 'webapp' : 'telegram';
 function syncWebapp() {
-  if (chatTarget !== 'webapp' || webappView || webappStatus !== 'reachable') return;
+  if (chatTarget === 'webapp' && !webappView && webappStatus === 'reachable') createWebappView(webappTarget);
+}
+// A Webapp without sign-in opens only through the one-use link `hermes webapp --no-open`
+// prints; its credential then lives in this view's sessionStorage, never on disk here.
+function openWebappLink(link) {
+  let launch;
+  try {
+    const pasted = new URL(String(link).trim());
+    // The host prints its own address; a tunnel may forward it to another local port.
+    if (pasted.pathname.endsWith('/webapp/launch') && /^#ticket=[\w-]{43}(&|$)/.test(pasted.hash)) launch = new URL(`webapp/launch${pasted.hash}`, webappTarget);
+  } catch {}
+  if (!launch || webappStatus === 'unconfigured') throw new Error('Paste the one-use link that hermes webapp --no-open prints on the Hermes host.');
+  chatTarget = 'webapp';
+  if (webappView) webappView.webContents.loadURL(launch.href).catch(() => {});
+  else createWebappView(launch.href);
+}
+function createWebappView(url) {
   webappView = new WebContentsView({ webPreferences: { partition: WEBAPP_PARTITION, navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true } });
   webappView.setBackgroundColor('#09090a');
   const contents = webappView.webContents, { origin } = new URL(webappTarget);
@@ -622,10 +638,13 @@ function syncWebapp() {
   contents.on('will-navigate', stay);
   contents.on('will-redirect', stay);
   const report = (status) => { webappStatus = status; applyLayout(); broadcast(); };
-  contents.on('did-navigate', (_event, url) => report(new URL(url).pathname.endsWith('/login') ? 'sign-in' : 'ready'));
+  contents.on('did-navigate', (_event, url) => {
+    const { pathname } = new URL(url);
+    if (!pathname.endsWith('/webapp/launch')) report(pathname.endsWith('/login') ? 'sign-in' : 'ready');
+  });
   contents.on('did-fail-load', (_event, code, _text, _url, isMainFrame) => { if (isMainFrame && code !== -3) report('unreachable'); });
   win.contentView.addChildView(webappView);
-  contents.loadURL(webappTarget).catch(() => {});
+  contents.loadURL(url).catch(() => {});
 }
 // Runs at startup, when the address changes and on Try again, never on a live view.
 async function checkWebapp() {
@@ -639,13 +658,15 @@ async function checkWebapp() {
   webappStatus = target ? 'checking' : 'unconfigured';
   applyLayout(); broadcast();
   if (!target) return;
-  let reachable = false;
+  let reachable = false, needsLink = false;
   try {
     const reply = await session.fromPartition(WEBAPP_PARTITION).fetch(new URL('api/status', target), { signal: AbortSignal.timeout(5000), cache: 'no-store' });
-    reachable = reply.ok && typeof (await reply.json()).version === 'string';
+    const body = reply.ok ? await reply.json() : {};
+    reachable = typeof body.version === 'string';
+    needsLink = body.auth_required === false;
   } catch {}
   if (target !== webappTarget) return;
-  webappStatus = reachable ? 'reachable' : 'unreachable';
+  webappStatus = !reachable ? 'unreachable' : needsLink && !webappView ? 'needs-link' : 'reachable';
   if (chatTarget === 'telegram') chatTarget = surfaceTarget();
   if (reachable && webappView) webappView.webContents.loadURL(target).catch(() => {});
   syncWebapp();
@@ -2067,6 +2088,7 @@ function registerIpc() {
       case 'show-hermes': chatTarget = 'hermes'; broadcast(); break;
       case 'show-webapp': chatTarget = 'webapp'; syncWebapp(); broadcast(); break;
       case 'webapp-retry': await checkWebapp(); break;
+      case 'webapp-link': openWebappLink(value.url); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
       case 'bot-sort': if (['recent', 'alpha', 'manual'].includes(value.mode)) { prefs.botSort = value.mode; savePreferences(); } break;
       case 'hide-bot':

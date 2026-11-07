@@ -40,19 +40,9 @@ test('legacy installs retain aliases and viewers; explicit enforcement never fal
   }
 });
 
-test('the Hermes Webapp pane loads only Tailscale Serve names', () => {
-  for (const url of ['https://vm.tail1234.ts.net/', 'https://vm.tail1234.ts.net/hermes/']) assert.equal(hermesWebappUrl(url), url);
+test('the Hermes Webapp pane loads only Tailscale Serve names and this machine', () => {
+  for (const url of ['https://vm.tail1234.ts.net/', 'https://vm.tail1234.ts.net/hermes/', 'http://127.0.0.1:9120/', 'http://localhost:9120/']) assert.equal(hermesWebappUrl(url), url);
   assert.equal(hermesWebappUrl('  HTTPS://VM.tail1234.TS.NET '), 'https://vm.tail1234.ts.net/');
-  const refused = ['', null, 'not a url', 'http://vm.tail1234.ts.net/', 'https://ts.net/', 'https://evil-ts.net/', 'https://vm.ts.net.evil.example/', 'https://127.0.0.1:9120/', 'http://127.0.0.2:9120/',
-    `http://${ip}:9120/`, 'file:///etc/passwd', 'https://user:pw@vm.tail1234.ts.net/', 'https://vm.tail1234.ts.net/?ticket=x'];
-  const loopback = process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK;
-  try {
-    delete process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK;
-    for (const url of [...refused, 'http://127.0.0.1:9120/', 'http://localhost:9120/']) assert.equal(hermesWebappUrl(url), '', String(url));
-    process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
-    assert.equal(hermesWebappUrl('http://127.0.0.1:9120/'), 'http://127.0.0.1:9120/');
-    for (const url of [...refused, 'http://127.0.0.1:9120/webapp/launch#ticket=x']) assert.equal(hermesWebappUrl(url), '', String(url));
-  } finally {
-    if (loopback === undefined) delete process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK; else process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = loopback;
-  }
+  for (const url of ['', null, 'not a url', 'http://vm.tail1234.ts.net/', 'https://ts.net/', 'https://evil-ts.net/', 'https://vm.ts.net.evil.example/', 'https://127.0.0.1:9120/', 'http://127.0.0.2:9120/',
+    `http://${ip}:9120/`, 'file:///etc/passwd', 'https://user:pw@vm.tail1234.ts.net/', 'https://vm.tail1234.ts.net/?ticket=x', 'http://127.0.0.1:9120/webapp/launch#ticket=x']) assert.equal(hermesWebappUrl(url), '', String(url));
 });
