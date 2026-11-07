@@ -1,3 +1,5 @@
+// Saved-address assertions here cover strict mode; tailnet.test.cjs covers the legacy default.
+process.env.HERMES_WORKSPACE_REQUIRE_TAILNET = '1';
 const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
