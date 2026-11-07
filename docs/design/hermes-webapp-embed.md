@@ -1,6 +1,7 @@
 # Hermes Webapp in the Workspace chat pane
 
-Status: spike, 2026-11-06. An opt-in prototype is in the tree, off by default.
+Status: spike, 2026-11-06. The opt-in prototype is the **Chat surface** setting. Nothing
+changes for anyone who does not configure it.
 Hermes facts below were read from the `v0.23.0` tag and exercised against commit
 `355a4175` (`v0.23.0-10`), whose version string still reports `0.22.7`.
 
@@ -11,7 +12,9 @@ with dashboard password sign-in kept in its own persistent partition. The agent'
 browser and computer-use tools need no change: they never travel through the chat
 surface.
 
-Keep Telegram and the native Hermes pane until phase 2 settles whether the Webapp
+Users pick the surface in Settings, under **Chat surface**: Telegram or Hermes Desktop
+(the UI's name for the embedded Webapp). Keep Telegram and the native Hermes
+pane until phase 2 settles whether the Webapp
 can replace the native pane.
 
 ## What was tried
@@ -22,6 +25,10 @@ can replace the native pane.
 | Backend connects after sign-in | Works; the page reports the backend version and moves on to provider setup | Same |
 | Sign-in survives a Workspace restart | Works; a second launch with the same profile skipped the form | Same, two processes |
 | Agent `POST /v1/tabs` foregrounds a tab while the Webapp shows | Works; chat target stays `webapp` | Same, and in the Electron test |
+| Chat surface choice survives a restart and reopens signed in | Works | Real gateway, stand-in Serve, two launches |
+| No choice saved, address reachable | Opens Hermes Desktop | Real gateway, third launch |
+| No choice saved, gateway down | Stays on Telegram; no view created | Real gateway stopped, fourth launch |
+| Both surfaces keep their page state across switches | Works; no reload | Electron test, with fixture pages |
 | Bare loopback URL | Fails by design; shows "Run hermes webapp on this computer" | Same |
 | Real `tailscale serve` | **Not run** | Would have changed the tailnet |
 | A real chat turn or agent tool call from the Webapp | **Not run** | The test gateway had no model provider |
@@ -135,8 +142,7 @@ Three real gaps remain:
 
 1. **Bot mapping.** Tabs are filtered by `selectedBotId`, and the Webapp can switch
    profile without the Workspace knowing. An agent on another profile opens a tab
-   the user cannot see. Selecting a bot also resets the chat to Telegram, which
-   throws the user out of the Webapp. Phase 1 fixes this by storing a Hermes profile
+   the user cannot see. Phase 1 fixes this by storing a Hermes profile
    on each bot and loading `/?profile=<name>`, which the Webapp already supports,
    with one view per profile. The view has no bridge, so it cannot report a switch
    made inside the Webapp. The Browser pane may need to follow the most recent agent
@@ -150,33 +156,76 @@ Three real gaps remain:
    bound Telegram chat. Whether a Webapp turn counts as `desktop` for the texting
    voice was not checked.
 
-## The prototype
+## The Chat surface setting
 
-Off unless `hermesWebappUrl` is set in the Workspace's `preferences.json`. There is
-no Settings row yet. Nothing is created and no request is made until the user clicks
-the **Hermes Webapp** row.
+This is the prototype. It lives in Settings, under General, as a two-way choice and an
+address field.
 
-- `src/tailnet.cjs`: `hermesWebappUrl()`, the address check.
-- `src/main.cjs`: `showWebapp()`, layout, focus restore, session flush, and site
-  permission prompts through the existing `sitePermissions`.
-- `src/renderer.js`, `src/index.html`: the slot, title and sidebar row.
-- `test/webapp-embed-electron.cjs`: `npm run test:webapp-embed`.
+**Choosing a surface.**
+
+| Saved choice | Webapp state | Pane shows |
+|---|---|---|
+| None (default) | Not configured, unreachable, or still checking | Telegram, as today |
+| None | Configured and answering | Hermes Desktop |
+| Telegram | Anything | Telegram |
+| Hermes Desktop | Anything | Hermes Desktop, or the inline help |
+
+Saved values are `chatSurface` (`''`, `telegram` or `hermes-desktop`) and
+`hermesWebappUrl` in `preferences.json`. Picking an option always saves an explicit
+choice, so a host going down never moves someone off a surface they picked. Someone who
+never chose can land on Telegram when the host is down and on Hermes Desktop when it is
+up; that is the requested default and is worth a second look (open question 5).
+
+**Reachability** is one `GET api/status` at startup, when the address changes, and on
+**Try again**, with a 5-second limit. It counts only a 200 with a string `version`, so
+another service at that address does not pass. The endpoint stays public in gated mode.
+
+**Inline help** appears in the pane and in Settings:
+
+| Status | What the user sees | Cause on a real gateway |
+|---|---|---|
+| `unconfigured` | Add an address in Settings | No address saved |
+| `checking` | Checking the address | Probe running |
+| `unreachable` | Can't reach it; run `hermes webapp --status`. **Try again**, **Open Settings** | `webapp.enabled` off, no sign-in provider, or gateway down (all refuse the connection, observed), or gateway still starting (503, observed), or Serve not set up |
+| `sign-in` | The Hermes sign-in form, in the pane | No valid cookie yet |
+| `ready` | Hermes Desktop | Signed in |
+
+The Workspace cannot tell those `unreachable` causes apart from outside, so it hands off
+to `hermes webapp --status`, which names the exact one. A missing bundle is different: the
+address answers, sign-in appears, and the Webapp page itself reports it. That last step
+was read from the docs; only the 200 and the redirect to sign-in were observed.
+
+**Switching keeps state.** Neither view is destroyed or reloaded when you switch. They are
+only hidden, the same way the native Hermes pane already hides Telegram. The only thing that
+replaces the Webapp view is changing the address. Sign-in cookies stay in the partition even then.
+
+**Bots.** Selecting a bot now keeps the chosen surface instead of forcing Telegram. It still
+updates the hidden Telegram chat, and picks which bot's tabs the Browser pane shows. With
+Hermes Desktop chosen, sidebar rows move between the two for the current session without
+changing the saved choice.
+
+Code: `resolveChatSurface()` in `src/shell-support.cjs`, `hermesWebappUrl()` in
+`src/tailnet.cjs`, `syncWebapp()` and `checkWebapp()` in `src/main.cjs`,
+`mountChatSurface()` and `renderWebappHelp()` in `src/renderer.js`. Tests:
+`npm run test:webapp-embed`, plus unit tests in `test/shell-support.test.cjs` and
+`test/tailnet.test.cjs`.
 
 Known limits, also marked in the code:
 
 - Webapp **New Window** and session pop-outs do nothing.
 - **Nous sign-in does not work**, because leaving the origin is refused. Password
   sign-in only.
-- Loopback is a test opt-in, since a saved address cannot carry a one-use link.
-- No Settings UI and no per-profile views.
+- Loopback is a test opt-in, since a saved address cannot carry a one-use link. So Hermes
+  on this same Mac also needs a `.ts.net` address.
+- A gateway that stops *after* the view has loaded shows the Webapp's own offline state,
+  not this help. Reachability is not re-checked on a timer.
+- Onboarding still assumes Telegram. A new user sees it before this setting matters.
 - The chat pane maxes out at 680 px, and this UI was built for a full window.
 
 ## Plan
 
 **Phase 1: usable for one person.**
-Settings row and a connection check. Per-bot profile mapping and one view per
-profile. Same-origin child windows. A clear retry page when the host is unreachable.
-Run the real `tailscale serve` path and a real turn with a tool call.
+Per-bot profile mapping and one view per profile. Same-origin child windows. Run the real `tailscale serve` path and a real turn with a tool call.
 
 **Phase 2: decide on the native pane.**
 Use it daily and compare it with `hermes-view.js`, `hermes-hub.cjs` and friends. The
@@ -245,3 +294,7 @@ OAuth remotes, so plugins need a polling fallback.
    This decides how much phase 1 is worth.
 4. Should bot selection stay primary in this mode, or should Hermes profiles replace
    the bot list when the Webapp is showing?
+5. Should the default change surfaces by itself? As specified, someone with an address and
+   no saved choice gets Hermes Desktop when the host answers and Telegram when it does not,
+   decided at launch. Saving a choice when the address is first entered would remove that
+   flip, at the cost of one more decision.
