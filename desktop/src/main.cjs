@@ -11,7 +11,7 @@ const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, continuedOnVm, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
-const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
+const { resolveChatSurface, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
@@ -124,7 +124,8 @@ let tabActivationSequence = 0;
 let activeTabId = 'home', activeVpsTabId = '', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 // Native Hermes chat: 'telegram' shows the Telegram WebContentsView; 'hermes'
 // shows the DOM surface (the Telegram view then measures to zero and hides).
-let hermesHub = null, chatTarget = 'telegram';
+let hermesHub = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '';
+const WEBAPP_PARTITION = 'persist:hermes-webapp';
 let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
 const tabs = new Map();
 const vpsTabs = new Map();
@@ -182,7 +183,7 @@ const recordings = recorder.createRecordingStore(path.join(app.getPath('userData
 let pointerTimer, activityTimer, idleTimer, captchaTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', hermesWebappUrl: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', hermesWebappUrl: '', chatSurface: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -381,7 +382,8 @@ function selectAgent(id) {
   if (tabs.has(localId)) prefs.agentLastTabs[old] = localId;
   prefs.selectedBotId = id;
   prefs.remoteControl = false;
-  chatTarget = 'telegram';
+  chatTarget = surfaceTarget();
+  syncWebapp();
   const own = [...tabs.values()].filter(tab => tab.botId === id || (tab.allowedBots ?? []).includes(id));
   const nextLocal = own.some(tab => tab.id === prefs.agentLastTabs[id]) ? prefs.agentLastTabs[id] : own.at(-1)?.id || 'home';
   browserReturnTabId = nextLocal;
@@ -490,7 +492,7 @@ function getState() {
     autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false, carrySignIns: prefs.carrySignIns !== false,
     activeTabId, activeVpsTabId, browserTabHost: activeTabId === 'vps' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (vpsTabs.has(activeVpsTabId) ? activeVpsTabId : tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
-    chatTarget, hermes: hermesSummary(), hermesWebapp: !!hermesWebappUrl(prefs.hermesWebappUrl),
+    chatTarget, hermes: hermesSummary(), chatSurface: resolveChatSurface(prefs.chatSurface, webappStatus), hermesWebappUrl: prefs.hermesWebappUrl, webappStatus,
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
     fullscreen: !!win && !win.isDestroyed() && win.isFullScreen(), api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
   // One authority orders native IPC reads, command replies and broadcasts by
@@ -566,7 +568,7 @@ function applyLayout() {
   const active = tabs.get(activeTabId)?.view.webContents;
   if (active && active.id !== extensionActiveContentsId) { extensionActiveContentsId = active.id; extensionHost?.selectTab(active); }
   fit(telegramView, layout.telegram);
-  fit(webappView, layout.webapp);
+  fit(webappView, ['sign-in', 'ready'].includes(webappStatus) ? layout.webapp : null);
   for (const tab of tabs.values()) {
     const foreground = activeTabId === tab.id && layout.browser?.width > 0 && layout.browser?.height > 0 && !layout.obscured;
     const host = foreground ? win : backgroundHost(layout.browser?.width || 900, layout.browser?.height || 700);
@@ -597,17 +599,15 @@ function openTelegramLink(value, activate = true) {
   recentLinkTabs.set(url, { tabId: tab.id, at: Date.now() });
   if (recentLinkTabs.size > 50) recentLinkTabs.delete(recentLinkTabs.keys().next().value);
 }
-// The Hermes Webapp in the chat pane. No preload and its own partition: a signed-in
-// session can run shell commands on its host, so it never holds a Workspace bridge
-// or the browser's cookies, and its own host's links open as human Browser tabs.
-function showWebapp() {
-  const target = hermesWebappUrl(prefs.hermesWebappUrl);
-  if (!target) throw new Error('Set a valid Hermes Webapp address first.');
-  chatTarget = 'webapp';
-  if (webappView) return;
-  webappView = new WebContentsView({ webPreferences: { partition: 'persist:hermes-webapp', navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true } });
+// Hermes Desktop: the Hermes Webapp in the chat pane. No preload and its own partition:
+// a signed-in session can run shell commands on its host, so it never holds a Workspace
+// bridge or the browser's cookies, and its own host's links open as human Browser tabs.
+const surfaceTarget = () => resolveChatSurface(prefs.chatSurface, webappStatus) === 'hermes-desktop' ? 'webapp' : 'telegram';
+function syncWebapp() {
+  if (chatTarget !== 'webapp' || webappView || webappStatus !== 'reachable') return;
+  webappView = new WebContentsView({ webPreferences: { partition: WEBAPP_PARTITION, navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true } });
   webappView.setBackgroundColor('#09090a');
-  const contents = webappView.webContents, { origin } = new URL(target);
+  const contents = webappView.webContents, { origin } = new URL(webappTarget);
   sitePermissions.install(contents.session, 'browser');
   const toBrowser = (url) => { try { if (new URL(url).origin !== origin) openTelegramLink(url); } catch {} };
   // shortcut: Webapp New Window and session pop-outs are refused here and so do nothing; allow same-origin child windows when embedding ships.
@@ -621,8 +621,35 @@ function showWebapp() {
   };
   contents.on('will-navigate', stay);
   contents.on('will-redirect', stay);
+  const report = (status) => { webappStatus = status; applyLayout(); broadcast(); };
+  contents.on('did-navigate', (_event, url) => report(new URL(url).pathname.endsWith('/login') ? 'sign-in' : 'ready'));
+  contents.on('did-fail-load', (_event, code, _text, _url, isMainFrame) => { if (isMainFrame && code !== -3) report('unreachable'); });
   win.contentView.addChildView(webappView);
-  contents.loadURL(target).catch(() => {});
+  contents.loadURL(webappTarget).catch(() => {});
+}
+// Runs at startup, when the address changes and on Try again, never on a live view.
+async function checkWebapp() {
+  const target = hermesWebappUrl(prefs.hermesWebappUrl);
+  if (webappView && target !== webappTarget) {
+    win.contentView.removeChildView(webappView);
+    webappView.webContents.close();
+    webappView = null;
+  }
+  webappTarget = target;
+  webappStatus = target ? 'checking' : 'unconfigured';
+  applyLayout(); broadcast();
+  if (!target) return;
+  let reachable = false;
+  try {
+    const reply = await session.fromPartition(WEBAPP_PARTITION).fetch(new URL('api/status', target), { signal: AbortSignal.timeout(5000), cache: 'no-store' });
+    reachable = reply.ok && typeof (await reply.json()).version === 'string';
+  } catch {}
+  if (target !== webappTarget) return;
+  webappStatus = reachable ? 'reachable' : 'unreachable';
+  if (chatTarget === 'telegram') chatTarget = surfaceTarget();
+  if (reachable && webappView) webappView.webContents.loadURL(target).catch(() => {});
+  syncWebapp();
+  applyLayout(); broadcast();
 }
 function configureContents(contents, isTelegram = false) {
   contents.setWindowOpenHandler((details) => {
@@ -1349,7 +1376,7 @@ const checkVersionsWhenIdle = () => {
 const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs) });
 async function saveBrowserSession() {
   savePreferences();
-  await Promise.all(['persist:browser', 'persist:telegram', ...(webappView ? ['persist:hermes-webapp'] : [])].map(async partition => {
+  await Promise.all(['persist:browser', 'persist:telegram', ...(webappView ? [WEBAPP_PARTITION] : [])].map(async partition => {
     const target = session.fromPartition(partition);
     target.flushStorageData();
     await target.cookies.flushStore();
@@ -2038,7 +2065,8 @@ function registerIpc() {
       case 'open-bot': await openBot(String(value.id)); break;
       case 'show-telegram': chatTarget = 'telegram'; broadcast(); break;
       case 'show-hermes': chatTarget = 'hermes'; broadcast(); break;
-      case 'show-webapp': showWebapp(); broadcast(); break;
+      case 'show-webapp': chatTarget = 'webapp'; syncWebapp(); broadcast(); break;
+      case 'webapp-retry': await checkWebapp(); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
       case 'bot-sort': if (['recent', 'alpha', 'manual'].includes(value.mode)) { prefs.botSort = value.mode; savePreferences(); } break;
       case 'hide-bot':
@@ -2088,11 +2116,19 @@ function registerIpc() {
         if (typeof value.carrySignIns === 'boolean') next.carrySignIns = value.carrySignIns;
         if (typeof value.primaryBotId === 'string') next.primaryBotId = next.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : next.primaryBotId;
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) next.locationDefault = value.locationDefault;
+        if (['telegram', 'hermes-desktop'].includes(value.chatSurface)) next.chatSurface = value.chatSurface;
+        if (typeof value.hermesWebappUrl === 'string') {
+          next.hermesWebappUrl = hermesWebappUrl(value.hermesWebappUrl);
+          if (!next.hermesWebappUrl && value.hermesWebappUrl.trim()) throw new Error('Enter the address as https://your-machine.your-tailnet.ts.net');
+        }
         if (Number.isFinite(value.chatWidth)) next.chatWidth = Math.max(320, Math.min(680, value.chatWidth));
         for (const field of Object.keys(settingsFieldRevisions)) {
           if (Object.hasOwn(value, field) || (field === 'remoteUrl' && value.vpsBrowser && typeof value.vpsBrowser === 'object')) settingsFieldRevisions[field]++;
         }
+        const addressChanged = next.hermesWebappUrl !== prefs.hermesWebappUrl;
         persistSettingsPreferences(next);
+        if (addressChanged) checkWebapp().catch(error => logError('hermes-webapp', error));
+        if (Object.hasOwn(value, 'chatSurface')) { chatTarget = surfaceTarget(); syncWebapp(); }
         if (Object.hasOwn(value, 'releaseChannel')) {
           holdAppInstall(false);
           if (prefs.releaseChannel !== activeReleaseChannel) { update.available = ''; update.tag = ''; update.ready = false; appLatest = ''; }
@@ -3645,7 +3681,10 @@ else {
     });
     extensionStore = createExtensionStore({ root: app.getPath('userData'), session: browserSession, dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences, onChanged: broadcast,
       canInstall: frame => [...tabs.values()].some(tab => tab.id === activeTabId && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
-    await extensionStore.installStore(); createWindow(); await extensionStore.restore(); broadcast();
+    await extensionStore.installStore();
+    chatTarget = surfaceTarget();
+    createWindow(); await extensionStore.restore(); broadcast();
+    checkWebapp().catch(error => logError('hermes-webapp', error));
     if (cloudSession() && prefs.cloud?.step && prefs.cloud.step !== 'done') startCloudPolling();
     startUpdates();
   });

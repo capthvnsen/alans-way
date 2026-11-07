@@ -14,7 +14,7 @@ process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1';
 const prompts = [];
 dialog.showMessageBox = async (_win, options) => { prompts.push(options.message); return { response: 0 }; };
 
-let server, other;
+let server, other, statusUp = false;
 const until = async (read, why, ms = 15000) => {
   const end = Date.now() + ms;
   for (;;) {
@@ -30,15 +30,21 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
   other = await listen((_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><title>Elsewhere</title>'); }, '127.0.0.1');
   const elsewhere = `http://127.0.0.1:${other.address().port}`;
   server = await listen((req, res) => {
+    if (req.url === '/api/status') {
+      res.writeHead(statusUp ? 200 : 502, { 'Content-Type': 'application/json' });
+      return res.end(statusUp ? '{"version":"0.23.0"}' : '{}');
+    }
     if (req.url === '/away') { res.writeHead(302, { Location: `${elsewhere}/redirected` }); return res.end(); }
+    if (req.url === '/signin') { res.writeHead(302, { Location: '/', 'Set-Cookie': 'webapp-login=yes; Max-Age=3600; HttpOnly' }); return res.end(); }
+    if (req.url === '/' && !/webapp-login/.test(req.headers.cookie || '')) { res.writeHead(302, { Location: '/login' }); return res.end(); }
     res.setHeader('Content-Type', 'text/html');
     // The header the real Webapp sends: it rules out an iframe, not a top-level view.
     res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
-    res.setHeader('Set-Cookie', 'webapp-login=yes; Max-Age=3600; HttpOnly');
-    res.end('<!doctype html><title>Webapp fixture</title><main>Webapp</main>');
+    res.end(`<!doctype html><title>${req.url === '/login' ? 'Sign in' : 'Webapp fixture'}</title><main>Webapp</main>`);
   }, 'localhost');
-  const origin = `http://localhost:${server.address().port}`;
-  fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, hermesWebappUrl: `${origin}/`,
+  const address = `http://localhost:${server.address().port}/`, origin = address.slice(0, -1);
+  const prefsFile = path.join(profile, 'preferences.json');
+  fs.writeFileSync(prefsFile, JSON.stringify({ onboarded: true, preview: false,
     bots: [{ id: '4242', isBot: true, name: 'Embed fixture' }], selectedBotId: '4242' }));
   require('../src/main.cjs');
 
@@ -47,24 +53,83 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
   await until(() => !shell.isLoading() && shell.getURL().endsWith('index.html'), 'workspace page');
   const run = (expression) => shell.executeJavaScript(expression);
   const state = () => run('workspace.getState()');
-  await until(async () => (await state()).hermesWebapp, 'opt-in visible in state');
-  await until(() => run(`[...document.querySelectorAll('#hermes-list .bot-open')].some(button => button.textContent === 'Hermes Webapp')`), 'sidebar row');
-
+  const settings = (value) => run(`workspace.command('settings', ${JSON.stringify(value)})`);
+  const saved = () => JSON.parse(fs.readFileSync(prefsFile, 'utf8'));
+  const showing = (slot) => until(() => run(`['telegram-slot', 'webapp-slot'].every(id => document.getElementById(id).classList.contains('hidden') !== (id === '${slot}'))`), `${slot} showing`);
+  const helpSays = (text) => until(() => run(`document.getElementById('webapp-help').textContent.includes(${JSON.stringify(text)})`), `help says ${text}`);
+  const statusIs = (status) => until(async () => (await state()).webappStatus === status, `status ${status}`);
   const webappPartition = session.fromPartition('persist:hermes-webapp');
   const browserPartition = session.fromPartition('persist:browser');
+  const webappViews = () => webContents.getAllWebContents().filter(contents => contents.session === webappPartition && !contents.isDestroyed());
   const opened = () => webContents.getAllWebContents().filter(contents => contents.session === browserPartition && !contents.isDestroyed());
   const openedAt = (url) => opened().find(contents => contents.getURL().startsWith(url));
-  assert.equal(webContents.getAllWebContents().some(contents => contents.session === webappPartition), false, 'the opt-in view is created on first use');
 
-  await run(`[...document.querySelectorAll('#hermes-list .bot-open')].find(button => button.textContent === 'Hermes Webapp').click()`);
-  const view = await until(() => webContents.getAllWebContents().find(contents => contents.session === webappPartition), 'webapp view');
+  // Default: nothing configured stays on Telegram, with no view and no setting forced.
+  await statusIs('unconfigured');
+  assert.equal((await state()).chatSurface, 'telegram');
+  await showing('telegram-slot');
+  assert.equal(webappViews().length, 0);
+
+  // Configured but not answering stays on Telegram too.
+  await settings({ hermesWebappUrl: address });
+  await statusIs('unreachable');
+  assert.equal((await state()).chatTarget, 'telegram');
+  assert.equal(webappViews().length, 0);
+
+  // Bad addresses are refused and leave the saved one alone.
+  await assert.rejects(settings({ hermesWebappUrl: 'https://example.com/' }), /ts\.net/);
+  assert.equal(saved().hermesWebappUrl, address);
+
+  // Choosing Hermes Desktop persists and explains what is missing, inline.
+  await settings({ hermesWebappUrl: '', chatSurface: 'hermes-desktop' });
+  assert.equal(saved().chatSurface, 'hermes-desktop');
+  await showing('webapp-slot');
+  await helpSays('no address yet');
+  await settings({ hermesWebappUrl: address });
+  await helpSays('hermes webapp --status');
+  assert.equal(webappViews().length, 0, 'an unreachable address opens no view');
+
+  // Try again recovers once the host answers, and the view then asks for sign-in.
+  statusUp = true;
+  await run(`[...document.querySelectorAll('#webapp-help button')].find(button => button.textContent === 'Try again').click()`);
+  const view = await until(() => webappViews()[0], 'webapp view');
+  await statusIs('sign-in');
+  await until(() => view.getURL() === `${origin}/login`, 'sign-in page');
+  await view.executeJavaScript(`location.href = '/signin'; void 0`);
+  await statusIs('ready');
   await until(() => view.getURL() === `${origin}/` && !view.isLoading(), 'webapp page');
   assert.equal(await view.executeJavaScript('document.title'), 'Webapp fixture', 'frame-ancestors does not block a top-level view');
-
-  await until(async () => (await state()).chatTarget === 'webapp', 'chat target');
-  await until(() => run(`document.getElementById('telegram-slot').classList.contains('hidden') && !document.getElementById('webapp-slot').classList.contains('hidden') && document.getElementById('chat-title').textContent === 'Hermes Webapp'`), 'pane swap');
   const slotWidth = await run(`document.getElementById('webapp-slot').getBoundingClientRect().width`);
   await until(async () => Math.abs(await view.executeJavaScript('innerWidth') - (slotWidth - 2)) <= 1, 'view fits the chat pane');
+
+  // Settings shows the choice and the status; changing the select applies it.
+  await run(`document.getElementById('settings-fallback').click()`);
+  await until(() => run(`document.getElementById('settings-chat-surface')?.value === 'hermes-desktop' && document.getElementById('settings-webapp-status').textContent.includes('signed in')`), 'Settings status');
+  await run(`(() => { const select = document.getElementById('settings-chat-surface'); select.value = 'telegram'; select.dispatchEvent(new Event('change')); })()`);
+  await until(() => saved().chatSurface === 'telegram', 'choice persisted from Settings');
+  await until(async () => (await state()).chatTarget === 'telegram', 'Settings switches the pane');
+  await run(`document.getElementById('modal-close').click()`);
+
+  // Switching back and forth keeps both surfaces alive and unreloaded.
+  const telegram = await until(() => webContents.getAllWebContents().find(contents => contents.session === session.fromPartition('persist:telegram')), 'telegram view');
+  await view.executeJavaScript('window.kept = "webapp"');
+  await telegram.executeJavaScript('window.kept = "telegram"');
+  for (const choice of ['hermes-desktop', 'telegram', 'hermes-desktop']) {
+    await settings({ chatSurface: choice });
+    await showing(choice === 'telegram' ? 'telegram-slot' : 'webapp-slot');
+    assert.equal(await view.executeJavaScript('window.kept'), 'webapp');
+    assert.equal(await telegram.executeJavaScript('window.kept'), 'telegram');
+  }
+  assert.equal(webappViews().length, 1);
+
+  // Selecting a bot keeps the chosen surface; the Telegram row is the way across and back.
+  await run(`workspace.command('open-bot', { id: '4242' })`);
+  await showing('webapp-slot');
+  await run(`workspace.command('show-telegram')`);
+  await showing('telegram-slot');
+  await run(`[...document.querySelectorAll('#hermes-list .bot-open')].find(button => button.textContent === 'Hermes Desktop').click()`);
+  await showing('webapp-slot');
+  assert.equal(await view.executeJavaScript('window.kept'), 'webapp');
 
   assert.equal(await view.executeJavaScript('typeof window.workspace + typeof window.hermes'), 'undefinedundefined', 'no Workspace bridge');
   assert.equal((await webappPartition.cookies.get({ name: 'webapp-login' })).length, 1, 'sign-in cookie lands in the webapp partition');
@@ -101,8 +166,10 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
   await until(async () => { const now = await state(); return now.activeTabId === created.id && now.chatTarget === 'webapp'; }, 'agent tab foregrounds beside the webapp');
   assert.equal(view.isDestroyed(), false);
 
-  await run(`workspace.command('show-telegram')`);
-  await until(() => run(`!document.getElementById('telegram-slot').classList.contains('hidden') && document.getElementById('webapp-slot').classList.contains('hidden')`), 'way back to Telegram');
+  // Changing the address replaces the view; clearing it falls back to the help.
+  await settings({ hermesWebappUrl: '' });
+  await until(() => view.isDestroyed(), 'old view closed');
+  await helpSays('no address yet');
   console.log('webapp embed: ok');
   quitFixture(server, other);
 })().catch((error) => {
