@@ -32,7 +32,8 @@ can replace the native pane.
 | Bare loopback URL | Fails by design; shows "Run hermes webapp on this computer" | Same |
 | Real `tailscale serve` | **Not run** | Would have changed the tailnet |
 | Live VM, Hermes `0.23.0`, no sign-in, SSH tunnel to `127.0.0.1:9120` (2026-11-07) | Pane loads after pasting a one-use link; "Backend ready" | Branch app on the real Workspace profile |
-| Real chat turn on that VM | Works; reply arrived from the VM's model | Same |
+| Real chat turn on that VM | Works. Asked "what is 17 times 23?"; the reply "17 times 23 is 391." (grok-4.7) arrived after 10 s and matched the VM's session store | Branch app, throwaway profile, 2026-11-07 |
+| Four switches between surfaces | Same views, neither page reloaded (`performance.timeOrigin` unchanged), still signed in, reply still shown | Same |
 | Agent browser tool from a Hermes Desktop chat | Works; `example.com` opened in the right-hand pane after 26 s, chat stayed on Hermes Desktop | Same; VM agent via `workspace-router` over SSH to this Mac |
 | Switch to Telegram and back on the real profile | Same views, page state and transcript kept, still signed in | Same |
 | Agent computer-use tools | **Not run** | They drive the Mac's desktop, not the pane, and would send a screenshot of the real screen to the model |
