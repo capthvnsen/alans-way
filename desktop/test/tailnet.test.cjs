@@ -1,5 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+// The first test covers strict mode; the legacy default is covered by the spawned checks below.
+process.env.HERMES_WORKSPACE_REQUIRE_TAILNET = '1';
 const { isTailnetAddress, hermesWebappUrl, SSH_OPTIONS } = require('../src/tailnet.cjs');
 const { isSshTarget, parseRemoteUrl, viewerUrl } = require('../src/core.cjs');
 const { normalizeBaseUrl } = require('../src/hermes-remote.cjs');

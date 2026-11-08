@@ -11,7 +11,7 @@
 | Alan's Plugin for Hermes | `capthvnsen/alans-way-agents`: existing `alans-way/`, `alans-way-computer/`, root setup scripts and `deploy/` | Python Hermes integration, hooks, skills, routing/provisioning adapters and reading shared config | Workspace UI or ownership of the shared CU MCP implementation |
 | Alan's Plugin for Grok Bot | `capthvnsen/alans-way-agents`: `alans-way-grok-bot/` scaffold, pending [PR #157](https://github.com/capthvnsen/alans-way-agents/pull/157) | Grok Bot skill/settings integration targeting the same shared config | Loading a Hermes Python plugin; Grok Bot cannot do that |
 
-The app and CU MCP share a source directory and release bundle today. That is packaging, not a fifth product or a reason to move the server. CU MCP stays at its existing path; `workspace-mcp` is its product/client-entry name, not a new binary or package.
+The app and CU MCP share a source directory and release bundle today. That is packaging, not a fifth product or a reason to move the server. CU MCP stays at its existing path; `workspace-mcp` is its product/client-entry name and the binary of the root `package.json`, which installs just the server from this repository ([guide](cu-mcp.md)).
 
 The VM router (`alans-way/scripts/workspace-router.cjs`), the repository-level operator tool `scripts/setup-remote-agent.sh` (outside the installed plugin), and optional HTTP bridge currently live in `alans-way-agents`. They adapt remote clients to this repo's CU MCP/host implementation. A generic MCP client does not need the Hermes Python runtime to speak MCP. Existing provisioning instructions may use a Hermes plugin installation path; that does not make the Grok package a Hermes plugin.
 
@@ -29,6 +29,7 @@ Paths below are defaults, not instructions to copy user data or credentials betw
 | Workspace Linux | User's desktop: `~/.local/share/alans-way-localapp` | `scripts/connect-linux.sh`; x64, systemd, desktop session, Node 22.12+ and git |
 | CU MCP bundled on Mac | `/Applications/alans-way-localapp.app/Contents/Resources/app/scripts/browser-mcp.cjs` | [Generic client example](../README.md#2-alans-cu-mcp) |
 | CU MCP from source | `<alans-way checkout>/desktop/scripts/browser-mcp.cjs`, with sibling modules and `desktop/node_modules/` | `cd desktop && npm ci`; Node 24 for development; connect over stdio locally or SSH |
+| CU MCP standalone | Any machine running a host: global npm prefix, `workspace-mcp` command | [Install guide](cu-mcp.md); `npm install -g github:capthvnsen/alans-way` |
 | CU MCP VM browser host | VM's checkout of this repo, `desktop/scripts/vps-browser-host.cjs` and `vps-chromium-host.cjs` | [VM browser guide](../desktop/docs/vps-browser.md), [macOS guest](mac-vm-guest.md); provision once per host, keep private endpoints private |
 | Hermes plugin components | Gateway host: `~/.hermes/plugins/alans-way/` and `~/.hermes/plugins/alans-way-computer/` by default | [Agents install guide](https://github.com/capthvnsen/alans-way-agents/blob/main/docs/install.md); native profiles can override `HERMES_HOME` |
 | Grok Bot package | `alans-way-agents/alans-way-grok-bot/` scaffold, pending [PR #157](https://github.com/capthvnsen/alans-way-agents/pull/157) | Native Grok Bot install/loading is unverified; [existing connector setup](../desktop/docs/remote-agents.md) is a separate step |

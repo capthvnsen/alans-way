@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Lives here, not read from package.json: app bundles and connector copies have no root manifest.
+const VERSION = '0.1.0';
+if (process.argv[2] === '--version') { process.stdout.write(`workspace-mcp ${VERSION}\n`); process.exit(0); }
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -403,7 +406,7 @@ async function request(endpoint, method = 'GET', body, epoch, approvedConnection
     }
   }
 }
-const server = new Server({ name: 'hermes-cua-alans-way', version: '0.1.0' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'hermes-cua-alans-way', version: VERSION }, { capabilities: { tools: {} } });
 // shortcut: Hermes keys omit app version and env, so startup may reuse schemas for 60s; version the config if immediate invalidation is needed.
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools, ttlMs: 60_000 }));
 server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => calls.run(
@@ -531,4 +534,10 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => cal
       ...(error.browserRequest ? { _meta: { browserRequest: error.browserRequest } } : {}) };
   } finally { reloadIfReplaced(); }
 }));
-server.connect(new StdioServerTransport()).catch(() => { process.stderr.write('Browser MCP connection failed.\n'); process.exit(1); });
+if (process.argv.includes('--health')) {
+  // Only named fields are printed: the status reply is the host's to extend.
+  requestOnce('/v1/status').then(
+    (status) => process.stdout.write(JSON.stringify({ ok: true, version: VERSION, node: process.version, capabilities: Array.isArray(status?.capabilities) ? status.capabilities : [] }) + '\n'),
+    (error) => { process.exitCode = 1; process.stdout.write(JSON.stringify({ ok: false, version: VERSION, node: process.version, error: error.message }) + '\n'); },
+  );
+} else server.connect(new StdioServerTransport()).catch(() => { process.stderr.write('Browser MCP connection failed.\n'); process.exit(1); });

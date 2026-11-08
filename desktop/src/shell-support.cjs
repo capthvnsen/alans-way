@@ -7,6 +7,7 @@ const path = require('node:path');
 const { fileURLToPath } = require('node:url');
 const { execFileSync } = require('node:child_process');
 const { isSshTarget } = require('./core.cjs');
+const { isTailnetAddress } = require('./tailnet.cjs');
 
 const RETRYABLE = new Set(['EPERM', 'EBUSY', 'EACCES', 'EMFILE']);
 function sleepSync(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
@@ -166,8 +167,7 @@ function tailscaleSshHost({ platform = process.platform, programFiles = process.
     if ((cli.includes('/') || cli.includes('\\')) && !exists(cli)) continue;
     let out;
     try { out = invoke(cli, ['ip', '-4']); } catch { continue; }
-    const ip = String(out).split('\n').map((line) => line.trim()).find((line) =>
-      /^(\d{1,3}\.){3}\d{1,3}$/.test(line) && line.split('.').every((part) => Number(part) <= 255));
+    const ip = String(out).split('\n').map((line) => line.trim()).find(isTailnetAddress);
     if (ip) {
       const host = `${username}@${ip}`;
       return isSshTarget(host) ? host : '';
