@@ -1419,8 +1419,19 @@ function filterSettingsSections() {
   $('settings-empty-query').textContent = query ? `No settings match “${query}”.` : 'No settings are available in this category.';
   content.scrollTop = 0; refreshSettingsSections();
 }
-function showSettings() {
-  if (settingsSession && modalOpen) { $('settings-search').focus(); return; }
+function revealSettingsSection(sectionId) {
+  const section = availableSettingsSections().find((item) => item.id === sectionId);
+  if (!section) return;
+  selectSettingsCategory(section.category);
+  document.querySelector(`[data-settings-section="${section.id}"]`)?.scrollIntoView({ block: 'nearest' });
+}
+function showSettings(detail) {
+  const sectionId = detail && typeof detail.section === 'string' ? detail.section : '';
+  if (settingsSession && modalOpen) {
+    if (sectionId) revealSettingsSection(sectionId);
+    else $('settings-search').focus();
+    return;
+  }
   openModal('Workspace settings'); $('modal').classList.add('settings-modal');
   const categories = SETTINGS_CATEGORIES.filter(([category]) => availableSettingsSections().some(section => section.category === category));
   settingsSession = { category: categories[0][0], mounted: new Map() };
@@ -1453,7 +1464,9 @@ function showSettings() {
     if (box.top < pane.top + margin) content.scrollTop -= pane.top + margin - box.top;
     else if (box.bottom > pane.bottom - margin) content.scrollTop += box.bottom - pane.bottom + margin;
   });
-  filterSettingsSections(); search.focus({ preventScroll: true });
+  filterSettingsSections();
+  if (sectionId) revealSettingsSection(sectionId);
+  search.focus({ preventScroll: true });
 }
 function settingsStatus(body) {
   const status = element('p', 'settings-action-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); body.append(status); return status;
@@ -2336,7 +2349,7 @@ if (window.HermesView && hermesApi) {
 api.onState(render);
 api.onPointer?.(point => window.HermesAvatars.receivePointer(point));
 api.onFocusAddress(() => { $('address').focus(); $('address').select(); });
-api.onSettings?.(() => { if (!dialogStack.length) showSettings(); });
+api.onSettings?.((_event, detail) => { if (!dialogStack.length) showSettings(detail); });
 api.onShortcuts?.(showShortcuts);
 api.onFocusWorkspace?.(() => { if (state?.showBrowser === false) return; focusMode = !focusMode; $('shell').classList.toggle('focus-workspace', focusMode); scheduleLayout(); });
 new ResizeObserver(scheduleLayout).observe($('shell'));
