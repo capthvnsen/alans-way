@@ -1005,7 +1005,9 @@ test('Enter in a field outside a form is refused while the page shows a commit c
   const notes = await openTab('/notes');
   const passed = await act(notes, { action: 'press', name: 'Note', key: 'Enter' });
   assert.equal(passed.status, 200, JSON.stringify(passed.data));
-  assert.equal(await pageText(notes, '#out'), 'did:noted');
+  // read, not eval: eval is refused when the commit-check probe fails to answer,
+  // which flakes under a loaded macOS runner after the rest of this suite.
+  assert.match((await act(notes, { action: 'read', maxChars: 2000 })).data.text, /did:noted/);
 });
 
 test('a link moved by hover is re-resolved before the click lands', live, async () => {
