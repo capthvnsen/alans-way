@@ -702,7 +702,7 @@ function renderOnboarding(show) {
     // silent ordinary wizard.
     if (cloud.error) card.append(element('p', 'settings-note', cloud.error));
     const signedIn = state.telegramStatus === 'connected';
-    card.append(element('p', `check-item${signedIn ? ' done' : ''}`, signedIn ? '✓ Signed in to Telegram' : '○ Scan the QR code on the left with your phone: Telegram → Settings → Devices → Link Desktop Device.'));
+    card.append(element('p', `check-item${signedIn ? ' done' : ''}`, onboardingTelegramLine(state.telegramStatus)));
     if (state.inApplications === false) {
       const move = element('div', 'onboarding-move');
       move.append(element('p', 'settings-note', 'Move Alan’s Workspace to your Applications folder so your agent can find it.'),
