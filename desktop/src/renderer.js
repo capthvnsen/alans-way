@@ -455,14 +455,12 @@ function render(next) {
   const sharedTab = tab?.botId === 'shared';
   const ownerName = tab && !sharedTab ? state.bots.find((item) => item.id === tab.botId)?.name || tab.botId : '';
   const controlButton = $('control-button');
-  controlButton.textContent = tab?.controller === 'agent' ? 'Take over'
-    : sharedTab ? `Give to ${bot?.name || state.selectedBotId || 'agents'}`
-    : `Give to ${ownerName || 'agent'}`;
+  const control = browserControlState({ tab, ownerName, recipientName: bot?.name || '', botCount: state.bots.length });
+  controlButton.textContent = control.text;
   controlButton.classList.toggle('agent', tab?.controller === 'agent');
-  controlButton.disabled = !tab || tab.extensionPage || tab.localPdf;
+  controlButton.disabled = control.disabled;
   const askBot = $('ask-bot'); askBot.disabled = !tab || !/^https?:\/\//.test(tab?.url || ''); askBot.title = tab ? `Share ${tab.title || 'this page'} with ${bot?.name || 'the selected bot'}` : 'Discuss this page with your agent';
   $('browser-slot').classList.toggle('agent-live', !!tab && tab.controller === 'agent');
-  if (tab?.extensionPage || tab?.localPdf) controlButton.textContent = 'You';
   const controlOffer = /^(Give|Take)/.test(controlButton.textContent) ? ` · ${controlButton.textContent}` : '';
   controlButton.title = tab ? `Browser runs on ${tab.host==='vps'||tab.host==='remote'?'the '+remoteName():'your '+thisComputer()} · ${tab.controller === 'agent' ? (sharedTab ? 'Agents share control' : `${ownerName || 'Agent'} controls it`) : `You control it${sharedTab && !state.selectedBotId ? ' · an agent can claim it' : ''}`}${controlOffer}` : 'Open a browser tab first';
   if (document.activeElement !== $('address')) $('address').value = tab?.recoveryUrl || (tab?.internal ? '' : tab?.url || '');
