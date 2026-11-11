@@ -83,7 +83,7 @@ app.whenReady().then(async () => {
   const queries = [
     ['new tab', ['new-tab']], ['close tab', ['close-tab', 'tab-close']], ['focus address', ['address']], ['switch tabs', ['tab-move']],
     ['cmd+t', ['new-tab']], ['Command+T', ['new-tab']], ['⌘T', ['new-tab']],
-    ['command comma', ['settings']], ['cmd+,', ['settings']], ['⌘,', ['settings']], ['comma', ['settings']], ['settings', ['settings']],
+    ['command comma', ['settings']], ['cmd+,', ['settings']], ['⌘,', ['settings']], ['comma', ['settings']], ['settings', ['settings', 'canvas-pages']],
     ['ArrowDown', ['agent-move', 'search-result']], ['down arrow', ['agent-move', 'search-result']], ['↓', ['agent-move', 'search-result']],
     ['shift tab', ['dialog-tab']], ['⇧⇥', ['dialog-tab']], ['command+q', []], ['nonesuch-zqv', []],
   ];
