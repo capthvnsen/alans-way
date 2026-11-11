@@ -167,6 +167,17 @@ if (!process.versions.electron) {
         console.log('NATIVE CHAT PROOF: /tmp/w1-proof/native-chat.png /tmp/w1-proof/native-chat-transcript.txt');
       }
 
+      // The conversation menu by keyboard: focus goes to the current item, arrows move, Escape returns to the switcher.
+      await click('#native-pane .nc-switch');
+      assert.equal(await run(`document.activeElement.classList.contains('current') && document.activeElement.getAttribute('role')`), 'menuitem');
+      const key = (name) => run(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: '${name}', bubbles: true, cancelable: true }))`);
+      await key('Home');
+      assert.equal(await run(`document.activeElement.textContent`), 'New chat');
+      await key('ArrowDown');
+      assert.equal(await run(`document.activeElement === document.querySelectorAll('#native-pane .nc-menu-item')[1]`), true);
+      await key('Escape');
+      assert.equal(await run(`document.querySelector('#native-pane .nc-menu').classList.contains('hidden') && document.activeElement.classList.contains('nc-switch')`), true);
+
       // 1,000-message conversation: first open from the network, then switches paint from memory.
       const sessions = (await native()).sessions;
       const bigId = sessions.find((s) => s.title === 'seed 1k').id, telegramId = sessions.find((s) => s.source === 'telegram').id;

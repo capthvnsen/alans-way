@@ -426,19 +426,23 @@
     }
 
     function renderMenu() {
+      const focused = menu.contains(document.activeElement) && (document.activeElement.dataset.id || 'new');
       menu.replaceChildren();
-      const fresh = button('nc-menu-item nc-menu-new', 'New chat', () => { closeMenu(); command('new'); });
+      const fresh = button('nc-menu-item nc-menu-new', 'New chat', () => { closeMenu(); command('new'); textarea.focus(); });
+      fresh.dataset.id = '';
       menu.append(fresh);
       for (const s of (state.sessions || []).slice(0, 30)) {
-        const item = button(`nc-menu-item${s.id === state.activeId ? ' current' : ''}`, '', () => { closeMenu(); if (s.id !== state.activeId) command('open', { sessionId: s.id }); });
-        item.setAttribute('role', 'menuitem');
+        const item = button(`nc-menu-item${s.id === state.activeId ? ' current' : ''}`, '', () => { closeMenu(); switcher.focus(); if (s.id !== state.activeId) command('open', { sessionId: s.id }); });
         item.dataset.id = s.id;
         const title = el('span', 'nc-menu-title', s.title || s.preview || 'Untitled chat');
         const meta = el('span', 'nc-menu-meta', `${sourceLabel(s.source)}${s.running ? ' · replying' : ''}${s.waiting ? ' · needs you' : ''}`);
-        if (s.unread) item.append(el('span', 'nc-unread'));
+        if (s.unread) { const dot = el('span', 'nc-unread'); dot.setAttribute('role', 'img'); dot.setAttribute('aria-label', 'Unread'); item.append(dot); }
         item.append(title, meta);
         menu.append(item);
       }
+      for (const item of menu.children) { item.setAttribute('role', 'menuitem'); item.tabIndex = -1; }
+      // Live updates redraw the menu; keep the keyboard where it was.
+      if (focused) [...menu.children].find((item) => (item.dataset.id || 'new') === focused)?.focus();
     }
     const closeMenu = () => { menu.classList.add('hidden'); switcher.setAttribute('aria-expanded', 'false'); };
     switcher.addEventListener('click', () => {
@@ -446,6 +450,13 @@
       if (open) renderMenu();
       menu.classList.toggle('hidden', !open);
       switcher.setAttribute('aria-expanded', String(open));
+      if (open) (menu.querySelector('.current') || menu.firstChild).focus();
+    });
+    menu.addEventListener('keydown', (event) => {
+      const items = [...menu.children], at = items.indexOf(document.activeElement);
+      if (event.key === 'Tab') { closeMenu(); return; }
+      const next = items[{ ArrowDown: Math.min(items.length - 1, at + 1), ArrowUp: Math.max(0, at - 1), Home: 0, End: items.length - 1 }[event.key]];
+      if (next) { event.preventDefault(); next.focus(); }
     });
     document.addEventListener('pointerdown', (event) => { if (!head.contains(event.target)) closeMenu(); });
     root.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !menu.classList.contains('hidden')) { closeMenu(); switcher.focus(); } });
