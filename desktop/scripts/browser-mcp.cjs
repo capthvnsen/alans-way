@@ -66,7 +66,7 @@ const COMPUTER_NEXT = {
   locked: 'Nothing can be read or driven until the user unlocks the computer; then snapshot again.',
   permission: 'Ask the user to turn it on for alans-way-localapp in System Settings > Privacy & Security, then retry.',
   off_limits: 'It stays off limits: do not retry or work around it; tell the user.',
-  not_found: 'Call workspace_computer_apps if the app may have quit; otherwise snapshot again and use a ref from that reply.',
+  not_found: 'For a menu or file path, check the path you sent (workspace_computer_menu lists the menu titles). Otherwise call workspace_computer_apps if the app may have quit, or snapshot again and use a ref from that reply.',
   unresponsive: 'The app is hung: do not repeat the action; wait a moment, then snapshot to see whether it ran.',
   timeout: 'It may still have run: snapshot to see the app state before retrying.',
   focus_unverified: 'Snapshot again, then retry once.',

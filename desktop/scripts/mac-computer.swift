@@ -739,6 +739,8 @@ func selectRow(_ element: AXUIElement) -> Bool {
     return false
 }
 
+let pressMayHaveRun = Fail("unresponsive", "The app did not answer the press, so it may have run.")
+
 func eventClick(_ pid: pid_t, _ element: AXUIElement) throws -> String {
     guard let frame = axFrame(element), frame.width > 0, frame.height > 0 else { throw Fail("failed", "Press failed.") }
     postMouse(pid, axToQuartz(CGPoint(x: frame.midX, y: frame.midY)), button: .left, clicks: 1, dragTo: nil)
@@ -749,6 +751,8 @@ func pressElement(_ pid: pid_t, _ element: AXUIElement, role: String) throws -> 
     let result = AXUIElementPerformAction(element, "AXPress" as CFString)
     if result == .success { return "ax" }
     if result == .invalidUIElement { throw Fail("stale_ref", "That control is gone. Take a fresh snapshot.") }
+    // A press that opens a modal can block past the messaging timeout, so it may have run: pressing again would be a second press.
+    if result == .cannotComplete { throw pressMayHaveRun }
     if role == "AXRow" || role == "AXCell" || role == "AXOutlineRow", selectRow(element) { return "select" }
     if let ancestor = pressableAncestor(element), AXUIElementPerformAction(ancestor, "AXPress" as CFString) == .success { return "ancestor" }
     return try eventClick(pid, element)
@@ -957,6 +961,7 @@ func pressMenu(_ pid: pid_t, _ path: [String]) throws {
     let item = try menuItem(pid, path)
     if (axValue(item, "AXEnabled") as? NSNumber)?.boolValue == false { throw Fail("failed", "That menu item is disabled.") }
     let result = AXUIElementPerformAction(item, "AXPress" as CFString)
+    if result == .cannotComplete { throw pressMayHaveRun }
     if result != .success { throw Fail("failed", "Press failed (\(result.rawValue)).") }
 }
 
@@ -1311,7 +1316,10 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
                     break
                 }
             }
-            for character in text { try postKey(pid, key: character == "\n" ? "return" : String(character), modifiers: []) }
+            for character in text {
+                if pastActDeadline() { throw Fail("timeout", "Out of time partway through the text, so only part of it was typed.") }
+                try postKey(pid, key: character == "\n" ? "return" : String(character), modifiers: [])
+            }
             out["via"] = "keys"
             break
         }
@@ -1509,7 +1517,15 @@ func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?)
     }
 }
 
+// Input time per act, so the reads before and after still fit inside the 20 s helper kill.
+var actBudget = 9.0
+var actDeadline = Double.infinity
+func pastActDeadline() -> Bool { ProcessInfo.processInfo.systemUptime >= actDeadline }
+
 func act(_ request: JSON) throws -> JSON {
+    let started = ProcessInfo.processInfo.systemUptime
+    actDeadline = started + actBudget
+    defer { actDeadline = .infinity }
     let pid = try pidOf(request)
     try requireAccessibility()
     try checkApp(pid, action: true)
@@ -1531,6 +1547,10 @@ func act(_ request: JSON) throws -> JSON {
     var results: [JSON] = []
     var succeeded = false
     for step in steps {
+        if !results.isEmpty, pastActDeadline() {
+            results.append(["ok": false, "error": "Out of time before this step, so it and the ones after it did not run.", "code": "timeout"])
+            break
+        }
         do {
             try checkApp(pid, action: true)
             try validateWindowStep(pid, step, try selectedWindow(pid, selected?.id))
@@ -1553,12 +1573,24 @@ func act(_ request: JSON) throws -> JSON {
         // The steps already ran; a tree that cannot be read afterwards must not hide their results.
         // An app just launched or brought forward can miss one read while it builds its window.
         let running = { NSRunningApplication(processIdentifier: pid).map { !$0.isTerminated } ?? false }
-        let walk = (try? refresh(pid, menubar: menubar, windowId: selected?.id))
-            ?? (running() && !screenLocked() ? { usleep(500_000); return try? refresh(pid, menubar: menubar, windowId: selected?.id) }() : nil)
+        var readFailure: Fail?
+        let read = { () -> Walk? in
+            do { return try refresh(pid, menubar: menubar, windowId: selected?.id) } catch let failure as Fail { readFailure = failure } catch {}
+            return nil
+        }
+        let walk = read() ?? (running() && !screenLocked() && ProcessInfo.processInfo.systemUptime < started + 12 ? { usleep(500_000); return read() }() : nil)
         if let walk { for (key, value) in snapshotFields(walk) { reply[key] = value } }
-        else { reply["note"] = "unresponsive: the steps ran but the app stopped responding, so there is no tree. Do not repeat them; take a fresh snapshot." }
+        else { reply["note"] = readFailedNote(readFailure, running: running()) }
     }
     return reply
+}
+
+func readFailedNote(_ failure: Fail?, running: Bool) -> String {
+    if !running { return "not_found: the steps ran and the app has quit. Do not repeat them." }
+    guard let failure, failure.code != "unresponsive" else {
+        return "unresponsive: the steps ran but the app stopped responding, so there is no tree. Do not repeat them; take a fresh snapshot."
+    }
+    return "\(failure.code): the steps ran but the app could not be read afterwards (\(failure.message)) Do not repeat them; take a fresh snapshot."
 }
 
 // Opening a file must never run code, so anything that can execute is refused up front.
@@ -1705,6 +1737,9 @@ func selftest() throws -> JSON {
         checks += 1
         if !condition { throw Fail("failed", "selftest: \(message)") }
     }
+    try expect(readFailedNote(Fail("stale_window", "That window is gone."), running: true).hasPrefix("stale_window: the steps ran"), "a closed window is not called hung")
+    try expect(readFailedNote(Fail("unresponsive", "x"), running: false).hasPrefix("not_found: the steps ran"), "a quit app is not called hung")
+    try expect(readFailedNote(nil, running: true).hasPrefix("unresponsive: the steps ran"), "an unexplained read failure stays unresponsive")
     let repeated = try selectionRange("😀 first word; second word.", text: "word", prefix: "second ", suffix: ".", selection: "text")
     try expect(repeated.location == 22 && repeated.length == 4, "context selects repeated text in UTF16")
     let overlap = try selectionRange("aaa", text: "aa", prefix: "a", suffix: "", selection: "cursor_after")
