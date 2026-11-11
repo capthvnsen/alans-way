@@ -221,7 +221,7 @@ test('a chat link notification arriving after the human clicked reuses the exist
 test('ordinary quit keeps views alive until cookies are durable, and a repeated quit shares the drain', async () => {
   let listener, finish, saves = 0, closes = 0;
   const app = { on: (_name, fn) => { listener = fn; }, quit: () => listener({ preventDefault() {} }) };
-  const context = vm.createContext({ app, isQuitting: false, setTimeout() {}, QUIT_SAVE_MS: 8000, logError: (_label, error) => { throw error; },
+  const context = vm.createContext({ app, nativeChat: null, isQuitting: false, setTimeout() {}, QUIT_SAVE_MS: 8000, logError: (_label, error) => { throw error; },
     savePreferences() {}, saveBrowserSession: () => { saves++; return new Promise(resolve => { finish = resolve; }); },
     hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },
     modelAuthChild: null, tray: null, apiServer: null, clearInterval() {}, clearTimeout() {},
@@ -247,7 +247,7 @@ for (const outcome of ['hangs', 'fails']) {
     let listener, closes = 0;
     const timers = [], errors = [];
     const app = { on: (_name, fn) => { listener = fn; }, quit: () => listener({ preventDefault() {} }) };
-    const context = vm.createContext({ app, isQuitting: false, setTimeout: (fn, ms) => timers.push({ fn, ms }), QUIT_SAVE_MS: 8000,
+    const context = vm.createContext({ app, nativeChat: null, isQuitting: false, setTimeout: (fn, ms) => timers.push({ fn, ms }), QUIT_SAVE_MS: 8000,
       savePreferences() {}, saveBrowserSession: () => (outcome === 'hangs' ? new Promise(() => {}) : Promise.reject(new Error('denied'))),
       logError: (label, error) => errors.push(`${label}: ${error.message}`),
       hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },

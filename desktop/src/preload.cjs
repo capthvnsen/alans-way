@@ -30,3 +30,13 @@ contextBridge.exposeInMainWorld('hermes', {
     return () => { ipcRenderer.removeListener('hermes:state', listener); };
   },
 });
+// Alan's native chat: display state + the controller's allowlisted commands. The API key never crosses.
+contextBridge.exposeInMainWorld('nativeChat', {
+  getState: () => ipcRenderer.invoke('native:get'),
+  command: (name, value) => ipcRenderer.invoke('native:command', name, value),
+  onState: (callback) => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('native:state', listener);
+    return () => { ipcRenderer.removeListener('native:state', listener); };
+  },
+});

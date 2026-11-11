@@ -233,3 +233,12 @@ test('resolveChatSurface keeps Telegram until Hermes Desktop answers, and an exp
   assert.equal(resolveChatSurface('hermes-desktop', 'unconfigured'), 'hermes-desktop');
   assert.equal(resolveChatSurface('bogus', 'unconfigured'), 'telegram');
 });
+
+test('resolveChatSurface keeps the native chat only while it is configured', () => {
+  assert.equal(resolveChatSurface('native', 'unconfigured', true), 'native');
+  assert.equal(resolveChatSurface('native', 'ready', true), 'native');
+  assert.equal(resolveChatSurface('native', 'unconfigured', false), 'telegram');
+  assert.equal(resolveChatSurface('native', 'ready', false), 'hermes-desktop');
+  assert.equal(resolveChatSurface('', 'unconfigured', true), 'telegram', 'configuring native chat alone does not switch the surface');
+  assert.equal(resolveChatSurface('telegram', 'unconfigured', true), 'telegram');
+});
