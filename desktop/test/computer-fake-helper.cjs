@@ -13,6 +13,7 @@ const handle = (request) => {
   if ((mode === 'busy-once-act' && misses++ < 1 || mode === 'always-busy-act') && request.cmd === 'act') return reply({ id: request.id, ok: false, code: 'in_front', error: 'You are using that app right now.' });
   if (mode === 'always-not-found' || (mode === 'flaky-not-found' && misses++ < 1)) return reply({ id: request.id, ok: false, code: 'not_found', error: 'App not found.' });
   if (mode === 'bad-menu' && request.cmd === 'menu') return reply({ id: request.id, ok: false, code: 'not_found', error: 'No such menu item.' });
+  if (mode === 'reject-settle' && request.cmd === 'act' && request.settleMs !== undefined) return reply({ id: request.id, ok: false, code: 'bad_request', error: 'settleMs sent' });
   if (mode === 'crash-mid-act' && request.cmd === 'act') process.exit(3);
   if (request.cmd === 'apps') return reply({ id: request.id, ok: true, apps: [
     { name: 'X', bundleId: 'x', pid: process.pid, frontmost: false }, { name: 'Front', bundleId: 'front', pid: 3, frontmost: true },
