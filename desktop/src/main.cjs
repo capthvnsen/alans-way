@@ -37,6 +37,7 @@ const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { screenshotClip } = require('./cdp.cjs');
 const { listReadExpression, cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
+const { createTerminals } = require('./terminal.cjs');
 const { brokerTarget, createVpsBrowser, backoffDelay, toCdpCookie, toElectronCookies, isTailnetHost, resolveSshHostname, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createBrowserSessionStore } = require('./browser-session.cjs');
@@ -121,11 +122,15 @@ let pendingUpdateDelivery = null;
 let updateRun = { steps: [], summary: '', restart: false };
 let lastSetupCheck = null;
 let tabActivationSequence = 0;
-let activeTabId = 'home', activeVpsTabId = '', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
+// activeTabId is the browser's own tab (local id or 'home'); canvasTab is what the Canvas shows.
+let activeTabId = 'home', canvasTab = 'browser', activeVpsTabId = '', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 // Native Hermes chat: 'telegram' shows the Telegram WebContentsView; 'hermes'
 // shows the DOM surface (the Telegram view then measures to zero and hides).
-let hermesHub = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '';
+let hermesHub = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '', webappPrivate = false, canvasView = null, canvasPage = '';
 const WEBAPP_PARTITION = 'persist:hermes-webapp';
+// Canvas tabs beyond Browser and Bot screen are Hermes Desktop pages (HashRouter routes).
+const CANVAS_PAGES = { chat: '#/', artifacts: '#/artifacts', cron: '#/cron', settings: '#/settings' };
+const CANVAS_TABS = ['browser', 'screen', 'terminal', ...Object.keys(CANVAS_PAGES)];
 let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
 const tabs = new Map();
 const vpsTabs = new Map();
@@ -160,7 +165,7 @@ const sitePermissions = createSitePermissions({ getPreferences: () => prefs, sav
   canRequest: (wc) => {
     const tab = [...tabs.values()].find(item => item.view.webContents === wc);
     if (layout.obscured) return false;
-    return tab ? tab.id === activeTabId && tab.controller === 'human' : wc === telegramView?.webContents || wc === webappView?.webContents;
+    return tab ? tab.id === shownTabId() && tab.controller === 'human' : wc === telegramView?.webContents || wc === webappView?.webContents || wc === canvasView?.webContents;
   },
   prompt: async (origin, permissions) => {
     const answer = await dialog.showMessageBox(win, { type: 'question', buttons: ['Block for this site', 'Allow for this site'], defaultId: 0, cancelId: 0,
@@ -377,32 +382,48 @@ async function remoteRequest(id, operation, body, { human = true, botId = prefs.
 function selectAgent(id) {
   const old = prefs.selectedBotId;
   if (old === id) return;
-  const viewingVps = activeTabId === 'vps';
-  const localId = viewingVps ? browserReturnTabId : activeTabId;
-  if (tabs.has(localId)) prefs.agentLastTabs[old] = localId;
-  if (old) prefs.canvasTabs[old] = viewingVps ? 'screen' : 'browser';
+  if (tabs.has(activeTabId)) prefs.agentLastTabs[old] = activeTabId;
+  if (old) prefs.canvasTabs[old] = canvasTab;
   prefs.selectedBotId = id;
   prefs.remoteControl = false;
   chatTarget = surfaceTarget();
   syncWebapp();
   const own = [...tabs.values()].filter(tab => tab.botId === id || (tab.allowedBots ?? []).includes(id));
   const nextLocal = own.some(tab => tab.id === prefs.agentLastTabs[id]) ? prefs.agentLastTabs[id] : own.at(-1)?.id || 'home';
-  browserReturnTabId = nextLocal;
-  activeTabId = (prefs.canvasTabs[id] ? prefs.canvasTabs[id] === 'screen' : viewingVps) ? 'vps' : nextLocal;
+  activeTabId = nextLocal;
+  if (CANVAS_TABS.includes(prefs.canvasTabs[id])) canvasTab = prefs.canvasTabs[id];
   applyLayout();
 }
-// The Canvas shows Browser or Bot screen (the VM live view); each bot keeps its own choice.
-async function showCanvas(tab) {
-  if ((activeTabId === 'vps') === (tab === 'screen')) return;
-  if (activeTabId === 'vps') activeTabId = tabs.has(browserReturnTabId) ? browserReturnTabId : 'home';
-  else {
-    browserReturnTabId = activeTabId; activeTabId = 'vps';
-    if (!vpsTabs.has(activeVpsTabId)) {
-      const waiting = [...vpsTabs.values()].find(item => item.handback?.state === 'awaiting_human');
-      if (waiting) await activateTab(waiting.id, 'vps');
-    }
+// Hermes Desktop pages need an address that signs in with cookies, or a one-use link already opened in the chat view
+// (see loadPrivateCanvasPage).
+const webappCanvas = () => !!webappTarget && (webappPrivate ? webappStatus === 'ready' : !['unconfigured', 'unreachable', 'needs-link'].includes(webappStatus));
+// The Canvas tab on screen; a saved Hermes Desktop tab shows the browser while that is unavailable.
+const shownCanvas = () => CANVAS_PAGES[canvasTab] && !webappCanvas() ? 'browser' : canvasTab;
+const shownTabId = () => shownCanvas() === 'browser' ? activeTabId : '';
+// One shell per bot (key '_' with none selected), run on the saved agent server when there is one. Only showCanvas and the
+// terminal IPC below reach it, and both are driven by the Workspace window itself: no bot, tab, API or MCP call can.
+let terminalNote = '';
+const terminals = createTerminals({ onData: (id, data) => { if (win && !win.isDestroyed()) win.webContents.send('terminal:data', id, data); }, onExit: (id) => { if (win && !win.isDestroyed()) win.webContents.send('terminal:exit', id); broadcast(); } });
+process.on('exit', () => terminals.killAll());
+const terminalKey = () => prefs.selectedBotId || '_';
+function startTerminal(cols, rows) {
+  const result = terminals.start(terminalKey(), { sshHost: (prefs.vpsBrowser?.sshHost || '').trim(), sshOptions: TAILNET_SSH_OPTIONS, cols, rows });
+  terminalNote = result.ok ? '' : result.reason;
+  broadcast();
+}
+// Each bot keeps its own Canvas tab. Choosing one also reopens a collapsed browser pane.
+async function showCanvas(tab, start = false) {
+  if (!CANVAS_TABS.includes(tab) || (CANVAS_PAGES[tab] && !webappCanvas())) return;
+  if (prefs.showBrowser === false) { prefs.showBrowser = true; savePreferencesSoon(); }
+  if (shownCanvas() !== tab) prefs.remoteControl = false;
+  if (tab === 'screen' && canvasTab !== 'screen' && !vpsTabs.has(activeVpsTabId)) {
+    const waiting = [...vpsTabs.values()].find(item => item.handback?.state === 'awaiting_human');
+    if (waiting) await activateTab(waiting.id, 'vps');
   }
-  prefs.remoteControl = false;
+  canvasTab = tab;
+  if (tab === 'terminal' && start) startTerminal();
+  // Picking a page tab reopens its page, even after Hermes Desktop navigated or closed it.
+  if (CANVAS_PAGES[tab]) canvasPage = '';
   if (prefs.selectedBotId) { prefs.canvasTabs[prefs.selectedBotId] = tab; savePreferencesSoon(); }
   applyLayout();
 }
@@ -506,7 +527,8 @@ function getState() {
     primaryBotId: prefs.primaryBotId || (prefs.overseerBots || [])[0] || '', primaryBotPref: prefs.primaryBotId || '', overseerBots: prefs.overseerBots || [],
     botSort: prefs.botSort || 'manual',
     autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false, carrySignIns: prefs.carrySignIns !== false,
-    activeTabId, activeVpsTabId, browserTabHost: activeTabId === 'vps' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (vpsTabs.has(activeVpsTabId) ? activeVpsTabId : tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
+    // activeTabId keeps its wire meaning for the renderer: the surface on screen, 'vps' for Bot screen.
+    canvasTab: shownCanvas(), webappCanvas: webappCanvas(), terminals: terminals.ids(), terminalNote, activeTabId: shownCanvas() === 'screen' ? 'vps' : shownTabId(), activeVpsTabId, browserTabHost: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(shownTabId())?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? activeVpsTabId : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     chatTarget, hermes: hermesSummary(), chatSurface: resolveChatSurface(prefs.chatSurface, webappStatus), hermesWebappUrl: prefs.hermesWebappUrl, webappStatus,
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
@@ -580,13 +602,14 @@ function backgroundHost(width = 900, height = 700) {
   return backgroundWindow;
 }
 function applyLayout() {
-  if (extensionPopup && extensionPopupTabId !== activeTabId) extensionPopup.destroy();
-  const active = tabs.get(activeTabId)?.view.webContents;
+  const shown = shownTabId();
+  if (extensionPopup && extensionPopupTabId !== shown) extensionPopup.destroy();
+  const active = tabs.get(shown)?.view.webContents;
   if (active && active.id !== extensionActiveContentsId) { extensionActiveContentsId = active.id; extensionHost?.selectTab(active); }
   fit(telegramView, layout.telegram);
   fit(webappView, ['sign-in', 'ready'].includes(webappStatus) ? layout.webapp : null);
   for (const tab of tabs.values()) {
-    const foreground = activeTabId === tab.id && layout.browser?.width > 0 && layout.browser?.height > 0 && !layout.obscured;
+    const foreground = shown === tab.id && layout.browser?.width > 0 && layout.browser?.height > 0 && !layout.obscured;
     const host = foreground ? win : backgroundHost(layout.browser?.width || 900, layout.browser?.height || 700);
     if (tab.host !== host) {
       tab.view.setVisible(false);
@@ -602,13 +625,14 @@ function applyLayout() {
       if (!tab.view.getVisible()) tab.view.setVisible(true);
     }
   }
-  fit(remoteView, activeTabId === 'vps' ? layout.browser : prefs.preview ? layout.preview : null);
+  fit(remoteView, shownCanvas() === 'screen' ? layout.browser : prefs.preview ? layout.preview : null);
+  syncCanvasView();
   if (remoteView && win.contentView.children.at(-1) !== remoteView) win.contentView.addChildView(remoteView);
 }
 function openTelegramLink(value, activate = true) {
   const url = normalizeUrl(value), opened = recentLinkTabs.get(url);
   if (opened && Date.now() - opened.at < 15000 && tabs.has(opened.tabId)) {
-    if (activate) { activeTabId = opened.tabId; applyLayout(); broadcast(); }
+    if (activate) { activeTabId = opened.tabId; canvasTab = 'browser'; applyLayout(); broadcast(); }
     return;
   }
   const tab = createTab({ url, activate });
@@ -637,9 +661,35 @@ function openWebappLink(link) {
   else createWebappView(launch.href);
 }
 function createWebappView(url) {
-  webappView = new WebContentsView({ webPreferences: { partition: WEBAPP_PARTITION, navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true } });
-  webappView.setBackgroundColor('#09090a');
-  const contents = webappView.webContents, { origin } = new URL(webappTarget);
+  webappView = guardedWebappView(url, (status) => { webappStatus = status; applyLayout(); broadcast(); });
+}
+// The Canvas view shares the chat view's partition, so one cookie sign-in serves both.
+function syncCanvasView() {
+  const page = CANVAS_PAGES[shownCanvas()] || '';
+  if (page && webappStatus !== 'checking' && page !== canvasPage) {
+    const url = new URL(page, webappTarget).href;
+    canvasPage = page;
+    if (webappPrivate) loadPrivateCanvasPage(url).catch(() => {});
+    else if (canvasView) canvasView.webContents.loadURL(url).catch(() => {});
+    else canvasView = guardedWebappView(url);
+  }
+  fit(canvasView, page ? layout.browser : null);
+}
+// A one-use-link host keeps its credential in the chat view's sessionStorage, so the Canvas view gets a copy of it
+// (same origin, same partition, no bridge) on the host's credential-free launch page before it opens a page.
+async function loadPrivateCanvasPage(url) {
+  if (!canvasView) canvasView = guardedWebappView(new URL('webapp/launch', webappTarget).href);
+  const view = canvasView, contents = view.webContents;
+  const grants = (await webappView.webContents.executeJavaScript(`Object.entries(sessionStorage).filter(([key]) => key.startsWith('hermes.webapp.session.v1:'))`))
+    .filter(([key, token]) => typeof key === 'string' && key.length < 300 && /^[A-Za-z0-9_-]{43}$/.test(token));
+  if (contents.isLoading()) await new Promise((resolve) => contents.once('did-stop-loading', resolve));
+  await contents.executeJavaScript(`for (const [key, token] of ${JSON.stringify(grants)}) sessionStorage.setItem(key, token)`);
+  if (canvasView === view) contents.loadURL(url).catch(() => {});
+}
+function guardedWebappView(url, report = () => {}) {
+  const view = new WebContentsView({ webPreferences: { partition: WEBAPP_PARTITION, navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  view.setBackgroundColor('#09090a');
+  const contents = view.webContents, { origin } = new URL(webappTarget);
   sitePermissions.install(contents.session, 'browser');
   const toBrowser = (url) => { try { if (new URL(url).origin !== origin) openTelegramLink(url); } catch {} };
   // shortcut: Webapp New Window and session pop-outs are refused here and so do nothing; allow same-origin child windows when embedding ships.
@@ -653,22 +703,21 @@ function createWebappView(url) {
   };
   contents.on('will-navigate', stay);
   contents.on('will-redirect', stay);
-  const report = (status) => { webappStatus = status; applyLayout(); broadcast(); };
   contents.on('did-navigate', (_event, url) => {
     const { pathname } = new URL(url);
     if (!pathname.endsWith('/webapp/launch')) report(pathname.endsWith('/login') ? 'sign-in' : 'ready');
   });
   contents.on('did-fail-load', (_event, code, _text, _url, isMainFrame) => { if (isMainFrame && code !== -3) report('unreachable'); });
-  win.contentView.addChildView(webappView);
+  win.contentView.addChildView(view);
   contents.loadURL(url).catch(() => {});
+  return view;
 }
 // Runs at startup, when the address changes and on Try again, never on a live view.
 async function checkWebapp() {
   const target = hermesWebappUrl(prefs.hermesWebappUrl);
-  if (webappView && target !== webappTarget) {
-    win.contentView.removeChildView(webappView);
-    webappView.webContents.close();
-    webappView = null;
+  if (target !== webappTarget) {
+    for (const view of [webappView, canvasView].filter(Boolean)) { win.contentView.removeChildView(view); view.webContents.close(); }
+    webappView = canvasView = null; canvasPage = '';
   }
   webappTarget = target;
   webappStatus = target ? 'checking' : 'unconfigured';
@@ -683,8 +732,10 @@ async function checkWebapp() {
   } catch {}
   if (target !== webappTarget) return;
   webappStatus = !reachable ? 'unreachable' : needsLink && !webappView ? 'needs-link' : 'reachable';
+  webappPrivate = needsLink;
   if (chatTarget === 'telegram') chatTarget = surfaceTarget();
   if (reachable && webappView) webappView.webContents.loadURL(target).catch(() => {});
+  if (reachable && canvasView) canvasPage = '';
   syncWebapp();
   applyLayout(); broadcast();
 }
@@ -738,7 +789,7 @@ function configureContents(contents, isTelegram = false) {
       if (key === 'l') { event.preventDefault(); win.webContents.send('workspace:focus-address'); }
       if (key === 'o') { event.preventDefault(); pickPdf().catch(error => logError('open-pdf', error)); }
       if (key === 't') { event.preventDefault(); createTab({}); }
-      if (key === 'w' && !isTelegram && activeTabId !== 'home') { event.preventDefault(); closeTab(activeTabId); }
+      if (key === 'w' && !isTelegram && shownTabId() && shownTabId() !== 'home') { event.preventDefault(); closeTab(shownTabId()); }
     }
   });
   const session = contents.session;
@@ -861,7 +912,7 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
   extensionActiveContentsId = undefined;
   view.webContents.on('context-menu', (_event, params) => {
     const items = extensionHost?.getContextMenuItems(view.webContents, params) || [];
-    if (items.length && tab.id === activeTabId && tab.controller === 'human') Menu.buildFromTemplate(items).popup({ window: win });
+    if (items.length && tab.id === shownTabId() && tab.controller === 'human') Menu.buildFromTemplate(items).popup({ window: win });
   });
   const liveBrowserFrames = () => {
     const wc = view.webContents;
@@ -929,14 +980,14 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
   // During teardown the hosts are already gone and cleanup only throws, and
   // app.exit() tears down without before-quit, so check the host itself.
   view.webContents.on('destroyed', () => { if (!isQuitting && tabs.has(tab.id) && !tab.host?.isDestroyed()) closeTab(tab.id); });
-  if (activate) { prefs.remoteControl = false; activeTabId = tab.id; }
+  if (activate) { prefs.remoteControl = false; activeTabId = tab.id; canvasTab = 'browser'; }
   applyLayout(); broadcast();
   if (!skipLoad) view.webContents.loadURL(targetUrl).catch(() => {});
   savePreferencesSoon();
   return tab;
 }
 function closeTab(id) {
-  if (id === 'home' || id === 'vps') { prefs.remoteControl=false; activeTabId = 'home'; applyLayout(); broadcast(); return; }
+  if (id === 'home' || id === 'vps') { prefs.remoteControl=false; activeTabId = 'home'; canvasTab = 'browser'; applyLayout(); broadcast(); return; }
   const tab = tabs.get(id);
   if (!tab) return;
   if (recording?.tabId === id) { try { stopRecording(); } catch (error) { logError('recording', error); } }
@@ -945,7 +996,6 @@ function closeTab(id) {
   handbackNotices.delete(`${HOST_LABEL}:${id}`);
   for (const key of notifiedHandbacks) if (key.startsWith(`${HOST_LABEL}:${id}:`)) notifiedHandbacks.delete(key);
   if (tab.view.webContents) extensionHost?.removeTab(tab.view.webContents);
-  if (browserReturnTabId === id) browserReturnTabId = [...tabs.keys()].at(-1) || 'home';
   tab.host?.contentView.removeChildView(tab.view);
   tab.view.webContents?.close();
   if (activeTabId === id) activeTabId = [...tabs.keys()].at(-1) || 'home';
@@ -1197,10 +1247,10 @@ function notifyHandback(info) {
 }
 async function activateTab(tabId, host) {
   const remote = isVpsTarget(tabId, host), sequence = ++tabActivationSequence;
-  const id = remote ? 'vps' : tabId;
-  if(id==='vps'&&activeTabId!=='vps')browserReturnTabId=activeTabId;
-  if(activeTabId!==id)prefs.remoteControl=false;
-  activeTabId=tabs.has(id)||['home','vps'].includes(id)?id:'home';
+  const screen = remote || tabId === 'vps';
+  if (screen ? shownCanvas() !== 'screen' : shownTabId() !== tabId) prefs.remoteControl = false;
+  if (screen) canvasTab = 'screen';
+  else { canvasTab = 'browser'; activeTabId = tabs.has(tabId) ? tabId : 'home'; }
   if (remote) {
     activeVpsTabId = '';
     await remoteRequest(tabId, 'activate', {});
@@ -1282,7 +1332,7 @@ function stopRecording({ save = true, keepTyped = false } = {}) {
   } finally { broadcast(); }
 }
 async function openExtension(key, anchor) {
-  if (activeTabId === 'vps') throw new Error('Extensions are available in local browser tabs.');
+  if (shownCanvas() !== 'browser') throw new Error('Extensions are available in local browser tabs.');
   const item = extensionStore.list().find(item => item.key === key && item.loaded);
   if (!item) throw new Error('Enable this extension before opening it.');
   if (!tabs.has(activeTabId)) createTab({});
@@ -1413,7 +1463,7 @@ const checkVersionsWhenIdle = () => {
 const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs) });
 async function saveBrowserSession() {
   savePreferences();
-  await Promise.all(['persist:browser', 'persist:telegram', ...(webappView ? [WEBAPP_PARTITION] : [])].map(async partition => {
+  await Promise.all(['persist:browser', 'persist:telegram', ...(webappView || canvasView ? [WEBAPP_PARTITION] : [])].map(async partition => {
     const target = session.fromPartition(partition);
     target.flushStorageData();
     await target.cookies.flushStore();
@@ -1576,7 +1626,7 @@ function startCloudPolling() {
 }
 function startCloudOnboarding() {
   prefs.onboarded = false;
-  activeTabId = 'home';
+  activeTabId = 'home'; canvasTab = 'browser';
   startCloudPolling();
   showWindow();
   broadcast();
@@ -1929,6 +1979,12 @@ function registerIpc() {
     if (Array.isArray(files)) for (const file of files.slice(0, 40)) receivePdf(file);
   });
   ipcMain.handle('workspace:get', (event) => { trustSender(event); return getState(); });
+  // Terminal: start, input, resize and kill, from the Workspace page only (not the VM view, which shares the preload).
+  const shellOnly = (event) => { trustSender(event); if (event.sender !== win?.webContents) throw new Error('Untrusted workspace request.'); };
+  ipcMain.handle('terminal:start', (event, id, cols, rows) => { shellOnly(event); if (id === terminalKey()) startTerminal(cols, rows); });
+  ipcMain.on('terminal:input', (event, id, data) => { try { shellOnly(event); terminals.input(id, data); } catch {} });
+  ipcMain.on('terminal:resize', (event, id, cols, rows) => { try { shellOnly(event); terminals.resize(id, cols, rows); } catch {} });
+  ipcMain.on('terminal:kill', (event, id) => { try { shellOnly(event); terminals.kill(id); } catch {} });
   // Native Hermes chat bridge — the allowlisted command names are enforced by
   // the hub; secrets (passwords, tokens) may arrive but are never returned
   // through state or logged.
@@ -1951,7 +2007,7 @@ function registerIpc() {
       const wasObscured = !!layout.obscured;
       if (next.obscured && !wasObscured) {
         const focused = webContents.getFocusedWebContents();
-        obscuredFocus = focused === telegramView?.webContents || focused === webappView?.webContents || focused === tabs.get(activeTabId)?.view.webContents ? focused : null;
+        obscuredFocus = focused === telegramView?.webContents || focused === webappView?.webContents || focused === canvasView?.webContents || focused === tabs.get(shownTabId())?.view.webContents ? focused : null;
         win.webContents.focus();
       }
       layout = next;
@@ -1959,7 +2015,7 @@ function registerIpc() {
       if (!next.obscured && wasObscured) {
         const target = obscuredFocus;
         obscuredFocus = null;
-        if (target && !target.isDestroyed() && (target === telegramView?.webContents || target === webappView?.webContents || target === tabs.get(activeTabId)?.view.webContents)) target.focus();
+        if (target && !target.isDestroyed() && (target === telegramView?.webContents || target === webappView?.webContents || target === canvasView?.webContents || target === tabs.get(shownTabId())?.view.webContents)) target.focus();
       }
     } catch {}
   });
@@ -1976,8 +2032,8 @@ function registerIpc() {
       case 'close-tab':
         if (isVpsTarget(value.id, value.host)) { if(activeTabId===value.id)prefs.remoteControl=false; await vpsBrowser.request(`/v1/tabs/${value.id}`,'DELETE',undefined,{human:true}); vpsTabs.delete(value.id); if(activeTabId===value.id)activeTabId='home'; applyLayout(); } else closeTab(value.id); break;
       case 'activate': await activateTab(value.id, value.host); break;
-      case 'toggle-vps-view': await showCanvas(activeTabId === 'vps' ? 'browser' : 'screen'); break;
-      case 'canvas-tab': await showCanvas(value?.tab === 'screen' ? 'screen' : 'browser'); break;
+      case 'toggle-vps-view': await showCanvas(shownCanvas() === 'screen' ? 'browser' : 'screen'); break;
+      case 'canvas-tab': await showCanvas(value?.tab, value?.start === true); break;
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
         const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; await tab.view.webContents.loadURL(target).catch(() => {}); } break;
@@ -2004,7 +2060,7 @@ function registerIpc() {
         return changeController(value.id, value.controller);
       }
       case 'share-page': {
-        const tab = tabs.get(activeTabId);
+        const tab = tabs.get(shownTabId());
         const url = tab ? tab.view.webContents.getURL() : '';
         if (!tab || !/^https?:\/\//i.test(url)) throw new Error('Open a web page first.');
         const title = (tab.view.webContents.getTitle() || url).slice(0, 300);
@@ -2411,7 +2467,7 @@ function registerIpc() {
           cloud.step = 'model';
           delete cloud.modelDetected;
         }
-        prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home';
+        prefs.onboarded = false; prefs.remoteControl = false; activeTabId = 'home'; canvasTab = 'browser';
         seedMacSshHost(); savePreferences(); applyLayout(); break;
       }
       case 'cloud-claim-code': {
@@ -2675,6 +2731,7 @@ function registerIpc() {
       const merged = new Map(prefs.bots.map((bot) => [bot.id, bot]));
       bots.forEach((bot) => merged.set(bot.id, bot));
       prefs.bots = [...merged.values()];
+      terminals.keepOnly(['_', ...prefs.bots.map((bot) => bot.id)]);
       if (value.selectedId && prefs.bots.some((bot) => bot.id === value.selectedId)) selectAgent(value.selectedId);
       if (!prefs.selectedBotId && prefs.bots.length && telegramStatus === 'connected') {
         const bot = prefs.bots.find((item) => !prefs.hidden.includes(item.id));
@@ -2800,7 +2857,7 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   const retired={id:record.id,phase:'handed_off',sourceHost,destinationHost:dest,destinationTabId:target.id,createdAt:record.createdAt};
   if(sourceHost==='mac')source.handoff=retired;
   else record.sourceRetired=await remoteRequest(id,'control',{controller:'human',handoff:retired}).then(()=>true,()=>false);
-  prefs.remoteControl=false; prefs.handoffs=[record,...prefs.handoffs].slice(0,20);activeTabId=dest==='vps'?'vps':target.id;
+  prefs.remoteControl=false; prefs.handoffs=[record,...prefs.handoffs].slice(0,20);if(dest==='vps')canvasTab='screen';else{canvasTab='browser';activeTabId=target.id;}
   if(dest==='vps')await remoteRequest(target.id,'activate',{});
   savePreferences();applyLayout();broadcast();return record;
 }
@@ -3496,9 +3553,9 @@ function buildMenu() {
   const settings = { id: 'workspace-settings', label: 'Settings…', accelerator: ACCELERATORS.settings, click: () => { if (!layout.obscured) win.webContents.send('workspace:settings'); } };
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, settings, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
-    { label: 'File', submenu: [{ label: 'Open File…', accelerator: ACCELERATORS['open-file'], click: () => pickPdf().catch(error => logError('open-pdf', error)) }, { label: 'New Browser Tab', accelerator: ACCELERATORS['new-tab'], click: () => createTab({}) }, { label: 'Close Tab', accelerator: ACCELERATORS['close-tab'], click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(activeTabId) }, ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, settings, { type: 'separator' }, { role: 'quit' }])] },
+    { label: 'File', submenu: [{ label: 'Open File…', accelerator: ACCELERATORS['open-file'], click: () => pickPdf().catch(error => logError('open-pdf', error)) }, { label: 'New Browser Tab', accelerator: ACCELERATORS['new-tab'], click: () => createTab({}) }, { label: 'Close Tab', accelerator: ACCELERATORS['close-tab'], click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(shownTabId()) }, ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, settings, { type: 'separator' }, { role: 'quit' }])] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: ACCELERATORS.reload, click: () => { const tab = tabs.get(activeTabId); if (tab) reloadBrowserPage(tab); } }, { type: 'separator' }, { id: 'canvas-browser', label: 'Browser', accelerator: ACCELERATORS['canvas-browser'], click: () => showCanvas('browser').then(broadcast) }, { id: 'canvas-screen', label: 'Bot Screen', accelerator: ACCELERATORS['canvas-screen'], click: () => showCanvas('screen').then(broadcast) }, { type: 'separator' }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
+    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: ACCELERATORS.reload, click: () => { const tab = tabs.get(shownTabId()); if (tab) reloadBrowserPage(tab); } }, { type: 'separator' }, { id: 'canvas-browser', label: 'Browser', accelerator: ACCELERATORS['canvas-browser'], click: () => showCanvas('browser').then(broadcast) }, { id: 'canvas-screen', label: 'Bot Screen', accelerator: ACCELERATORS['canvas-screen'], click: () => showCanvas('screen').then(broadcast) }, { id: 'canvas-terminal', label: 'Terminal', accelerator: ACCELERATORS['canvas-terminal'], click: () => showCanvas('terminal', true).then(broadcast) }, ...Object.entries({ chat: 'Side Chat', artifacts: 'Artifacts', cron: 'Cron Jobs', settings: 'Bot Settings' }).map(([tab, label]) => ({ id: `canvas-${tab}`, label, accelerator: ACCELERATORS[`canvas-${tab}`], click: () => showCanvas(tab).then(broadcast) })), { type: 'separator' }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
     ...(process.platform === 'darwin' ? [{ label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }] : []),
     { label: 'Help', submenu: [{ id: 'workspace-shortcuts', label: 'Keyboard Shortcuts', click: () => win.webContents.send('workspace:shortcuts') }, ...(prefs?.cloud?.sessionEnc ? [{ type: 'separator' }, { label: 'Get help', click: () => shell.openExternal(cloudView().supportUrl).catch(() => {}) }] : [])] },
   ]));
@@ -3518,7 +3575,7 @@ function restoreBrowserTabs() {
       if (item.active === true) activeTabId = tab.id;
     } catch {}
   }
-  if (prefs.canvasTabs[prefs.selectedBotId] === 'screen') { browserReturnTabId = activeTabId; activeTabId = 'vps'; }
+  if (CANVAS_TABS.includes(prefs.canvasTabs[prefs.selectedBotId])) canvasTab = prefs.canvasTabs[prefs.selectedBotId];
 }
 function createWindow() {
   nativeTheme.themeSource = 'dark';
@@ -3688,7 +3745,7 @@ else {
     });
     extensionHost = new ElectronChromeExtensions({ license: 'GPL-3.0', session: browserSession,
       createTab: async details => { const tab = createTab({ url: details.url || 'about:blank', activate: details.active !== false, extensionPage: isExtensionUrl(details.url) }); return [tab.view.webContents, win]; },
-      selectTab: wc => { if (isQuitting || registeringExtensionTab) return; const tab = [...tabs.values()].find(item => item.view.webContents === wc); if (tab) { activeTabId = tab.id; prefs.remoteControl = false; applyLayout(); broadcast(); } else BrowserWindow.fromWebContents(wc)?.show(); },
+      selectTab: wc => { if (isQuitting || registeringExtensionTab) return; const tab = [...tabs.values()].find(item => item.view.webContents === wc); if (tab) { activeTabId = tab.id; canvasTab = 'browser'; prefs.remoteControl = false; applyLayout(); broadcast(); } else BrowserWindow.fromWebContents(wc)?.show(); },
       removeTab: (wc, window) => { if (isQuitting) return; const tab = [...tabs.values()].find(item => item.view.webContents === wc); if (tab) closeTab(tab.id); else if (window !== win && window !== backgroundWindow && !window?.isDestroyed()) window?.close(); },
       createWindow: async details => {
         const popup = new BrowserWindow({ parent: win, width: details.width || 640, height: details.height || 720, webPreferences: { session: browserSession, sandbox: true, contextIsolation: true, nodeIntegration: false } });
@@ -3698,19 +3755,19 @@ else {
       },
       removeWindow: window => { if (window.isDestroyed()) return; if (window === win) throw new Error('The workspace window cannot be closed by an extension.'); window.close(); },
       requestPermissions: async (extension, permissions) => {
-        if (!win?.isFocused() || activeTabId === 'vps') return false;
+        if (!win?.isFocused() || shownCanvas() !== 'browser') return false;
         const answer = await dialog.showMessageBox(win, { type: 'question', message: `${extension.name} requests additional access`, detail: [...(permissions.permissions || []), ...(permissions.origins || [])].join('\n'), buttons: ['Block', 'Allow'], defaultId: 0, cancelId: 0 });
         return answer.response === 1;
       } });
     for (const type of ['frame', 'service-worker']) browserSession.registerPreloadScript({ id: `hermes-extension-namespace-${type}`, type, filePath: path.join(ROOT, 'extension-namespace-preload.cjs') });
     ElectronChromeExtensions.handleCRXProtocol(session.defaultSession);
     extensionHost.on('browser-action-popup-created', popup => {
-      extensionPopup = popup; extensionPopupTabId = activeTabId;
+      extensionPopup = popup; extensionPopupTabId = shownTabId();
       popup.browserWindow?.once('closed', () => { if (extensionPopup === popup) extensionPopup = undefined; });
       popup.browserWindow?.webContents.setWindowOpenHandler(({ url }) => { createTab({ url, extensionPage: isExtensionUrl(url) }); return { action: 'deny' }; });
     });
     extensionStore = createExtensionStore({ root: app.getPath('userData'), session: browserSession, dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences, onChanged: broadcast,
-      canInstall: frame => [...tabs.values()].some(tab => tab.id === activeTabId && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
+      canInstall: frame => [...tabs.values()].some(tab => tab.id === shownTabId() && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
     await extensionStore.installStore();
     chatTarget = surfaceTarget();
     createWindow(); await extensionStore.restore(); broadcast();
