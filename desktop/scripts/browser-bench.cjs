@@ -28,7 +28,7 @@ const { isDeepStrictEqual } = require('node:util');
 
 // Under Electron this file is the app launcher for the `app` engine: a fresh
 // profile, loopback fixtures allowed, the window kept out of the way.
-if (process.versions.electron) {
+if (process.versions.electron && !process.env.ELECTRON_RUN_AS_NODE) {
   const { app, BrowserWindow, webContents, session } = require('electron');
   const profile = process.env.HERMES_WORKSPACE_DATA;
   process.env.HERMES_WORKSPACE_PORT = '0';
@@ -178,7 +178,9 @@ const { Client } = require(path.join(here, 'node_modules/@modelcontextprotocol/s
 const { StdioClientTransport } = require(path.join(here, 'node_modules/@modelcontextprotocol/sdk/dist/cjs/client/stdio.js'));
 async function connectMcp(connFile) {
   const client = new Client({ name: 'browser-bench', version: '1' }, { capabilities: {} });
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'scripts/browser-mcp.cjs'), '--bot-id', 'bench', '--connection', connFile] }));
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'scripts/browser-mcp.cjs'), '--bot-id', 'bench', '--connection', connFile],
+    // The SDK passes a minimal env; under an app's Electron run as Node the server needs this one too.
+    ...(process.env.ELECTRON_RUN_AS_NODE ? { env: { ...require(path.join(here, 'node_modules/@modelcontextprotocol/sdk/dist/cjs/client/stdio.js')).getDefaultEnvironment(), ELECTRON_RUN_AS_NODE: '1' } } : {}) }));
   return client;
 }
 const isRef = (e) => e && typeof e.ref === 'string';
@@ -701,4 +703,5 @@ async function runApiSuite() {
   process.exit(rows.some((r) => !r.ok) ? 1 : 0);
 }
 
-(suite === 'api' ? runApiSuite() : runAgentSuite()).catch((e) => { console.error('bench failed:', e.stack || e.message); process.exit(1); });
+if (require.main === module) (suite === 'api' ? runApiSuite() : runAgentSuite()).catch((e) => { console.error('bench failed:', e.stack || e.message); process.exit(1); });
+module.exports = { tasks, Agent, startEngine, startFixtures, pages, connectMcp, findChrome };
