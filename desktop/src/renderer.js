@@ -1372,7 +1372,7 @@ const SETTINGS_CATEGORIES = [
 ];
 const SETTINGS_SECTIONS = [
   { id: 'keyboard', category: 'general', title: 'Keyboard shortcuts', description: 'Find the keys for moving between agents, browser tabs and dialogs.', words: 'keyboard navigation keys guide shortcuts search', mount(body) { const button = element('button', 'secondary-button', 'Keyboard shortcuts'); button.id = 'settings-shortcuts'; button.onclick = showShortcuts; body.append(button); } },
-  { id: 'chat-surface', category: 'general', title: 'Chat surface', description: 'Choose what runs in the left chat pane: Telegram or Hermes Desktop.', words: 'telegram hermes desktop webapp chat surface tailscale address sign in', mount: mountChatSurface },
+  { id: 'chat-surface', category: 'general', title: 'Chat surface', description: 'Choose what runs in the middle chat pane: Telegram, Hermes Desktop or Alan’s native chat.', words: 'telegram hermes desktop webapp chat surface tailscale address sign in', mount: mountChatSurface },
   { id: 'tab-behavior', category: 'general', title: 'Links and tab control', description: 'Choose how links from bot chats open and when bots can take back browser tabs.', words: 'automatic takeover auto open links control browser hand back', mount: mountTabBehavior },
   { id: 'bot-appearance', category: 'bots', title: 'Bot appearance', description: 'Choose a marble avatar or import an image for your selected bot.', words: 'avatars image customize appearance eyes', mount(body) { const button = element('button', 'secondary-button', 'Customize bot avatars'); button.onclick = () => openSettingsDetail(() => showAvatarEditor()); body.append(button, element('p', 'settings-note', 'Eyes follow your mouse only while Telegram reports activity.')); } },
   { id: 'primary-bot', category: 'bots', title: 'Primary bot', description: 'Pin one bot at the top of your sidebar. Without a preference, the overseer bot is used.', words: 'default primary pinned order sidebar', mount: mountPrimaryBot },
@@ -1743,12 +1743,13 @@ function openSettingsDetail(open) {
 }
 function mountChatSurface(body) {
   const row = element('div', 'setting-row'), surface = element('select'); surface.id = 'settings-chat-surface'; surface.setAttribute('aria-label', 'Chat surface');
-  for (const [value, label] of [['telegram', 'Telegram'], ['hermes-desktop', 'Hermes Desktop'], ['native', "Alan's native chat"]]) { const option = element('option', '', label); option.value = value; surface.append(option); }
-  row.append(element('span', '', 'Chat in the left pane with'), surface); body.append(row);
-  body.append(element('p', 'settings-note', 'This is the default. Each bot remembers the surface you pick for it with the switch at the top of its chat.'));
+  for (const [value, label] of [['telegram', 'Telegram'], ['hermes-desktop', 'Hermes Desktop'], ['native', 'Alan’s native chat']]) { const option = element('option', '', label); option.value = value; surface.append(option); }
+  row.append(element('span', '', 'Default chat surface'), surface); body.append(row);
+  body.append(element('p', 'settings-note', 'Each bot remembers the surface you pick for it with the switch at the top of its chat. Switching keeps every chat open in the background.'));
   const surfaceStatus = settingsStatus(body);
   surface.onchange = async () => { await runSettingsAction(surface, surfaceStatus, () => api.command('settings', { chatSurface: surface.value }), 'Saving…', 'Chat surface saved.'); surface.value = state.chatSurface; };
-  const address = settingsField(body, 'settings-webapp-url', 'Hermes Desktop address', state.hermesWebappUrl, 'https://your-machine.your-tailnet.ts.net');
+  body.append(element('h4', 'settings-subheading', 'Hermes Desktop'));
+  const address = settingsField(body, 'settings-webapp-url', 'Address', state.hermesWebappUrl, 'https://your-machine.your-tailnet.ts.net'); address.setAttribute('aria-label', 'Hermes Desktop address');
   const save = element('button', 'secondary-button', 'Save address'); body.append(save);
   const saveStatus = settingsStatus(body);
   save.onclick = async () => { const reply = await runSettingsAction(save, saveStatus, () => api.command('settings', { hermesWebappUrl: address.value }), 'Saving…', 'Address saved.'); if (reply.ok) delete address.dataset.dirty; };
@@ -1762,15 +1763,16 @@ function mountChatSurface(body) {
   };
   signOut.onclick = () => runSettingsAction(signOut, signInStatus, () => api.command('webapp-sign-out'), 'Signing out…', 'Signed out. The saved password is gone from this computer.');
   const status = element('p', 'connection-state'); status.id = 'settings-webapp-status'; body.append(status);
-  body.append(element('p', 'settings-note', 'On your Hermes server, run scripts/webapp-signin.sh from alans-way as the user that runs Hermes. It prints the address to enter here and writes the username and password to webapp-signin.txt on the server, never to the screen. Switching keeps both chats open in the background.'));
-  const nativeAddress = settingsField(body, 'settings-native-url', 'Native chat address', state.nativeChat?.address, 'http://127.0.0.1:8642');
+  body.append(element('p', 'settings-note', 'On your Hermes server, run scripts/webapp-signin.sh from alans-way as the user that runs Hermes. It prints the address to enter here and writes the username and password to webapp-signin.txt on the server, never to the screen.'));
+  body.append(element('h4', 'settings-subheading', 'Alan’s native chat'));
+  const nativeAddress = settingsField(body, 'settings-native-url', 'Address', state.nativeChat?.address, 'http://127.0.0.1:8642'); nativeAddress.setAttribute('aria-label', 'Native chat address');
   const nativeKey = settingsField(body, 'settings-native-key', 'API key', '', ''); nativeKey.type = 'password';
   const nativeActions = element('div', 'native-settings-actions'), nativeSave = element('button', 'secondary-button', 'Save'), nativeTest = element('button', 'secondary-button', 'Test');
   nativeSave.id = 'settings-native-save'; nativeTest.id = 'settings-native-test'; nativeActions.append(nativeSave, nativeTest); body.append(nativeActions);
   const nativeStatus = settingsStatus(body); nativeStatus.id = 'settings-native-status';
   nativeSave.onclick = async () => { const reply = await runSettingsAction(nativeSave, nativeStatus, () => api.command('settings', { nativeChatUrl: nativeAddress.value, nativeChatKey: nativeKey.value }), 'Saving…', 'Saved.'); if (reply.ok) { nativeKey.value = ''; delete nativeAddress.dataset.dirty; } };
   nativeTest.onclick = async () => { const reply = await runSettingsAction(nativeTest, nativeStatus, () => window.nativeChat.command('test'), 'Testing…'); if (reply.ok) nativeStatus.textContent = reply.result.detail; };
-  body.append(element('p', 'settings-note', "Alan's native chat talks to the Hermes API server (API_SERVER_ENABLED=true and API_SERVER_KEY in the profile's .env). Use http://127.0.0.1:8642 through an SSH tunnel, or the https address Tailscale Serve gives port 8642."));
+  body.append(element('p', 'settings-note', "It talks to the Hermes API server (API_SERVER_ENABLED=true and API_SERVER_KEY in the profile's .env). Use http://127.0.0.1:8642 through an SSH tunnel, or the https address Tailscale Serve gives port 8642."));
   const refresh = () => {
     if (document.activeElement !== surface) surface.value = state.chatSurface;
     surface.querySelector('option[value="native"]').disabled = !state.nativeChat?.configured;
@@ -1779,7 +1781,7 @@ function mountChatSurface(body) {
     if (!password.dataset.dirty) password.placeholder = state.webappSignIn ? "Saved in this computer's keychain" : 'from webapp-signin.txt';
     if (!nativeAddress.dataset.dirty) nativeAddress.value = state.nativeChat?.address || '';
     nativeKey.placeholder = state.nativeChat?.hasKey ? 'Saved. Paste a new key to replace it.' : 'API_SERVER_KEY';
-    status.textContent = webappStatusText();
+    status.textContent = state.webappStatus === 'unconfigured' ? 'Not set up. Enter the address of your Hermes server above.' : webappStatusText();
   };
   refresh(); return refresh;
 }

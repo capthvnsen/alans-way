@@ -194,7 +194,7 @@ body.win32 .pane-actions{padding-right:140px}body.win32 .side-title{padding-top:
 .settings-connection-section>.settings-section-description{display:inline;margin:0;line-height:1.5}
 .settings-connection-section .settings-section-body{margin-top:5px}
 .settings-connection-section[data-settings-section=remote-desktop]{border-bottom:0}
-.settings-connection-section .connection-state{font-size:12px;color:#c7c7d0;line-height:1.5;margin:5px 0;overflow-wrap:anywhere}
+.settings-connection-section .connection-state{font-size:12px;color:#c7c7d0;line-height:1.5;margin:5px 0;overflow-wrap:anywhere}.settings-subheading{font-size:13px;font-weight:550;color:#eeeef2;margin:20px 0 0;padding-top:16px;border-top:1px solid #2a2a2f}
 .settings-connection-section .connection-target{display:block;color:#aaaab5}
 .settings-connection-section .connection-details{margin:5px 0 0}
 .settings-connection-section .connection-details>summary{font-size:12px;padding:3px 0;color:#b2c5ed}
