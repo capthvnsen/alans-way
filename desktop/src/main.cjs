@@ -2185,7 +2185,7 @@ function registerIpc() {
       case 'remote-status': remoteStatus = String(value.status).slice(0, 50); break;
       case 'remote-paste': if (!prefs.remoteControl || remoteStatus!=='connected') throw new Error('Take control of the connected remote desktop first.'); return clipboard.readText().slice(0,20000);
       case 'fullscreen': win.setFullScreen(!win.isFullScreen()); break;
-      case 'open-settings': win.webContents.send('workspace:settings'); break;
+      case 'open-settings': win.webContents.send('workspace:settings', value?.section === 'remote-desktop' ? { section: 'remote-desktop' } : {}); break;
       case 'focus-workspace': win.webContents.send('workspace:focus-workspace'); break;
       case 'copy-connection': clipboard.writeText(JSON.stringify({ url: `http://127.0.0.1:${apiPort}`, token: API_TOKEN }, null, 2)); break;
       case 'agent-setup': {
