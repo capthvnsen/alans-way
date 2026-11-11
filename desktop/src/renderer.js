@@ -2089,7 +2089,7 @@ for (const button of $('surface-tabs').children) button.onkeydown = (event) => {
   const target = moveNavigationFocus(event, [...$('surface-tabs').querySelectorAll('[role=tab]:not(.hidden)')], 'horizontal');
   if (target) command('chat-surface', { surface: target.dataset.surface });
 };
-$('canvas-tabs').onclick = (event) => { const tab = event.target.closest('[data-canvas]')?.dataset.canvas; if (tab) command('canvas-tab', { tab, start: tab === 'terminal' }); };
+$('canvas-tabs').onclick = (event) => { const tab = event.target.closest('[data-canvas]')?.dataset.canvas; if (!tab) return; terminalFocus = tab === 'terminal'; command('canvas-tab', { tab, start: tab === 'terminal' }); };
 $('canvas-tabs').onkeydown = (event) => {
   const shown = [...$('canvas-tabs').children].filter(button => !button.hidden), at = shown.indexOf(document.activeElement);
   const next = shown[{ ArrowLeft: Math.max(0, at - 1), ArrowRight: Math.min(shown.length - 1, at + 1), Home: 0, End: shown.length - 1 }[event.key]];
@@ -2411,6 +2411,7 @@ new ResizeObserver(() => fitTabs()).observe($('tabs'));
 // Terminal: one xterm per bot, kept hidden when not shown so scrollback survives tab and bot switches. A shell starts only from
 // the tab click, its shortcut or the Start button; restoring the tab or switching bots never starts one.
 const terminalViews = new Map();
+let terminalFocus = false, terminalLast = { id: '', shown: false };
 function terminalView(id) {
   let view = terminalViews.get(id);
   if (!view) {
@@ -2442,12 +2443,17 @@ function renderTerminal() {
   $('terminal-idle').classList.toggle('hidden', !on || live);
   if (on && !live) renderTerminalIdle(ended);
   if (on && ended) fitTerminal(id);
+  // Focus follows a deliberate open (tab click, its shortcut, Start) on the same bot, never a bot switch or arrow keys on the strip.
+  const arrived = on && live && !(terminalLast.id === id && terminalLast.shown);
+  const focus = terminalFocus || (arrived && terminalLast.id === id && !$('canvas-tabs').contains(document.activeElement));
+  terminalLast = { id, shown: on && live };
+  if (!on) terminalFocus = false;
   if (!on || !live) return;
-  const view = terminalView(id), hidden = view.host.classList.contains('hidden');
+  const view = terminalView(id);
   view.host.classList.remove('hidden');
   if (!view.opened) { view.term.open(view.host); view.opened = true; }
   fitTerminal(id);
-  if (hidden) view.term.focus();
+  if (focus) { terminalFocus = false; view.term.focus(); }
 }
 function renderTerminalIdle(ended) {
   const windows = state.platform === 'win32', server = (state.vpsBrowser?.sshHost || '').trim();
@@ -2455,7 +2461,7 @@ function renderTerminalIdle(ended) {
   $('terminal-start').textContent = ended ? 'Restart terminal' : 'Start terminal';
   $('terminal-start').hidden = windows;
 }
-$('terminal-start').onclick = () => window.terminal.start(state.selectedBotId || '_');
+$('terminal-start').onclick = () => { terminalFocus = true; window.terminal.start(state.selectedBotId || '_'); };
 window.terminal.onData((id, data) => terminalView(id).term.write(data));
 window.terminal.onExit((id) => { const view = terminalViews.get(id); if (view) { view.term.write('\r\n[Session ended]\r\n'); view.size = ''; } });
 new ResizeObserver(() => { for (const id of terminalViews.keys()) fitTerminal(id); }).observe($('terminal-panel'));

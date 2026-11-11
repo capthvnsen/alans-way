@@ -53,6 +53,8 @@ const until = async (read, why, ms = 15000) => {
   await until(async () => (await live()) === '1001', 'shell started');
   await until(() => run(`terminalViews.get('1001')?.opened && !terminalViews.get('1001').host.classList.contains('hidden')`), 'terminal shown');
   assert.equal(await run(`document.getElementById('preview-chip').classList.contains('hidden')`), true, 'the VM preview chip does not cover the terminal');
+  const typing = () => run(`document.activeElement === terminalViews.get(state.selectedBotId)?.term.textarea`);
+  assert.equal(await typing(), true, 'the tab click puts the keyboard in the terminal');
   await new Promise(resolve => setTimeout(resolve, 500));
   await run(`terminalViews.get('1001').term.input('echo canvas-$((6*7))\\r')`);
   await until(() => lineFor('1001', 'canvas-42'), 'echo output');
@@ -66,6 +68,7 @@ const until = async (read, why, ms = 15000) => {
   assert.equal(await run(`terminalViews.get('1001').host.classList.contains('hidden')`), true);
   assert.equal(await live(), '1001');
   Menu.getApplicationMenu().getMenuItemById('canvas-terminal').click(); await showing('terminal');
+  await until(typing, '⌘3 puts the keyboard in the terminal');
   assert.equal(await lineFor('1001', 'canvas-42'), true, 'output kept');
   assert.equal(await live(), '1001', 'the same shell');
 
@@ -79,7 +82,9 @@ const until = async (read, why, ms = 15000) => {
   await until(async () => (await live()) === '1001,1002', 'second shell started');
   await until(() => run(`terminalViews.get('1002')?.opened && !terminalViews.get('1002').host.classList.contains('hidden')`), 'second terminal shown');
   assert.equal(await run(`terminalViews.get('1001').host.classList.contains('hidden')`), true);
+  await run(`document.activeElement.blur()`);
   await pick('1001'); await showing('terminal');
+  assert.equal(await typing(), false, 'switching bots does not move the keyboard into a terminal');
   assert.equal(await lineFor('1001', 'canvas-42'), true, 'first bot’s output kept after switching bots');
   assert.equal(await lineFor('1002', 'canvas-42'), false, 'the other bot’s shell is separate');
 
