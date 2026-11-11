@@ -25,8 +25,8 @@ test('an unusable SHELL falls back to /bin/sh, and sizes are clamped integers', 
 });
 
 test('a bot reached over SSH: ssh -tt with the existing options, the address after --', () => {
-  const command = terminalCommand({ platform: 'darwin', sshHost: 'agent@agent.example', sshOptions: ['-F', 'none'], cols: 90, rows: 20 });
-  assert.deepEqual(command.args.slice(-13), ['sh', '90', '20', 'ssh', '-tt', '-F', 'none', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', '--', 'agent@agent.example']);
+  const command = terminalCommand({ platform: 'darwin', sshHost: `agent@${[100, 64, 0, 9].join('.')}`, sshOptions: ['-F', 'none'], cols: 90, rows: 20 });
+  assert.deepEqual(command.args.slice(-13), ['sh', '90', '20', 'ssh', '-tt', '-F', 'none', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', '--', `agent@${[100, 64, 0, 9].join('.')}`]);
   assert.equal(command.args.includes('/bin/zsh'), false);
 });
 
