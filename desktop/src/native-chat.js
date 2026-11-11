@@ -495,7 +495,7 @@
       if (!menu.classList.contains('hidden')) renderMenu();
       renderNotice();
       const count = thread?.messages.length || 0;
-      const emptyText = count || s.run ? '' : !s.activeId ? 'New conversation. Say hello.'
+      const emptyText = count || s.run || s.cards?.length ? '' : !s.activeId ? 'New conversation. Say hello.'
         : thread?.loading ? 'Loading this conversation…' : s.status === 'unreachable' || s.status === 'unauthorized' ? '' : 'No messages yet. Say hello.';
       empty.textContent = emptyText;
       empty.classList.toggle('hidden', !emptyText);
