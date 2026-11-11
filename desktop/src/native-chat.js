@@ -205,6 +205,7 @@
     const composer = el('form', 'nc-composer');
     const textarea = document.createElement('textarea');
     textarea.rows = 1;
+    textarea.dir = 'auto';
     textarea.placeholder = 'Message';
     textarea.setAttribute('aria-label', 'Message');
     const sendBtn = el('button', 'nc-send');
@@ -264,6 +265,7 @@
       const row = el('div', `nc-row ${m.role}${cont ? ' cont' : ''}${m.state ? ` ${m.state}` : ''}`);
       row.dataset.id = m.id;
       const body = el('div', 'nc-bubble');
+      body.dir = 'auto';
       body.title = exactTime(m.ts);
       if (m.role === 'assistant') fillMarkdown(body, m.text, false);
       else body.append(el('div', 'nc-plain', m.text));

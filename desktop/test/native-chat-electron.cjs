@@ -133,6 +133,12 @@ if (!process.versions.electron) {
       const chatId = (await native()).activeId;
       if (LAB) await until(async () => (await run(`document.querySelector('#native-pane .nc-switch-title').textContent`)) !== 'Untitled chat', 'Hermes names the new chat');
 
+      // Right-to-left text runs right to left in its bubble.
+      if (!LAB) {
+        await send('مرحبا بالعالم.');
+        assert.equal(await run(`getComputedStyle([...document.querySelectorAll('#native-pane .nc-row.user .nc-plain')].at(-1)).direction`), 'rtl');
+      }
+
       // Markdown: table (scrollable, Copy as markdown) and a fenced code block with its label.
       await send('MD please');
       await until(() => run(`!![...document.querySelectorAll('#native-pane .nc-row.assistant')].at(-1)?.querySelector('.nc-table table')`), 'table');
@@ -161,7 +167,7 @@ if (!process.versions.electron) {
       await run(`${allowOnce}.click()`);
       await until(() => visible('#native-pane .nc-prompt.approval.answered'), 'approval answered');
       await idle();
-      await until(async () => (await rows()).filter((row) => row.role === 'user').length === 3 && (await rows()).filter((row) => row.role === 'assistant').length === 3, 'approval turn reconciled');
+      await until(async () => (await rows()).filter((row) => row.role === 'user').length === (LAB ? 3 : 4) && (await rows()).filter((row) => row.role === 'assistant').length === (LAB ? 3 : 4), 'approval turn reconciled');
 
       if (LAB) {
         await new Promise((resolve) => setTimeout(resolve, 400));
