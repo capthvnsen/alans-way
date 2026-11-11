@@ -1738,11 +1738,22 @@ function mountChatSurface(body) {
   const save = element('button', 'secondary-button', 'Save address'); body.append(save);
   const saveStatus = settingsStatus(body);
   save.onclick = async () => { const reply = await runSettingsAction(save, saveStatus, () => api.command('settings', { hermesWebappUrl: address.value }), 'Saving…', 'Address saved.'); if (reply.ok) delete address.dataset.dirty; };
+  const username = settingsField(body, 'settings-webapp-user', 'Username', state.webappSignIn, 'from webapp-signin.txt');
+  const password = settingsField(body, 'settings-webapp-password', 'Password', '', state.webappSignIn ? 'Saved in this computer\'s keychain' : 'from webapp-signin.txt'); password.type = 'password';
+  const signIn = element('button', 'secondary-button', 'Save sign-in'), signOut = element('button', 'secondary-button', 'Sign out of Hermes Desktop'); body.append(signIn, signOut);
+  const signInStatus = settingsStatus(body);
+  signIn.onclick = async () => {
+    const reply = await runSettingsAction(signIn, signInStatus, () => api.command('webapp-sign-in', { username: username.value, password: password.value }), 'Signing in…', "Signed in. The password is saved in this computer's keychain.");
+    if (reply.ok) { password.value = ''; delete username.dataset.dirty; delete password.dataset.dirty; }
+  };
+  signOut.onclick = () => runSettingsAction(signOut, signInStatus, () => api.command('webapp-sign-out'), 'Signing out…', 'Signed out. The saved password is gone from this computer.');
   const status = element('p', 'connection-state'); status.id = 'settings-webapp-status'; body.append(status);
-  body.append(element('p', 'settings-note', 'On the Hermes host, turn on the Webapp and a dashboard sign-in, then publish it with tailscale serve --bg --https=443 http://127.0.0.1:9120 and set webapp.public_url to the same https address. Switching keeps both chats open in the background.'));
+  body.append(element('p', 'settings-note', 'On your Hermes server, run scripts/webapp-signin.sh from alans-way as the user that runs Hermes. It prints the address to enter here and writes the username and password to webapp-signin.txt on the server, never to the screen. Switching keeps both chats open in the background.'));
   const refresh = () => {
     if (document.activeElement !== surface) surface.value = state.chatSurface;
     if (!address.dataset.dirty) address.value = state.hermesWebappUrl || '';
+    if (!username.dataset.dirty) username.value = state.webappSignIn || '';
+    if (!password.dataset.dirty) password.placeholder = state.webappSignIn ? "Saved in this computer's keychain" : 'from webapp-signin.txt';
     status.textContent = webappStatusText();
   };
   refresh(); return refresh;
@@ -2167,10 +2178,11 @@ function webappStatusText() {
   return { unconfigured: 'Hermes Desktop has no address yet. Add it in Settings under Chat surface.',
     checking: `Checking ${url}…`, reachable: `Opening ${url}…`, unreachable: `Can't reach ${url}. ${WEBAPP_HOST_CHECK}`,
     'needs-link': 'This Hermes has no sign-in, so it opens only with a one-use link. On the Hermes host, run hermes webapp --no-open and paste the link in the chat pane within 60 seconds. You need a new link each time Workspace restarts.',
-    'sign-in': 'Sign in inside the chat pane with your Hermes dashboard username and password.', ready: 'Connected and signed in.' }[state.webappStatus] || '';
+    'sign-in': state.webappSignInError || (state.webappSignIn ? `Signing in as ${state.webappSignIn}…` : 'Sign in inside the chat pane, or save the username and password from webapp-signin.txt in Settings under Chat surface so Workspace signs in for you.'),
+    ready: state.webappSignIn ? `Connected and signed in as ${state.webappSignIn}.` : 'Connected and signed in.' }[state.webappStatus] || '';
 }
 function renderWebappHelp() {
-  const help = $('webapp-help'), key = JSON.stringify([state.webappStatus, state.hermesWebappUrl]);
+  const help = $('webapp-help'), key = JSON.stringify([state.webappStatus, state.hermesWebappUrl, state.webappSignIn, state.webappSignInError]);
   if (help.dataset.key === key) return;
   help.dataset.key = key;
   help.replaceChildren(element('h2', '', 'Hermes Desktop'), element('p', 'settings-note', webappStatusText()));
