@@ -435,18 +435,24 @@ function render(next) {
   }
   renderBots(); renderTabs(); renderSettingsBots(); renderRecordings(); renderSitePermissions(); renderExtensions(); renderDownloads(); refreshSettingsSections();
   const tab = state.tabs.find((item) => item.id === state.activeTabId && item.host === state.hostLabel);
-  const remote = state.activeTabId==='vps';
+  const remote = state.canvasTab === 'screen';
   $('vm-toggle').title = remote ? 'Return to browser' : 'Expand virtual desktop';
   $('vm-toggle').setAttribute('aria-label', $('vm-toggle').title);
   $('vm-toggle').setAttribute('aria-pressed', String(remote));
-  for (const button of $('canvas-tabs').children) { const on = (button.dataset.canvas === 'screen') === remote; button.setAttribute('aria-selected', String(on)); button.tabIndex = on ? 0 : -1; }
+  const page = !['browser', 'screen'].includes(state.canvasTab);
+  for (const button of $('canvas-tabs').children) {
+    const on = button.dataset.canvas === state.canvasTab;
+    button.setAttribute('aria-selected', String(on)); button.tabIndex = on ? 0 : -1;
+    button.hidden = !['browser', 'screen', 'terminal'].includes(button.dataset.canvas) && !state.webappCanvas;
+  }
+  showSelectedCanvasTab(); renderTerminal();
   $('shell').classList.toggle('browser-hidden', state.showBrowser === false);
   $('browser-collapse').title = state.showBrowser === false ? 'Show browser pane' : 'Hide browser pane';
   $('browser-collapse').setAttribute('aria-label', $('browser-collapse').title);
   $('browser-collapse').setAttribute('aria-pressed', String(state.showBrowser === false));
-  renderHome(bot, !!tab || state.activeTabId === 'vps' || !!state.onboarding);
-  renderOnboarding(!tab && state.activeTabId !== 'vps' && !!state.onboarding);
-  $('browser-toolbar').classList.toggle('hidden', state.activeTabId === 'vps');
+  renderHome(bot, !!tab || remote || page || !!state.onboarding);
+  renderOnboarding(!tab && !remote && !page && !!state.onboarding);
+  $('browser-toolbar').classList.toggle('hidden', remote || page);
   $('remote-preview-slot').classList.toggle('hidden', !state.preview || remote || !!state.onboarding);
   $('preview-chip').classList.toggle('hidden', state.preview || remote);
   $('preview-label').textContent = state.remoteStatus === 'connected' ? `${remoteName()} desktop` : `${remoteName()} · ${state.remoteStatus}`;
@@ -2045,11 +2051,12 @@ $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };
 $('vm-toggle').onclick = () => { if (state?.showBrowser === false) command('settings', { showBrowser: true }); command('toggle-vps-view'); };
 $('preview-expand').onclick = () => command('toggle-vps-view');
-$('canvas-tabs').onclick = (event) => { const tab = event.target.closest('[data-canvas]')?.dataset.canvas; if (tab) command('canvas-tab', { tab }); };
+$('canvas-tabs').onclick = (event) => { const tab = event.target.closest('[data-canvas]')?.dataset.canvas; if (tab) command('canvas-tab', { tab, start: tab === 'terminal' }); };
 $('canvas-tabs').onkeydown = (event) => {
-  const tab = { ArrowLeft: 'browser', Home: 'browser', ArrowRight: 'screen', End: 'screen' }[event.key];
-  if (!tab) return;
-  event.preventDefault(); $(`canvas-${tab}`).focus(); command('canvas-tab', { tab });
+  const shown = [...$('canvas-tabs').children].filter(button => !button.hidden), at = shown.indexOf(document.activeElement);
+  const next = shown[{ ArrowLeft: Math.max(0, at - 1), ArrowRight: Math.min(shown.length - 1, at + 1), Home: 0, End: shown.length - 1 }[event.key]];
+  if (!next) return;
+  event.preventDefault(); next.focus(); command('canvas-tab', { tab: next.dataset.canvas });
 };
 $('preview-hide').onclick = () => command('settings', { preview: false });
 $('preview-chip').onclick = () => command('settings', { preview: true });
@@ -2373,5 +2380,55 @@ api.onShortcuts?.(showShortcuts);
 api.onFocusWorkspace?.(() => { if (state?.showBrowser === false) return; focusMode = !focusMode; $('shell').classList.toggle('focus-workspace', focusMode); scheduleLayout(); });
 new ResizeObserver(scheduleLayout).observe($('shell'));
 new ResizeObserver(() => fitTabs()).observe($('tabs'));
+// Terminal: one xterm per bot, kept hidden when not shown so scrollback survives tab and bot switches. A shell starts only from
+// the tab click, its shortcut or the Start button; restoring the tab or switching bots never starts one.
+const terminalViews = new Map();
+function terminalView(id) {
+  let view = terminalViews.get(id);
+  if (!view) {
+    const host = document.createElement('div'); host.className = 'terminal-host hidden'; $('terminal-panel').append(host);
+    const term = new Terminal({ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 12.5, cursorBlink: true, scrollback: 5000, theme: { background: '#09090a' } });
+    const fit = new FitAddon.FitAddon(); term.loadAddon(fit);
+    term.onData((data) => window.terminal.input(id, data));
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown' || event.key.toLowerCase() !== 'c' || !term.hasSelection() || !(event.metaKey || (event.ctrlKey && event.shiftKey))) return true;
+      navigator.clipboard.writeText(term.getSelection()).catch(() => {}); return false;
+    });
+    view = { term, fit, host, opened: false, size: '' }; terminalViews.set(id, view);
+  }
+  return view;
+}
+function fitTerminal(id) {
+  const view = terminalViews.get(id);
+  if (!view?.opened || view.host.classList.contains('hidden')) return;
+  try { view.fit.fit(); } catch { return; }
+  const size = `${view.term.cols}x${view.term.rows}`;
+  if (size !== view.size) { view.size = size; window.terminal.resize(id, view.term.cols, view.term.rows); }
+}
+function renderTerminal() {
+  const on = state.canvasTab === 'terminal', id = state.selectedBotId || '_', live = state.terminals.includes(id);
+  $('terminal-panel').classList.toggle('hidden', !on);
+  for (const [key, view] of terminalViews) view.host.classList.toggle('hidden', !(on && live && key === id));
+  $('terminal-idle').classList.toggle('hidden', !on || live);
+  if (on && !live) renderTerminalIdle();
+  if (!on || !live) return;
+  const view = terminalView(id), hidden = view.host.classList.contains('hidden');
+  view.host.classList.remove('hidden');
+  if (!view.opened) { view.term.open(view.host); view.opened = true; }
+  fitTerminal(id);
+  if (hidden) view.term.focus();
+}
+function renderTerminalIdle() {
+  const windows = state.platform === 'win32', server = (state.vpsBrowser?.sshHost || '').trim();
+  $('terminal-idle-text').textContent = windows ? 'Terminal is not available on Windows yet.' : state.terminalNote || `Open a shell on ${server ? `the agent server (${server})` : 'this computer'}.`;
+  $('terminal-start').hidden = windows;
+}
+$('terminal-start').onclick = () => window.terminal.start(state.selectedBotId || '_');
+window.terminal.onData((id, data) => terminalView(id).term.write(data));
+window.terminal.onExit((id) => { const view = terminalViews.get(id); if (view) { view.term.write('\r\n[Session ended]\r\n'); view.size = ''; } });
+new ResizeObserver(() => { for (const id of terminalViews.keys()) fitTerminal(id); }).observe($('terminal-panel'));
+// A narrow pane scrolls the Canvas strip; keep the selected tab in view.
+function showSelectedCanvasTab() { $('canvas-tabs').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+new ResizeObserver(showSelectedCanvasTab).observe($('canvas-tabs'));
 window.addEventListener('resize', () => { positionPreview(); scheduleLayout(); });
 api.getState().then(render).catch((error) => toast(error.message));
