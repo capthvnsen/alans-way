@@ -32,6 +32,8 @@
     "test:canvas-tabs": "node test/run-electron.cjs test/canvas-tabs-electron.cjs",
     "test:terminal-tab": "node test/run-electron.cjs test/terminal-tab-electron.cjs",
     "test:native-chat": "node test/native-chat-electron.cjs",
+    "bench:chat": "node test/bench/chat-surfaces-bench.cjs",
+    "prebench:chat": "npm run build:preload",
     "pretest:native-chat": "npm run build:preload",
     "test:surface-toggle": "node test/surface-toggle-electron.cjs",
     "pretest:surface-toggle": "npm run build:preload",
