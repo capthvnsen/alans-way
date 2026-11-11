@@ -120,3 +120,14 @@ test('show: a bot opens its remembered conversation, else the newest Telegram-so
   await tick(); await tick();
   assert.equal(chat.info('api_2').preview, 'pong', 'last assistant text once the thread is in memory');
 });
+
+test('a conversation deleted in Hermes says so in its own thread, not as a connection error', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-'));
+  const gone = Object.assign(new Error('Session not found'), { code: 'http_404' });
+  const chat = createNativeChat({ dir, apiFactory: () => fakeApi({ getMessages: async () => { throw gone; } }), loadConfig: () => ({ baseUrl: 'http://127.0.0.1:8642', key: 'k'.repeat(20), sessions: [{ id: 'api_1', source: 'api_server' }] }) });
+  await chat.command('open', { sessionId: 'api_1' });
+  await tick(); await tick();
+  const state = chat.getState();
+  assert.notEqual(state.status, 'error');
+  assert.equal(state.thread.notice, 'This conversation was deleted in Hermes.');
+});

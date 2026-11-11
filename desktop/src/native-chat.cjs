@@ -157,7 +157,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
         if (!t.loadedRows) { t.loadedRows = rows.length; t.hasOlder = rows.length === PAGE; }
         apply(id, rows.map(toMessage).filter(Boolean));
         status = 'ready'; error = '';
-      } catch (e) { fail(e); }
+      } catch (e) { if (e?.code === 'http_404') t.notice = 'This conversation was deleted in Hermes.'; else fail(e); }
       t.loading = false; notify();
     });
   }
