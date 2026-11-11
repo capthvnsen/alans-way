@@ -106,3 +106,17 @@ test('a send that never starts is marked failed and can be retried', async () =>
   assert.equal(attempts, 2);
   assert.equal(chat.getState().thread.messages.length, 1);
 });
+
+test('show: a bot opens its remembered conversation, else the newest Telegram-source one or one made here; a gone id falls back', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-'));
+  const sessions = [{ id: 'telegram_1', source: 'telegram' }, { id: 'api_2', source: 'api_server' }, { id: 'api_1', source: 'api_server' }];
+  const chat = createNativeChat({ dir, apiFactory: () => fakeApi(), loadConfig: () => ({ baseUrl: 'http://127.0.0.1:8642', key: 'k'.repeat(20), lastSessionId: 'api_1', sessions }) });
+  chat.show({ sessionId: 'api_1', telegram: true }); assert.equal(chat.activeId, 'api_1');
+  chat.show({ sessionId: 'gone', telegram: true }); assert.equal(chat.activeId, 'telegram_1');
+  chat.show({ sessionId: 'gone' }); assert.equal(chat.activeId, 'api_2');
+  assert.equal(chat.info('gone'), null);
+  assert.deepEqual(chat.info('api_2'), { unread: false, waiting: false, preview: '' });
+  chat.show({}); chat.activate();
+  await tick(); await tick();
+  assert.equal(chat.info('api_2').preview, 'pong', 'last assistant text once the thread is in memory');
+});

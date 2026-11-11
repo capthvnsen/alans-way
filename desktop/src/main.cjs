@@ -12,7 +12,7 @@ const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, continuedOnVm, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
-const { resolveChatSurface, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
+const { resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
@@ -192,7 +192,7 @@ const recordings = recorder.createRecordingStore(path.join(app.getPath('userData
 let pointerTimer, activityTimer, idleTimer, captchaTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', hermesWebappUrl: '', chatSurface: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, canvasTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', hermesWebappUrl: '', chatSurface: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, canvasTabs: {}, chatSurfaces: {}, nativeSessions: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -390,8 +390,7 @@ function selectAgent(id) {
   if (old) prefs.canvasTabs[old] = canvasTab;
   prefs.selectedBotId = id;
   prefs.remoteControl = false;
-  chatTarget = surfaceTarget();
-  syncWebapp();
+  applySurface();
   const own = [...tabs.values()].filter(tab => tab.botId === id || (tab.allowedBots ?? []).includes(id));
   const nextLocal = own.some(tab => tab.id === prefs.agentLastTabs[id]) ? prefs.agentLastTabs[id] : own.at(-1)?.id || 'home';
   activeTabId = nextLocal;
@@ -536,8 +535,10 @@ function getState() {
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     chatTarget, hermes: hermesSummary(), chatSurface: resolveChatSurface(prefs.chatSurface, webappStatus, !!nativeChat?.configured), hermesWebappUrl: prefs.hermesWebappUrl, webappStatus, nativeChat: nativeChat?.summary() || { configured: false },
     webappSignIn: webappTarget ? webappSignIn.username(new URL(webappTarget).origin) : '', webappSignInError,
+    chatBotId: chatBotId(), hermesBot: builtinBot() ? { id: 'hermes', name: hermesBotName() } : null, surfaces: usableSurfaces(surfaceContext(chatBotId())),
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
     fullscreen: !!win && !win.isDestroyed() && win.isFullScreen(), api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
+  state.inbox = chatInbox(state.tabs);
   // One authority orders native IPC reads, command replies and broadcasts by
   // snapshot content, independent of when any asynchronous reply is delivered.
   const signature = JSON.stringify(state);
@@ -647,7 +648,49 @@ function openTelegramLink(value, activate = true) {
 // Hermes Desktop: the Hermes Webapp in the chat pane. No preload and its own partition:
 // a signed-in session can run shell commands on its host, so it never holds a Workspace
 // bridge or the browser's cookies, and its own host's links open as human Browser tabs.
-const surfaceTarget = () => ({ 'hermes-desktop': 'webapp', native: 'native' })[resolveChatSurface(prefs.chatSurface, webappStatus, !!nativeChat?.configured)] || 'telegram';
+// One inbox: a row per Telegram bot or, with none, one built-in row for this Hermes host. Each
+// row remembers its surface (prefs.chatSurfaces) and native conversation (prefs.nativeSessions).
+const builtinBot = () => !prefs.bots.length && (!!prefs.hermesWebappUrl || !!nativeChat?.configured);
+const chatBotId = () => prefs.bots.length ? prefs.selectedBotId : builtinBot() ? 'hermes' : '';
+const chatBotIds = () => prefs.bots.length ? prefs.bots.map((bot) => bot.id) : builtinBot() ? ['hermes'] : [];
+const surfaceContext = (id) => ({ telegram: id !== 'hermes', webapp: !!prefs.hermesWebappUrl, nativeConfigured: !!nativeChat?.configured, webappStatus });
+const botSurface = (id) => surfaceForBot(prefs.chatSurfaces[id], prefs.chatSurface, surfaceContext(id));
+function hermesBotName() {
+  try { const host = new URL(prefs.hermesWebappUrl || nativeChat?.summary().address).hostname; return `Hermes on ${/^[\d.]+$|^\[/.test(host) ? host : host.split('.')[0]}`; }
+  catch { return 'Hermes'; }
+}
+function showSurface(surface) {
+  chatTarget = ({ 'hermes-desktop': 'webapp', native: 'native' })[surface] || 'telegram';
+  syncWebapp();
+  if (chatTarget !== 'native' || !nativeChat) return;
+  const bot = chatBotId();
+  nativeChat.show({ sessionId: prefs.nativeSessions[bot] || '', telegram: !!bot && bot !== 'hermes' });
+  rememberNativeSession();
+  nativeChat.activate();
+}
+const applySurface = () => showSurface(botSurface(chatBotId()));
+function rememberNativeSession() {
+  const bot = chatBotId(), id = nativeChat.activeId;
+  if (chatTarget === 'native' && bot && id && prefs.nativeSessions[bot] !== id) { prefs.nativeSessions[bot] = id; savePreferencesSoon(); }
+}
+const nativeInbox = () => Object.fromEntries(chatBotIds().map((id) => [id, nativeChat?.info(prefs.nativeSessions[id]) || null]));
+function chatInbox(allTabs) {
+  const native = nativeInbox();
+  return Object.fromEntries(chatBotIds().map((id) => [id, inboxRow({ bot: prefs.bots.find((bot) => bot.id === id), surface: botSurface(id), native: native[id],
+    handback: allTabs.some((tab) => tab.botId === id && tab.handback?.state === 'awaiting_human') })]));
+}
+// One notification per waiting episode of a bot's native conversation; handbacks notify on their own.
+let waitingBots = new Set();
+function notifyWaiting(native) {
+  const now = new Set(Object.keys(native).filter((id) => native[id]?.waiting));
+  for (const id of now) {
+    if (waitingBots.has(id) || (win?.isFocused() && chatBotId() === id)) continue;
+    showNotice(`waiting:${id}`, { title: nameForBot(id) || hermesBotName(), body: 'is waiting for you' }, () => {
+      (id === 'hermes' ? Promise.resolve() : openBot(id)).then(() => { showSurface('native'); broadcast(); }, () => {});
+    });
+  }
+  waitingBots = now;
+}
 function syncWebapp() {
   if (chatTarget === 'webapp' && !webappView && webappStatus === 'reachable') createWebappView(webappTarget);
 }
@@ -757,7 +800,7 @@ async function checkWebapp() {
   if (target !== webappTarget) return;
   webappStatus = !reachable ? 'unreachable' : needsLink && !webappView ? 'needs-link' : 'reachable';
   webappPrivate = needsLink;
-  if (chatTarget === 'telegram') chatTarget = surfaceTarget();
+  if (chatTarget === 'telegram') applySurface();
   if (reachable && webappView) webappView.webContents.loadURL(target).catch(() => {});
   if (reachable && canvasView) canvasPage = '';
   syncWebapp();
@@ -1256,17 +1299,23 @@ function notifyHandback(info) {
   const key = `${info.host}:${info.id}:${h.since}`;
   if (notifiedHandbacks.has(key)) return;
   notifiedHandbacks.add(key);
-  const notice = new Notification({ title: `${nameForBot(info.botId) || 'Your agent'} needs you`, body: h.note || HANDBACK_TEXT[h.reason] || '' });
-  notice.on('click', () => {
-    if (!win || win.isDestroyed()) return;
-    if (win.isMinimized()) win.restore();
-    win.show(); win.focus();
+  showNotice(`${info.host}:${info.id}`, { title: `${nameForBot(info.botId) || 'Your agent'} needs you`, body: h.note || HANDBACK_TEXT[h.reason] || '' }, () => {
     if (!(info.host === 'vps' ? vpsTabs : tabs).has(info.id)) return;
     // A collapsed browser pane would hide the badge and the banner.
     if (prefs.showBrowser === false) { prefs.showBrowser = true; savePreferencesSoon(); }
     activateTab(info.id, info.host).then(broadcast, () => {});
   });
-  handbackNotices.set(`${info.host}:${info.id}`, notice);
+}
+function showNotice(key, options, onClick) {
+  if (!Notification.isSupported()) return;
+  const notice = new Notification(options);
+  notice.on('click', () => {
+    if (!win || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.show(); win.focus();
+    onClick();
+  });
+  handbackNotices.set(key, notice);
   notice.show();
 }
 async function activateTab(tabId, host) {
@@ -2178,11 +2227,17 @@ function registerIpc() {
       case 'record-stop': return stopRecording({ save: value.save !== false, keepTyped: value.keepTyped === true });
       case 'recording-share': recordings.share(String(value.id), value.botIds); broadcast(); break;
       case 'recording-delete': recordings.remove(String(value.id)); broadcast(); break;
-      case 'open-bot': await openBot(String(value.id)); break;
+      case 'open-bot': if (value.id === 'hermes' && chatBotId() === 'hermes') applySurface(); else await openBot(String(value.id)); break;
+      case 'chat-surface': {
+        const bot = chatBotId();
+        if (!usableSurfaces(surfaceContext(bot)).includes(value.surface)) throw new Error('That chat surface is not set up yet.');
+        if (bot) { prefs.chatSurfaces[bot] = value.surface; savePreferencesSoon(); }
+        showSurface(value.surface); break;
+      }
       case 'show-telegram': chatTarget = 'telegram'; broadcast(); break;
       case 'show-hermes': chatTarget = 'hermes'; broadcast(); break;
       case 'show-webapp': chatTarget = 'webapp'; syncWebapp(); broadcast(); break;
-      case 'show-native': chatTarget = 'native'; nativeChat.activate(); broadcast(); break;
+      case 'show-native': showSurface('native'); broadcast(); break;
       case 'webapp-retry': await checkWebapp(); break;
       case 'webapp-link': openWebappLink(value.url); break;
       case 'webapp-sign-in': {
@@ -2270,7 +2325,7 @@ function registerIpc() {
         persistSettingsPreferences(next);
         if (addressChanged) { webappSignIn.forget(); webappSignInError = ''; webappSignInTried = false; checkWebapp().catch(error => logError('hermes-webapp', error)); }
         if (nativeConfig) nativeChat.configure(nativeConfig);
-        if (Object.hasOwn(value, 'chatSurface') || nativeConfig) { chatTarget = surfaceTarget(); syncWebapp(); if (chatTarget === 'native') nativeChat.activate(); }
+        if (Object.hasOwn(value, 'chatSurface') || nativeConfig) applySurface();
         if (Object.hasOwn(value, 'releaseChannel')) {
           holdAppInstall(false);
           if (prefs.releaseChannel !== activeReleaseChannel) { update.available = ''; update.tag = ''; update.ready = false; appLatest = ''; }
@@ -2789,6 +2844,8 @@ function registerIpc() {
       bots.forEach((bot) => merged.set(bot.id, bot));
       prefs.bots = [...merged.values()];
       terminals.keepOnly(['_', ...prefs.bots.map((bot) => bot.id)]);
+      const ids = prefs.bots.map((bot) => bot.id);
+      prefs.chatSurfaces = keepBots(prefs.chatSurfaces, ids); prefs.nativeSessions = keepBots(prefs.nativeSessions, ids);
       if (value.selectedId && prefs.bots.some((bot) => bot.id === value.selectedId)) selectAgent(value.selectedId);
       if (!prefs.selectedBotId && prefs.bots.length && telegramStatus === 'connected') {
         const bot = prefs.bots.find((item) => !prefs.hidden.includes(item.id));
@@ -3845,16 +3902,17 @@ else {
     // Loads the last-open conversation from disk before the window exists, so it paints with no network.
     nativeChat = createNativeChat({
       dir: app.getPath('userData'), loadConfig: loadNativePersisted, saveConfig: saveNativePersisted,
-      openLink: (url) => openTelegramLink(url), copyText: (text) => clipboard.writeText(text),
+      openLink: (url) => openTelegramLink(url), copyText: (text) => clipboard.writeText(text), visible: () => chatTarget === 'native',
       notify: () => {
         pushNativeState();
-        const summary = JSON.stringify(nativeChat.summary());
-        if (summary !== nativeSummary) { nativeSummary = summary; broadcast(); }
+        const native = nativeInbox(), summary = JSON.stringify([nativeChat.summary(), nativeChat.activeId, native]);
+        if (summary === nativeSummary) return;
+        nativeSummary = summary;
+        rememberNativeSession(); notifyWaiting(native); broadcast();
       },
     });
-    chatTarget = surfaceTarget();
+    applySurface();
     createWindow(); await extensionStore.restore(); broadcast();
-    if (chatTarget === 'native') nativeChat.activate();
     checkWebapp().catch(error => logError('hermes-webapp', error));
     setInterval(() => { if (webappStatus === 'unreachable') checkWebapp().catch(error => logError('hermes-webapp', error)); }, 30000);
     if (cloudSession() && prefs.cloud?.step && prefs.cloud.step !== 'done') startCloudPolling();

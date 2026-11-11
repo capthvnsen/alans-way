@@ -6,7 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHermesApi } = require('./hermes-api.cjs');
-const { writePrivateJson } = require('./shell-support.cjs');
+const { writePrivateJson, plainLine } = require('./shell-support.cjs');
 
 const MAX_TEXT = 100000, MAX_THREAD = 2000, MAX_SESSIONS = 50, MAX_CARDS = 20, MAX_THREADS = 20;
 const PAGE = 500, CACHE_CAP = 32 * 1024 * 1024;
@@ -39,13 +39,13 @@ function mergeMessages(current, incoming, keepLocal = () => true) {
 const sameMessages = (a, b) => a.length === b.length && a.every((m, i) => m.id === b[i].id && m.text === b[i].text && m.state === b[i].state);
 
 function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {}, notify = () => {}, openLink = () => {}, copyText = () => {},
-  apiFactory = createHermesApi, now = Date.now, pollMs = 1000 }) {
+  apiFactory = createHermesApi, now = Date.now, pollMs = 1000, visible = () => true }) {
   const cacheDir = path.join(dir, 'native-chat-cache');
   const loaded = loadConfig() || {};
   const config = { baseUrl: str(loaded.baseUrl, 500), profile: str(loaded.profile, 64), key: str(loaded.key, 500) };
   let sessions = Array.isArray(loaded.sessions) ? loaded.sessions.filter((s) => s && SESSION_ID.test(s.id)).slice(0, MAX_SESSIONS) : [];
   let activeId = SESSION_ID.test(loaded.lastSessionId || '') ? loaded.lastSessionId : '';
-  let api = null, status = 'idle', error = '', revSeq = 0, localSeq = 0, cardSeq = 0, configTimer, autoPick = !activeId;
+  let api = null, status = 'idle', error = '', revSeq = 0, localSeq = 0, cardSeq = 0, configTimer, autoPick = !activeId, wanted = {};
   const threads = new Map(), runs = new Map(), cards = new Map(), unread = new Set(), inflight = new Map();
   const configured = () => !!(config.baseUrl && config.key);
   const rebuild = () => { api = configured() ? apiFactory({ baseUrl: config.baseUrl, key: config.key, profile: config.profile }) : null; status = api ? 'idle' : 'unconfigured'; error = ''; };
@@ -113,6 +113,10 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     lastActive: Number(s.last_active ?? s.lastActive ?? s.started_at) || 0 });
   const sourceOf = (id) => sessions.find((s) => s.id === id)?.source || 'api_server';
   const isReadOnly = (id) => sourceOf(id) !== 'api_server';
+  // A bot's conversation: the one it last used while that still exists; for a Telegram bot the
+  // newest Telegram-source one (which Telegram bot it came from is not knowable here); else the newest one made here.
+  const pickSession = () => (sessions.find((s) => s.id === wanted.sessionId) || (wanted.telegram && sessions.find((s) => s.source === 'telegram'))
+    || sessions.find((s) => s.source === 'api_server'))?.id || '';
 
   function refreshSessions() {
     if (!api) { rebuild(); notify(); return Promise.resolve(); }
@@ -123,7 +127,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
         const local = sessions.filter((s) => s.id === activeId && !rows.some((r) => r.id === s.id));
         sessions = local.concat(rows).slice(0, MAX_SESSIONS);
         status = 'ready'; error = '';
-        if (autoPick && !activeId) { const first = sessions.find((s) => s.source === 'api_server'); if (first) { activeId = first.id; revalidate(first.id); } }
+        if (autoPick && !activeId) { activeId = pickSession(); if (activeId) revalidate(activeId); }
         persistConfigSoon();
       } catch (e) { fail(e); }
       notify();
@@ -235,7 +239,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
       : run.outcome === 'failed' ? (run.error || 'Hermes could not finish this reply.') : run.outcome === 'cancelled' ? 'Stopped.' : '';
     setLocal(run, 'sent');
     runs.delete(id);
-    if (id !== activeId) unread.add(id);
+    if (id !== activeId || !visible()) unread.add(id);
     notify();
     await revalidate(id);
     // Hermes names a conversation after its first turn.
@@ -410,6 +414,23 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
   return {
     getState, pushState,
     get configured() { return configured(); },
+    get activeId() { return activeId; },
+    // A row's view of one conversation, from memory only: no disk or network.
+    info(id) {
+      if (!sessions.some((s) => s.id === id)) return null;
+      const live = runs.get(id), last = threads.get(id)?.messages.findLast((m) => m.role === 'assistant');
+      return { unread: unread.has(id), waiting: !!live && openCards(live).length > 0, preview: plainLine(last?.text) };
+    },
+    show({ sessionId = '', telegram = false } = {}) {
+      wanted = { sessionId, telegram };
+      const id = pickSession();
+      autoPick = !id;
+      if (id === activeId) return;
+      activeId = id;
+      if (id) thread(id);
+      persistConfigSoon();
+      notify();
+    },
     summary: () => ({ configured: configured(), hasKey: !!config.key, address: address(), status, error }),
     async command(name, value) {
       if (!Object.hasOwn(commands, name)) throw new Error('Unknown native chat command.');
@@ -425,7 +446,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
       notify();
       if (api) refreshSessions();
     },
-    activate() { if (!api) return; refreshSessions(); if (activeId) revalidate(activeId); },
+    activate() { unread.delete(activeId); notify(); if (!api) return; refreshSessions(); if (activeId) revalidate(activeId); },
     flush() { persistConfig(); for (const [id, t] of threads) writeCache(id, t); },
   };
 }

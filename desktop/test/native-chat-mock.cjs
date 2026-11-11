@@ -33,7 +33,7 @@ function createMock({ key, chunk = 0 } = {}) {
     sessions.set(meta.id, { meta, rows: synthRows(meta, count, start) });
     start += count + 10;
   }
-  const mock = { requests, sessions, delayMs: 0, chunk, get served() { return served; }, set served(n) { served = n; } };
+  const mock = { requests, sessions, delayMs: 0, streamDelayMs: 0, chunk, get served() { return served; }, set served(n) { served = n; } };
 
   const json = (res, status, body) => { served++; res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
   const error = (res, status, code, message) => json(res, status, { error: { message, type: 'invalid_request_error', param: null, code } });
@@ -50,6 +50,7 @@ function createMock({ key, chunk = 0 } = {}) {
     stops.delete(runId);
     served++;
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Hermes-Session-Id': session.meta.id });
+    if (mock.streamDelayMs) await sleep(mock.streamDelayMs);
     let content = '';
     for (let i = 0; i < frames.length; i++) {
       if (res.destroyed) return;
@@ -85,6 +86,7 @@ function createMock({ key, chunk = 0 } = {}) {
     const url = new URL(req.url, 'http://mock');
     requests.push({ method: req.method, path: url.pathname, search: url.search, headers: { ...req.headers } });
     if (url.pathname === '/__stats') { res.end(JSON.stringify({ served })); return; }
+    if (url.pathname === '/__stream-delay') { mock.streamDelayMs = Number(url.searchParams.get('ms')) || 0; res.end('{}'); return; }
     if (mock.delayMs) await sleep(mock.delayMs);
     if (req.headers.origin !== undefined) { served++; res.writeHead(403); res.end('Forbidden'); return; }
     if (req.headers.authorization !== `Bearer ${key}`) return error(res, 401, 'gateway_auth_failed', 'Invalid gateway API key (API_SERVER_KEY)');
