@@ -1,6 +1,6 @@
 # Alan's Workspace for iOS
 
-The iOS app is part of **Alan's Workspace**, one of [Alan's Way's four products](../README.md#what-to-install). Its source stays in `ios/`; voice support stays in [`mobile/`](../mobile/README.md). Alan's CU MCP is the separate Node server in `desktop/`; the Hermes and Grok Bot plugin products and their shared persona/voice/proactivity/identity spec belong in [alans-way-agents](https://github.com/capthvnsen/alans-way-agents). See [boundaries and publication TODOs](../docs/products.md) and [license coverage](../docs/licensing.md).
+The iOS app is part of **Alan's Workspace**, one of [Alan's Way's four products](../README.md#what-to-install). Its source stays in `ios/`; voice support stays in [`mobile/`](../mobile/README.md). Alan's CU MCP is the separate Node server in `desktop/`; the Hermes and Grok Bot plugin products and their shared persona/voice/proactivity/identity spec belong in [alans-way-agents](https://github.com/capthvnsen/alans-way-agents). See [product boundaries](../docs/products.md) and [license coverage](../docs/licensing.md).
 
 **Install:** use an existing [beta invitation](../docs/ios-beta-testers.md) or build with Xcode below. This repo does not provide a public App Store install link. Community: [Discord](https://discord.gg/jBQCPUsVE) · [openalan.com](https://openalan.com).
 
@@ -45,7 +45,7 @@ These need the Apple account and are not done by any script here.
 
 By default the upload script uses Apple's **TestFlight Internal Only** setting. Those builds cannot be distributed through external TestFlight or submitted for public App Store release. `./ios/scripts/testflight.sh --external` uploads the same signed archive without that restriction, so the build can go to external tester groups after Beta App Review; it still does not submit an App Store version. See [Apple's distribution documentation](https://developer.apple.com/documentation/xcode/distributing-your-app-for-beta-testing-and-releases).
 
-`MARKETING_VERSION` in `project.yml` follows the project's shared `0.<Hermes minor>.<patch>` versioning (currently the desktop app's 0.21.13). App Store Connect accepts only numeric versions, so beta status comes from TestFlight rather than a `-beta` suffix. The export lets Xcode assign the build number on upload; `CURRENT_PROJECT_VERSION` stays `1` locally.
+`MARKETING_VERSION` in `project.yml` follows the project's shared `0.<Hermes minor>.<patch>` versioning (currently 0.21.13; the desktop app has moved to 0.21.14). App Store Connect accepts only numeric versions, so beta status comes from TestFlight rather than a `-beta` suffix. The export lets Xcode assign the build number on upload; `CURRENT_PROJECT_VERSION` stays `1` locally.
 
 Sign into the developer account in **Xcode > Settings > Accounts**. Register `com.openalan.workspace` for the selected developer team and create its iOS app record in App Store Connect. Suggested record values are **Alan's Workspace**, primary language **English (U.S.)**, and SKU **alans-workspace-ios**. Check for an existing matching app before creating another record. Set the ignored Telegram application credentials before uploading a build intended for testers who should only need to sign into Telegram.
 

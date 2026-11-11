@@ -9,9 +9,9 @@ Alan's Way has [four products](docs/products.md). Community and setup help: [Dis
 | Alan's Workspace (Mac, iOS, VM handoff; existing Windows/Linux builds) | This repo: `desktop/`, `ios/`, supporting `mobile/` and install scripts | `product:workspace` |
 | Alan's CU MCP (`workspace-mcp`, Node) | This repo: `desktop/scripts/browser-mcp.cjs`, supporting `desktop/src/` and VM hosts/tests | `product:cu-mcp` |
 | Alan's Plugin for Hermes (Python) | [alans-way-agents](https://github.com/capthvnsen/alans-way-agents): `alans-way/`, `alans-way-computer/`, setup/router adapters | `product:hermes-plugin` |
-| Alan's Plugin for Grok Bot (skill + settings) | [alans-way-agents](https://github.com/capthvnsen/alans-way-agents): dedicated package path **TODO** | `product:grok-plugin` |
+| Alan's Plugin for Grok Bot (skill + settings) | [alans-way-agents](https://github.com/capthvnsen/alans-way-agents): `alans-way-grok-bot/` and `scripts/generate_grok_bot.py` | `product:grok-plugin` |
 
-Both plugins read one shared persona/voice/proactivity/identity config spec owned in `alans-way-agents`; its canonical path is still a [publication TODO](docs/products.md#shared-config-contract). Propose shared-spec changes there and name both plugin products. Grok Bot cannot load Hermes plugins. Keep the CU MCP server at its existing path; the product name does not require moving code or creating a new package.
+Both plugins read one shared persona/voice/proactivity/identity config spec owned in `alans-way-agents` at `shared/config.schema.json` ([contract](docs/products.md#shared-config-contract)). Propose shared-spec changes there and name both plugin products. Grok Bot cannot load Hermes plugins. Keep the CU MCP server at its existing path; the product name does not require moving code or creating a new package.
 
 For cross-product work, identify every affected product and link companion issues/PRs across repos. Workspace and CU MCP share `desktop/`, so a shared-server change can affect every agent client. Check callers, tool contracts, fixtures, install paths and docs before changing them.
 
