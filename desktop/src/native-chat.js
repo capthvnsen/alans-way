@@ -371,6 +371,9 @@
     }
 
     const toBottom = () => { scroller.scrollTop = scroller.scrollHeight; };
+    // Rows grow from their estimated height once painted (content-visibility), so a pinned view follows.
+    const follow = new ResizeObserver(() => { if (visible && pinned) toBottom(); });
+    for (const node of [scroller, list, live]) follow.observe(node);
     scroller.addEventListener('scroll', () => {
       if (!visible) return;
       pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
@@ -540,6 +543,7 @@
       },
       dispose() {
         disposed = true;
+        follow.disconnect();
         if (typeof unsubscribe === 'function') unsubscribe();
         root.replaceChildren();
       },

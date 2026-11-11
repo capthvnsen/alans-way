@@ -194,6 +194,7 @@ if (!process.versions.electron) {
       // Read-only conversations offer Continue here.
       await openSession(telegramId);
       await until(() => visible('#native-pane .nc-readonly'), 'read-only bar');
+      if (!LAB) await until(() => run(`(() => { const s = document.querySelector('#native-pane .nc-scroll'); return s.scrollHeight > s.clientHeight + 200 && s.scrollHeight - s.scrollTop - s.clientHeight < 2; })()`), 'opens at the newest message', 3000);
       assert.match(await run(`document.querySelector('#native-pane .nc-readonly').innerText`), /from Telegram, so it is read-only here[\s\S]*Continue here/);
       assert.equal(await visible('#native-pane .nc-composer'), false);
       if (!LAB) {
