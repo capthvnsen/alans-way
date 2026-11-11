@@ -109,6 +109,7 @@ if (!process.versions.electron) {
       assert.equal(JSON.parse(fs.readFileSync(prefsFile, 'utf8')).chatSurface, 'native');
       await click('#modal-close');
       await until(() => visible('#native-pane .nc-composer'), 'native pane');
+      assert.equal(await run(`(() => { const box = document.querySelector('#native-pane textarea'); return box.scrollHeight <= box.clientHeight; })()`), true, 'the empty composer shows a whole line');
 
       // The newest conversation opens by itself and shows its history as bubbles.
       await until(async () => (await native()).activeId, 'a conversation opened');

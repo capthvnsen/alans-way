@@ -395,7 +395,8 @@
 
     function grow() {
       textarea.style.height = 'auto';
-      textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
+      // Hidden (display:none) it measures 0; 'auto' keeps one row until it is laid out.
+      if (textarea.scrollHeight) textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
     }
     textarea.addEventListener('input', () => { drafts.set(draftKey(), textarea.value); grow(); });
     textarea.addEventListener('compositionstart', () => { composing = true; });
@@ -535,7 +536,7 @@
         const shown = on && !visible;
         if (!on) keepScroll();
         visible = on;
-        if (shown) { paneArmed = true; if (state) { render(); restoreScroll(); } }
+        if (shown) { paneArmed = true; grow(); if (state) { render(); restoreScroll(); } }
       },
       dispose() {
         disposed = true;
