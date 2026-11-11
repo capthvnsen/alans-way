@@ -459,7 +459,15 @@
       if (next) { event.preventDefault(); next.focus(); }
     });
     document.addEventListener('pointerdown', (event) => { if (!head.contains(event.target)) closeMenu(); });
-    root.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !menu.classList.contains('hidden')) { closeMenu(); switcher.focus(); } });
+    // Escape closes the topmost thing only: the menu, else an open details toggle; never the draft.
+    root.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      const details = event.target.closest?.('details[open]');
+      if (!menu.classList.contains('hidden')) { closeMenu(); switcher.focus(); }
+      else if (details) { details.open = false; details.querySelector('summary')?.focus(); }
+      else return;
+      event.preventDefault(); event.stopPropagation();
+    });
 
     function renderNotice() {
       if (notice.dataset.flash) return;

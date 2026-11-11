@@ -144,6 +144,11 @@ if (!process.versions.electron) {
       await until(() => visible('#native-pane .nc-prompt.approval.open'), 'approval card', 30000);
       assert.match(await run(`document.querySelector('#native-pane .nc-prompt.approval').innerText`), /Alan wants to run a command[\s\S]*Show details/);
       await until(async () => (await run(`document.querySelector('#native-pane .nc-status')?.textContent`)) === 'Waiting for you', 'status says it waits for you');
+      // Escape folds an open details toggle and goes no further.
+      assert.equal(await run(`(() => { const details = document.querySelector('#native-pane .nc-prompt.approval details'); details.open = true; details.querySelector('summary').focus();
+        let reached = false; const spy = () => { reached = true; }; document.addEventListener('keydown', spy, { once: true });
+        document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        document.removeEventListener('keydown', spy); return !details.open && !reached && document.activeElement.tagName === 'SUMMARY'; })()`), true);
       assert.equal(await run(`document.querySelector('#native-pane .nc-prompt.approval details pre').textContent`), 'rm -rf /tmp/hermes-lab-nonexistent-xyz');
       const allowOnce = `[...document.querySelectorAll('#native-pane .nc-prompt.approval button')].find(b => b.textContent === 'Allow once')`;
       if (!LAB) {
