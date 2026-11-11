@@ -71,3 +71,26 @@
 .avatar-editor button:disabled{cursor:wait;opacity:.55}
 @media(prefers-reduced-motion:reduce){.hermes-avatar-active .hermes-avatar-ring{animation:none;background:linear-gradient(125deg,#9ee0c4,#b7a6e3)}.hermes-avatar-cutout.hermes-avatar-active .hermes-avatar-face{animation:none;filter:drop-shadow(0 0 3px #8cdfc373)}.hermes-pupil{transition:none!important}}
 @media(max-width:700px){.avatar-gallery{grid-template-columns:repeat(4,minmax(0,1fr))}.avatar-stage{gap:16px;padding:18px 12px}.avatar-editor-preview{width:140px;height:140px}}
+
+/* Chat and agent-list density. Kept here (loaded after style.css) so it composes with parallel style.css edits. */
+.side-caption{padding:20px 20px 8px}
+.bot-row{padding:6px 10px;min-height:0;border-radius:9px;margin-bottom:1px;transition:background-color .12s ease}
+.bot-row:hover{background:#1a1a1d}
+.bot-row.selected{background:#26262a}
+.bot-copy{line-height:1.3}
+.bot-name{font-size:13px;font-weight:550}
+.bot-row.selected .bot-name{color:#fff}
+.bot-preview{font-size:11.5px;color:#85858c;margin-top:1px}
+.bot-activity{margin-top:2px}
+.hermes-bar{padding:8px 20px;gap:10px}
+.hermes-transcript{padding:18px 20px;gap:14px}
+.hermes-msg{font-size:13px;line-height:1.55}
+.hermes-msg.user{background:#22272e;border-color:#2f3640;border-radius:14px 14px 5px 14px}
+.hermes-msg.assistant{max-width:100%;background:transparent;border-color:transparent;padding:2px 2px 2px 0}
+.hermes-msg.assistant.streaming{border-color:transparent;border-left-color:#2d4a44;border-radius:0;padding-left:12px}
+.hermes-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.5;background:#0e0e11;border-color:#24242b}
+.hermes-tool{font-size:10.5px}
+.hermes-composer{padding:12px 16px 14px}
+.hermes-composer textarea{font:inherit;font-size:13px;line-height:1.45;border-radius:12px;background:#141417;transition:border-color .12s ease,box-shadow .12s ease}
+.hermes-composer textarea:focus{border-color:#4a5263;box-shadow:0 0 0 3px #8baaf11a}
+.hermes-send,.hermes-stop{border-radius:10px}
