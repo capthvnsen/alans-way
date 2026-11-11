@@ -49,7 +49,7 @@ test('shutdown does not overwrite the saved user tabs when Chromium destroys its
 
 function restoreFixture(savedTabs) {
   const restored = [];
-  const context = vm.createContext({ prefs: { savedTabs }, activeTabId: 'home',
+  const context = vm.createContext({ prefs: { savedTabs, canvasTabs: {} }, activeTabId: 'home',
     fileURLToPath: require('node:url').fileURLToPath,
     createTab: options => { const created = { ...options, id: `restored-${restored.length}` }; restored.push(created); return created; },
   });

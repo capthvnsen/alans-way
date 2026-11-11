@@ -29,7 +29,7 @@ test('shared scope notes and word substrings do not invent matches', () => {
   assert.deepEqual(find('comma'), ['settings']);
   assert.deepEqual(find('settings'), ['settings']);
   for (const query of ['com', 'command+q', 'command+shift+t', 'nonesuch-zqv']) assert.deepEqual(find(query), [], query);
-  assert.equal(find('').length, 15);
+  assert.equal(find('').length, 17);
 });
 
 test('modifier glyphs and names retain platform meaning instead of falling out of a query', () => {
@@ -74,7 +74,7 @@ test('a chord is one complete displayed binding, never a union with prose or ano
 test('all app accelerator keys use the displayed platform modifier without accepting extra modifiers', () => {
   for (const platform of ['darwin', 'win32', 'linux']) {
     const mac = platform === 'darwin';
-    for (const [key, id] of [[',', 'settings'], ['T', 'new-tab'], ['W', 'close-tab'], ['R', 'reload'], ['O', 'open-file'], ['L', 'address']]) {
+    for (const [key, id] of [[',', 'settings'], ['T', 'new-tab'], ['W', 'close-tab'], ['R', 'reload'], ['O', 'open-file'], ['L', 'address'], ['1', 'canvas-browser'], ['2', 'canvas-screen']]) {
       for (const modifier of mac ? ['⌘', 'Command+', 'cmd '] : ['⌃', '^', 'Control+', 'ctrl '])
         for (const query of [modifier + key, `${modifier}${key} key`])
           assert.deepEqual(find(query, platform), [id], `${platform}: ${query}`);
@@ -101,7 +101,7 @@ test('key spellings search actual keys and useful action wording retains whole-w
 test('nonempty punctuation and unknown symbols never become an empty all-actions query', () => {
   for (const query of ['!!', '???', '+', '---', '/', '⌥', '⌃', '^', '🌐', '⌫', '⌥!!', 'T🌐', 'Command+T!', '⌘T⌫', '⌘+'])
     assert.deepEqual(find(query), [], query);
-  for (const query of ['', ' ', '\t\n']) assert.equal(find(query).length, 15, JSON.stringify(query));
+  for (const query of ['', ' ', '\t\n']) assert.equal(find(query).length, 17, JSON.stringify(query));
 });
 
 test('an unmodified key glyph searches displayed bindings rather than prose', () => {

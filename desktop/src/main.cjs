@@ -183,7 +183,7 @@ const recordings = recorder.createRecordingStore(path.join(app.getPath('userData
 let pointerTimer, activityTimer, idleTimer, captchaTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', hermesWebappUrl: '', chatSurface: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', hermesWebappUrl: '', chatSurface: '', remotePlatform: 'linux', chatWidth: 490, preview: true, previewPos: null, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, canvasTabs: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -380,6 +380,7 @@ function selectAgent(id) {
   const viewingVps = activeTabId === 'vps';
   const localId = viewingVps ? browserReturnTabId : activeTabId;
   if (tabs.has(localId)) prefs.agentLastTabs[old] = localId;
+  if (old) prefs.canvasTabs[old] = viewingVps ? 'screen' : 'browser';
   prefs.selectedBotId = id;
   prefs.remoteControl = false;
   chatTarget = surfaceTarget();
@@ -387,7 +388,22 @@ function selectAgent(id) {
   const own = [...tabs.values()].filter(tab => tab.botId === id || (tab.allowedBots ?? []).includes(id));
   const nextLocal = own.some(tab => tab.id === prefs.agentLastTabs[id]) ? prefs.agentLastTabs[id] : own.at(-1)?.id || 'home';
   browserReturnTabId = nextLocal;
-  activeTabId = viewingVps ? 'vps' : nextLocal;
+  activeTabId = (prefs.canvasTabs[id] ? prefs.canvasTabs[id] === 'screen' : viewingVps) ? 'vps' : nextLocal;
+  applyLayout();
+}
+// The Canvas shows Browser or Bot screen (the VM live view); each bot keeps its own choice.
+async function showCanvas(tab) {
+  if ((activeTabId === 'vps') === (tab === 'screen')) return;
+  if (activeTabId === 'vps') activeTabId = tabs.has(browserReturnTabId) ? browserReturnTabId : 'home';
+  else {
+    browserReturnTabId = activeTabId; activeTabId = 'vps';
+    if (!vpsTabs.has(activeVpsTabId)) {
+      const waiting = [...vpsTabs.values()].find(item => item.handback?.state === 'awaiting_human');
+      if (waiting) await activateTab(waiting.id, 'vps');
+    }
+  }
+  prefs.remoteControl = false;
+  if (prefs.selectedBotId) { prefs.canvasTabs[prefs.selectedBotId] = tab; savePreferencesSoon(); }
   applyLayout();
 }
 // Compact, transcript-free Hermes summary for the workspace shell (sidebar
@@ -1960,17 +1976,8 @@ function registerIpc() {
       case 'close-tab':
         if (isVpsTarget(value.id, value.host)) { if(activeTabId===value.id)prefs.remoteControl=false; await vpsBrowser.request(`/v1/tabs/${value.id}`,'DELETE',undefined,{human:true}); vpsTabs.delete(value.id); if(activeTabId===value.id)activeTabId='home'; applyLayout(); } else closeTab(value.id); break;
       case 'activate': await activateTab(value.id, value.host); break;
-      case 'toggle-vps-view': {
-        if(activeTabId==='vps')activeTabId=tabs.has(browserReturnTabId)?browserReturnTabId:'home';
-        else {
-          browserReturnTabId=activeTabId;activeTabId='vps';
-          if (!vpsTabs.has(activeVpsTabId)) {
-            const waiting = [...vpsTabs.values()].find(tab => tab.handback?.state === 'awaiting_human');
-            if (waiting) await activateTab(waiting.id, 'vps');
-          }
-        }
-        prefs.remoteControl=false;applyLayout();break;
-      }
+      case 'toggle-vps-view': await showCanvas(activeTabId === 'vps' ? 'browser' : 'screen'); break;
+      case 'canvas-tab': await showCanvas(value?.tab === 'screen' ? 'screen' : 'browser'); break;
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
         const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; await tab.view.webContents.loadURL(target).catch(() => {}); } break;
@@ -3491,7 +3498,7 @@ function buildMenu() {
     ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, settings, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
     { label: 'File', submenu: [{ label: 'Open File…', accelerator: ACCELERATORS['open-file'], click: () => pickPdf().catch(error => logError('open-pdf', error)) }, { label: 'New Browser Tab', accelerator: ACCELERATORS['new-tab'], click: () => createTab({}) }, { label: 'Close Tab', accelerator: ACCELERATORS['close-tab'], click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(activeTabId) }, ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, settings, { type: 'separator' }, { role: 'quit' }])] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: ACCELERATORS.reload, click: () => { const tab = tabs.get(activeTabId); if (tab) reloadBrowserPage(tab); } }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
+    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: ACCELERATORS.reload, click: () => { const tab = tabs.get(activeTabId); if (tab) reloadBrowserPage(tab); } }, { type: 'separator' }, { id: 'canvas-browser', label: 'Browser', accelerator: ACCELERATORS['canvas-browser'], click: () => showCanvas('browser').then(broadcast) }, { id: 'canvas-screen', label: 'Bot Screen', accelerator: ACCELERATORS['canvas-screen'], click: () => showCanvas('screen').then(broadcast) }, { type: 'separator' }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
     ...(process.platform === 'darwin' ? [{ label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }] : []),
     { label: 'Help', submenu: [{ id: 'workspace-shortcuts', label: 'Keyboard Shortcuts', click: () => win.webContents.send('workspace:shortcuts') }, ...(prefs?.cloud?.sessionEnc ? [{ type: 'separator' }, { label: 'Get help', click: () => shell.openExternal(cloudView().supportUrl).catch(() => {}) }] : [])] },
   ]));
@@ -3511,6 +3518,7 @@ function restoreBrowserTabs() {
       if (item.active === true) activeTabId = tab.id;
     } catch {}
   }
+  if (prefs.canvasTabs[prefs.selectedBotId] === 'screen') { browserReturnTabId = activeTabId; activeTabId = 'vps'; }
 }
 function createWindow() {
   nativeTheme.themeSource = 'dark';
