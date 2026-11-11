@@ -165,7 +165,7 @@ const fake = path.join(__dirname, 'computer-fake-helper.cjs');
 const fakeHelper = (mode, extra = {}) => createHelper({
   command: async (kind) => [process.execPath, fake, kind], env: { ...process.env, FAKE_MODE: mode }, ...extra,
 });
-const fakeComputer = (mode) => createComputer({ command: async (kind) => [process.execPath, fake, kind], env: { ...process.env, FAKE_MODE: mode } });
+const fakeComputer = (mode, extra = {}) => createComputer({ command: async (kind) => [process.execPath, fake, kind], env: { ...process.env, FAKE_MODE: mode }, ...extra });
 
 test('one helper process answers every request and carries the policy', async (t) => {
   const helper = fakeHelper('ok');
@@ -451,14 +451,32 @@ test('a just-activated app that is briefly not found is retried once, then expla
 });
 
 test('an action refused because the person is busy waits out the idle rule and retries once', async (t) => {
-  const helper = fakeHelper('busy-once-act');
+  const helper = fakeHelper('busy-once-act', { busyRetry: true });
   t.after(() => helper.close());
   const started = Date.now();
   assert.ok((await helper.request({ cmd: 'act', pid: 5, steps: [{ action: 'press', ref: 'c1' }] })).results);
   assert.ok(Date.now() - started >= 2000, 'waited for two idle seconds');
-  const busy = fakeHelper('always-busy-act');
+  const busy = fakeHelper('always-busy-act', { busyRetry: true });
   t.after(() => busy.close());
   await assert.rejects(busy.request({ cmd: 'act', pid: 5, steps: [{ action: 'press', ref: 'c1' }] }), (error) => error.code === 'in_front');
+});
+
+test('Windows and Linux helpers report in_front at once, since waiting does not change which app is in front', async (t) => {
+  const helper = fakeHelper('busy-once-act');
+  t.after(() => helper.close());
+  const started = Date.now();
+  await assert.rejects(helper.request({ cmd: 'act', pid: 5, steps: [{ action: 'press', ref: 'c1' }] }), (error) => error.code === 'in_front');
+  assert.ok(Date.now() - started < 1500, 'no idle wait');
+});
+
+test('only the Mac helper is asked to skip its post-press beat before a wait', async (t) => {
+  const steps = [{ action: 'click', x: 1, y: 2 }, { action: 'wait', text: 'Done' }];
+  const other = fakeComputer('reject-settle');
+  t.after(other.close);
+  assert.deepEqual((await other.service.action('bot', 5, { action: 'batch', generation: 7, steps })).results.map((r) => r.ok !== false && !r.error), [true, true]);
+  const mac = fakeComputer('reject-settle', { nativeMac: true });
+  t.after(mac.close);
+  await assert.rejects(mac.service.action('bot', 5, { action: 'batch', generation: 7, steps }), /settleMs sent/);
 });
 
 test('any command that reports a missing app is retried once and explained', async (t) => {

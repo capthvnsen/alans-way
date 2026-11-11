@@ -31,7 +31,7 @@ function helperError(response) {
 // if it cannot start at all every request runs the same JSON through
 // `helper once` instead (the old one-shot mode) for a minute before retrying.
 // `command(mode)` resolves to [executable, ...args] for mode 'serve' or 'once'.
-function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
+function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS, busyRetry = false }) {
   const policy = helperPolicy();
   let child = null;
   let chain = Promise.resolve();
@@ -162,9 +162,10 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
       if (appMissing(response))
         response = { ...response, error: 'App not found. If it was just opened or activated, wait a moment and retry.' };
     }
-    // in_front at the top of an act is refused before any step runs, so waiting out the
-    // two-second idle rule and asking once more saves the model a round trip.
-    if (body.cmd === 'act' && response && response.ok === false && response.code === 'in_front') {
+    // On the Mac, in_front at the top of an act is refused before any step runs, so waiting out
+    // the two-second idle rule and asking once more saves the model a round trip. Windows and
+    // Linux mean "that app is in front" there, which waiting does not change.
+    if (busyRetry && body.cmd === 'act' && response && response.ok === false && response.code === 'in_front') {
       checkCall();
       await waitInCall(new Promise((resolve) => setTimeout(resolve, Math.ceil(remainingMs(BUSY_RETRY_MS)))));
       response = await run(body, tracking);
@@ -486,7 +487,7 @@ function createComputerService(driver) {
 
 // platform.command(mode) -> [file, ...args]; shared by mac, Windows, and Linux.
 function createComputer({ command, env, nativeMac = false }) {
-  const helper = createHelper({ command, env });
+  const helper = createHelper({ command, env, busyRetry: nativeMac });
   // A permission dialog must never occupy the app's AX request queue.
   const permissionHelper = nativeMac ? createHelper({ command, env }) : null;
   let windowSupport;
@@ -523,7 +524,9 @@ function createComputer({ command, env, nativeMac = false }) {
     act: async (pid, { steps, generation, menubar, windowId, settleMs }) => {
       await requireWindowSupport(windowId);
       const { ok, id, ...reply } = await helper.request({
-        cmd: 'act', pid, steps, ...windowOptions(windowId), ...(Number.isInteger(generation) ? { generation } : {}), ...(menubar ? { menubar: true } : {}), ...(Number.isInteger(settleMs) ? { settleMs } : {}),
+        cmd: 'act', pid, steps, ...windowOptions(windowId), ...(Number.isInteger(generation) ? { generation } : {}), ...(menubar ? { menubar: true } : {}),
+        // Only the Mac helper reads settleMs as "skip the fixed beat"; Windows and Linux read it as the whole settle (default 60 ms).
+        ...(nativeMac && Number.isInteger(settleMs) ? { settleMs } : {}),
       });
       return reply;
     },

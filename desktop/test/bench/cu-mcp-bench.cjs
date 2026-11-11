@@ -69,7 +69,8 @@ function reexecUnderApp(app) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cu-mcp-bench-'));
   const out = path.join(dir, 'out.txt');
   const rest = process.argv.slice(2).filter((x, i, a) => x !== '--mac-app' && a[i - 1] !== '--mac-app');
-  spawnSync('open', ['-W', '-n', '-g', '--env', 'ELECTRON_RUN_AS_NODE=1', '--env', 'CU_MCP_BENCH_IN_APP=1', '--stdout', out, '--stderr', out, app, '--args', __filename, ...rest]);
+  // If the app ignores ELECTRON_RUN_AS_NODE and starts its window, it uses a throwaway profile, not the person's connection.json.
+  spawnSync('open', ['-W', '-n', '-g', '--env', 'ELECTRON_RUN_AS_NODE=1', '--env', 'CU_MCP_BENCH_IN_APP=1', '--env', `HERMES_WORKSPACE_DATA=${path.join(dir, 'profile')}`, '--stdout', out, '--stderr', out, app, '--args', __filename, ...rest]);
   const text = fs.existsSync(out) ? fs.readFileSync(out, 'utf8') : 'no output from the app run';
   fs.rmSync(dir, { recursive: true, force: true });
   process.stdout.write(text.split('\n').filter((l) => !/codesign_util|Legacy broker credential/.test(l)).join('\n'));
