@@ -774,7 +774,8 @@ async function signInWebapp() {
   const failure = await signInToWebapp((url, init) => session.fromPartition(WEBAPP_PARTITION).fetch(url, init), target, saved);
   if (target !== webappTarget) return '';
   webappSignInError = failure && SIGN_IN_ERRORS[failure];
-  if (!failure) webappView?.webContents.loadURL(target).catch(() => {});
+  // The Canvas view shares the partition, so it reopens its page with the new cookie too.
+  if (!failure) { webappView?.webContents.loadURL(target).catch(() => {}); canvasPage = ''; applyLayout(); }
   broadcast();
   return webappSignInError;
 }
@@ -2252,7 +2253,7 @@ function registerIpc() {
         webappSignIn.forget(); webappSignInError = ''; webappSignInTried = true;
         await session.fromPartition(WEBAPP_PARTITION).clearStorageData();
         webappView?.webContents.loadURL(webappTarget).catch(() => {});
-        broadcast(); break;
+        canvasPage = ''; applyLayout(); broadcast(); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
       case 'bot-sort': if (['recent', 'alpha', 'manual'].includes(value.mode)) { prefs.botSort = value.mode; savePreferences(); } break;
       case 'hide-bot':
