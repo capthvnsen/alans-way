@@ -31,6 +31,8 @@
     "test:webapp-embed": "node test/run-electron.cjs test/webapp-embed-electron.cjs",
     "test:canvas-tabs": "node test/run-electron.cjs test/canvas-tabs-electron.cjs",
     "test:native-chat": "node test/native-chat-electron.cjs",
+    "bench:chat": "node test/bench/chat-surfaces-bench.cjs",
+    "prebench:chat": "npm run build:preload",
     "pretest:native-chat": "npm run build:preload",
     "test:needs-human": "electron test/needs-human-electron.cjs",
     "test:recorder": "node test/run-electron.cjs test/recorder-electron.cjs",
