@@ -61,7 +61,7 @@ function renderBots() {
     row.setAttribute('role', 'listitem'); row.draggable = (state.botSort || 'manual') === 'manual'; row.dataset.botId = bot.id;
     const open = element('button', 'bot-open'); open.type = 'button'; open.setAttribute('aria-label', `Open ${bot.name}${flags.waiting ? ', waiting for you' : ''}`);
     open.setAttribute('aria-current', String(selectedId === bot.id)); open.tabIndex = bot.id === entryId ? 0 : -1;
-    const avatar = element('span', 'avatar'); window.HermesAvatars.paint(avatar, bot, state);
+    const avatar = element('span', 'avatar'); avatar.style.setProperty('--avatar-bg', colorFor(bot.id)); window.HermesAvatars.paint(avatar, bot, state);
     const copy = element('span', 'bot-copy');
     const nameLine = element('div', 'bot-name', bot.name);
     if (state.primaryBotId === bot.id) nameLine.append(element('span', 'primary-badge', 'PRIMARY'));

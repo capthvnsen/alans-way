@@ -101,6 +101,7 @@ if (!process.versions.electron) {
       // Three usable surfaces: three segments in one tablist; nothing configured yet is the default Hermes Desktop.
       await until(async () => (await segments()).replace(/\*/g, '') === 'telegram,hermes-desktop,native', 'three segments');
       assert.equal(await run(`document.getElementById('surface-tabs').getAttribute('role')`), 'tablist');
+      assert.equal(await run(`[...document.querySelectorAll('#bot-list .avatar')].every(a => getComputedStyle(a).backgroundColor !== 'rgba(0, 0, 0, 0)')`), true, 'a bot without a picture shows its initials on a colour');
       await showing('hermes-desktop');
       const webappView = await until(() => webContents.getAllWebContents().find((c) => c.session === session.fromPartition('persist:hermes-webapp') && !c.isDestroyed()), 'webapp view');
       const telegramView = webContents.getAllWebContents().find((c) => c.session === session.fromPartition('persist:telegram'));
