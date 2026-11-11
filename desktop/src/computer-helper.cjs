@@ -11,6 +11,8 @@ const REQUEST_TIMEOUT_MS = 20000;
 const ONCE_RETRY_MS = 60000;
 const STEP_LIMIT = 25;
 const WAIT_POLL_MS = 150;
+// Just over the helper's two seconds without input for acting in the front app.
+const BUSY_RETRY_MS = 2100;
 // Waits and act runs in one call start only within this budget. A run started
 // just before it ends can still take REQUEST_TIMEOUT_MS (20 s), keeping the call
 // well under the connector's 90 s abort.
@@ -159,6 +161,13 @@ function createHelper({ command, env, timeoutMs = REQUEST_TIMEOUT_MS }) {
       response = await run(body, tracking);
       if (appMissing(response))
         response = { ...response, error: 'App not found. If it was just opened or activated, wait a moment and retry.' };
+    }
+    // in_front at the top of an act is refused before any step runs, so waiting out the
+    // two-second idle rule and asking once more saves the model a round trip.
+    if (body.cmd === 'act' && response && response.ok === false && response.code === 'in_front') {
+      checkCall();
+      await waitInCall(new Promise((resolve) => setTimeout(resolve, Math.ceil(remainingMs(BUSY_RETRY_MS)))));
+      response = await run(body, tracking);
     }
     return response;
   }
@@ -435,7 +444,8 @@ function createComputerService(driver) {
         break;
       }
       let reply;
-      try { reply = await driver.act(pid, { steps: steps.slice(at, end), generation: body.generation, menubar, ...window }); }
+      // A wait right after this run confirms its effect, so the helper's fixed post-press beat would only add latency.
+      try { reply = await driver.act(pid, { steps: steps.slice(at, end), generation: body.generation, menubar, ...window, ...(steps[end]?.action === 'wait' ? { settleMs: 250 } : {}) }); }
       catch (error) {
         // Nothing ran yet: fail the call as before. Later, earlier steps did run and must be reported.
         if (!results.length) throw error;
@@ -510,10 +520,10 @@ function createComputer({ command, env, nativeMac = false }) {
       const { id, ...tree } = await helper.request({ cmd: 'snapshot', pid, ...windowOptions(windowId), ...(menubar ? { menubar: true } : {}), ...(Number.isInteger(pin) ? { pin } : {}) });
       return tree;
     },
-    act: async (pid, { steps, generation, menubar, windowId }) => {
+    act: async (pid, { steps, generation, menubar, windowId, settleMs }) => {
       await requireWindowSupport(windowId);
       const { ok, id, ...reply } = await helper.request({
-        cmd: 'act', pid, steps, ...windowOptions(windowId), ...(Number.isInteger(generation) ? { generation } : {}), ...(menubar ? { menubar: true } : {}),
+        cmd: 'act', pid, steps, ...windowOptions(windowId), ...(Number.isInteger(generation) ? { generation } : {}), ...(menubar ? { menubar: true } : {}), ...(Number.isInteger(settleMs) ? { settleMs } : {}),
       });
       return reply;
     },
