@@ -150,7 +150,7 @@ if (!process.versions.electron) {
         // A failed answer leaves the choices usable.
         await fetch(`${process.env.NATIVE_CHAT_URL}/__fail-approval`);
         await run(`${allowOnce}.click()`);
-        await until(() => visible('#native-pane .nc-notice'), 'failure shown');
+        await until(async () => (await run(`document.querySelector('#native-pane .nc-notice').textContent`)) === 'Hermes had a problem', 'failure shown in plain words');
         await until(() => run(`!${allowOnce}.disabled`), 'Allow once usable again', 3000);
       }
       await run(`${allowOnce}.click()`);

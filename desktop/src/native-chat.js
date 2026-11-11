@@ -220,7 +220,7 @@
 
     async function command(name, value = {}) {
       try { return await api.command(name, value); }
-      catch (error) { flash(String(error?.message || error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '')); return null; }
+      catch (error) { flash(String(error?.message || error).replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '')); return null; }
     }
     function flash(text) {
       notice.textContent = text;
