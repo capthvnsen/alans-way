@@ -159,7 +159,23 @@
     let shown = CHUNK, pinned = true, composing = false, growing = false, olderPending = false;
     let threadSig = '', liveSig = '', lastActive = null, paneArmed = false, threadArmed = false, tokenRun = '', frame = 0;
     let nodes = new Map();
-    const drafts = new Map();
+    const drafts = new Map(), scrolls = new Map();
+    // Per conversation: the message at the top of the view and how far into it (rebuilt rows have
+    // estimated heights until painted, so a raw scrollTop would drift), or pinned to the bottom.
+    const offsetOf = (node) => node.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    const keepScroll = () => {
+      if (!visible || !state || !scroller.clientHeight) return;
+      const row = [...list.children].find((node) => node.dataset.id && offsetOf(node) + node.offsetHeight > scroller.scrollTop);
+      scrolls.set(draftKey(), { pinned, shown, top: scroller.scrollTop, id: row?.dataset.id, delta: row ? scroller.scrollTop - offsetOf(row) : 0 });
+    };
+    // Rows near the view paint at full height over the next frames, so the anchor is set again.
+    const restoreScroll = (key = draftKey(), frames = 2) => {
+      const saved = scrolls.get(key);
+      if (!visible || !saved || saved.pinned || key !== draftKey()) return;
+      const row = saved.id && [...list.children].find((node) => node.dataset.id === saved.id);
+      scroller.scrollTop = row ? offsetOf(row) + saved.delta : saved.top;
+      if (row && frames) requestAnimationFrame(() => restoreScroll(key, frames - 1));
+    };
     const mark = (name) => requestAnimationFrame(() => setTimeout(() => marks.push({ name, t: performance.now() }), 0));
     const draftKey = () => state?.activeId || 'new';
 
@@ -356,6 +372,7 @@
 
     const toBottom = () => { scroller.scrollTop = scroller.scrollHeight; };
     scroller.addEventListener('scroll', () => {
+      if (!visible) return;
       pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
       if (pinned) jump.classList.add('hidden');
       if (scroller.scrollTop < 800 && !growing) growOlder();
@@ -494,7 +511,9 @@
       }
       const first = lastActive === null, switched = !first && next.activeId !== lastActive;
       if (first || switched) {
-        shown = CHUNK; pinned = true; nodes = new Map(); list.replaceChildren(); threadSig = '';
+        if (switched) keepScroll();
+        const saved = scrolls.get(next.activeId || 'new');
+        shown = saved?.shown || CHUNK; pinned = saved ? saved.pinned : true; nodes = new Map(); list.replaceChildren(); threadSig = '';
         if (switched) {
           if (state) drafts.set(draftKey(), textarea.value);
           threadArmed = visible;
@@ -505,7 +524,7 @@
       state = next;
       thread = next.thread;
       // A session switch paints in this same task; streaming frames wait for the next animation frame.
-      if (first || switched) render(); else scheduleRender();
+      if (first || switched) { render(); if (switched) restoreScroll(); } else scheduleRender();
     }
 
     const unsubscribe = api.onState(setState);
@@ -514,8 +533,9 @@
       setState,
       setVisible(on) {
         const shown = on && !visible;
+        if (!on) keepScroll();
         visible = on;
-        if (shown) { paneArmed = true; if (state) render(); }
+        if (shown) { paneArmed = true; if (state) { render(); restoreScroll(); } }
       },
       dispose() {
         disposed = true;

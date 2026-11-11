@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { resolveChatSurface, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed } = require('../src/shell-support.cjs');
+const { resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, keepBots, plainLine, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed } = require('../src/shell-support.cjs');
 
 const dir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'shell-support-'));
 
@@ -241,4 +241,35 @@ test('resolveChatSurface keeps the native chat only while it is configured', () 
   assert.equal(resolveChatSurface('native', 'ready', false), 'hermes-desktop');
   assert.equal(resolveChatSurface('', 'unconfigured', true), 'telegram', 'configuring native chat alone does not switch the surface');
   assert.equal(resolveChatSurface('telegram', 'unconfigured', true), 'telegram');
+});
+
+test('surfaceForBot: the bot’s own choice, then the global setting, then the fallback; unusable choices are kept', () => {
+  const all = { telegram: true, webapp: true, nativeConfigured: true, webappStatus: 'ready' };
+  assert.deepEqual(usableSurfaces(all), ['telegram', 'hermes-desktop', 'native']);
+  assert.deepEqual(usableSurfaces({ telegram: false, webapp: true }), ['hermes-desktop']);
+  assert.equal(surfaceForBot('native', 'telegram', all), 'native', 'per-bot choice wins');
+  assert.equal(surfaceForBot(undefined, 'native', all), 'native', 'no choice: the global setting');
+  assert.equal(surfaceForBot(undefined, '', all), 'hermes-desktop', 'no setting: resolveChatSurface');
+  assert.equal(surfaceForBot(undefined, '', { ...all, webappStatus: 'unreachable' }), 'telegram');
+  const choices = { 1: 'native' };
+  assert.equal(surfaceForBot(choices[1], 'hermes-desktop', { ...all, nativeConfigured: false }), 'hermes-desktop', 'unusable choice falls back');
+  assert.deepEqual(choices, { 1: 'native' }, 'and is not erased');
+  assert.equal(surfaceForBot('telegram', '', { telegram: false, webapp: true, nativeConfigured: true }), 'hermes-desktop', 'the built-in row never shows Telegram');
+  assert.equal(surfaceForBot(undefined, 'native', { telegram: false, webapp: true, nativeConfigured: true }), 'native');
+  assert.equal(surfaceForBot(undefined, '', { telegram: false, nativeConfigured: true }), 'native');
+});
+
+test('inboxRow: unread from either source, waiting from native prompts or a handback, native preview only on native', () => {
+  assert.deepEqual(inboxRow({ bot: { unread: 2 }, surface: 'telegram', native: { unread: false, waiting: false, preview: 'hi' } }), { surface: 'telegram', unread: true, waiting: false, preview: '' });
+  assert.deepEqual(inboxRow({ bot: { unread: 0 }, surface: 'native', native: { unread: true, waiting: true, preview: 'hi' } }), { surface: 'native', unread: true, waiting: true, preview: 'hi' });
+  assert.deepEqual(inboxRow({ bot: undefined, surface: 'hermes-desktop', native: null, handback: true }), { surface: 'hermes-desktop', unread: false, waiting: true, preview: '' });
+  assert.equal(inboxRow({ bot: {}, surface: 'native', native: null }).unread, false);
+});
+
+test('keepBots drops removed bots and keeps the built-in row; plainLine flattens markdown', () => {
+  assert.deepEqual(keepBots({ 1: 'native', 2: 'telegram', hermes: 'native' }, ['2']), { 2: 'telegram', hermes: 'native' });
+  assert.deepEqual(keepBots(undefined, []), {});
+  assert.equal(plainLine('## Result\n\n- **item** a\n\n| k | v |\n|---|---|\n| x | 1 |\n\n```js\nconsole.log(1);\n```\nSee [docs](https://x.y)'), 'Result - item a k v x 1 See docs');
+  assert.equal(plainLine('::card{title="x"}\nDone.'), 'Done.');
+  assert.equal(plainLine('a'.repeat(300)).length, 120);
 });
