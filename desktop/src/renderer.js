@@ -460,8 +460,8 @@ function render(next) {
   renderHome(bot, !!tab || remote || page || !!state.onboarding);
   renderOnboarding(!tab && !remote && !page && !!state.onboarding);
   $('browser-toolbar').classList.toggle('hidden', remote || page);
-  $('remote-preview-slot').classList.toggle('hidden', !state.preview || remote || !!state.onboarding);
-  $('preview-chip').classList.toggle('hidden', state.preview || remote);
+  $('remote-preview-slot').classList.toggle('hidden', !state.preview || remote || page || !!state.onboarding);
+  $('preview-chip').classList.toggle('hidden', state.preview || remote || page);
   $('preview-label').textContent = state.remoteStatus === 'connected' ? `${remoteName()} desktop` : `${remoteName()} · ${state.remoteStatus}`;
   document.body.classList.toggle('win32', state.platform === 'win32');
   $('new-tab').title = state.platform === 'darwin' ? 'New local browser tab (⌘T)' : 'New local browser tab (Ctrl+T)';
