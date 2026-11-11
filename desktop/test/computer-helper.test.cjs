@@ -326,7 +326,7 @@ test('a batch can act and then wait for what the action caused', async (t) => {
 });
 
 test('wait polls pin the caller generation for later runs', async () => {
-  const options = [], generations = [];
+  const options = [], generations = [], settles = [];
   let polls = 0;
   const service = createComputerService({
     snapshot: async (_pid, value) => {
@@ -336,6 +336,7 @@ test('wait polls pin the caller generation for later runs', async () => {
     },
     act: async (_pid, request) => {
       generations.push(request.generation);
+      settles.push(request.settleMs);
       return { results: request.steps.map(() => ({ ok: true })), generation: 50, elements: [{ ref: 'c1', role: 'AXButton', name: 'Saving' }] };
     },
   });
@@ -347,6 +348,8 @@ test('wait polls pin the caller generation for later runs', async () => {
   assert.ok(options.length >= 3);
   assert.ok(options.every((value) => value.pin === 7));
   assert.deepEqual(generations, [7, 7]);
+  // The run a wait confirms skips the helper's fixed post-press beat; the last run keeps it.
+  assert.deepEqual(settles, [250, undefined]);
 });
 
 test('no act run starts after the call deadline', async (t) => {
@@ -445,6 +448,17 @@ test('a just-activated app that is briefly not found is retried once, then expla
   const gone = fakeHelper('always-not-found');
   t.after(() => gone.close());
   await assert.rejects(gone.request({ cmd: 'snapshot', pid: 5 }), (error) => error.code === 'not_found' && /wait a moment and retry/.test(error.message));
+});
+
+test('an action refused because the person is busy waits out the idle rule and retries once', async (t) => {
+  const helper = fakeHelper('busy-once-act');
+  t.after(() => helper.close());
+  const started = Date.now();
+  assert.ok((await helper.request({ cmd: 'act', pid: 5, steps: [{ action: 'press', ref: 'c1' }] })).results);
+  assert.ok(Date.now() - started >= 2000, 'waited for two idle seconds');
+  const busy = fakeHelper('always-busy-act');
+  t.after(() => busy.close());
+  await assert.rejects(busy.request({ cmd: 'act', pid: 5, steps: [{ action: 'press', ref: 'c1' }] }), (error) => error.code === 'in_front');
 });
 
 test('any command that reports a missing app is retried once and explained', async (t) => {
