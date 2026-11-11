@@ -24,6 +24,9 @@ BUDGET = 5.0
 NODE_CAP = 2500
 CALL_MS = 1000
 MAX_STEPS = 25
+# Input time per act. The settle (up to 2 s) and the read afterwards (BUDGET) must also fit inside the 20 s JS kill.
+ACT_BUDGET = 10.0
+ACT_DEADLINE = None
 
 ROLE_NUM = {
     'push button': 43, 'toggle button': 62, 'check box': 7, 'radio button': 44, 'text': 61,
@@ -843,10 +846,14 @@ def best_window(pid):
 
 
 def send_xdotool(args):
+    # At least 1 s so a mouseup after a failed drag still goes out.
+    left = 30 if ACT_DEADLINE is None else min(30, max(1, ACT_DEADLINE - time.monotonic()))
     try:
-        subprocess.check_call(['xdotool', *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        subprocess.check_call(['xdotool', *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=left)
     except FileNotFoundError:
         fail('xdotool is not installed.', 'unsupported_action')
+    except subprocess.TimeoutExpired:
+        fail('The input ran out of time and may have been partly sent.', 'timeout')
     except (subprocess.SubprocessError, OSError):
         fail('Could not send that input.')
 
@@ -1106,17 +1113,24 @@ def cmd_act(req):
         target.walk = walk_app(pid, app, bool(req.get('menubar')))
         if target.walk['generation'] != target.gen:
             fail('stale_ref: The app changed since your snapshot. Take a fresh snapshot.', 'stale_ref')
+    global ACT_DEADLINE
+    ACT_DEADLINE = time.monotonic() + ACT_BUDGET
     results = []
-    for step in steps:
-        run = STEPS.get(step.get('action'))
-        try:
-            if not run:
-                fail(f"Unsupported action {step.get('action')}.", 'unsupported_action')
-            argv = pixel_argv(step) if agent_desktop() else None
-            results.append(step_pixel(bus, target, argv) if argv else run(bus, target, step))
-        except Fail as exc:
-            results.append({'ok': False, 'error': str(exc), 'code': exc.code})
-            break
+    try:
+        for step in steps:
+            run = STEPS.get(step.get('action'))
+            try:
+                if results and time.monotonic() >= ACT_DEADLINE:
+                    fail('Out of time before this step; it was not sent.', 'timeout')
+                if not run:
+                    fail(f"Unsupported action {step.get('action')}.", 'unsupported_action')
+                argv = pixel_argv(step) if agent_desktop() else None
+                results.append(step_pixel(bus, target, argv) if argv else run(bus, target, step))
+            except Fail as exc:
+                results.append({'ok': False, 'error': str(exc), 'code': exc.code})
+                break
+    finally:
+        ACT_DEADLINE = None
     response = {'ok': True, 'results': results}
     if req.get('snapshot', True) and any(item['ok'] for item in results):
         time.sleep(min(max(int(req.get('settleMs', 60)), 0), 2000) / 1000)
@@ -1563,6 +1577,13 @@ def cmd_selftest(req):
             globals()['walk_app'] = real_walk
         check(reply['ok'] and codes(reply) == ['ok'] and sent and reply['note'].startswith('unresponsive: the steps ran')
               and 'elements' not in reply, 'a tree unreadable after the input keeps the results of the steps that ran')
+        del sent[:]
+        globals()['ACT_BUDGET'] = 0
+        try:
+            reply = cmd_act({'pid': 0, 'steps': steps[:2], 'settleMs': 0})
+        finally:
+            globals()['ACT_BUDGET'] = 10.0
+        check(codes(reply) == ['ok', 'timeout'] and len(sent) == 1, 'steps stop at the act deadline and keep what ran')
     finally:
         restore()
     del sent[:], displays[:]
@@ -1615,6 +1636,21 @@ def cmd_selftest(req):
         check(x_window_pids() == [10, 30] and calls[1] == ['getwindowpid', '3'], 'a window without a pid is skipped')
     finally:
         restore()
+    limits, real_call = [], subprocess.check_call
+
+    def slow(args, timeout, **_kw):
+        limits.append(timeout)
+        raise subprocess.TimeoutExpired(args, timeout)
+    subprocess.check_call = slow
+    globals()['ACT_DEADLINE'] = time.monotonic() + 3
+    try:
+        send_xdotool(['type', 'x'])
+        refused = None
+    except Fail as exc:
+        refused = exc.code
+    finally:
+        subprocess.check_call, globals()['ACT_DEADLINE'] = real_call, None
+    check(refused == 'timeout' and limits[0] <= 3, 'xdotool is capped by the time left and reports a timeout')
     screen = (1920, 1080)
     check(clamp_box({'X': '-10', 'Y': '5', 'WIDTH': '100', 'HEIGHT': '2000'}, screen) == (0, 5, 90, 1075), 'clamp box')
     check(clamp_box({'X': '100', 'Y': '50', 'WIDTH': '640', 'HEIGHT': '480'}, screen) == (100, 50, 640, 480), 'clamp keeps a window that fits')
