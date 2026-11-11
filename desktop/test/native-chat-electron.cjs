@@ -145,7 +145,15 @@ if (!process.versions.electron) {
       assert.match(await run(`document.querySelector('#native-pane .nc-prompt.approval').innerText`), /Alan wants to run a command[\s\S]*Show details/);
       await until(async () => (await run(`document.querySelector('#native-pane .nc-status')?.textContent`)) === 'Waiting for you', 'status says it waits for you');
       assert.equal(await run(`document.querySelector('#native-pane .nc-prompt.approval details pre').textContent`), 'rm -rf /tmp/hermes-lab-nonexistent-xyz');
-      await run(`[...document.querySelectorAll('#native-pane .nc-prompt.approval button')].find(b => b.textContent === 'Allow once').click()`);
+      const allowOnce = `[...document.querySelectorAll('#native-pane .nc-prompt.approval button')].find(b => b.textContent === 'Allow once')`;
+      if (!LAB) {
+        // A failed answer leaves the choices usable.
+        await fetch(`${process.env.NATIVE_CHAT_URL}/__fail-approval`);
+        await run(`${allowOnce}.click()`);
+        await until(() => visible('#native-pane .nc-notice'), 'failure shown');
+        await until(() => run(`!${allowOnce}.disabled`), 'Allow once usable again', 3000);
+      }
+      await run(`${allowOnce}.click()`);
       await until(() => visible('#native-pane .nc-prompt.approval.answered'), 'approval answered');
       await idle();
       await until(async () => (await rows()).filter((row) => row.role === 'user').length === 3 && (await rows()).filter((row) => row.role === 'assistant').length === 3, 'approval turn reconciled');

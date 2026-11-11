@@ -294,7 +294,7 @@
           for (const choice of ['deny', 'once', 'session', 'always']) {
             if (!c.choices.includes(choice)) continue;
             actions.append(button(`nc-pill${choice === 'once' ? ' primary' : ''}`, { once: 'Allow once', session: 'Allow for this chat', always: 'Always allow', deny: 'Deny' }[choice],
-              (event) => { event.currentTarget.disabled = true; command('approve', { sessionId: state.activeId, cardId: c.id, choice }); }));
+              (event) => { const pressed = event.currentTarget; pressed.disabled = true; command('approve', { sessionId: state.activeId, cardId: c.id, choice }).then((reply) => { if (!reply) pressed.disabled = false; }); }));
           }
           node.append(actions);
         }
