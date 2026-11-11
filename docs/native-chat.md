@@ -64,6 +64,36 @@ Hermes lists conversations from every surface. Only those created over the API
 (`source` `api_server`) accept messages here. Others, such as Telegram, can be
 read. **Continue here** copies one into a new API conversation and opens it.
 
+## Surfaces and one inbox
+
+The chat header has a switch with **Telegram**, **Hermes Desktop** and **Native**.
+It shows only what is set up: Telegram for a Telegram bot, Hermes Desktop once it
+has an address (marked when it can't be reached), Native once it has an address
+and key. With one surface it is hidden. Arrow keys, Home and End move along it.
+
+The left list has one row per bot, whatever surface it uses. With no Telegram bots
+at all, one built-in row named after the Hermes host (`hermes`) reaches Hermes
+Desktop and Native. A row's dot means unread in Telegram or in its native
+conversation; an amber ring means it is waiting for you (an open approval or
+question in its native conversation, or a browser tab handed back to you). A new
+native wait while you are elsewhere sends one notification.
+
+**Shared between surfaces:** Hermes Desktop and Native read the same Hermes
+session store, so a conversation started in one is listed in the other.
+Telegram-source conversations can be read from Native but not written to; Continue
+here forks them. Switching keeps every surface alive: the Telegram and Hermes
+Desktop views stay loaded, and a native reply keeps streaming in the background
+(it marks the row unread when it finishes out of view).
+
+**Per bot** (`preferences.json`): `chatSurfaces[botId]` is the surface you last
+picked with the switch; a bot without one follows Settings, Chat surface.
+`nativeSessions[botId]` is the native conversation last used with that bot. A bot
+with none opens, for a Telegram bot, the newest Telegram-source conversation on
+this Hermes host (read-only), otherwise the newest conversation made here, or a new
+chat. Which Hermes conversation belongs to which Telegram bot is not known; "newest
+Telegram-source conversation" is a guess, nothing more. Drafts and scroll position
+are kept per conversation while the app runs.
+
 ## Known limits
 
 - Math (`$…$`) shows as code-styled text, not typeset.

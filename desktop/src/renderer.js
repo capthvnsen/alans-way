@@ -31,17 +31,17 @@ function renderBots() {
   // Capture ownership before a zero-result filter can hide and blur the list.
   const focusedId = focused?.dataset.botId, focusedHide = document.activeElement.classList.contains('bot-hide');
   const previousIds = [...list.children].map(row => row.dataset.botId), focusedIndex = previousIds.indexOf(focusedId);
-  const search = $('bot-search').value.trim().toLowerCase();
-  const visibleBots = orderedBots();
+  const search = $('bot-search').value.trim().toLowerCase(), selectedId = state.chatBotId ?? state.selectedBotId, inbox = state.inbox || {};
+  const visibleBots = state.hermesBot && !state.bots.length ? [state.hermesBot] : orderedBots();
   const bots = visibleBots.filter((bot) => `${bot.name || ''} ${bot.username || ''}`.toLowerCase().includes(search));
   list.classList.toggle('hidden', !!search && !bots.length);
   $('bot-search-clear').classList.toggle('hidden', !search);
   $('bot-search-empty').classList.toggle('hidden', !search || bots.length > 0);
   $('bot-search-status').textContent = search ? (bots.length ? `${bots.length} agent${bots.length === 1 ? '' : 's'} found.` : 'No agents found.') : '';
   $('bot-count').textContent = visibleBots.length;
-  $('empty-bots').classList.toggle('hidden', !!search || state.bots.length > 0);
+  $('empty-bots').classList.toggle('hidden', !!search || state.bots.length > 0 || !!state.hermesBot);
   $('empty-bots').querySelector('p').textContent = state.telegramStatus === 'connected' ? 'Finding your Telegram bot chats…' : 'Sign in to Telegram to load your bot chats here.';
-  const signature = JSON.stringify([bots.map(({ activity, ...bot }) => bot), state.selectedBotId, state.primaryBotId, state.botSort]);
+  const signature = JSON.stringify([bots.map(({ activity, ...bot }) => bot), selectedId, state.primaryBotId, state.botSort, inbox]);
   if (signature === botListSignature) {
     for (const row of list.children) {
       const bot = bots.find(item => item.id === row.dataset.botId);
@@ -54,22 +54,24 @@ function renderBots() {
   // Continue at the next surviving neighbor; at the end, use the previous one.
   const focusId = remainingIds.has(focusedId) ? focusedId : previousIds.slice(focusedIndex + 1).find(id => remainingIds.has(id))
     || previousIds.slice(0, focusedIndex).reverse().find(id => remainingIds.has(id)) || bots[0]?.id;
-  const entryId = focusedId ? focusId : bots.find(bot => bot.id === state.selectedBotId)?.id || bots[0]?.id;
+  const entryId = focusedId ? focusId : bots.find(bot => bot.id === selectedId)?.id || bots[0]?.id;
   botListSignature = signature; list.replaceChildren();
   for (const bot of bots) {
-    const row = element('div', `bot-row${state.selectedBotId === bot.id ? ' selected' : ''}${state.primaryBotId === bot.id ? ' primary' : ''}`);
+    const row = element('div', `bot-row${selectedId === bot.id ? ' selected' : ''}${state.primaryBotId === bot.id ? ' primary' : ''}`), flags = inbox[bot.id] || {};
     row.setAttribute('role', 'listitem'); row.draggable = (state.botSort || 'manual') === 'manual'; row.dataset.botId = bot.id;
-    const open = element('button', 'bot-open'); open.type = 'button'; open.setAttribute('aria-label', `Open ${bot.name}`);
-    open.setAttribute('aria-current', String(state.selectedBotId === bot.id)); open.tabIndex = bot.id === entryId ? 0 : -1;
+    const open = element('button', 'bot-open'); open.type = 'button'; open.setAttribute('aria-label', `Open ${bot.name}${flags.waiting ? ', waiting for you' : ''}`);
+    open.setAttribute('aria-current', String(selectedId === bot.id)); open.tabIndex = bot.id === entryId ? 0 : -1;
     const avatar = element('span', 'avatar'); window.HermesAvatars.paint(avatar, bot, state);
     const copy = element('span', 'bot-copy');
     const nameLine = element('div', 'bot-name', bot.name);
     if (state.primaryBotId === bot.id) nameLine.append(element('span', 'primary-badge', 'PRIMARY'));
-    copy.append(nameLine, element('div', 'bot-preview', bot.preview || (bot.username ? `@${bot.username}` : 'Telegram bot')), element('div', 'bot-activity'));
-    const hide = element('button', 'bot-hide', '×'); hide.title = `Hide ${bot.name}`; hide.setAttribute('aria-label', hide.title);
+    copy.append(nameLine, element('div', 'bot-preview', flags.preview || bot.preview || (bot.username ? `@${bot.username}` : bot.id === 'hermes' ? 'Hermes Desktop and native chat' : 'Telegram bot')), element('div', 'bot-activity'));
+    const hide = element('button', `bot-hide${bot.id === 'hermes' ? ' hidden' : ''}`, '×'); hide.title = `Hide ${bot.name}`; hide.setAttribute('aria-label', hide.title);
     hide.tabIndex = bot.id === entryId ? 0 : -1;
     hide.onclick = (event) => { event.stopPropagation(); command('hide-bot', { id: bot.id }); };
-    open.append(avatar, copy); if (bot.unread) open.append(element('span', 'unread')); row.append(open, hide);
+    open.append(avatar, copy);
+    if (flags.waiting) { const badge = element('span', 'waiting-badge'); badge.title = 'Waiting for you'; open.append(badge); }
+    if (bot.unread || flags.unread) open.append(element('span', 'unread')); row.append(open, hide);
     row.onclick = () => command('open-bot', { id: bot.id });
     open.onfocus = () => {
       for (const item of list.querySelectorAll('.bot-row')) {
@@ -418,13 +420,16 @@ function render(next) {
   $('telegram-slot').classList.toggle('hidden', !telegramActive);
   $('telegram-note').classList.toggle('hidden', !telegramActive);
   $('hermes-pane').classList.toggle('hidden', !hermesActive);
+  // The native view saves its scroll position while it is still laid out.
+  if (!nativeActive) nativeView?.setVisible(false);
   $('native-pane').classList.toggle('hidden', !nativeActive);
-  nativeView?.setVisible(nativeActive);
+  if (nativeActive) nativeView?.setVisible(true);
   const hermesSelected = hermesActive && state.hermes?.sessions?.find((s) => s.selected);
-  $('chat-title').textContent = webappActive ? 'Hermes Desktop' : nativeActive ? 'Alan' : hermesActive
-    ? (hermesSelected?.title || `Hermes${state.hermes?.target ? ` · ${state.hermes.target.label}` : ''}`)
-    : (bot?.name || 'Telegram');
-  $('chat-avatar').style.display = telegramActive ? '' : 'none';
+  const chatName = bot?.name || (state.chatBotId === 'hermes' ? state.hermesBot?.name : '');
+  $('chat-title').textContent = hermesActive ? (hermesSelected?.title || `Hermes${state.hermes?.target ? ` · ${state.hermes.target.label}` : ''}`)
+    : chatName || (webappActive ? 'Hermes Desktop' : nativeActive ? 'Alan' : 'Telegram');
+  $('chat-avatar').style.display = telegramActive || (bot && !hermesActive) ? '' : 'none';
+  renderSurfaceTabs();
   window.HermesAvatars.paint($('chat-avatar'), bot || { id: '', name: 'Telegram' }, state);
   $('chat-avatar').title = bot ? `Customize ${bot.name} avatar` : 'Select a bot to customize its avatar';
   renderHermes();
@@ -1723,6 +1728,7 @@ function mountChatSurface(body) {
   const row = element('div', 'setting-row'), surface = element('select'); surface.id = 'settings-chat-surface'; surface.setAttribute('aria-label', 'Chat surface');
   for (const [value, label] of [['telegram', 'Telegram'], ['hermes-desktop', 'Hermes Desktop'], ['native', "Alan's native chat"]]) { const option = element('option', '', label); option.value = value; surface.append(option); }
   row.append(element('span', '', 'Chat in the left pane with'), surface); body.append(row);
+  body.append(element('p', 'settings-note', 'This is the default. Each bot remembers the surface you pick for it with the switch at the top of its chat.'));
   const surfaceStatus = settingsStatus(body);
   surface.onchange = async () => { await runSettingsAction(surface, surfaceStatus, () => api.command('settings', { chatSurface: surface.value }), 'Saving…', 'Chat surface saved.'); surface.value = state.chatSurface; };
   const address = settingsField(body, 'settings-webapp-url', 'Hermes Desktop address', state.hermesWebappUrl, 'https://your-machine.your-tailnet.ts.net');
@@ -2036,6 +2042,25 @@ $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };
 $('vm-toggle').onclick = () => { if (state?.showBrowser === false) command('settings', { showBrowser: true }); command('toggle-vps-view'); };
 $('preview-expand').onclick = () => command('toggle-vps-view');
+const SURFACE_OF = { telegram: 'telegram', webapp: 'hermes-desktop', native: 'native' };
+// Only usable surfaces show; with one there is nothing to switch, unless another pane is up.
+function renderSurfaceTabs() {
+  const current = SURFACE_OF[state.chatTarget] || '', usable = state.surfaces || [], tabs = [...$('surface-tabs').children];
+  $('surface-tabs').classList.toggle('hidden', usable.length < 2 && usable[0] === current);
+  const stop = usable.includes(current) ? current : usable[0];
+  for (const button of tabs) {
+    const surface = button.dataset.surface, unreachable = surface === 'hermes-desktop' && state.webappStatus === 'unreachable';
+    button.classList.toggle('hidden', !usable.includes(surface));
+    button.setAttribute('aria-selected', String(surface === current)); button.tabIndex = surface === stop ? 0 : -1;
+    button.classList.toggle('unreachable', unreachable);
+    button.setAttribute('aria-label', unreachable ? 'Hermes Desktop, can’t reach it' : button.textContent); button.title = unreachable ? 'Can’t reach Hermes Desktop' : '';
+  }
+}
+$('surface-tabs').onclick = (event) => { const surface = event.target.closest('[data-surface]')?.dataset.surface; if (surface) command('chat-surface', { surface }); };
+for (const button of $('surface-tabs').children) button.onkeydown = (event) => {
+  const target = moveNavigationFocus(event, [...$('surface-tabs').querySelectorAll('[role=tab]:not(.hidden)')], 'horizontal');
+  if (target) command('chat-surface', { surface: target.dataset.surface });
+};
 $('canvas-tabs').onclick = (event) => { const tab = event.target.closest('[data-canvas]')?.dataset.canvas; if (tab) command('canvas-tab', { tab }); };
 $('canvas-tabs').onkeydown = (event) => {
   const tab = { ArrowLeft: 'browser', Home: 'browser', ArrowRight: 'screen', End: 'screen' }[event.key];
@@ -2198,30 +2223,8 @@ function renderHermes() {
   const h = state.hermes || { status: 'unconfigured', sessions: [] };
   const list = $('hermes-list'), connect = $('hermes-connect');
   $('hermes-new').classList.toggle('hidden', h.status !== 'ready');
-  // The Telegram row is the way back — always present while a Hermes target is
-  // showing, so a bot-less workspace is never stranded on the Hermes pane.
+  // The chat header's surface toggle is the way back from this pane.
   list.innerHTML = '';
-  if (state.chatSurface === 'hermes-desktop') {
-    const row = element('div', `bot-row hermes-row${state.chatTarget === 'webapp' ? ' selected' : ''}`);
-    const open = element('button', 'bot-open', 'Hermes Desktop');
-    open.onclick = () => command('show-webapp');
-    row.append(open);
-    list.append(row);
-  }
-  if (state.chatSurface === 'native') {
-    const row = element('div', `bot-row hermes-row${state.chatTarget === 'native' ? ' selected' : ''}`);
-    const open = element('button', 'bot-open', "Alan's native chat");
-    open.onclick = () => command('show-native');
-    row.append(open);
-    list.append(row);
-  }
-  if (state.chatTarget !== 'telegram') {
-    const back = element('div', 'bot-row hermes-row');
-    const open = element('button', 'bot-open', '← Telegram');
-    open.onclick = () => command('show-telegram');
-    back.append(open);
-    list.append(back);
-  }
   for (const session of h.sessions) {
     const row = element('div', `bot-row hermes-row${session.selected ? ' selected' : ''}`);
     const open = element('button', 'bot-open', session.title || session.id);

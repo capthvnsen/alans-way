@@ -314,6 +314,8 @@ body.win32 .pane-actions{padding-right:140px}body.win32 .side-title{padding-top:
 .hermes-setup-error{color:#ef9d9d;font-size:11px;margin-top:10px}
 
 .canvas-tabs{display:flex;align-self:center;gap:2px;padding:3px;margin-right:8px;border-radius:999px;background:#18181b;border:1px solid #29292d;flex-shrink:0}.canvas-tabs button{border-radius:999px;padding:5px 13px;font-size:11.5px;color:#8a8a94;white-space:nowrap}.canvas-tabs button:hover{color:#dcdce3}.canvas-tabs button[aria-selected=true]{background:#2e2e33;color:#f1f1f5;box-shadow:0 1px 2px #0006}
+.surface-tabs{margin-right:0}.surface-tabs button.unreachable::after{content:"";display:inline-block;width:5px;height:5px;margin-left:6px;border-radius:50%;background:#d99b4c;vertical-align:1px}.chat-header .chat-pill{min-width:0;flex-shrink:1}
+.waiting-badge{width:9px;height:9px;flex-shrink:0;border-radius:50%;border:2px solid #f0b45a;margin-right:1px}
 
 /* ── Alan's native chat ── */
 .native-pane{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}

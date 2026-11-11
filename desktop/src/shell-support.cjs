@@ -183,5 +183,28 @@ function resolveChatSurface(choice, webappStatus, nativeConfigured = false) {
   if (choice === 'telegram' || choice === 'hermes-desktop') return choice;
   return ['reachable', 'needs-link', 'sign-in', 'ready'].includes(webappStatus) ? 'hermes-desktop' : 'telegram';
 }
+// What a chat row can switch to: Telegram for a Telegram bot, Hermes Desktop once it has an
+// address (reachable or not), native once it has an address and key.
+function usableSurfaces({ telegram = true, webapp = false, nativeConfigured = false } = {}) {
+  return ['telegram', 'hermes-desktop', 'native'].filter((surface) => ({ telegram, 'hermes-desktop': webapp, native: nativeConfigured })[surface]);
+}
+// A bot's own choice while it is usable, else the global setting; a row without Telegram
+// takes its first usable surface instead. Nothing here writes the choice.
+function surfaceForBot(choice, globalChoice, context = {}) {
+  const usable = usableSurfaces(context);
+  if (usable.includes(choice)) return choice;
+  const fallback = resolveChatSurface(globalChoice, context.webappStatus, !!context.nativeConfigured);
+  return fallback === 'telegram' && usable.length && !usable.includes('telegram') ? usable[0] : fallback;
+}
+// A sidebar row's flags: unread in Telegram or in its native conversation; waiting on an open
+// approval or question there, or on a tab handed back to you.
+function inboxRow({ bot, surface, native, handback = false }) {
+  return { surface, unread: !!bot?.unread || !!native?.unread, waiting: !!native?.waiting || !!handback, preview: surface === 'native' ? native?.preview || '' : '' };
+}
+// Per-bot memory keeps only bots that still exist, and the built-in Hermes row.
+const keepBots = (map, ids) => Object.fromEntries(Object.entries(map || {}).filter(([id]) => id === 'hermes' || ids.includes(id)));
+// Markdown to one plain line for a row preview.
+const plainLine = (text) => String(text || '').replace(/```[\s\S]*?(```|$)/g, ' ').replace(/^::.*$/gm, ' ').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+  .replace(/^\s*\|?[\s:|-]*-{3,}[\s:|-]*$/gm, ' ').replace(/[#>*_`|~]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
 
-module.exports = { resolveChatSurface, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost };
+module.exports = { resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, keepBots, plainLine, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost };
