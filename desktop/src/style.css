@@ -323,6 +323,7 @@ body.win32 .pane-actions{padding-right:140px}body.win32 .side-title{padding-top:
 .nc-head{position:relative;display:flex;align-items:center;gap:4px;padding:0 12px 6px 16px}
 .nc-switch{flex:1;min-width:0;display:flex;align-items:center;justify-content:center;gap:6px;padding:6px 10px;border-radius:10px;font-size:12.5px;font-weight:550;color:#d9d9e0}
 .nc-switch:hover,.nc-switch[aria-expanded=true]{background:#17171a}
+.nc-switch:focus-visible{outline-offset:-2px}
 .nc-switch-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nc-caret{color:#76767f;font-size:12px;line-height:1;transform:translateY(-3px)}
 .nc-icon{width:30px;height:30px;flex-shrink:0;display:grid;place-items:center;border-radius:9px;color:#9d9da8}
