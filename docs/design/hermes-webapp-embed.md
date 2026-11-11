@@ -234,7 +234,10 @@ Known limits, also marked in the code:
 **Phase 1: usable for one person.**
 Per-bot profile mapping and one view per profile. Same-origin child windows. Run the real `tailscale serve` path and a real turn with a tool call.
 
-**Phase 2: decide on the native pane.**
+**Phase 2: decide on the native pane.** *Superseded (2026-11-11): native-first was decided.
+Alan's native chat ([`docs/native-chat.md`](../native-chat.md)) is the product surface and
+Hermes Desktop stays as an alternative surface; see `docs/grokbot-parity/spec-waves.md`
+(branch `agent/fable-recon`, PR #296). The plan below is kept for the record.*
 Use it daily and compare it with `hermes-view.js`, `hermes-hub.cjs` and friends. The
 Webapp brings Capabilities, Artifacts, scheduled jobs, files, Git review and the
 terminal. If it wins, delete the native pane and its tests rather than maintain both.
