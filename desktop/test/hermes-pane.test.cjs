@@ -56,6 +56,7 @@ let slice = src.slice(start, end);
 if (!slice.includes('hermesSetupForced')) slice = `let hermesSetupForced = false;\n${slice}`;
 
 function harness(h, { chatTarget = 'hermes' } = {}) {
+  h = { providers: [{ name: 'basic', displayName: 'Password', password: true, browser: false }], ...h };
   const setup = new FakeNode('div');
   const convo = new FakeNode('div');
   const calls = [], renders = [];
@@ -165,7 +166,8 @@ test('forced setup shows the form with a way back, and the flag self-clears', ()
 });
 
 test('sign-in retries retain the username and show updated errors inline without replacing the form', async () => {
-  const h = { status: 'needs_signin', target, selected: null, error: null };
+  const h = { status: 'needs_signin', target, selected: null, error: null,
+    providers: [{ name: 'basic', displayName: 'Password', password: true, browser: false }] };
   const { setup, ctx, calls } = harness(h);
   const user = setup.findAll(n => n.attributes['aria-label'] === 'Username')[0];
   const pass = setup.findAll(n => n.attributes['aria-label'] === 'Password')[0];
@@ -183,6 +185,53 @@ test('sign-in retries retain the username and show updated errors inline without
   assert.ok(setup.findAll(n => n.textContent === 'Sign in and connect')[0]);
   ctx.renderHermesSetup(h);
   assert.ok(error.hasClass('hidden'), 'the next attempt clears the previous error');
+});
+
+test('browser providers render explicit provider actions and no password form', async () => {
+  const providers = [
+    { name: 'nous', displayName: 'Nous Research', password: false, browser: true },
+    { name: 'other', displayName: 'Other account', password: false, browser: true },
+  ];
+  const { setup, calls } = harness({ status: 'needs_signin', target, providers });
+  assert.equal(setup.findAll(n => n.attributes['aria-label'] === 'Password').length, 0);
+  const buttons = setup.findAll(n => n.tagName === 'BUTTON');
+  await buttons.find(n => n.textContent === 'Continue with Nous Research in browser').click();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'sign-in-browser');
+  assert.equal(calls[0].value.provider, 'nous');
+});
+
+test('browser sign-in pending state can cancel and does not offer another login', async () => {
+  const providers = [{ name: 'nous', displayName: 'Nous Research', browser: true }];
+  const h = { status: 'needs_signin', target, providers };
+  const { setup, calls, ctx } = harness(h);
+  ctx.renderHermesSetup({ ...h, signInPending: true });
+  assert.ok(setup.textContent.includes('Finish signing in in your browser'));
+  assert.equal(setup.findAll(n => n.textContent === 'Continue with Nous Research in browser').length, 0);
+  await setup.findAll(n => n.textContent === 'Cancel sign-in')[0].click();
+  assert.equal(calls[0].name, 'cancel-sign-in');
+  ctx.renderHermesSetup({ ...h, signInPending: false });
+  assert.ok(setup.findAll(n => n.textContent === 'Continue with Nous Research in browser').length);
+});
+
+test('provider refresh redraws the setup form and unknown capabilities fail closed', () => {
+  const h = { status: 'needs_signin', target, providers: [] };
+  const { setup, ctx } = harness(h);
+  assert.equal(setup.findAll(n => n.attributes['aria-label'] === 'Password').length, 0);
+  assert.ok(setup.textContent.includes('No supported sign-in method'));
+  ctx.renderHermesSetup({ ...h, providers: [{ name: 'nous', displayName: 'Nous Research', browser: true }] });
+  assert.ok(setup.findAll(n => n.textContent === 'Continue with Nous Research in browser').length);
+  ctx.renderHermesSetup({ ...h, providers: [{ name: 'unknown', displayName: 'Unknown' }] });
+  assert.equal(setup.findAll(n => n.tagName === 'BUTTON').length, 0);
+  assert.ok(setup.textContent.includes('No supported sign-in method'));
+});
+
+test('a changed backend is saved and probed before provider authentication', async () => {
+  const providers = [{ name: 'nous', displayName: 'Nous Research', browser: true }];
+  const { setup, calls } = harness({ status: 'needs_signin', target, providers });
+  setup.findAll(n => n.attributes['aria-label'] === 'Hermes backend URL')[0].value = 'https://other.example';
+  await setup.findAll(n => n.textContent === 'Continue with Nous Research in browser')[0].click();
+  assert.deepEqual(calls.map(c => c.name), ['configure', 'connect']);
 });
 
 test('the real hub and setup pane keep the sign-in form throughout a failed password attempt', async () => {

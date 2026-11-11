@@ -219,11 +219,12 @@ test('a chat link notification arriving after the human clicked reuses the exist
 });
 
 test('ordinary quit keeps views alive until cookies are durable, and a repeated quit shares the drain', async () => {
-  let listener, finish, saves = 0, closes = 0;
+  let listener, finish, saves = 0, closes = 0, disposed = 0;
   const app = { on: (_name, fn) => { listener = fn; }, quit: () => listener({ preventDefault() {} }) };
   const context = vm.createContext({ app, isQuitting: false, setTimeout() {}, QUIT_SAVE_MS: 8000, logError: (_label, error) => { throw error; },
     savePreferences() {}, saveBrowserSession: () => { saves++; return new Promise(resolve => { finish = resolve; }); },
     hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },
+    hermesHub: { dispose: () => { disposed++; } },
     modelAuthChild: null, tray: null, apiServer: null, clearInterval() {}, clearTimeout() {},
     pointerTimer: 0, activityTimer: 0, idleTimer: 0, captchaTimer: 0, vpsTimer: 0, vpsMirrorTimer: 0, vpsMirrorDebounce: 0,
   });
@@ -235,22 +236,25 @@ test('ordinary quit keeps views alive until cookies are durable, and a repeated 
   assert.equal(prevented, 2, 'quit must wait for storage');
   assert.equal(saves, 1);
   assert.equal(closes, 0, 'keep browser services alive while saving');
+  assert.equal(disposed, 0, 'pending sign-in is cancelled during final cleanup');
   finish();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(closes, 1);
+  assert.equal(disposed, 1);
   assert.equal(context.isQuitting, true);
 });
 
 for (const outcome of ['hangs', 'fails']) {
   test(`quit still exits when saving browser sign-ins ${outcome}`, async () => {
     // A keychain prompt nobody answers, or a denied one, must not keep the app from quitting.
-    let listener, closes = 0;
+    let listener, closes = 0, disposed = 0;
     const timers = [], errors = [];
     const app = { on: (_name, fn) => { listener = fn; }, quit: () => listener({ preventDefault() {} }) };
     const context = vm.createContext({ app, isQuitting: false, setTimeout: (fn, ms) => timers.push({ fn, ms }), QUIT_SAVE_MS: 8000,
       savePreferences() {}, saveBrowserSession: () => (outcome === 'hangs' ? new Promise(() => {}) : Promise.reject(new Error('denied'))),
       logError: (label, error) => errors.push(`${label}: ${error.message}`),
       hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },
+      hermesHub: { dispose: () => { disposed++; } },
       modelAuthChild: null, tray: null, apiServer: null, clearInterval() {}, clearTimeout() {},
       pointerTimer: 0, activityTimer: 0, idleTimer: 0, captchaTimer: 0, vpsTimer: 0, vpsMirrorTimer: 0, vpsMirrorDebounce: 0,
     });
@@ -259,11 +263,13 @@ for (const outcome of ['hangs', 'fails']) {
     await new Promise(resolve => setImmediate(resolve));
     if (outcome === 'hangs') {
       assert.equal(closes, 0, 'a save in progress gets its time');
+      assert.equal(disposed, 0);
       assert.ok(timers.length === 1 && timers[0].ms <= 10000);
       timers[0].fn();
       await new Promise(resolve => setImmediate(resolve));
     }
     assert.equal(closes, 1);
+    assert.equal(disposed, 1);
     assert.equal(errors.length, 1);
   });
 }

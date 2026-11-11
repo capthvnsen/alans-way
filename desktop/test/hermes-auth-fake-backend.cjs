@@ -74,7 +74,7 @@ async function fakeBackend(cfg = {}) {
     access_token: `at-${tag}-${user}${seq}`,
     refresh_token: `rt-${tag}-${user}${seq}`,
     expires_at: 9999999999,
-    provider: 'basic',
+    provider: cfg.provider || 'basic',
     user_id: user,
   });
 
@@ -163,19 +163,27 @@ async function fakeBackend(cfg = {}) {
           version: '1.0.0-auth-fake',
           auth_required: auth,
           auth_flows: auth ? ['cookie', 'native_pkce'] : [],
-          auth_providers: auth ? ['basic'] : [],
+          auth_providers: auth ? [cfg.provider || 'basic'] : [],
           profiles: ['default'],
           gateway_running: false,
         });
         return;
       }
       if (u.pathname === '/api/auth/providers' && req.method === 'GET') {
-        send(200, { providers: [{ name: 'basic', display_name: 'Password', supports_password: true }] });
+        send(200, { providers: [{ name: cfg.provider || 'basic', display_name: cfg.nativeBrowser ? 'Nous Research' : 'Password', supports_password: !cfg.nativeBrowser }] });
         return;
       }
       if (u.pathname === '/auth/native/authorize' && req.method === 'GET') {
         const state = u.searchParams.get('state') || '';
         const cookie = `pkce_${crypto.randomBytes(8).toString('hex')}`;
+        if (cfg.nativeBrowser) {
+          const code = `gwcode-${cookie}`;
+          const redirect = new URL(u.searchParams.get('redirect_uri'));
+          pendingUser.set(code, { user: cfg.user || 'oauth-user', challenge: u.searchParams.get('code_challenge') });
+          redirect.searchParams.set('code', code);
+          redirect.searchParams.set('state', state);
+          res.writeHead(302, { location: redirect.href }); res.end(); return;
+        }
         pendingStates.set(cookie, state);
         res.writeHead(302, { 'set-cookie': `hermes_pkce=${cookie}; Path=/; HttpOnly`, location: '/login' });
         res.end();
@@ -197,8 +205,13 @@ async function fakeBackend(cfg = {}) {
         if (!body || typeof body.code !== 'string' || typeof body.code_verifier !== 'string') {
           send(400, { detail: 'bad_code' }); return;
         }
-        const user = pendingUser.get(body.code) || 'agent';
-        const answer = () => send(200, mint(user));
+        const pending = pendingUser.get(body.code);
+        if (cfg.nativeBrowser && (!pending || pending.challenge !== crypto.createHash('sha256').update(body.code_verifier).digest('base64url'))) {
+          send(400, { detail: 'invalid_code_or_pkce' }); return;
+        }
+        if (cfg.nativeBrowser) pendingUser.delete(body.code);
+        const user = cfg.nativeBrowser ? pending.user : pending || 'agent';
+        const answer = () => send(200, cfg.tokenResponse || mint(user));
         if (cfg.tokenDelayMs) setTimeout(answer, cfg.tokenDelayMs); else answer();
         return;
       }

@@ -3645,6 +3645,7 @@ else {
     hermesHub = createHermesHub({
       load: loadHermesPersisted,
       persist: saveHermesPersisted,
+      openAuthUrl: (url) => shell.openExternal(url),
       notify: () => { pushHermesState(); broadcast(); },
     });
     pushHermesState();
@@ -3739,6 +3740,7 @@ else {
       return;
     }
     isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close();
+    hermesHub?.dispose();
   });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }
