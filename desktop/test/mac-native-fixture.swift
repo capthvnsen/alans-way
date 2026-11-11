@@ -262,6 +262,16 @@ func fixture() throws {
         attributes[AXKey(element: app)]?["AXFocusedUIElement"] = field
         attributes[AXKey(element: field)]?["AXSubrole"] = "AXSecureTextField"
         try refuses("off_limits") { _ = try runStep(7, ["action": "type", "text": "secret"], windowId: 41) }
+    case "act-deadline":
+        fixtureIdle = 2
+        actBudget = 0
+        let reply = respond(["cmd": "act", "pid": 7, "windowId": 41, "snapshot": false, "steps": [["action": "key", "key": "a"], ["action": "key", "key": "b"]]])
+        let codes = (reply["results"] as? [JSON] ?? []).map { $0["code"] as? String ?? "ok" }
+        try expectFixture(codes == ["ok", "timeout"] && posted == ["a"], "steps stop at the act deadline and keep what ran: \(reply) \(posted)")
+        posted = []
+        actDeadline = 0
+        try refuses("timeout") { _ = try runStep(7, ["action": "type", "text": "abc"], windowId: 41) }
+        try expectFixture(posted.isEmpty, "typing stops at the act deadline: \(posted)")
     case "shortcut-front":
         fixtureIdle = 2; fixtureOnScreen = false
         let stale = try selectedWindow(7, 41)

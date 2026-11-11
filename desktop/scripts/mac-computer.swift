@@ -1316,7 +1316,10 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
                     break
                 }
             }
-            for character in text { try postKey(pid, key: character == "\n" ? "return" : String(character), modifiers: []) }
+            for character in text {
+                if pastActDeadline() { throw Fail("timeout", "Out of time partway through the text, so only part of it was typed.") }
+                try postKey(pid, key: character == "\n" ? "return" : String(character), modifiers: [])
+            }
             out["via"] = "keys"
             break
         }
@@ -1514,7 +1517,15 @@ func validateWindowStep(_ pid: pid_t, _ step: JSON, _ selected: SelectedWindow?)
     }
 }
 
+// Input time per act, so the reads before and after still fit inside the 20 s helper kill.
+var actBudget = 9.0
+var actDeadline = Double.infinity
+func pastActDeadline() -> Bool { ProcessInfo.processInfo.systemUptime >= actDeadline }
+
 func act(_ request: JSON) throws -> JSON {
+    let started = ProcessInfo.processInfo.systemUptime
+    actDeadline = started + actBudget
+    defer { actDeadline = .infinity }
     let pid = try pidOf(request)
     try requireAccessibility()
     try checkApp(pid, action: true)
@@ -1536,6 +1547,10 @@ func act(_ request: JSON) throws -> JSON {
     var results: [JSON] = []
     var succeeded = false
     for step in steps {
+        if !results.isEmpty, pastActDeadline() {
+            results.append(["ok": false, "error": "Out of time before this step, so it and the ones after it did not run.", "code": "timeout"])
+            break
+        }
         do {
             try checkApp(pid, action: true)
             try validateWindowStep(pid, step, try selectedWindow(pid, selected?.id))
@@ -1563,7 +1578,7 @@ func act(_ request: JSON) throws -> JSON {
             do { return try refresh(pid, menubar: menubar, windowId: selected?.id) } catch let failure as Fail { readFailure = failure } catch {}
             return nil
         }
-        let walk = read() ?? (running() && !screenLocked() ? { usleep(500_000); return read() }() : nil)
+        let walk = read() ?? (running() && !screenLocked() && ProcessInfo.processInfo.systemUptime < started + 12 ? { usleep(500_000); return read() }() : nil)
         if let walk { for (key, value) in snapshotFields(walk) { reply[key] = value } }
         else { reply["note"] = readFailedNote(readFailure, running: running()) }
     }
