@@ -61,9 +61,10 @@ func fixtureAttributes(_ element: AXUIElement, _ names: CFArray, _ options: AXCo
     values.pointee = (names as! [String]).map { record[$0] ?? NSNull() } as CFArray
     return .success
 }
+var performResult = AXError.success
 func fixturePerform(_ element: AXUIElement, _ action: CFString) -> AXError {
     performed.append(action as String)
-    return .success
+    return performResult
 }
 func fixtureSettable(_ element: AXUIElement, _ name: CFString, _ settable: UnsafeMutablePointer<DarwinBoolean>) -> AXError {
     settable.pointee = DarwinBoolean(attributes[AXKey(element: element)]?[name as String] != nil)
@@ -147,6 +148,14 @@ func fixture() throws {
         menuReads = 0; menuError = .attributeUnsupported
         try refuses("unsupported_action") { _ = try menuBar(7) }
         try expectFixture(menuReads == 1, "unsupported menu must not retry")
+    case "press-uncertain":
+        performResult = .cannotComplete
+        try refuses("unresponsive") { _ = try pressElement(7, field, role: "AXButton") }
+        try expectFixture(performed == ["AXPress"], "a press that may have run is not pressed again: \(performed)")
+        let item = AXUIElementCreateApplication(1006)
+        attributes[AXKey(element: item)] = ["AXRole": "AXMenuItem", "AXTitle": "Save As…"]
+        attributes[AXKey(element: bar)] = ["AXRole": "AXMenuBar", "AXChildren": [item]]
+        try refuses("unresponsive") { try pressMenu(7, ["Save As"]) }
     case "launch":
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".app")
         try FileManager.default.createDirectory(at: dir.appendingPathComponent("Contents"), withIntermediateDirectories: true)

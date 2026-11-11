@@ -739,6 +739,8 @@ func selectRow(_ element: AXUIElement) -> Bool {
     return false
 }
 
+let pressMayHaveRun = Fail("unresponsive", "The app did not answer the press, so it may have run.")
+
 func eventClick(_ pid: pid_t, _ element: AXUIElement) throws -> String {
     guard let frame = axFrame(element), frame.width > 0, frame.height > 0 else { throw Fail("failed", "Press failed.") }
     postMouse(pid, axToQuartz(CGPoint(x: frame.midX, y: frame.midY)), button: .left, clicks: 1, dragTo: nil)
@@ -749,6 +751,8 @@ func pressElement(_ pid: pid_t, _ element: AXUIElement, role: String) throws -> 
     let result = AXUIElementPerformAction(element, "AXPress" as CFString)
     if result == .success { return "ax" }
     if result == .invalidUIElement { throw Fail("stale_ref", "That control is gone. Take a fresh snapshot.") }
+    // A press that opens a modal can block past the messaging timeout, so it may have run: pressing again would be a second press.
+    if result == .cannotComplete { throw pressMayHaveRun }
     if role == "AXRow" || role == "AXCell" || role == "AXOutlineRow", selectRow(element) { return "select" }
     if let ancestor = pressableAncestor(element), AXUIElementPerformAction(ancestor, "AXPress" as CFString) == .success { return "ancestor" }
     return try eventClick(pid, element)
@@ -957,6 +961,7 @@ func pressMenu(_ pid: pid_t, _ path: [String]) throws {
     let item = try menuItem(pid, path)
     if (axValue(item, "AXEnabled") as? NSNumber)?.boolValue == false { throw Fail("failed", "That menu item is disabled.") }
     let result = AXUIElementPerformAction(item, "AXPress" as CFString)
+    if result == .cannotComplete { throw pressMayHaveRun }
     if result != .success { throw Fail("failed", "Press failed (\(result.rawValue)).") }
 }
 
