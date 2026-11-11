@@ -120,7 +120,7 @@ test('base URLs: loopback over http, everything else only over https', () => {
   assert.deepEqual(parseBaseUrl('http://[::1]:8642'), { baseUrl: 'http://[::1]:8642', profile: '' });
   assert.deepEqual(parseBaseUrl('https://alan.tail1234.ts.net/p/work/'), { baseUrl: 'https://alan.tail1234.ts.net', profile: 'work' });
   assert.deepEqual(parseBaseUrl('https://example.com/hermes'), { baseUrl: 'https://example.com/hermes', profile: '' });
-  for (const refused of ['http://100.64.0.1:8642', 'http://example.com', 'ftp://127.0.0.1', 'https://user:pw@example.com', 'https://example.com/?key=1', 'https://example.com/#x', 'not a url', '']) {
+  for (const refused of ['http://remote.example:8642', 'http://example.com', 'ftp://127.0.0.1', 'https://user:pw@example.com', 'https://example.com/?key=1', 'https://example.com/#x', 'not a url', '']) {
     assert.equal(parseBaseUrl(refused), null, refused);
   }
 });
