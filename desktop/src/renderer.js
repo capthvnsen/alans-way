@@ -412,14 +412,17 @@ function render(next) {
   // Hermes DOM surface. When the Hermes pane is up the slot collapses and its
   // reported rect goes zero — main then hides the Telegram view for us.
   const hermesActive = state.chatTarget === 'hermes';
-  $('telegram-slot').classList.toggle('hidden', hermesActive);
-  $('telegram-note').classList.toggle('hidden', hermesActive);
+  const webappActive = state.chatTarget === 'webapp', telegramActive = !hermesActive && !webappActive;
+  $('webapp-slot').classList.toggle('hidden', !webappActive);
+  renderWebappHelp();
+  $('telegram-slot').classList.toggle('hidden', !telegramActive);
+  $('telegram-note').classList.toggle('hidden', !telegramActive);
   $('hermes-pane').classList.toggle('hidden', !hermesActive);
   const hermesSelected = hermesActive && state.hermes?.sessions?.find((s) => s.selected);
-  $('chat-title').textContent = hermesActive
+  $('chat-title').textContent = webappActive ? 'Hermes Desktop' : hermesActive
     ? (hermesSelected?.title || `Hermes${state.hermes?.target ? ` · ${state.hermes.target.label}` : ''}`)
     : (bot?.name || 'Telegram');
-  $('chat-avatar').style.display = hermesActive ? 'none' : '';
+  $('chat-avatar').style.display = telegramActive ? '' : 'none';
   window.HermesAvatars.paint($('chat-avatar'), bot || { id: '', name: 'Telegram' }, state);
   $('chat-avatar').title = bot ? `Customize ${bot.name} avatar` : 'Select a bot to customize its avatar';
   renderHermes();
@@ -954,7 +957,7 @@ function rect(id) {
 }
 function scheduleLayout() {
   cancelAnimationFrame(resizeFrame);
-  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: dialogStack.length > 0 || !$('tabs-panel').classList.contains('hidden') || !$('status-panel').classList.contains('hidden') }));
+  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), webapp: focusMode ? null : rect('webapp-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: dialogStack.length > 0 || !$('tabs-panel').classList.contains('hidden') || !$('status-panel').classList.contains('hidden') }));
 }
 // The mini VM window is anchored bottom-right until dragged; its saved offset
 // is relative to the workspace pane and clamped so it can never get lost.
@@ -1357,6 +1360,7 @@ const SETTINGS_CATEGORIES = [
 ];
 const SETTINGS_SECTIONS = [
   { id: 'keyboard', category: 'general', title: 'Keyboard shortcuts', description: 'Find the keys for moving between agents, browser tabs and dialogs.', words: 'keyboard navigation keys guide shortcuts search', mount(body) { const button = element('button', 'secondary-button', 'Keyboard shortcuts'); button.id = 'settings-shortcuts'; button.onclick = showShortcuts; body.append(button); } },
+  { id: 'chat-surface', category: 'general', title: 'Chat surface', description: 'Choose what runs in the left chat pane: Telegram or Hermes Desktop.', words: 'telegram hermes desktop webapp chat surface tailscale address sign in', mount: mountChatSurface },
   { id: 'tab-behavior', category: 'general', title: 'Links and tab control', description: 'Choose how links from bot chats open and when bots can take back browser tabs.', words: 'automatic takeover auto open links control browser hand back', mount: mountTabBehavior },
   { id: 'bot-appearance', category: 'bots', title: 'Bot appearance', description: 'Choose a marble avatar or import an image for your selected bot.', words: 'avatars image customize appearance eyes', mount(body) { const button = element('button', 'secondary-button', 'Customize bot avatars'); button.onclick = () => openSettingsDetail(() => showAvatarEditor()); body.append(button, element('p', 'settings-note', 'Eyes follow your mouse only while Telegram reports activity.')); } },
   { id: 'primary-bot', category: 'bots', title: 'Primary bot', description: 'Pin one bot at the top of your sidebar. Without a preference, the overseer bot is used.', words: 'default primary pinned order sidebar', mount: mountPrimaryBot },
@@ -1711,6 +1715,25 @@ function openSettingsDetail(open) {
   const back = element('button', 'settings-detail-back', '← Back to settings');
   back.onclick = () => { showSettings(); selectSettingsCategory(category); $('settings-category-' + category).focus(); };
   $('modal-body').prepend(back);
+}
+function mountChatSurface(body) {
+  const row = element('div', 'setting-row'), surface = element('select'); surface.id = 'settings-chat-surface'; surface.setAttribute('aria-label', 'Chat surface');
+  for (const [value, label] of [['telegram', 'Telegram'], ['hermes-desktop', 'Hermes Desktop']]) { const option = element('option', '', label); option.value = value; surface.append(option); }
+  row.append(element('span', '', 'Chat in the left pane with'), surface); body.append(row);
+  const surfaceStatus = settingsStatus(body);
+  surface.onchange = async () => { await runSettingsAction(surface, surfaceStatus, () => api.command('settings', { chatSurface: surface.value }), 'Saving…', 'Chat surface saved.'); surface.value = state.chatSurface; };
+  const address = settingsField(body, 'settings-webapp-url', 'Hermes Desktop address', state.hermesWebappUrl, 'https://your-machine.your-tailnet.ts.net');
+  const save = element('button', 'secondary-button', 'Save address'); body.append(save);
+  const saveStatus = settingsStatus(body);
+  save.onclick = async () => { const reply = await runSettingsAction(save, saveStatus, () => api.command('settings', { hermesWebappUrl: address.value }), 'Saving…', 'Address saved.'); if (reply.ok) delete address.dataset.dirty; };
+  const status = element('p', 'connection-state'); status.id = 'settings-webapp-status'; body.append(status);
+  body.append(element('p', 'settings-note', 'On the Hermes host, turn on the Webapp and a dashboard sign-in, then publish it with tailscale serve --bg --https=443 http://127.0.0.1:9120 and set webapp.public_url to the same https address. Switching keeps both chats open in the background.'));
+  const refresh = () => {
+    if (document.activeElement !== surface) surface.value = state.chatSurface;
+    if (!address.dataset.dirty) address.value = state.hermesWebappUrl || '';
+    status.textContent = webappStatusText();
+  };
+  refresh(); return refresh;
 }
 function mountTabBehavior(body) {
   const links = settingsToggle(body, 'settings-auto-links', 'Open links sent in bot chats as tabs', 'autoOpenLinks');
@@ -2120,6 +2143,37 @@ async function hermesCommand(name, value = {}) {
   try { return await hermesApi.command(name, value); }
   catch (error) { toast(window.HermesView.commandErrorMessage(error)); return null; }
 }
+const WEBAPP_HOST_CHECK = 'On the Hermes host, run: hermes webapp --status. It says whether webapp.enabled is on, whether sign-in is set up and whether the bundle is built.';
+function webappStatusText() {
+  const url = state.hermesWebappUrl;
+  return { unconfigured: 'Hermes Desktop has no address yet. Add it in Settings under Chat surface.',
+    checking: `Checking ${url}…`, reachable: `Opening ${url}…`, unreachable: `Can't reach ${url}. ${WEBAPP_HOST_CHECK}`,
+    'needs-link': 'This Hermes has no sign-in, so it opens only with a one-use link. On the Hermes host, run hermes webapp --no-open and paste the link in the chat pane within 60 seconds. You need a new link each time Workspace restarts.',
+    'sign-in': 'Sign in inside the chat pane with your Hermes dashboard username and password.', ready: 'Connected and signed in.' }[state.webappStatus] || '';
+}
+function renderWebappHelp() {
+  const help = $('webapp-help'), key = JSON.stringify([state.webappStatus, state.hermesWebappUrl]);
+  if (help.dataset.key === key) return;
+  help.dataset.key = key;
+  help.replaceChildren(element('h2', '', 'Hermes Desktop'), element('p', 'settings-note', webappStatusText()));
+  if (state.webappStatus === 'needs-link') {
+    const link = element('input'); link.id = 'webapp-link'; link.autocomplete = 'off'; link.spellcheck = false;
+    link.placeholder = 'http://127.0.0.1:9120/webapp/launch#ticket=…'; link.setAttribute('aria-label', 'One-use link');
+    const open = element('button', 'primary-button', 'Open');
+    open.onclick = () => command('webapp-link', { url: link.value }).finally(() => { link.value = ''; });
+    help.append(link, open);
+  }
+  if (state.webappStatus === 'unreachable') {
+    const retry = element('button', 'primary-button', 'Try again');
+    retry.onclick = () => command('webapp-retry');
+    help.append(retry);
+  }
+  if (['unconfigured', 'unreachable'].includes(state.webappStatus)) {
+    const settings = element('button', 'secondary-button', 'Open Settings');
+    settings.onclick = () => $('settings-fallback').click();
+    help.append(settings);
+  }
+}
 function renderHermes() {
   const h = state.hermes || { status: 'unconfigured', sessions: [] };
   const list = $('hermes-list'), connect = $('hermes-connect');
@@ -2127,7 +2181,14 @@ function renderHermes() {
   // The Telegram row is the way back — always present while a Hermes target is
   // showing, so a bot-less workspace is never stranded on the Hermes pane.
   list.innerHTML = '';
-  if (state.chatTarget === 'hermes') {
+  if (state.chatSurface === 'hermes-desktop') {
+    const row = element('div', `bot-row hermes-row${state.chatTarget === 'webapp' ? ' selected' : ''}`);
+    const open = element('button', 'bot-open', 'Hermes Desktop');
+    open.onclick = () => command('show-webapp');
+    row.append(open);
+    list.append(row);
+  }
+  if (state.chatTarget !== 'telegram') {
     const back = element('div', 'bot-row hermes-row');
     const open = element('button', 'bot-open', '← Telegram');
     open.onclick = () => command('show-telegram');

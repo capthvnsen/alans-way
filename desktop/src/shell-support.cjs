@@ -176,4 +176,10 @@ function tailscaleSshHost({ platform = process.platform, programFiles = process.
   return '';
 }
 
-module.exports = { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost };
+// An explicit choice stands. Otherwise Telegram, until Hermes Desktop is configured and answers.
+function resolveChatSurface(choice, webappStatus) {
+  if (choice === 'telegram' || choice === 'hermes-desktop') return choice;
+  return ['reachable', 'needs-link', 'sign-in', 'ready'].includes(webappStatus) ? 'hermes-desktop' : 'telegram';
+}
+
+module.exports = { resolveChatSurface, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost };

@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed } = require('../src/shell-support.cjs');
+const { resolveChatSurface, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed } = require('../src/shell-support.cjs');
 
 const dir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'shell-support-'));
 
@@ -224,4 +224,12 @@ test('tailscaleSshHost probes the bundled CLI before PATH', () => {
 test('always-allowed desktop agents stay a list of bot ID strings', () => {
   assert.deepEqual(normalizePreferences({ desktopTrustedBots: 'grok' }, { savedTabs: [], desktopTrustedBots: [] }).desktopTrustedBots, []);
   assert.deepEqual(normalizePreferences({ desktopTrustedBots: ['grok', 5, null] }, { savedTabs: [], desktopTrustedBots: [] }).desktopTrustedBots, ['grok']);
+});
+
+test('resolveChatSurface keeps Telegram until Hermes Desktop answers, and an explicit choice always stands', () => {
+  for (const status of ['unconfigured', 'checking', 'unreachable']) assert.equal(resolveChatSurface('', status), 'telegram', status);
+  for (const status of ['reachable', 'needs-link', 'sign-in', 'ready']) assert.equal(resolveChatSurface('', status), 'hermes-desktop', status);
+  assert.equal(resolveChatSurface('telegram', 'ready'), 'telegram');
+  assert.equal(resolveChatSurface('hermes-desktop', 'unconfigured'), 'hermes-desktop');
+  assert.equal(resolveChatSurface('bogus', 'unconfigured'), 'telegram');
 });
