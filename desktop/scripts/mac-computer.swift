@@ -1553,12 +1553,24 @@ func act(_ request: JSON) throws -> JSON {
         // The steps already ran; a tree that cannot be read afterwards must not hide their results.
         // An app just launched or brought forward can miss one read while it builds its window.
         let running = { NSRunningApplication(processIdentifier: pid).map { !$0.isTerminated } ?? false }
-        let walk = (try? refresh(pid, menubar: menubar, windowId: selected?.id))
-            ?? (running() && !screenLocked() ? { usleep(500_000); return try? refresh(pid, menubar: menubar, windowId: selected?.id) }() : nil)
+        var readFailure: Fail?
+        let read = { () -> Walk? in
+            do { return try refresh(pid, menubar: menubar, windowId: selected?.id) } catch let failure as Fail { readFailure = failure } catch {}
+            return nil
+        }
+        let walk = read() ?? (running() && !screenLocked() ? { usleep(500_000); return read() }() : nil)
         if let walk { for (key, value) in snapshotFields(walk) { reply[key] = value } }
-        else { reply["note"] = "unresponsive: the steps ran but the app stopped responding, so there is no tree. Do not repeat them; take a fresh snapshot." }
+        else { reply["note"] = readFailedNote(readFailure, running: running()) }
     }
     return reply
+}
+
+func readFailedNote(_ failure: Fail?, running: Bool) -> String {
+    if !running { return "not_found: the steps ran and the app has quit. Do not repeat them." }
+    guard let failure, failure.code != "unresponsive" else {
+        return "unresponsive: the steps ran but the app stopped responding, so there is no tree. Do not repeat them; take a fresh snapshot."
+    }
+    return "\(failure.code): the steps ran but the app could not be read afterwards (\(failure.message)) Do not repeat them; take a fresh snapshot."
 }
 
 // Opening a file must never run code, so anything that can execute is refused up front.
@@ -1705,6 +1717,9 @@ func selftest() throws -> JSON {
         checks += 1
         if !condition { throw Fail("failed", "selftest: \(message)") }
     }
+    try expect(readFailedNote(Fail("stale_window", "That window is gone."), running: true).hasPrefix("stale_window: the steps ran"), "a closed window is not called hung")
+    try expect(readFailedNote(Fail("unresponsive", "x"), running: false).hasPrefix("not_found: the steps ran"), "a quit app is not called hung")
+    try expect(readFailedNote(nil, running: true).hasPrefix("unresponsive: the steps ran"), "an unexplained read failure stays unresponsive")
     let repeated = try selectionRange("😀 first word; second word.", text: "word", prefix: "second ", suffix: ".", selection: "text")
     try expect(repeated.location == 22 && repeated.length == 4, "context selects repeated text in UTF16")
     let overlap = try selectionRange("aaa", text: "aa", prefix: "a", suffix: "", selection: "cursor_after")
