@@ -1770,6 +1770,13 @@ function mountChatSurface(body) {
   const nativeStatus = settingsStatus(body); nativeStatus.id = 'settings-native-status';
   nativeSave.onclick = async () => { const reply = await runSettingsAction(nativeSave, nativeStatus, () => api.command('settings', { nativeChatUrl: nativeAddress.value, nativeChatKey: nativeKey.value }), 'Saving…', 'Saved.'); if (reply.ok) { nativeKey.value = ''; delete nativeAddress.dataset.dirty; } };
   nativeTest.onclick = async () => { const reply = await runSettingsAction(nativeTest, nativeStatus, () => window.nativeChat.command('test'), 'Testing…'); if (reply.ok) nativeStatus.textContent = reply.result.detail; };
+  const nativeImport = element('div', 'native-settings-actions'); nativeImport.id = 'settings-native-import'; body.append(nativeImport);
+  const importStatus = settingsStatus(body); importStatus.id = 'settings-native-import-status';
+  const importButton = (name) => {
+    const button = element('button', 'secondary-button', `Import saved key from ~/.config/alans-way/${name}-api-key`); button.dataset.name = name;
+    button.onclick = async () => { const reply = await runSettingsAction(button, importStatus, () => api.command('native-import-key', { name }), 'Importing…'); if (reply.ok) { importStatus.textContent = reply.result.detail; nativeTest.click(); } };
+    return button;
+  };
   body.append(element('p', 'settings-note', "Alan's native chat talks to the Hermes API server (API_SERVER_ENABLED=true and API_SERVER_KEY in the profile's .env). Use http://127.0.0.1:8642 through an SSH tunnel, or the https address Tailscale Serve gives port 8642."));
   const refresh = () => {
     if (document.activeElement !== surface) surface.value = state.chatSurface;
@@ -1779,6 +1786,10 @@ function mountChatSurface(body) {
     if (!password.dataset.dirty) password.placeholder = state.webappSignIn ? "Saved in this computer's keychain" : 'from webapp-signin.txt';
     if (!nativeAddress.dataset.dirty) nativeAddress.value = state.nativeChat?.address || '';
     nativeKey.placeholder = state.nativeChat?.hasKey ? 'Saved. Paste a new key to replace it.' : 'API_SERVER_KEY';
+    const files = state.nativeKeyFiles || [];
+    for (const name of files) if (!nativeImport.querySelector(`[data-name="${name}"]`)) nativeImport.append(importButton(name));
+    for (const button of nativeImport.children) button.hidden = !files.includes(button.dataset.name);
+    nativeImport.hidden = !files.length;
     status.textContent = webappStatusText();
   };
   refresh(); return refresh;

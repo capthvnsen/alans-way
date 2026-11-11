@@ -435,4 +435,4 @@ button.nc-card:hover{background:#ffffff0d}
 .nc-send svg{width:16px;height:16px;stroke-width:2.2}
 .nc-stop-square{width:10px;height:10px;border-radius:2px;background:currentColor}
 .nc-readonly{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:4px 14px 14px;padding:9px 9px 9px 15px;border-radius:16px;background:#141417;border:1px solid #29292f;font-size:12px;color:#b5b5bf}
-.native-settings-actions{display:flex;gap:8px;margin-top:8px}
+.native-settings-actions{display:flex;gap:8px;margin-top:8px}.native-settings-actions[hidden]{display:none}

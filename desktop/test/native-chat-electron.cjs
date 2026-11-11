@@ -2,6 +2,7 @@
 // in-process Hermes API mock (default, CI-safe) or, with NATIVE_CHAT_LAB=1, the
 // real lab Hermes on 127.0.0.1:18642. Two launches share one throwaway profile:
 // the second proves the last thread paints from the disk cache before any network.
+// Two more launches import a saved key file and prove it persisted.
 // Run: npm run test:native-chat
 const fs = require('node:fs');
 const os = require('node:os');
@@ -17,12 +18,20 @@ if (!process.versions.electron) {
   (async () => {
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-electron-'));
     const mock = LAB ? null : await createMock({ key: MOCK_KEY }).listen();
+    const url = mock ? mock.url : 'http://127.0.0.1:18642', key = mock ? MOCK_KEY : LAB_KEY;
+    // The import phases get their own profile and a temp HOME holding a fake key file; the
+    // mock keychain keeps macOS from asking for a keychain that HOME no longer points at.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-home-')), importProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-import-'));
+    fs.mkdirSync(path.join(home, '.config', 'alans-way'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.config', 'alans-way', 'fake-api-key'), `${key}\n`, { mode: 0o600 });
+    fs.writeFileSync(path.join(importProfile, 'native-chat.json'), JSON.stringify({ baseUrl: url }));
     let failed = false;
-    for (const phase of ['1', '2']) {
+    for (const phase of ['1', '2', 'import', 'import-2']) {
       if (mock) { mock.delayMs = phase === '2' ? 2500 : 0; mock.served = 0; }
+      const imports = phase.startsWith('import'), dir = imports ? importProfile : profile;
       const code = await new Promise((resolve) => {
-        const child = spawn(require('electron'), [`--user-data-dir=${profile}`, __filename], { stdio: 'inherit',
-          env: { ...process.env, HERMES_TEST_PROFILE: profile, NATIVE_CHAT_PHASE: phase, NATIVE_CHAT_URL: mock ? mock.url : 'http://127.0.0.1:18642', NATIVE_CHAT_KEY: mock ? MOCK_KEY : LAB_KEY, NATIVE_CHAT_STATS: mock ? `${mock.url}/__stats` : '' } });
+        const child = spawn(require('electron'), [...(imports ? ['--use-mock-keychain'] : []), `--user-data-dir=${dir}`, __filename], { stdio: 'inherit',
+          env: { ...process.env, ...(imports ? { HOME: home } : {}), HERMES_TEST_PROFILE: dir, NATIVE_CHAT_PHASE: phase, NATIVE_CHAT_URL: url, NATIVE_CHAT_KEY: key, NATIVE_CHAT_STATS: mock ? `${mock.url}/__stats` : '' } });
         const deadline = setTimeout(() => { console.error(`Phase ${phase} exceeded 150s.`); child.kill('SIGKILL'); }, 150000);
         child.once('close', (exit, signal) => { clearTimeout(deadline); resolve(signal ? 1 : exit); });
       });
@@ -33,7 +42,7 @@ if (!process.versions.electron) {
       if (origins.length) { console.error('A request carried an Origin header:', origins[0].path); failed = true; }
       mock.close();
     }
-    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    for (const dir of [profile, importProfile, home]) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     console.log(failed ? 'native chat: FAILED' : `native chat: ok (${LAB ? 'lab' : 'mock'})`);
     process.exit(failed ? 1 : 0);
   })();
@@ -44,7 +53,7 @@ if (!process.versions.electron) {
   const profile = process.env.HERMES_TEST_PROFILE, phase = process.env.NATIVE_CHAT_PHASE;
   prepareFixture(profile);
   const prefsFile = path.join(profile, 'preferences.json');
-  if (phase === '1') fs.writeFileSync(prefsFile, JSON.stringify({ onboarded: true, preview: false }));
+  if (phase === '1' || phase === 'import') fs.writeFileSync(prefsFile, JSON.stringify({ onboarded: true, preview: false }));
   const until = async (read, why, ms = 20000) => {
     const end = Date.now() + ms;
     for (;;) {
@@ -205,6 +214,32 @@ if (!process.versions.electron) {
       // Leave the big thread open for the relaunch.
       await openSession(bigId);
       await new Promise((resolve) => setTimeout(resolve, 700));
+    } else if (phase === 'import') {
+      // A waiting key file: only its name reaches the renderer; one click imports it and deletes the file.
+      const keyFile = path.join(os.homedir(), '.config', 'alans-way', 'fake-api-key'), key = process.env.NATIVE_CHAT_KEY;
+      await run(`document.getElementById('settings-fallback').click()`);
+      await until(() => visible('#settings-native-import button[data-name="fake"]'), 'import action');
+      assert.equal(JSON.stringify(await run('workspace.getState()')).includes(key), false);
+      assert.equal((await run('document.documentElement.outerHTML')).includes(key), false);
+      await click('#settings-native-import button[data-name="fake"]');
+      await until(async () => (await run(`document.getElementById('settings-native-import-status').textContent`)) === 'Key imported and the file deleted.', 'imported');
+      await until(async () => /^Connected/.test(await run(`document.getElementById('settings-native-status').textContent`)), 'test after import');
+      assert.equal(fs.existsSync(keyFile), false, 'the key file is deleted');
+      await until(async () => !(await visible('#settings-native-import')), 'import action gone');
+      assert.equal(fs.readFileSync(path.join(profile, 'native-chat.json'), 'utf8').includes(key), false, 'stored sealed');
+      assert.equal((await run('workspace.getState()')).nativeChat.address, process.env.NATIVE_CHAT_URL);
+      await run(`(() => { const select = document.getElementById('settings-chat-surface'); select.value = 'native'; select.dispatchEvent(new Event('change')); })()`);
+      await until(async () => (await run('workspace.getState()')).chatTarget === 'native', 'native surface');
+      await click('#modal-close');
+      await until(async () => (await rows()).length > 0, 'history after import');
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    } else if (phase === 'import-2') {
+      // Relaunch: the imported key was persisted, so a new chat still gets its reply.
+      await until(() => visible('#native-pane .nc-composer'), 'native pane after relaunch');
+      await click('#native-pane .nc-new');
+      await send('hello world');
+      await until(async () => (await rows()).some((row) => row.role === 'assistant' && row.text === 'pong: hello world'), 'reply with the imported key');
+      assert.deepEqual((await run('workspace.getState()')).nativeKeyFiles, []);
     } else {
       // Relaunch: the last thread is on screen while every request is still held by the mock.
       await until(async () => (await rows().catch(() => [])).length >= 60, 'cached bubbles after relaunch', 10000);

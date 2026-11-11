@@ -42,6 +42,13 @@ In the app: Settings, Chat surface. Enter **Native chat address** and **API
 key**, choose **Save**, then **Test**. Once it is saved, choose **Alan's native
 chat** in "Chat in the left pane with".
 
+**Import a saved key instead of pasting it:** put the key alone in
+`~/.config/alans-way/<name>-api-key` (`<name>` is lowercase letters, digits and
+dashes) and `chmod 600` it. Settings, Chat surface then shows **Import saved key**.
+One click checks the file (a regular file you own, mode 600, 16 to 500 bytes),
+saves the key encrypted like a pasted one, reads it back, then deletes the file and
+runs **Test**. The address defaults to `http://127.0.0.1:8642` when none is set.
+
 ## What you can do
 
 - Pick a conversation or start a new one from the switcher at the top of the pane.

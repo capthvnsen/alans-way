@@ -30,6 +30,7 @@ const { createLog } = require('./main-log.cjs');
 const { armQuitWatchdog } = require('./update-quit.cjs');
 const releaseChannel = require('./release-channel.cjs');
 const { createNativeChat } = require('./native-chat.cjs');
+const { keyFiles, importKey } = require('./key-import.cjs');
 const { parseBaseUrl } = require('./hermes-api.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
 const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, deliverPendingUpdateReport, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
@@ -533,7 +534,7 @@ function getState() {
     // activeTabId keeps its wire meaning for the renderer: the surface on screen, 'vps' for Bot screen.
     canvasTab: shownCanvas(), webappCanvas: webappCanvas(), terminals: terminals.ids(), terminalNote, activeTabId: shownCanvas() === 'screen' ? 'vps' : shownTabId(), activeVpsTabId, browserTabHost: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(shownTabId())?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? activeVpsTabId : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
-    chatTarget, hermes: hermesSummary(), chatSurface: resolveChatSurface(prefs.chatSurface, webappStatus, !!nativeChat?.configured), hermesWebappUrl: prefs.hermesWebappUrl, webappStatus, nativeChat: nativeChat?.summary() || { configured: false },
+    chatTarget, hermes: hermesSummary(), chatSurface: resolveChatSurface(prefs.chatSurface, webappStatus, !!nativeChat?.configured), hermesWebappUrl: prefs.hermesWebappUrl, webappStatus, nativeChat: nativeChat?.summary() || { configured: false }, nativeKeyFiles: keyFiles({ fs, home: os.homedir() }),
     webappSignIn: webappTarget ? webappSignIn.username(new URL(webappTarget).origin) : '', webappSignInError,
     chatBotId: chatBotId(), hermesBot: builtinBot() ? { id: 'hermes', name: hermesBotName() } : null, surfaces: usableSurfaces(surfaceContext(chatBotId())),
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
@@ -2240,6 +2241,11 @@ function registerIpc() {
       case 'show-webapp': chatTarget = 'webapp'; syncWebapp(); broadcast(); break;
       case 'show-native': showSurface('native'); broadcast(); break;
       case 'webapp-retry': await checkWebapp(); break;
+      case 'native-import-key': {
+        const result = importKey({ name: value.name, fs, home: os.homedir(), safeStorage, readBack: () => loadNativePersisted().key,
+          save: (key) => nativeChat.configure({ ...(parseBaseUrl(nativeChat.summary().address) || { baseUrl: 'http://127.0.0.1:8642', profile: '' }), key }) });
+        applySurface(); broadcast(); return result;
+      }
       case 'webapp-link': openWebappLink(value.url); break;
       case 'webapp-sign-in': {
         if (!webappTarget) throw new Error('Save the Hermes Desktop address first.');
