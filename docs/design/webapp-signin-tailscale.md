@@ -1,6 +1,9 @@
 # Webapp sign-in over Tailscale
 
 Status: design only, 2026-11-11. No code, config or gateway change comes with this doc.
+Lane D2 built it for friends' own servers ([hermes-desktop-signin.md](../hermes-desktop-signin.md)).
+One change from this design: the Workspace may save the password, encrypted with
+safeStorage and tied to one origin, so it can sign in again when a session lapses.
 It answers open questions 1 and 2 of the Hermes Webapp embed plan (PR #284,
 `docs/design/hermes-webapp-embed.md` on `agent/lane4-webapp-embed`) and gives the
 rollout steps that need Alex.

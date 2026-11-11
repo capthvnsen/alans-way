@@ -52,6 +52,26 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
     res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><title>Private webapp</title>');
   }, '127.0.0.1');
   const privateAddress = `http://127.0.0.1:${privateServer.address().port}`;
+  // Hermes' basic password sign-in: POST /auth/password-login sets the session cookie.
+  const logins = [];
+  const signinServer = await listen((req, res) => {
+    if (req.url === '/api/status') { res.setHeader('Content-Type', 'application/json'); return res.end('{"version":"0.23.1","auth_required":true}'); }
+    if (req.url === '/auth/password-login' && req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      return req.on('end', () => {
+        const { provider, username, password } = JSON.parse(body);
+        logins.push(username);
+        if (provider !== 'basic' || username !== 'sam' || password !== 'right-horse-battery') { res.writeHead(401); return res.end('{"detail":"Invalid credentials"}'); }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': 'hermes-session=yes; Max-Age=3600; HttpOnly; Path=/' });
+        res.end('{"ok":true,"next":"/"}');
+      });
+    }
+    if (req.url === '/' && !/hermes-session/.test(req.headers.cookie || '')) { res.writeHead(302, { Location: '/login' }); return res.end(); }
+    res.setHeader('Content-Type', 'text/html');
+    res.end(`<!doctype html><title>${req.url === '/login' ? 'Sign in' : 'Signed-in webapp'}</title>`);
+  }, '127.0.0.1');
+  const signinAddress = `http://127.0.0.1:${signinServer.address().port}/`;
   const prefsFile = path.join(profile, 'preferences.json');
   fs.writeFileSync(prefsFile, JSON.stringify({ onboarded: true, preview: false,
     bots: [{ id: '4242', isBot: true, name: 'Embed fixture' }], selectedBotId: '4242' }));
@@ -194,12 +214,58 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
   await settings({ chatSurface: 'hermes-desktop' });
   assert.equal(await linked.executeJavaScript('sessionStorage.signedIn'), 'yes', 'switching keeps the link sign-in');
 
+  // A saved password signs in for the user, survives a lost session, and is never stored in clear.
+  await settings({ hermesWebappUrl: signinAddress });
+  await until(() => linked.isDestroyed(), 'linked view closed');
+  await statusIs('sign-in');
+  const signedIn = await until(() => webappViews()[0], 'sign-in view');
+  await assert.rejects(run(`workspace.command('webapp-sign-in', { username: 'sam', password: 'wrong' })`), /refused/);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.deepEqual(logins, ['sam'], 'a refused password is tried once, not looped');
+  assert.match((await state()).webappSignInError, /refused/);
+  await run(`document.getElementById('settings-fallback').click()`);
+  await until(() => run(`!!document.getElementById('settings-webapp-password')`), 'sign-in fields');
+  assert.equal(await run(`document.getElementById('settings-webapp-password').type`), 'password');
+  await run(`(() => { for (const [id, value] of [['settings-webapp-user', 'sam'], ['settings-webapp-password', 'right-horse-battery']]) { const input = document.getElementById(id); input.value = value; input.dispatchEvent(new Event('input')); }
+    [...document.querySelectorAll('button')].find(button => button.textContent === 'Save sign-in').click(); })()`);
+  await statusIs('ready');
+  await until(() => signedIn.getURL() === signinAddress && !signedIn.isLoading(), 'signed-in webapp');
+  assert.equal(await signedIn.executeJavaScript('document.title'), 'Signed-in webapp');
+  await until(() => run(`document.getElementById('settings-webapp-status').textContent.includes('signed in as sam') && document.getElementById('settings-webapp-password').value === ''`), 'Settings shows the saved sign-in');
+  assert.equal((await webappPartition.cookies.get({ name: 'hermes-session' })).length, 1, 'the session cookie lands in the webapp partition');
+  assert.equal((await browserPartition.cookies.get({ name: 'hermes-session' })).length, 0);
+  assert.equal(fs.readFileSync(prefsFile, 'utf8').includes('right-horse-battery'), false, 'no plaintext password on disk');
+  assert.equal(saved().webappSignIn.origin, signinAddress.slice(0, -1));
+  assert.equal(saved().webappSignIn.username, 'sam');
+  assert.equal(JSON.stringify(await state()).includes('right-horse-battery'), false, 'the password never reaches the renderer');
+
+  // Reconnect: the session lapses, the Webapp sends us to /login, and Workspace signs in again.
+  await webappPartition.clearStorageData({ storages: ['cookies'] });
+  await signedIn.executeJavaScript(`location.href = '/'; void 0`);
+  await until(() => logins.length === 3, 'automatic sign-in');
+  await statusIs('ready');
+  await until(() => signedIn.getURL() === signinAddress && !signedIn.isLoading(), 'back in after the lapse');
+
+  // Sign out clears the cookie and the saved password, and does not sign straight back in.
+  await run(`[...document.querySelectorAll('button')].find(button => button.textContent === 'Sign out of Hermes Desktop').click()`);
+  await statusIs('sign-in');
+  await until(() => signedIn.getURL() === `${signinAddress}login`, 'back at the sign-in form');
+  assert.equal((await webappPartition.cookies.get({ name: 'hermes-session' })).length, 0);
+  assert.equal(saved().webappSignIn, undefined);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.equal(logins.length, 3, 'no sign-in after signing out');
+  await run(`document.getElementById('modal-close').click()`);
+
+  // A new address never receives the old password.
+  await run(`workspace.command('webapp-sign-in', { username: 'sam', password: 'right-horse-battery' })`);
+  await statusIs('ready');
   // Clearing the address falls back to the help.
   await settings({ hermesWebappUrl: '' });
-  await until(() => linked.isDestroyed(), 'linked view closed');
+  await until(() => signedIn.isDestroyed(), 'signed-in view closed');
+  assert.equal(saved().webappSignIn, undefined, 'changing the address forgets the saved sign-in');
   await helpSays('no address yet');
   console.log('webapp embed: ok');
-  quitFixture(server, other, privateServer);
+  quitFixture(server, other, privateServer, signinServer);
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

@@ -1,4 +1,5 @@
 const { SSH_OPTIONS: TAILNET_SSH_OPTIONS, hermesWebappUrl } = require('./tailnet.cjs');
+const { createWebappSignIn, signInToWebapp, SIGN_IN_ERRORS } = require('./webapp-signin.cjs');
 const { authorizeBot, approvalIdentity, registryFile } = require('./bot-auth.cjs');
 const { app, BrowserWindow, WebContentsView, webContents, ipcMain, Menu, Tray, Notification, dialog, clipboard, shell, nativeTheme, screen, nativeImage, session, powerMonitor, net, protocol, systemPreferences, safeStorage } = require('electron');
 const { ACCELERATORS } = require('./workspace-shortcuts.cjs');
@@ -124,7 +125,7 @@ let tabActivationSequence = 0;
 let activeTabId = 'home', activeVpsTabId = '', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 // Native Hermes chat: 'telegram' shows the Telegram WebContentsView; 'hermes'
 // shows the DOM surface (the Telegram view then measures to zero and hides).
-let hermesHub = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '';
+let hermesHub = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '', webappSignInError = '', webappSignInTried = false;
 const WEBAPP_PARTITION = 'persist:hermes-webapp';
 let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
 const tabs = new Map();
@@ -509,6 +510,7 @@ function getState() {
     activeTabId, activeVpsTabId, browserTabHost: activeTabId === 'vps' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (vpsTabs.has(activeVpsTabId) ? activeVpsTabId : tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     chatTarget, hermes: hermesSummary(), chatSurface: resolveChatSurface(prefs.chatSurface, webappStatus), hermesWebappUrl: prefs.hermesWebappUrl, webappStatus,
+    webappSignIn: webappTarget ? webappSignIn.username(new URL(webappTarget).origin) : '', webappSignInError,
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
     fullscreen: !!win && !win.isDestroyed() && win.isFullScreen(), api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
   // One authority orders native IPC reads, command replies and broadcasts by
@@ -656,13 +658,32 @@ function createWebappView(url) {
   const report = (status) => { webappStatus = status; applyLayout(); broadcast(); };
   contents.on('did-navigate', (_event, url) => {
     const { pathname } = new URL(url);
-    if (!pathname.endsWith('/webapp/launch')) report(pathname.endsWith('/login') ? 'sign-in' : 'ready');
+    if (pathname.endsWith('/webapp/launch')) return;
+    const signIn = pathname.endsWith('/login');
+    // One automatic try per sign-out, so a refused password can't loop or trip the throttle.
+    if (!signIn) { webappSignInTried = false; webappSignInError = ''; }
+    else if (!webappSignInTried) signInWebapp().catch(error => logError('hermes-webapp', error));
+    report(signIn ? 'sign-in' : 'ready');
   });
   contents.on('did-fail-load', (_event, code, _text, _url, isMainFrame) => { if (isMainFrame && code !== -3) report('unreachable'); });
   win.contentView.addChildView(webappView);
   contents.loadURL(url).catch(() => {});
 }
-// Runs at startup, when the address changes and on Try again, never on a live view.
+// Signs in with the saved password and reloads the Webapp; on failure the Webapp's own
+// form stays up and the reason shows in Settings.
+async function signInWebapp() {
+  const target = webappTarget, saved = target && webappSignIn.read(new URL(target).origin);
+  if (!saved) return '';
+  webappSignInTried = true;
+  const failure = await signInToWebapp((url, init) => session.fromPartition(WEBAPP_PARTITION).fetch(url, init), target, saved);
+  if (target !== webappTarget) return '';
+  webappSignInError = failure && SIGN_IN_ERRORS[failure];
+  if (!failure) webappView?.webContents.loadURL(target).catch(() => {});
+  broadcast();
+  return webappSignInError;
+}
+// Runs at startup, when the address changes, on Try again and every 30 seconds while
+// unreachable, never on a live view.
 async function checkWebapp() {
   const target = hermesWebappUrl(prefs.hermesWebappUrl);
   if (webappView && target !== webappTarget) {
@@ -1410,6 +1431,7 @@ const checkVersionsWhenIdle = () => {
   if (updateLocked({ updateBusy: update.busy, vmRetrying, hermesUpdating, updatingAll })) return;
   checkVmVersions().catch((error) => logError('vm-check', error));
 };
+const webappSignIn = createWebappSignIn({ safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs) });
 const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs) });
 async function saveBrowserSession() {
   savePreferences();
@@ -2096,6 +2118,19 @@ function registerIpc() {
       case 'show-webapp': chatTarget = 'webapp'; syncWebapp(); broadcast(); break;
       case 'webapp-retry': await checkWebapp(); break;
       case 'webapp-link': openWebappLink(value.url); break;
+      case 'webapp-sign-in': {
+        if (!webappTarget) throw new Error('Save the Hermes Desktop address first.');
+        webappSignIn.save(new URL(webappTarget).origin, value.username, value.password);
+        webappSignInError = ''; webappSignInTried = false; broadcast();
+        const failure = webappView ? await signInWebapp() : (await checkWebapp(), '');
+        if (failure) throw new Error(failure);
+        break;
+      }
+      case 'webapp-sign-out':
+        webappSignIn.forget(); webappSignInError = ''; webappSignInTried = true;
+        await session.fromPartition(WEBAPP_PARTITION).clearStorageData();
+        webappView?.webContents.loadURL(webappTarget).catch(() => {});
+        broadcast(); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
       case 'bot-sort': if (['recent', 'alpha', 'manual'].includes(value.mode)) { prefs.botSort = value.mode; savePreferences(); } break;
       case 'hide-bot':
@@ -2156,7 +2191,7 @@ function registerIpc() {
         }
         const addressChanged = next.hermesWebappUrl !== prefs.hermesWebappUrl;
         persistSettingsPreferences(next);
-        if (addressChanged) checkWebapp().catch(error => logError('hermes-webapp', error));
+        if (addressChanged) { webappSignIn.forget(); webappSignInError = ''; webappSignInTried = false; checkWebapp().catch(error => logError('hermes-webapp', error)); }
         if (Object.hasOwn(value, 'chatSurface')) { chatTarget = surfaceTarget(); syncWebapp(); }
         if (Object.hasOwn(value, 'releaseChannel')) {
           holdAppInstall(false);
@@ -3715,6 +3750,7 @@ else {
     chatTarget = surfaceTarget();
     createWindow(); await extensionStore.restore(); broadcast();
     checkWebapp().catch(error => logError('hermes-webapp', error));
+    setInterval(() => { if (webappStatus === 'unreachable') checkWebapp().catch(error => logError('hermes-webapp', error)); }, 30000);
     if (cloudSession() && prefs.cloud?.step && prefs.cloud.step !== 'done') startCloudPolling();
     startUpdates();
   });
