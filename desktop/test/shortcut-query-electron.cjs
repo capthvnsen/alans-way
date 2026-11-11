@@ -101,7 +101,7 @@ app.whenReady().then(async () => {
   }
   for (const query of ['', ' \t ']) {
     const result = await search(query); receipts.push({ name: 'empty-query', result });
-    assert.equal(result.rows.length, 18);
+    assert.equal(result.rows.length, 19);
   }
   const events = await js('queryEvents');
   assert.ok(events.some(e => e.type === 'input')); assert.ok(events.every(e => e.trusted));

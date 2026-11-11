@@ -37,6 +37,7 @@ const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
 const { screenshotClip } = require('./cdp.cjs');
 const { listReadExpression, cachedSnapshot, settleSnapshot, readEffect, passCloudflare, challengeProbeExpression, checkpointExpression, restoreExpression, followUpInstallExpression, lastReadOf } = require('./browser-page.cjs');
+const { createTerminals } = require('./terminal.cjs');
 const { brokerTarget, createVpsBrowser, backoffDelay, toCdpCookie, toElectronCookies, isTailnetHost, resolveSshHostname, createMirrorPusher, prepareMirrorTabs, settleWithin, checkScriptPath } = require('./vps-browser.cjs');
 const { createExtensionStore } = require('./extension-store.cjs');
 const { createBrowserSessionStore } = require('./browser-session.cjs');
@@ -129,7 +130,7 @@ let hermesHub = null, chatTarget = 'telegram', webappStatus = 'unconfigured', we
 const WEBAPP_PARTITION = 'persist:hermes-webapp';
 // Canvas tabs beyond Browser and Bot screen are Hermes Desktop pages (HashRouter routes).
 const CANVAS_PAGES = { chat: '#/', artifacts: '#/artifacts', cron: '#/cron', settings: '#/settings' };
-const CANVAS_TABS = ['browser', 'screen', ...Object.keys(CANVAS_PAGES)];
+const CANVAS_TABS = ['browser', 'screen', 'terminal', ...Object.keys(CANVAS_PAGES)];
 let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
 const tabs = new Map();
 const vpsTabs = new Map();
@@ -393,14 +394,25 @@ function selectAgent(id) {
   if (CANVAS_TABS.includes(prefs.canvasTabs[id])) canvasTab = prefs.canvasTabs[id];
   applyLayout();
 }
-// Hermes Desktop pages need an address that signs in with cookies: a one-use link's
-// credential lives in the chat view's sessionStorage and cannot reach a second view.
-const webappCanvas = () => !!webappTarget && !webappPrivate && !['unconfigured', 'unreachable', 'needs-link'].includes(webappStatus);
+// Hermes Desktop pages need an address that signs in with cookies, or a one-use link already opened in the chat view
+// (see loadPrivateCanvasPage).
+const webappCanvas = () => !!webappTarget && (webappPrivate ? webappStatus === 'ready' : !['unconfigured', 'unreachable', 'needs-link'].includes(webappStatus));
 // The Canvas tab on screen; a saved Hermes Desktop tab shows the browser while that is unavailable.
 const shownCanvas = () => CANVAS_PAGES[canvasTab] && !webappCanvas() ? 'browser' : canvasTab;
 const shownTabId = () => shownCanvas() === 'browser' ? activeTabId : '';
+// One shell per bot (key '_' with none selected), run on the saved agent server when there is one. Only showCanvas and the
+// terminal IPC below reach it, and both are driven by the Workspace window itself: no bot, tab, API or MCP call can.
+let terminalNote = '';
+const terminals = createTerminals({ onData: (id, data) => { if (win && !win.isDestroyed()) win.webContents.send('terminal:data', id, data); }, onExit: (id) => { if (win && !win.isDestroyed()) win.webContents.send('terminal:exit', id); broadcast(); } });
+process.on('exit', () => terminals.killAll());
+const terminalKey = () => prefs.selectedBotId || '_';
+function startTerminal(cols, rows) {
+  const result = terminals.start(terminalKey(), { sshHost: (prefs.vpsBrowser?.sshHost || '').trim(), sshOptions: TAILNET_SSH_OPTIONS, cols, rows });
+  terminalNote = result.ok ? '' : result.reason;
+  broadcast();
+}
 // Each bot keeps its own Canvas tab. Choosing one also reopens a collapsed browser pane.
-async function showCanvas(tab) {
+async function showCanvas(tab, start = false) {
   if (!CANVAS_TABS.includes(tab) || (CANVAS_PAGES[tab] && !webappCanvas())) return;
   if (prefs.showBrowser === false) { prefs.showBrowser = true; savePreferencesSoon(); }
   if (shownCanvas() !== tab) prefs.remoteControl = false;
@@ -409,6 +421,7 @@ async function showCanvas(tab) {
     if (waiting) await activateTab(waiting.id, 'vps');
   }
   canvasTab = tab;
+  if (tab === 'terminal' && start) startTerminal();
   // Picking a page tab reopens its page, even after Hermes Desktop navigated or closed it.
   if (CANVAS_PAGES[tab]) canvasPage = '';
   if (prefs.selectedBotId) { prefs.canvasTabs[prefs.selectedBotId] = tab; savePreferencesSoon(); }
@@ -515,7 +528,7 @@ function getState() {
     botSort: prefs.botSort || 'manual',
     autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false, carrySignIns: prefs.carrySignIns !== false,
     // activeTabId keeps its wire meaning for the renderer: the surface on screen, 'vps' for Bot screen.
-    canvasTab: shownCanvas(), webappCanvas: webappCanvas(), activeTabId: shownCanvas() === 'screen' ? 'vps' : shownTabId(), activeVpsTabId, browserTabHost: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(shownTabId())?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? activeVpsTabId : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
+    canvasTab: shownCanvas(), webappCanvas: webappCanvas(), terminals: terminals.ids(), terminalNote, activeTabId: shownCanvas() === 'screen' ? 'vps' : shownTabId(), activeVpsTabId, browserTabHost: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(shownTabId())?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? activeVpsTabId : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     chatTarget, hermes: hermesSummary(), chatSurface: resolveChatSurface(prefs.chatSurface, webappStatus), hermesWebappUrl: prefs.hermesWebappUrl, webappStatus,
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
@@ -655,11 +668,23 @@ function syncCanvasView() {
   const page = CANVAS_PAGES[shownCanvas()] || '';
   if (page && webappStatus !== 'checking' && page !== canvasPage) {
     const url = new URL(page, webappTarget).href;
-    if (canvasView) canvasView.webContents.loadURL(url).catch(() => {});
-    else canvasView = guardedWebappView(url);
     canvasPage = page;
+    if (webappPrivate) loadPrivateCanvasPage(url).catch(() => {});
+    else if (canvasView) canvasView.webContents.loadURL(url).catch(() => {});
+    else canvasView = guardedWebappView(url);
   }
   fit(canvasView, page ? layout.browser : null);
+}
+// A one-use-link host keeps its credential in the chat view's sessionStorage, so the Canvas view gets a copy of it
+// (same origin, same partition, no bridge) on the host's credential-free launch page before it opens a page.
+async function loadPrivateCanvasPage(url) {
+  if (!canvasView) canvasView = guardedWebappView(new URL('webapp/launch', webappTarget).href);
+  const view = canvasView, contents = view.webContents;
+  const grants = (await webappView.webContents.executeJavaScript(`Object.entries(sessionStorage).filter(([key]) => key.startsWith('hermes.webapp.session.v1:'))`))
+    .filter(([key, token]) => typeof key === 'string' && key.length < 300 && /^[A-Za-z0-9_-]{43}$/.test(token));
+  if (contents.isLoading()) await new Promise((resolve) => contents.once('did-stop-loading', resolve));
+  await contents.executeJavaScript(`for (const [key, token] of ${JSON.stringify(grants)}) sessionStorage.setItem(key, token)`);
+  if (canvasView === view) contents.loadURL(url).catch(() => {});
 }
 function guardedWebappView(url, report = () => {}) {
   const view = new WebContentsView({ webPreferences: { partition: WEBAPP_PARTITION, navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true } });
@@ -1954,6 +1979,12 @@ function registerIpc() {
     if (Array.isArray(files)) for (const file of files.slice(0, 40)) receivePdf(file);
   });
   ipcMain.handle('workspace:get', (event) => { trustSender(event); return getState(); });
+  // Terminal: start, input, resize and kill, from the Workspace page only (not the VM view, which shares the preload).
+  const shellOnly = (event) => { trustSender(event); if (event.sender !== win?.webContents) throw new Error('Untrusted workspace request.'); };
+  ipcMain.handle('terminal:start', (event, id, cols, rows) => { shellOnly(event); if (id === terminalKey()) startTerminal(cols, rows); });
+  ipcMain.on('terminal:input', (event, id, data) => { try { shellOnly(event); terminals.input(id, data); } catch {} });
+  ipcMain.on('terminal:resize', (event, id, cols, rows) => { try { shellOnly(event); terminals.resize(id, cols, rows); } catch {} });
+  ipcMain.on('terminal:kill', (event, id) => { try { shellOnly(event); terminals.kill(id); } catch {} });
   // Native Hermes chat bridge — the allowlisted command names are enforced by
   // the hub; secrets (passwords, tokens) may arrive but are never returned
   // through state or logged.
@@ -2002,7 +2033,7 @@ function registerIpc() {
         if (isVpsTarget(value.id, value.host)) { if(activeTabId===value.id)prefs.remoteControl=false; await vpsBrowser.request(`/v1/tabs/${value.id}`,'DELETE',undefined,{human:true}); vpsTabs.delete(value.id); if(activeTabId===value.id)activeTabId='home'; applyLayout(); } else closeTab(value.id); break;
       case 'activate': await activateTab(value.id, value.host); break;
       case 'toggle-vps-view': await showCanvas(shownCanvas() === 'screen' ? 'browser' : 'screen'); break;
-      case 'canvas-tab': await showCanvas(value?.tab); break;
+      case 'canvas-tab': await showCanvas(value?.tab, value?.start === true); break;
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
         const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; await tab.view.webContents.loadURL(target).catch(() => {}); } break;
@@ -2700,6 +2731,7 @@ function registerIpc() {
       const merged = new Map(prefs.bots.map((bot) => [bot.id, bot]));
       bots.forEach((bot) => merged.set(bot.id, bot));
       prefs.bots = [...merged.values()];
+      terminals.keepOnly(['_', ...prefs.bots.map((bot) => bot.id)]);
       if (value.selectedId && prefs.bots.some((bot) => bot.id === value.selectedId)) selectAgent(value.selectedId);
       if (!prefs.selectedBotId && prefs.bots.length && telegramStatus === 'connected') {
         const bot = prefs.bots.find((item) => !prefs.hidden.includes(item.id));
@@ -3523,7 +3555,7 @@ function buildMenu() {
     ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, settings, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
     { label: 'File', submenu: [{ label: 'Open File…', accelerator: ACCELERATORS['open-file'], click: () => pickPdf().catch(error => logError('open-pdf', error)) }, { label: 'New Browser Tab', accelerator: ACCELERATORS['new-tab'], click: () => createTab({}) }, { label: 'Close Tab', accelerator: ACCELERATORS['close-tab'], click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(shownTabId()) }, ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, settings, { type: 'separator' }, { role: 'quit' }])] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: ACCELERATORS.reload, click: () => { const tab = tabs.get(shownTabId()); if (tab) reloadBrowserPage(tab); } }, { type: 'separator' }, { id: 'canvas-browser', label: 'Browser', accelerator: ACCELERATORS['canvas-browser'], click: () => showCanvas('browser').then(broadcast) }, { id: 'canvas-screen', label: 'Bot Screen', accelerator: ACCELERATORS['canvas-screen'], click: () => showCanvas('screen').then(broadcast) }, ...Object.entries({ chat: 'Side Chat', artifacts: 'Artifacts', cron: 'Cron Jobs', settings: 'Bot Settings' }).map(([tab, label]) => ({ id: `canvas-${tab}`, label, accelerator: ACCELERATORS[`canvas-${tab}`], click: () => showCanvas(tab).then(broadcast) })), { type: 'separator' }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
+    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: ACCELERATORS.reload, click: () => { const tab = tabs.get(shownTabId()); if (tab) reloadBrowserPage(tab); } }, { type: 'separator' }, { id: 'canvas-browser', label: 'Browser', accelerator: ACCELERATORS['canvas-browser'], click: () => showCanvas('browser').then(broadcast) }, { id: 'canvas-screen', label: 'Bot Screen', accelerator: ACCELERATORS['canvas-screen'], click: () => showCanvas('screen').then(broadcast) }, { id: 'canvas-terminal', label: 'Terminal', accelerator: ACCELERATORS['canvas-terminal'], click: () => showCanvas('terminal', true).then(broadcast) }, ...Object.entries({ chat: 'Side Chat', artifacts: 'Artifacts', cron: 'Cron Jobs', settings: 'Bot Settings' }).map(([tab, label]) => ({ id: `canvas-${tab}`, label, accelerator: ACCELERATORS[`canvas-${tab}`], click: () => showCanvas(tab).then(broadcast) })), { type: 'separator' }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
     ...(process.platform === 'darwin' ? [{ label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }] : []),
     { label: 'Help', submenu: [{ id: 'workspace-shortcuts', label: 'Keyboard Shortcuts', click: () => win.webContents.send('workspace:shortcuts') }, ...(prefs?.cloud?.sessionEnc ? [{ type: 'separator' }, { label: 'Get help', click: () => shell.openExternal(cloudView().supportUrl).catch(() => {}) }] : [])] },
   ]));

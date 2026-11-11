@@ -1,7 +1,7 @@
 // Only existing workspace bindings belong here. Region keys are deliberately
 // separate from application menu accelerators; they never install global hooks.
 (() => {
-const ACCELERATORS = Object.freeze({ settings: 'CmdOrCtrl+,', 'open-file': 'CmdOrCtrl+O', 'new-tab': 'CmdOrCtrl+T', 'close-tab': 'CmdOrCtrl+W', reload: 'CmdOrCtrl+R', 'canvas-browser': 'CmdOrCtrl+1', 'canvas-screen': 'CmdOrCtrl+2', 'canvas-chat': 'CmdOrCtrl+3', 'canvas-artifacts': 'CmdOrCtrl+4', 'canvas-cron': 'CmdOrCtrl+5', 'canvas-settings': 'CmdOrCtrl+6' });
+const ACCELERATORS = Object.freeze({ settings: 'CmdOrCtrl+,', 'open-file': 'CmdOrCtrl+O', 'new-tab': 'CmdOrCtrl+T', 'close-tab': 'CmdOrCtrl+W', reload: 'CmdOrCtrl+R', 'canvas-browser': 'CmdOrCtrl+1', 'canvas-screen': 'CmdOrCtrl+2', 'canvas-terminal': 'CmdOrCtrl+3', 'canvas-chat': 'CmdOrCtrl+4', 'canvas-artifacts': 'CmdOrCtrl+5', 'canvas-cron': 'CmdOrCtrl+6', 'canvas-settings': 'CmdOrCtrl+7' });
 function shortcutReference(platform) {
   const mac = platform === 'darwin', mod = mac ? '⌘' : 'Ctrl';
   const chord = key => [[mod, key]];
@@ -16,7 +16,8 @@ function shortcutReference(platform) {
         { id: 'open-file', title: 'Open PDF', description: 'Choose a local PDF to open in a browser tab.', keys: chord('O'), search: 'file' },
         { id: 'canvas-browser', title: 'Show Browser', description: 'Switch the canvas to the browser.', keys: chord('1'), search: 'canvas' },
         { id: 'canvas-screen', title: 'Show Bot screen', description: 'Switch the canvas to the bot’s computer screen.', keys: chord('2'), search: 'canvas vm desktop' },
-        { id: 'canvas-pages', title: 'Show Side chat, Artifacts, Cron jobs or Bot settings', description: 'Switch the canvas to a Hermes Desktop page, in that order. Needs a Hermes Desktop address.', keys: [[mod, '3'], [mod, '4'], [mod, '5'], [mod, '6']], search: 'canvas hermes' },
+        { id: 'canvas-terminal', title: 'Show Terminal', description: 'Switch the canvas to a terminal for this bot. Starts one if none is running.', keys: chord('3'), search: 'canvas shell ssh' },
+        { id: 'canvas-pages', title: 'Show Side chat, Artifacts, Cron jobs or Bot settings', description: 'Switch the canvas to a Hermes Desktop page, in that order. Needs a Hermes Desktop address.', keys: [[mod, '4'], [mod, '5'], [mod, '6'], [mod, '7']], search: 'canvas hermes' },
       ] },
       { title: 'Browser & Telegram', note: 'Only while a local page or Telegram has keyboard focus.', rows: [
         { id: 'address', title: 'Focus browser address', description: 'Move focus to the workspace address field.', keys: chord('L'), search: 'url' },

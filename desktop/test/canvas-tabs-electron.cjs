@@ -30,7 +30,14 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
     if (req.url === '/' && !/webapp-login/.test(req.headers.cookie || '')) { res.writeHead(302, { Location: '/login' }); return res.end(); }
     res.setHeader('Content-Type', 'text/html'); res.end(`<!doctype html><title>${req.url === '/login' ? 'Sign in' : 'Hermes Desktop'}</title><body style="color:#ddd;font:20px system-ui">Hermes Desktop stand-in</body>`);
   });
-  const privateServer = await listen((req, res) => { res.setHeader('Content-Type', 'application/json'); res.end('{"version":"0.23.0","auth_required":false}'); });
+  // A loopback host without sign-in, as reached through an SSH tunnel: the launch link leaves a credential in sessionStorage, as Hermes does.
+  const privateKey = 'hermes.webapp.session.v1:["origin",""]';
+  const privateServer = await listen((req, res) => {
+    if (req.url === '/api/status') { res.setHeader('Content-Type', 'application/json'); return res.end('{"version":"0.23.0","auth_required":false}'); }
+    res.setHeader('Content-Type', 'text/html');
+    if (req.url.startsWith('/webapp/launch')) return res.end(`<script>if (location.hash) { sessionStorage.setItem(${JSON.stringify(privateKey)}, 'K'.repeat(43)); location.replace('/'); }</script>`);
+    res.end(`<!doctype html><script>document.title = sessionStorage.getItem(${JSON.stringify(privateKey)}) ? 'Hermes Desktop' : 'No link'</script>`);
+  });
   const address = `http://127.0.0.1:${server.address().port}/`;
   const prefsFile = path.join(profile, 'preferences.json');
   fs.writeFileSync(prefsFile, JSON.stringify({ onboarded: true, preview: false,
@@ -106,7 +113,7 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   await until(async () => (await state()).showBrowser === true, '⌘1 reopens the pane');
 
   // Without a Hermes Desktop address the page tabs stay hidden and do nothing.
-  assert.equal(await visible(), 'browser,screen');
+  assert.equal(await visible(), 'browser,screen,terminal');
   menu.getMenuItemById('canvas-cron').click(); await new Promise(resolve => setTimeout(resolve, 300));
   await showing('browser');
   await run(`workspace.command('canvas-tab', { tab: 'nonsense' })`); await showing('browser');
@@ -114,7 +121,7 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   // With one, they appear and load its pages in a Canvas view that shares the sign-in cookie.
   await session.fromPartition('persist:hermes-webapp').cookies.set({ url: address, name: 'webapp-login', value: 'yes' });
   await run(`workspace.command('settings', { hermesWebappUrl: ${JSON.stringify(address)}, chatSurface: 'telegram' })`);
-  await until(async () => (await visible()) === 'browser,screen,chat,artifacts,cron,settings', 'page tabs shown');
+  await until(async () => (await visible()) === 'browser,screen,terminal,chat,artifacts,cron,settings', 'page tabs shown');
   await run(`document.getElementById('canvas-cron').click()`); await showing('cron');
   const view = await until(canvasView, 'canvas view');
   await until(() => view.getURL() === `${address}#/cron` && !view.isLoading(), 'cron page');
@@ -150,18 +157,27 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   // If Hermes Desktop goes away the canvas falls back to Browser but keeps the choice.
   statusUp = false; await run(`workspace.command('webapp-retry')`);
   await showing('browser');
-  assert.equal(await visible(), 'browser,screen');
+  assert.equal(await visible(), 'browser,screen,terminal');
   assert.equal(saved().canvasTabs['1002'], 'cron');
   statusUp = true; await run(`workspace.command('webapp-retry')`);
   await showing('cron');
 
-  // A one-use-link host cannot sign a second view in, so it gets no page tabs.
-  await run(`workspace.command('settings', { hermesWebappUrl: 'http://127.0.0.1:${privateServer.address().port}/' })`);
+  // A host without sign-in has no page tabs until its one-use link is open in the chat view, then they share that credential.
+  const privateAddress = `http://127.0.0.1:${privateServer.address().port}/`;
+  await run(`workspace.command('settings', { hermesWebappUrl: ${JSON.stringify(privateAddress)} })`);
   await until(async () => (await state()).webappStatus === 'needs-link', 'private host checked');
   await showing('browser');
-  assert.equal(await visible(), 'browser,screen');
+  assert.equal(await visible(), 'browser,screen,terminal');
   assert.equal(canvasView(), undefined, 'the old host’s Canvas view is closed');
-  console.log('PASS canvas tabs: click, per-bot memory, arrow keys, ⌘1–⌘6, collapsed pane, Hermes Desktop pages, saved preferences.');
+  await run(`workspace.command('webapp-link', { url: 'http://127.0.0.1:9120/webapp/launch#ticket=${'T'.repeat(43)}' })`);
+  await until(async () => (await visible()) === 'browser,screen,terminal,chat,artifacts,cron,settings', 'page tabs after the link');
+  await run(`document.getElementById('canvas-cron').click()`); await showing('cron');
+  const linked = await until(canvasView, 'private canvas view');
+  await until(() => linked.getURL() === `${privateAddress}#/cron` && !linked.isLoading(), 'private cron page');
+  assert.equal(await linked.executeJavaScript('document.title'), 'Hermes Desktop', 'the Canvas view got the link’s credential');
+  assert.equal(await linked.executeJavaScript('typeof workspace'), 'undefined', 'no Workspace bridge in the Canvas view');
+  assert.equal(JSON.stringify(saved()).includes('K'.repeat(43)), false, 'the credential is never saved');
+  console.log('PASS canvas tabs: click, per-bot memory, arrow keys, ⌘1–⌘7, collapsed pane, Hermes Desktop pages (cookie and one-use-link hosts), saved preferences.');
   server.close(); privateServer.close();
   quitFixture();
 // app.quit() would exit 0 and hide the failure.
