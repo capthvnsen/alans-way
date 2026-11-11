@@ -77,6 +77,8 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   // Click: Alan moves to his screen.
   await run(`document.getElementById('canvas-screen').click()`);
   await showing('screen');
+  const remotePage = webContents.getAllWebContents().find(item => item.getURL().endsWith('remote.html'));
+  await until(async () => (await remotePage.executeJavaScript(`document.getElementById('remote-hint').textContent`)) === 'Not connected', 'no VM: no Take control hint');
   await shot('screen', 1440); await shot('screen', 1120);
 
   // The canvas follows the bot: Scout has no choice yet and inherits the view;

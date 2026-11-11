@@ -93,7 +93,7 @@ function render(next) {
   $('control').disabled = !connected;
   $('remote-name').textContent=state.remotePlatform==='mac'?'Mac VM':'VPS computer';
   $('control').title = state.remoteControl ? 'Return to watch mode' : 'Enable your mouse and keyboard · desktop agents may still be active';
-  $('remote-hint').textContent = state.remoteControl ? 'You control this view · click, drag, scroll and type' : state.activeTabId === 'vps' ? 'Watching · click Take control to use your mouse and keyboard' : 'Watching · drag the preview anywhere · Take control for mouse and keyboard';
+  $('remote-hint').textContent = !connected ? 'Not connected' : state.remoteControl ? 'You control this view · click, drag, scroll and type' : state.activeTabId === 'vps' ? 'Watching · click Take control to use your mouse and keyboard' : 'Watching · drag the preview anywhere · Take control for mouse and keyboard';
   $('paste').disabled=!connected || !state.remoteControl;
 }
 window.addEventListener('online', () => retryNow?.());
