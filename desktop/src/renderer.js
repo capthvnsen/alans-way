@@ -445,6 +445,7 @@ function render(next) {
     button.setAttribute('aria-selected', String(on)); button.tabIndex = on ? 0 : -1;
     button.hidden = !['browser', 'screen'].includes(button.dataset.canvas) && !state.webappCanvas;
   }
+  showSelectedCanvasTab();
   $('shell').classList.toggle('browser-hidden', state.showBrowser === false);
   $('browser-collapse').title = state.showBrowser === false ? 'Show browser pane' : 'Hide browser pane';
   $('browser-collapse').setAttribute('aria-label', $('browser-collapse').title);
@@ -2356,5 +2357,8 @@ api.onShortcuts?.(showShortcuts);
 api.onFocusWorkspace?.(() => { if (state?.showBrowser === false) return; focusMode = !focusMode; $('shell').classList.toggle('focus-workspace', focusMode); scheduleLayout(); });
 new ResizeObserver(scheduleLayout).observe($('shell'));
 new ResizeObserver(() => fitTabs()).observe($('tabs'));
+// A narrow pane scrolls the Canvas strip; keep the selected tab in view.
+function showSelectedCanvasTab() { $('canvas-tabs').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+new ResizeObserver(showSelectedCanvasTab).observe($('canvas-tabs'));
 window.addEventListener('resize', () => { positionPreview(); scheduleLayout(); });
 api.getState().then(render).catch((error) => toast(error.message));

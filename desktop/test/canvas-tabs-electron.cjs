@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
-const { BrowserWindow, Menu, session, webContents } = require('electron');
+const { app, BrowserWindow, Menu, session, webContents } = require('electron');
 const { prepareFixture, quitFixture } = require('./electron-fixture.cjs');
 
 const profile = process.env.HERMES_TEST_PROFILE;
@@ -48,7 +48,9 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
     // capturePage sees only the shell page; the VM live view is its own native view, saved alongside.
     fs.writeFileSync(path.join(shots, `${name}-${width}.png`), (await shell.capturePage()).toPNG());
     const native = name === 'screen' ? webContents.getAllWebContents().find(item => item.getURL().endsWith('remote.html')) : name === 'cron' ? canvasView() : null;
-    if (native) fs.writeFileSync(path.join(shots, `${name}-${width}-${name === 'cron' ? 'canvas' : 'vm'}-view.png`), (await native.capturePage()).toPNG());
+    // shortcut: native views may refuse capture (no Screen Recording permission); the shell shot still lands.
+    const image = await native?.capturePage().catch(error => console.warn(`no ${name} view shot: ${error.message}`));
+    if (image) fs.writeFileSync(path.join(shots, `${name}-${width}-${name === 'cron' ? 'canvas' : 'vm'}-view.png`), image.toPNG());
   };
   const state = () => run('workspace.getState()');
   const selected = () => run(`[...document.querySelectorAll('#canvas-tabs [role=tab]')].filter(b => b.getAttribute('aria-selected') === 'true').map(b => b.dataset.canvas).join()`);
@@ -162,4 +164,5 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   console.log('PASS canvas tabs: click, per-bot memory, arrow keys, ⌘1–⌘6, collapsed pane, Hermes Desktop pages, saved preferences.');
   server.close(); privateServer.close();
   quitFixture();
-})().catch((error) => { console.error(error); quitFixture(); process.exitCode = 1; });
+// app.quit() would exit 0 and hide the failure.
+})().catch((error) => { console.error(error); app.exit(1); });
