@@ -186,6 +186,8 @@ if (!process.versions.electron) {
       await streamDelay(0);
       await until(async () => !(await native()).run, 'approval turn finished', 30000);
 
+      const small = await run(`[...document.querySelectorAll('#bot-list *, .chat-header *, #native-pane *')].filter(n => n.offsetParent && [...n.childNodes].some(c => c.nodeType === 3 && c.textContent.trim()) && parseFloat(getComputedStyle(n).fontSize) < 11).map(n => n.className)`);
+      assert.deepEqual(small, [], 'no text below 11px in the list, header or native chat');
       fs.mkdirSync('/tmp/w1-proof', { recursive: true });
       await run(`document.activeElement?.blur()`);
       await sleep(400);
