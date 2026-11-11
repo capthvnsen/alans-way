@@ -1760,6 +1760,7 @@ function mountChatSurface(body) {
   signIn.onclick = async () => {
     const reply = await runSettingsAction(signIn, signInStatus, () => api.command('webapp-sign-in', { username: username.value, password: password.value }), 'Signing in…', "Signed in. The password is saved in this computer's keychain.");
     if (reply.ok) { password.value = ''; delete username.dataset.dirty; delete password.dataset.dirty; }
+    else if (state.webappSignInError) signInStatus.textContent = '';
   };
   signOut.onclick = () => runSettingsAction(signOut, signInStatus, () => api.command('webapp-sign-out'), 'Signing out…', 'Signed out. The saved password is gone from this computer.');
   const status = element('p', 'connection-state'); status.id = 'settings-webapp-status'; body.append(status);
