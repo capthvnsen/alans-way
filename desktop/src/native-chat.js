@@ -361,7 +361,7 @@
         children.push(streamBubble);
         if (tokenRun !== streamFor) { tokenRun = streamFor; mark('first-token'); }
       }
-      const statusText = run.tool || (run.status === 'waiting' ? 'Waiting for you' : !run.text ? 'Thinking' : '');
+      const statusText = run.status === 'waiting' ? 'Waiting for you' : run.tool || (!run.text ? 'Thinking' : '');
       if (statusText) {
         const line = el('div', 'nc-status');
         line.append(el('span', 'nc-dots'), document.createTextNode(statusText));

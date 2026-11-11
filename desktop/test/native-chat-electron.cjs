@@ -143,6 +143,7 @@ if (!process.versions.electron) {
       await type('APPROVE please');
       await until(() => visible('#native-pane .nc-prompt.approval.open'), 'approval card', 30000);
       assert.match(await run(`document.querySelector('#native-pane .nc-prompt.approval').innerText`), /Alan wants to run a command[\s\S]*Show details/);
+      await until(async () => (await run(`document.querySelector('#native-pane .nc-status')?.textContent`)) === 'Waiting for you', 'status says it waits for you');
       assert.equal(await run(`document.querySelector('#native-pane .nc-prompt.approval details pre').textContent`), 'rm -rf /tmp/hermes-lab-nonexistent-xyz');
       await run(`[...document.querySelectorAll('#native-pane .nc-prompt.approval button')].find(b => b.textContent === 'Allow once').click()`);
       await until(() => visible('#native-pane .nc-prompt.approval.answered'), 'approval answered');
