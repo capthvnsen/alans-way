@@ -2431,14 +2431,17 @@ function fitTerminal(id) {
   if (!view?.opened || view.host.classList.contains('hidden')) return;
   try { view.fit.fit(); } catch { return; }
   const size = `${view.term.cols}x${view.term.rows}`;
-  if (size !== view.size) { view.size = size; window.terminal.resize(id, view.term.cols, view.term.rows); }
+  if (size !== view.size && state.terminals.includes(id)) { view.size = size; window.terminal.resize(id, view.term.cols, view.term.rows); }
 }
 function renderTerminal() {
   const on = state.canvasTab === 'terminal', id = state.selectedBotId || '_', live = state.terminals.includes(id);
-  $('terminal-panel').classList.toggle('hidden', !on);
-  for (const [key, view] of terminalViews) view.host.classList.toggle('hidden', !(on && live && key === id));
+  // An ended session stays on screen, so its last output (an ssh error, say) can be read before restarting.
+  const ended = !live && !!terminalViews.get(id)?.opened;
+  $('terminal-panel').classList.toggle('hidden', !on); $('terminal-panel').classList.toggle('ended', ended);
+  for (const [key, view] of terminalViews) view.host.classList.toggle('hidden', !(on && (live || ended) && key === id));
   $('terminal-idle').classList.toggle('hidden', !on || live);
-  if (on && !live) renderTerminalIdle();
+  if (on && !live) renderTerminalIdle(ended);
+  if (on && ended) fitTerminal(id);
   if (!on || !live) return;
   const view = terminalView(id), hidden = view.host.classList.contains('hidden');
   view.host.classList.remove('hidden');
@@ -2446,9 +2449,10 @@ function renderTerminal() {
   fitTerminal(id);
   if (hidden) view.term.focus();
 }
-function renderTerminalIdle() {
+function renderTerminalIdle(ended) {
   const windows = state.platform === 'win32', server = (state.vpsBrowser?.sshHost || '').trim();
-  $('terminal-idle-text').textContent = windows ? 'Terminal is not available on Windows yet.' : state.terminalNote || `Open a shell on ${server ? `the agent server (${server})` : 'this computer'}.`;
+  $('terminal-idle-text').textContent = windows ? 'Terminal is not available on Windows yet.' : state.terminalNote || (ended ? 'Session ended.' : `Open a shell on ${server ? `the agent server (${server})` : 'this computer'}.`);
+  $('terminal-start').textContent = ended ? 'Restart terminal' : 'Start terminal';
   $('terminal-start').hidden = windows;
 }
 $('terminal-start').onclick = () => window.terminal.start(state.selectedBotId || '_');

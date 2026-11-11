@@ -87,6 +87,11 @@ const until = async (read, why, ms = 15000) => {
   await until(async () => (await live()) === '1002', 'session ended');
   assert.equal(await lineFor('1001', '[Session ended]'), true);
   assert.equal(await run(`!document.getElementById('terminal-idle').classList.contains('hidden')`), true);
+  assert.equal(await run(`!terminalViews.get('1001').host.classList.contains('hidden')`), true, 'the ended session’s output stays readable');
+  assert.equal(await run(`document.getElementById('terminal-start').textContent`), 'Restart terminal');
+  await run(`document.getElementById('terminal-start').click()`);
+  await until(async () => (await state()).terminals.includes('1001'), 'restarted');
+  assert.equal(await lineFor('1001', 'canvas-42'), true, 'a restart keeps the old scrollback');
 
   // Only the Workspace page may drive a shell: the browser pane's pages have no bridge at all.
   assert.equal(await run(`typeof window.terminal.start + typeof window.terminal.input + typeof window.terminal.resize + typeof window.terminal.kill + Object.keys(window.terminal).length`), 'functionfunctionfunctionfunction6');
