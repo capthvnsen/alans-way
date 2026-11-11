@@ -439,6 +439,7 @@ function render(next) {
   $('vm-toggle').title = remote ? 'Return to browser' : 'Expand virtual desktop';
   $('vm-toggle').setAttribute('aria-label', $('vm-toggle').title);
   $('vm-toggle').setAttribute('aria-pressed', String(remote));
+  for (const button of $('canvas-tabs').children) { const on = (button.dataset.canvas === 'screen') === remote; button.setAttribute('aria-selected', String(on)); button.tabIndex = on ? 0 : -1; }
   $('shell').classList.toggle('browser-hidden', state.showBrowser === false);
   $('browser-collapse').title = state.showBrowser === false ? 'Show browser pane' : 'Hide browser pane';
   $('browser-collapse').setAttribute('aria-label', $('browser-collapse').title);
@@ -2022,6 +2023,12 @@ $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };
 $('vm-toggle').onclick = () => { if (state?.showBrowser === false) command('settings', { showBrowser: true }); command('toggle-vps-view'); };
 $('preview-expand').onclick = () => command('toggle-vps-view');
+$('canvas-tabs').onclick = (event) => { const tab = event.target.closest('[data-canvas]')?.dataset.canvas; if (tab) command('canvas-tab', { tab }); };
+$('canvas-tabs').onkeydown = (event) => {
+  const tab = { ArrowLeft: 'browser', Home: 'browser', ArrowRight: 'screen', End: 'screen' }[event.key];
+  if (!tab) return;
+  event.preventDefault(); $(`canvas-${tab}`).focus(); command('canvas-tab', { tab });
+};
 $('preview-hide').onclick = () => command('settings', { preview: false });
 $('preview-chip').onclick = () => command('settings', { preview: true });
 wirePreviewDrag();
