@@ -1290,3 +1290,10 @@ test('only the labeled legacy connector retains an older VM desktop driver', asy
   await assert.rejects(check({ token: 'bound', botId: 'grok' }, false), /Computer broker unavailable/);
   await assert.rejects(check({ token: 'legacy' }, true), /Computer broker unavailable/);
 });
+
+test('the not_found hint covers bad menu and file paths, not only a quit app', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/browser-mcp.cjs'), 'utf8');
+  const next = require('node:vm').runInNewContext(source.slice(source.indexOf('const COMPUTER_NEXT ='), source.indexOf('function singleContinuedFromArgv')) + '\nCOMPUTER_NEXT;');
+  assert.match(next.not_found, /menu or file path/);
+  assert.match(next.not_found, /workspace_computer_apps/);
+});
