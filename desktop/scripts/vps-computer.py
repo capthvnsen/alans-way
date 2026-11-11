@@ -1100,7 +1100,9 @@ def cmd_act(req):
         ensure_display()
     bus = get_bus() if app else None
     target = Target(pid, app, req.get('generation'))
-    if target.gen is not None and any(s.get('ref') is not None for s in steps):
+    # Point steps on a user desktop hit-test the cached tree, so they need the same check as refs.
+    hits = not agent_desktop() and any('x' in s and 'y' in s for s in steps)
+    if target.gen is not None and (hits or any(s.get('ref') is not None for s in steps)):
         target.walk = walk_app(pid, app, bool(req.get('menubar')))
         if target.walk['generation'] != target.gen:
             fail('stale_ref: The app changed since your snapshot. Take a fresh snapshot.', 'stale_ref')
@@ -1569,6 +1571,12 @@ def cmd_selftest(req):
     try:
         reply = cmd_act({'pid': 9, 'steps': [{'action': 'click', 'x': 5, 'y': 6}], 'settleMs': 0})
         check(codes(reply) == ['not_found'] and not sent and not displays, 'a user desktop never calls xdotool for a point')
+        try:
+            cmd_act({'pid': 9, 'generation': 999, 'steps': [{'action': 'click', 'x': 5, 'y': 6}], 'settleMs': 0})
+            refused = None
+        except Fail as exc:
+            refused = exc.code
+        check(refused == 'stale_ref', 'a point step checks the generation it was aimed with')
     finally:
         restore()
     class Pw:
