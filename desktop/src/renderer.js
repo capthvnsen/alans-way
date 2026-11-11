@@ -435,18 +435,23 @@ function render(next) {
   }
   renderBots(); renderTabs(); renderSettingsBots(); renderRecordings(); renderSitePermissions(); renderExtensions(); renderDownloads(); refreshSettingsSections();
   const tab = state.tabs.find((item) => item.id === state.activeTabId && item.host === state.hostLabel);
-  const remote = state.activeTabId==='vps';
+  const remote = state.canvasTab === 'screen';
   $('vm-toggle').title = remote ? 'Return to browser' : 'Expand virtual desktop';
   $('vm-toggle').setAttribute('aria-label', $('vm-toggle').title);
   $('vm-toggle').setAttribute('aria-pressed', String(remote));
-  for (const button of $('canvas-tabs').children) { const on = (button.dataset.canvas === 'screen') === remote; button.setAttribute('aria-selected', String(on)); button.tabIndex = on ? 0 : -1; }
+  const page = !['browser', 'screen'].includes(state.canvasTab);
+  for (const button of $('canvas-tabs').children) {
+    const on = button.dataset.canvas === state.canvasTab;
+    button.setAttribute('aria-selected', String(on)); button.tabIndex = on ? 0 : -1;
+    button.hidden = !['browser', 'screen'].includes(button.dataset.canvas) && !state.webappCanvas;
+  }
   $('shell').classList.toggle('browser-hidden', state.showBrowser === false);
   $('browser-collapse').title = state.showBrowser === false ? 'Show browser pane' : 'Hide browser pane';
   $('browser-collapse').setAttribute('aria-label', $('browser-collapse').title);
   $('browser-collapse').setAttribute('aria-pressed', String(state.showBrowser === false));
-  renderHome(bot, !!tab || state.activeTabId === 'vps' || !!state.onboarding);
-  renderOnboarding(!tab && state.activeTabId !== 'vps' && !!state.onboarding);
-  $('browser-toolbar').classList.toggle('hidden', state.activeTabId === 'vps');
+  renderHome(bot, !!tab || remote || page || !!state.onboarding);
+  renderOnboarding(!tab && !remote && !page && !!state.onboarding);
+  $('browser-toolbar').classList.toggle('hidden', remote || page);
   $('remote-preview-slot').classList.toggle('hidden', !state.preview || remote || !!state.onboarding);
   $('preview-chip').classList.toggle('hidden', state.preview || remote);
   $('preview-label').textContent = state.remoteStatus === 'connected' ? `${remoteName()} desktop` : `${remoteName()} · ${state.remoteStatus}`;
@@ -2025,9 +2030,10 @@ $('vm-toggle').onclick = () => { if (state?.showBrowser === false) command('sett
 $('preview-expand').onclick = () => command('toggle-vps-view');
 $('canvas-tabs').onclick = (event) => { const tab = event.target.closest('[data-canvas]')?.dataset.canvas; if (tab) command('canvas-tab', { tab }); };
 $('canvas-tabs').onkeydown = (event) => {
-  const tab = { ArrowLeft: 'browser', Home: 'browser', ArrowRight: 'screen', End: 'screen' }[event.key];
-  if (!tab) return;
-  event.preventDefault(); $(`canvas-${tab}`).focus(); command('canvas-tab', { tab });
+  const shown = [...$('canvas-tabs').children].filter(button => !button.hidden), at = shown.indexOf(document.activeElement);
+  const next = shown[{ ArrowLeft: Math.max(0, at - 1), ArrowRight: Math.min(shown.length - 1, at + 1), Home: 0, End: shown.length - 1 }[event.key]];
+  if (!next) return;
+  event.preventDefault(); next.focus(); command('canvas-tab', { tab: next.dataset.canvas });
 };
 $('preview-hide').onclick = () => command('settings', { preview: false });
 $('preview-chip').onclick = () => command('settings', { preview: true });
