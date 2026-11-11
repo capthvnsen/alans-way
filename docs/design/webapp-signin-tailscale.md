@@ -63,12 +63,12 @@ sessions that can drive Alex's Mac and browser through the Workspace.
 |---|---|---|---|
 | T1 | Anyone on the internet | Public IP of the VM, any port | Nothing listens on a public interface. No Funnel. |
 | T2 | Another device or user on the tailnet: a shared node, a guest, a lost phone, Grok Bot's computer (it reaches the VM over Tailscale SSH) | `https://<vm>.<tailnet>.ts.net` | Tailnet policy lets only Alex's own devices reach port 443 on the VM. Password second. |
-| T3 | A lost or stolen device of Alex's that is still on the tailnet | Same URL, and maybe a live cookie in the Workspace partition | Remove the device in the Tailscale admin console. That ends its network access at once. Then `hermes webapp --sign-out` and rotate the password. |
-| T4 | Another OS user on the VM (the broker login, a compromised service) | `curl 127.0.0.1:<webapp port>` with forged headers | The Webapp must check a credential that a local process can't fake. A password or a signed token does that. A header such as `Tailscale-User-Login` does not (see Rejected B). |
+| T3 | A lost or stolen device of Alex's that is still on the tailnet | Same URL, and maybe a live cookie in the Workspace partition | Remove the device in the Tailscale admin console. That ends its network access at once. Then `hermes webapp --sign-out`, which ends every browser login. Rotate the password and secret too. A password change alone ends no session (rollout step 6). |
+| T4 | Another OS user on the VM (the broker login, a compromised service) | `curl 127.0.0.1:<webapp port>` with forged headers | The Webapp must check a credential that a local process can't fake. A password or a signed token does that. A header such as `Tailscale-User-Login` does not (see Rejected B). Native clients skip sign-in only through a same-user bootstrap: tickets come over a private control channel, and the token file is mode 0600 (`hermes_cli/dashboard_auth/native_http.py`, `gateway/webapp_listener.py`). That route doesn't help another OS user. A local process *can* forge `X-Forwarded-For`, because loopback is a trusted proxy. That lets it dodge the per-IP throttle and guess without limit, so the password must be long and random. Keep the hash and secret out of files and command lines that other users can read. |
 | T5 | Web pages in the Workspace Browser pane | Read Webapp cookies, or frame the Webapp | Separate partition `persist:hermes-webapp`, no preload. The Webapp sends `frame-ancestors 'none'` (PR #284). |
 | T6 | DNS rebinding or a look-alike `.ts.net` name typed into Settings | Point the Workspace pane at someone else's host | The TLS certificate binds the name. The pane holds no bridge, so a wrong host gets a login form and no Workspace powers. Pin the expected tailnet suffix (see Workspace side). |
-| T7 | Password guessing from an allowed device | Login form | Long random password and the Hermes throttle. Only Alex's devices can reach the form anyway. |
-| T8 | Password leaking through setup | Shell history, chat transcripts, the agent's own logs | Alex types it into a prompt on the VM. Only the hash goes into config. No agent ever sees it. |
+| T7 | Password guessing from an allowed device, or from a local process (see T4) | Login form | A random password of at least 24 characters, which is out of reach even with no throttle. Only Alex's devices can reach the form over the network. |
+| T8 | Password, hash or signing secret leaking through setup | Shell history, `ps` output that other VM users can read, chat transcripts, the agent's own logs | Alex types the password into a prompt on the VM. The hash and secret go into the Hermes account's 0600 `.env` through an editor, never as command arguments. No agent ever sees any of them. |
 
 Out of scope: the Hermes account itself, which already holds this authority. Tailscale's
 coordination server, which we trust for device identity. A compromised Mac session of
@@ -177,7 +177,7 @@ Small, and all of it is in PR #284's code:
 
 ## Rollout steps that need Alex
 
-Only Alex can do these. They change the tailnet policy, set a secret, and restart the
+Only Alex can do these. They change the tailnet policy, set secrets, and restart the
 shared Hermes gateway. Agents must not do any of them. Replace `<vm>` and `<tailnet>` with
 the real names from the Tailscale admin console's Machines page.
 
@@ -185,34 +185,52 @@ the real names from the Tailscale admin console's Machines page.
 password manager and label it "Hermes Webapp". Don't paste it into any chat or agent.
 
 **2. Lock port 443 to your devices.** In the Tailscale admin console:
-1. Open **Access controls**.
-2. Make sure no rule lets everyone reach the VM on every port. Rules with
-   `"dst": ["*:*"]` or `"<vm>:*"` for `autogroup:member` or `*` do that.
-3. Add a rule that lets only your own login reach the VM on 443:
-   `{"action": "accept", "src": ["<your-tailscale-login>"], "dst": ["<vm>:443"]}`
-   If you use `grants`, use the same idea: your login as `src`, the VM as `dst`,
-   `"ip": ["tcp:443"]`.
-4. Keep the existing SSH rules exactly as they are. #274 and #275 depend on them.
-5. Click **Save**. It worked if the console saves with no error.
+1. Open **DNS** and check that **MagicDNS** and **HTTPS Certificates** are both on. Serve
+   needs them for the `.ts.net` certificate.
+2. Open **Access controls** and copy the whole current policy into your password manager
+   as a backup.
+3. Add a rule that lets only your own devices reach the VM on 443. List each device's
+   `100.x` address under `hosts` (for example `"alex-mac": "100.x.y.z"`), then add
+   `{"action": "accept", "src": ["alex-mac", "alex-phone"], "dst": ["<vm>:443"]}`.
+   If the file uses `grants`, use your devices as `src`, the VM as `dst` and
+   `"ip": ["tcp:443"]`. Name devices rather than your login. A login matches **every**
+   machine signed in as you, and that may include a bot's computer.
+4. Add `tests` entries so a bad save is refused. One should check that a device of yours is
+   **accepted** on `<vm>:443`. Another should check that any other source, such as Grok
+   Bot's computer, is **denied** on `<vm>:443`.
+5. Only then look for broad rules that let other devices reach the VM on every port
+   (`"dst": ["*:*"]` or `"<vm>:*"`). Don't delete one outright. If SSH (port 22) or the
+   Workspace's own ports depend on it, replace it with rules for exactly those ports first.
+   The SSH rules from #274 and #275 must keep working.
+6. Check that no `nodeAttrs` entry gives the VM `funnel`.
+7. Click **Save**. It worked if the console saves and the tests pass. Then, from a second
+   terminal, check that `ssh` to the VM still works before you close your current session.
 
-**3. Turn on Serve and the Webapp on the VM.** SSH into the VM yourself, then as the
-Hermes OS user:
+**3. Turn on Serve and the Webapp on the VM.** SSH into the VM yourself.
+
+As **root**, not the Hermes user, because Serve changes `tailscaled`. Don't make the Hermes
+account a Tailscale operator: that would let it turn on Funnel itself.
 1. `tailscale serve --bg --https=443 http://127.0.0.1:<webapp port>`
    (the port is in `hermes webapp --status`; PR #284 used `9120`).
-2. `hermes config set webapp.enabled true`
-3. `hermes config set webapp.public_url https://<vm>.<tailnet>.ts.net`
-4. `hermes config set dashboard.basic_auth.username alex`
-5. Make the hash. This prompts for the password, so it stays out of shell history:
-   `python -c "import getpass; from plugins.dashboard_auth.basic import hash_password; print(hash_password(getpass.getpass()))"`
-   Run it from the Hermes checkout so the import resolves. Paste the output into
-   `hermes config set dashboard.basic_auth.password_hash '<output>'`.
-6. Set a stable signing secret:
-   `hermes config set dashboard.basic_auth.secret "$(openssl rand -base64 32)"`
-7. `hermes webapp --build-only`
-8. When no chat is running, `hermes gateway restart`. This ends running work on **every**
-   profile that gateway serves, so pick a quiet moment.
-9. Run `tailscale funnel status`. It should say Funnel is off. If it lists anything, run
+2. `tailscale funnel status`. It should show no Funnel. If it shows any, run
    `tailscale funnel reset`.
+
+As the **Hermes OS user**:
+
+3. `hermes config set webapp.enabled true`
+4. `hermes config set webapp.public_url https://<vm>.<tailnet>.ts.net`
+5. `hermes config set dashboard.basic_auth.username alex`
+6. From the Hermes checkout, make the hash. This asks for the password twice and never puts
+   it in shell history or `ps`:
+   `venv/bin/python -c "import getpass; from plugins.dashboard_auth.basic import hash_password; p = getpass.getpass(); assert p == getpass.getpass('Again: '); print(hash_password(p))"`
+7. `openssl rand -base64 32` prints a signing secret.
+8. Open `~/.hermes/.env` in an editor and add two lines, pasting the two outputs:
+   `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=<hash>` and
+   `HERMES_DASHBOARD_BASIC_AUTH_SECRET=<secret>`. Then `chmod 600 ~/.hermes/.env`.
+   Pasting into a file keeps both out of command lines that other VM users can see.
+9. `hermes webapp --build-only`
+10. When no chat is running, run `hermes gateway restart`. This ends running work on
+    **every** profile that gateway serves, so pick a quiet moment.
 
 It worked if `hermes webapp --status` reports gated mode with the `basic` provider.
 
@@ -222,19 +240,25 @@ with `alex` and the password. It worked if the Webapp loads. Quit and reopen the
 Workspace: it should still be signed in.
 
 **5. Check that strangers are blocked.** These are the checks that prove the threat model:
-1. From a device that is **not** on your policy rule (or with Tailscale turned off), open
-   the URL. It should time out.
-2. From the internet (phone on cellular, Tailscale off), open `http://<VM public IP>:<webapp port>`.
-   It should time out.
-3. On the VM, run `curl -s http://127.0.0.1:<webapp port>/api/status`. It should report
-   that sign-in is required. A local process gets no free pass.
+1. From a device that is **not** in your rule, open the URL. It should time out.
+2. From the internet (phone on cellular, Tailscale off), open
+   `http://<VM public IP>:<webapp port>`. It should time out.
+3. On the VM, as a user other than the Hermes user, run
+   `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:<webapp port>/api/sessions`.
+   It should print `401`. `/api/status` is public by design, so it proves nothing.
 4. Restart the gateway once more at a quiet moment and reopen the Workspace. You should
-   still be signed in. If not, the `secret` from step 3.6 didn't take.
+   still be signed in. If not, the secret from step 3.8 didn't load.
 
-**6. If a device is lost:** remove it on the admin console's Machines page, then run
-`hermes webapp --sign-out` on the VM. That signs out every browser, whichever provider it
-signed in with (`hermes_cli/webapp_sign_in.py`). Then redo step 3.5 with a new password.
-Sign in again on your other devices afterwards.
+**6. If a device is lost:**
+1. Remove it on the admin console's Machines page, and take it out of the `hosts` entry
+   from step 2.
+2. On the VM, run `hermes webapp --sign-out`. That signs out every browser, whichever
+   provider it signed in with (`hermes_cli/webapp_sign_in.py`). Changing the password
+   alone does not: password sessions are stateless, and `revoke_session` does nothing
+   (`plugins/dashboard_auth/basic/__init__.py`).
+3. Redo steps 3.6 to 3.8 with a new password **and** a new secret, then restart the
+   gateway so they load.
+4. Sign in again on your remaining devices.
 
 ## UNVERIFIED, to settle during rollout
 
@@ -244,5 +268,8 @@ Sign in again on your other devices afterwards.
   is loopback, one shared bucket means an allowed device could lock the form for a minute
   at a time. With step 2 in place, only Alex's devices can do that.
 - That the VM's Tailscale node is not tagged in a way that changes which policy rules
-  apply.
+  apply, and that `<vm>:443` as written in step 2 matches it. If not, use its tag or a
+  `hosts` alias.
+- Whether Grok Bot's computer is signed in to the tailnet as Alex. If it is, step 2 must
+  list devices, which it already does, and must not use the login.
 - Option C's two open points listed above.
