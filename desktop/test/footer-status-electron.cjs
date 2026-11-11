@@ -29,7 +29,11 @@ app.whenReady().then(async () => {
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
   await win.loadFile(path.join(__dirname, '../src/index.html'));
   await win.webContents.executeJavaScript(`document.getElementById('version-label').textContent = 'Alan’s Workspace 0.21.14'; document.getElementById('workspace-status').textContent = 'You in control · Mac'; document.getElementById('connection-status').textContent = 'Browser connector ready';`);
+  // CI screens can be narrower than the app's minimum window, so pin the footer
+  // (the container the CSS queries) to the widths 1550 and 1120 windows give it.
+  const footerWidth = (w) => win.webContents.executeJavaScript(`document.querySelector('.workspace-footer').style.cssText = 'width:${w}px;flex:none'`);
   await resizeWindow(win, 1550, 980);
+  await footerWidth(799);
   const wide = await win.webContents.executeJavaScript(measure);
   assert.notEqual(wide.status.display, 'none', JSON.stringify(wide));
   assert.notEqual(wide.connection.display, 'none', JSON.stringify(wide));
@@ -37,6 +41,7 @@ app.whenReady().then(async () => {
   console.log('PASS: wide footer keeps both status lines', JSON.stringify(wide));
 
   await resizeWindow(win, 1120, 680);
+  await footerWidth(397);
   const narrow = await win.webContents.executeJavaScript(measure);
   assert.equal(narrow.status.display, 'none', JSON.stringify(narrow));
   assert.equal(narrow.connection.display, 'none', JSON.stringify(narrow));
@@ -46,4 +51,4 @@ app.whenReady().then(async () => {
   assert.equal(narrow.version.overflow, 0, JSON.stringify(narrow));
   console.log('PASS: minimum window hides clipped status and keeps the version readable', JSON.stringify(narrow));
   app.exit(0);
-});
+}).catch((error) => { console.error(error.stack || error); app.exit(1); });
