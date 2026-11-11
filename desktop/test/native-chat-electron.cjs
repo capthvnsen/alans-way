@@ -17,6 +17,11 @@ if (!process.versions.electron) {
   (async () => {
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-electron-'));
     const mock = LAB ? null : await createMock({ key: MOCK_KEY }).listen();
+    if (LAB) {
+      // The lab profile's Bot Chat, made the way `hermes peer dm` makes it when there is none.
+      const lab = (route, init) => fetch(`http://127.0.0.1:18642${route}`, { ...init, headers: { Authorization: `Bearer ${LAB_KEY}`, 'Content-Type': 'application/json' } }).then((r) => r.json());
+      if (!(await lab('/api/sessions?title=Bot%20Chat')).data?.length) await lab('/api/sessions', { method: 'POST', body: JSON.stringify({ title: 'Bot Chat' }) });
+    }
     let failed = false;
     for (const phase of ['1', '2']) {
       if (mock) { mock.delayMs = phase === '2' ? 2500 : 0; mock.served = 0; }
@@ -200,6 +205,30 @@ if (!process.versions.electron) {
         await until(async () => { const s = await native(); return s.activeId !== telegramId && !s.thread.readOnly; }, 'forked');
         await until(() => visible('#native-pane .nc-composer'), 'composer after Continue here');
         await until(async () => (await rows()).length === 6, 'fork paints the copied history');
+      }
+
+      // The profile's Bot Chat is the one conversation of another surface native can write: same session id, no fork.
+      const bot = (await native()).sessions.find((s) => s.title === 'Bot Chat');
+      assert.ok(bot && bot.shared && !bot.readOnly, 'the Bot Chat is listed as shared');
+      await click('#native-pane .nc-switch');
+      assert.equal(await run(`document.querySelector('#native-pane .nc-menu-item[data-id="${bot.id}"] .nc-menu-meta').textContent`), 'Shared with Hermes Desktop');
+      await click('#native-pane .nc-switch');
+      await openSession(bot.id);
+      await until(async () => (await run(`document.querySelector('#native-pane .nc-switch-title').textContent`)) === 'Bot Chat' && visible('#native-pane .nc-composer'), 'composer in the Bot Chat');
+      assert.equal(await visible('#native-pane .nc-readonly'), false);
+      const said = LAB ? `hello from native ${Date.now()}` : 'hello world';
+      await send(said);
+      await until(async () => (await rows()).some((row) => row.role === 'assistant' && row.text === `pong: ${said}`), 'Bot Chat reply');
+      assert.equal((await native()).activeId, bot.id, 'still the same conversation, not a copy');
+      if (LAB) {
+        const stored = await (await fetch(`http://127.0.0.1:18642/api/sessions/${bot.id}/messages`, { headers: { Authorization: `Bearer ${LAB_KEY}` } })).json();
+        const texts = stored.data.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => `[${m.role}] ${m.content}`);
+        assert.ok(texts.includes(`[user] ${said}`) && texts.includes(`[assistant] pong: ${said}`), 'stored in the Bot Chat itself');
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        fs.mkdirSync('/tmp/polish-proof', { recursive: true });
+        fs.writeFileSync('/tmp/polish-proof/sameconv-after.png', (await shell.capturePage()).toPNG());
+        fs.writeFileSync('/tmp/polish-proof/sameconv-transcript.txt', `session ${bot.id} (title "Bot Chat", source ${bot.source})\nGET /api/sessions/${bot.id}/messages after native sent "${said}":\n${texts.join('\n')}\n`);
+        console.log(`SAMECONV PROOF: ${bot.id} /tmp/polish-proof/sameconv-after.png /tmp/polish-proof/sameconv-transcript.txt`);
       }
 
       // Leave the big thread open for the relaunch.
