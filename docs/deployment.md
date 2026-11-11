@@ -1,6 +1,6 @@
 # Deploy Alan's Workspace and CU MCP with an existing Hermes instance
 
-This guide covers three of [Alan's Way's four products](../README.md#what-to-install): **Alan's Workspace**, **Alan's CU MCP** (`workspace-mcp`, the Node server that stays in `desktop/`), and **Alan's Plugin for Hermes** from `alans-way-agents`. **Alan's Plugin for Grok Bot** is a separate skill + settings package in that agents repo; Grok Bot cannot load Hermes plugins. Use [remote-agent setup](../desktop/docs/remote-agents.md) for its CU MCP connection and [product boundaries](products.md) for Grok package/shared config publication TODOs. Both plugins read one persona/voice/proactivity/identity config spec; this deployment guide does not define a second spec.
+This guide covers three of [Alan's Way's four products](../README.md#what-to-install): **Alan's Workspace**, **Alan's CU MCP** (`workspace-mcp`, the Node server that stays in `desktop/`), and **Alan's Plugin for Hermes** from `alans-way-agents`. **Alan's Plugin for Grok Bot** is a separate skill + settings package in that agents repo; Grok Bot cannot load Hermes plugins. Use [remote-agent setup](../desktop/docs/remote-agents.md) for its CU MCP connection and [product boundaries](products.md) for the Grok package and shared config. Both plugins read one persona/voice/proactivity/identity config spec; this deployment guide does not define a second spec.
 
 This is a manual setup today, with a stock Hermes gateway and an optional Mac
 profile. It does not require a Hermes fork. Desktop packaging targets Apple
