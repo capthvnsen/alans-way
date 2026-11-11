@@ -28,6 +28,8 @@ const setupCheck = require('./setup-check.cjs');
 const { createLog } = require('./main-log.cjs');
 const { armQuitWatchdog } = require('./update-quit.cjs');
 const releaseChannel = require('./release-channel.cjs');
+const { createNativeChat } = require('./native-chat.cjs');
+const { parseBaseUrl } = require('./hermes-api.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
 const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, deliverPendingUpdateReport, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
@@ -123,8 +125,9 @@ let lastSetupCheck = null;
 let tabActivationSequence = 0;
 let activeTabId = 'home', activeVpsTabId = '', browserReturnTabId = 'home', apiError = '', remoteStatus = 'disconnected', telegramStatus = 'loading', telegramDiagnostics = {};
 // Native Hermes chat: 'telegram' shows the Telegram WebContentsView; 'hermes'
-// shows the DOM surface (the Telegram view then measures to zero and hides).
-let hermesHub = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '';
+// shows the DOM surface (the Telegram view then measures to zero and hides);
+// 'native' shows Alan's native chat on the Hermes Sessions API.
+let nativeChat = null, hermesHub = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '';
 const WEBAPP_PARTITION = 'persist:hermes-webapp';
 let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
 const tabs = new Map();
@@ -508,7 +511,7 @@ function getState() {
     autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false, carrySignIns: prefs.carrySignIns !== false,
     activeTabId, activeVpsTabId, browserTabHost: activeTabId === 'vps' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(activeTabId)?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: activeTabId === 'vps' ? (vpsTabs.has(activeVpsTabId) ? activeVpsTabId : tabs.has(browserReturnTabId) ? browserReturnTabId : 'home') : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
-    chatTarget, hermes: hermesSummary(), chatSurface: resolveChatSurface(prefs.chatSurface, webappStatus), hermesWebappUrl: prefs.hermesWebappUrl, webappStatus,
+    chatTarget, hermes: hermesSummary(), chatSurface: resolveChatSurface(prefs.chatSurface, webappStatus, !!nativeChat?.configured), hermesWebappUrl: prefs.hermesWebappUrl, webappStatus, nativeChat: nativeChat?.summary() || { configured: false },
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
     fullscreen: !!win && !win.isDestroyed() && win.isFullScreen(), api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
   // One authority orders native IPC reads, command replies and broadcasts by
@@ -618,7 +621,7 @@ function openTelegramLink(value, activate = true) {
 // Hermes Desktop: the Hermes Webapp in the chat pane. No preload and its own partition:
 // a signed-in session can run shell commands on its host, so it never holds a Workspace
 // bridge or the browser's cookies, and its own host's links open as human Browser tabs.
-const surfaceTarget = () => resolveChatSurface(prefs.chatSurface, webappStatus) === 'hermes-desktop' ? 'webapp' : 'telegram';
+const surfaceTarget = () => ({ 'hermes-desktop': 'webapp', native: 'native' })[resolveChatSurface(prefs.chatSurface, webappStatus, !!nativeChat?.configured)] || 'telegram';
 function syncWebapp() {
   if (chatTarget === 'webapp' && !webappView && webappStatus === 'reachable') createWebappView(webappTarget);
 }
@@ -1941,6 +1944,13 @@ function registerIpc() {
       return result;
     } catch (error) { logError(`hermes ${String(name).slice(0, 40)}`, error); throw error; }
   });
+  // Alan's native chat: bounded display state and the controller's own command allowlist; the API key stays here.
+  ipcMain.handle('native:get', (event) => { trustSender(event); return nativeChat.getState(); });
+  ipcMain.handle('native:command', async (event, name, value) => {
+    trustSender(event);
+    try { return await nativeChat.command(name, value); }
+    catch (error) { logError(`native ${String(name).slice(0, 40)}`, error); throw error; }
+  });
   ipcMain.on('workspace:layout', (event, value) => {
     try {
       trustSender(event);
@@ -2094,6 +2104,7 @@ function registerIpc() {
       case 'show-telegram': chatTarget = 'telegram'; broadcast(); break;
       case 'show-hermes': chatTarget = 'hermes'; broadcast(); break;
       case 'show-webapp': chatTarget = 'webapp'; syncWebapp(); broadcast(); break;
+      case 'show-native': chatTarget = 'native'; nativeChat.activate(); broadcast(); break;
       case 'webapp-retry': await checkWebapp(); break;
       case 'webapp-link': openWebappLink(value.url); break;
       case 'sort-bots': prefs.order = Array.isArray(value.ids) ? value.ids.filter((id) => prefs.bots.some((bot) => bot.id === id)) : prefs.order; savePreferences(); break;
@@ -2145,7 +2156,17 @@ function registerIpc() {
         if (typeof value.carrySignIns === 'boolean') next.carrySignIns = value.carrySignIns;
         if (typeof value.primaryBotId === 'string') next.primaryBotId = next.bots.some((bot) => bot.id === value.primaryBotId) || value.primaryBotId === '' ? value.primaryBotId : next.primaryBotId;
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) next.locationDefault = value.locationDefault;
-        if (['telegram', 'hermes-desktop'].includes(value.chatSurface)) next.chatSurface = value.chatSurface;
+        if (value.chatSurface === 'native' && !nativeChat.configured) throw new Error('Save the native chat address and API key first.');
+        if (['telegram', 'hermes-desktop', 'native'].includes(value.chatSurface)) next.chatSurface = value.chatSurface;
+        let nativeConfig = null;
+        if (typeof value.nativeChatUrl === 'string') {
+          const parsed = value.nativeChatUrl.trim() ? parseBaseUrl(value.nativeChatUrl) : { baseUrl: '', profile: '' };
+          if (!parsed) throw new Error('Enter the address as http://127.0.0.1:8642, or an https:// address for another computer.');
+          const key = typeof value.nativeChatKey === 'string' ? value.nativeChatKey.trim() : '';
+          if (key && key.length < 16) throw new Error('The API key is at least 16 characters long.');
+          if (parsed.baseUrl && !key && !nativeChat.summary().hasKey) throw new Error('Paste the API key too.');
+          nativeConfig = { ...parsed, key: key || undefined };
+        }
         if (typeof value.hermesWebappUrl === 'string') {
           next.hermesWebappUrl = hermesWebappUrl(value.hermesWebappUrl);
           if (!next.hermesWebappUrl && value.hermesWebappUrl.trim()) throw new Error('Enter the address as https://your-machine.your-tailnet.ts.net');
@@ -2157,7 +2178,8 @@ function registerIpc() {
         const addressChanged = next.hermesWebappUrl !== prefs.hermesWebappUrl;
         persistSettingsPreferences(next);
         if (addressChanged) checkWebapp().catch(error => logError('hermes-webapp', error));
-        if (Object.hasOwn(value, 'chatSurface')) { chatTarget = surfaceTarget(); syncWebapp(); }
+        if (nativeConfig) nativeChat.configure(nativeConfig);
+        if (Object.hasOwn(value, 'chatSurface') || nativeConfig) { chatTarget = surfaceTarget(); syncWebapp(); if (chatTarget === 'native') nativeChat.activate(); }
         if (Object.hasOwn(value, 'releaseChannel')) {
           holdAppInstall(false);
           if (prefs.releaseChannel !== activeReleaseChannel) { update.available = ''; update.tag = ''; update.ready = false; appLatest = ''; }
@@ -3598,15 +3620,16 @@ function createWindow() {
 const HERMES_STORE = () => path.join(app.getPath('userData'), 'hermes-gateway.json');
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 function hermesSecretsAvailable() { try { return safeStorage.isEncryptionAvailable(); } catch { return false; } }
+const seal = (v) => hermesSecretsAvailable() && typeof v === 'string' && v ? safeStorage.encryptString(v).toString('base64') : '';
+const unseal = (v) => {
+  try { return typeof v === 'string' && v ? safeStorage.decryptString(Buffer.from(v, 'base64')) : ''; }
+  catch { return ''; }
+};
 function loadHermesPersisted() {
   try {
     const raw = JSON.parse(fs.readFileSync(HERMES_STORE(), 'utf8'));
     if (!raw || typeof raw !== 'object') return {};
     const out = { url: raw.url, profile: raw.profile, selected: raw.selected };
-    const unseal = (v) => {
-      try { return typeof v === 'string' && v ? safeStorage.decryptString(Buffer.from(v, 'base64')) : ''; }
-      catch { return ''; }
-    };
     if (isPlainObject(raw.tokensEnc)) {
       out.tokens = {
         refreshToken: unseal(raw.tokensEnc.refreshToken), accessToken: unseal(raw.tokensEnc.accessToken),
@@ -3620,8 +3643,6 @@ function loadHermesPersisted() {
 }
 function saveHermesPersisted(record) {
   try {
-    const seal = (v) => hermesSecretsAvailable() && typeof v === 'string' && v
-      ? safeStorage.encryptString(v).toString('base64') : '';
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
     writePrivateJson(HERMES_STORE(), JSON.stringify({
       url: record.url || '', profile: record.profile || '', selected: record.selected || null,
@@ -3636,6 +3657,23 @@ function saveHermesPersisted(record) {
 const pushHermesState = coalesce(() => {
   if (win && !win.isDestroyed() && hermesHub) win.webContents.send('hermes:state', hermesHub.getState());
 }, 60);
+// Native chat config: the API key is sealed like the loopback token above; without
+// safeStorage it lives in memory for this run only.
+const NATIVE_STORE = () => path.join(app.getPath('userData'), 'native-chat.json');
+function loadNativePersisted() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(NATIVE_STORE(), 'utf8'));
+    return isPlainObject(raw) ? { baseUrl: raw.baseUrl, profile: raw.profile, key: unseal(raw.keyEnc), lastSessionId: raw.lastSessionId, sessions: raw.sessions } : {};
+  } catch { return {}; }
+}
+function saveNativePersisted({ key, ...record }) {
+  writePrivateJson(NATIVE_STORE(), JSON.stringify({ ...record, keyEnc: seal(key) }));
+}
+// Deltas arrive per token; the renderer gets at most one state per frame.
+const pushNativeState = coalesce(() => {
+  if (win && !win.isDestroyed() && nativeChat) win.webContents.send('native:state', nativeChat.pushState());
+}, 16);
+let nativeSummary = '';
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.whenReady().then(async () => {
@@ -3712,8 +3750,19 @@ else {
     extensionStore = createExtensionStore({ root: app.getPath('userData'), session: browserSession, dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences, onChanged: broadcast,
       canInstall: frame => [...tabs.values()].some(tab => tab.id === activeTabId && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
     await extensionStore.installStore();
+    // Loads the last-open conversation from disk before the window exists, so it paints with no network.
+    nativeChat = createNativeChat({
+      dir: app.getPath('userData'), loadConfig: loadNativePersisted, saveConfig: saveNativePersisted,
+      openLink: (url) => openTelegramLink(url), copyText: (text) => clipboard.writeText(text),
+      notify: () => {
+        pushNativeState();
+        const summary = JSON.stringify(nativeChat.summary());
+        if (summary !== nativeSummary) { nativeSummary = summary; broadcast(); }
+      },
+    });
     chatTarget = surfaceTarget();
     createWindow(); await extensionStore.restore(); broadcast();
+    if (chatTarget === 'native') nativeChat.activate();
     checkWebapp().catch(error => logError('hermes-webapp', error));
     if (cloudSession() && prefs.cloud?.step && prefs.cloud.step !== 'done') startCloudPolling();
     startUpdates();
@@ -3738,7 +3787,7 @@ else {
       }
       return;
     }
-    isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); tray?.destroy(); apiServer?.close();
+    isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); nativeChat?.flush(); tray?.destroy(); apiServer?.close();
   });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

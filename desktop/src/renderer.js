@@ -1,6 +1,6 @@
 const api = window.workspace;
 const hermesApi = window.hermes || null;
-let hermesView = null;
+let hermesView = null, nativeView = null;
 let latestUiStateRevision = -1;
 let state, lastRecording = null, resumeToasts = new Set(), stoppedRecordingAt = 0, draggingBot = '', focusMode = false, modalOpen = false, resizeFrame, toastTimer, botListSignature = '', handoffBusy = false;
 const $ = (id) => document.getElementById(id);
@@ -411,15 +411,17 @@ function render(next) {
   // The chat pane hosts either the Telegram WebContentsView or the native
   // Hermes DOM surface. When the Hermes pane is up the slot collapses and its
   // reported rect goes zero — main then hides the Telegram view for us.
-  const hermesActive = state.chatTarget === 'hermes';
-  const webappActive = state.chatTarget === 'webapp', telegramActive = !hermesActive && !webappActive;
+  const hermesActive = state.chatTarget === 'hermes', nativeActive = state.chatTarget === 'native';
+  const webappActive = state.chatTarget === 'webapp', telegramActive = !hermesActive && !webappActive && !nativeActive;
   $('webapp-slot').classList.toggle('hidden', !webappActive);
   renderWebappHelp();
   $('telegram-slot').classList.toggle('hidden', !telegramActive);
   $('telegram-note').classList.toggle('hidden', !telegramActive);
   $('hermes-pane').classList.toggle('hidden', !hermesActive);
+  $('native-pane').classList.toggle('hidden', !nativeActive);
+  nativeView?.setVisible(nativeActive);
   const hermesSelected = hermesActive && state.hermes?.sessions?.find((s) => s.selected);
-  $('chat-title').textContent = webappActive ? 'Hermes Desktop' : hermesActive
+  $('chat-title').textContent = webappActive ? 'Hermes Desktop' : nativeActive ? 'Alan' : hermesActive
     ? (hermesSelected?.title || `Hermes${state.hermes?.target ? ` · ${state.hermes.target.label}` : ''}`)
     : (bot?.name || 'Telegram');
   $('chat-avatar').style.display = telegramActive ? '' : 'none';
@@ -1719,7 +1721,7 @@ function openSettingsDetail(open) {
 }
 function mountChatSurface(body) {
   const row = element('div', 'setting-row'), surface = element('select'); surface.id = 'settings-chat-surface'; surface.setAttribute('aria-label', 'Chat surface');
-  for (const [value, label] of [['telegram', 'Telegram'], ['hermes-desktop', 'Hermes Desktop']]) { const option = element('option', '', label); option.value = value; surface.append(option); }
+  for (const [value, label] of [['telegram', 'Telegram'], ['hermes-desktop', 'Hermes Desktop'], ['native', "Alan's native chat"]]) { const option = element('option', '', label); option.value = value; surface.append(option); }
   row.append(element('span', '', 'Chat in the left pane with'), surface); body.append(row);
   const surfaceStatus = settingsStatus(body);
   surface.onchange = async () => { await runSettingsAction(surface, surfaceStatus, () => api.command('settings', { chatSurface: surface.value }), 'Saving…', 'Chat surface saved.'); surface.value = state.chatSurface; };
@@ -1729,9 +1731,20 @@ function mountChatSurface(body) {
   save.onclick = async () => { const reply = await runSettingsAction(save, saveStatus, () => api.command('settings', { hermesWebappUrl: address.value }), 'Saving…', 'Address saved.'); if (reply.ok) delete address.dataset.dirty; };
   const status = element('p', 'connection-state'); status.id = 'settings-webapp-status'; body.append(status);
   body.append(element('p', 'settings-note', 'On the Hermes host, turn on the Webapp and a dashboard sign-in, then publish it with tailscale serve --bg --https=443 http://127.0.0.1:9120 and set webapp.public_url to the same https address. Switching keeps both chats open in the background.'));
+  const nativeAddress = settingsField(body, 'settings-native-url', 'Native chat address', state.nativeChat?.address, 'http://127.0.0.1:8642');
+  const nativeKey = settingsField(body, 'settings-native-key', 'API key', '', ''); nativeKey.type = 'password';
+  const nativeActions = element('div', 'native-settings-actions'), nativeSave = element('button', 'secondary-button', 'Save'), nativeTest = element('button', 'secondary-button', 'Test');
+  nativeSave.id = 'settings-native-save'; nativeTest.id = 'settings-native-test'; nativeActions.append(nativeSave, nativeTest); body.append(nativeActions);
+  const nativeStatus = settingsStatus(body); nativeStatus.id = 'settings-native-status';
+  nativeSave.onclick = async () => { const reply = await runSettingsAction(nativeSave, nativeStatus, () => api.command('settings', { nativeChatUrl: nativeAddress.value, nativeChatKey: nativeKey.value }), 'Saving…', 'Saved.'); if (reply.ok) { nativeKey.value = ''; delete nativeAddress.dataset.dirty; } };
+  nativeTest.onclick = async () => { const reply = await runSettingsAction(nativeTest, nativeStatus, () => window.nativeChat.command('test'), 'Testing…'); if (reply.ok) nativeStatus.textContent = reply.result.detail; };
+  body.append(element('p', 'settings-note', "Alan's native chat talks to the Hermes API server (API_SERVER_ENABLED=true and API_SERVER_KEY in the profile's .env). Use http://127.0.0.1:8642 through an SSH tunnel, or the https address Tailscale Serve gives port 8642."));
   const refresh = () => {
     if (document.activeElement !== surface) surface.value = state.chatSurface;
+    surface.querySelector('option[value="native"]').disabled = !state.nativeChat?.configured;
     if (!address.dataset.dirty) address.value = state.hermesWebappUrl || '';
+    if (!nativeAddress.dataset.dirty) nativeAddress.value = state.nativeChat?.address || '';
+    nativeKey.placeholder = state.nativeChat?.hasKey ? 'Saved. Paste a new key to replace it.' : 'API_SERVER_KEY';
     status.textContent = webappStatusText();
   };
   refresh(); return refresh;
@@ -2195,6 +2208,13 @@ function renderHermes() {
     row.append(open);
     list.append(row);
   }
+  if (state.chatSurface === 'native') {
+    const row = element('div', `bot-row hermes-row${state.chatTarget === 'native' ? ' selected' : ''}`);
+    const open = element('button', 'bot-open', "Alan's native chat");
+    open.onclick = () => command('show-native');
+    row.append(open);
+    list.append(row);
+  }
   if (state.chatTarget !== 'telegram') {
     const back = element('div', 'bot-row hermes-row');
     const open = element('button', 'bot-open', '← Telegram');
@@ -2341,6 +2361,11 @@ $('hermes-new').onclick = () => hermesCommand('new-session');
 if (window.HermesView && hermesApi) {
   hermesView = window.HermesView.createHermesView({ api: hermesApi, root: $('hermes-convo'),
     onShowSetup: () => { hermesSetupForced = true; render(state); } });
+}
+window.__nativeChatMarks = [];
+if (window.NativeChat && window.nativeChat && window.markdownit) {
+  nativeView = window.NativeChat.create({ api: window.nativeChat, root: $('native-pane'), md: window.markdownit({ html: false, linkify: true }), marks: window.__nativeChatMarks,
+    onOpenSettings: () => $('settings-fallback').click(), onOpenHermesDesktop: () => command('show-webapp') });
 }
 api.onState(render);
 api.onPointer?.(point => window.HermesAvatars.receivePointer(point));

@@ -176,8 +176,10 @@ function tailscaleSshHost({ platform = process.platform, programFiles = process.
   return '';
 }
 
-// An explicit choice stands. Otherwise Telegram, until Hermes Desktop is configured and answers.
-function resolveChatSurface(choice, webappStatus) {
+// An explicit choice stands; native only while it has an address and key, else it
+// falls back like no choice. Otherwise Telegram, until Hermes Desktop is configured and answers.
+function resolveChatSurface(choice, webappStatus, nativeConfigured = false) {
+  if (choice === 'native' && nativeConfigured) return 'native';
   if (choice === 'telegram' || choice === 'hermes-desktop') return choice;
   return ['reachable', 'needs-link', 'sign-in', 'ready'].includes(webappStatus) ? 'hermes-desktop' : 'telegram';
 }

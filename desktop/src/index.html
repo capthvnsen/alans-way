@@ -34,6 +34,7 @@
       <div id="telegram-slot" class="telegram-slot"><div class="loading-label">Connecting to Telegram…</div></div>
       <div id="webapp-slot" class="telegram-slot hidden" aria-label="Hermes Desktop"><div id="webapp-help" class="hermes-setup hermes-setup-card"></div></div>
       <div id="hermes-pane" class="hermes-pane hidden" aria-label="Hermes conversation"><div id="hermes-setup" class="hermes-setup hidden"></div><div id="hermes-convo" class="hermes-convo"></div></div>
+      <div id="native-pane" class="native-pane hidden" aria-label="Alan's native chat"></div>
       <div id="telegram-note" class="chat-note">Sign in with your Telegram account. Your bots appear on the left.</div>
     </section>
     <div id="splitter" class="splitter" role="separator" aria-label="Resize chat" aria-orientation="vertical"></div>
@@ -94,5 +95,5 @@
     </div>
   </div>
   <div id="toast" class="toast hidden" role="status"></div>
-  <script src="avatars.js"></script><script src="workspace-shortcuts.cjs"></script><script src="hermes-view.js"></script><script src="renderer.js"></script>
+  <script src="avatars.js"></script><script src="workspace-shortcuts.cjs"></script><script src="hermes-view.js"></script><script src="../node_modules/markdown-it/dist/browser/markdown-it.umd.min.js"></script><script src="native-chat.js"></script><script src="renderer.js"></script>
 </body></html>
