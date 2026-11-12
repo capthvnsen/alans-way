@@ -2255,9 +2255,9 @@ function renderWebappHelp() {
   if (state.webappStatus === 'needs-link') {
     const link = element('input'); link.id = 'webapp-link'; link.autocomplete = 'off'; link.spellcheck = false;
     link.placeholder = 'http://127.0.0.1:9120/webapp/launch#ticket=…'; link.setAttribute('aria-label', 'One-use link');
-    const open = element('button', 'primary-button', 'Open');
+    const open = element('button', 'primary-button', 'Open'), field = element('div', 'field'); field.append(link);
     open.onclick = () => command('webapp-link', { url: link.value }).finally(() => { link.value = ''; });
-    help.append(link, open);
+    help.append(field, open);
   }
   if (state.webappStatus === 'unreachable') {
     const retry = element('button', 'primary-button', 'Try again');

@@ -202,6 +202,7 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
   await statusIs('needs-link');
   await helpSays('hermes webapp --no-open');
   assert.equal(webappViews().length, 0, 'no view until a link arrives');
+  assert.equal(await run(`getComputedStyle(document.getElementById('webapp-link')).width === getComputedStyle(document.getElementById('webapp-link').parentElement).width && document.getElementById('webapp-link').parentElement.classList.contains('field')`), true, 'the link field is a full-width app field');
   await assert.rejects(run(`workspace.command('webapp-link', { url: 'http://127.0.0.1:9120/webapp/launch#ticket=short' })`), /one-use link/);
   await run(`(() => { document.getElementById('webapp-link').value = 'http://127.0.0.1:9120/webapp/launch#ticket=${ticket}'; [...document.querySelectorAll('#webapp-help button')].find(button => button.textContent === 'Open').click(); })()`);
   await statusIs('ready');
