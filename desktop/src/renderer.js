@@ -1768,13 +1768,13 @@ function mountChatSurface(body) {
   body.append(element('h4', 'settings-subheading', 'Alan’s native chat'));
   const nativeAddress = settingsField(body, 'settings-native-url', 'Address', state.nativeChat?.address, 'http://127.0.0.1:8642'); nativeAddress.setAttribute('aria-label', 'Native chat address');
   const nativeKey = settingsField(body, 'settings-native-key', 'API key', '', ''); nativeKey.type = 'password';
+  const nativeImport = element('div', 'native-settings-actions'); nativeImport.id = 'settings-native-import'; body.append(nativeImport);
+  const importStatus = settingsStatus(body); importStatus.id = 'settings-native-import-status';
   const nativeActions = element('div', 'native-settings-actions'), nativeSave = element('button', 'secondary-button', 'Save'), nativeTest = element('button', 'secondary-button', 'Test');
   nativeSave.id = 'settings-native-save'; nativeTest.id = 'settings-native-test'; nativeActions.append(nativeSave, nativeTest); body.append(nativeActions);
   const nativeStatus = settingsStatus(body); nativeStatus.id = 'settings-native-status';
   nativeSave.onclick = async () => { const reply = await runSettingsAction(nativeSave, nativeStatus, () => api.command('settings', { nativeChatUrl: nativeAddress.value, nativeChatKey: nativeKey.value }), 'Saving…', 'Saved.'); if (reply.ok) { nativeKey.value = ''; delete nativeAddress.dataset.dirty; } };
   nativeTest.onclick = async () => { const reply = await runSettingsAction(nativeTest, nativeStatus, () => window.nativeChat.command('test'), 'Testing…'); if (reply.ok) nativeStatus.textContent = reply.result.detail; };
-  const nativeImport = element('div', 'native-settings-actions'); nativeImport.id = 'settings-native-import'; body.append(nativeImport);
-  const importStatus = settingsStatus(body); importStatus.id = 'settings-native-import-status';
   const importButton = (name) => {
     const button = element('button', 'secondary-button', `Import saved key from ~/.config/alans-way/${name}-api-key`); button.dataset.name = name;
     button.onclick = async () => { const reply = await runSettingsAction(button, importStatus, () => api.command('native-import-key', { name }), 'Importing…'); if (reply.ok) { importStatus.textContent = reply.result.detail; nativeTest.click(); } };

@@ -281,6 +281,7 @@ if (!process.versions.electron) {
       const keyFile = path.join(os.homedir(), '.config', 'alans-way', 'fake-api-key'), key = process.env.NATIVE_CHAT_KEY;
       await run(`document.getElementById('settings-fallback').click()`);
       await until(() => visible('#settings-native-import button[data-name="fake"]'), 'import action');
+      assert.equal(await run(`document.getElementById('settings-native-import').previousElementSibling.contains(document.getElementById('settings-native-key'))`), true, 'the import action sits under the API key field');
       assert.equal(JSON.stringify(await run('workspace.getState()')).includes(key), false);
       assert.equal((await run('document.documentElement.outerHTML')).includes(key), false);
       await click('#settings-native-import button[data-name="fake"]');
