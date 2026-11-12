@@ -167,3 +167,8 @@ test('explicit key queries cannot borrow prose or combine alternative bindings',
   assert.equal(matchesShortcut({ keys: [['T']] }, 'T key'), true);
   assert.deepEqual(find('T key'), []);
 });
+
+test('opening an agent is not described as Telegram only, since each bot picks its chat surface', () => {
+  const row = shortcutReference('darwin').groups.flatMap(group => group.rows).find(r => r.id === 'agent-open');
+  assert.doesNotMatch(row.description, /Telegram/);
+});

@@ -24,7 +24,7 @@ function shortcutReference(platform) {
       ] },
       { title: 'Agent list', note: 'Only while an agent’s Open button has focus. Moving focus does not select an agent.', rows: [
         { id: 'agent-move', title: 'Move between agents', description: 'Focus the previous or next agent; Home and End focus the first or last.', keys: [['↑'], ['↓'], ['Home'], ['End']], search: 'arrow up down' },
-        { id: 'agent-open', title: 'Open focused agent', description: 'Select the focused agent and open its Telegram chat.', keys: [[mac ? '↩' : 'Enter'], ['Space']], search: 'return enter' },
+        { id: 'agent-open', title: 'Open focused agent', description: 'Select the focused agent and open its chat.', keys: [[mac ? '↩' : 'Enter'], ['Space']], search: 'return enter' },
         { id: 'agent-hide', title: 'Reach Hide agent', description: 'Tab from Open to Hide for that agent. Press Enter to hide it from the sidebar.', keys: [[mac ? '⇥' : 'Tab']], search: 'remove tab' },
       ] },
       { title: 'Browser tab strip', note: 'Only while a browser tab’s title button has focus.', rows: [
