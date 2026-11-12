@@ -238,7 +238,8 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     if (err && !run.runId) {
       setLocal(run, 'failed');
       runs.delete(id);
-      if (err.code !== 'aborted') { fail(err); t.notice = 'That message was not sent.'; }
+      if (err.code === 'http_404') t.notice = 'This conversation was deleted in Hermes, so the message was not sent.';
+      else if (err.code !== 'aborted') { fail(err); t.notice = 'That message was not sent.'; }
       notify();
       return;
     }

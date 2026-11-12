@@ -172,3 +172,18 @@ test('a conversation deleted in Hermes says so in its own thread, not as a conne
   assert.notEqual(state.status, 'error');
   assert.equal(state.thread.notice, 'This conversation was deleted in Hermes.');
 });
+
+test('sending into a conversation deleted in Hermes says so instead of a pane-wide Session not found', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-'));
+  const gone = Object.assign(new Error('Session not found'), { code: 'http_404' });
+  const chat = createNativeChat({ dir, apiFactory: () => fakeApi({ streamChat: async () => { throw gone; } }), loadConfig: () => ({ baseUrl: 'http://127.0.0.1:8642', key: 'k'.repeat(20), sessions: [{ id: 'api_1', source: 'api_server' }] }) });
+  await chat.command('open', { sessionId: 'api_1' });
+  await tick(); await tick();
+  await chat.command('send', { sessionId: 'api_1', text: 'hello' });
+  await tick(); await tick();
+  const state = chat.getState();
+  assert.notEqual(state.status, 'error');
+  assert.equal(state.error, '');
+  assert.equal(state.thread.notice, 'This conversation was deleted in Hermes, so the message was not sent.');
+  assert.equal(state.thread.messages.at(-1).state, 'failed');
+});
