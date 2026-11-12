@@ -205,6 +205,7 @@
     const composer = el('form', 'nc-composer');
     const textarea = document.createElement('textarea');
     textarea.rows = 1;
+    textarea.dir = 'auto';
     textarea.placeholder = 'Message';
     textarea.setAttribute('aria-label', 'Message');
     const sendBtn = el('button', 'nc-send');
@@ -220,7 +221,7 @@
 
     async function command(name, value = {}) {
       try { return await api.command(name, value); }
-      catch (error) { flash(String(error?.message || error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '')); return null; }
+      catch (error) { flash(String(error?.message || error).replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '')); return null; }
     }
     function flash(text) {
       notice.textContent = text;
@@ -264,6 +265,7 @@
       const row = el('div', `nc-row ${m.role}${cont ? ' cont' : ''}${m.state ? ` ${m.state}` : ''}`);
       row.dataset.id = m.id;
       const body = el('div', 'nc-bubble');
+      body.dir = 'auto';
       body.title = exactTime(m.ts);
       if (m.role === 'assistant') fillMarkdown(body, m.text, false);
       else body.append(el('div', 'nc-plain', m.text));
@@ -294,7 +296,7 @@
           for (const choice of ['deny', 'once', 'session', 'always']) {
             if (!c.choices.includes(choice)) continue;
             actions.append(button(`nc-pill${choice === 'once' ? ' primary' : ''}`, { once: 'Allow once', session: 'Allow for this chat', always: 'Always allow', deny: 'Deny' }[choice],
-              (event) => { event.currentTarget.disabled = true; command('approve', { sessionId: state.activeId, cardId: c.id, choice }); }));
+              (event) => { const pressed = event.currentTarget; pressed.disabled = true; command('approve', { sessionId: state.activeId, cardId: c.id, choice }).then((reply) => { if (!reply) pressed.disabled = false; }); }));
           }
           node.append(actions);
         }
@@ -361,7 +363,7 @@
         children.push(streamBubble);
         if (tokenRun !== streamFor) { tokenRun = streamFor; mark('first-token'); }
       }
-      const statusText = run.tool || (run.status === 'waiting' ? 'Waiting for you' : !run.text ? 'Thinking' : '');
+      const statusText = run.status === 'waiting' ? 'Waiting for you' : run.tool || (!run.text ? 'Thinking' : '');
       if (statusText) {
         const line = el('div', 'nc-status');
         line.append(el('span', 'nc-dots'), document.createTextNode(statusText));
@@ -371,6 +373,9 @@
     }
 
     const toBottom = () => { scroller.scrollTop = scroller.scrollHeight; };
+    // Rows grow from their estimated height once painted (content-visibility), so a pinned view follows.
+    const follow = new ResizeObserver(() => { if (visible && pinned) toBottom(); });
+    for (const node of [scroller, list, live]) follow.observe(node);
     scroller.addEventListener('scroll', () => {
       if (!visible) return;
       pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
@@ -395,7 +400,8 @@
 
     function grow() {
       textarea.style.height = 'auto';
-      textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
+      // Hidden (display:none) it measures 0; 'auto' keeps one row until it is laid out.
+      if (textarea.scrollHeight) textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
     }
     textarea.addEventListener('input', () => { drafts.set(draftKey(), textarea.value); grow(); });
     textarea.addEventListener('compositionstart', () => { composing = true; });
@@ -422,19 +428,23 @@
     }
 
     function renderMenu() {
+      const focused = menu.contains(document.activeElement) && (document.activeElement.dataset.id || 'new');
       menu.replaceChildren();
-      const fresh = button('nc-menu-item nc-menu-new', 'New chat', () => { closeMenu(); command('new'); });
+      const fresh = button('nc-menu-item nc-menu-new', 'New chat', () => { closeMenu(); command('new'); textarea.focus(); });
+      fresh.dataset.id = '';
       menu.append(fresh);
       for (const s of (state.sessions || []).slice(0, 30)) {
-        const item = button(`nc-menu-item${s.id === state.activeId ? ' current' : ''}`, '', () => { closeMenu(); if (s.id !== state.activeId) command('open', { sessionId: s.id }); });
-        item.setAttribute('role', 'menuitem');
+        const item = button(`nc-menu-item${s.id === state.activeId ? ' current' : ''}`, '', () => { closeMenu(); switcher.focus(); if (s.id !== state.activeId) command('open', { sessionId: s.id }); });
         item.dataset.id = s.id;
         const title = el('span', 'nc-menu-title', s.title || s.preview || 'Untitled chat');
         const meta = el('span', 'nc-menu-meta', `${s.shared ? 'Shared with Hermes Desktop' : sourceLabel(s.source)}${s.running ? ' · replying' : ''}${s.waiting ? ' · needs you' : ''}`);
-        if (s.unread) item.append(el('span', 'nc-unread'));
+        if (s.unread) { const dot = el('span', 'nc-unread'); dot.setAttribute('role', 'img'); dot.setAttribute('aria-label', 'Unread'); item.append(dot); }
         item.append(title, meta);
         menu.append(item);
       }
+      for (const item of menu.children) { item.setAttribute('role', 'menuitem'); item.tabIndex = -1; }
+      // Live updates redraw the menu; keep the keyboard where it was.
+      if (focused) [...menu.children].find((item) => (item.dataset.id || 'new') === focused)?.focus();
     }
     const closeMenu = () => { menu.classList.add('hidden'); switcher.setAttribute('aria-expanded', 'false'); };
     switcher.addEventListener('click', () => {
@@ -442,9 +452,24 @@
       if (open) renderMenu();
       menu.classList.toggle('hidden', !open);
       switcher.setAttribute('aria-expanded', String(open));
+      if (open) (menu.querySelector('.current') || menu.firstChild).focus();
+    });
+    menu.addEventListener('keydown', (event) => {
+      const items = [...menu.children], at = items.indexOf(document.activeElement);
+      if (event.key === 'Tab') { closeMenu(); return; }
+      const next = items[{ ArrowDown: Math.min(items.length - 1, at + 1), ArrowUp: Math.max(0, at - 1), Home: 0, End: items.length - 1 }[event.key]];
+      if (next) { event.preventDefault(); next.focus(); }
     });
     document.addEventListener('pointerdown', (event) => { if (!head.contains(event.target)) closeMenu(); });
-    root.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !menu.classList.contains('hidden')) { closeMenu(); switcher.focus(); } });
+    // Escape closes the topmost thing only: the menu, else an open details toggle; never the draft.
+    root.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      const details = event.target.closest?.('details[open]');
+      if (!menu.classList.contains('hidden')) { closeMenu(); switcher.focus(); }
+      else if (details) { details.open = false; details.querySelector('summary')?.focus(); }
+      else return;
+      event.preventDefault(); event.stopPropagation();
+    });
 
     function renderNotice() {
       if (notice.dataset.flash) return;
@@ -472,7 +497,7 @@
       if (!menu.classList.contains('hidden')) renderMenu();
       renderNotice();
       const count = thread?.messages.length || 0;
-      const emptyText = count || s.run ? '' : !s.activeId ? 'New conversation. Say hello.'
+      const emptyText = count || s.run || s.cards?.length ? '' : !s.activeId ? 'New conversation. Say hello.'
         : thread?.loading ? 'Loading this conversation…' : s.status === 'unreachable' || s.status === 'unauthorized' ? '' : 'No messages yet. Say hello.';
       empty.textContent = emptyText;
       empty.classList.toggle('hidden', !emptyText);
@@ -535,10 +560,11 @@
         const shown = on && !visible;
         if (!on) keepScroll();
         visible = on;
-        if (shown) { paneArmed = true; if (state) { render(); restoreScroll(); } }
+        if (shown) { paneArmed = true; grow(); if (state) { render(); restoreScroll(); } }
       },
       dispose() {
         disposed = true;
+        follow.disconnect();
         if (typeof unsubscribe === 'function') unsubscribe();
         root.replaceChildren();
       },

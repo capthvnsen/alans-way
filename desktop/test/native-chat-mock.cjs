@@ -91,6 +91,7 @@ function createMock({ key, chunk = 0 } = {}) {
     requests.push({ method: req.method, path: url.pathname, search: url.search, headers: { ...req.headers } });
     if (url.pathname === '/__stats') { res.end(JSON.stringify({ served })); return; }
     if (url.pathname === '/__stream-delay') { mock.streamDelayMs = Number(url.searchParams.get('ms')) || 0; res.end('{}'); return; }
+    if (url.pathname === '/__fail-approval') { mock.failApproval = true; res.end('{}'); return; }
     if (mock.delayMs) await sleep(mock.delayMs);
     if (req.headers.origin !== undefined) { served++; res.writeHead(403); res.end('Forbidden'); return; }
     if (req.headers.authorization !== `Bearer ${key}`) return error(res, 401, 'gateway_auth_failed', 'Invalid gateway API key (API_SERVER_KEY)');
@@ -128,6 +129,7 @@ function createMock({ key, chunk = 0 } = {}) {
       case 'POST /v1/runs/:id/approval': {
         const runId = parts[2], value = await body(req), pending = approvals.get(runId);
         if (!pending) return error(res, 404, 'run_not_found', 'Run not found');
+        if (mock.failApproval) { mock.failApproval = false; return error(res, 500, 'server_error', 'Hermes had a problem'); }
         if (!value || Object.keys(value).sort().join() !== 'choice,execution_generation,request_id' || value.request_id !== pending.requestId || value.execution_generation !== pending.generation) return error(res, 400, 'invalid_params', 'request_id and execution_generation are required');
         approvals.delete(runId);
         pending.resolve(value.choice);

@@ -123,6 +123,7 @@ if (!process.versions.electron) {
       assert.equal(JSON.parse(fs.readFileSync(prefsFile, 'utf8')).chatSurface, 'native');
       await click('#modal-close');
       await until(() => visible('#native-pane .nc-composer'), 'native pane');
+      assert.equal(await run(`(() => { const box = document.querySelector('#native-pane textarea'); return box.scrollHeight <= box.clientHeight; })()`), true, 'the empty composer shows a whole line');
 
       // The newest conversation opens by itself and shows its history as bubbles.
       await until(async () => (await native()).activeId, 'a conversation opened');
@@ -146,6 +147,12 @@ if (!process.versions.electron) {
       const chatId = (await native()).activeId;
       if (LAB) await until(async () => (await run(`document.querySelector('#native-pane .nc-switch-title').textContent`)) !== 'Untitled chat', 'Hermes names the new chat');
 
+      // Right-to-left text runs right to left in its bubble.
+      if (!LAB) {
+        await send('مرحبا بالعالم.');
+        assert.equal(await run(`getComputedStyle([...document.querySelectorAll('#native-pane .nc-row.user .nc-plain')].at(-1)).direction`), 'rtl');
+      }
+
       // Markdown: table (scrollable, Copy as markdown) and a fenced code block with its label.
       await send('MD please');
       await until(() => run(`!![...document.querySelectorAll('#native-pane .nc-row.assistant')].at(-1)?.querySelector('.nc-table table')`), 'table');
@@ -156,11 +163,25 @@ if (!process.versions.electron) {
       await type('APPROVE please');
       await until(() => visible('#native-pane .nc-prompt.approval.open'), 'approval card', 30000);
       assert.match(await run(`document.querySelector('#native-pane .nc-prompt.approval').innerText`), /Alan wants to run a command[\s\S]*Show details/);
+      await until(async () => (await run(`document.querySelector('#native-pane .nc-status')?.textContent`)) === 'Waiting for you', 'status says it waits for you');
+      // Escape folds an open details toggle and goes no further.
+      assert.equal(await run(`(() => { const details = document.querySelector('#native-pane .nc-prompt.approval details'); details.open = true; details.querySelector('summary').focus();
+        let reached = false; const spy = () => { reached = true; }; document.addEventListener('keydown', spy, { once: true });
+        document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        document.removeEventListener('keydown', spy); return !details.open && !reached && document.activeElement.tagName === 'SUMMARY'; })()`), true);
       assert.equal(await run(`document.querySelector('#native-pane .nc-prompt.approval details pre').textContent`), 'rm -rf /tmp/hermes-lab-nonexistent-xyz');
-      await run(`[...document.querySelectorAll('#native-pane .nc-prompt.approval button')].find(b => b.textContent === 'Allow once').click()`);
+      const allowOnce = `[...document.querySelectorAll('#native-pane .nc-prompt.approval button')].find(b => b.textContent === 'Allow once')`;
+      if (!LAB) {
+        // A failed answer leaves the choices usable.
+        await fetch(`${process.env.NATIVE_CHAT_URL}/__fail-approval`);
+        await run(`${allowOnce}.click()`);
+        await until(async () => (await run(`document.querySelector('#native-pane .nc-notice').textContent`)) === 'Hermes had a problem', 'failure shown in plain words');
+        await until(() => run(`!${allowOnce}.disabled`), 'Allow once usable again', 3000);
+      }
+      await run(`${allowOnce}.click()`);
       await until(() => visible('#native-pane .nc-prompt.approval.answered'), 'approval answered');
       await idle();
-      await until(async () => (await rows()).filter((row) => row.role === 'user').length === 3 && (await rows()).filter((row) => row.role === 'assistant').length === 3, 'approval turn reconciled');
+      await until(async () => (await rows()).filter((row) => row.role === 'user').length === (LAB ? 3 : 4) && (await rows()).filter((row) => row.role === 'assistant').length === (LAB ? 3 : 4), 'approval turn reconciled');
 
       if (LAB) {
         await new Promise((resolve) => setTimeout(resolve, 400));
@@ -170,6 +191,17 @@ if (!process.versions.electron) {
         fs.writeFileSync('/tmp/w1-proof/native-chat-transcript.txt', `${transcript}\n`);
         console.log('NATIVE CHAT PROOF: /tmp/w1-proof/native-chat.png /tmp/w1-proof/native-chat-transcript.txt');
       }
+
+      // The conversation menu by keyboard: focus goes to the current item, arrows move, Escape returns to the switcher.
+      await click('#native-pane .nc-switch');
+      assert.equal(await run(`document.activeElement.classList.contains('current') && document.activeElement.getAttribute('role')`), 'menuitem');
+      const key = (name) => run(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: '${name}', bubbles: true, cancelable: true }))`);
+      await key('Home');
+      assert.equal(await run(`document.activeElement.textContent`), 'New chat');
+      await key('ArrowDown');
+      assert.equal(await run(`document.activeElement === document.querySelectorAll('#native-pane .nc-menu-item')[1]`), true);
+      await key('Escape');
+      assert.equal(await run(`document.querySelector('#native-pane .nc-menu').classList.contains('hidden') && document.activeElement.classList.contains('nc-switch')`), true);
 
       // 1,000-message conversation: first open from the network, then switches paint from memory.
       const sessions = (await native()).sessions;
@@ -207,6 +239,7 @@ if (!process.versions.electron) {
       // Read-only conversations offer Continue here.
       await openSession(telegramId);
       await until(() => visible('#native-pane .nc-readonly'), 'read-only bar');
+      if (!LAB) await until(() => run(`(() => { const s = document.querySelector('#native-pane .nc-scroll'); return s.scrollHeight > s.clientHeight + 200 && s.scrollHeight - s.scrollTop - s.clientHeight < 2; })()`), 'opens at the newest message', 3000);
       assert.match(await run(`document.querySelector('#native-pane .nc-readonly').innerText`), /from Telegram, so it is read-only here[\s\S]*Continue here/);
       assert.equal(await visible('#native-pane .nc-composer'), false);
       if (!LAB) {
