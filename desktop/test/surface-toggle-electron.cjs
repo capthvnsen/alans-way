@@ -124,6 +124,7 @@ if (!process.versions.electron) {
       await until(() => saved().chatSurfaces?.['1002'] === 'hermes-desktop', 'B choice saved');
       const apart = () => run(`(() => { const [t, p, s] = ['bots-toggle', 'chat-pill', 'surface-tabs'].map(id => document.getElementById(id).getBoundingClientRect()); return t.right <= p.left && p.right <= s.left; })()`);
       assert.equal(await apart(), true, 'a long bot name keeps the header pieces apart');
+      assert.match(await run(`document.getElementById('home-copy').textContent`), /^Talk to Scout Research Assistant/, 'Home does not wait for Telegram when the bot chats elsewhere');
       await run(`document.getElementById('bots-toggle').click()`); await until(() => run(`document.getElementById('shell').classList.contains('bots-hidden')`), 'agent list hidden');
       assert.equal(await apart(), true, 'and with the agent list hidden');
       await run(`document.getElementById('bots-toggle').click()`); await until(async () => !(await run(`document.getElementById('shell').classList.contains('bots-hidden')`)), 'agent list back');

@@ -680,7 +680,7 @@ function renderHome(bot, hidden) {
     offline: 'Telegram is offline. Reconnecting automatically.',
     'layout-changed': 'Telegram’s layout changed. Bot chats may not load until Alan’s Workspace is updated.',
   };
-  const firstLine = state.telegramStatus === 'connected'
+  const firstLine = state.telegramStatus === 'connected' || (bot && state.chatTarget !== 'telegram')
     ? bot ? `Talk to ${bot.name} in the left chat.` : state.bots.length ? 'Pick an agent on the left.' : 'Your agents appear on the left as bot chats.'
     : waiting[state.telegramStatus] || waiting.loading;
   $('home-copy').replaceChildren(
