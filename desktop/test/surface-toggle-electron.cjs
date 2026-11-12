@@ -101,6 +101,16 @@ if (!process.versions.electron) {
       // Three usable surfaces: three segments in one tablist; nothing configured yet is the default Hermes Desktop.
       await until(async () => (await segments()).replace(/\*/g, '') === 'telegram,hermes-desktop,native', 'three segments');
       assert.equal(await run(`document.getElementById('surface-tabs').getAttribute('role')`), 'tablist');
+      // An unsaved address in Settings, Chat surface survives Escape without being saved.
+      const openSettings = async () => { await run(`document.getElementById('settings-fallback').click()`); await until(() => run(`!document.getElementById('modal').classList.contains('hidden') && !!document.getElementById('settings-native-url')`), 'chat surface settings'); };
+      await openSettings();
+      await run(`(() => { const i = document.getElementById('settings-native-url'); i.focus(); i.value = 'http://127.0.0.1:1'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      for (const type of ['keyDown', 'keyUp']) shell.sendInputEvent({ type, keyCode: 'Escape' });
+      await until(() => run(`document.getElementById('modal').classList.contains('hidden')`), 'settings closed by Escape');
+      await openSettings();
+      assert.equal(await run(`document.getElementById('settings-native-url').value`), 'http://127.0.0.1:1', 'an unsaved address survives closing Settings');
+      assert.equal((await state()).nativeChat.address, process.env.NATIVE_CHAT_URL, 'and is not saved');
+      await run(`document.getElementById('modal-close').click()`);
       assert.equal(await run(`(() => { const xs = [...document.querySelectorAll('.chat-header button, .chat-header [tabindex="0"]')].filter(n => n.offsetParent && n.tabIndex >= 0).map(n => n.getBoundingClientRect().left); return xs.every((x, i) => !i || x >= xs[i - 1]); })()`), true, 'header tab order follows the screen');
       assert.equal(await run(`[...document.querySelectorAll('#bot-list .avatar')].every(a => getComputedStyle(a).backgroundColor !== 'rgba(0, 0, 0, 0)')`), true, 'a bot without a picture shows its initials on a colour');
       await showing('hermes-desktop');
