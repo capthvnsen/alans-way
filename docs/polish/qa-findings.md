@@ -159,8 +159,8 @@ first-run layout tests, the unit tests with `HERMES_WORKSPACE_REQUIRE_TAILNET=1`
 publication check.
 
 `test:shortcut-reference` fails ("agent-dispatched settings and browser keys…", 2 tabs where 1
-was expected). It failed the same way on untouched `main` before this work, its test file is
-unchanged since `main`, and CI does not run it (`.github/workflows/tests.yml` runs
+was expected). It already failed on untouched `main` before this work (seen in an earlier run;
+not re-run on `main` here), its test file is unchanged since `main`, and CI does not run it (`.github/workflows/tests.yml` runs
 `shortcut-query` and `shortcut-round2` only). It needs its own look.
 
 ## Screenshots
