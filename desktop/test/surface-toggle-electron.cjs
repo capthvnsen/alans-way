@@ -47,7 +47,7 @@ if (!process.versions.electron) {
   prepareFixture(profile);
   const prefsFile = path.join(profile, 'preferences.json');
   if (phase === '1') fs.writeFileSync(prefsFile, JSON.stringify({ onboarded: true, preview: false, hermesWebappUrl: process.env.WEBAPP_URL,
-    bots: [{ id: '1001', isBot: true, name: 'Alan' }, { id: '1002', isBot: true, name: 'Scout' }], selectedBotId: '1001' }));
+    bots: [{ id: '1001', isBot: true, name: 'Alan' }, { id: '1002', isBot: true, name: 'Scout Research Assistant' }], selectedBotId: '1001' }));
   // Notifications are recorded instead of shown.
   const shown = [];
   Notification.prototype.show = function show() { shown.push({ title: this.title, body: this.body }); };
@@ -101,6 +101,18 @@ if (!process.versions.electron) {
       // Three usable surfaces: three segments in one tablist; nothing configured yet is the default Hermes Desktop.
       await until(async () => (await segments()).replace(/\*/g, '') === 'telegram,hermes-desktop,native', 'three segments');
       assert.equal(await run(`document.getElementById('surface-tabs').getAttribute('role')`), 'tablist');
+      // An unsaved address in Settings, Chat surface survives Escape without being saved.
+      const openSettings = async () => { await run(`document.getElementById('settings-fallback').click()`); await until(() => run(`!document.getElementById('modal').classList.contains('hidden') && !!document.getElementById('settings-native-url')`), 'chat surface settings'); };
+      await openSettings();
+      await run(`(() => { const i = document.getElementById('settings-native-url'); i.focus(); i.value = 'http://127.0.0.1:1'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      for (const type of ['keyDown', 'keyUp']) shell.sendInputEvent({ type, keyCode: 'Escape' });
+      await until(() => run(`document.getElementById('modal').classList.contains('hidden')`), 'settings closed by Escape');
+      await openSettings();
+      assert.equal(await run(`document.getElementById('settings-native-url').value`), 'http://127.0.0.1:1', 'an unsaved address survives closing Settings');
+      assert.equal((await state()).nativeChat.address, process.env.NATIVE_CHAT_URL, 'and is not saved');
+      await run(`document.getElementById('modal-close').click()`);
+      assert.equal(await run(`(() => { const xs = [...document.querySelectorAll('.chat-header button, .chat-header [tabindex="0"]')].filter(n => n.offsetParent && n.tabIndex >= 0).map(n => n.getBoundingClientRect().left); return xs.every((x, i) => !i || x >= xs[i - 1]); })()`), true, 'header tab order follows the screen');
+      assert.equal(await run(`[...document.querySelectorAll('#bot-list .avatar')].every(a => getComputedStyle(a).backgroundColor !== 'rgba(0, 0, 0, 0)')`), true, 'a bot without a picture shows its initials on a colour');
       await showing('hermes-desktop');
       const webappView = await until(() => webContents.getAllWebContents().find((c) => c.session === session.fromPartition('persist:hermes-webapp') && !c.isDestroyed()), 'webapp view');
       const telegramView = webContents.getAllWebContents().find((c) => c.session === session.fromPartition('persist:telegram'));
@@ -120,6 +132,12 @@ if (!process.versions.electron) {
       // Bot B: Hermes Desktop.
       await pick('1002'); await choose('hermes-desktop'); await showing('hermes-desktop');
       await until(() => saved().chatSurfaces?.['1002'] === 'hermes-desktop', 'B choice saved');
+      const apart = () => run(`(() => { const [t, p, s] = ['bots-toggle', 'chat-pill', 'surface-tabs'].map(id => document.getElementById(id).getBoundingClientRect()); return t.right <= p.left && p.right <= s.left; })()`);
+      assert.equal(await apart(), true, 'a long bot name keeps the header pieces apart');
+      assert.match(await run(`document.getElementById('home-copy').textContent`), /^Talk to Scout Research Assistant/, 'Home does not wait for Telegram when the bot chats elsewhere');
+      await run(`document.getElementById('bots-toggle').click()`); await until(() => run(`document.getElementById('shell').classList.contains('bots-hidden')`), 'agent list hidden');
+      assert.equal(await apart(), true, 'and with the agent list hidden');
+      await run(`document.getElementById('bots-toggle').click()`); await until(async () => !(await run(`document.getElementById('shell').classList.contains('bots-hidden')`)), 'agent list back');
       for (let i = 0; i < 2; i++) {
         await pick('1001'); await showing('native');
         await pick('1002'); await showing('hermes-desktop');
@@ -185,6 +203,8 @@ if (!process.versions.electron) {
       await streamDelay(0);
       await until(async () => !(await native()).run, 'approval turn finished', 30000);
 
+      const small = await run(`[...document.querySelectorAll('#bot-list *, .chat-header *, #native-pane *')].filter(n => n.offsetParent && [...n.childNodes].some(c => c.nodeType === 3 && c.textContent.trim()) && parseFloat(getComputedStyle(n).fontSize) < 11).map(n => n.className)`);
+      assert.deepEqual(small, [], 'no text below 11px in the list, header or native chat');
       fs.mkdirSync('/tmp/w1-proof', { recursive: true });
       await run(`document.activeElement?.blur()`);
       await sleep(400);

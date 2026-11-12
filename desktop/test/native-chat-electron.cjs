@@ -2,6 +2,7 @@
 // in-process Hermes API mock (default, CI-safe) or, with NATIVE_CHAT_LAB=1, the
 // real lab Hermes on 127.0.0.1:18642. Two launches share one throwaway profile:
 // the second proves the last thread paints from the disk cache before any network.
+// Two more launches import a saved key file and prove it persisted.
 // Run: npm run test:native-chat
 const fs = require('node:fs');
 const os = require('node:os');
@@ -17,12 +18,25 @@ if (!process.versions.electron) {
   (async () => {
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-electron-'));
     const mock = LAB ? null : await createMock({ key: MOCK_KEY }).listen();
+    const url = mock ? mock.url : 'http://127.0.0.1:18642', key = mock ? MOCK_KEY : LAB_KEY;
+    // The import phases get their own profile and a temp HOME holding a fake key file; the
+    // mock keychain keeps macOS from asking for a keychain that HOME no longer points at.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-home-')), importProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-import-'));
+    fs.mkdirSync(path.join(home, '.config', 'alans-way'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.config', 'alans-way', 'fake-api-key'), `${key}\n`, { mode: 0o600 });
+    fs.writeFileSync(path.join(importProfile, 'native-chat.json'), JSON.stringify({ baseUrl: url }));
+    if (LAB) {
+      // The lab profile's Bot Chat, made the way `hermes peer dm` makes it when there is none.
+      const lab = (route, init) => fetch(`http://127.0.0.1:18642${route}`, { ...init, headers: { Authorization: `Bearer ${LAB_KEY}`, 'Content-Type': 'application/json' } }).then((r) => r.json());
+      if (!(await lab('/api/sessions?title=Bot%20Chat')).data?.length) await lab('/api/sessions', { method: 'POST', body: JSON.stringify({ title: 'Bot Chat' }) });
+    }
     let failed = false;
-    for (const phase of ['1', '2']) {
+    for (const phase of ['1', '2', 'import', 'import-2']) {
       if (mock) { mock.delayMs = phase === '2' ? 2500 : 0; mock.served = 0; }
+      const imports = phase.startsWith('import'), dir = imports ? importProfile : profile;
       const code = await new Promise((resolve) => {
-        const child = spawn(require('electron'), [`--user-data-dir=${profile}`, __filename], { stdio: 'inherit',
-          env: { ...process.env, HERMES_TEST_PROFILE: profile, NATIVE_CHAT_PHASE: phase, NATIVE_CHAT_URL: mock ? mock.url : 'http://127.0.0.1:18642', NATIVE_CHAT_KEY: mock ? MOCK_KEY : LAB_KEY, NATIVE_CHAT_STATS: mock ? `${mock.url}/__stats` : '' } });
+        const child = spawn(require('electron'), [...(imports ? ['--use-mock-keychain'] : []), `--user-data-dir=${dir}`, __filename], { stdio: 'inherit',
+          env: { ...process.env, ...(imports ? { HOME: home } : {}), HERMES_TEST_PROFILE: dir, NATIVE_CHAT_PHASE: phase, NATIVE_CHAT_URL: url, NATIVE_CHAT_KEY: key, NATIVE_CHAT_STATS: mock ? `${mock.url}/__stats` : '' } });
         const deadline = setTimeout(() => { console.error(`Phase ${phase} exceeded 150s.`); child.kill('SIGKILL'); }, 150000);
         child.once('close', (exit, signal) => { clearTimeout(deadline); resolve(signal ? 1 : exit); });
       });
@@ -33,7 +47,7 @@ if (!process.versions.electron) {
       if (origins.length) { console.error('A request carried an Origin header:', origins[0].path); failed = true; }
       mock.close();
     }
-    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    for (const dir of [profile, importProfile, home]) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     console.log(failed ? 'native chat: FAILED' : `native chat: ok (${LAB ? 'lab' : 'mock'})`);
     process.exit(failed ? 1 : 0);
   })();
@@ -44,7 +58,7 @@ if (!process.versions.electron) {
   const profile = process.env.HERMES_TEST_PROFILE, phase = process.env.NATIVE_CHAT_PHASE;
   prepareFixture(profile);
   const prefsFile = path.join(profile, 'preferences.json');
-  if (phase === '1') fs.writeFileSync(prefsFile, JSON.stringify({ onboarded: true, preview: false }));
+  if (phase === '1' || phase === 'import') fs.writeFileSync(prefsFile, JSON.stringify({ onboarded: true, preview: false }));
   const until = async (read, why, ms = 20000) => {
     const end = Date.now() + ms;
     for (;;) {
@@ -109,6 +123,7 @@ if (!process.versions.electron) {
       assert.equal(JSON.parse(fs.readFileSync(prefsFile, 'utf8')).chatSurface, 'native');
       await click('#modal-close');
       await until(() => visible('#native-pane .nc-composer'), 'native pane');
+      assert.equal(await run(`(() => { const box = document.querySelector('#native-pane textarea'); return box.scrollHeight <= box.clientHeight; })()`), true, 'the empty composer shows a whole line');
 
       // The newest conversation opens by itself and shows its history as bubbles.
       await until(async () => (await native()).activeId, 'a conversation opened');
@@ -132,6 +147,12 @@ if (!process.versions.electron) {
       const chatId = (await native()).activeId;
       if (LAB) await until(async () => (await run(`document.querySelector('#native-pane .nc-switch-title').textContent`)) !== 'Untitled chat', 'Hermes names the new chat');
 
+      // Right-to-left text runs right to left in its bubble.
+      if (!LAB) {
+        await send('مرحبا بالعالم.');
+        assert.equal(await run(`getComputedStyle([...document.querySelectorAll('#native-pane .nc-row.user .nc-plain')].at(-1)).direction`), 'rtl');
+      }
+
       // Markdown: table (scrollable, Copy as markdown) and a fenced code block with its label.
       await send('MD please');
       await until(() => run(`!![...document.querySelectorAll('#native-pane .nc-row.assistant')].at(-1)?.querySelector('.nc-table table')`), 'table');
@@ -142,11 +163,25 @@ if (!process.versions.electron) {
       await type('APPROVE please');
       await until(() => visible('#native-pane .nc-prompt.approval.open'), 'approval card', 30000);
       assert.match(await run(`document.querySelector('#native-pane .nc-prompt.approval').innerText`), /Alan wants to run a command[\s\S]*Show details/);
+      await until(async () => (await run(`document.querySelector('#native-pane .nc-status')?.textContent`)) === 'Waiting for you', 'status says it waits for you');
+      // Escape folds an open details toggle and goes no further.
+      assert.equal(await run(`(() => { const details = document.querySelector('#native-pane .nc-prompt.approval details'); details.open = true; details.querySelector('summary').focus();
+        let reached = false; const spy = () => { reached = true; }; document.addEventListener('keydown', spy, { once: true });
+        document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        document.removeEventListener('keydown', spy); return !details.open && !reached && document.activeElement.tagName === 'SUMMARY'; })()`), true);
       assert.equal(await run(`document.querySelector('#native-pane .nc-prompt.approval details pre').textContent`), 'rm -rf /tmp/hermes-lab-nonexistent-xyz');
-      await run(`[...document.querySelectorAll('#native-pane .nc-prompt.approval button')].find(b => b.textContent === 'Allow once').click()`);
+      const allowOnce = `[...document.querySelectorAll('#native-pane .nc-prompt.approval button')].find(b => b.textContent === 'Allow once')`;
+      if (!LAB) {
+        // A failed answer leaves the choices usable.
+        await fetch(`${process.env.NATIVE_CHAT_URL}/__fail-approval`);
+        await run(`${allowOnce}.click()`);
+        await until(async () => (await run(`document.querySelector('#native-pane .nc-notice').textContent`)) === 'Hermes had a problem', 'failure shown in plain words');
+        await until(() => run(`!${allowOnce}.disabled`), 'Allow once usable again', 3000);
+      }
+      await run(`${allowOnce}.click()`);
       await until(() => visible('#native-pane .nc-prompt.approval.answered'), 'approval answered');
       await idle();
-      await until(async () => (await rows()).filter((row) => row.role === 'user').length === 3 && (await rows()).filter((row) => row.role === 'assistant').length === 3, 'approval turn reconciled');
+      await until(async () => (await rows()).filter((row) => row.role === 'user').length === (LAB ? 3 : 4) && (await rows()).filter((row) => row.role === 'assistant').length === (LAB ? 3 : 4), 'approval turn reconciled');
 
       if (LAB) {
         await new Promise((resolve) => setTimeout(resolve, 400));
@@ -156,6 +191,17 @@ if (!process.versions.electron) {
         fs.writeFileSync('/tmp/w1-proof/native-chat-transcript.txt', `${transcript}\n`);
         console.log('NATIVE CHAT PROOF: /tmp/w1-proof/native-chat.png /tmp/w1-proof/native-chat-transcript.txt');
       }
+
+      // The conversation menu by keyboard: focus goes to the current item, arrows move, Escape returns to the switcher.
+      await click('#native-pane .nc-switch');
+      assert.equal(await run(`document.activeElement.classList.contains('current') && document.activeElement.getAttribute('role')`), 'menuitem');
+      const key = (name) => run(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: '${name}', bubbles: true, cancelable: true }))`);
+      await key('Home');
+      assert.equal(await run(`document.activeElement.textContent`), 'New chat');
+      await key('ArrowDown');
+      assert.equal(await run(`document.activeElement === document.querySelectorAll('#native-pane .nc-menu-item')[1]`), true);
+      await key('Escape');
+      assert.equal(await run(`document.querySelector('#native-pane .nc-menu').classList.contains('hidden') && document.activeElement.classList.contains('nc-switch')`), true);
 
       // 1,000-message conversation: first open from the network, then switches paint from memory.
       const sessions = (await native()).sessions;
@@ -193,6 +239,7 @@ if (!process.versions.electron) {
       // Read-only conversations offer Continue here.
       await openSession(telegramId);
       await until(() => visible('#native-pane .nc-readonly'), 'read-only bar');
+      if (!LAB) await until(() => run(`(() => { const s = document.querySelector('#native-pane .nc-scroll'); return s.scrollHeight > s.clientHeight + 200 && s.scrollHeight - s.scrollTop - s.clientHeight < 2; })()`), 'opens at the newest message', 3000);
       assert.match(await run(`document.querySelector('#native-pane .nc-readonly').innerText`), /from Telegram, so it is read-only here[\s\S]*Continue here/);
       assert.equal(await visible('#native-pane .nc-composer'), false);
       if (!LAB) {
@@ -202,9 +249,60 @@ if (!process.versions.electron) {
         await until(async () => (await rows()).length === 6, 'fork paints the copied history');
       }
 
+      // The profile's Bot Chat is the one conversation of another surface native can write: same session id, no fork.
+      const bot = (await native()).sessions.find((s) => s.title === 'Bot Chat');
+      assert.ok(bot && bot.shared && !bot.readOnly, 'the Bot Chat is listed as shared');
+      await click('#native-pane .nc-switch');
+      assert.equal(await run(`document.querySelector('#native-pane .nc-menu-item[data-id="${bot.id}"] .nc-menu-meta').textContent`), 'Shared with Hermes Desktop');
+      await click('#native-pane .nc-switch');
+      await openSession(bot.id);
+      await until(async () => (await run(`document.querySelector('#native-pane .nc-switch-title').textContent`)) === 'Bot Chat' && visible('#native-pane .nc-composer'), 'composer in the Bot Chat');
+      assert.equal(await visible('#native-pane .nc-readonly'), false);
+      const said = LAB ? `hello from native ${Date.now()}` : 'hello world';
+      await send(said);
+      await until(async () => (await rows()).some((row) => row.role === 'assistant' && row.text === `pong: ${said}`), 'Bot Chat reply');
+      assert.equal((await native()).activeId, bot.id, 'still the same conversation, not a copy');
+      if (LAB) {
+        const stored = await (await fetch(`http://127.0.0.1:18642/api/sessions/${bot.id}/messages`, { headers: { Authorization: `Bearer ${LAB_KEY}` } })).json();
+        const texts = stored.data.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => `[${m.role}] ${m.content}`);
+        assert.ok(texts.includes(`[user] ${said}`) && texts.includes(`[assistant] pong: ${said}`), 'stored in the Bot Chat itself');
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        fs.mkdirSync('/tmp/polish-proof', { recursive: true });
+        fs.writeFileSync('/tmp/polish-proof/sameconv-after.png', (await shell.capturePage()).toPNG());
+        fs.writeFileSync('/tmp/polish-proof/sameconv-transcript.txt', `session ${bot.id} (title "Bot Chat", source ${bot.source})\nGET /api/sessions/${bot.id}/messages after native sent "${said}":\n${texts.join('\n')}\n`);
+        console.log(`SAMECONV PROOF: ${bot.id} /tmp/polish-proof/sameconv-after.png /tmp/polish-proof/sameconv-transcript.txt`);
+      }
+
       // Leave the big thread open for the relaunch.
       await openSession(bigId);
       await new Promise((resolve) => setTimeout(resolve, 700));
+    } else if (phase === 'import') {
+      // A waiting key file: only its name reaches the renderer; one click imports it and deletes the file.
+      const keyFile = path.join(os.homedir(), '.config', 'alans-way', 'fake-api-key'), key = process.env.NATIVE_CHAT_KEY;
+      await run(`document.getElementById('settings-fallback').click()`);
+      await until(() => visible('#settings-native-import button[data-name="fake"]'), 'import action');
+      assert.equal(await run(`document.getElementById('settings-native-import').previousElementSibling.contains(document.getElementById('settings-native-key'))`), true, 'the import action sits under the API key field');
+      assert.equal(JSON.stringify(await run('workspace.getState()')).includes(key), false);
+      assert.equal((await run('document.documentElement.outerHTML')).includes(key), false);
+      await click('#settings-native-import button[data-name="fake"]');
+      await until(async () => (await run(`document.getElementById('settings-native-import-status').textContent`)) === 'Key imported and the file deleted.', 'imported');
+      await until(async () => /^Connected/.test(await run(`document.getElementById('settings-native-status').textContent`)), 'test after import');
+      assert.equal(fs.existsSync(keyFile), false, 'the key file is deleted');
+      await until(async () => !(await visible('#settings-native-import')), 'import action gone');
+      assert.equal(fs.readFileSync(path.join(profile, 'native-chat.json'), 'utf8').includes(key), false, 'stored sealed');
+      assert.equal((await run('workspace.getState()')).nativeChat.address, process.env.NATIVE_CHAT_URL);
+      await run(`(() => { const select = document.getElementById('settings-chat-surface'); select.value = 'native'; select.dispatchEvent(new Event('change')); })()`);
+      await until(async () => (await run('workspace.getState()')).chatTarget === 'native', 'native surface');
+      await click('#modal-close');
+      await until(async () => (await rows()).length > 0, 'history after import');
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    } else if (phase === 'import-2') {
+      // Relaunch: the imported key was persisted, so a new chat still gets its reply.
+      await until(() => visible('#native-pane .nc-composer'), 'native pane after relaunch');
+      await click('#native-pane .nc-new');
+      await send('hello world');
+      await until(async () => (await rows()).some((row) => row.role === 'assistant' && row.text === 'pong: hello world'), 'reply with the imported key');
+      assert.deepEqual((await run('workspace.getState()')).nativeKeyFiles, []);
     } else {
       // Relaunch: the last thread is on screen while every request is still held by the mock.
       await until(async () => (await rows().catch(() => [])).length >= 60, 'cached bubbles after relaunch', 10000);

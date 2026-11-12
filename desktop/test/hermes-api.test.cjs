@@ -74,6 +74,24 @@ test('stop ends a long reply with run.cancelled', async () => {
   assert.deepEqual(names.slice(-3), ['assistant.completed', 'run.cancelled', 'done']);
 });
 
+test('a hidden session is found only by title with include_hidden', async () => {
+  assert.equal((await api.listSessions({ limit: 200 })).data.some((s) => s.title === 'Bot Chat'), false);
+  const body = await api.listSessions({ limit: 1, title: 'Bot Chat', includeHidden: true });
+  assert.deepEqual(body.data.map((s) => [s.id, s.hidden]), [['local-0b07c4a7', true]]);
+  assert.match(mock.requests.at(-1).search, /title=Bot\+Chat&include_hidden=true/);
+});
+
+test('the Bot Chat answers in one piece; another surface\'s session answers permission_denied in the stream', async () => {
+  const events = [];
+  await api.streamChat('local-0b07c4a7', 'hello world', { onEvent: (name, data) => events.push([name, data?.content ?? data?.message]) });
+  assert.deepEqual(events.map(([name]) => name), ['run.started', 'message.started', 'assistant.completed', 'run.completed', 'done']);
+  assert.equal(events[2][1], 'pong: hello world');
+  const refused = [];
+  const telegram = (await api.listSessions()).data.find((s) => s.source === 'telegram').id;
+  await api.streamChat(telegram, 'hello world', { onEvent: (name, data) => refused.push([name, data?.message]) });
+  assert.deepEqual(refused.slice(-2), [['error', 'permission_denied'], ['done', undefined]]);
+});
+
 test('aborting a live stream rejects as aborted', async () => {
   const controller = new AbortController();
   const done = api.streamChat(BASE_ID, 'LONG please', { signal: controller.signal, onEvent: (name) => { if (name === 'assistant.delta') controller.abort(); } });

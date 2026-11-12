@@ -42,6 +42,13 @@ In the app: Settings, Chat surface. Enter **Native chat address** and **API
 key**, choose **Save**, then **Test**. Once it is saved, choose **Alan's native
 chat** in "Chat in the left pane with".
 
+**Import a saved key instead of pasting it:** put the key alone in
+`~/.config/alans-way/<name>-api-key` (`<name>` is lowercase letters, digits and
+dashes) and `chmod 600` it. Settings, Chat surface then shows **Import saved key**.
+One click checks the file (a regular file you own, mode 600, 16 to 500 bytes),
+saves the key encrypted like a pasted one, reads it back, then deletes the file and
+runs **Test**. The address defaults to `http://127.0.0.1:8642` when none is set.
+
 ## What you can do
 
 - Pick a conversation or start a new one from the switcher at the top of the pane.
@@ -58,11 +65,24 @@ chat** in "Chat in the left pane with".
   card. A fenced block tagged `html widget` runs in a sandboxed frame with no
   network access.
 
-## Read-only conversations
+## Shared and read-only conversations
 
-Hermes lists conversations from every surface. Only those created over the API
-(`source` `api_server`) accept messages here. Others, such as Telegram, can be
-read. **Continue here** copies one into a new API conversation and opens it.
+Hermes lists conversations from every surface. Two kinds accept messages here:
+
+- Conversations made here (`source` `api_server`). Hermes Desktop can open and
+  continue them too.
+- The profile's **Bot Chat**: the Hermes Desktop or terminal conversation titled
+  exactly `Bot Chat`. It is the same conversation in Hermes Desktop, the terminal
+  (`hermes chat -c "Bot Chat"`) and here. It is pinned first in the switcher and
+  marked **Shared with Hermes Desktop**, even though Hermes Desktop hides Bot Chats
+  from its own session list. Hermes queues a message from here behind whatever that chat is
+  doing and sends the reply whole, not word by word. If the chat is still busy
+  after five minutes, the message stays queued there; refresh later to see the
+  reply. No server setting is needed (Hermes Agent 0.23.1).
+
+Every other conversation (other Hermes Desktop chats, Telegram) can be read but not
+written from here; Hermes refuses it. **Continue here** copies one into a new
+conversation made here and opens it. Details: `docs/polish/same-conversation.md`.
 
 ## Surfaces and one inbox
 
@@ -80,8 +100,8 @@ native wait while you are elsewhere sends one notification.
 
 **Shared between surfaces:** Hermes Desktop and Native read the same Hermes
 session store, so a conversation started in one is listed in the other.
-Telegram-source conversations can be read from Native but not written to; Continue
-here forks them. Switching keeps every surface alive: the Telegram and Hermes
+Telegram-source conversations, and Hermes Desktop ones other than the Bot Chat, can
+be read from Native but not written to; Continue here forks them. Switching keeps every surface alive: the Telegram and Hermes
 Desktop views stay loaded, and a native reply keeps streaming in the background
 (it marks the row unread when it finishes out of view).
 
@@ -102,4 +122,7 @@ are kept per conversation while the app runs.
 - Clarifying questions come from polling the run once a second, because they are
   not sent on the reply stream.
 - One reply at a time per conversation; send again after it finishes or after Stop.
+- In the Bot Chat, Stop only stops waiting here: the turn keeps running in Hermes.
+  Approvals and questions for a turn sent from here show in Hermes Desktop, not
+  here. Both are read from the Hermes source, not tested.
 - The conversation list shows the 50 most recent conversations.

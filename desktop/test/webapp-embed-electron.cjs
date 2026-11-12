@@ -202,6 +202,7 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
   await statusIs('needs-link');
   await helpSays('hermes webapp --no-open');
   assert.equal(webappViews().length, 0, 'no view until a link arrives');
+  assert.equal(await run(`getComputedStyle(document.getElementById('webapp-link')).width === getComputedStyle(document.getElementById('webapp-link').parentElement).width && document.getElementById('webapp-link').parentElement.classList.contains('field')`), true, 'the link field is a full-width app field');
   await assert.rejects(run(`workspace.command('webapp-link', { url: 'http://127.0.0.1:9120/webapp/launch#ticket=short' })`), /one-use link/);
   await run(`(() => { document.getElementById('webapp-link').value = 'http://127.0.0.1:9120/webapp/launch#ticket=${ticket}'; [...document.querySelectorAll('#webapp-help button')].find(button => button.textContent === 'Open').click(); })()`);
   await statusIs('ready');
@@ -226,6 +227,11 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
   await run(`document.getElementById('settings-fallback').click()`);
   await until(() => run(`!!document.getElementById('settings-webapp-password')`), 'sign-in fields');
   assert.equal(await run(`document.getElementById('settings-webapp-password').type`), 'password');
+  await run(`(() => { for (const [id, value] of [['settings-webapp-user', 'sam'], ['settings-webapp-password', 'wrong']]) { const input = document.getElementById(id); input.value = value; input.dispatchEvent(new Event('input')); }
+    [...document.querySelectorAll('button')].find(button => button.textContent === 'Save sign-in').click(); })()`);
+  await until(() => run(`!document.querySelector('[data-settings-section="chat-surface"] [aria-busy]')`) && run(`document.getElementById('settings-webapp-status').textContent.includes('refused')`), 'refusal shown');
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(await run(`[...document.querySelectorAll('[data-settings-section="chat-surface"] p')].filter(p => p.textContent.includes('refused')).length`), 1, 'a refusal is said once');
   await run(`(() => { for (const [id, value] of [['settings-webapp-user', 'sam'], ['settings-webapp-password', 'right-horse-battery']]) { const input = document.getElementById(id); input.value = value; input.dispatchEvent(new Event('input')); }
     [...document.querySelectorAll('button')].find(button => button.textContent === 'Save sign-in').click(); })()`);
   await statusIs('ready');
@@ -242,7 +248,7 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
   // Reconnect: the session lapses, the Webapp sends us to /login, and Workspace signs in again.
   await webappPartition.clearStorageData({ storages: ['cookies'] });
   await signedIn.executeJavaScript(`location.href = '/'; void 0`);
-  await until(() => logins.length === 3, 'automatic sign-in');
+  await until(() => logins.length === 4, 'automatic sign-in');
   await statusIs('ready');
   await until(() => signedIn.getURL() === signinAddress && !signedIn.isLoading(), 'back in after the lapse');
 
@@ -253,7 +259,7 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
   assert.equal((await webappPartition.cookies.get({ name: 'hermes-session' })).length, 0);
   assert.equal(saved().webappSignIn, undefined);
   await new Promise(resolve => setTimeout(resolve, 500));
-  assert.equal(logins.length, 3, 'no sign-in after signing out');
+  assert.equal(logins.length, 4, 'no sign-in after signing out');
   await run(`document.getElementById('modal-close').click()`);
 
   // A new address never receives the old password.
