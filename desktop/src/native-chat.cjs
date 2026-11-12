@@ -10,7 +10,8 @@ const { writePrivateJson, plainLine } = require('./shell-support.cjs');
 
 const MAX_TEXT = 100000, MAX_THREAD = 2000, MAX_SESSIONS = 50, MAX_CARDS = 20, MAX_THREADS = 20;
 const PAGE = 500, CACHE_CAP = 32 * 1024 * 1024;
-const SESSION_ID = /^[\w.-]{1,128}$/;
+const SESSION_ID = /^[\w.-]{1,128}$/, BOT_CHAT = 'Bot Chat', LOCAL_SOURCES = new Set(['local', 'cli', 'tui', 'gui', 'desktop']);
+const REFUSED = 'Hermes does not let this app write to that conversation.';
 const str = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
 const capText = (text) => text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}\n\n…` : text;
 const TOOL_LABELS = { terminal: 'Running a command', execute_code: 'Running code', web_search: 'Searching the web', web_extract: 'Reading a web page',
@@ -112,7 +113,10 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
   const sessionRow = (s) => ({ id: str(s.id, 128), title: str(s.title, 200), source: str(s.source, 40) || 'api_server', preview: str(s.preview, 200),
     lastActive: Number(s.last_active ?? s.lastActive ?? s.started_at) || 0 });
   const sourceOf = (id) => sessions.find((s) => s.id === id)?.source || 'api_server';
-  const isReadOnly = (id) => sourceOf(id) !== 'api_server';
+  // Hermes admits API turns only into API sessions and into the profile's local "Bot Chat" (its
+  // peer door: gateway/platforms/api_server_bot_chat.py); every other surface's session refuses them.
+  const isShared = (row) => !!row && LOCAL_SOURCES.has(row.source) && row.title === BOT_CHAT;
+  const isReadOnly = (id) => sourceOf(id) !== 'api_server' && !isShared(sessions.find((s) => s.id === id));
   // A bot's conversation: the one it last used while that still exists; for a Telegram bot the
   // newest Telegram-source one (which Telegram bot it came from is not knowable here); else the newest one made here.
   const pickSession = () => (sessions.find((s) => s.id === wanted.sessionId) || (wanted.telegram && sessions.find((s) => s.source === 'telegram'))
@@ -122,8 +126,11 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     if (!api) { rebuild(); notify(); return Promise.resolve(); }
     return once('sessions', async () => {
       try {
-        const body = await api.listSessions({ limit: MAX_SESSIONS });
-        const rows = (Array.isArray(body.data) ? body.data : []).filter((s) => s && SESSION_ID.test(s.id) && !s.hidden && !s.archived && !s.is_internal_child).map(sessionRow);
+        // Hermes Desktop's Bot Mode keeps the Bot Chat hidden from the general list: it is asked for by title and pinned first.
+        const [body, bot] = await Promise.all([api.listSessions({ limit: MAX_SESSIONS }), api.listSessions({ limit: 1, title: BOT_CHAT, includeHidden: true }).catch(() => ({}))]);
+        const listed = (Array.isArray(body.data) ? body.data : []).filter((s) => s && !s.hidden);
+        for (const s of Array.isArray(bot.data) ? bot.data : []) if (s && isShared(s) && !listed.some((r) => r.id === s.id)) listed.push(s);
+        const rows = listed.filter((s) => SESSION_ID.test(s.id) && !s.archived && !s.is_internal_child).map(sessionRow).sort((a, b) => isShared(b) - isShared(a));
         const local = sessions.filter((s) => s.id === activeId && !rows.some((r) => r.id === s.id));
         sessions = local.concat(rows).slice(0, MAX_SESSIONS);
         status = 'ready'; error = '';
@@ -215,7 +222,9 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
         if (last) run.final = last.content;
         break;
       }
-      case 'error': run.error = str(d.message, 300); break;
+      // A Bot Chat turn still waiting behind its owner's queue after the server's wait budget.
+      case 'run.queued': run.outcome = 'queued'; break;
+      case 'error': run.error = d.message === 'permission_denied' || d.code === 'permission_denied' ? REFUSED : str(d.message, 300); break;
       default: return;
     }
     run.status = run.runId ? (openCards(run).length ? 'waiting' : 'running') : run.status;
@@ -236,7 +245,8 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     const text = run.final || run.text;
     if (text) { const reply = { id: `local-${++localSeq}`, role: 'assistant', text: capText(text), ts: now() / 1000 }; t.messages = [...t.messages, reply]; run.localIds.push(reply.id); }
     t.notice = err && err.code !== 'aborted' ? 'The connection dropped during the reply; it may be incomplete.'
-      : run.outcome === 'failed' ? (run.error || 'Hermes could not finish this reply.') : run.outcome === 'cancelled' ? 'Stopped.' : '';
+      : run.outcome === 'failed' || (run.error && !text) ? (run.error || 'Hermes could not finish this reply.') : run.outcome === 'cancelled' ? 'Stopped.'
+      : run.outcome === 'queued' ? 'Hermes queued this message behind a reply still running there. Refresh later to see the answer.' : '';
     setLocal(run, 'sent');
     runs.delete(id);
     if (id !== activeId || !visible()) unread.add(id);
@@ -392,11 +402,11 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
       configured: configured(), status, error, address: address(),
       sessions: sessions.map((row) => {
         const live = runs.get(row.id);
-        return { ...row, readOnly: row.source !== 'api_server', running: !!live, waiting: !!live && openCards(live).length > 0, unread: unread.has(row.id) };
+        return { ...row, readOnly: isReadOnly(row.id), shared: isShared(row), running: !!live, waiting: !!live && openCards(live).length > 0, unread: unread.has(row.id) };
       }),
       activeId,
       thread: t && { sessionId: activeId, rev: t.rev, messages: t.messages, loading: t.loading, hasOlder: t.hasOlder, notice: t.notice,
-        title: s?.title || '', source: sourceOf(activeId), readOnly: isReadOnly(activeId) },
+        title: s?.title || '', source: sourceOf(activeId), readOnly: isReadOnly(activeId), shared: isShared(s) },
       run: run ? { status: run.status, text: run.text, tool: run.tool, messageId: run.messageId } : null,
       cards: (cards.get(activeId) || []).map(({ runId, generation, requestId, ...card }) => card),
     };

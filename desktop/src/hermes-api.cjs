@@ -140,7 +140,7 @@ function createHermesApi({ baseUrl, key, profile = '', timeoutMs = 15000, idleMs
   }
 
   return {
-    listSessions: ({ limit = 50, offset = 0, source } = {}, options) => json('GET', `/api/sessions?${query({ limit, offset, source })}`, undefined, options),
+    listSessions: ({ limit = 50, offset = 0, source, title, includeHidden } = {}, options) => json('GET', `/api/sessions?${query({ limit, offset, source, title, include_hidden: includeHidden ? 'true' : undefined })}`, undefined, options),
     createSession: (body = {}) => json('POST', '/api/sessions', body),
     getMessages: (id, { limit = 500, offset = 0, order = 'latest' } = {}, options) => json('GET', `/api/sessions/${enc(id)}/messages?${query({ limit, offset, order })}`, undefined, options),
     forkSession: (id, body = {}) => json('POST', `/api/sessions/${enc(id)}/fork`, body),

@@ -120,3 +120,44 @@ test('show: a bot opens its remembered conversation, else the newest Telegram-so
   await tick(); await tick();
   assert.equal(chat.info('api_2').preview, 'pong', 'last assistant text once the thread is in memory');
 });
+
+test('the profile\'s Bot Chat is writable and shared; other Hermes Desktop or Telegram conversations stay read-only', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-'));
+  let emit, release;
+  const sessions = [{ id: 'local-bot', source: 'local', title: 'Bot Chat' }, { id: 'local-2', source: 'local', title: 'Other' }, { id: 'telegram_1', source: 'telegram', title: 'Bot Chat' }];
+  const api = fakeApi({ listSessions: async ({ title } = {}) => ({ data: title ? sessions.filter((s) => s.title === title) : sessions }), streamChat: (_id, _text, { onEvent }) => { emit = onEvent; return new Promise((resolve) => { release = resolve; }); } });
+  const chat = createNativeChat({ dir, apiFactory: () => api, loadConfig: () => ({ baseUrl: 'http://127.0.0.1:8642', key: 'k'.repeat(20), lastSessionId: 'local-bot', sessions }) });
+  const state = chat.getState();
+  assert.deepEqual(state.sessions.map((s) => [s.id, s.readOnly, s.shared]), [['local-bot', false, true], ['local-2', true, false], ['telegram_1', true, false]]);
+  assert.deepEqual([state.thread.readOnly, state.thread.shared], [false, true]);
+  await assert.rejects(chat.command('send', { sessionId: 'local-2', text: 'x' }), /read-only/);
+  await chat.command('send', { sessionId: 'local-bot', text: 'hello world' });
+  emit('run.started', { run_id: 'run_b' }); emit('message.started', { message: { id: 'msg_b' } });
+  emit('assistant.completed', { content: 'pong: hello world' }); emit('run.completed', {});
+  release();
+  await tick(); await tick();
+  assert.equal(chat.getState().thread.notice, '');
+});
+
+test('the hidden Bot Chat comes from a title lookup and is pinned first', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-'));
+  const bot = { id: 'local-bot', source: 'local', title: 'Bot Chat', hidden: true, last_active: 1 };
+  const asked = [];
+  const api = fakeApi({ listSessions: async (params) => { asked.push(params); return { data: params.title ? [bot] : [{ id: 'api_1', source: 'api_server', title: 'One', last_active: 9 }, { ...bot }] }; } });
+  const chat = createNativeChat({ dir, apiFactory: () => api, loadConfig: () => ({ baseUrl: 'http://127.0.0.1:8642', key: 'k'.repeat(20), lastSessionId: 'api_1' }) });
+  await chat.command('refresh');
+  assert.deepEqual(asked.find((p) => p.title), { limit: 1, title: 'Bot Chat', includeHidden: true });
+  assert.deepEqual(chat.getState().sessions.map((s) => [s.id, s.shared]), [['local-bot', true], ['api_1', false]]);
+});
+
+test('a refused or queued turn says so in plain words', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-'));
+  const script = { refused: [['run.started', { run_id: 'r1' }], ['error', { message: 'permission_denied' }], ['done', {}]], queued: [['run.started', { run_id: 'r2' }], ['run.queued', { status: 'queued' }], ['done', {}]] };
+  let next;
+  const api = fakeApi({ streamChat: async (_id, _text, { onEvent }) => { for (const [name, data] of script[next]) onEvent(name, data); } });
+  const chat = createNativeChat({ dir, apiFactory: () => api, loadConfig: () => ({ baseUrl: 'http://127.0.0.1:8642', key: 'k'.repeat(20), lastSessionId: 'api_1', sessions: [{ id: 'api_1', source: 'api_server' }] }) });
+  next = 'refused'; await chat.command('send', { sessionId: 'api_1', text: 'x' }); await tick(); await tick();
+  assert.equal(chat.getState().thread.notice, 'Hermes does not let this app write to that conversation.');
+  next = 'queued'; await chat.command('send', { sessionId: 'api_1', text: 'y' }); await tick(); await tick();
+  assert.match(chat.getState().thread.notice, /^Hermes queued this message/);
+});

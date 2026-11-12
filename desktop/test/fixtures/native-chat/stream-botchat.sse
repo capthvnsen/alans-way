@@ -1,0 +1,15 @@
+event: run.started
+data: {"user_message": {"role": "user", "content": "hello world"}, "runtime": {}, "session_id": "local-5bffc3c60b4946ac555307ddb59d763bac3a32edd5d9dac1f022fd0cde994898", "run_id": "run_4fd2f898404f4685ab14980e991ed004", "seq": 1, "ts": 1794440384.041709}
+
+event: message.started
+data: {"message": {"id": "msg_2a3ccd6a4762494094174b8e9ec6ad32", "role": "assistant"}, "session_id": "local-5bffc3c60b4946ac555307ddb59d763bac3a32edd5d9dac1f022fd0cde994898", "run_id": "run_4fd2f898404f4685ab14980e991ed004", "seq": 2, "ts": 1794440384.27423}
+
+event: assistant.completed
+data: {"message_id": "msg_2a3ccd6a4762494094174b8e9ec6ad32", "content": "pong: hello world", "delivery_id": "a15b729311d044a0b2ea506dc934f3c1", "runtime": {}, "session_id": "local-5bffc3c60b4946ac555307ddb59d763bac3a32edd5d9dac1f022fd0cde994898", "run_id": "run_4fd2f898404f4685ab14980e991ed004", "seq": 3, "ts": 1794440384.274266}
+
+event: run.completed
+data: {"message_id": "msg_2a3ccd6a4762494094174b8e9ec6ad32", "delivery_id": "a15b729311d044a0b2ea506dc934f3c1", "usage": {}, "runtime": {}, "session_id": "local-5bffc3c60b4946ac555307ddb59d763bac3a32edd5d9dac1f022fd0cde994898", "run_id": "run_4fd2f898404f4685ab14980e991ed004", "seq": 4, "ts": 1794440384.274276}
+
+event: done
+data: {"session_id": "local-5bffc3c60b4946ac555307ddb59d763bac3a32edd5d9dac1f022fd0cde994898", "run_id": "run_4fd2f898404f4685ab14980e991ed004", "seq": 5, "ts": 1794440384.274285}
+

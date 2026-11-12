@@ -148,7 +148,7 @@
     const days = (today - date) / 86400000;
     return `${date.toLocaleDateString([], days < 6 ? { weekday: 'long' } : { month: 'short', day: 'numeric', year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric' })} ${fmtTime(ts)}`;
   }
-  const SOURCE_LABEL = { api_server: 'Here', telegram: 'Telegram', discord: 'Discord', slack: 'Slack', whatsapp: 'WhatsApp', signal: 'Signal', email: 'Email', cli: 'Terminal', tui: 'Terminal', desktop: 'Hermes Desktop' };
+  const SOURCE_LABEL = { api_server: 'Here', telegram: 'Telegram', discord: 'Discord', slack: 'Slack', whatsapp: 'WhatsApp', signal: 'Signal', email: 'Email', cli: 'Terminal', tui: 'Terminal', desktop: 'Hermes Desktop', gui: 'Hermes Desktop', local: 'Hermes Desktop' };
   const sourceLabel = (source) => SOURCE_LABEL[source] || String(source || 'Hermes').replace(/_/g, ' ');
   const GAP = 15 * 60, CHUNK = 60;
 
@@ -430,7 +430,7 @@
         item.setAttribute('role', 'menuitem');
         item.dataset.id = s.id;
         const title = el('span', 'nc-menu-title', s.title || s.preview || 'Untitled chat');
-        const meta = el('span', 'nc-menu-meta', `${sourceLabel(s.source)}${s.running ? ' · replying' : ''}${s.waiting ? ' · needs you' : ''}`);
+        const meta = el('span', 'nc-menu-meta', `${s.shared ? 'Shared with Hermes Desktop' : sourceLabel(s.source)}${s.running ? ' · replying' : ''}${s.waiting ? ' · needs you' : ''}`);
         if (s.unread) item.append(el('span', 'nc-unread'));
         item.append(title, meta);
         menu.append(item);

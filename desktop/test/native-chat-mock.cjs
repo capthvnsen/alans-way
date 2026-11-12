@@ -33,6 +33,9 @@ function createMock({ key, chunk = 0 } = {}) {
     sessions.set(meta.id, { meta, rows: synthRows(meta, count, start) });
     start += count + 10;
   }
+  // The profile's Bot Chat as Hermes Desktop leaves it: a hidden local session the API may write (the peer door).
+  const botChat = { ...listed[1], id: 'local-0b07c4a7', source: 'local', title: 'Bot Chat', hidden: true, last_active: listed[2].last_active - 100, started_at: listed[2].started_at - 100 };
+  sessions.set(botChat.id, { meta: botChat, rows: synthRows(botChat, 2, start) });
   const mock = { requests, sessions, delayMs: 0, streamDelayMs: 0, chunk, get served() { return served; }, set served(n) { served = n; } };
 
   const json = (res, status, body) => { served++; res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -43,8 +46,8 @@ function createMock({ key, chunk = 0 } = {}) {
     for (let i = 0; i < frame.length; i += mock.chunk) { res.write(frame.slice(i, i + mock.chunk)); await sleep(1); }
   };
 
-  async function stream(req, res, session, input) {
-    const capture = /APPROVE/.test(input) ? 'stream-approve.sse' : /MD/.test(input) ? 'stream-md.sse' : /LONG/.test(input) ? 'stream-long-cancelled.sse' : 'stream-pong.sse';
+  async function stream(req, res, session, input, fixed) {
+    const capture = fixed || (/APPROVE/.test(input) ? 'stream-approve.sse' : /MD/.test(input) ? 'stream-md.sse' : /LONG/.test(input) ? 'stream-long-cancelled.sse' : 'stream-pong.sse');
     const frames = framesOf(capture);
     const runId = dataOf(frames[0]).run_id;
     stops.delete(runId);
@@ -68,6 +71,7 @@ function createMock({ key, chunk = 0 } = {}) {
       }
     }
     res.end();
+    if (fixed === 'stream-refused.sse') return;
     const now = Date.now() / 1000;
     session.rows.push({ id: nextId++, session_id: session.meta.id, role: 'user', content: input, timestamp: now - 1, display_kind: 'internal_notification' },
       { id: nextId++, session_id: session.meta.id, role: 'assistant', content, timestamp: now, finish_reason: 'stop' },
@@ -97,7 +101,8 @@ function createMock({ key, chunk = 0 } = {}) {
     switch (route) {
       case 'GET /api/sessions': {
         const limit = Math.min(200, Number(url.searchParams.get('limit')) || 50), offset = Number(url.searchParams.get('offset')) || 0;
-        const all = [...sessions.values()].map((s) => s.meta).sort((a, b) => b.last_active - a.last_active);
+        const title = url.searchParams.get('title'), hidden = title && url.searchParams.get('include_hidden') === 'true';
+        const all = [...sessions.values()].map((s) => s.meta).filter((s) => (!title || s.title === title) && (hidden || !s.hidden)).sort((a, b) => b.last_active - a.last_active);
         return json(res, 200, { object: 'list', data: all.slice(offset, offset + limit), limit, offset, has_more: all.length > offset + limit });
       }
       case 'POST /api/sessions': await body(req); return json(res, 201, { object: 'hermes.session', session: newSession().meta });
@@ -110,7 +115,7 @@ function createMock({ key, chunk = 0 } = {}) {
       case 'POST /api/sessions/:id/chat/stream': {
         const input = (await body(req))?.input;
         if (typeof input !== 'string') return error(res, 400, 'invalid_params', 'input is required');
-        if (session.meta.source !== 'api_server') { served++; res.writeHead(500); res.end('Server got itself in trouble'); return; }
+        if (session.meta.source !== 'api_server') return stream(req, res, session, input, session.meta.title === 'Bot Chat' ? 'stream-botchat.sse' : 'stream-refused.sse');
         return stream(req, res, session, input);
       }
       case 'POST /api/sessions/:id/fork': {
