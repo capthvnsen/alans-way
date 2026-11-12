@@ -2480,7 +2480,7 @@ window.terminal.onData((id, data) => terminalView(id).term.write(data));
 window.terminal.onExit((id) => { const view = terminalViews.get(id); if (view) { view.term.write('\r\n[Session ended]\r\n'); view.size = ''; } });
 new ResizeObserver(() => { for (const id of terminalViews.keys()) fitTerminal(id); }).observe($('terminal-panel'));
 // A narrow pane scrolls the Canvas strip; keep the selected tab in view.
-function showSelectedCanvasTab() { $('canvas-tabs').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
-new ResizeObserver(showSelectedCanvasTab).observe($('canvas-tabs'));
+function showSelectedCanvasTab() { for (const id of ['canvas-tabs', 'surface-tabs']) $(id).querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+for (const id of ['canvas-tabs', 'surface-tabs']) new ResizeObserver(showSelectedCanvasTab).observe($(id));
 window.addEventListener('resize', () => { positionPreview(); scheduleLayout(); });
 api.getState().then(render).catch((error) => toast(error.message));

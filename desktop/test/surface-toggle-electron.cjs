@@ -47,7 +47,7 @@ if (!process.versions.electron) {
   prepareFixture(profile);
   const prefsFile = path.join(profile, 'preferences.json');
   if (phase === '1') fs.writeFileSync(prefsFile, JSON.stringify({ onboarded: true, preview: false, hermesWebappUrl: process.env.WEBAPP_URL,
-    bots: [{ id: '1001', isBot: true, name: 'Alan' }, { id: '1002', isBot: true, name: 'Scout' }], selectedBotId: '1001' }));
+    bots: [{ id: '1001', isBot: true, name: 'Alan' }, { id: '1002', isBot: true, name: 'Scout Research Assistant' }], selectedBotId: '1001' }));
   // Notifications are recorded instead of shown.
   const shown = [];
   Notification.prototype.show = function show() { shown.push({ title: this.title, body: this.body }); };
@@ -122,6 +122,11 @@ if (!process.versions.electron) {
       // Bot B: Hermes Desktop.
       await pick('1002'); await choose('hermes-desktop'); await showing('hermes-desktop');
       await until(() => saved().chatSurfaces?.['1002'] === 'hermes-desktop', 'B choice saved');
+      const apart = () => run(`(() => { const [t, p, s] = ['bots-toggle', 'chat-pill', 'surface-tabs'].map(id => document.getElementById(id).getBoundingClientRect()); return t.right <= p.left && p.right <= s.left; })()`);
+      assert.equal(await apart(), true, 'a long bot name keeps the header pieces apart');
+      await run(`document.getElementById('bots-toggle').click()`); await until(() => run(`document.getElementById('shell').classList.contains('bots-hidden')`), 'agent list hidden');
+      assert.equal(await apart(), true, 'and with the agent list hidden');
+      await run(`document.getElementById('bots-toggle').click()`); await until(async () => !(await run(`document.getElementById('shell').classList.contains('bots-hidden')`)), 'agent list back');
       for (let i = 0; i < 2; i++) {
         await pick('1001'); await showing('native');
         await pick('1002'); await showing('hermes-desktop');
