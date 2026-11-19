@@ -115,9 +115,10 @@ Desktop views stay loaded, and a native reply keeps streaming in the background
 (it marks the row unread when it finishes out of view).
 
 **Per bot** (`preferences.json`): `chatSurfaces[botId]` is the gateway whose row you
-last opened for that bot; a bot without one, or whose saved gateway is no longer set up
-(including values the old header switch could leave), follows Settings, Chat surface and
-then the first gateway it has, so a bot is never left on a row that is not in the list.
+last opened for that bot. A bot without one, or whose saved gateway is not set up (an
+old value from the retired header switch, say), follows Settings, Chat surface, so it
+opens on a row it has. If that default itself names a gateway with no address yet, the
+pane shows that gateway's setup help and the bot's first row is highlighted.
 `nativeSessions[botId]` is the native conversation last used with that bot. A bot
 with none opens, for a Telegram bot, the newest Telegram-source conversation on
 this Hermes host (read-only), otherwise the newest conversation made here, or a new

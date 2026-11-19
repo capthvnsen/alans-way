@@ -36,7 +36,7 @@ one where you left it.
   overwrites it and `browserReturnTabId` is gone. The renderer still receives
   `activeTabId: 'vps'` for Bot screen (wire compatibility for `remote.js` and the
   existing tests), plus `canvasTab` and `webappCanvas`.
-- **Collapsed pane:** choosing any Canvas tab (⌘1–⌘4, the strip, a row's Cron jobs or Settings icon, the expand button)
+- **Collapsed pane:** choosing any Canvas tab (⌘1–⌘4, the strip, the bot's name in the chat header, the expand button)
   reopens a collapsed browser pane.
 - **New tabs:** Artifacts, Cron jobs and Bot settings are the Hermes Desktop
   routes `#/artifacts`, `#/cron` and `#/settings` (Hermes Desktop uses a
@@ -62,21 +62,24 @@ one where you left it.
 - **Keyboard:** ⌘4 (Artifacts) in the View menu, listed in the Shortcuts sheet.
   Arrow keys, Home and End move across the visible tabs only.
 
-## Side chat removed, Cron jobs and Bot settings on the bot's row
+## Side chat removed; Bot settings and Cron jobs from the bot's name
 
 The Side chat tab (`#/`) is gone, with its state value and shortcut. A stale saved
 `canvasTabs` entry of `chat` is ignored: that bot keeps the current view.
 
-Cron jobs and Bot settings are not in the permanent strip. Each bot's rows in the
-agent list carry a clock and a gear button (visible on hover, on keyboard focus and on
-the selected row; "Cron jobs for <bot>", "Settings for <bot>"). They appear only for a
-bot that has a Hermes row while the Hermes Desktop pages are reachable, the same
-condition that shows Artifacts. A button selects its bot first, on the gateway of the
-row it is on, if that bot is not selected, then opens the page. They are still the
-`cron` and `settings` values of `canvasTab`, remembered per bot like the rest; the
-strip (`canvasStripTabs()` in `src/shell-support.cjs`, sent to the renderer as
-`canvasStrip`) adds that tab at the end only while it is the one open, and it leaves
-the strip as soon as another tab is chosen. They have no shortcut or menu item.
+Bot settings and Cron jobs are not in the permanent strip. The bot's name in the chat
+header (the pill beside its avatar) is a button, "<bot> settings and cron jobs", with a
+chevron (›) that appears on hover and keyboard focus. It opens that bot's Bot settings
+and shows both tabs, Bot settings and Cron jobs, at the end of the strip so you can move
+between them. Choosing Browser, Bot screen, Terminal or Artifacts removes both again, and
+clicking the name while they are open returns to the tab you came from (`canvasReturn` in
+`src/main.cjs`, command `canvas-bot-pages`). The name is a plain, unclickable label with
+no chevron unless the bot has a Hermes row and the Hermes Desktop pages are reachable,
+the same condition that shows Artifacts. The avatar beside it still opens the avatar
+editor. Both pages are still the `cron` and `settings` values of `canvasTab`, remembered
+per bot like the rest; the strip (`canvasStripTabs()` in `src/shell-support.cjs`, sent to
+the renderer as `canvasStrip`) adds them only while one is the open page. They have no
+shortcut or menu item.
 
 ## Terminal
 
