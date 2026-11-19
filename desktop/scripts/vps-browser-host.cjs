@@ -11,6 +11,7 @@ const { spawn } = require('node:child_process');
 const { CDP, AGENT_BROWSER_FLAGS, screenshotClip } = require('../src/cdp.cjs');
 const { normalizeUrl, agentPageUrl, redactTabForBot, cdpMethodError, normalizeHost, requireActor, requireAgentRead, requireAgentClaim, reviewedHandoff, isAuthorized, hostShouldReload, errorMessage, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe, viewerUrl } = require('../src/core.cjs');
 const agentInputModule = require('../src/agent-input.cjs');
+const batchFlow = require('../src/batch-flow.cjs');
 const { createAgentInput, APPROVED, refuseChallenge, tintScript, botAccent } = agentInputModule;
 // Nobody watches the VM pointer live, so agent-input skips its glide pacing (isVisible) when it supports that.
 const INPUT_ACTIONS = agentInputModule.INPUT_ACTIONS || new Set(['click', 'type', 'press', 'move', 'scroll']);
@@ -51,6 +52,7 @@ const intParam = (url, key, min, max) => {
 // Must stay below the request timeouts for /actions in request() and the
 // Mac's SSH proxy, allowing a final 30s wait step to finish.
 const BATCH_BUDGET_MS = 50000;
+const FLOW = Symbol('batch-flow');
 const MIRROR_TTL_MS = 24 * 3600000;
 const RESTORE_PARALLEL = 4, RESTORE_LOAD_ATTEMPTS = 50;
 // Every request an agent-held tab (or a frame, worker or pop-up of it) makes is
@@ -512,11 +514,18 @@ async function serve() {
     requireActor(tab, botId, body.epoch, true, overseer);
     if (depth === 0) input.approve(tab, body);
     const finish = async (payload, opts) => depth > 0 ? { ...payload, ...(opts?.clicked ? { clicked: opts.clicked } : {}) } : { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) };
+    const probe = (cond) => wc.executeJavaScript(batchFlow.conditionExpression(cond, tab.refSeed)).catch(() => false);
+    if (batchFlow.FLOW_ACTIONS.has(body.action)) {
+      if (depth === 0 || !body[FLOW]) throw fail('if and repeat run inside a batch.');
+      // Inner steps get the epoch only: an approval belongs to one top-level step, so they face the commit gate on their own.
+      return batchFlow.run(body, { ctx: body[FLOW], test: probe, before: checkCall, aborted: () => false, leaf: (step) => vpsPerform(tab, { ...step, epoch: body.epoch }, botId, overseer, 1) });
+    }
     if (body.action === 'batch') {
       if (depth > 0) throw fail('Batches cannot nest.');
       const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
       if (!steps.length) throw fail('batch needs a non-empty steps array (max 25).');
-      const results = [], started = Date.now();
+      try { batchFlow.validateBatch(steps); } catch (error) { throw fail(error.message); }
+      const results = [], started = Date.now(), flow = batchFlow.context(BATCH_BUDGET_MS);
       let lastTarget, lastClicked, sawInput = false;
       for (const step of steps) {
         if (!step || typeof step !== 'object') { results.push({ ok: false, error: 'Invalid step.' }); break; }
@@ -524,15 +533,15 @@ async function serve() {
         try { checkCall(); }
         catch (error) { results.push({ ok: false, code: error.code, error: error.message }); break; }
         try {
-          const { clicked, ...result } = await vpsPerform(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, overseer, 1);
+          const { clicked, ...result } = await vpsPerform(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED], [FLOW]: flow }, botId, overseer, 1);
           results.push({ ok: true, ...result });
           if (clicked) lastClicked = clicked;
         }
-        catch (error) { results.push({ ok: false, error: errorMessage(error) }); break; }
+        catch (error) { results.push({ ok: false, error: errorMessage(error), ...(error.flowResults ? { results: error.flowResults } : {}) }); if (batchFlow.hasInput(step, INPUT_ACTIONS)) sawInput = true; break; }
         // A step aimed by name reports the ref it resolved to.
         const ref = results.at(-1).ref || step.ref;
         if (ref !== undefined || step.selector !== undefined) lastTarget = { ref, selector: step.selector };
-        if (INPUT_ACTIONS.has(step.action) && step.action !== 'move') sawInput = true;
+        if ((INPUT_ACTIONS.has(step.action) && step.action !== 'move') || batchFlow.hasInput(step, INPUT_ACTIONS)) sawInput = true;
       }
       // A takeover mid-batch seals the accumulated step results too.
       requireActor(tab, botId, body.epoch, true, overseer);
@@ -572,6 +581,11 @@ async function serve() {
       const serialized = typeof value === 'string' ? value : JSON.stringify(value);
       if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
       return finish({ value, dispatched: true });
+    }
+    if (body.action === 'wait' && body.name !== undefined) {
+      const timeoutMs = Math.min(Math.max(Number(body.timeout) || 10000, 100), depth > 0 ? remainingMs(30000) : 30000);
+      const cond = { name: body.name, role: body.role, row: body.row, selector: body.selector, text: body.text, url: body.url, visible: body.visible, gone: body.gone };
+      try { return finish({ ...(await batchFlow.waitFor(cond, { test: probe, timeoutMs })), dispatched: true }); } catch (error) { if (!error.status) throw error; throw fail(error.message, error.status); }
     }
     if (body.action === 'wait') {
       const selector = String(body.selector || '').slice(0, 2000);
@@ -963,7 +977,7 @@ async function serve() {
         platform: process.platform,
         protocol: 1,
         session: 'shared-vps',
-        capabilities: ['computer', 'computer-v2', ...(process.platform === 'darwin' ? ['computer-window-v1', 'computer-launch-v1', 'computer-open-v1'] : []), 'tabs', 'snapshot', 'screenshot', 'background-input', 'control-epochs', 'checkpoint', 'agent-desktop', 'name-targets', 'commit-check', ...(agentInputModule.APPROVAL_BINDING_VERSION === 1 ? ['approval-binding-v1'] : [])],
+        capabilities: ['computer', 'computer-v2', ...(process.platform === 'darwin' ? ['computer-window-v1', 'computer-launch-v1', 'computer-open-v1'] : []), 'tabs', 'snapshot', 'screenshot', 'background-input', 'control-epochs', 'checkpoint', 'agent-desktop', 'name-targets', 'batch-flow', 'commit-check', ...(agentInputModule.APPROVAL_BINDING_VERSION === 1 ? ['approval-binding-v1'] : [])],
         tabCount: tabs.size,
         browserUp: cdp.socket.readyState === 1,
         busy: [...tabs.values()].some((t) => (t.pendingActions || 0) > 0 || input.isDispatching(t)),
