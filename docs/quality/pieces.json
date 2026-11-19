@@ -351,15 +351,6 @@
     "acceptance": "Refused, timed-out, invalid and recovered connection states expose a specific next action; no claim of active control before connected."
   },
   {
-    "id": "remote-preview",
-    "area": "Remote workspace",
-    "title": "Preview placement, resize and legibility",
-    "status": "queued",
-    "builder": null,
-    "critic": null,
-    "acceptance": "Real running workflow, adverse case, regression check, reference comparison; evidence required."
-  },
-  {
     "id": "remote-control",
     "area": "Remote workspace",
     "title": "Watch versus control and clipboard",
@@ -1130,16 +1121,6 @@
     "builder": null,
     "critic": null,
     "acceptance": "Actual local fault server yields distinct connection states and actionable retry without sending credentials to wrong host."
-  },
-  {
-    "id": "remote-preview-reconnect",
-    "parent": "remote-preview",
-    "area": "Remote workspace",
-    "title": "Preview disconnect, resize and reconnect",
-    "status": "queued",
-    "builder": null,
-    "critic": null,
-    "acceptance": "Real local remote protocol fixture updates dimensions, shows disconnection truthfully and reconnects without stale frame posing as live."
   },
   {
     "id": "remote-control-mode",

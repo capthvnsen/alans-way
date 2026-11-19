@@ -235,14 +235,14 @@ app.whenReady().then(async () => {
     await disclose('#settings-agent-details'); await fill('#mac-ssh-host', `old-save@${fixtureTailnet}`);
     const gate = holdSave('macSshHost'); await click('#settings-save-addresses'); await wait(() => gate.entered);
     await fill('#mac-ssh-host', `old-context-draft@${fixtureTailnet}`);
-    await call('settings', { macSshHost: `new-context@${fixtureTailnet}`, preview: true }); await frame();
+    await call('settings', { macSshHost: `new-context@${fixtureTailnet}`, autoTakeover: true }); await frame();
     const revision = await js('state.uiStateRevision'); await open(); await disclose('#settings-agent-details');
     assert.equal(await js('document.getElementById("mac-ssh-host").value'), `new-context@${fixtureTailnet}`);
     gate.release(); await pause(100); await frame();
-    assert.equal(await js('state.macSshHost'), `new-context@${fixtureTailnet}`); assert.equal(await js('state.preview'), true);
+    assert.equal(await js('state.macSshHost'), `new-context@${fixtureTailnet}`); assert.equal(await js('state.autoTakeover'), true);
     assert.ok(await js('state.uiStateRevision') >= revision);
     assert.equal(await js('document.getElementById("mac-ssh-host").value'), `new-context@${fixtureTailnet}`);
-    await call('settings', { macSshHost: `old-save@${fixtureTailnet}`, preview: false }); await frame();
+    await call('settings', { macSshHost: `old-save@${fixtureTailnet}`, autoTakeover: false }); await frame();
     assert.equal(await js('document.getElementById("mac-ssh-host").value'), `old-context-draft@${fixtureTailnet}`);
     assert.equal(await js('document.getElementById("mac-ssh-host").dataset.dirty'), 'true');
   });

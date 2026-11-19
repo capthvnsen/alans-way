@@ -491,12 +491,8 @@ function render(next) {
   renderHome(bot, !!tab || remote || page || !!state.onboarding);
   renderOnboarding(!tab && !remote && !page && !!state.onboarding);
   $('browser-toolbar').classList.toggle('hidden', remote || page);
-  $('remote-preview-slot').classList.toggle('hidden', !state.preview || remote || page || !!state.onboarding);
-  $('preview-chip').classList.toggle('hidden', state.preview || remote || page);
-  $('preview-label').textContent = state.remoteStatus === 'connected' ? `${remoteName()} desktop` : `${remoteName()} · ${state.remoteStatus}`;
   document.body.classList.toggle('win32', state.platform === 'win32');
   $('new-tab').title = state.platform === 'darwin' ? 'New local browser tab (⌘T)' : 'New local browser tab (Ctrl+T)';
-  positionPreview();
   const sharedTab = tab?.botId === 'shared';
   const ownerName = tab && !sharedTab ? state.bots.find((item) => item.id === tab.botId)?.name || tab.botId : '';
   const controlButton = $('control-button');
@@ -690,7 +686,7 @@ function renderVmBanner() {
 let onboardingStep = 1, onboardingSignature = '', homeWasVisible = false;
 function renderHome(bot, hidden) {
   $('home').classList.toggle('hidden', hidden);
-  if (!hidden && !homeWasVisible && document.activeElement === document.body && canFocus($('home-address'))) $('home-address').focus({ preventScroll: true });
+  if (!hidden && !homeWasVisible && document.activeElement === document.body && canFocus($('address'))) $('address').focus({ preventScroll: true });
   homeWasVisible = !hidden;
   const homeAgent = $('home-agent');
   homeAgent.classList.toggle('hidden', !bot);
@@ -700,24 +696,6 @@ function renderHome(bot, hidden) {
     homeAgent.title = `Open a page for ${bot.name}`;
     homeAgent.setAttribute('aria-label', homeAgent.title);
   }
-  const computer = state.platform === 'darwin' ? 'Mac' : thisComputer();
-  const remoteKnown = state.remoteStatus === 'connected' || !!state.remoteUrl || !!state.vpsBrowser?.sshHost;
-  // The chat offer is only real once the app observes a connected account; a
-  // saved agent list alone proves nothing about sign-in or chat readiness.
-  const waiting = {
-    loading: bot ? `${bot.name}’s chat is still connecting.` : 'Telegram is still connecting.',
-    login: bot ? `Sign in on the left to bring ${bot.name}’s chat here.` : 'Sign in to Telegram on the left to bring your agents here.',
-    locked: 'Unlock Telegram on the left to load your bot chats.',
-    offline: 'Telegram is offline. Reconnecting automatically.',
-    'layout-changed': 'Telegram’s layout changed. Bot chats may not load until Alan’s Workspace is updated.',
-  };
-  const firstLine = state.telegramStatus === 'connected' || (bot && state.chatTarget !== 'telegram')
-    ? bot ? `Talk to ${bot.name} in the left chat.` : state.bots.length ? 'Pick an agent on the left.' : 'Your agents appear on the left as bot chats.'
-    : waiting[state.telegramStatus] || waiting.loading;
-  $('home-copy').replaceChildren(
-    document.createTextNode(firstLine),
-    element('br'),
-    document.createTextNode(`${bot ? `Or open a page on your ${computer} and hand it to ${bot.name}.` : `Pages open on your ${computer} below.`}${remoteKnown ? ' Keep their computer in view.' : ''}`));
 }
 function renderOnboarding(show) {
   const panel = $('onboarding');
@@ -1000,58 +978,8 @@ function rect(id) {
 }
 function scheduleLayout() {
   cancelAnimationFrame(resizeFrame);
-  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), webapp: focusMode ? null : rect('webapp-slot'), browser: rect('browser-slot'), preview: rect('preview-screen'), obscured: dialogStack.length > 0 || !$('tabs-panel').classList.contains('hidden') || !$('status-panel').classList.contains('hidden') }));
+  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), webapp: focusMode ? null : rect('webapp-slot'), browser: rect('browser-slot'), obscured: dialogStack.length > 0 || !$('tabs-panel').classList.contains('hidden') || !$('status-panel').classList.contains('hidden') }));
 }
-// The mini VM window is anchored bottom-right until dragged; its saved offset
-// is relative to the workspace pane and clamped so it can never get lost.
-let previewDragging = false;
-function positionPreview() {
-  const slot = $('remote-preview-slot'), pos = state?.previewPos;
-  if (previewDragging) return;
-  if (state?.showBrowser === false || !pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) { slot.style.left = ''; slot.style.top = ''; slot.style.right = ''; slot.style.bottom = ''; return; }
-  const pane = slot.parentElement.getBoundingClientRect();
-  const x = Math.max(0, Math.min(pos.x, pane.width - slot.offsetWidth));
-  const y = Math.max(0, Math.min(pos.y, pane.height - slot.offsetHeight));
-  slot.style.left = `${x}px`; slot.style.top = `${y}px`; slot.style.right = 'auto'; slot.style.bottom = 'auto';
-}
-function wirePreviewDrag() {
-  const chrome = $('preview-chrome'), slot = $('remote-preview-slot');
-  let drag = null;
-  chrome.addEventListener('pointerdown', (event) => {
-    if (event.target.closest('button') || state?.showBrowser === false) return;
-    previewDragging = true;
-    const paneBox = slot.parentElement.getBoundingClientRect(), slotBox = slot.getBoundingClientRect();
-    drag = { dx: event.clientX - slotBox.left, dy: event.clientY - slotBox.top, pane: paneBox };
-    chrome.setPointerCapture(event.pointerId);
-  });
-  chrome.addEventListener('pointermove', (event) => {
-    if (!drag) return;
-    const x = Math.max(0, Math.min(event.clientX - drag.pane.left - drag.dx, drag.pane.width - slot.offsetWidth));
-    const y = Math.max(0, Math.min(event.clientY - drag.pane.top - drag.dy, drag.pane.height - slot.offsetHeight));
-    slot.style.left = `${x}px`; slot.style.top = `${y}px`; slot.style.right = 'auto'; slot.style.bottom = 'auto';
-    drag.pos = { x: Math.round(x), y: Math.round(y) };
-    scheduleLayout();
-  });
-  const end = () => { if (drag?.pos) command('preview-move', drag.pos).catch(() => {}); drag = null; previewDragging = false; };
-  chrome.addEventListener('pointerup', end); chrome.addEventListener('pointercancel', end);
-}
-// A drag started inside the streamed picture lands here as deltas — the slot
-// moves live and the drop point persists exactly like a chrome-strip drag.
-let previewLivePos = null;
-api.onPreviewNudge?.(({ dx, dy }) => {
-  if (!state?.preview || state.activeTabId === 'vps' || state?.showBrowser === false) return;
-  const slot = $('remote-preview-slot'), pane = slot.parentElement.getBoundingClientRect(), box = slot.getBoundingClientRect();
-  const x = Math.max(0, Math.min(box.left - pane.left + dx, pane.width - slot.offsetWidth));
-  const y = Math.max(0, Math.min(box.top - pane.top + dy, pane.height - slot.offsetHeight));
-  slot.style.left = `${x}px`; slot.style.top = `${y}px`; slot.style.right = 'auto'; slot.style.bottom = 'auto';
-  previewLivePos = { x: Math.round(x), y: Math.round(y) };
-  previewDragging = true;
-  scheduleLayout();
-});
-api.onPreviewDrop?.(() => {
-  if (previewLivePos) command('preview-move', previewLivePos).catch(() => {});
-  previewLivePos = null; previewDragging = false;
-});
 // Registered once with a mutable target: re-rendering the migrate card must
 // not stack listeners or every log chunk would append once per past render.
 let cloudLogEl = null;
@@ -1416,7 +1344,7 @@ const SETTINGS_SECTIONS = [
   { id: 'computer-permissions', category: 'computer', title: 'Computer permissions', description: 'Allow agents to read and operate apps on this Mac. Accessibility and Screen Recording are managed in System Settings.', words: 'accessibility screen recording privacy permissions desktop apps', available: () => state.platform === 'darwin', mount: showMacPermissions },
   { id: 'browser-connector', category: 'connections', title: 'This computer', description: 'Browser tabs and logins stay here.', words: 'browser connector local api pair connection token app data copy open details', mount: mountBrowserConnector },
   { id: 'agent-setup', category: 'connections', title: 'Agent machine', description: 'Your existing Hermes machine.', words: 'agent setup remote connection cloud setup server hermes ssh address gateway tailscale wizard connect migrate manual command update prompt copy save addresses run bot', mount: mountAgentSetup },
-  { id: 'remote-desktop', category: 'connections', title: 'Remote desktop · Optional', description: 'Viewer only, separate from agent setup.', words: 'remote connection desktop preview vps vm novnc vnc tailscale watch macos linux viewer address save computer runs platform corner', mount: mountRemoteConnection },
+  { id: 'remote-desktop', category: 'connections', title: 'Remote desktop · Optional', description: 'Viewer only, separate from agent setup.', words: 'remote connection desktop vps vm novnc vnc tailscale watch macos linux viewer address save computer runs platform', mount: mountRemoteConnection },
   { id: 'updates', category: 'support', title: 'Updates', description: 'Choose Stable or Nightly and review version and update status for this app, Hermes and the agent plugin.', words: 'update status versions check refresh restart available errors hermes plugin release channel stable nightly', mount: mountSettingsUpdates },
   { id: 'diagnostics', category: 'support', title: 'Diagnostics and help', description: 'Check this computer, your connection and the server. Copy a report or get help from the team.', words: 'diagnostics support help setup check troubleshoot error report discord', mount: mountSettingsDiagnostics },
 ];
@@ -1879,7 +1807,7 @@ function settingsConnectionDetails(body, id, label, search) {
 }
 function mountRemoteConnection(body) {
   const connection = element('p', 'connection-state'); body.append(connection);
-  const advanced = settingsConnectionDetails(body, 'settings-remote-details', 'Viewer address and preview', /remote connection|viewer|novnc|vnc|preview|remote desktop|remote computer|platform|linux|macos/i);
+  const advanced = settingsConnectionDetails(body, 'settings-remote-details', 'Viewer address', /remote connection|viewer|novnc|vnc|remote desktop|remote computer|platform|linux|macos/i);
   const input = settingsField(advanced.content, 'remote-url', 'Viewer address', state.savedRemoteUrl ?? state.remoteUrl, 'https://your-server/vnc.html or wss://…');
   advanced.content.append(element('p', 'settings-note', 'Existing installs keep their legacy transport until tailnet enforcement is enabled by the administrator. Provision pinned tailnet addresses and SSH keys first; enforcement pauses incompatible saved addresses without deleting them. Saving an address does not verify a connection; preview starts in watch mode.'));
   const save = settingsSaveFields(advanced.content, 'Save connection', [input], () => ({ remoteUrl: input.value.trim() }), { primary: true, busy: 'Saving connection…', success: 'Viewer address saved. Connection status is shown above.', draftScope: () => ['viewer', state.selectedBotId || '', state.hostLabel, state.vpsBrowser?.sshHost || '', state.vpsBrowser?.brokerSshHost || '', state.macSshHost || ''], saved: () => [state.savedRemoteUrl ?? state.remoteUrl ?? ''] });
@@ -1887,9 +1815,8 @@ function mountRemoteConnection(body) {
   for (const [value, name] of [['linux', 'Linux'], ['mac', 'macOS']]) { const option = element('option', '', name); option.value = value; os.append(option); }
   row.append(label, os); advanced.content.append(row); const status = settingsStatus(advanced.content);
   os.onchange = async () => { await runSettingsAction(os, status, () => api.command('settings', { remotePlatform: os.value }), 'Saving…', 'Saved.'); os.value = state.remotePlatform || 'linux'; };
-  const preview = settingsToggle(advanced.content, 'settings-preview', 'Remote desktop preview in the corner', 'preview');
   return () => {
-    advanced.reveal(); save.refreshDraft(); os.value = state.remotePlatform || 'linux'; preview();
+    advanced.reveal(); save.refreshDraft(); os.value = state.remotePlatform || 'linux';
     connection.textContent = (state.savedRemoteUrl ?? state.remoteUrl) ? `Viewer address saved · ${state.remoteStatus || 'not connected'}.` : 'No viewer address saved.';
   };
 }
@@ -2121,7 +2048,6 @@ $('presence-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };
 $('vm-toggle').onclick = () => { if (state?.showBrowser === false) command('settings', { showBrowser: true }); command('toggle-vps-view'); };
-$('preview-expand').onclick = () => command('toggle-vps-view');
 $('chat-name').onclick = () => command('canvas-bot-pages');
 $('canvas-tabs').onclick = (event) => { const tab = event.target.closest('[data-canvas]')?.dataset.canvas; if (!tab) return; terminalFocus = tab === 'terminal'; command('canvas-tab', { tab, start: tab === 'terminal' }); };
 $('canvas-tabs').onkeydown = (event) => {
@@ -2130,9 +2056,6 @@ $('canvas-tabs').onkeydown = (event) => {
   if (!next) return;
   event.preventDefault(); next.focus(); command('canvas-tab', { tab: next.dataset.canvas });
 };
-$('preview-hide').onclick = () => command('settings', { preview: false });
-$('preview-chip').onclick = () => command('settings', { preview: true });
-wirePreviewDrag();
 $('extensions-button').onclick = showExtensions;
 $('downloads-button').onclick = (event) => {
   event.stopPropagation();
@@ -2161,12 +2084,11 @@ $('tabs-panel').onkeydown = (event) => {
 $('new-tab').onclick = async () => { await command('create-tab'); $('address').focus(); };
 function submitUrl(event, inputId) { event.preventDefault(); const url = $(inputId).value.trim(); if (!url) return; if (state.tabs.some((tab) => tab.id === state.activeTabId)) command('navigate', { id: state.activeTabId, url }); else command('create-tab', { url }); }
 $('address-form').onsubmit = (event) => submitUrl(event, 'address');
-$('home-search').onsubmit = (event) => submitUrl(event, 'home-address');
 $('home-agent').onclick = async () => {
   const button = $('home-agent');
   button.disabled = true;
   try {
-    const created = await command('create-tab', { url: $('home-address').value.trim() || 'about:blank' });
+    const created = await command('create-tab', { url: 'about:blank' });
     if (created?.id) await command('control', { id: created.id, controller: 'agent' });
   } finally { button.disabled = false; }
 };
@@ -2502,5 +2424,5 @@ new ResizeObserver(() => { for (const id of terminalViews.keys()) fitTerminal(id
 // A narrow pane scrolls the Canvas strip; keep the selected tab in view.
 function showSelectedCanvasTab() { $('canvas-tabs').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
 new ResizeObserver(showSelectedCanvasTab).observe($('canvas-tabs'));
-window.addEventListener('resize', () => { positionPreview(); scheduleLayout(); });
+window.addEventListener('resize', scheduleLayout);
 api.getState().then(render).catch((error) => toast(error.message));

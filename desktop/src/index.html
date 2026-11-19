@@ -49,8 +49,7 @@
       <div id="browser-error-banner" class="vm-banner browser-error hidden" role="status"><span id="browser-error-text"></span><button id="browser-error-reload" class="secondary-button">Reload page</button></div>
       <div id="browser-slot" class="browser-slot">
         <div id="home" class="home">
-          <div class="home-symbol"><span></span><span></span></div><h1>A place to get things done.</h1><p id="home-copy">Talk to your agents. Browse on your Mac.<br>Keep their computer in view.</p>
-          <form id="home-search" class="home-search"><span>⌕</span><input id="home-address" placeholder="Search or enter a URL" aria-label="Open a browser page"><button type="submit" aria-label="Go">↗</button></form>
+          <div class="home-symbol"><span></span><span></span></div>
           <button id="home-agent" type="button" class="home-agent hidden"><svg viewBox="0 0 19 25" aria-hidden="true"><path d="M1 1v19l5-5 4 9 4-2-4-8h7Z"/></svg><span class="home-agent-lead">Open a page for </span><span class="home-agent-name"></span></button>
           <div class="quick-links"><button data-url="https://www.google.com">Google <span>↗</span></button><button data-url="https://github.com">GitHub <span>↗</span></button></div>
           <div class="home-bottom"><span class="status-dot"></span><span>Local Chromium. Your own computer.</span></div>
@@ -58,11 +57,6 @@
         <div id="onboarding" class="onboarding hidden" aria-live="polite"></div>
         <div id="terminal-panel" class="terminal-panel hidden"><div id="terminal-idle" class="terminal-idle hidden"><p id="terminal-idle-text"></p><button id="terminal-start" class="primary-button" type="button">Start terminal</button></div></div>
       </div>
-      <div id="remote-preview-slot" class="remote-preview-slot">
-        <div id="preview-chrome" class="preview-chrome" title="Drag to move the VM preview"><span class="preview-grip">⋮⋮</span><span id="preview-label">VPS desktop</span><button id="preview-expand" class="icon-button" title="Expand virtual desktop" aria-label="Expand virtual desktop">⤢</button><button id="preview-hide" class="icon-button" title="Hide VM preview" aria-label="Hide VM preview">×</button></div>
-        <div id="preview-screen" class="preview-screen"></div>
-      </div>
-      <button id="preview-chip" class="preview-chip hidden" title="Show VM preview">▣ VPS</button>
       <footer class="workspace-footer"><button id="version-label" class="version-label"></button><button id="update-all" class="update-all-button">Update</button><span id="build-badge" class="build-badge hidden"></span><button id="update-note" class="update-note hidden"></button><button id="shortcuts-button" class="shortcuts-button" title="Keyboard shortcuts" aria-haspopup="dialog"><span aria-hidden="true">⌨</span> Shortcuts</button><span id="workspace-status" role="button" tabindex="0">Ready</span><span id="connection-status" role="button" tabindex="0">Browser connector starting…</span><button id="status-more" class="status-more" title="Workspace status" aria-label="Workspace and connector status" aria-haspopup="dialog" aria-expanded="false" aria-controls="status-panel">ⓘ</button></footer>
       <div id="status-panel" class="status-panel hidden" role="dialog" aria-label="Workspace status"></div>
     </section>

@@ -227,7 +227,7 @@ app.whenReady().then(async () => {
     const connection=JSON.parse(fs.readFileSync(path.join(profile,'connection.json'),'utf8'));
     const api=async (route,body) => {const response=await fetch(new URL(route,connection.url),{method:'POST',headers:{Authorization:`Bearer ${connection.token}`,'X-Hermes-Bot':'shortcut-fixture','Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();assert.ok(response.ok,data.error);return data;};
     const agent=await api('/v1/tabs',{url:url+'agent'});
-    wc.focus(); await focus('#home-address').catch(()=>{}); const before=await state(), focused=webContents.getFocusedWebContents()?.id||null;
+    wc.focus(); await focus('#address').catch(()=>{}); const before=await state(), focused=webContents.getFocusedWebContents()?.id||null;
     for(const k of [',','t','w','l','r','o']) await api(`/v1/tabs/${agent.id}/actions`,{action:'press',key:k,modifiers:[modifier],epoch:agent.epoch});
     const after=await state();assert.equal(after.activeTabId,before.activeTabId);assert.equal(after.tabs.length,before.tabs.length);
     assert.equal(await visible('modal'),false);assert.equal(await visible('shortcut-dialog'),false);assert.equal(webContents.getFocusedWebContents()?.id||null,focused);

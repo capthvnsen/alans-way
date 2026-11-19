@@ -52,7 +52,6 @@ const until = async (read, why, ms = 15000) => {
   await run(`document.getElementById('canvas-terminal').click()`); await showing('terminal');
   await until(async () => (await live()) === '1001', 'shell started');
   await until(() => run(`terminalViews.get('1001')?.opened && !terminalViews.get('1001').host.classList.contains('hidden')`), 'terminal shown');
-  assert.equal(await run(`document.getElementById('preview-chip').classList.contains('hidden')`), true, 'the VM preview chip does not cover the terminal');
   const typing = () => run(`document.activeElement === terminalViews.get(state.selectedBotId)?.term.textarea`);
   assert.equal(await typing(), true, 'the tab click puts the keyboard in the terminal');
   await new Promise(resolve => setTimeout(resolve, 500));
