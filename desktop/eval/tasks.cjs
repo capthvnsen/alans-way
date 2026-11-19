@@ -10,6 +10,8 @@
 //   why         what makes it hard
 //   oracle(t, fx, stack)  scripted solution through the real MCP tools; returns the
 //                         final answer string. null = not yet validated.
+//   approval    set when the task ends in an action the commit gate asks the user to approve (submit, buy, post). The harness
+//               then plays the user for the model's commit request on the task's origin, and the row records approvalGrantedBy.
 //   verified    oracle validated against the check in a recorded run
 const fs = require('node:fs');
 const os = require('node:os');
@@ -30,12 +32,15 @@ const tasks = [
   // ---- Real public sites, no login ----
   {
     id: 'pub-form-multifield', tier: 'public', title: 'Multi-field web form',
+    approval: 'Submit sends a static public test form (GET, no side effects)',
     start: () => 'https://www.selenium.dev/selenium/web/web-form.html',
     goal: () => 'Fill the form: text input "Eval Run", password "s3cret", textarea "hello there", dropdown select "Two". Then submit it. Do not change anything else. Report the confirmation message shown.',
     check: async ({ stack }) => { const u = ((await stack.tabs())[0] || {}).url || ''; return { ok: /submitted-form/.test(u) && /my-text=Eval\+Run/.test(u) && /my-select=2/.test(u) && /my-textarea=hello\+there/.test(u), why: u }; },
     maxSteps: 8, why: 'Mixed control types (text, password, textarea, native select) with several decoy controls; the success signal is the post-submit URL, not text.', oracle: async (t) => { await t.act({ action: 'batch', steps: [
       { action: 'type', selector: '[name=my-text]', text: 'Eval Run' }, { action: 'type', selector: '[name=my-password]', text: 's3cret' }, { action: 'type', selector: '[name=my-textarea]', text: 'hello there' },
-      { action: 'select', selector: '[name=my-select]', label: 'Two' }, { action: 'click', selector: 'button[type=submit]' }, { action: 'wait', text: 'Form submitted', timeout: 8000 }, { action: 'read' }] });
+      { action: 'select', selector: '[name=my-select]', label: 'Two' }] });
+      // Submit is gated and an approval binds to an observed control, so it is its own call by name, not a selector inside the batch.
+      await t.snapshot(); await t.act({ action: 'click', name: 'Submit' }); await t.act({ action: 'wait', text: 'Form submitted', timeout: 8000 });
       return (await t.act({ action: 'read' })).text; },
   },
   {
@@ -163,6 +168,7 @@ const tasks = [
   },
   {
     id: 'fx-paginate-max', tier: 'fixture', title: 'Max across paged table',
+    approval: 'Submit reports the answer to the local fixture',
     start: F('/f/paginate'),
     goal: () => 'The table is split over 6 pages. Find the row with the highest Score, type its ID into the Answer ID box and press Submit.',
     check: ({ fx }) => ({ ok: fx.reports.paginate?.id === fx.paginateAnswer, why: `${JSON.stringify(fx.reports.paginate)} want ${fx.paginateAnswer}` }),
@@ -173,6 +179,7 @@ const tasks = [
   },
   {
     id: 'fx-flaky-overlay', tier: 'fixture', title: 'Overlay and remounting button',
+    approval: 'Confirm order places an order on the local fixture',
     start: F('/f/flaky'),
     goal: () => 'Click "Confirm order" exactly once. The page is slow to become interactive. Report what the status line says.',
     check: ({ fx, answer }) => ({ ok: fx.reports.flaky?.clicks === 1, why: `${JSON.stringify(fx.reports.flaky)} ans=${answer}` }),
