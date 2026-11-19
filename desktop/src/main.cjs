@@ -33,6 +33,8 @@ const { createNativeChat } = require('./native-chat.cjs');
 const { keyFiles, importKey } = require('./key-import.cjs');
 const { parseBaseUrl, createHermesApi } = require('./hermes-api.cjs');
 const { createGatewayLink, createGatewayOpener } = require('./gateway-link.cjs');
+const { createVaultFill } = require('./vault-fill.cjs');
+const { createVaultPrompt } = require('./vault-prompt.cjs');
 const { createGatewayApiFactory } = require('./gateway-api.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
 const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, deliverPendingUpdateReport, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
@@ -3943,6 +3945,8 @@ else {
       isOnline: () => net.isOnline(),
       profile: () => hermesHub.session.credentials()?.profile || '',
       log: (event, fields) => mainLog().write(event, JSON.stringify(fields)),
+      vault: createVaultFill({ botFor: (storedId) => Object.keys(prefs.nativeSessions || {}).find((bot) => prefs.nativeSessions[bot] === storedId) || '',
+        nameFor: nameForBot, listTabs: () => tabs.values(), ask: createVaultPrompt({ dialog, app }), log: (event, fields) => mainLog().write(event, JSON.stringify(fields)) }),
     });
     gatewayLink.start();
     gatewayLink.on('state', () => pushNativeState());
