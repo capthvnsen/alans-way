@@ -171,6 +171,25 @@ test('bind negotiates epoch/capabilities/identity and hydrates state', async () 
   gw.end();
 });
 
+test('bind sends activate and events.since together, and a bad activate still wins over a bad replay', async () => {
+  // The server runs a socket's calls in arrival order, so the second need not wait for the first's reply.
+  const gw = new FakeGateway().bindDefaults();
+  gw.on('session.activate', async (p) => {
+    await gw.waitForCall((f) => f.method === 'session.events.since');
+    return { session_id: p.session_id, session_key: 'key-A', messages: [], open_requests: [], inflight: null };
+  });
+  const conv = makeConv(gw);
+  assert.equal((await conv.bind({ expectedEpoch: EPOCH })).phase, 'bound');
+  conv.dispose(); gw.end();
+
+  const bad = new FakeGateway().bindDefaults({ epoch: 'epoch-OTHER' });
+  bad.on('session.activate', () => ({ session_id: 'sess-A', session_key: 'OTHER', messages: [], open_requests: [] }));
+  const c2 = makeConv(bad);
+  await assert.rejects(c2.bind({ expectedEpoch: EPOCH }), (e) => e.code === 'identity_drift');
+  assert.equal(c2.getState().epochChanged, false, 'the replay was never judged once activate failed');
+  bad.end();
+});
+
 test('bind waits for gateway.ready when no expectedEpoch is supplied', async () => {
   const gw = new FakeGateway().bindDefaults();
   const conv = makeConv(gw);

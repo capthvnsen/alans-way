@@ -70,7 +70,7 @@ What Hermes does on its side (confirmed in the installed source):
 
 ### Network rules, benchmarks, iOS
 
-- **Tailnet.** `HERMES_WORKSPACE_REQUIRE_TAILNET=1` makes `tailnetUrl` accept only literal Tailscale addresses (`desktop/src/tailnet.cjs:3,19-24`). `hermes-remote.cjs` applies it to every request and to the socket (`:52,68,273`). `SECURITY.md:44` documents the flag. The Hermes Webapp helper accepts `*.ts.net` HTTPS names and loopback (`tailnet.cjs:26-37`).
+- **Tailnet.** `HERMES_WORKSPACE_REQUIRE_TAILNET=1` makes `tailnetUrl` accept only literal Tailscale addresses, plus, when a caller passes `serveName`, an `https`/`wss` `*.ts.net` name (`desktop/src/tailnet.cjs`, `isServeName`). `hermes-remote.cjs` applies it with `serveName` to every request and to the socket (`:52,68,273`); the desktop viewer and noVNC callers (`core.cjs:143,270`) do not pass it and stay literal-IP only. The real dashboard answers the raw IP `400 Invalid Host header`, so the `.ts.net` name is the address that works. `SECURITY.md:44` documents the flag. The Hermes Webapp helper accepts the same `.ts.net` HTTPS names and loopback (`hermesWebappUrl`).
 - **Benchmarks** (`docs/benchmarks/results/2026-11-11-chat-surfaces/results.md`, `...-after-polish/results.md`; median / p95 ms, Apple M5 Pro, loopback Hermes, fake model whose first chunk comes after 50 ms):
 
   | Metric | native | Hermes Desktop |
@@ -204,7 +204,7 @@ Replies: `streaming`, `waiting` (an approval or question is open), `done`, `inte
 
 | Setting | Value (start values, tuned by the harness) |
 |---|---|
-| Delay | 0.5 s x 2^n with full jitter, cap 15 s; reset after 30 s of a stable `live` |
+| Delay | Failed attempts: 0.5 s x 2^n with full jitter, cap 15 s; the count resets when an attempt reaches `live`. Drops of a link that had been `live`: the first 5 in any 2 minutes reconnect at once; each further one waits 0.5 s x 2^(k-1) (k = drops past 5), cap 15 s, with half-to-full jitter, until the window empties. So an occasional drop costs no wait, 7 closes 0.5 s apart wait 0.5 s and 1 s on the 6th and 7th, and a server that drops every 200 ms settles to about 4-8 attempts a minute (`gateway-link.cjs` `dropDelay`; tests `gateway-link.test.cjs` "backoff:"; harness `flapping server`) |
 | Immediate attempt (skip the wait) | network path becomes available, resume from sleep, window regains focus after more than 15 s, user presses Retry |
 | One attempt at a time | yes; a new trigger cancels the wait, not a running attempt |
 | Connect timeout | 8 s (today 15 s: `hermes-remote.cjs:264`, `hermes-hub.cjs:248-251`) |
@@ -299,8 +299,8 @@ A first VM baseline (one warm WebSocket round trip and one first token, 10 runs)
 | Address | Scheme | Notes |
 |---|---|---|
 | loopback (SSH tunnel or a local Hermes) | `http`/`ws` | as native chat today (`hermes-api.cjs:15-24`) |
-| `<machine>.<tailnet>.ts.net` | `https`/`wss` | certificate-bound; `tailnet.cjs:26-29` gives this as the reason for the Webapp view |
-| literal Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) | `ws` | allowed under `tailnet.cjs:6-12`; TLS to a bare IP cannot be verified, so only when strict tailnet mode is on |
+| `<machine>.<tailnet>.ts.net` | `https`/`wss` | certificate-bound; accepted in strict mode too (`isServeName`: ASCII labels under `ts.net`; not bare `ts.net`, no trailing dot, no punycode, no userinfo, never `http`/`ws`) |
+| literal Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) | `ws` | allowed under `tailnet.cjs:6-12`; TLS to a bare IP cannot be verified, so only when strict tailnet mode is on. A Hermes dashboard behind Tailscale Serve refuses it (`400 Invalid Host header`), so use the `.ts.net` name there |
 
 The check runs at configure time and on every connect (`hermes-remote.cjs:68,273`). Today the two desktop clients disagree on the rule (Today, "Address rule"); the gateway uses this one table. On iOS, Tailscale must be connected on the phone (`ios/README.md:100`). Whether App Transport Security allows `ws://` to a literal `100.x` address with no exception in `Info.plist` is unconfirmed; the safe path is the `.ts.net` `wss` name. Verify on a device in phase 3.
 
