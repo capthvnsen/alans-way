@@ -1,0 +1,12 @@
+event: run.started
+data: {"user_message": {"role": "user", "content": "hello world"}, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "session_id": "local-b3c31f38bf5e91f59c0bf8cc6e331ccba9aeafc9f5ac5f9bc3898ada3565d373", "run_id": "run_7200d7f2ea654c8c9091b2a8420425be", "seq": 1, "ts": 1794440384.2826471}
+
+event: message.started
+data: {"message": {"id": "msg_093ec39f97fb479d94c6a6fe4069309d", "role": "assistant"}, "session_id": "local-b3c31f38bf5e91f59c0bf8cc6e331ccba9aeafc9f5ac5f9bc3898ada3565d373", "run_id": "run_7200d7f2ea654c8c9091b2a8420425be", "seq": 2, "ts": 1794440384.282652}
+
+event: error
+data: {"message": "permission_denied", "session_id": "local-b3c31f38bf5e91f59c0bf8cc6e331ccba9aeafc9f5ac5f9bc3898ada3565d373", "run_id": "run_7200d7f2ea654c8c9091b2a8420425be", "seq": 3, "ts": 1794440384.28762}
+
+event: done
+data: {"session_id": "local-b3c31f38bf5e91f59c0bf8cc6e331ccba9aeafc9f5ac5f9bc3898ada3565d373", "run_id": "run_7200d7f2ea654c8c9091b2a8420425be", "seq": 4, "ts": 1794440384.2876291}
+

@@ -93,7 +93,7 @@ function render(next) {
   $('control').disabled = !connected;
   $('remote-name').textContent=state.remotePlatform==='mac'?'Mac VM':'VPS computer';
   $('control').title = state.remoteControl ? 'Return to watch mode' : 'Enable your mouse and keyboard · desktop agents may still be active';
-  $('remote-hint').textContent = state.remoteControl ? 'You control this view · click, drag, scroll and type' : state.activeTabId === 'vps' ? 'Watching · click Take control to use your mouse and keyboard' : 'Watching · drag the preview anywhere · Take control for mouse and keyboard';
+  $('remote-hint').textContent = !connected ? 'Not connected' : state.remoteControl ? 'You control this view · click, drag, scroll and type' : state.activeTabId === 'vps' ? 'Watching · click Take control to use your mouse and keyboard' : 'Watching · drag the preview to move it';
   $('paste').disabled=!connected || !state.remoteControl;
 }
 window.addEventListener('online', () => retryNow?.());
@@ -131,5 +131,5 @@ document.addEventListener('pointerup', () => { if (pdrag?.moved) { suppressScree
 document.addEventListener('pointercancel', () => { if (pdrag?.moved) api.command('preview-drop').catch(() => {}); pdrag = null; });
 $('screen').onclick = () => { if (suppressScreenClick) { suppressScreenClick = false; return; } if (!state.remoteControl && state.activeTabId !== 'vps') api.command('activate', { id: 'vps' }); };
 $('credentials').onsubmit = (event) => { event.preventDefault(); rfb?.sendCredentials({ password: $('vnc-password').value }); $('vnc-password').value = ''; $('credentials').classList.add('hidden'); };
-$('configure').onclick = () => { if (currentUrl && $('configure').textContent === 'Reconnect') connect(currentUrl); else api.command('open-settings'); };
+$('configure').onclick = () => { if (currentUrl && $('configure').textContent === 'Reconnect') connect(currentUrl); else api.command('open-settings', { section: 'remote-desktop' }); };
 api.onState(render); api.getState().then((next) => { render(next); if (!currentUrl) showEmpty('Your agent’s computer', 'Connect your VPS to see its desktop here.', 'Connect VPS'); });

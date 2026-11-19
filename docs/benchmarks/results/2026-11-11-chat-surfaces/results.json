@@ -1,0 +1,520 @@
+{
+ "meta": {
+  "date": "2026-11-11T22:27:15.855Z",
+  "machine": {
+   "model": "Apple M5 Pro",
+   "memGB": 48,
+   "os": "macOS 27.2 (26B123)",
+   "power": "Now drawing from 'AC Power' / -InternalBattery-0 (id=23855203)\t46%; charging",
+   "loadAvgAtStart": [
+    5.39,
+    7.98,
+    7.43
+   ]
+  },
+  "versions": {
+   "gitRev": "fa737630dfafedb49d93e268f7fed165b4baa90b",
+   "branch": "agent/w1-chat-bench",
+   "electron": "44.5.1",
+   "node": "v26.7.0",
+   "hermesAgent": "0.23.1",
+   "app": "0.21.14"
+  },
+  "settings": {
+   "warm": 3,
+   "cold": 10,
+   "switch": 20,
+   "token": 10,
+   "scroll": 5
+  },
+  "notes": [
+   "native: 660/671/682/671/667 frames per scroll run",
+   "hermes-desktop: 459/402/422/425/431 frames per scroll run; 5 thread opens used the route (#/id) because the sidebar had no row for the thread"
+  ],
+  "fakeModel": {
+   "ttftMs": 50,
+   "chunkDelayMs": 15,
+   "note": "defaults of fake-llm.cjs when the env is unset; replies \"pong: <text>\" in 4-char chunks"
+  },
+  "realGatewayPidBefore": 94972,
+  "realGatewayPidAfter": 94972
+ },
+ "rows": [
+  {
+   "surface": "native",
+   "metric": "cold open",
+   "unit": "ms",
+   "n": 10,
+   "median": 479.3,
+   "p95": 518.5,
+   "min": 452.2,
+   "max": 518.5,
+   "note": "disk cache primed by the previous launch; the thread paints from it while the network revalidates",
+   "samples": [
+    493.3,
+    470.3,
+    452.2,
+    473.7,
+    471.5,
+    471.1,
+    508.4,
+    490.9,
+    484.8,
+    518.5
+   ]
+  },
+  {
+   "surface": "native",
+   "metric": "cold open (app pane-painted mark)",
+   "unit": "ms",
+   "n": 10,
+   "median": 475,
+   "p95": 515.5,
+   "min": 448.3,
+   "max": 515.5,
+   "note": "cross-check: the pane-painted mark, not the shared probe",
+   "samples": [
+    487.7,
+    467,
+    448.3,
+    467.8,
+    468.4,
+    467.9,
+    507.5,
+    487.6,
+    481.7,
+    515.5
+   ]
+  },
+  {
+   "surface": "native (no cache)",
+   "metric": "cold open",
+   "unit": "ms",
+   "n": 10,
+   "median": 517.8,
+   "p95": 545.4,
+   "min": 475.5,
+   "max": 545.4,
+   "note": "native-chat-cache/ deleted before each launch, so the thread comes from the network",
+   "samples": [
+    485.9,
+    482.3,
+    475.5,
+    518.8,
+    516.9,
+    540.5,
+    545.4,
+    493.4,
+    538.7,
+    523.4
+   ]
+  },
+  {
+   "surface": "hermes-desktop",
+   "metric": "cold open",
+   "unit": "ms",
+   "n": 10,
+   "median": 907.4,
+   "p95": 960.1,
+   "min": 894.4,
+   "max": 960.1,
+   "note": "includes redeeming a fresh one-use link (minted before the spawn, pasted by the harness) and the harness opening the thread by route once the composer is up",
+   "samples": [
+    906,
+    960.1,
+    894.4,
+    911.8,
+    947.3,
+    908.8,
+    895.5,
+    939.9,
+    896.8,
+    903.2
+   ]
+  },
+  {
+   "surface": "hermes-desktop",
+   "metric": "cold open: composer ready (new session, no thread)",
+   "unit": "ms",
+   "n": 10,
+   "median": 700.1,
+   "p95": 742.5,
+   "min": 688.2,
+   "max": 742.5,
+   "samples": [
+    692.5,
+    738.5,
+    691.5,
+    703.6,
+    742.5,
+    716.1,
+    688.2,
+    733.4,
+    694.8,
+    696.5
+   ]
+  },
+  {
+   "surface": "telegram",
+   "metric": "cold open to the sign-in screen",
+   "unit": "ms",
+   "n": 10,
+   "median": 7317.7,
+   "p95": 8451.3,
+   "min": 7203.3,
+   "max": 8451.3,
+   "note": "real web.telegram.org over the network, throwaway profile, never signed in; ends when the \"Log in by phone number\" button is painted. NOT comparable with a thread paint.",
+   "samples": [
+    7454.1,
+    8358.9,
+    7288.2,
+    7347.2,
+    7599,
+    7211.6,
+    7203.3,
+    7214.4,
+    7214,
+    8451.3
+   ]
+  },
+  {
+   "surface": "native",
+   "metric": "thread switch",
+   "unit": "ms",
+   "n": 20,
+   "median": 6.8,
+   "p95": 14.2,
+   "min": 5.6,
+   "max": 32.8,
+   "note": "click on the menu item / sidebar row -> frame with the target thread's last message painted (small 40-44 message threads, alternating)",
+   "samples": [
+    32.8,
+    7,
+    6.3,
+    6.1,
+    6.9,
+    6.5,
+    6.5,
+    10.5,
+    14.2,
+    6.6,
+    6.2,
+    6.7,
+    7.1,
+    9.7,
+    8,
+    5.6,
+    10,
+    6.2,
+    5.6,
+    11.2
+   ]
+  },
+  {
+   "surface": "native",
+   "metric": "first token",
+   "unit": "ms",
+   "n": 10,
+   "median": 141.7,
+   "p95": 153.6,
+   "min": 131.9,
+   "max": 153.6,
+   "note": "Enter keydown in the page -> first frame whose reply text holds \"pong\"; new conversation, text \"hello\"",
+   "samples": [
+    149.8,
+    145.3,
+    140.3,
+    141.3,
+    131.9,
+    141.1,
+    146.1,
+    138.9,
+    142,
+    153.6
+   ]
+  },
+  {
+   "surface": "native",
+   "metric": "1k scroll: p95 frame",
+   "unit": "ms",
+   "n": 5,
+   "median": 9.9,
+   "p95": 9.9,
+   "min": 9.8,
+   "max": 9.9,
+   "note": "rAF frame deltas while 150 wheel events of 400 px (60,000 px) go up and 150 come back down at 16 ms spacing",
+   "samples": [
+    9.9,
+    9.9,
+    9.9,
+    9.8,
+    9.9
+   ]
+  },
+  {
+   "surface": "native",
+   "metric": "1k scroll: frames > 16.7 ms (%)",
+   "unit": "ms",
+   "n": 5,
+   "median": 0.2,
+   "p95": 0.4,
+   "min": 0,
+   "max": 0.4,
+   "samples": [
+    0.2,
+    0,
+    0.4,
+    0.1,
+    0.3
+   ]
+  },
+  {
+   "surface": "native",
+   "metric": "1k scroll: worst frame",
+   "unit": "ms",
+   "n": 5,
+   "median": 18.3,
+   "p95": 20.2,
+   "min": 15.6,
+   "max": 20.2,
+   "note": "scrollTop reached 836..64165 px",
+   "samples": [
+    17.2,
+    15.6,
+    19.2,
+    18.3,
+    20.2
+   ]
+  },
+  {
+   "surface": "hermes-desktop",
+   "metric": "thread switch",
+   "unit": "ms",
+   "n": 20,
+   "median": 61.3,
+   "p95": 102.3,
+   "min": 55.1,
+   "max": 103.2,
+   "note": "click on the menu item / sidebar row -> frame with the target thread's last message painted (small 40-44 message threads, alternating)",
+   "samples": [
+    103.2,
+    94,
+    68.9,
+    102.3,
+    75.5,
+    64.1,
+    61.7,
+    60.9,
+    63.9,
+    57.9,
+    63.4,
+    62.2,
+    59.4,
+    59.4,
+    58.6,
+    55.2,
+    55.1,
+    59.6,
+    58,
+    57.9
+   ]
+  },
+  {
+   "surface": "hermes-desktop",
+   "metric": "first token",
+   "unit": "ms",
+   "n": 10,
+   "median": 321.3,
+   "p95": 357.2,
+   "min": 314.6,
+   "max": 357.2,
+   "note": "Enter keydown in the page -> first frame whose reply text holds \"pong\"; new conversation, text \"hello\"",
+   "samples": [
+    315.3,
+    314.6,
+    357.2,
+    316.2,
+    330.5,
+    346.9,
+    322.9,
+    319.7,
+    343.4,
+    318
+   ]
+  },
+  {
+   "surface": "hermes-desktop",
+   "metric": "1k scroll: p95 frame",
+   "unit": "ms",
+   "n": 5,
+   "median": 19.6,
+   "p95": 24.6,
+   "min": 17.5,
+   "max": 24.6,
+   "note": "rAF frame deltas while 150 wheel events of 400 px (60,000 px) go up and 150 come back down at 16 ms spacing",
+   "samples": [
+    17.5,
+    24.6,
+    19.6,
+    19.5,
+    22.6
+   ]
+  },
+  {
+   "surface": "hermes-desktop",
+   "metric": "1k scroll: frames > 16.7 ms (%)",
+   "unit": "ms",
+   "n": 5,
+   "median": 23.9,
+   "p95": 29.4,
+   "min": 13.3,
+   "max": 29.4,
+   "samples": [
+    13.3,
+    29.4,
+    23.9,
+    23.8,
+    25.5
+   ]
+  },
+  {
+   "surface": "hermes-desktop",
+   "metric": "1k scroll: worst frame",
+   "unit": "ms",
+   "n": 5,
+   "median": 33,
+   "p95": 232.3,
+   "min": 27.9,
+   "max": 232.3,
+   "note": "scrollTop reached 0..89617 px",
+   "samples": [
+    232.3,
+    34.8,
+    32.1,
+    33,
+    27.9
+   ]
+  },
+  {
+   "surface": "server floor (curl)",
+   "metric": "first token, new session",
+   "unit": "ms",
+   "n": 10,
+   "median": 131.1,
+   "p95": 157.1,
+   "min": 115.2,
+   "max": 157.1,
+   "note": "curl POST /api/sessions/{id}/chat/stream on a just-created session, spawn -> first assistant.delta; same session setup as the surfaces' first-token runs, minus session creation",
+   "samples": [
+    157.1,
+    129.2,
+    146.3,
+    133.1,
+    132.9,
+    122,
+    125.4,
+    115.2,
+    121.7,
+    146.1
+   ]
+  },
+  {
+   "surface": "server floor (curl)",
+   "metric": "first token, existing session",
+   "unit": "ms",
+   "n": 10,
+   "median": 127.2,
+   "p95": 140.1,
+   "min": 102.5,
+   "max": 140.1,
+   "note": "same, on one session that already has turns",
+   "samples": [
+    102.5,
+    114.5,
+    131.7,
+    121.8,
+    118.2,
+    131.6,
+    140.1,
+    133.9,
+    135.6,
+    122.8
+   ]
+  },
+  {
+   "surface": "server floor (curl)",
+   "metric": "create session (POST /api/sessions)",
+   "unit": "ms",
+   "n": 10,
+   "median": 1.3,
+   "p95": 9.2,
+   "min": 1.2,
+   "max": 9.2,
+   "note": "not part of the stream above",
+   "samples": [
+    9.2,
+    5.2,
+    1.3,
+    1.3,
+    1.2,
+    1.4,
+    1.3,
+    1.2,
+    1.2,
+    1.3
+   ]
+  },
+  {
+   "surface": "server floor (curl)",
+   "metric": "curl spawn -> /health first byte",
+   "unit": "ms",
+   "n": 10,
+   "median": 8.2,
+   "p95": 9.5,
+   "min": 7.7,
+   "max": 9.5,
+   "note": "process-spawn baseline inside the floor numbers",
+   "samples": [
+    8.5,
+    8.6,
+    9.5,
+    8,
+    8.3,
+    7.7,
+    8.3,
+    7.7,
+    8.2,
+    7.7
+   ]
+  },
+  {
+   "surface": "VM over tunnel",
+   "metric": "round trip to /api/status (curl time_total)",
+   "unit": "ms",
+   "n": 10,
+   "median": 246.5,
+   "p95": 760,
+   "min": 238.8,
+   "max": 760,
+   "note": "HTTP 200",
+   "samples": [
+    760,
+    238.8,
+    245,
+    245.9,
+    239.3,
+    242.9,
+    247.1,
+    250.1,
+    251.8,
+    259.2
+   ]
+  }
+ ],
+ "notMeasured": [
+  {
+   "what": "Hermes Desktop cold open and thread switch on the VM over the tunnel",
+   "why": "the VM's Webapp has no sign-in but still needs a one-use link, which has to be minted on the VM (hermes webapp --no-open): an action on Alan's host this run is not allowed to take. At run time /api/status answered HTTP 200 and GET /api/sessions without a credential answered HTTP 401."
+  }
+ ]
+}

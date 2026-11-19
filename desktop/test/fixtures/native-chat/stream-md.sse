@@ -1,0 +1,234 @@
+event: run.started
+data: {"user_message": {"role": "user", "content": "MD please"}, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 1, "ts": 1794430532.237268}
+
+event: message.started
+data: {"message": {"id": "msg_93803dd56026485b888ba2c8bc21476c", "role": "assistant"}, "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 2, "ts": 1794430532.237277}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "# He", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 3, "ts": 1794430532.3307478}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "adin", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 4, "ts": 1794430532.3469062}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "g On", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 5, "ts": 1794430532.362998}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "e\n\nS", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 6, "ts": 1794430532.3790889}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "ome ", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 7, "ts": 1794430532.3952692}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "**bo", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 8, "ts": 1794430532.411364}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "ld**", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 9, "ts": 1794430532.427527}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": " tex", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 10, "ts": 1794430532.444157}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "t an", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 11, "ts": 1794430532.46058}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "d `i", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 12, "ts": 1794430532.47682}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "nlin", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 13, "ts": 1794430532.492969}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "e co", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 14, "ts": 1794430532.5097759}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "de`,", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 15, "ts": 1794430532.525816}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": " wit", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 16, "ts": 1794430532.5410602}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "h ma", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 17, "ts": 1794430532.5575511}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "th $", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 18, "ts": 1794430532.5742888}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "a^2+", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 19, "ts": 1794430532.590509}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "b^2$", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 20, "ts": 1794430532.6060429}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": ".\n\n-", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 21, "ts": 1794430532.62165}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": " fir", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 22, "ts": 1794430532.63755}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "st i", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 23, "ts": 1794430532.652417}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "tem\n", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 24, "ts": 1794430532.6687229}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "- se", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 25, "ts": 1794430532.685057}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "cond", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 26, "ts": 1794430532.7010062}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": " ite", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 27, "ts": 1794430532.716877}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "m\n- ", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 28, "ts": 1794430532.733046}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "thir", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 29, "ts": 1794430532.748648}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "d it", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 30, "ts": 1794430532.7640908}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "em\n\n", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 31, "ts": 1794430532.7803872}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "| Na", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 32, "ts": 1794430532.796736}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "me |", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 33, "ts": 1794430532.813086}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": " Kin", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 34, "ts": 1794430532.8293}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "d | ", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 35, "ts": 1794430532.845765}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "Coun", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 36, "ts": 1794430532.861005}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "t |\n", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 37, "ts": 1794430532.877266}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "|---", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 38, "ts": 1794430532.893427}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "---|", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 39, "ts": 1794430532.9091089}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "----", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 40, "ts": 1794430532.925353}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "--|-", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 41, "ts": 1794430532.94194}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "----", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 42, "ts": 1794430532.9581811}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "--|\n", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 43, "ts": 1794430532.973967}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "| al", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 44, "ts": 1794430532.9903328}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "pha ", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 45, "ts": 1794430533.0060291}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "| le", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 46, "ts": 1794430533.022728}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "tter", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 47, "ts": 1794430533.039229}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": " | 1", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 48, "ts": 1794430533.055578}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": " |\n|", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 49, "ts": 1794430533.072154}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": " bet", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 50, "ts": 1794430533.086255}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "a | ", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 51, "ts": 1794430533.1027489}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "lett", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 52, "ts": 1794430533.1189601}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "er |", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 53, "ts": 1794430533.13569}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": " 2 |", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 54, "ts": 1794430533.1508741}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "\n\n``", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 55, "ts": 1794430533.1666791}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "`js\n", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 56, "ts": 1794430533.182375}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "func", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 57, "ts": 1794430533.198879}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "tion", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 58, "ts": 1794430533.2149801}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": " add", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 59, "ts": 1794430533.23147}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "(a, ", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 60, "ts": 1794430533.247604}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "b) {", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 61, "ts": 1794430533.264113}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "\n  r", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 62, "ts": 1794430533.296729}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "etur", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 63, "ts": 1794430533.297448}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "n a ", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 64, "ts": 1794430533.3131788}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "+ b;", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 65, "ts": 1794430533.3292758}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "\n}\nc", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 66, "ts": 1794430533.345532}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "onso", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 67, "ts": 1794430533.361897}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "le.l", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 68, "ts": 1794430533.37822}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "og(a", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 69, "ts": 1794430533.3945549}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "dd(1", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 70, "ts": 1794430533.41008}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": ", 2)", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 71, "ts": 1794430533.4263859}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": ");\n`", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 72, "ts": 1794430533.4426198}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "``\n\n", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 73, "ts": 1794430533.458122}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": "Done", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 74, "ts": 1794430533.474016}
+
+event: assistant.delta
+data: {"message_id": "msg_93803dd56026485b888ba2c8bc21476c", "delta": ".", "session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 75, "ts": 1794430533.490295}
+
+event: assistant.completed
+data: {"session_id": "api_1794430525_b34278ca", "message_id": "msg_93803dd56026485b888ba2c8bc21476c", "content": "# Heading One\n\nSome **bold** text and `inline code`, with math $a^2+b^2$.\n\n- first item\n- second item\n- third item\n\n| Name | Kind | Count |\n|------|------|-------|\n| alpha | letter | 1 |\n| beta | letter | 2 |\n\n```js\nfunction add(a, b) {\n  return a + b;\n}\nconsole.log(add(1, 2));\n```\n\nDone.", "completed": true, "partial": false, "interrupted": false, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 76, "ts": 1794430533.5382988}
+
+event: run.completed
+data: {"session_id": "api_1794430525_b34278ca", "message_id": "msg_93803dd56026485b888ba2c8bc21476c", "completed": true, "partial": false, "interrupted": false, "messages": [{"role": "assistant", "content": "# Heading One\n\nSome **bold** text and `inline code`, with math $a^2+b^2$.\n\n- first item\n- second item\n- third item\n\n| Name | Kind | Count |\n|------|------|-------|\n| alpha | letter | 1 |\n| beta | letter | 2 |\n\n```js\nfunction add(a, b) {\n  return a + b;\n}\nconsole.log(add(1, 2));\n```\n\nDone.", "timestamp": 1794430533.493711, "finish_reason": "stop", "reasoning": null}], "usage": {"input_tokens": 10, "output_tokens": 10, "total_tokens": 20}, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 77, "ts": 1794430533.538303}
+
+event: done
+data: {"session_id": "api_1794430525_b34278ca", "run_id": "run_f0c739b81866490c92ceb82e43a19384", "seq": 78, "ts": 1794430533.538315}
+

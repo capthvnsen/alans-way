@@ -1,0 +1,40 @@
+{
+ "date": "2026-11-11T22:27:15.855Z",
+ "machine": {
+  "model": "Apple M5 Pro",
+  "memGB": 48,
+  "os": "macOS 27.2 (26B123)",
+  "power": "Now drawing from 'AC Power' / -InternalBattery-0 (id=23855203)\t46%; charging",
+  "loadAvgAtStart": [
+   5.39,
+   7.98,
+   7.43
+  ]
+ },
+ "versions": {
+  "gitRev": "fa737630dfafedb49d93e268f7fed165b4baa90b",
+  "branch": "agent/w1-chat-bench",
+  "electron": "44.5.1",
+  "node": "v26.7.0",
+  "hermesAgent": "0.23.1",
+  "app": "0.21.14"
+ },
+ "settings": {
+  "warm": 3,
+  "cold": 10,
+  "switch": 20,
+  "token": 10,
+  "scroll": 5
+ },
+ "notes": [
+  "native: 660/671/682/671/667 frames per scroll run",
+  "hermes-desktop: 459/402/422/425/431 frames per scroll run; 5 thread opens used the route (#/id) because the sidebar had no row for the thread"
+ ],
+ "fakeModel": {
+  "ttftMs": 50,
+  "chunkDelayMs": 15,
+  "note": "defaults of fake-llm.cjs when the env is unset; replies \"pong: <text>\" in 4-char chunks"
+ },
+ "realGatewayPidBefore": 94972,
+ "realGatewayPidAfter": 94972
+}

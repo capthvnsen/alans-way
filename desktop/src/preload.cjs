@@ -19,6 +19,15 @@ contextBridge.exposeInMainWorld('workspace', {
   onPreviewDrop: (callback) => { ipcRenderer.on('workspace:preview-drop', callback); },
   onCloudLog: (callback) => { ipcRenderer.on('workspace:cloud-log', (_event, text) => callback(text)); },
 });
+// Canvas Terminal: four calls in, two events out. Only the Workspace page is served; the VM view is refused in main.
+contextBridge.exposeInMainWorld('terminal', {
+  start: (id, cols, rows) => ipcRenderer.invoke('terminal:start', id, cols, rows),
+  input: (id, data) => ipcRenderer.send('terminal:input', id, data),
+  resize: (id, cols, rows) => ipcRenderer.send('terminal:resize', id, cols, rows),
+  kill: (id) => ipcRenderer.send('terminal:kill', id),
+  onData: (callback) => { ipcRenderer.on('terminal:data', (_event, id, data) => callback(id, data)); },
+  onExit: (callback) => { ipcRenderer.on('terminal:exit', (_event, id) => callback(id)); },
+});
 // Native Hermes chat: state + allowlisted commands only. No credentials,
 // sockets, or arbitrary RPC names cross this bridge.
 contextBridge.exposeInMainWorld('hermes', {
@@ -28,5 +37,15 @@ contextBridge.exposeInMainWorld('hermes', {
     const listener = (_event, state) => callback(state);
     ipcRenderer.on('hermes:state', listener);
     return () => { ipcRenderer.removeListener('hermes:state', listener); };
+  },
+});
+// Alan's native chat: display state + the controller's allowlisted commands. The API key never crosses.
+contextBridge.exposeInMainWorld('nativeChat', {
+  getState: () => ipcRenderer.invoke('native:get'),
+  command: (name, value) => ipcRenderer.invoke('native:command', name, value),
+  onState: (callback) => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('native:state', listener);
+    return () => { ipcRenderer.removeListener('native:state', listener); };
   },
 });

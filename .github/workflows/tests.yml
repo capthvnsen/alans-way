@@ -66,6 +66,12 @@ jobs:
         timeout-minutes: 3
       - run: node test/run-electron.cjs test/onboarding-layout-electron.cjs
         timeout-minutes: 3
+      - run: node test/run-electron.cjs test/side-caption-electron.cjs
+        timeout-minutes: 3
+      - run: node test/run-electron.cjs test/footer-status-electron.cjs
+        timeout-minutes: 3
+      - run: node test/run-electron.cjs test/connect-vps-electron.cjs
+        timeout-minutes: 3
       - run: npm run test:pdf-viewer
         timeout-minutes: 3
       - run: npm run test:restore-tabs

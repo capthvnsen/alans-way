@@ -1,0 +1,30 @@
+event: run.started
+data: {"user_message": {"role": "user", "content": "hello world"}, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "session_id": "api_1794430525_b34278ca", "run_id": "run_5f666124c19f49cda56629077b4e3b6d", "seq": 1, "ts": 1794430525.6780312}
+
+event: message.started
+data: {"message": {"id": "msg_ab8fb32139b1481890dc9cfd29116c5f", "role": "assistant"}, "session_id": "api_1794430525_b34278ca", "run_id": "run_5f666124c19f49cda56629077b4e3b6d", "seq": 2, "ts": 1794430525.678045}
+
+event: assistant.delta
+data: {"message_id": "msg_ab8fb32139b1481890dc9cfd29116c5f", "delta": "pong", "session_id": "api_1794430525_b34278ca", "run_id": "run_5f666124c19f49cda56629077b4e3b6d", "seq": 3, "ts": 1794430526.8304489}
+
+event: assistant.delta
+data: {"message_id": "msg_ab8fb32139b1481890dc9cfd29116c5f", "delta": ": he", "session_id": "api_1794430525_b34278ca", "run_id": "run_5f666124c19f49cda56629077b4e3b6d", "seq": 4, "ts": 1794430526.894163}
+
+event: assistant.delta
+data: {"message_id": "msg_ab8fb32139b1481890dc9cfd29116c5f", "delta": "llo ", "session_id": "api_1794430525_b34278ca", "run_id": "run_5f666124c19f49cda56629077b4e3b6d", "seq": 5, "ts": 1794430526.894492}
+
+event: assistant.delta
+data: {"message_id": "msg_ab8fb32139b1481890dc9cfd29116c5f", "delta": "worl", "session_id": "api_1794430525_b34278ca", "run_id": "run_5f666124c19f49cda56629077b4e3b6d", "seq": 6, "ts": 1794430526.89472}
+
+event: assistant.delta
+data: {"message_id": "msg_ab8fb32139b1481890dc9cfd29116c5f", "delta": "d", "session_id": "api_1794430525_b34278ca", "run_id": "run_5f666124c19f49cda56629077b4e3b6d", "seq": 7, "ts": 1794430526.894975}
+
+event: assistant.completed
+data: {"session_id": "api_1794430525_b34278ca", "message_id": "msg_ab8fb32139b1481890dc9cfd29116c5f", "content": "pong: hello world", "completed": true, "partial": false, "interrupted": false, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "run_id": "run_5f666124c19f49cda56629077b4e3b6d", "seq": 8, "ts": 1794430526.982561}
+
+event: run.completed
+data: {"session_id": "api_1794430525_b34278ca", "message_id": "msg_ab8fb32139b1481890dc9cfd29116c5f", "completed": true, "partial": false, "interrupted": false, "messages": [{"role": "assistant", "content": "pong: hello world", "timestamp": 1794430526.89957, "finish_reason": "stop", "reasoning": null}], "usage": {"input_tokens": 10, "output_tokens": 10, "total_tokens": 20}, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "run_id": "run_5f666124c19f49cda56629077b4e3b6d", "seq": 9, "ts": 1794430526.9825659}
+
+event: done
+data: {"session_id": "api_1794430525_b34278ca", "run_id": "run_5f666124c19f49cda56629077b4e3b6d", "seq": 10, "ts": 1794430526.9825878}
+

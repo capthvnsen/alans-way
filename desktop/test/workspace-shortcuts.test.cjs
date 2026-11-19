@@ -27,9 +27,9 @@ test('DOM arrow names, spoken directions and glyphs have equivalent matches', ()
 });
 test('shared scope notes and word substrings do not invent matches', () => {
   assert.deepEqual(find('comma'), ['settings']);
-  assert.deepEqual(find('settings'), ['settings']);
+  assert.deepEqual(find('settings'), ['settings', 'canvas-pages']);
   for (const query of ['com', 'command+q', 'command+shift+t', 'nonesuch-zqv']) assert.deepEqual(find(query), [], query);
-  assert.equal(find('').length, 17);
+  assert.equal(find('').length, 19);
 });
 
 test('modifier glyphs and names retain platform meaning instead of falling out of a query', () => {
@@ -101,7 +101,7 @@ test('key spellings search actual keys and useful action wording retains whole-w
 test('nonempty punctuation and unknown symbols never become an empty all-actions query', () => {
   for (const query of ['!!', '???', '+', '---', '/', '⌥', '⌃', '^', '🌐', '⌫', '⌥!!', 'T🌐', 'Command+T!', '⌘T⌫', '⌘+'])
     assert.deepEqual(find(query), [], query);
-  for (const query of ['', ' ', '\t\n']) assert.equal(find(query).length, 17, JSON.stringify(query));
+  for (const query of ['', ' ', '\t\n']) assert.equal(find(query).length, 19, JSON.stringify(query));
 });
 
 test('an unmodified key glyph searches displayed bindings rather than prose', () => {
@@ -166,4 +166,9 @@ test('explicit key queries cannot borrow prose or combine alternative bindings',
   assert.equal(matchesShortcut({ keys: [['F2']] }, 'F2 key'), true);
   assert.equal(matchesShortcut({ keys: [['T']] }, 'T key'), true);
   assert.deepEqual(find('T key'), []);
+});
+
+test('opening an agent is not described as Telegram only, since each bot picks its chat surface', () => {
+  const row = shortcutReference('darwin').groups.flatMap(group => group.rows).find(r => r.id === 'agent-open');
+  assert.doesNotMatch(row.description, /Telegram/);
 });
