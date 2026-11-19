@@ -36,8 +36,8 @@ app.whenReady().then(async () => {
   const invoke = (name, value) => evaluate(`window.workspace.command(${JSON.stringify(name)}, ${JSON.stringify(value || {})})`);
   await waitFor(() => evaluate('!document.getElementById("home").classList.contains("hidden")'), Boolean);
 
-  assert.equal(await evaluate('document.activeElement.id'), 'home-address', 'The URL input takes focus when home appears.');
-  assert.match(await evaluate('document.getElementById("home-copy").textContent'), /Research assistant/, 'Home names the selected agent.');
+  assert.equal(await evaluate('document.activeElement.id'), 'address', 'The toolbar address field takes focus when home appears.');
+  assert.equal(await evaluate('["home-copy", "home-search", "home-address"].some(id => document.getElementById(id)) || !!document.querySelector("#home h1, #home p")'), false, 'Home has no headline, copy or search box.');
   const agent = await evaluate('(()=>{const e=document.getElementById("home-agent");const r=e.getBoundingClientRect();return {hidden:e.classList.contains("hidden"),label:e.getAttribute("aria-label"),title:e.title,text:e.textContent.trim(),visible:r.width>0&&r.height>0}})()');
   assert.equal(agent.hidden, false, 'The agent page action shows when a bot is selected.');
   assert.match(agent.label + agent.title, /Research assistant/);
@@ -57,8 +57,8 @@ app.whenReady().then(async () => {
   await waitFor(() => evaluate('window.workspace.getState()'), s => s.tabs.length === 0);
   assert.ok(await evaluate('!document.getElementById("home").classList.contains("hidden")'), 'Closing the last tab returns home.');
 
-  await evaluate(`document.getElementById("home-address").value="http://127.0.0.1:${server.address().port}/doc"`);
-  await evaluate('document.getElementById("home-search").requestSubmit()');
+  await evaluate(`document.getElementById("address").value="http://127.0.0.1:${server.address().port}/doc"`);
+  await evaluate('document.getElementById("address-form").requestSubmit()');
   await waitFor(() => evaluate('window.workspace.getState()'), s => s.tabs.length === 1 && s.tabs[0].url.includes('/doc'));
   tab = (await evaluate('window.workspace.getState()')).tabs[0];
   assert.equal(tab.controller, 'human', 'The URL bar keeps its existing human-owned navigation.');
@@ -68,8 +68,7 @@ app.whenReady().then(async () => {
   await invoke('open-bot', { id: '88002' });
   await waitFor(() => evaluate('document.getElementById("home-agent").title'), t => /Planning assistant/.test(t));
   assert.match(await evaluate('document.getElementById("home-agent").textContent'), /Planning assistant/, 'The visible label follows the newly selected agent.');
-  assert.match(await evaluate('document.getElementById("home-copy").textContent'), /Planning assistant/, 'Copy follows the newly selected agent.');
 
-  console.log('PASS: home names the selected agent, hands it a real page, keeps URL navigation human, focuses the input.');
+  console.log('PASS: home names the selected agent, hands it a real page, keeps URL navigation human, focuses the address field.');
   quitFixture(server);
 }).catch(error => { console.error(error.stack); server?.close(); app.exit(1); });

@@ -15,8 +15,6 @@ contextBridge.exposeInMainWorld('workspace', {
   onPointer: (callback) => { ipcRenderer.on('workspace:pointer', (_event, point) => callback(point)); },
   onRemoteShortcut: (callback) => { ipcRenderer.on('workspace:remote-shortcut', (_event, value) => callback(value)); },
   onRemoteRetry: (callback) => { ipcRenderer.on('workspace:remote-retry', callback); },
-  onPreviewNudge: (callback) => { ipcRenderer.on('workspace:preview-nudge', (_event, value) => callback(value)); },
-  onPreviewDrop: (callback) => { ipcRenderer.on('workspace:preview-drop', callback); },
   onCloudLog: (callback) => { ipcRenderer.on('workspace:cloud-log', (_event, text) => callback(text)); },
 });
 // Canvas Terminal: four calls in, two events out. Only the Workspace page is served; the VM view is refused in main.

@@ -93,7 +93,7 @@ function render(next) {
   $('control').disabled = !connected;
   $('remote-name').textContent=state.remotePlatform==='mac'?'Mac VM':'VPS computer';
   $('control').title = state.remoteControl ? 'Return to watch mode' : 'Enable your mouse and keyboard · desktop agents may still be active';
-  $('remote-hint').textContent = !connected ? 'Not connected' : state.remoteControl ? 'You control this view · click, drag, scroll and type' : state.activeTabId === 'vps' ? 'Watching · click Take control to use your mouse and keyboard' : 'Watching · drag the preview to move it';
+  $('remote-hint').textContent = !connected ? 'Not connected' : state.remoteControl ? 'You control this view · click, drag, scroll and type' : 'Watching · click Take control to use your mouse and keyboard';
   $('paste').disabled=!connected || !state.remoteControl;
 }
 window.addEventListener('online', () => retryNow?.());
@@ -110,26 +110,6 @@ $('control').onclick = async () => {
 function shortcut(key,shift=false){if(!connected || !state.remoteControl)return;rfb.focus();const mod=state.remotePlatform==='mac'?[0xffeb,'MetaLeft']:[0xffe3,'ControlLeft'];rfb.sendKey(mod[0],mod[1],true);if(shift)rfb.sendKey(0xffe1,'ShiftLeft',true);rfb.sendKey(key.charCodeAt(0),'Key'+key.toUpperCase());if(shift)rfb.sendKey(0xffe1,'ShiftLeft',false);rfb.sendKey(mod[0],mod[1],false);}
 api.onRemoteShortcut?.(({key,shift})=>shortcut(key,shift));
 $('paste').onclick=async()=>{try{const text=await api.command('remote-paste');rfb.clipboardPasteFrom(text);shortcut('v');}catch(error){$('remote-hint').textContent=error.message;}};
-// In watch-mode preview, dragging anywhere in the viewer moves the floating
-// window: deltas are relayed to the window renderer, which owns the position.
-// Buttons, links and the password form keep their normal behavior.
-let pdrag = null, suppressScreenClick = false;
-document.addEventListener('pointerdown', (event) => {
-  if (!state || state.remoteControl || state.activeTabId === 'vps' || event.target.closest('button, input, a, form')) return;
-  // The native view moves underneath the pointer, so use stable screen coordinates.
-  pdrag = { x: event.screenX, y: event.screenY, moved: false };
-  event.target.setPointerCapture(event.pointerId);
-});
-document.addEventListener('pointermove', (event) => {
-  if (!pdrag) return;
-  const dx = event.screenX - pdrag.x, dy = event.screenY - pdrag.y;
-  if (!pdrag.moved && Math.hypot(dx, dy) < 4) return;
-  pdrag.moved = true; pdrag.x = event.screenX; pdrag.y = event.screenY;
-  api.command('preview-nudge', { dx, dy }).catch(() => {});
-});
-document.addEventListener('pointerup', () => { if (pdrag?.moved) { suppressScreenClick = true; api.command('preview-drop').catch(() => {}); } pdrag = null; });
-document.addEventListener('pointercancel', () => { if (pdrag?.moved) api.command('preview-drop').catch(() => {}); pdrag = null; });
-$('screen').onclick = () => { if (suppressScreenClick) { suppressScreenClick = false; return; } if (!state.remoteControl && state.activeTabId !== 'vps') api.command('activate', { id: 'vps' }); };
 $('credentials').onsubmit = (event) => { event.preventDefault(); rfb?.sendCredentials({ password: $('vnc-password').value }); $('vnc-password').value = ''; $('credentials').classList.add('hidden'); };
 $('configure').onclick = () => { if (currentUrl && $('configure').textContent === 'Reconnect') connect(currentUrl); else api.command('open-settings', { section: 'remote-desktop' }); };
 api.onState(render); api.getState().then((next) => { render(next); if (!currentUrl) showEmpty('Your agent’s computer', 'Connect your VPS to see its desktop here.', 'Connect VPS'); });
