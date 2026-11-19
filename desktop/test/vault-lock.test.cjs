@@ -72,7 +72,7 @@ test('the anchored read-only allowlist: methods that run code, inject script or 
     'DOM.setOuterHTML', 'DOM.setAttributeValue', 'DOM.setNodeValue', 'DOM.performSearch', 'DOM.removeNode', 'CSS.setStyleTexts', 'Input.insertText', 'Network.setExtraHTTPHeaders', 'Network.setRequestInterception', 'Page.getX.evil', 'Evil.getX', 'XPage.reload']) {
     assert.equal(READ_ONLY_CDP.test(method) && !/^(?:\w+)\.get/.test(method), false, method);
   }
-  assert.equal(READ_ONLY_CDP.test('Page.reload; Runtime.evaluate'), false, 'anchored: nothing may trail the name');
+  for (const trailing of ['DOM.getDocument; Runtime.evaluate', 'DOM.get-evil', 'DOM.getDocument\n', 'Emulation.setX.y', 'Page.reload; Runtime.evaluate']) assert.equal(READ_ONLY_CDP.test(trailing), false, `anchored: ${JSON.stringify(trailing)}`);
   assert.equal(READ_ONLY_CDP.test('Page.reloadSomething'), false);
 });
 
