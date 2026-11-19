@@ -30,8 +30,7 @@ const SURFACE_OF = { telegram: 'telegram', webapp: 'hermes-desktop', native: 'na
 // Section headers are logos only; each carries its name for assistive technology.
 const GATEWAY_LOGOS = {
   telegram: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.6 4.3 3.7 10.8c-.8.3-.8 1.4 0 1.7l4.3 1.6 1.7 5.2c.2.7 1.1.9 1.6.4l2.4-2.3 4.4 3.2c.6.4 1.4.1 1.6-.6L22.1 5.5c.2-.9-.7-1.5-1.5-1.2ZM8 14.1 20.2 6.6"/></svg>',
-  // Placeholder until a Hermes logo is supplied: the Hermes bust from the avatar gallery.
-  'hermes-desktop': '<img src="../assets/avatars/hermes.png" alt="">',
+  'hermes-desktop': '<img src="../assets/hermes-icon.png" alt="">',
   // The Alan's Way mark: the two slanted bars of the browser home page.
   native: '<svg viewBox="0 0 24 24" aria-hidden="true"><g transform="rotate(-24 12 12)" fill="currentColor" stroke="none"><rect x="7.4" y="4.5" width="3.3" height="15" rx="1.65"/><rect x="13.3" y="4.5" width="3.3" height="15" rx="1.65"/></g></svg>',
 };
@@ -1713,6 +1712,9 @@ function mountChatSurface(body) {
   body.append(element('p', 'settings-note', 'Each agent remembers the chat you last opened for it in the agent list, under Telegram, Hermes or Alan’s Way. This sets the one it opens on until you pick. Switching keeps every chat open in the background.'));
   const surfaceStatus = settingsStatus(body);
   surface.onchange = async () => { await runSettingsAction(surface, surfaceStatus, () => api.command('settings', { chatSurface: surface.value }), 'Saving…', 'Chat surface saved.'); surface.value = state.chatSurface; };
+  body.append(element('h4', 'settings-subheading', 'Hermes conversations'), element('p', 'settings-note', 'Talk to a Hermes backend (hermes serve) directly. Set up the backend, start a session or resume a saved one there.'));
+  const openHermes = element('button', 'secondary-button', 'Open Hermes conversations'); openHermes.id = 'settings-open-hermes'; body.append(openHermes);
+  openHermes.onclick = () => { closeModal(); command('show-hermes'); };
   body.append(element('h4', 'settings-subheading', 'Hermes Desktop'));
   const address = settingsField(body, 'settings-webapp-url', 'Address', state.hermesWebappUrl, 'https://your-machine.your-tailnet.ts.net'); address.setAttribute('aria-label', 'Hermes Desktop address');
   const save = element('button', 'secondary-button', 'Save address'); body.append(save);
@@ -2204,42 +2206,30 @@ function renderWebappHelp() {
 }
 function renderHermes() {
   const h = state.hermes || { status: 'unconfigured', sessions: [] };
-  const list = $('hermes-list'), connect = $('hermes-connect');
-  $('hermes-new').classList.toggle('hidden', h.status !== 'ready');
-  // Opening any agent row is the way back from this pane.
+  const list = $('hermes-list');
   list.innerHTML = '';
   for (const session of h.sessions) {
-    const row = element('div', `bot-row hermes-row${session.selected ? ' selected' : ''}`);
-    const open = element('button', 'bot-open', session.title || session.id);
+    const open = element('button', `hermes-chip${session.selected ? ' selected' : ''}`, session.title || session.id);
+    open.type = 'button'; open.setAttribute('aria-pressed', String(!!session.selected));
     open.onclick = () => hermesCommand('select', { sessionId: session.id, sessionKey: session.key });
-    row.append(open);
-    list.append(row);
+    list.append(open);
   }
   if (h.status === 'ready') {
     if (!h.sessions.length) list.append(element('div', 'hermes-note', 'No live conversations.'));
     if (h.storedSessions?.length) {
       list.append(element('div', 'hermes-note', 'Saved conversations'));
       for (const saved of h.storedSessions) {
-        const row = element('div', 'bot-row hermes-row');
-        const resume = element('button', 'bot-open', `Resume ${saved.title || saved.id}`);
+        const resume = element('button', 'hermes-chip', `Resume ${saved.title || saved.id}`);
+        resume.type = 'button';
         const generation = h.generation;
         resume.onclick = () => hermesCommand('resume-session', { storedSessionId: saved.id, generation });
-        row.append(resume); list.append(row);
+        list.append(resume);
       }
     } else if (!h.sessions.length && !h.storedSessionsError) {
       list.append(element('div', 'hermes-note', 'No saved conversations.'));
     }
     if (h.storedSessionsError) list.append(element('div', 'hermes-note', h.storedSessionsError));
   }
-  // Compact connection status in the sidebar; the full form lives in the pane.
-  connect.classList.remove('hidden');
-  connect.innerHTML = '';
-  const label = { unconfigured: 'No backend configured', disconnected: 'Not connected', connecting: 'Connecting…', needs_signin: 'Sign in required', needs_local_token: 'Session token required', ready: `Connected · ${h.target?.label || ''}`, error: 'Connection error' }[h.status] || h.status;
-  const row = element('button', 'hermes-connect-row');
-  row.append(element('span', `status-dot hermes-dot ${h.status === 'ready' ? 'on' : ''}`), element('span', 'hermes-connect-label', label));
-  row.title = h.target?.label ? `Hermes backend: ${h.target.label}` : 'Set up a Hermes backend';
-  row.onclick = () => command('show-hermes');
-  connect.append(row);
   renderHermesSetup(h);
 }
 // The setup card owns the pane only when the backend genuinely needs input —
@@ -2260,6 +2250,7 @@ function renderHermesSetup(h) {
     && (hermesSetupForced || needsInput || (h.status !== 'ready' && !h.selected));
   setup.classList.toggle('hidden', !needsSetup);
   convo.classList.toggle('hidden', !!needsSetup);
+  $('hermes-sessions')?.classList.toggle('hidden', !!needsSetup || h.status !== 'ready');
   const renderedKey = JSON.stringify([h.status, h.target?.url, h.target?.profile, hermesSetupForced]);
   if (!needsSetup) return;
   const updateError = () => {

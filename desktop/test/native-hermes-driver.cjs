@@ -222,17 +222,6 @@ app.whenReady().then(async () => {
     return r.width > 20 && r.right <= window.innerWidth + 0.5 && r.bottom <= window.innerHeight + 0.5;
   })()`);
   rec('narrow-send-onscreen', sendVisible === true);
-  // The Telegram empty-state promo must be bounded inside the bot region so it
-  // can never paint over the Hermes section below it.
-  const sidebarClear = await evaluate(`(() => {
-    const promo = document.getElementById('empty-bots');
-    const hermes = document.querySelector('.hermes-caption');
-    if (!promo || promo.classList.contains('hidden') || !hermes) return true;
-    const region = promo.closest('.bot-region');
-    if (!region) return false;
-    return region.getBoundingClientRect().bottom <= hermes.getBoundingClientRect().top;
-  })()`);
-  rec('sidebar-empty-no-collision', sidebarClear === true);
   await snap(wc, 'narrow-640');
   win.setMinimumSize(1120, 680);
   win.setSize(1100, 720);

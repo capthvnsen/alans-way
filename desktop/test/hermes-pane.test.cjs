@@ -57,12 +57,12 @@ if (!slice.includes('hermesSetupForced')) slice = `let hermesSetupForced = false
 
 function harness(h, { chatTarget = 'hermes' } = {}) {
   const setup = new FakeNode('div');
-  const convo = new FakeNode('div');
+  const convo = new FakeNode('div'), sessions = new FakeNode('div');
   const calls = [], renders = [];
   const ctx = {
     state: { chatTarget },
     hermesSetupForced: false,
-    $: (id) => ({ 'hermes-setup': setup, 'hermes-convo': convo })[id] || null,
+    $: (id) => ({ 'hermes-setup': setup, 'hermes-convo': convo, 'hermes-sessions': sessions })[id] || null,
     element: (tag, className, text) => {
       const n = new FakeNode(tag);
       if (className) n.className = className;
@@ -78,7 +78,7 @@ function harness(h, { chatTarget = 'hermes' } = {}) {
   };
   vm.runInNewContext(`${slice}\nthis.renderHermesSetup = renderHermesSetup;\nthis.setForced = (v) => { hermesSetupForced = v; };\nthis.getForced = () => hermesSetupForced;`, ctx);
   ctx.renderHermesSetup(h);
-  return { setup, convo, calls, renders, ctx };
+  return { setup, convo, sessions, calls, renders, ctx };
 }
 
 const target = { label: `${fixtureTailnet}`, url: `https://${fixtureTailnet}`, profile: 'default' };
@@ -106,6 +106,16 @@ test('the setup card still owns the pane whenever input is required or nothing i
     assert.ok(!setup.hasClass('hidden'), `${status} with no selection falls back to the form`);
     assert.ok(convo.hasClass('hidden'), status);
   }
+});
+
+test('the session strip (New session, resume) shows only while connected and not editing the backend', () => {
+  assert.ok(!harness({ status: 'ready', target, selected: sel, error: null }).sessions.hasClass('hidden'));
+  for (const status of ['unconfigured', 'needs_signin', 'disconnected']) {
+    assert.ok(harness({ status, target, selected: null, error: null }).sessions.hasClass('hidden'), status);
+  }
+  const { sessions, ctx } = harness({ status: 'ready', target, selected: sel, error: null });
+  ctx.setForced(true); ctx.renderHermesSetup({ status: 'ready', target, selected: sel, error: null });
+  assert.ok(sessions.hasClass('hidden'), 'the backend editor replaces the strip');
 });
 
 test('ready shows the conversation until Change backend is requested, then keeps the editor open across pushes', () => {
@@ -253,12 +263,12 @@ test('renderer Hermes command errors use the same plain messages as conversation
   assert.deepEqual(messages, ['Configure a backend first.']);
 });
 
-test('sidebar distinguishes saved conversations from live identities and dispatches a fenced Resume', () => {
-  const list = new FakeNode('div'), connect = new FakeNode('div'), newSession = new FakeNode('button');
+test('the pane distinguishes saved conversations from live identities and dispatches a fenced Resume', () => {
+  const list = new FakeNode('div');
   const calls = [];
   const h = { status: 'ready', generation: 42, target, sessions: [], storedSessions: [{ id: 'stored-1', title: 'Lighthouse' }] };
   const ctx = { state: { chatTarget: 'hermes', hermes: h },
-    $: id => ({ 'hermes-list': list, 'hermes-connect': connect, 'hermes-new': newSession })[id],
+    $: id => ({ 'hermes-list': list })[id],
     element: (tag, cls, text) => { const n = new FakeNode(tag); n.className = cls || ''; if (text) n.textContent = text; return n; },
     hermesCommand: (name, value) => calls.push({ name, value }), command: () => {}, renderHermesSetup: () => {} };
   const start = src.indexOf('function renderHermes()'), end = src.indexOf('// The setup card owns', start);
