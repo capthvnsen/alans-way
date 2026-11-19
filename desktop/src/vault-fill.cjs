@@ -1,0 +1,230 @@
+'use strict';
+// Fills a saved login from Hermes's own vault into a page of the built-in browser, for the `preview.act`
+// requests Hermes sends the client that owns the browser (tools/browser_vault_preview.py, operation
+// open | evaluate | close). Hermes resolves the secret on its side and sends it INSIDE the fill script; the model
+// never sees it. This module is the only door that script walks through, in the main process:
+//   - open pins one agent tab of the conversation's bot, bound to its document (generation) and control (epoch);
+//   - `window.location.href` is answered from the main process's own navigation state, never from the page;
+//   - only the exact inspection and fill scripts Hermes builds (vault-scripts.cjs) run, in the tab's top frame;
+//   - a fill needs: the tab's top-level origin exactly equal to the origin the entry is bound to, a native
+//     Allow once from the user, and the same checks again right before the page runs it.
+// What goes back to Hermes is rebuilt here (a count, a password control's descriptor, a reason), never page text.
+// Logs carry the step and a reason code. JS strings cannot be zeroed: the secret is kept in no field of ours
+// and the request's copy is blanked as soon as the page has run it.
+const { INSPECT, FILL } = require('./vault-scripts.cjs');
+
+const VAULT_REQUESTS = new Set(['vault.code', 'vault.unlock_prompt', 'vault.save_login']);
+const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+// Requests the conversation controller must never hold: they carry (or ask for) vault secrets.
+const isVaultRequest = (method, params) => VAULT_REQUESTS.has(method)
+  || (method === 'preview.act' && isPlainObject(params) && params.action === 'vault');
+
+const MAX_EXPRESSION = 65536, MAX_TARGETS = 16, MAX_CONTROLS = 50, PAGE_MS = 5000;
+const NOT_YET = 'not supported yet';
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const JSON_STRING = '"(?:[^"\\\\\\n]|\\\\.)*"';
+const SLOT = { __NONCE__: JSON_STRING, __EXPECTED_ORIGIN__: JSON_STRING, __FILLS__: '\\[.*?\\]' };
+// A template with each slot as a JSON capture: an expression matches only if it IS the template with JSON
+// values in its slots. A JSON value is data, so nothing else can ride along in the script.
+function templateMatcher(template) {
+  const literals = template.split(/__[A-Z_]+__/), slots = template.match(/__[A-Z_]+__/g);
+  const source = literals.reduce((acc, text, i) => `${acc}${escapeRe(text)}${i < slots.length ? `(${SLOT[slots[i]]})` : ''}`, '^');
+  return new RegExp(`${source}$`, 's');
+}
+const INSPECT_RE = templateMatcher(INSPECT), FILL_RE = templateMatcher(FILL);
+const NONCE_RE = /^[0-9a-f]{8,64}$/;
+const parseJson = (text) => { try { return JSON.parse(text); } catch { return undefined; } };
+
+function matchInspect(expression) {
+  const m = INSPECT_RE.exec(expression), nonce = m && parseJson(m[1]);
+  return typeof nonce === 'string' && NONCE_RE.test(nonce) ? { nonce } : null;
+}
+function matchFill(expression) {
+  const m = FILL_RE.exec(expression);
+  if (!m) return null;
+  const [origin, fills, nonce] = [parseJson(m[1]), parseJson(m[2]), parseJson(m[3])];
+  const shaped = (f) => isPlainObject(f) && Object.keys(f).sort().join() === 'index,token,value'
+    && Number.isSafeInteger(f.index) && f.index >= 0 && typeof f.token === 'string' && typeof f.value === 'string';
+  return typeof origin === 'string' && typeof nonce === 'string' && Array.isArray(fills) && fills.every(shaped) ? { origin, fills, nonce } : null;
+}
+
+// An origin as the browser writes it, http(s) only: the entry's bound origin must already be in this form.
+function originOf(url) {
+  try { const u = new URL(url); return u.protocol === 'https:' || u.protocol === 'http:' ? u.origin : ''; } catch { return ''; }
+}
+const canonicalOrigin = (s) => typeof s === 'string' && s && originOf(s) === s ? s : '';
+
+const ok = (extra = {}) => ({ success: true, ...extra });
+const refuse = (error_type, error) => ({ success: false, error_type, error });
+const REASONS = {
+  no_bot: 'This conversation is not tied to a bot of this app, so there is no agent tab to fill.',
+  no_tab: "This bot has no agent tab open in the built-in browser. Open the login page first.",
+  human_has_control: 'The person has taken this tab. Nothing was filled.',
+  navigating: 'The page is still navigating. Nothing was filled.',
+  page_changed: 'The page changed since the vault operation started. Nothing was filled.',
+  origin_mismatch: "The tab's site is not exactly the site this login is saved for. Nothing was filled.",
+  denied: 'The user chose not to fill this login. Do not ask again this turn.',
+  denied_recently: 'The user just declined this fill. Do not ask again this turn.',
+  no_answer: 'The user did not answer the fill prompt in time. Nothing was filled.',
+  busy: 'Another fill prompt is already open. Nothing was filled.',
+  unknown_target: 'That vault target is closed or expired. Open a new one.',
+  no_inspection: 'The fill does not match the page inspection that came before it. Nothing was filled.',
+  already_filled: 'This vault target already filled once. Open a new one.',
+  page_failed: 'The page could not complete the vault step. Nothing was filled or its result was unusable.',
+  bad_request: 'The vault request was malformed.',
+  internal: 'The vault step failed.',
+};
+const no = (type, message) => refuse(type, message || REASONS[type]);
+
+function createVaultFill({ botFor, nameFor = () => '', listTabs, ask, log = () => {}, now = Date.now,
+  targetTtlMs = 5 * 60000, askMs = 30000, denyMs = 60000 }) {
+  const targets = new Map(), denied = new Map();
+  let asking = false;
+
+  const findTab = (id) => { for (const tab of listTabs()) if (tab.id === id) return tab; return null; };
+  const liveContents = (tab) => { const wc = tab?.view?.webContents; return wc && !wc.isDestroyed() && !wc.isCrashed() ? wc : null; };
+  const agentTab = (tab, bot) => tab.controller === 'agent' && tab.botId === bot && !tab.extensionPage && !tab.localPdf && !tab.preflight;
+
+  // The tab as the main process knows it right now, or why it cannot be filled. Page script is never asked.
+  function read(target) {
+    const tab = findTab(target.tabId), wc = liveContents(tab);
+    if (!wc || tab.botId !== target.botId || tab.extensionPage || tab.localPdf) return { why: 'no_tab' };
+    if (tab.controller !== 'agent') return { why: 'human_has_control' };
+    if (!agentTab(tab, target.botId)) return { why: 'no_tab' };
+    if (tab.navigationUrl) return { why: 'navigating' };
+    if (tab.recoveryUrl || tab.error || tab.generation !== target.generation || tab.epoch !== target.epoch) return { why: 'page_changed' };
+    const origin = originOf(wc.getURL()), frame = wc.mainFrame;
+    // Top frame only: what the scripts run in must be the very document whose origin was just read.
+    if (!origin || !frame || frame.isDestroyed?.() || frame.detached || originOf(frame.url) !== origin) return { why: 'page_changed' };
+    return { frame, origin, wc };
+  }
+
+  const lookup = (v, storedId) => {
+    const target = typeof v.target === 'string' ? targets.get(v.target) : null;
+    if (target && target.expiresAt < now()) targets.delete(v.target);
+    return target && target.expiresAt >= now() && target.storedId === storedId ? target : null;
+  };
+
+  function open({ storedId }) {
+    const bot = botFor(storedId);
+    if (!bot) return no('no_bot');
+    const mine = [...listTabs()].filter((t) => t.botId === bot && liveContents(t) && !t.extensionPage && !t.localPdf);
+    const own = mine.filter((t) => agentTab(t, bot)).sort((a, b) => Math.max(b.agentSince || 0, b.lastAgentActivity || 0) - Math.max(a.agentSince || 0, a.lastAgentActivity || 0));
+    if (!own.length) return no(mine.length ? 'human_has_control' : 'no_tab');
+    const tab = own[0], target = { storedId, botId: bot, tabId: tab.id, generation: tab.generation, epoch: tab.epoch, nonce: '', filled: false, expiresAt: now() + targetTtlMs };
+    const seen = read(target);
+    if (seen.why) return no(seen.why);
+    while (targets.size >= MAX_TARGETS) targets.delete(targets.keys().next().value);
+    const id = require('node:crypto').randomUUID();
+    targets.set(id, target);
+    return ok({ target: id });
+  }
+
+  // The page runs the script in its top frame, bounded, and its error text (which can quote the script) is dropped.
+  async function run(frame, expression) {
+    let timer;
+    try {
+      return await Promise.race([Promise.resolve().then(() => frame.executeJavaScript(expression)),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), PAGE_MS); timer.unref?.(); })]);
+    } finally { clearTimeout(timer); }
+  }
+
+  const control = (c) => {
+    const text = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
+    const int = (v) => Number.isSafeInteger(v) && v >= 0 ? v : null;
+    return { autocomplete: text(c.autocomplete, 100), formIndex: int(c.formIndex), index: c.index, label: text(c.label, 200), maxLength: int(c.maxLength), name: text(c.name, 200), type: 'password' };
+  };
+
+  async function inspect(target, expression, inspection) {
+    const seen = read(target);
+    if (seen.why) return no(seen.why);
+    const raw = parseJson(String(await run(seen.frame, expression)));
+    const after = read(target);
+    if (after.why) return no(after.why);
+    if (!Array.isArray(raw)) return no('page_failed');
+    target.nonce = inspection.nonce;
+    // Only password controls: all a password fill needs, and the least of the page that has to leave this app.
+    const controls = raw.filter((c) => isPlainObject(c) && c.type === 'password' && Number.isSafeInteger(c.index) && c.index >= 0).slice(0, MAX_CONTROLS).map(control);
+    return ok({ result: JSON.stringify(controls) });
+  }
+
+  async function fill(target, expression, fillScript, signal) {
+    const { fills } = fillScript;
+    if (!fills.length) return no('bad_request');
+    if (fills.length !== 1 || fills[0].token !== 'current-password') return no('unsupported', `Only a saved password can be filled; one-time codes, usernames, cards and addresses are ${NOT_YET}.`);
+    if (!fills[0].value || fills[0].value.length > 1024) return no('bad_request');
+    const bound = canonicalOrigin(fillScript.origin);
+    if (!bound) return no('bad_request', 'The saved login is not bound to a plain http(s) origin. Nothing was filled.');
+    if (target.filled) return no('already_filled');
+    if (!target.nonce || target.nonce !== fillScript.nonce) return no('no_inspection');
+    let seen = read(target);
+    if (seen.why) return no(seen.why);
+    if (seen.origin !== bound) return no('origin_mismatch');
+
+    const key = JSON.stringify([target.botId, bound]);
+    if (denied.get(key) > now()) return no('denied_recently');
+    if (asking) return no('busy');
+    asking = true;
+    const deadline = AbortSignal.timeout(askMs), cancel = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    let answer = null;
+    try { answer = await ask({ botId: target.botId, botName: nameFor(target.botId) || target.botId, origin: bound }, cancel); } catch { answer = null; } finally { asking = false; }
+    if (cancel.aborted || answer === null || answer === undefined) return no('no_answer');
+    if (answer !== true) { denied.set(key, now() + denyMs); return no('denied'); }
+
+    // The same checks again, now that the user has answered: this is what the password is typed into.
+    seen = read(target);
+    if (seen.why) return no(seen.why);
+    if (seen.origin !== bound) return no('origin_mismatch');
+    target.filled = true;
+    const result = parseJson(String(await run(seen.frame, expression)));
+    if (isPlainObject(result) && result.refused === 'origin_changed') return ok({ result: JSON.stringify({ refused: 'origin_changed', found: originOf(seen.wc.getURL()) }) });
+    if (isPlainObject(result) && Number.isSafeInteger(result.filled) && result.filled >= 0) return ok({ result: JSON.stringify({ filled: Math.min(result.filled, 1) }) });
+    return no('page_failed');
+  }
+
+  async function evaluate(v, { storedId, signal }) {
+    const target = lookup(v, storedId);
+    if (!target) return no(typeof v.target === 'string' && typeof v.expression === 'string' ? 'unknown_target' : 'bad_request');
+    const expression = v.expression;
+    if (typeof expression !== 'string' || !expression || expression.length > MAX_EXPRESSION) return no('bad_request');
+    if (expression === 'window.location.href') {
+      const seen = read(target);
+      return seen.why ? no(seen.why) : ok({ result: `${seen.origin}/` });
+    }
+    const inspection = matchInspect(expression);
+    if (inspection) return inspect(target, expression, inspection);
+    const script = matchFill(expression);
+    if (script) {
+      try { return await fill(target, expression, script, signal); } finally { for (const f of script.fills) f.value = ''; script.fills.length = 0; }
+    }
+    return no('bad_request', 'That script is not one the vault runs in a page.');
+  }
+
+  // One answer per request: `{value}` is the JSON text Hermes's `preview.act` reply carries.
+  async function handle({ storedId, sessionId, params, signal } = {}) {
+    const v = isPlainObject(params) && params.action === 'vault' && isPlainObject(params.vault) ? params.vault : null;
+    const op = v && typeof v.operation === 'string' ? v.operation : 'invalid';
+    let out;
+    try {
+      if (!v) out = no('bad_request');
+      else if (op === 'open') out = open({ storedId, sessionId });
+      else if (op === 'evaluate') out = await evaluate(v, { storedId, signal });
+      else if (op === 'close') {
+        const target = lookup(v, storedId);
+        if (target) targets.delete(v.target);
+        out = target ? ok() : no('unknown_target');
+      } else out = no(typeof v.operation === 'string' ? 'unsupported' : 'bad_request', `The vault operation ${NOT_YET}.`);
+    } catch {
+      out = no('page_failed');
+    } finally {
+      if (v) v.expression = '';
+    }
+    log('vault.step', { op, ok: out.success, ...(out.success ? {} : { reason: out.error_type }) });
+    return { value: JSON.stringify(out) };
+  }
+
+  return { handle };
+}
+
+module.exports = { createVaultFill, isVaultRequest, NOT_YET };
