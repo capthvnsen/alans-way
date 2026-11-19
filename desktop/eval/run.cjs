@@ -213,6 +213,7 @@ async function manual(picked, outDir) {
         wallMs, toolCalls, maxSteps: task.maxSteps, overBudget: toolCalls > task.maxSteps,
         httpCalls: log.length, httpErrors: log.filter((l) => l.status >= 400).length, respBytes: log.reduce((a, l) => a + l.bytes, 0),
         byTool: tools ? { ...tools.metrics.byTool } : undefined,
+        calls: log.map((l) => ({ at: l.t - t0, call: `${l.method} ${l.path.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/, ':tab')}${l.act ? ' ' + l.act : ''}`, status: l.status, ms: l.ms, bytes: l.bytes })),
         toolMs: log.reduce((a, l) => a + l.ms, 0), firstToolMs: log.length ? log[0].t - t0 : null, // host-side time only; the rest of wallMs is model, MCP and CLI overhead
         inputTokens: agent.usage?.input_tokens ?? null, outputTokens: agent.usage?.output_tokens ?? null, cacheReadTokens: agent.usage?.cache_read_tokens ?? null, cacheWriteTokens: agent.usage?.cache_write_tokens ?? null,
         stderr: agent.crashed || agent.timedOut ? agent.err : undefined,

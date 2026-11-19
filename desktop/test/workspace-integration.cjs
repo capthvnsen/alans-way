@@ -541,6 +541,21 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({ status: 503,
   ] }, 'overseer-bot');
   assert.equal(typed.results[1].value, 'via selector', 'type by selector produces real field input.');
   console.log('PASS: selector-targeted typing inside a self-contained batch.');
+  // if, repeat and wait by name run through the same per-step path as single actions.
+  const flowed = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'batch', epoch: seizedTab.epoch, steps: [
+    { action: 'if', when: { selector: '#sel-in' }, then: [{ action: 'type', selector: '#sel-in', text: ' and if' }] },
+    { action: 'repeat', until: { selector: '#sel-in' }, steps: [{ action: 'scroll', y: 1 }], max: 2 },
+    { action: 'wait', name: 'No such control', gone: true },
+    { action: 'eval', code: "document.getElementById('sel-in').value" },
+  ] }, 'overseer-bot');
+  assert.equal(flowed.results[0].branch, 'then', 'if takes the branch whose condition holds.');
+  assert.equal(flowed.results[1].iterations, 0, 'repeat checks its condition before the first round.');
+  assert.equal(flowed.results[2].found, true, 'wait for a control to be gone resolves when it is not there.');
+  assert.match(flowed.results[3].value, /and if/, 'an inner step really typed.');
+  const flowBad = await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'batch', epoch: seizedTab.epoch, steps: [{ action: 'repeat', steps: [{ action: 'scroll' }] }] }, 'overseer-bot');
+  assert.equal(flowBad.status, 400, 'a malformed flow step is refused before any step runs.');
+  assert.equal((await apiRaw(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'wait', name: 'No such control', timeout: 300, epoch: seizedTab.epoch }, 'overseer-bot')).status, 408, 'wait for a missing control times out as 408.');
+  console.log('PASS: if, repeat and wait-by-name inside a batch.');
   // Snapshot refs stay valid across an entire batch until navigation.
   const formTab = await api('/v1/tabs', 'POST', { url: `http://127.0.0.1:${server.address().port}/form` });
   const formNames = ['Field A', 'Field B', 'Field C', 'Save form'];
