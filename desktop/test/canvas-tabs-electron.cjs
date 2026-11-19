@@ -1,4 +1,4 @@
-// Real main, preload and renderer: the Canvas tab strip and its per-bot memory.
+// Real main, preload and renderer: the Canvas tab strip, its per-bot memory, and Cron jobs / Bot settings opened from the icons on a bot's row.
 // Run: npm run test:canvas-tabs   (CANVAS_SHOTS=<dir> also saves screenshots)
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -41,7 +41,9 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   const address = `http://127.0.0.1:${server.address().port}/`;
   const prefsFile = path.join(profile, 'preferences.json');
   fs.writeFileSync(prefsFile, JSON.stringify({ onboarded: true, preview: false,
-    bots: [{ id: '1001', isBot: true, name: 'Alan' }, { id: '1002', isBot: true, name: 'Scout' }], selectedBotId: '1001' }));
+    bots: [{ id: '1001', isBot: true, name: 'Alan' }, { id: '1002', isBot: true, name: 'Scout' }], selectedBotId: '1001',
+    // A tab the app no longer has (Side chat) must be ignored, not strand the bot on a missing view.
+    canvasTabs: { 1002: 'chat' } }));
   require('../src/main.cjs');
 
   const win = await until(() => BrowserWindow.getAllWindows()[0], 'workspace window');
@@ -69,6 +71,8 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   const visible = () => run(`[...document.querySelectorAll('#canvas-tabs [role=tab]')].filter(b => !b.hidden).map(b => b.dataset.canvas).join()`);
   const canvasView = () => webContents.getAllWebContents().find(item => !item.isDestroyed() && item.session === session.fromPartition('persist:hermes-webapp') && item.getURL().includes('#/'));
   const pick = (id) => run(`workspace.command('open-bot', { id: '${id}' })`);
+  const rowTool = (id, tool, gateway = 'telegram') => `document.querySelector('.bot-row[data-bot-id="${id}"][data-gateway="${gateway}"] [data-tool="${tool}"]')`;
+  const tools = () => run(`document.querySelectorAll('.bot-tool').length`);
   const saved = () => JSON.parse(fs.readFileSync(prefsFile, 'utf8'));
 
   await showing('browser');
@@ -114,17 +118,28 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   menu.getMenuItemById('canvas-browser').click(); await showing('browser');
   await until(async () => (await state()).showBrowser === true, '⌘1 reopens the pane');
 
-  // Without a Hermes Desktop address the page tabs stay hidden and do nothing.
+  // Without a Hermes Desktop address the strip is the four permanent tabs minus Artifacts, and no row has Cron or Settings icons.
   assert.equal(await visible(), 'browser,screen,terminal');
-  menu.getMenuItemById('canvas-cron').click(); await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(await tools(), 0, 'no Hermes Desktop: no row icons');
+  assert.equal(await run(`document.getElementById('canvas-chat')`), null, 'Side chat has no tab');
+  for (const gone of ['canvas-chat', 'canvas-cron', 'canvas-settings']) assert.equal(menu.getMenuItemById(gone), null, `${gone} has no menu item or shortcut`);
+  await run(`workspace.command('canvas-tab', { tab: 'cron' })`); await new Promise(resolve => setTimeout(resolve, 300));
   await showing('browser');
+  await run(`workspace.command('canvas-tab', { tab: 'chat' })`); await showing('browser');
   await run(`workspace.command('canvas-tab', { tab: 'nonsense' })`); await showing('browser');
 
   // With one, they appear and load its pages in a Canvas view that shares the sign-in cookie.
   await session.fromPartition('persist:hermes-webapp').cookies.set({ url: address, name: 'webapp-login', value: 'yes' });
   await run(`workspace.command('settings', { hermesWebappUrl: ${JSON.stringify(address)}, chatSurface: 'telegram' })`);
-  await until(async () => (await visible()) === 'browser,screen,terminal,chat,artifacts,cron,settings', 'page tabs shown');
-  await run(`document.getElementById('canvas-cron').click()`); await showing('cron');
+  await until(async () => (await visible()) === 'browser,screen,terminal,artifacts', 'Artifacts shown; Cron jobs and Bot settings stay off the strip');
+  // Both bots now have a Hermes row, so each row of each bot has the two icons, as real buttons with names.
+  await until(async () => (await tools()) === 8, 'icons on all four rows');
+  assert.deepEqual(await run(`[...document.querySelectorAll('.bot-row[data-bot-id="1002"][data-gateway="telegram"] .bot-tool')].map(b => [b.tagName, b.getAttribute('aria-label'), b.title])`), [['BUTTON', 'Cron jobs for Scout', 'Cron jobs for Scout'], ['BUTTON', 'Settings for Scout', 'Settings for Scout']]);
+  // The icon opens that bot's Cron jobs; its temporary tab joins the strip, once, and the row click did not also fire.
+  await run(`window.rowClicks = 0; document.querySelector('.bot-row[data-bot-id="1001"][data-gateway="telegram"]').addEventListener('click', () => window.rowClicks++)`);
+  await run(`${rowTool('1001', 'cron')}.click()`); await showing('cron');
+  assert.equal(await visible(), 'browser,screen,terminal,artifacts,cron');
+  assert.equal(await run('window.rowClicks'), 0, 'the icon click does not reach the row');
   const view = await until(canvasView, 'canvas view');
   await until(() => view.getURL() === `${address}#/cron` && !view.isLoading(), 'cron page');
   assert.equal(await view.executeJavaScript('document.title'), 'Hermes Desktop', 'signed in by the shared cookie');
@@ -134,25 +149,38 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   const slot = await run(`document.getElementById('browser-slot').getBoundingClientRect().width`);
   await until(async () => Math.abs(await view.executeJavaScript('innerWidth') - slot) <= 2, 'view fits the canvas');
   await view.executeJavaScript('window.kept = 1');
-  for (const [item, hash] of [['canvas-settings', '#/settings'], ['canvas-chat', '#/'], ['canvas-artifacts', '#/artifacts']]) {
-    menu.getMenuItemById(item).click(); await showing(item.slice(7));
-    await until(() => view.getURL() === `${address}${hash}`, hash);
-  }
+  // ⌘4 shows Artifacts; the Cron jobs tab leaves the strip because it was a visitor.
+  assert.equal(menu.getMenuItemById('canvas-artifacts').accelerator, 'CmdOrCtrl+4');
+  menu.getMenuItemById('canvas-artifacts').click(); await showing('artifacts');
+  await until(() => view.getURL() === `${address}#/artifacts`, '#/artifacts');
+  assert.equal(await visible(), 'browser,screen,terminal,artifacts', 'switching away drops the temporary tab');
   assert.equal(await view.executeJavaScript('window.kept'), 1, 'switching pages does not reload Hermes Desktop');
   assert.equal(canvasView(), view, 'one Canvas view serves every page');
+  // Scout is not selected: his Settings icon selects him, then opens his Bot settings.
+  assert.equal((await state()).selectedBotId, '1001');
+  await run(`${rowTool('1002', 'settings')}.click()`);
+  await until(async () => (await state()).selectedBotId === '1002', 'the icon selects its bot');
+  await showing('settings'); await until(() => view.getURL() === `${address}#/settings`, '#/settings');
+  assert.equal(await visible(), 'browser,screen,terminal,artifacts,settings');
+  assert.equal(await run(`document.querySelectorAll('.bot-row.selected').length`), 1, 'one selected row');
+  assert.equal(await run(`document.querySelector('.bot-row.selected').dataset.botId`), '1002');
+  await until(() => saved().canvasTabs?.['1002'] === 'settings', 'visitor tab remembered for Scout');
+  // Arrow keys cross the visible tabs, including the visitor, and leaving it removes it.
   await run(`document.getElementById('canvas-artifacts').focus(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))`);
   await showing('settings');
   await run(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))`);
-  await showing('cron');
-  // Hermes Desktop closes its Cron overlay by navigating; picking the tab again reopens it.
+  await showing('artifacts'); assert.equal(await visible(), 'browser,screen,terminal,artifacts');
+  // Hermes Desktop closes its Cron overlay by navigating; opening it again from the icon reopens it.
+  await run(`${rowTool('1002', 'cron')}.click()`); await showing('cron');
   await view.executeJavaScript(`location.hash = '#/'`);
   await until(() => view.getURL() === `${address}#/`, 'overlay closed');
-  await run(`document.getElementById('canvas-cron').click()`);
+  await run(`${rowTool('1002', 'cron', 'hermes-desktop')}.click()`);
   await until(() => view.getURL() === `${address}#/cron`, 'cron reopened');
   assert.equal(await view.executeJavaScript('window.kept'), 1);
 
   // Page tabs are remembered per bot like the others.
-  await pick('1001'); await showing('screen');
+  await pick('1001'); await showing('artifacts');
+  assert.equal(await visible(), 'browser,screen,terminal,artifacts');
   await pick('1002'); await showing('cron');
   await until(() => view.getURL() === `${address}#/cron`, 'cron again');
 
@@ -160,6 +188,7 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   statusUp = false; await run(`workspace.command('webapp-retry')`);
   await showing('browser');
   assert.equal(await visible(), 'browser,screen,terminal');
+  assert.equal(await tools(), 0, 'no reachable pages: no row icons');
   assert.equal(saved().canvasTabs['1002'], 'cron');
   statusUp = true; await run(`workspace.command('webapp-retry')`);
   await showing('cron');
@@ -172,14 +201,16 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   assert.equal(await visible(), 'browser,screen,terminal');
   assert.equal(canvasView(), undefined, 'the old host’s Canvas view is closed');
   await run(`workspace.command('webapp-link', { url: 'http://127.0.0.1:9120/webapp/launch#ticket=${'T'.repeat(43)}' })`);
-  await until(async () => (await visible()) === 'browser,screen,terminal,chat,artifacts,cron,settings', 'page tabs after the link');
-  await run(`document.getElementById('canvas-cron').click()`); await showing('cron');
+  // Scout was left on Cron jobs, so that tab is back with him.
+  await until(async () => (await visible()) === 'browser,screen,terminal,artifacts,cron', 'pages after the link');
+  await until(async () => (await tools()) > 0, 'icons after the link');
+  await run(`${rowTool('1002', 'cron')}.click()`); await showing('cron');
   const linked = await until(canvasView, 'private canvas view');
   await until(() => linked.getURL() === `${privateAddress}#/cron` && !linked.isLoading(), 'private cron page');
   assert.equal(await linked.executeJavaScript('document.title'), 'Hermes Desktop', 'the Canvas view got the link’s credential');
   assert.equal(await linked.executeJavaScript('typeof workspace'), 'undefined', 'no Workspace bridge in the Canvas view');
   assert.equal(JSON.stringify(saved()).includes('K'.repeat(43)), false, 'the credential is never saved');
-  console.log('PASS canvas tabs: click, per-bot memory, arrow keys, ⌘1–⌘7, collapsed pane, Hermes Desktop pages (cookie and one-use-link hosts), saved preferences.');
+  console.log('PASS canvas tabs: click, per-bot memory, arrow keys, ⌘1–⌘4, collapsed pane, Cron jobs and Bot settings from row icons with a temporary tab, Hermes Desktop pages (cookie and one-use-link hosts), saved preferences.');
   server.close(); privateServer.close();
   quitFixture();
 // app.quit() would exit 0 and hide the failure.

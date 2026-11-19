@@ -1,7 +1,8 @@
-// The per-bot chat surface toggle and one inbox, end to end: real main, preload and renderer with
-// two fake Telegram bots, a local stand-in Hermes Webapp and the native chat mock. Three launches
-// share one throwaway profile: the toggle and switching, a relaunch, then zero Telegram bots.
-// Run: npm run test:surface-toggle
+// The agent list grouped by gateway (Telegram, Hermes, Alan's Way) and one inbox, end to end: real main,
+// preload and renderer with two fake Telegram bots, a local stand-in Hermes Webapp and the native chat mock.
+// Three launches share one throwaway profile: the grouped list and switching, a relaunch (with an old
+// preference that names no gateway), then zero Telegram bots.
+// Run: npm run test:gateway-list
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -13,7 +14,7 @@ if (!process.versions.electron) {
   const { spawn } = require('node:child_process');
   const { createMock } = require('./native-chat-mock.cjs');
   (async () => {
-    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'surface-toggle-electron-'));
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'gateway-list-electron-'));
     const mock = await createMock({ key: KEY }).listen();
     const webapp = http.createServer((req, res) => {
       if (req.url === '/api/status') { res.setHeader('Content-Type', 'application/json'); return res.end('{"version":"0.23.0"}'); }
@@ -22,13 +23,17 @@ if (!process.versions.electron) {
     await new Promise((resolve) => webapp.listen(0, 'localhost', resolve));
     let failed = false;
     for (const phase of ['1', '2', '3']) {
+      if (phase === '2') {
+        const file = path.join(profile, 'preferences.json'), prefs = JSON.parse(fs.readFileSync(file, 'utf8'));
+        fs.writeFileSync(file, JSON.stringify({ ...prefs, chatSurfaces: { ...prefs.chatSurfaces, 1002: 'pill-toggle-leftover' } }));
+      }
       if (phase === '3') {
         const file = path.join(profile, 'preferences.json'), prefs = JSON.parse(fs.readFileSync(file, 'utf8'));
         fs.writeFileSync(file, JSON.stringify({ ...prefs, bots: [], order: [], selectedBotId: '' }));
       }
       const code = await new Promise((resolve) => {
         const child = spawn(require('electron'), [`--user-data-dir=${profile}`, __filename], { stdio: 'inherit',
-          env: { ...process.env, HERMES_TEST_PROFILE: profile, SURFACE_PHASE: phase, NATIVE_CHAT_URL: mock.url, WEBAPP_URL: `http://localhost:${webapp.address().port}/` } });
+          env: { ...process.env, HERMES_TEST_PROFILE: profile, GATEWAY_PHASE: phase, NATIVE_CHAT_URL: mock.url, WEBAPP_URL: `http://localhost:${webapp.address().port}/` } });
         const deadline = setTimeout(() => { console.error(`Phase ${phase} exceeded 150s.`); child.kill('SIGKILL'); }, 150000);
         child.once('close', (exit, signal) => { clearTimeout(deadline); resolve(signal ? 1 : exit); });
       });
@@ -36,18 +41,18 @@ if (!process.versions.electron) {
     }
     mock.close(); webapp.closeAllConnections(); webapp.close();
     fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-    console.log(failed ? 'surface toggle: FAILED' : 'surface toggle: ok');
+    console.log(failed ? 'gateway list: FAILED' : 'gateway list: ok');
     process.exit(failed ? 1 : 0);
   })();
 } else {
   const assert = require('node:assert/strict');
   const { app, BrowserWindow, Notification, webContents, session } = require('electron');
   const { prepareFixture, quitFixture } = require('./electron-fixture.cjs');
-  const profile = process.env.HERMES_TEST_PROFILE, phase = process.env.SURFACE_PHASE;
+  const profile = process.env.HERMES_TEST_PROFILE, phase = process.env.GATEWAY_PHASE;
   prepareFixture(profile);
   const prefsFile = path.join(profile, 'preferences.json');
   if (phase === '1') fs.writeFileSync(prefsFile, JSON.stringify({ onboarded: true, preview: false, hermesWebappUrl: process.env.WEBAPP_URL,
-    bots: [{ id: '1001', isBot: true, name: 'Alan' }, { id: '1002', isBot: true, name: 'Scout Research Assistant' }], selectedBotId: '1001' }));
+    bots: [{ id: '1001', isBot: true, name: 'Alan', username: 'alan_bot' }, { id: '1002', isBot: true, name: 'Scout Research Assistant' }], selectedBotId: '1001' }));
   // Notifications are recorded instead of shown.
   const shown = [];
   Notification.prototype.show = function show() { shown.push({ title: this.title, body: this.body }); };
@@ -73,12 +78,14 @@ if (!process.versions.electron) {
     const state = () => run('workspace.getState()');
     const native = () => run('nativeChat.getState()');
     const saved = () => JSON.parse(fs.readFileSync(prefsFile, 'utf8'));
-    const segments = () => run(`[...document.querySelectorAll('#surface-tabs [role=tab]')].filter(b => b.offsetParent).map(b => b.dataset.surface + (b.getAttribute('aria-selected') === 'true' ? '*' : '')).join()`);
-    const showing = (surface) => until(async () => (await state()).chatTarget === { telegram: 'telegram', 'hermes-desktop': 'webapp', native: 'native' }[surface]
-      && (await segments()).split(',').includes(`${surface}*`), `${surface} showing`);
-    const pick = async (id) => { await run(`workspace.command('open-bot', { id: '${id}' })`); await until(async () => (await state()).selectedBotId === id, `bot ${id}`); };
-    const choose = (surface) => run(`document.querySelector('#surface-tabs [data-surface="${surface}"]').click()`);
-    const row = (id) => `#bot-list .bot-row[data-bot-id="${id}"]`;
+    // The list as [gateway, bot ids]; rows other than the selected one carry no star.
+    const sections = () => run(`[...document.querySelectorAll('#bot-list .gateway-section')].map(s => s.querySelector('.gateway-logo').dataset.gateway + ':' + [...s.querySelectorAll('.bot-row')].map(r => r.dataset.botId + (r.classList.contains('selected') ? '*' : '')).join('+')).join(' ')`);
+    const selectedRows = () => run(`[...document.querySelectorAll('#bot-list .bot-row.selected')].map(r => r.dataset.botId + '@' + r.dataset.gateway)`);
+    const showing = (surface, id) => until(async () => (await state()).chatTarget === { telegram: 'telegram', 'hermes-desktop': 'webapp', native: 'native' }[surface]
+      && (await selectedRows()).length === 1 && (!id || (await selectedRows())[0] === `${id}@${surface}`), `${surface} showing`);
+    // A click on a row opens that bot on that row's gateway.
+    const go = async (id, surface) => { await run(`document.querySelector('${row(id, surface)}').click()`); await until(async () => (await state()).chatBotId === id, `bot ${id}`); await showing(surface, id); };
+    const row = (id, surface = 'telegram') => `#bot-list .bot-row[data-bot-id="${id}"][data-gateway="${surface}"]`;
     const has = (selector) => run(`!!document.querySelector(${JSON.stringify(selector)})`);
     const scroller = '#native-pane .nc-scroll';
     const scrollTop = () => run(`document.querySelector('${scroller}').scrollTop`);
@@ -97,10 +104,25 @@ if (!process.versions.electron) {
     };
 
     if (phase === '1') {
+      // Only the gateways that are set up get a section: Telegram and Hermes now, no Alan's Way section yet, and no empty header.
+      await until(async () => (await sections()).replace(/\*/g, '') === 'telegram:1001+1002 hermes-desktop:1001+1002', 'Telegram and Hermes sections');
+      assert.equal(await run(`document.querySelectorAll('#bot-list .gateway-section').length`), 2);
       await run(`workspace.command('settings', { nativeChatUrl: ${JSON.stringify(process.env.NATIVE_CHAT_URL)}, nativeChatKey: ${JSON.stringify(KEY)} })`);
-      // Three usable surfaces: three segments in one tablist; nothing configured yet is the default Hermes Desktop.
-      await until(async () => (await segments()).replace(/\*/g, '') === 'telegram,hermes-desktop,native', 'three segments');
-      assert.equal(await run(`document.getElementById('surface-tabs').getAttribute('role')`), 'tablist');
+      // Three gateways, in order, each header a logo with only an accessible name; each bot is on all three; two bots, six rows.
+      await until(async () => (await sections()).replace(/\*/g, '') === 'telegram:1001+1002 hermes-desktop:1001+1002 native:1001+1002', 'three sections');
+      assert.deepEqual(await run(`[...document.querySelectorAll('#bot-list .gateway-head')].map(h => [h.textContent.trim(), h.querySelector('[role=img]').getAttribute('aria-label'), h.querySelector('[role=img]').title])`), [['', 'Telegram', 'Telegram'], ['', 'Hermes', 'Hermes'], ['', 'Alan\'s Way', 'Alan\'s Way']]);
+      assert.deepEqual(await run(`[...document.querySelectorAll('#bot-list .gateway-section')].map(s => [s.getAttribute('role'), document.getElementById(s.getAttribute('aria-labelledby')).textContent.trim() === '' && s.querySelector('[role=img]').getAttribute('aria-label')])`), [['group', 'Telegram'], ['group', 'Hermes'], ['group', 'Alan\'s Way']]);
+      assert.equal(await run(`document.getElementById('bot-count').textContent`), '2', 'the count is bots, not rows');
+      assert.equal(await run(`document.querySelectorAll('#bot-list .bot-row').length`), 6);
+      assert.equal((await selectedRows()).length, 1, 'exactly one row is selected');
+      assert.equal(await run(`document.getElementById('surface-tabs')`), null, 'no pill toggle in the chat header');
+      assert.equal(await run(`document.getElementById('bot-list').textContent.includes('Telegram bot')`), false, 'no row claims to be a Telegram bot');
+      // Search filters rows in every section; the count stays; sorting is within each section.
+      await run(`(() => { const i = document.getElementById('bot-search'); i.value = 'scout'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      await until(async () => (await sections()).replace(/\*/g, '') === 'telegram:1002 hermes-desktop:1002 native:1002', 'search across sections');
+      assert.equal(await run(`document.getElementById('bot-count').textContent`), '2');
+      await run(`document.getElementById('bot-search-clear').click()`);
+      await until(async () => (await sections()).replace(/\*/g, '') === 'telegram:1001+1002 hermes-desktop:1001+1002 native:1001+1002', 'search cleared');
       // An unsaved address in Settings, Chat surface survives Escape without being saved.
       const openSettings = async () => { await run(`document.getElementById('settings-fallback').click()`); await until(() => run(`!document.getElementById('modal').classList.contains('hidden') && !!document.getElementById('settings-native-url')`), 'chat surface settings'); };
       await openSettings();
@@ -120,33 +142,34 @@ if (!process.versions.electron) {
       await webappView.executeJavaScript('window.kept = "webapp"');
       await telegramView.executeJavaScript('window.kept = "telegram"');
 
-      // Bot A: arrow keys move the selection and focus to Native; it opens the newest Telegram-source conversation read-only.
-      await run(`document.querySelector('#surface-tabs [data-surface="hermes-desktop"]').focus(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))`);
-      await showing('native');
-      assert.equal(await run('document.activeElement.dataset.surface'), 'native', 'focus follows the arrow');
-      assert.equal(await run(`document.querySelector('#surface-tabs [data-surface="native"]').tabIndex`), 0, 'roving tab stop');
+      // Bot A on Alan's Way: Arrow keys cross sections one row at a time; Enter on a row opens that gateway; the newest Telegram-source conversation opens read-only.
+      await run(`document.querySelector('${row('1001', 'hermes-desktop')} .bot-open').focus(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))`);
+      assert.equal(await run(`document.activeElement.closest('.bot-row').dataset.botId + '@' + document.activeElement.closest('.bot-row').dataset.gateway`), '1002@hermes-desktop');
+      await run(`document.querySelector('${row('1001', 'native')} .bot-open').focus(); document.activeElement.click()`);
+      await showing('native', '1001');
+      assert.equal(await run(`document.querySelectorAll('#bot-list .bot-open[tabindex="0"]').length`), 1, 'roving tab stop');
       await until(async () => (await native()).thread?.source === 'telegram', 'telegram-source conversation');
       await until(() => has('#native-pane .nc-readonly:not(.hidden)'), 'read-only with Continue here');
       await until(() => saved().chatSurfaces?.['1001'] === 'native', 'A choice saved');
 
       // Bot B: Hermes Desktop.
-      await pick('1002'); await choose('hermes-desktop'); await showing('hermes-desktop');
+      await go('1002', 'hermes-desktop');
       await until(() => saved().chatSurfaces?.['1002'] === 'hermes-desktop', 'B choice saved');
-      const apart = () => run(`(() => { const [t, p, s] = ['bots-toggle', 'chat-pill', 'surface-tabs'].map(id => document.getElementById(id).getBoundingClientRect()); return t.right <= p.left && p.right <= s.left; })()`);
+      const apart = () => run(`(() => { const [t, p] = ['bots-toggle', 'chat-pill'].map(id => document.getElementById(id).getBoundingClientRect()); return t.right <= p.left; })()`);
       assert.equal(await apart(), true, 'a long bot name keeps the header pieces apart');
       assert.match(await run(`document.getElementById('home-copy').textContent`), /^Talk to Scout Research Assistant/, 'Home does not wait for Telegram when the bot chats elsewhere');
       await run(`document.getElementById('bots-toggle').click()`); await until(() => run(`document.getElementById('shell').classList.contains('bots-hidden')`), 'agent list hidden');
       assert.equal(await apart(), true, 'and with the agent list hidden');
       await run(`document.getElementById('bots-toggle').click()`); await until(async () => !(await run(`document.getElementById('shell').classList.contains('bots-hidden')`)), 'agent list back');
       for (let i = 0; i < 2; i++) {
-        await pick('1001'); await showing('native');
-        await pick('1002'); await showing('hermes-desktop');
+        await go('1001', 'native');
+        await go('1002', 'hermes-desktop');
       }
       assert.equal(await webappView.executeJavaScript('window.kept'), 'webapp', 'webapp view kept alive');
       assert.equal(await telegramView.executeJavaScript('window.kept'), 'telegram', 'telegram view kept alive');
 
       // A's own conversation: a draft and a scroll position survive switching bots.
-      await pick('1001'); await showing('native');
+      await go('1001', 'native');
       const bigId = await openSession('seed 1k');
       await until(() => saved().nativeSessions?.['1001'] === bigId, 'A conversation remembered');
       await until(() => run(`document.querySelectorAll('#native-pane .nc-list > .nc-row').length >= 60`), 'thread painted');
@@ -155,8 +178,8 @@ if (!process.versions.electron) {
       await sleep(150);
       const anchor = await topRow(), sameView = (back) => back[0] === anchor[0] && Math.abs(back[1] - anchor[1]) < 4;
       assert.ok(await scrollTop() > 1000 && !(await atBottom()), 'scrolled into the thread');
-      await pick('1002'); await showing('hermes-desktop');
-      await pick('1001'); await showing('native');
+      await go('1002', 'hermes-desktop');
+      await go('1001', 'native');
       await sleep(150);
       assert.equal(await draft(), 'half-written thought', 'draft kept');
       // The message at the top of the view, not scrollTop: rows above it may paint at full height meanwhile.
@@ -169,8 +192,8 @@ if (!process.versions.electron) {
       await run(`(() => { const s = document.querySelector('${scroller}'); s.scrollTop = s.scrollHeight; })()`);
       await sleep(150);
       assert.ok(await atBottom(), 'pinned to the bottom');
-      await pick('1002'); await showing('hermes-desktop');
-      await pick('1001'); await showing('native');
+      await go('1002', 'hermes-desktop');
+      await go('1001', 'native');
       await sleep(150);
       assert.ok(await atBottom(), 'pinned stays pinned');
 
@@ -178,28 +201,31 @@ if (!process.versions.electron) {
       await streamDelay(1500);
       await type('hello world', true);
       await until(async () => (await native()).run, 'turn started');
-      await pick('1002'); await showing('hermes-desktop');
+      await go('1002', 'hermes-desktop');
       assert.ok((await native()).run, 'still running in the background');
       await until(async () => !(await native()).run, 'turn finished in the background', 30000);
-      await until(() => has(`${row('1001')} .unread`), 'A row unread');
-      assert.equal((await state()).inbox['1001'].preview, 'pong: hello world', 'row previews the native reply');
-      await until(async () => (await run(`document.querySelector('${row('1001')} .bot-preview').textContent`)) === 'pong: hello world', 'preview line');
-      await pick('1001'); await showing('native');
-      await until(async () => !(await has(`${row('1001')} .unread`)), 'opening native clears unread');
+      await until(() => has(`${row('1001', 'native')} .unread`), 'A row unread');
+      assert.equal((await state()).inbox['1001'].rows.native.preview, 'pong: hello world', 'row previews the native reply');
+      assert.equal(await has(`${row('1001')} .unread`), false, 'native unread is not Telegram unread');
+      assert.equal(await run(`document.querySelector('${row('1001')} .bot-preview').textContent`), '@alan_bot', 'the Telegram row keeps its own line');
+      await until(async () => (await run(`document.querySelector('${row('1001', 'native')} .bot-preview').textContent`)) === 'pong: hello world', 'preview line');
+      await go('1001', 'native');
+      await until(async () => !(await has(`${row('1001', 'native')} .unread`)), 'opening native clears unread');
 
       // An approval request while away: waiting badge, its label, one notification.
       await type('APPROVE please', true);
       await until(async () => (await native()).run, 'approval turn started');
-      await pick('1002'); await showing('hermes-desktop');
-      await until(() => has(`${row('1001')} .waiting-badge`), 'waiting badge', 30000);
-      assert.match(await run(`document.querySelector('${row('1001')} .bot-open').getAttribute('aria-label')`), /waiting for you$/);
-      assert.equal(await has(`${row('1002')} .waiting-badge`), false);
+      await go('1002', 'hermes-desktop');
+      await until(() => has(`${row('1001', 'native')} .waiting-badge`), 'waiting badge', 30000);
+      assert.match(await run(`document.querySelector('${row('1001', 'native')} .bot-open').getAttribute('aria-label')`), /waiting for you$/);
+      assert.equal(await has(`#bot-list [data-bot-id="1002"] .waiting-badge`), false);
+      assert.equal(await has(`${row('1001')} .waiting-badge`), false, 'waiting on a native approval is not waiting on Telegram');
       await sleep(600);
       assert.deepEqual(shown, [{ title: 'Alan', body: 'is waiting for you' }], 'one notification per waiting episode');
-      await pick('1001'); await showing('native');
+      await go('1001', 'native');
       await until(() => has('#native-pane .nc-prompt.approval.open'), 'approval card');
       await run(`[...document.querySelectorAll('#native-pane .nc-prompt.approval button')].find(b => b.textContent === 'Allow once').click()`);
-      await until(async () => !(await has(`${row('1001')} .waiting-badge`)), 'waiting cleared');
+      await until(async () => !(await has(`${row('1001', 'native')} .waiting-badge`)), 'waiting cleared');
       await streamDelay(0);
       await until(async () => !(await native()).run, 'approval turn finished', 30000);
 
@@ -208,28 +234,33 @@ if (!process.versions.electron) {
       fs.mkdirSync('/tmp/w1-proof', { recursive: true });
       await run(`document.activeElement?.blur()`);
       await sleep(400);
-      fs.writeFileSync('/tmp/w1-proof/surface-toggle.png', (await shell.capturePage()).toPNG());
-      console.log('SURFACE TOGGLE PROOF: /tmp/w1-proof/surface-toggle.png');
+      fs.writeFileSync('/tmp/w1-proof/gateway-list.png', (await shell.capturePage()).toPNG());
+      console.log('GATEWAY LIST PROOF: /tmp/w1-proof/gateway-list.png');
     } else if (phase === '2') {
-      // Relaunch: each bot's surface and A's conversation come back.
-      await showing('native');
+      // Relaunch: the last bot and gateway come back, and A's conversation.
+      await showing('native', '1001');
       const bigId = saved().nativeSessions['1001'];
       await until(async () => (await native()).activeId === bigId, 'A conversation restored');
-      await pick('1002'); await showing('hermes-desktop');
-      await pick('1001'); await showing('native');
+      // An old preference that names no gateway cannot strand B on a missing row: B opens on one it has.
+      assert.equal(saved().chatSurfaces['1002'], 'pill-toggle-leftover');
+      await run(`workspace.command('open-bot', { id: '1002' })`);
+      await until(async () => (await state()).selectedBotId === '1002', 'B opened');
+      await until(async () => (await selectedRows()).length === 1 && (await selectedRows())[0].startsWith('1002@'), 'one row selected for B');
+      await go('1002', 'hermes-desktop');
+      await go('1001', 'native');
       assert.deepEqual(saved().chatSurfaces, { 1001: 'native', 1002: 'hermes-desktop' });
     } else {
-      // No Telegram bots: one built-in row for this Hermes host, offering only the two Hermes surfaces.
-      await until(async () => (await run(`[...document.querySelectorAll('#bot-list .bot-row')].map(r => r.dataset.botId).join()`)) === 'hermes', 'built-in row');
-      assert.equal(await run(`document.querySelector('${row('hermes')} .bot-name').textContent`), 'Hermes on localhost');
-      assert.equal(await run(`document.querySelector('${row('hermes')}').classList.contains('selected')`), true);
-      await until(async () => (await segments()).replace(/\*/g, '') === 'hermes-desktop,native', 'two Hermes segments');
-      await choose('native'); await showing('native');
-      await choose('hermes-desktop'); await showing('hermes-desktop');
+      // No Telegram bots: one built-in bot with a row under Hermes and one under Alan's Way, and no Telegram section.
+      await until(async () => (await sections()).replace(/\*/g, '') === 'hermes-desktop:hermes native:hermes', 'built-in rows');
+      assert.equal(await run(`document.getElementById('bot-count').textContent`), '1');
+      assert.equal(await run(`document.querySelector('${row('hermes', 'hermes-desktop')} .bot-name').textContent`), 'Hermes on localhost');
+      assert.equal((await selectedRows()).length, 1);
+      await go('hermes', 'native');
+      await go('hermes', 'hermes-desktop');
       await until(() => saved().chatSurfaces?.hermes === 'hermes-desktop', 'built-in choice saved');
-      await assert.rejects(run(`workspace.command('chat-surface', { surface: 'telegram' })`), /not set up/);
+      await assert.rejects(run(`workspace.command('open-bot', { id: 'hermes', surface: 'telegram' })`), /not set up/);
     }
-    console.log(`PASS surface toggle phase ${phase}`);
+    console.log(`PASS gateway list phase ${phase}`);
     quitFixture();
   })().catch((error) => {
     console.error(error);

@@ -176,6 +176,7 @@ function tailscaleSshHost({ platform = process.platform, programFiles = process.
   return '';
 }
 
+const CANVAS_PERMANENT = ['browser', 'screen', 'terminal', 'artifacts'], CANVAS_TEMPORARY = ['cron', 'settings'];
 // An explicit choice stands; native only while it has an address and key, else it
 // falls back like no choice. Otherwise Telegram, until Hermes Desktop is configured and answers.
 function resolveChatSurface(choice, webappStatus, nativeConfigured = false) {
@@ -194,12 +195,18 @@ function surfaceForBot(choice, globalChoice, context = {}) {
   const usable = usableSurfaces(context);
   if (usable.includes(choice)) return choice;
   const fallback = resolveChatSurface(globalChoice, context.webappStatus, !!context.nativeConfigured);
-  return fallback === 'telegram' && usable.length && !usable.includes('telegram') ? usable[0] : fallback;
+  return usable.length && !usable.includes(fallback) ? usable[0] : fallback;
 }
-// A sidebar row's flags: unread in Telegram or in its native conversation; waiting on an open
-// approval or question there, or on a tab handed back to you.
-function inboxRow({ bot, surface, native, handback = false }) {
-  return { surface, unread: !!bot?.unread || !!native?.unread, waiting: !!native?.waiting || !!handback, preview: surface === 'native' ? native?.preview || '' : '' };
+// A bot's flags for each gateway row: unread in Telegram or in its native conversation; waiting on an open
+// approval or question there, or (on every row) on a tab handed back to you.
+function inboxRow({ bot, surface, native, handback = false, gateways = [] }) {
+  const row = (unread, waiting = false, preview = '') => ({ unread, waiting: waiting || !!handback, preview });
+  return { surface, gateways, rows: { telegram: row(!!bot?.unread), 'hermes-desktop': row(false), native: row(!!native?.unread, !!native?.waiting, native?.preview || '') } };
+}
+// The Canvas strip: four permanent tabs (Artifacts needs Hermes Desktop pages), plus Cron jobs or Bot
+// settings only while that page is the one open.
+function canvasStripTabs(canvasTab, webappCanvas) {
+  return [...CANVAS_PERMANENT.filter((tab) => tab !== 'artifacts' || webappCanvas), ...(webappCanvas && CANVAS_TEMPORARY.includes(canvasTab) ? [canvasTab] : [])];
 }
 // Per-bot memory keeps only bots that still exist, and the built-in Hermes row.
 const keepBots = (map, ids) => Object.fromEntries(Object.entries(map || {}).filter(([id]) => id === 'hermes' || ids.includes(id)));
@@ -207,4 +214,4 @@ const keepBots = (map, ids) => Object.fromEntries(Object.entries(map || {}).filt
 const plainLine = (text) => String(text || '').replace(/```[\s\S]*?(```|$)/g, ' ').replace(/^::.*$/gm, ' ').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
   .replace(/^\s*\|?[\s:|-]*-{3,}[\s:|-]*$/gm, ' ').replace(/[#>*_`|~]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
 
-module.exports = { resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, keepBots, plainLine, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost };
+module.exports = { resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, plainLine, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost };
