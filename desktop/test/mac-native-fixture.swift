@@ -9,12 +9,14 @@ var activateShowsWindow = true
 var activateFocus: AXUIElement?
 var posted: [String] = []
 var viaHID = 0
+var expireAfter = Int.max
 func fixtureHID(_ event: CGEvent, _ pid: pid_t) { viaHID += 1; fixturePost(event, pid) }
 func fixturePost(_ event: CGEvent, _ pid: pid_t) {
     var length = 0
     var units = [UniChar](repeating: 0, count: 8)
     event.keyboardGetUnicodeString(maxStringLength: 8, actualStringLength: &length, unicodeString: &units)
     if event.type == .keyDown { posted.append(String(utf16CodeUnits: units, count: length)) }
+    if posted.count >= expireAfter { actDeadline = 0 }
 }
 var fixtureIdle = 0.0
 var fixtureFront: pid_t? = 7
@@ -191,6 +193,22 @@ func fixture() throws {
         try refuses("stale_ref") { try validateWindowStep(7, ["action": "press", "ref": ref], selected) }
         attributes[AXKey(element: field)]?["AXParent"] = field
         try expectFixture(!belongsToWindow(field, selected), "parent cycles fail closed")
+    case "bot-cache":
+        fixtureIdle = 2
+        let seen = try dispatch(["cmd": "snapshot", "pid": 7, "windowId": 41, "bot": "a"])
+        guard let generation = seen["generation"] as? Int, let ref = ((seen["elements"] as? [JSON])?.first?["ref"]) as? String else { throw Fail("fixture", "snapshot missing field") }
+        let press: (String) -> JSON = { bot in respond(["cmd": "act", "pid": 7, "bot": bot, "generation": generation, "snapshot": false, "steps": [["action": "press", "ref": ref]]]) }
+        try expectFixture(press("a")["ok"] as? Bool == true, "the bot that took the snapshot can use its ref")
+        try expectFixture(press("b")["code"] as? String == "stale_ref", "another bot's ref and generation are stale: \(press("b"))")
+        try expectFixture(press("")["code"] as? String == "stale_ref", "a request naming no bot cannot use a bot's refs")
+        let own = try dispatch(["cmd": "snapshot", "pid": 7, "windowId": 41, "bot": "b"])
+        try expectFixture(own["generation"] as? Int == generation, "each bot reads its own tree")
+        try expectFixture(press("b")["ok"] as? Bool == true, "a bot's own snapshot makes its ref usable")
+        currentBot = "c"
+        try expectFixture(caches[7] == nil && refBooks[7] == nil, "a bot that never read the app inherits no window or refs")
+        currentBot = "a"
+        try expectFixture(caches[7]?.windowId == 41, "a bot keeps the window it read")
+        currentBot = ""
     case "permissions":
         for trusted in [true, false] { for screen in [true, false] {
             fixtureTrusted = trusted; fixtureScreen = screen
@@ -272,6 +290,17 @@ func fixture() throws {
         actDeadline = 0
         try refuses("timeout") { _ = try runStep(7, ["action": "type", "text": "abc"], windowId: 41) }
         try expectFixture(posted.isEmpty, "typing stops at the act deadline: \(posted)")
+        actDeadline = .infinity
+        expireAfter = 2
+        posted = []
+        do {
+            _ = try runStep(7, ["action": "type", "text": "abcdef"], windowId: 41)
+            throw Fail("fixture", "typing past the deadline must fail")
+        } catch let failure as Fail {
+            try expectFixture(failure.code == "timeout" && failure.message.contains("2 of 6 characters"), "the timeout says how much was typed: \(failure.code) \(failure.message)")
+        }
+        try expectFixture(posted.joined() == "ab", "typing stops where the deadline passed: \(posted)")
+        expireAfter = Int.max
     case "shortcut-front":
         fixtureIdle = 2; fixtureOnScreen = false
         let stale = try selectedWindow(7, 41)

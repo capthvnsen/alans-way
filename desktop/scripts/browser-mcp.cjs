@@ -61,6 +61,7 @@ const expectHost = { type: 'string', enum: ['computer', 'vm'], description: 'Sen
 const COMPUTER_NEXT = {
   stale_ref: 'Take a fresh workspace_computer_snapshot and act with its refs and generation.',
   stale_window: 'Snapshot the intended window again before acting; check its state before repeating an action.',
+  wrong_window: 'Nothing was sent: that point is outside the app window. Take a fresh snapshot or screenshot and use coordinates inside its window.',
   in_front: 'The user is using this app right now: wait a few seconds and retry once, then tell the user briefly if it still refuses. Never ask for approval per action.',
   no_window: 'Its windows are closed, minimized or on another Space: run action activate, then snapshot again. If it still has no window, ask the user to open one.',
   locked: 'Nothing can be read or driven until the user unlocks the computer; then snapshot again.',

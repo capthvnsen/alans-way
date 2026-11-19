@@ -872,14 +872,55 @@ def activate(pid):
         xdotool('windowactivate', '--sync', window[0])
         if xdotool('getactivewindow').strip() != window[0]:
             fail('Could not raise that window.')
+    return window
+
+
+TYPE_CHUNK = 100
+
+
+def type_text(text):
+    """One xdotool per chunk, so the act deadline stops between chunks and the error can say how much went in."""
+    done = 0
+    try:
+        while done < len(text):
+            if done and ACT_DEADLINE is not None and time.monotonic() >= ACT_DEADLINE:
+                fail('The input ran out of time.', 'timeout')
+            send_xdotool(['type', '--delay', '8', '--', text[done:done + TYPE_CHUNK]])
+            done += TYPE_CHUNK
+    except Fail as exc:
+        fail(f'{exc} Typed {done} of {len(text)} characters; the next {TYPE_CHUNK} may be partly typed. Do not retype the first {done}.', exc.code)
+
+
+def box_of(geo):
+    return tuple(int(geo[key]) for key in ('X', 'Y', 'WIDTH', 'HEIGHT'))
+
+
+def require_inside(pid, window, x, y):
+    """Menus, popovers and dialogs are windows of the same pid that can sit outside the main one, so any of them will do."""
+    # shortcut: a point inside a window's box can still sit under an always-on-top overlay, and a popup that sets no pid is refused; upgrade if either shows up.
+    try:
+        main = box_of(window[1])
+    except (KeyError, ValueError):
+        fail('Could not read that window\'s position.', 'no_window')
+    boxes = [main]
+    for _wid, geo in window_geometry(pid):
+        try:
+            boxes.append(box_of(geo))
+        except (KeyError, ValueError):
+            pass
+    if not any(left <= x < left + width and top <= y < top + height for left, top, width, height in boxes):
+        left, top, width, height = main
+        fail(f'That point is outside the app window ({left},{top} {width}x{height}), so the click would land on something else. Take a fresh snapshot and aim inside the window.', 'wrong_window')
 
 
 def step_pixel(bus, target, argv):
     if argv[0] == 'type':
         refuse_password_focus(bus, target)
-    activate(target.pid)
+    window = activate(target.pid)
+    if window and argv[0] == 'mousemove':
+        require_inside(target.pid, window, int(argv[2]), int(argv[3]))
     try:
-        send_xdotool(argv)
+        type_text(argv[-1]) if argv[0] == 'type' else send_xdotool(argv)
     except Fail:
         if 'mousedown' in argv:
             try:
@@ -1520,7 +1561,10 @@ def cmd_selftest(req):
     def codes(reply):
         return [item.get('code', 'ok') for item in reply['results']]
 
-    io = dict(send_xdotool=sent.append, best_window=lambda pid: ('42', {}), xdotool=fake_x, resolve_app=lambda pid: None,
+    main_box = {'X': '0', 'Y': '0', 'WIDTH': '100', 'HEIGHT': '100'}
+    popup = {'X': '500', 'Y': '500', 'WIDTH': '50', 'HEIGHT': '50'}
+    windows = [('42', main_box)]
+    io = dict(send_xdotool=sent.append, best_window=lambda pid: ('42', main_box), window_geometry=lambda pid: windows, xdotool=fake_x, resolve_app=lambda pid: None,
               active_pid=lambda: None, proc_name=lambda pid: 'gedit', ensure_display=lambda: displays.append(1))
     restore = stubbed(True, **io)
     try:
@@ -1534,6 +1578,24 @@ def cmd_selftest(req):
         del sent[:]
         check(codes(cmd_act({'pid': 9, 'steps': steps[:1], 'settleMs': 0})) == ['ok'], 'agent app click')
         check(sent[:2] == [['getactivewindow'], ['windowactivate', '--sync', '42']], 'agent app is activated first')
+        del sent[:]
+        outside = {'x': 900, 'y': 900}
+        for step in ({'action': 'click', **outside}, {'action': 'double_click', **outside}, {'action': 'right_click', **outside},
+                     {'action': 'scroll', **outside, 'direction': 'down'}, {'action': 'drag', **outside, 'x2': 5, 'y2': 5}):
+            reply = cmd_act({'pid': 9, 'steps': [step], 'settleMs': 0})
+            check(codes(reply) == ['wrong_window'] and 'outside' in reply['results'][0]['error'] and not [a for a in sent if a[0] == 'mousemove'],
+                  f"a {step['action']} outside the app window is refused before any pointer input")
+        check(codes(cmd_act({'pid': 9, 'steps': [{'action': 'click', 'x': 99, 'y': 0}], 'settleMs': 0})) == ['ok']
+              and codes(cmd_act({'pid': 9, 'steps': [{'action': 'click', 'x': 100, 'y': 0}], 'settleMs': 0})) == ['wrong_window'],
+              'the window edge is inclusive of its first pixel and exclusive of the next')
+        check(codes(cmd_act({'pid': 0, 'steps': [{'action': 'click', **outside}], 'settleMs': 0})) == ['ok'], 'the whole screen has no window to bind to')
+        windows.append(('43', popup))
+        del sent[:]
+        check(codes(cmd_act({'pid': 9, 'steps': [{'action': 'click', 'x': 520, 'y': 520}, {'action': 'drag', 'x': 549, 'y': 500, 'x2': 5, 'y2': 5}], 'settleMs': 0})) == ['ok', 'ok'],
+              'a point outside the main window but inside another window of the same pid is allowed')
+        reply = cmd_act({'pid': 9, 'steps': [{'action': 'click', 'x': 550, 'y': 500}], 'settleMs': 0})
+        check(codes(reply) == ['wrong_window'] and '(0,0 100x100)' in reply['results'][0]['error'], 'a point inside no window of the pid is still refused, naming the main window')
+        windows.pop()
         del sent[:]
         state['active'] = '7'
         state['raise'] = False
@@ -1584,6 +1646,17 @@ def cmd_selftest(req):
         finally:
             globals()['ACT_BUDGET'] = 10.0
         check(codes(reply) == ['ok', 'timeout'] and len(sent) == 1, 'steps stop at the act deadline and keep what ran')
+        del sent[:]
+
+        def expire(args):
+            sent.append(args)
+            if len(sent) == 2:
+                globals()['ACT_DEADLINE'] = 0
+        globals()['send_xdotool'] = expire
+        reply = cmd_act({'pid': 0, 'steps': [{'action': 'type', 'text': 'x' * 450}], 'settleMs': 0})
+        check(codes(reply) == ['timeout'] and len(sent) == 2 and 'Typed 200 of 450 characters' in reply['results'][0]['error'],
+              'long typing stops between chunks at the deadline and says how much went in')
+        check(''.join(args[-1] for args in sent) == 'x' * 200, 'typing is sent in order with nothing repeated')
     finally:
         restore()
     del sent[:], displays[:]
@@ -1651,6 +1724,26 @@ def cmd_selftest(req):
     finally:
         subprocess.check_call, globals()['ACT_DEADLINE'] = real_call, None
     check(refused == 'timeout' and limits[0] <= 3, 'xdotool is capped by the time left and reports a timeout')
+    with tempfile.TemporaryDirectory() as bindir:
+        pidfile = os.path.join(bindir, 'pid')
+        with open(os.path.join(bindir, 'xdotool'), 'w') as fake:
+            fake.write(f'#!/bin/sh\necho $$ > {pidfile}\nexec sleep 30\n')
+        os.chmod(os.path.join(bindir, 'xdotool'), 0o755)
+        real_path, globals()['ACT_DEADLINE'] = os.environ['PATH'], time.monotonic() + 0.3
+        os.environ['PATH'] = bindir + os.pathsep + real_path
+        try:
+            send_xdotool(['type', 'x'])
+            refused = None
+        except Fail as exc:
+            refused = exc.code
+        finally:
+            os.environ['PATH'], globals()['ACT_DEADLINE'] = real_path, None
+        try:
+            os.kill(int(open(pidfile).read()), 0)
+            running = True
+        except ProcessLookupError:
+            running = False
+        check(refused == 'timeout' and not running, 'a typing xdotool that hits the deadline is killed, not left running')
     screen = (1920, 1080)
     check(clamp_box({'X': '-10', 'Y': '5', 'WIDTH': '100', 'HEIGHT': '2000'}, screen) == (0, 5, 90, 1075), 'clamp box')
     check(clamp_box({'X': '100', 'Y': '50', 'WIDTH': '640', 'HEIGHT': '480'}, screen) == (100, 50, 640, 480), 'clamp keeps a window that fits')

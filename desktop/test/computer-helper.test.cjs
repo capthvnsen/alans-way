@@ -677,6 +677,25 @@ test('actions inherit the observing bot window and waits keep that window', asyn
   assert.equal(calls.at(-1).windowId, undefined);
 });
 
+test('every driver read and act names the bot, and only the Mac helper is sent it', async (t) => {
+  const calls = [];
+  const service = createComputerService({
+    snapshot: async (_pid, options) => { calls.push(options); return { generation: 7, elements: [{ ref: 'c1', name: 'Saved' }] }; },
+    act: async (_pid, options) => { calls.push(options); return { results: [{ ok: true }, { ok: true }], generation: 8, elements: [] }; },
+    screenshot: async () => ({}),
+  });
+  await service.snapshot('a', 7);
+  await service.action('b', 7, { action: 'batch', generation: 7, steps: [{ action: 'press', ref: 'c1' }, { action: 'wait', text: 'Saved' }] });
+  assert.deepEqual(calls.map((item) => item.bot), ['a', 'b', 'b']);
+  const wire = [];
+  const [mac, other] = [true, false].map((nativeMac) => permissionComputer(t, (request) => { wire.push(request); return { ok: true, generation: 1, elements: [], results: [{ ok: true }] }; }, false, true, nativeMac));
+  await mac.service.snapshot('a', 7);
+  await mac.service.action('a', 7, { action: 'click', x: 1, y: 2 });
+  await other.service.snapshot('a', 7);
+  await other.service.action('a', 7, { action: 'click', x: 1, y: 2 });
+  assert.deepEqual(wire.map((item) => item.bot), ['a', 'a', undefined, undefined]);
+});
+
 test('a shipped plugin-shaped capture still reads full snapshots or unchanged replies', async () => {
   let generation = 1;
   let value = '';
