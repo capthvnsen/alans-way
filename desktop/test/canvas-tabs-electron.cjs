@@ -61,6 +61,16 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
     const image = await native?.capturePage().catch(error => console.warn(`no ${name} view shot: ${error.message}`));
     if (image) fs.writeFileSync(path.join(shots, `${name}-${width}-${name === 'cron' ? 'canvas' : 'vm'}-view.png`), image.toPNG());
   };
+  // No label is cut at the strip's edge at any supported width (the window's minimum is 1120, so 1024 is that too).
+  const stripFits = async (why) => {
+    const size = win.getSize();
+    for (const width of [1024, 1120, 1280, 1600]) {
+      win.setSize(width, size[1]); await new Promise(resolve => setTimeout(resolve, 400));
+      const cut = await run(`(() => { const strip = document.getElementById('canvas-tabs'), box = strip.getBoundingClientRect(); return [strip.scrollWidth > strip.clientWidth + 1 ? 'scrolls' : '', ...[...strip.children].filter(b => !b.hidden).map(b => { const r = b.getBoundingClientRect(); return r.left < box.left - 1 || r.right > box.right + 1 ? b.dataset.canvas + ' is cut at the edge' : b.scrollWidth > b.clientWidth + 1 && getComputedStyle(b).textOverflow !== 'ellipsis' ? b.dataset.canvas + ' is clipped without an ellipsis' : ''; })].filter(Boolean).join(', '); })()`);
+      assert.equal(cut, '', `${why} at ${width}px`);
+    }
+    win.setSize(...size); await new Promise(resolve => setTimeout(resolve, 300));
+  };
   const state = () => run('workspace.getState()');
   const selected = () => run(`[...document.querySelectorAll('#canvas-tabs [role=tab]')].filter(b => b.getAttribute('aria-selected') === 'true').map(b => b.dataset.canvas).join()`);
   const showing = async (tab) => {
@@ -134,6 +144,7 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   await session.fromPartition('persist:hermes-webapp').cookies.set({ url: address, name: 'webapp-login', value: 'yes' });
   await run(`workspace.command('settings', { hermesWebappUrl: ${JSON.stringify(address)}, chatSurface: 'telegram' })`);
   await until(async () => (await visible()) === 'browser,screen,terminal,artifacts', 'Artifacts shown; Cron jobs and Bot settings stay off the strip');
+  await stripFits('four tabs');
   // The bot's name in the chat header becomes a button; its chevron shows on hover.
   await pick('1001'); await showing('screen'); await run(`document.getElementById('canvas-browser').click()`); await showing('browser');
   await nameOpens(true);
@@ -147,6 +158,7 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   await run(`${name}.click()`); await showing('settings');
   assert.equal(await visible(), 'browser,screen,terminal,artifacts,settings,cron');
   assert.equal(await run(`${name}.getAttribute('aria-expanded')`), 'true');
+  await stripFits('six tabs');
   await run(`document.getElementById('canvas-cron').click()`); await showing('cron');
   assert.equal(await visible(), 'browser,screen,terminal,artifacts,settings,cron', 'both stay while either is open');
   const view = await until(canvasView, 'canvas view');

@@ -189,6 +189,7 @@ async function manual(picked, outDir) {
       fixtures.reset(); await stack.closeTabs(); stack.proxy.takeLog(); task.setup?.();
       const fixtureHost = opt('fixture-host') || (opt('connection') || mode === 'codex' ? '127.0.0.1' : undefined);
       const fx = Object.assign(fixtures.state, { port: fixtures.port, ...(fixtureHost ? { host: fixtureHost } : {}) });
+      stack.approvalOrigin = task.approval && task.start ? new URL(task.start(fx)).origin : null; stack.takeApprovals();
       const t0 = Date.now();
       let answer = '', error = '', agent = {};
       if (mode === 'codex') {
@@ -196,7 +197,7 @@ async function manual(picked, outDir) {
         agent = await runCodex(codexPrompt(task, fx), Math.max(180000, task.maxSteps * 30000), cdir);
         answer = agent.answer; fs.rmSync(cdir, { recursive: true, force: true });
       } else if (mode !== 'hermes') {
-        tools.resetMetrics(); tools.tab = null; tools.fixtureOrigin = task.tier === 'fixture' && task.start ? new URL(task.start(fx)).origin : null;
+        tools.resetMetrics(); tools.tab = null;
         try { if (task.start) await tools.open(task.start(fx)); answer = (mode === 'null' ? '' : await task.oracle(tools, fx, stack)) || ''; } catch (e) { error = e.message; }
       } else {
         agent = await runHermes(hermesPrompt(task, fx), task, home, Math.max(120000, task.maxSteps * 30000), stack);
@@ -212,12 +213,14 @@ async function manual(picked, outDir) {
         wallMs, toolCalls, maxSteps: task.maxSteps, overBudget: toolCalls > task.maxSteps,
         httpCalls: log.length, httpErrors: log.filter((l) => l.status >= 400).length, respBytes: log.reduce((a, l) => a + l.bytes, 0),
         byTool: tools ? { ...tools.metrics.byTool } : undefined,
+        calls: log.map((l) => ({ at: l.t - t0, call: `${l.method} ${l.path.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/, ':tab')}${l.act ? ' ' + l.act : ''}`, status: l.status, ms: l.ms, bytes: l.bytes })),
         toolMs: log.reduce((a, l) => a + l.ms, 0), firstToolMs: log.length ? log[0].t - t0 : null, // host-side time only; the rest of wallMs is model, MCP and CLI overhead
         inputTokens: agent.usage?.input_tokens ?? null, outputTokens: agent.usage?.output_tokens ?? null, cacheReadTokens: agent.usage?.cache_read_tokens ?? null, cacheWriteTokens: agent.usage?.cache_write_tokens ?? null,
         stderr: agent.crashed || agent.timedOut ? agent.err : undefined,
         agentTurns: agent.usage?.api_calls ?? null, backends: agent.backends, tokens: agent.usage?.total_tokens ?? null, costUsd: agent.usage?.estimated_cost_usd ?? null,
         timedOut: agent.timedOut, crashed: agent.crashed,
       };
+      const approvals = stack.takeApprovals(); if (approvals.length) Object.assign(row, { approvalGrantedBy: 'harness', approvals });
       row.failure = classify(row);
       rows.push(row);
       console.log(`${row.ok ? 'PASS' : 'FAIL'} ${task.id.padEnd(28)} ${String(wallMs).padStart(6)}ms tools=${toolCalls}/${task.maxSteps}${row.failure ? ' [' + row.failure + ']' : ''}${row.ok ? '' : ' :: ' + (error || row.why)}`);

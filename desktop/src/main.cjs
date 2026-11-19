@@ -152,6 +152,8 @@ const API_TOKEN = crypto.randomBytes(32).toString('hex');
 // Connectors allow 90s for action requests; a batch stops starting new steps
 // early enough that its last step (wait caps at 30s) still answers in time.
 const BATCH_BUDGET_MS = 50000;
+const batchFlow = require('./batch-flow.cjs');
+const FLOW = Symbol('batch-flow');
 const QUIT_SAVE_MS = 8000;
 const NAVIGATE_PARSE_MS = 3000;
 const OPEN_PARSE_MS = 8000;
@@ -1237,8 +1239,8 @@ function requireActor(tab, botId, epoch, mutate = false, overseer = false, now =
 }
 function dryRun(tab) { if (tab.preflight) throw PREFLIGHT_READY; }
 const STALE_HUMAN_EPOCH = 'stale_control_epoch: the human took this tab and may have changed the page. Claim it (control, controller "agent") to take it back, read it, then act.';
-const OTHER_ACTIONS = new Set(['navigate', 'back', 'forward', 'reload', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp']);
-const UNSUPPORTED_ACTION = 'Supported actions: navigate, click, double_click, right_click, drag, select, type, press, move, scroll, back, forward, reload, batch, read, eval, wait, viewport, cdp.';
+const OTHER_ACTIONS = new Set(['navigate', 'back', 'forward', 'reload', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', ...batchFlow.FLOW_ACTIONS]);
+const UNSUPPORTED_ACTION = 'Supported actions: navigate, click, double_click, right_click, drag, select, type, press, move, scroll, back, forward, reload, batch (with if and repeat steps), read, eval, wait, viewport, cdp.';
 // The checks an action passes before it touches the page, run before a bot
 // takes a tab back so a malformed action never costs the human their tab.
 async function checkAction(tab, body, botId, depth = 0) {
@@ -1252,7 +1254,8 @@ async function checkAction(tab, body, botId, depth = 0) {
   if (INPUT_ACTIONS.has(action)) return agentInput.perform(tab, body, botId, { argsOnly: true });
   const code = String(body.code || '');
   if (action === 'eval' && (!code || code.length > 16384)) bad('eval needs a code string (max 16KB).');
-  if (action === 'wait' && !body.selector && !body.text && !body.url) bad('wait needs a selector, text, or url to wait for.');
+  if (action === 'wait' && !body.selector && !body.text && !body.url && !body.name) bad('wait needs a selector, text, url, or name to wait for.');
+  if (batchFlow.FLOW_ACTIONS.has(action)) { if (depth === 0) bad('if and repeat run inside a batch.'); try { batchFlow.validate(body); } catch (error) { bad(error.message); } }
   const width = Math.round(Number(body.width)), height = Math.round(Number(body.height));
   if (action === 'viewport' && body.clear !== true && !(width >= 100 && width <= 7680 && height >= 100 && height <= 4320))
     bad('viewport needs width 100-7680 and height 100-4320, or clear:true.');
@@ -3092,12 +3095,21 @@ async function performStep(tab, body, botId, depth, isAborted) {
   if (depth === 0) agentInput.approve(tab, body);
   const reply = (payload) => depth > 0 ? payload : actionReply(tab, payload);
   const finish = async (payload, opts) => depth > 0 ? { ...payload, ...(opts?.clicked ? { clicked: opts.clicked } : {}) } : actionReply(tab, { ...payload, ...(await actionEffect(tab, { ...opts, held: body.generation })) });
+  const probe = (cond) => { requireAgentRead(tab); return readJs(wc, batchFlow.conditionExpression(cond, tab.refSeed), 12000).catch(() => false); };
+  if (batchFlow.FLOW_ACTIONS.has(body.action)) {
+    if (depth === 0 || !body[FLOW]) throw Object.assign(new Error('if and repeat run inside a batch.'), { status: 400 });
+    dryRun(tab);
+    // Inner steps get the epoch only: an approval belongs to one top-level step, so they face the commit gate on their own.
+    return batchFlow.run(body, { ctx: body[FLOW], test: probe, aborted: isAborted, before: () => { if (isAborted()) throw Object.assign(new Error('The request was closed; remaining steps were not run.'), { status: 499 }); }, leaf: (step) => performAction(tab, { ...step, epoch: body.epoch }, botId, 1, isAborted) });
+  }
   if (body.action === 'batch') {
     if (depth > 0) throw Object.assign(new Error('Batches cannot nest.'), { status: 400 });
     const steps = Array.isArray(body.steps) ? body.steps.slice(0, 25) : [];
     if (!steps.length) throw Object.assign(new Error('batch needs a non-empty steps array (max 25).'), { status: 400 });
+    try { batchFlow.validateBatch(steps); } catch (error) { throw Object.assign(error, { status: 400 }); }
     // Takeover validates just the first step, with the batch's approval mark.
-    if (tab.preflight) return performAction(tab, { ...steps[0], epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, 1, isAborted);
+    const flow = batchFlow.context(BATCH_BUDGET_MS);
+    if (tab.preflight) return performAction(tab, { ...steps[0], epoch: body.epoch, [APPROVED]: body[APPROVED], [FLOW]: flow }, botId, 1, isAborted);
     const results = [], started = Date.now();
     let lastTarget, lastClicked, sawInput = false;
     for (const step of steps) {
@@ -3105,15 +3117,15 @@ async function performStep(tab, body, botId, depth, isAborted) {
       if (Date.now() - started > BATCH_BUDGET_MS) { results.push({ ok: false, error: `batch stopped after ${BATCH_BUDGET_MS / 1000}s; remaining steps were not run. Snapshot, then continue.` }); break; }
       if (isAborted()) { results.push({ ok: false, error: 'The request was closed; remaining steps were not run.' }); break; }
       try {
-        const { clicked, ...result } = await performAction(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED] }, botId, 1, isAborted);
+        const { clicked, ...result } = await performAction(tab, { ...step, epoch: body.epoch, [APPROVED]: body[APPROVED], [FLOW]: flow }, botId, 1, isAborted);
         results.push({ ok: true, ...result });
         if (clicked) lastClicked = clicked;
       }
-      catch (error) { results.push({ ok: false, error: errorMessage(error) }); break; }
+      catch (error) { results.push({ ok: false, error: errorMessage(error), ...(error.flowResults ? { results: error.flowResults } : {}) }); if (batchFlow.hasInput(step, INPUT_ACTIONS)) sawInput = true; break; }
       // A step aimed by name reports the ref it resolved to.
       const ref = results.at(-1).ref || step.ref;
       if (ref !== undefined || step.selector !== undefined) lastTarget = { ref, selector: step.selector };
-      if (INPUT_ACTIONS.has(step.action) && step.action !== 'move') sawInput = true;
+      if ((INPUT_ACTIONS.has(step.action) && step.action !== 'move') || batchFlow.hasInput(step, INPUT_ACTIONS)) sawInput = true;
     }
     // A takeover mid-batch seals the accumulated step results too.
     requireActor(tab, botId, body.epoch, true, overseer);
@@ -3158,6 +3170,13 @@ async function performStep(tab, body, botId, depth, isAborted) {
     const serialized = typeof value === 'string' ? value : JSON.stringify(value);
     if (serialized && serialized.length > 48000) value = serialized.slice(0, 48000) + '…[truncated]';
     return finish({ value, dispatched: true });
+  }
+  if (body.action === 'wait' && body.name !== undefined) {
+    dryRun(tab);
+    const timeoutMs = Math.min(Math.max(Number(body.timeout) || 10000, 100), 30000);
+    const cond = { name: body.name, role: body.role, row: body.row, selector: body.selector, text: body.text, url: body.url, visible: body.visible, gone: body.gone };
+    requireAgentRead(tab);
+    return finish({ ...(await batchFlow.waitFor(cond, { test: probe, timeoutMs, aborted: isAborted })), dispatched: true });
   }
   if (body.action === 'wait') {
     const selector = String(body.selector || '').slice(0, 2000);
@@ -3349,7 +3368,7 @@ function startApi() {
       const url = new URL(req.url, 'http://127.0.0.1');
       const botId = String(req.headers['x-hermes-bot'] || '');
       const overseer = isOverseer(botId);
-      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), ...(hostComputer && process.platform === 'darwin' ? ['computer-window-v1', 'computer-launch-v1', 'computer-open-v1'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets', 'commit-check', ...(require('./agent-input.cjs').APPROVAL_BINDING_VERSION === 1 ? ['approval-binding-v1'] : [])], tabCount: tabs.size+vpsTabs.size, ...(process.platform === 'darwin' ? { computerPermissions: await macPermissions.read(hostComputer) } : {}) });
+      if (req.method === 'GET' && url.pathname === '/v1/status') return send(200, { name: app.getName(), version: app.getVersion(), protocol: 1, build: BUILD, host: HOST_LABEL, hosts:{[HOST_LABEL]:'connected',vps:vpsBrowserStatus}, capabilities: [...(hostComputer ? ['computer', 'computer-v2'] : []), ...(hostComputer && process.platform === 'darwin' ? ['computer-window-v1', 'computer-launch-v1', 'computer-open-v1'] : []), 'tabs', 'snapshot', 'screenshot', 'navigate', 'click', 'double_click', 'right_click', 'drag', 'select', 'type', 'press', 'move', 'scroll', 'batch', 'read', 'eval', 'wait', 'viewport', 'cdp', 'agent-cursor', 'background-input', 'control-epochs', 'name-targets', 'batch-flow', 'commit-check', ...(require('./agent-input.cjs').APPROVAL_BINDING_VERSION === 1 ? ['approval-binding-v1'] : [])], tabCount: tabs.size+vpsTabs.size, ...(process.platform === 'darwin' ? { computerPermissions: await macPermissions.read(hostComputer) } : {}) });
       if (req.method === 'GET' && url.pathname === '/v1/diagnostics') {
         const appearance = await Promise.race([
           telegramView.webContents.executeJavaScript(`(() => ({
