@@ -64,20 +64,19 @@ const tasks = [
     start: () => 'https://books.toscrape.com/',
     goal: () => 'Using the Next button (not by editing the URL), go to page 3 of the catalogue and report the full title of the 5th book listed on that page.',
     check: async ({ answer }) => { const html = await get('https://books.toscrape.com/catalogue/page-3.html'); const t = [...html.matchAll(/<h3><a [^>]*title="([^"]+)"/g)][4]?.[1] || ''; return { ok: !!t && has(answer, t.replace(/&#39;/g, "'").replace(/&amp;/g, '&')), why: `expected "${t}" got "${answer}"` }; },
-    maxSteps: 10, why: 'Titles are truncated in link text (full title only in an attribute); counting list position across a grid.', oracle: async (t) => { for (let i = 0; i < 2; i++) { await t.act({ action: 'click', selector: 'li.next a' }); await t.act({ action: 'wait', selector: 'li.previous', timeout: 8000 }); }
-      // Link text is truncated, so open the 5th book and read its full title.
-      const { items } = await t.act({ action: 'read', list: { selector: 'article.product_pod', fields: { href: { type: 'href', selector: 'h3 a' } } } });
-      await t.act({ action: 'navigate', url: items[4].href });
-      return (await t.act({ action: 'read', list: { selector: '.product_main h1', fields: { title: { type: 'text' } } } })).items[0].title; },
+    maxSteps: 10, why: 'Titles are truncated in link text (full title only in an attribute); counting list position across a grid.', oracle: async (t) => (await t.act({ action: 'batch', steps: [
+      { action: 'repeat', until: { url: 'page-3.html' }, steps: [{ action: 'click', selector: 'li.next a' }], max: 3 },
+      // Link text is truncated; the title attribute holds the full title.
+      { action: 'read', list: { selector: 'article.product_pod h3 a', fields: { title: { type: 'attr', attr: 'title' } } } }] })).results[1].items[4].title,
   },
   {
     id: 'pub-quotes-infinite-scroll', tier: 'public', title: 'Infinite scroll extraction',
     start: () => 'https://quotes.toscrape.com/scroll',
     goal: () => 'This page loads more quotes as you scroll. Load at least 30 quotes and report the author of the 25th quote.',
     check: async ({ answer }) => { const j = JSON.parse(await get('https://quotes.toscrape.com/api/quotes?page=3')); const a = j.quotes[4].author.name; return { ok: has(answer, a), why: `expected ${a} got ${answer}` }; },
-    maxSteps: 10, why: 'Content only exists after scrolling; the agent must scroll, wait for the lazy load, and count.', oracle: async (t) => {
-      for (let n = 20; n <= 30; n += 10) await t.act({ action: 'batch', steps: [{ action: 'scroll', y: 5000 }, { action: 'wait', selector: `.quote:nth-of-type(${n})`, timeout: 8000 }] });
-      return (await t.act({ action: 'read', list: { selector: '.quote', fields: { author: { type: 'text', selector: '.author' } } } })).items[24].author; },
+    maxSteps: 10, why: 'Content only exists after scrolling; the agent must scroll, wait for the lazy load, and count.', oracle: async (t) => (await t.act({ action: 'batch', steps: [
+      { action: 'repeat', until: { selector: '.quote:nth-of-type(30)' }, steps: [{ action: 'scroll', y: 5000 }], max: 6 },
+      { action: 'read', list: { selector: '.quote', fields: { author: { type: 'text', selector: '.author' } } } }] })).results[1].items[24].author,
   },
   {
     id: 'pub-js-prompt', tier: 'public', title: 'Native prompt dialog',
@@ -93,9 +92,10 @@ const tasks = [
     goal: () => 'This docs page has live switch demos. Turn on the switch labelled "Medium" (leave the others alone) and report whether it is now on. A promotional dialog may be in the way.',
     check: async ({ stack }) => { const r = await stack.pageEval('[...document.querySelectorAll("sl-switch")].map(s=>s.textContent.trim()+(s.checked?"+":"-")).join()'); return { ok: /Medium\+/.test(r || '') && /Small-/.test(r || '') && /Large-/.test(r || ''), why: String(r) }; },
     maxSteps: 8, why: 'Shadow-DOM web components whose real input is visually hidden: the snapshot does not list the switches even when scrolled into view, so the agent needs a screenshot and a coordinate click. A modal "Web Awesome" promo covers the page on load and must be dismissed first.',
-    oracle: async (t) => { await t.act({ action: 'eval', code: 'document.getElementById("wa-dialog").open=false;1' }); await t.act({ action: 'eval', code: '(()=>{const s=[...document.querySelectorAll("sl-switch")].find(x=>x.textContent.trim()==="Medium");s.scrollIntoView({block:"center",behavior:"instant"});return 1})()' });
-      for (let i = 0; i < 20 && !t.els.some((e) => e.role === 'switch'); i++) { await t.snapshot({ maxElements: 300 }); if (!t.els.some((e) => e.role === 'switch')) await new Promise((r) => setTimeout(r, 250)); }
-      await t.act({ action: 'click', ref: t.ref(/^Medium/, 'switch') }); return 'on'; },
+    oracle: async (t) => { await t.act({ action: 'batch', steps: [
+      { action: 'wait', selector: '#wa-dialog[open]', timeout: 5000 }, { action: 'press', key: 'Escape' }, { action: 'wait', name: 'No, thanks', gone: true, timeout: 3000 },
+      { action: 'repeat', until: { name: 'Medium', role: 'switch' }, steps: [{ action: 'scroll', y: 400 }], max: 20 },
+      { action: 'click', name: 'Medium', role: 'switch' }] }); return 'on'; },
   },
   {
     id: 'pub-iframe-datepicker', tier: 'public', title: 'Datepicker inside an iframe',
@@ -162,9 +162,7 @@ const tasks = [
     check: ({ fx }) => ({ ok: fx.reports.scroll?.selected === `Item ${fx.scrollTarget}`, why: JSON.stringify(fx.reports.scroll) + ' want Item ' + fx.scrollTarget }),
     maxSteps: 14, why: 'Items load 20 at a time on scroll via IntersectionObserver; the target is 80-110 items down and 120 buttons share one name.',
     oracle: async (t, fx) => { const want = `Item ${fx.scrollTarget}`;
-      const find = `[...document.querySelectorAll('li')].find(l=>l.firstChild.textContent.trim()==='${want}')`;
-      for (let i = 0; i < 12; i++) { const r = await t.act({ action: 'eval', code: `(()=>{const li=${find};if(li){li.querySelector('button').scrollIntoView();return true}scrollTo(0,document.body.scrollHeight);return false})()` }); if (r.value) break; await t.act({ action: 'wait', timeout: 400, text: 'Item ' + (i * 20 + 21) }).catch(() => {}); }
-      await t.snapshot({ maxElements: 300 }); await t.act({ action: 'eval', code: `${find}.querySelector('button').click()` }); },
+      await t.act({ action: 'batch', steps: [{ action: 'repeat', until: { text: want }, steps: [{ action: 'scroll', y: 3000 }], max: 12 }, { action: 'click', name: 'Select', row: want }] }); },
   },
   {
     id: 'fx-paginate-max', tier: 'fixture', title: 'Max across paged table',
@@ -192,7 +190,7 @@ const tasks = [
     goal: () => 'Choose Portugal as the Country.',
     check: ({ fx }) => ({ ok: fx.reports.combo === 'Portugal', why: String(fx.reports.combo) }),
     maxSteps: 8, why: 'Options are rendered 9 at a time inside a scroller and filtered as you type; Portugal is not in the DOM until you scroll or type.',
-    oracle: async (t) => { const s = await t.snapshot(); await t.act({ action: 'type', ref: t.ref(/country/i), text: 'Port' }); const s2 = await t.snapshot(); await t.act({ action: 'click', ref: t.ref(/^Portugal/i) }); },
+    oracle: async (t) => { await t.act({ action: 'batch', steps: [{ action: 'type', name: 'Country', text: 'Port' }, { action: 'wait', name: 'Portugal', timeout: 4000 }, { action: 'click', name: 'Portugal' }] }); },
   },
   {
     id: 'fx-canvas-click', tier: 'fixture', title: 'Canvas target by colour',
@@ -209,9 +207,10 @@ const tasks = [
     goal: () => 'Sign up with work email ops@example.com on the Team plan with 12 seats, accept the terms and create the account.',
     check: ({ fx }) => ({ ok: JSON.stringify(fx.reports.wizard) === JSON.stringify({ email: 'ops@example.com', plan: 'team', seats: '12', terms: true }), why: JSON.stringify(fx.reports.wizard) }),
     maxSteps: 14, why: 'Controls are re-rendered at every step (refs invalidated), the seats field appears only after choosing Team, and each Next validates.',
-    oracle: async (t) => { let s = await t.snapshot(); await t.act({ action: 'type', ref: t.ref(/work email/i), text: 'ops@example.com' }); await t.act({ action: 'click', ref: t.ref(/^next/i) });
-      s = await t.snapshot(); await t.act({ action: 'click', ref: t.ref(/team/i) }); s = await t.snapshot(); await t.act({ action: 'type', ref: t.ref(/seats/i), text: '12' }); await t.act({ action: 'click', ref: t.ref(/^next/i) });
-      s = await t.snapshot(); await t.act({ action: 'click', ref: t.ref(/accept the terms/i) }); await t.act({ action: 'click', ref: t.ref(/create account/i) }); },
+    oracle: async (t) => { await t.act({ action: 'batch', steps: [
+      { action: 'type', name: 'Work email', text: 'ops@example.com' }, { action: 'click', name: 'Next' },
+      { action: 'wait', name: 'Team' }, { action: 'click', name: 'Team' }, { action: 'wait', name: 'Seats' }, { action: 'type', name: 'Seats', text: '12' }, { action: 'click', name: 'Next' },
+      { action: 'wait', name: 'Create account' }, { action: 'click', name: 'I accept the terms' }, { action: 'click', name: 'Create account' }] }); },
   },
   {
     id: 'fx-drag-reorder', tier: 'fixture', title: 'Native drag-and-drop reorder',
