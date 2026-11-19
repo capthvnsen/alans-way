@@ -59,3 +59,28 @@ test('a bot picture that changes gets a new URL so the renderer reloads it', () 
   prefs.bots[0].avatar = b;
   assert.notEqual(store.publicBots()[0].avatar, first);
 });
+test('tint is stored per bot beside the avatar choice, and unknown values are stored as none', () => {
+  const { store, prefs } = setup({ bots: [{ id: '123' }, { id: '456' }] });
+  const builtin = store.library()[0];
+  store.set({ id: '123', selectedId: builtin.id, eyes: builtin.eyes, tint: 'red' });
+  store.set({ id: '456', selectedId: builtin.id, eyes: builtin.eyes, tint: 'blue' });
+  assert.equal(prefs.avatarPreferences['123'].tint, 'red');
+  assert.equal(prefs.avatarPreferences['456'].tint, 'blue');
+  store.set({ id: '123', selectedId: builtin.id, eyes: builtin.eyes, tint: 'yellow' });
+  assert.equal(prefs.avatarPreferences['123'].tint, 'yellow');
+  assert.equal(prefs.avatarPreferences['456'].tint, 'blue');
+  for (const tint of ['purple', '', null, 3, undefined]) {
+    store.set({ id: '123', selectedId: builtin.id, eyes: builtin.eyes, tint });
+    assert.equal(prefs.avatarPreferences['123'].tint, 'none');
+  }
+});
+test('built-in marble avatars ship eye geometry that survives normalisation unchanged', () => {
+  const { store } = setup();
+  const marble = store.library().filter(item => item.builtIn);
+  assert.equal(marble.length, 10);
+  for (const item of marble) {
+    assert.equal(item.eyes.enabled, true);
+    assert.deepEqual(normalizeEyes(item.eyes), item.eyes);
+    assert.ok(item.eyes.travel.right > 0 && Number.isFinite(item.eyes.left.rotate));
+  }
+});

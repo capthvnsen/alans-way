@@ -4,11 +4,15 @@ const crypto = require('node:crypto');
 
 const LIMIT = 40;
 const AVATAR_SCHEME = 'hw-avatar';
+const { normalizeTint } = require('./avatars.js');
 function normalizeEyes(value) {
   const number = (value, fallback, min, max) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
-  const point = (value, x) => ({ x: number(value?.x, x, 0, 1), y: number(value?.y, 0.4, 0, 1), scaleX: number(value?.scaleX, 1, 0.5, 1.5) });
+  const point = (value, x) => ({ x: number(value?.x, x, 0, 1), y: number(value?.y, 0.4, 0, 1), scaleX: number(value?.scaleX, 1, 0.5, 1.5),
+    scaleY: number(value?.scaleY, 1, 0.5, 1.5), rotate: number(value?.rotate, 0, -45, 45) });
+  const travel = (edge, fallback) => number(value?.travel?.[edge], fallback, 0, 0.05);
   return { enabled: value?.enabled === true, left: point(value?.left, 0.4), right: point(value?.right, 0.6),
-    radius: number(value?.radius, 0.025, 0.005, 0.12), aspect: number(value?.aspect, 1.6, 0.5, 3), style: value?.style === 'obsidian' ? 'obsidian' : 'classic' };
+    radius: number(value?.radius, 0.025, 0.005, 0.12), aspect: number(value?.aspect, 1.6, 0.5, 3), style: value?.style === 'obsidian' ? 'obsidian' : 'classic',
+    travel: { left: travel('left', 0.02), right: travel('right', 0.02), up: travel('up', 0.012), down: travel('down', 0.016) } };
 }
 
 function createAvatarStore({ root, nativeImage, dialog, getWindow, getPreferences }) {
@@ -52,7 +56,7 @@ function createAvatarStore({ root, nativeImage, dialog, getWindow, getPreference
     if (!prefs.bots.some(bot => bot.id === id)) throw new Error('Choose a Telegram bot first.');
     if (value.selectedId !== 'telegram' && !library().some(item => item.id === value.selectedId)) throw new Error('Choose an available avatar.');
     prefs.avatarPreferences ||= {};
-    prefs.avatarPreferences[id] = { selectedId: value.selectedId, eyes: normalizeEyes(value.eyes) };
+    prefs.avatarPreferences[id] = { selectedId: value.selectedId, eyes: normalizeEyes(value.eyes), tint: normalizeTint(value.tint) };
   }
   async function importFiles() {
     const prefs = getPreferences();

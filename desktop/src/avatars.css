@@ -15,13 +15,16 @@
 .hermes-avatar-cutout .hermes-avatar-ring{display:none}
 .hermes-avatar-cutout.hermes-avatar-active .hermes-avatar-face{box-shadow:none;animation:hermes-bust-glow 2.6s ease-in-out infinite}
 @keyframes hermes-bust-glow{0%,100%{filter:drop-shadow(0 0 2px #8cdfc34d)}50%{filter:drop-shadow(0 0 7px #8cdfc399)}}
+.hermes-avatar-cutout .hermes-avatar-face>img,.avatar-choice-cutout img{filter:var(--hermes-tint,none)}
+/* A tint is a cast over the marble, not a recolour: it filters the sculpture image only (so the transparent surround and the eyes are untouched). */
+[data-tint=red]{--hermes-tint:hue-rotate(-34deg) saturate(.8)}
+[data-tint=blue]{--hermes-tint:hue-rotate(172deg) saturate(.7)}
+[data-tint=yellow]{--hermes-tint:sepia(.1) hue-rotate(8deg) saturate(1.3)}
 .hermes-eye{position:absolute;transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;overflow:hidden;z-index:2}
 .hermes-eye-classic{background:#f2eee5;box-shadow:inset 0 0 0 1px #16162025}
 .hermes-pupil{display:block;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:50%;height:55%;border-radius:50%;background:#17171c}
-.hermes-avatar-active .hermes-pupil{transition:transform 85ms ease-out}
 .hermes-eye-classic .hermes-pupil:after{content:'';position:absolute;width:23%;height:23%;left:18%;top:13%;border-radius:50%;background:#fff}
-.hermes-eye-obsidian{border-radius:46% / 25%;background:linear-gradient(120deg,#181817,#080908 70%);box-shadow:inset 0 0 0 .35px #171813}
-.hermes-eye-obsidian .hermes-pupil{width:69%;height:53%;background:radial-gradient(ellipse at 50% 28%,#f5f3dcdb 0,#c9cbb970 18%,#949b7f1c 42%,transparent 72%);border-radius:50%;top:35%;filter:blur(.18px)}
+.hermes-eye-obsidian{background:#000}
 .hermes-eye.calibrating{outline:1px dashed #a4efd5;outline-offset:2px}
 .avatar-editor{font-size:12px}
 .avatar-field-label{display:block;color:#b7b7c4;font-size:11px;margin:10px 0 7px}
@@ -53,6 +56,16 @@
 .avatar-choice[aria-pressed=true] .avatar-choice-check{display:flex}
 .avatar-remove{display:block;margin:9px 0 3px;padding:4px 0;font-size:10px;color:#b6a1a8}
 .avatar-remove:hover{color:#efbbc9}
+.avatar-tint-field[hidden],.avatar-eye-toggle[hidden]{display:none}
+.avatar-tints{display:flex;gap:10px;padding:2px}
+.avatar-swatch{width:26px;height:26px;border-radius:50%;border:1px solid #ffffff33;padding:0;background:var(--swatch);cursor:pointer}
+.avatar-swatch[data-tint=none]{--swatch:linear-gradient(135deg,#f1ebe1,#cfc6b8)}
+.avatar-swatch[data-tint=red]{--swatch:linear-gradient(135deg,#efd9d9,#c9a9aa)}
+.avatar-swatch[data-tint=blue]{--swatch:linear-gradient(135deg,#d9e3ee,#a9b9ca)}
+.avatar-swatch[data-tint=yellow]{--swatch:linear-gradient(135deg,#f1e6c4,#cdbd8a)}
+.avatar-swatch:hover{border-color:#ffffff80}
+.avatar-swatch[aria-checked=true]{box-shadow:0 0 0 2px #17171b,0 0 0 4px #9fddc2}
+.avatar-swatch:focus-visible{outline:2px solid #8baaf1;outline-offset:3px}
 .avatar-eye-toggle{display:flex;align-items:center;gap:9px;color:#d6d6df;line-height:1.5;margin-top:21px;padding-top:18px;border-top:1px solid #303038;cursor:pointer}
 .avatar-eye-toggle input{width:15px;height:15px;accent-color:#96d4b7;margin:0;flex-shrink:0}
 .avatar-calibration{padding:0 0 5px}
@@ -69,7 +82,7 @@
 .avatar-editor-footer .primary-button{margin:0}
 .avatar-save-note{font-size:10px;color:#9ec6ad}
 .avatar-editor button:disabled{cursor:wait;opacity:.55}
-@media(prefers-reduced-motion:reduce){.hermes-avatar-active .hermes-avatar-ring{animation:none;background:linear-gradient(125deg,#9ee0c4,#b7a6e3)}.hermes-avatar-cutout.hermes-avatar-active .hermes-avatar-face{animation:none;filter:drop-shadow(0 0 3px #8cdfc373)}.hermes-pupil{transition:none!important}}
+@media(prefers-reduced-motion:reduce){.hermes-avatar-active .hermes-avatar-ring{animation:none;background:linear-gradient(125deg,#9ee0c4,#b7a6e3)}.hermes-avatar-cutout.hermes-avatar-active .hermes-avatar-face{animation:none;filter:drop-shadow(0 0 3px #8cdfc373)}}
 @media(max-width:700px){.avatar-gallery{grid-template-columns:repeat(4,minmax(0,1fr))}.avatar-stage{gap:16px;padding:18px 12px}.avatar-editor-preview{width:140px;height:140px}}
 
 /* Chat and agent-list density. Kept here (loaded after style.css) so it composes with parallel style.css edits. */
