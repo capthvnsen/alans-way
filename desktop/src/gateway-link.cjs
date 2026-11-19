@@ -38,7 +38,7 @@ const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const str = (v, max = 300) => typeof v === 'string' ? v.slice(0, max) : '';
 // Failures that retrying cannot fix: the user (or the settings) must act.
 const SIGNIN_CODES = new Set(['session_expired', 'needs_signin', 'auth_failed']);
-const STOP_CODES = new Set(['unconfigured', 'bad_url', 'no_credential']);
+const STOP_CODES = new Set(['unconfigured', 'no_credential']);
 
 function createGatewayLink(deps = {}) {
   const { open } = deps;
@@ -118,6 +118,8 @@ function createGatewayLink(deps = {}) {
       if (conn === opened && opened) dropConn('attach_failed', { keepState: true });
       else if (opened) closeConn(opened);
       if (SIGNIN_CODES.has(code)) { setState('signin'); return; }
+      // The address rule (tailnet, scheme) said no: retrying cannot change that, only a new address can.
+      if (code === 'bad_url') { setState('refused'); return; }
       if (STOP_CODES.has(code)) { setState('idle'); return; }
       setState(isOnline() ? 'reconnecting' : 'offline');
       scheduleNext();
@@ -295,7 +297,7 @@ function createGatewayLink(deps = {}) {
     log('link.trigger', { reason });
     if (reason === 'retry' || reason === 'credentials') {
       if (suspended) return;
-      if (state === 'signin' || state === 'idle') { failures = 0; setState('reconnecting'); }
+      if (state === 'signin' || state === 'idle' || state === 'refused') { failures = 0; setState('reconnecting'); }
       if (!conn) { clearWait(); attemptNow(); }
       return;
     }

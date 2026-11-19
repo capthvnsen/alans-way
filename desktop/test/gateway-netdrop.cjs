@@ -1,4 +1,5 @@
 'use strict';
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1'; // loopback fixtures under HERMES_WORKSPACE_REQUIRE_TAILNET=1, as the other hermes tests
 // Network-drop harness for the gateway link (`npm run test:gateway-drop`).
 //
 // The REAL stack runs end to end: hermes-remote (sign-in, ticket, WebSocket),
@@ -82,7 +83,10 @@ function createProxy(targetPort) {
 const KEY = 'sess-key-1';
 async function stack({ rttMs = 0, jitterMs = 0, backend: backendCfg = {}, options = {} } = {}) {
   const backend = await fakeBackend({ authRequired: true, sessions: [], tokenTag: 'be', deltaCount: 6, deltaMs: 20, ...backendCfg });
-  const proxy = await createProxy(new URL(backend.url).port);
+  let proxy, link;
+  try { return await build(); } catch (e) { link?.stop(); await proxy?.close(); await backend.close(); throw e; }
+  async function build() {
+  proxy = await createProxy(new URL(backend.url).port);
   const url = `http://127.0.0.1:${proxy.port}`;
   const remote = createHermesRemote();
   const base = remote.normalizeBaseUrl(url);
@@ -102,7 +106,7 @@ async function stack({ rttMs = 0, jitterMs = 0, backend: backendCfg = {}, option
     } finally { live.inFlight -= 1; }
   };
   const logs = [];
-  const link = createGatewayLink({ open, log: (e, f) => logs.push([e, f]), options: { stableMs: 50, ...options } });
+  link = createGatewayLink({ open, log: (e, f) => logs.push([e, f]), options: { stableMs: 50, ...options } });
   const rest = createHermesApi({ baseUrl: url, key: 'k'.repeat(20) });
   const api = createGatewayApi({ rest, link });
   const linkEvents = [], states = [], gaps = [], lives = [];
@@ -112,8 +116,10 @@ async function stack({ rttMs = 0, jitterMs = 0, backend: backendCfg = {}, option
   link.on('live', () => lives.push(now()));
   link.start();
   await until(() => link.isLive(), 5000, 'the first connection');
+  const bounded = (p) => Promise.race([p, sleep(5000)]); // a close that never settles must not hold the run
   return { backend, proxy, link, api, rest, live, logs, linkEvents, states, gaps, lives, url,
-    async close() { link.stop(); await proxy.close(); await backend.close(); } };
+    async close() { link.stop(); await bounded(proxy.close()); await bounded(backend.close()); } };
+  }
 }
 
 // One reply through the adapter; resolves when the stream ends.
@@ -309,11 +315,15 @@ async function firstToken({ rttMs, n = 10 }) {
   } finally { await h.close(); }
 }
 
+// A scenario that stalls fails its row; the watchdog ends the process if anything still hangs.
+const SCENARIO_MS = 240000;
+setTimeout(() => { console.error('gateway-netdrop: watchdog, the run took longer than 10 minutes'); process.exit(2); }, 600000).unref();
+
 async function main() {
   const runs = Number(process.env.DROP_RUNS) || 100;
   const started = now();
   const only = process.env.DROP_ONLY;
-  const guarded = async (name, fn) => { if (only && !name.includes(only)) return; try { await fn(); } catch (e) { check(name, 'scenario completed', e.message, 'completes', false); } };
+  const guarded = async (name, fn) => { if (only && !name.includes(only)) return; try { await Promise.race([fn(), sleep(SCENARIO_MS).then(() => { throw new Error(`no result in ${SCENARIO_MS / 1000} s`); })]); } catch (e) { check(name, 'scenario completed', e.message, 'completes', false); } };
   // Timing-sensitive scenarios run alone; the long waits run side by side.
   await guarded('reset RT 100', () => resetRuns({ runs, rttMs: 100 }));
   await guarded('reset RT 0', () => resetRuns({ runs: 30, rttMs: 0 }));

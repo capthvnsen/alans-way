@@ -25,7 +25,7 @@ function submitError(e) {
 function createGatewayApi({ rest, link, transport = () => 'websocket' }) {
   let runCounter = 0;
   const idOf = (runId) => String(runId).split(':').slice(1, -1).join(':');
-  const usable = () => transport() !== 'sse' && !['idle', 'stopped'].includes(link.getState().state);
+  const usable = () => transport() !== 'sse' && !['idle', 'refused', 'stopped'].includes(link.getState().state);
 
   async function streamChat(sessionId, text, { onEvent = () => {}, signal } = {}) {
     if (!usable()) return rest.streamChat(sessionId, text, { onEvent, signal });
@@ -82,8 +82,8 @@ function createGatewayApi({ rest, link, transport = () => 'websocket' }) {
     const onState = (s) => {
       if (finished) return;
       clearTimeout(giveUp);
-      if (['signin', 'stopped'].includes(s.state)) { end(new ApiError('stream_dropped', 'The reply could not be resumed.')); return; }
-      if (s.state !== 'live') giveUp = setTimeout(() => end(new ApiError('stream_dropped', 'The connection did not come back in time.')), GIVE_UP_MS);
+      if (['signin', 'refused', 'stopped'].includes(s.state)) { end(new ApiError('stream_dropped', 'The reply could not be resumed.')); return; }
+      if (s.state !== 'live') { giveUp = setTimeout(() => end(new ApiError('stream_dropped', 'The connection did not come back in time.')), GIVE_UP_MS); giveUp.unref?.(); }
     };
     const onAbort = () => end(new ApiError('aborted', 'Stopped.'));
     link.on('event', onLinkEvent); link.on('request', onRequest); link.on('requestClosed', onClosed); link.on('gap', onGap); link.on('state', onState);

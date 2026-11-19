@@ -1,4 +1,5 @@
 'use strict';
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1'; // loopback fixtures under HERMES_WORKSPACE_REQUIRE_TAILNET=1, as the other hermes tests
 // Log canary (docs/gateway-spec.md, section 7): put a canary in every token and
 // ticket the backend mints, in the password, and in a message; connect, stream,
 // drop the socket, fail a ticket, expire the sign-in; then assert the canary is
@@ -31,20 +32,21 @@ test('a token, ticket, password or message never appears in a log', async () => 
   process.stdout.write = function (chunk, ...rest) { seen.push(String(chunk)); return stdout.call(this, chunk, ...rest); };
   process.stderr.write = function (chunk, ...rest) { seen.push(String(chunk)); return stderr.call(this, chunk, ...rest); };
 
-  const backend = await fakeBackend({ authRequired: true, tokenTag: CANARY, sessions: [], deltaCount: 8, deltaMs: 15 });
-  const remote = createHermesRemote();
-  const base = remote.normalizeBaseUrl(backend.url);
-  const tokens = await remote.signIn({ base, provider: 'basic', username: 'alice', password: PASSWORD });
-  assert.ok(tokens.accessToken.includes(CANARY), 'the canary is in the credentials');
+  let backend, link;
   let expired = false;
   const reported = [];
-  // Expired access token: every connect refreshes (refresh token on the wire) then mints a ticket.
-  const open = createGatewayOpener({ credentials: () => ({ base, tokens: { ...tokens, expiresAt: 1 } }), adoptTokens: () => {}, expireSignIn: () => { expired = true; }, remote });
-  const link = createGatewayLink({ open, log: (event, fields) => log.write(event, JSON.stringify(fields)),
-    options: { baseMs: 5, capMs: 40, stableMs: 20, connectTimeoutMs: 1000 } });
-  link.on('state', (s) => reported.push(JSON.stringify(s)));
-  link.on('gap', (g) => reported.push(JSON.stringify(g)));
   try {
+    backend = await fakeBackend({ authRequired: true, tokenTag: CANARY, sessions: [], deltaCount: 8, deltaMs: 15 });
+    const remote = createHermesRemote();
+    const base = remote.normalizeBaseUrl(backend.url);
+    const tokens = await remote.signIn({ base, provider: 'basic', username: 'alice', password: PASSWORD });
+    assert.ok(tokens.accessToken.includes(CANARY), 'the canary is in the credentials');
+    // Expired access token: every connect refreshes (refresh token on the wire) then mints a ticket.
+    const open = createGatewayOpener({ credentials: () => ({ base, tokens: { ...tokens, expiresAt: 1 } }), adoptTokens: () => {}, expireSignIn: () => { expired = true; }, remote });
+    link = createGatewayLink({ open, log: (event, fields) => log.write(event, JSON.stringify(fields)),
+      options: { baseMs: 5, capMs: 40, stableMs: 20, connectTimeoutMs: 1000 } });
+    link.on('state', (s) => reported.push(JSON.stringify(s)));
+    link.on('gap', (g) => reported.push(JSON.stringify(g)));
     link.start();
     await until(() => link.isLive(), 5000, 'live');
     await link.attach('canary-session');
@@ -64,10 +66,11 @@ test('a token, ticket, password or message never appears in a log', async () => 
     await until(() => link.getState().state === 'signin', 8000, 'signin');
     assert.equal(expired, true);
   } finally {
-    link.stop();
+    // Always: restore the console first so a failure is visible, then stop everything this test started.
     for (const [k, fn] of hooks) console[k] = fn;
     process.stdout.write = stdout; process.stderr.write = stderr;
-    await backend.close();
+    link?.stop();
+    await backend?.close();
   }
   const everything = [fs.readFileSync(log.file, 'utf8'), ...seen, ...reported, JSON.stringify(link.getState())].join('\n');
   assert.ok(everything.includes('link.state'), 'the log recorded the run');

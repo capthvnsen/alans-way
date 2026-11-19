@@ -1,4 +1,5 @@
 'use strict';
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1'; // loopback fixtures under HERMES_WORKSPACE_REQUIRE_TAILNET=1, as the other hermes tests
 // The adapter and native chat over a scripted link: event names map to what
 // native chat already handles, a gap reloads history with a note, the link
 // state shows in getState, and with no gateway the SSE path is untouched.

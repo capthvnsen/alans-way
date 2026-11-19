@@ -1,8 +1,9 @@
 'use strict';
+process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1'; // loopback fixtures under HERMES_WORKSPACE_REQUIRE_TAILNET=1, as the other hermes tests
 // Link supervisor over a fake wire: the REAL HermesSessionWire and controller
 // run over in-memory streams against the shared gateway engine (replay ring,
 // epoch, orphan grace). No sockets, no Electron. Timers are real and small.
-const { test } = require('node:test');
+const { test, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const { PassThrough } = require('node:stream');
 const { HermesSessionWire } = require('../src/hermes-session-wire.cjs');
@@ -39,6 +40,10 @@ function memConn(engine, server) {
   return conn;
 }
 
+const live = [];
+// Whatever a test (even a failing one) started is stopped here, so nothing keeps the suite alive.
+afterEach(() => { for (const stop of live.splice(0)) stop(); });
+
 function rig(engineCfg = {}, linkCfg = {}) {
   const engine = createGatewayEngine({ sessions: [], orphanGraceMs: 5000, deltaCount: 6, deltaMs: 15, ...engineCfg });
   const server = { opens: 0, open: 0, maxOpen: 0, maxInFlight: 0, inFlight: 0, gate: null, fail: 0, conns: [], failWith: null };
@@ -64,7 +69,9 @@ function rig(engineCfg = {}, linkCfg = {}) {
   link.on('event', (e) => events.push(e));
   link.on('gap', (g) => gaps.push(g));
   const hold = () => { let release; server.gate = new Promise((r) => { release = r; }); return () => { server.gate = null; release(); }; };
-  return { engine, server, link, states, events, gaps, logs, hold, done: () => { link.stop(); engine.close(); } };
+  const done = () => { link.stop(); engine.close(); };
+  live.push(done);
+  return { engine, server, link, states, events, gaps, logs, hold, done };
 }
 const seqs = (events, id = 'k1') => events.filter((e) => e.storedId === id && e.type !== 'gateway.ready').map((e) => e.seq);
 
@@ -75,6 +82,7 @@ test('backoff: first retry is immediate, then 0.5 s doubling to the 15 s cap, fu
     open: async () => { n++; throw new RemoteError('unreachable', 'x'); },
     timers: { random: () => 1, setTimeout: (fn, ms) => { delays.push(ms); return setTimeout(fn, 1); } },
   });
+  live.push(() => link.stop());
   link.start();
   await until(() => n >= 9);
   link.stop();
@@ -86,6 +94,7 @@ test('backoff: first retry is immediate, then 0.5 s doubling to the 15 s cap, fu
     open: async () => { m++; throw new RemoteError('unreachable', 'x'); },
     timers: { random: () => 0.5, setTimeout: (fn, ms) => { half.push(ms); return setTimeout(fn, 1); } },
   });
+  live.push(() => link2.stop());
   link2.start();
   await until(() => m >= 4);
   link2.stop();
@@ -283,4 +292,23 @@ test('a send while the link is not live is refused, not queued', async () => {
   const r = rig();
   await assert.rejects(r.link.submit('k1', 'hi'), (e) => e instanceof LinkError && e.code === 'not_live');
   r.done();
+});
+
+test('a refused address ends in the refused state: one attempt, no retry loop, nothing left running', async () => {
+  let opens = 0;
+  const link = createGatewayLink({ open: async () => { opens++; throw new RemoteError('bad_url', 'Use a literal Tailscale IP address for the Hermes backend.'); },
+    options: { baseMs: 5, capMs: 10 } });
+  live.push(() => link.stop());
+  link.start();
+  await until(() => link.getState().state === 'refused');
+  await sleep(60);
+  assert.equal(opens, 1);
+  assert.equal(link.getState().lastError, 'bad_url');
+  link.trigger('online'); link.trigger('wake');
+  await sleep(30);
+  assert.equal(opens, 2, 'a trigger tries once more, and lands in refused again');
+  assert.equal(link.getState().state, 'refused');
+  link.stop();
+  await sleep(30);
+  assert.equal(opens, 2);
 });
