@@ -1316,9 +1316,11 @@ func runStep(_ pid: pid_t, _ step: JSON, windowId: CGWindowID?) throws -> JSON {
                     break
                 }
             }
+            var typed = 0
             for character in text {
-                if pastActDeadline() { throw Fail("timeout", "Out of time partway through the text, so only part of it was typed.") }
+                if pastActDeadline() { throw Fail("timeout", "Out of time after typing \(typed) of \(text.count) characters; the rest was not typed. Do not retype the first \(typed).") }
                 try postKey(pid, key: character == "\n" ? "return" : String(character), modifiers: [])
+                typed += 1
             }
             out["via"] = "keys"
             break
