@@ -21,7 +21,11 @@ app.whenReady().then(async () => {
     if (ready) break;
     await pause(100);
   }
-  const guest = webContents.getAllWebContents().find((item) => item.getURL().endsWith('/remote.html'));
+  let guest;
+  for (let i = 0; i < 80 && !guest; i++) {
+    guest = webContents.getAllWebContents().find((item) => item.getURL().endsWith('/remote.html'));
+    if (!guest) await pause(100);
+  }
   assert.ok(guest, 'VM viewer did not load');
   for (let i = 0; i < 50; i++) {
     const ready = await guest.executeJavaScript(`typeof document.getElementById('configure').onclick === 'function'`);
