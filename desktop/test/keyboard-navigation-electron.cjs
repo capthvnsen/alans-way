@@ -71,7 +71,7 @@ app.whenReady().then(async () => {
       await focus('#modal-close'); await key('Tab', ['shift']); assert.equal(await active(), 'primary-button');
     });
     await check('background controls cannot take modal focus', async () => {
-      await focus('#search-toggle'); assert.equal(await inside('modal'), true);
+      await focus('#bot-search'); assert.equal(await inside('modal'), true);
     });
     await focus('#bot-username'); await key('Escape');
     await check('Escape dismisses and restores the opener', async () => {
@@ -108,7 +108,7 @@ app.whenReady().then(async () => {
       assert.equal(await active(), 'settings-button'); await evaluate('document.getElementById("add-bot").disabled = false');
     });
 
-    await focus('#search-toggle'); await key('Enter'); await wc.insertText('no-such-agent'); await frame();
+    await focus('#bot-search'); await wc.insertText('no-such-agent'); await frame();
     await shot('search-empty');
     await check('zero-result search explains and offers recovery', async () => {
       assert.equal(await evaluate('document.querySelectorAll(".bot-row").length'), 0);
@@ -127,11 +127,9 @@ app.whenReady().then(async () => {
       assert.equal(await active(), 'bot-search'); assert.equal(await hidden('bot-search'), false);
     });
     await key('Escape');
-    await check('second search Escape collapses and restores toggle', async () => {
-      assert.equal(await hidden('bot-search'), true); assert.equal(await active(), 'search-toggle');
-      assert.equal(await evaluate('document.getElementById("search-toggle").getAttribute("aria-expanded")'), 'false');
+    await check('second search Escape leaves the always-visible field alone', async () => {
+      assert.equal(await hidden('bot-search'), false); assert.equal(await active(), 'bot-search');
     });
-    if (!(await hidden('bot-search'))) await click('#search-toggle');
 
     await check('agent arrows move focus without opening Telegram', async () => {
       await focus('.bot-open, .bot-row[role=button]'); await key('ArrowDown');
@@ -227,8 +225,6 @@ app.whenReady().then(async () => {
     assert.equal(value.enabled && value.visible && value.ring, true, JSON.stringify(value));
   };
   const reveal = async () => {
-    await focus('#search-toggle');
-    if (!(await hidden('bot-search'))) await key('Enter');
     await evaluate(`document.getElementById('bot-search').value = ''; document.getElementById('bot-search').dispatchEvent(new Event('input'))`);
     for (const id of ['101', '202', '303']) await invoke('set-bot-visibility', { id, visible: false });
     for (const bot of denseBots) await invoke('set-bot-visibility', { id: bot.id, visible: true });
@@ -248,7 +244,7 @@ app.whenReady().then(async () => {
     await reveal(); await recordFocus(`${width}-dense`);
     await check(`${width}: final Hide keeps previous neighbor visible and selection unchanged`, async () => {
       // Enter the list by Tab, then reproduce End / Space / Tab / Enter.
-      await focus('#sort-bots'); await key('Tab'); assert.equal(await active(), 'bot-open');
+      await focus('#add-bot'); await key('Tab'); assert.equal(await active(), 'bot-open');
       await key('End'); assert.equal(await rowId(), '420'); await key(' ');
       await waitFor(getState, value => value.selectedBotId === '420'); await frame();
       await evaluate('window.fixtureActions = []'); await hideFocused('420');
@@ -267,7 +263,7 @@ app.whenReady().then(async () => {
     });
     await reveal();
     await check(`${width}: middle Hide keeps next neighbor and subsequent Enter hides only that neighbor`, async () => {
-      await focus('#sort-bots'); await key('Tab'); await key('End'); for (let index = 0; index < 10; index++) await key('ArrowUp'); assert.equal(await rowId(), '410');
+      await focus('#add-bot'); await key('Tab'); await key('End'); for (let index = 0; index < 10; index++) await key('ArrowUp'); assert.equal(await rowId(), '410');
       const selected = (await getState()).selectedBotId; await evaluate('window.fixtureActions = []'); await hideFocused('410');
       assert.equal(await rowId(), '411'); assert.equal(await active(), 'bot-hide');
       assert.equal((await getState()).selectedBotId, selected); await expectVisible(`${width}-middle-hide`); await shot(`${width}-middle-hide`);
@@ -281,7 +277,7 @@ app.whenReady().then(async () => {
     await check(`${width}: sort and state redraw reveal the same focused long-name control`, async () => {
       await invoke('bot-sort', { mode: 'manual' });
       await invoke('sort-bots', { ids: denseBots.map(bot => bot.id).reverse() }); await frame();
-      await focus('#sort-bots'); await key('Tab'); await key('End'); assert.equal(await rowId(), '400'); await key('Tab');
+      await focus('#add-bot'); await key('Tab'); await key('End'); assert.equal(await rowId(), '400'); await key('Tab');
       const selected = (await getState()).selectedBotId;
       await invoke('bot-sort', { mode: 'alpha' }); await frame();
       assert.equal(await rowId(), '400'); assert.equal(await active(), 'bot-hide'); await expectVisible(`${width}-sort-hide`);
@@ -296,7 +292,7 @@ app.whenReady().then(async () => {
       assert.equal(await rowId(), '420'); assert.equal(await active(), 'bot-open'); await expectVisible(`${width}-filter-redraw`);
     });
     await check(`${width}: only filtered Hide returns to search and clear recovers results`, async () => {
-      await focus('#search-toggle'); await key('Enter'); await focus('#bot-search'); await key('ArrowDown'); assert.equal(await rowId(), '420');
+      await focus('#bot-search'); await key('ArrowDown'); assert.equal(await rowId(), '420');
       const selected = (await getState()).selectedBotId; await hideFocused('420');
       assert.equal(await active(), 'bot-search'); assert.equal((await getState()).selectedBotId, selected); await expectVisible(`${width}-filtered-empty`);
       await key('Tab'); assert.equal(await active(), 'bot-search-clear'); await key('Enter');
@@ -306,14 +302,13 @@ app.whenReady().then(async () => {
       await key('Escape'); await key('Escape');
     });
     await reveal();
-    await check(`${width}: final remaining visible agent returns to search toggle`, async () => {
-      await focus('#sort-bots');
+    await check(`${width}: final remaining visible agent returns to search`, async () => {
+      await focus('#add-bot');
       for (const bot of denseBots.slice(0, -1)) await invoke('set-bot-visibility', { id: bot.id, visible: false });
       await frame(); await key('Tab'); assert.equal(await rowId(), '420'); const selected = (await getState()).selectedBotId;
-      await hideFocused('420'); assert.equal(await active(), 'search-toggle'); await expectVisible(`${width}-all-hidden`);
-      assert.equal((await getState()).selectedBotId, selected); await key('Tab'); assert.equal(await active(), 'add-bot');
-      await key('Tab', ['shift']); assert.equal(await active(), 'search-toggle'); await key('Enter'); assert.equal(await active(), 'bot-search');
-      await key('Escape');
+      await hideFocused('420'); assert.equal(await active(), 'bot-search'); await expectVisible(`${width}-all-hidden`);
+      assert.equal((await getState()).selectedBotId, selected); await key('Tab'); assert.equal(await active(), 'sort-bots');
+      await key('Tab'); assert.equal(await active(), 'add-bot'); await key('Tab', ['shift']); await key('Tab', ['shift']); assert.equal(await active(), 'bot-search');
     });
   }
   await check('all regression keys are trusted Chromium input', async () => {

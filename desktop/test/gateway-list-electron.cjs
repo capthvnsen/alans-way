@@ -112,7 +112,16 @@ if (!process.versions.electron) {
       await until(async () => (await sections()).replace(/\*/g, '') === 'telegram:1001+1002 hermes-desktop:1001+1002 native:1001+1002', 'three sections');
       assert.deepEqual(await run(`[...document.querySelectorAll('#bot-list .gateway-head')].map(h => [h.textContent.trim(), h.querySelector('[role=img]').getAttribute('aria-label'), h.querySelector('[role=img]').title])`), [['', 'Telegram', 'Telegram'], ['', 'Hermes', 'Hermes'], ['', 'Alan\'s Way', 'Alan\'s Way']]);
       assert.deepEqual(await run(`[...document.querySelectorAll('#bot-list .gateway-section')].map(s => [s.getAttribute('role'), document.getElementById(s.getAttribute('aria-labelledby')).textContent.trim() === '' && s.querySelector('[role=img]').getAttribute('aria-label')])`), [['group', 'Telegram'], ['group', 'Hermes'], ['group', 'Alan\'s Way']]);
-      assert.equal(await run(`document.getElementById('bot-count').textContent`), '2', 'the count is bots, not rows');
+      assert.equal(await run(`document.getElementById('bot-list').getAttribute('aria-label')`), 'Your agents (2)', 'the count is bots, not rows, and only in the list name');
+      // The sidebar header: one line beside the window buttons, a search field that is always there, no label or count.
+      assert.deepEqual(await run(`(() => { const t = document.querySelector('.side-title'), s = document.getElementById('bots-toggle'), top = document.querySelector('.side-top').getBoundingClientRect(), r = t.getBoundingClientRect(), b = s.getBoundingClientRect(); return [t.textContent, Math.round(r.height) <= 20, r.left >= b.right, r.bottom <= top.bottom, getComputedStyle(t.querySelector('b')).fontWeight > getComputedStyle(t).fontWeight]; })()`), ['Alan\'s Workspace', true, true, true, true], 'title on one line, right of the toggle, first word heavier');
+      assert.equal(await run(`getComputedStyle(document.querySelector('.side-top')).webkitAppRegion + ' ' + getComputedStyle(document.getElementById('bots-toggle')).webkitAppRegion`), 'drag no-drag', 'the top row drags except on its button');
+      assert.equal(await run(`getComputedStyle(document.getElementById('bot-search')).display !== 'none' && document.getElementById('bot-search').getBoundingClientRect().width > 60 && document.getElementById('bot-search').placeholder`), 'Search', 'the search field is always visible');
+      assert.equal(await run(`document.getElementById('search-toggle')`), null, 'no search toggle');
+      assert.equal(await run(`['bot-count', 'sort-bots', 'add-bot'].map((id) => !!document.getElementById(id)).join()`), 'false,true,true');
+      assert.equal(await run(`/YOUR AGENTS/.test(document.querySelector(".sidebar").textContent)`), false, 'no YOUR AGENTS label');
+      assert.equal(await run(`/Activity unavailable/.test(document.getElementById('bot-list').textContent) || !!document.querySelector('.bot-activity:not(.hidden):empty')`), false, 'unknown activity takes no line');
+      assert.equal(await run(`getComputedStyle(document.querySelector('#bot-list .bot-row.selected')).backgroundColor !== 'rgba(0, 0, 0, 0)' && getComputedStyle(document.querySelector('#bot-list .bot-row:not(.selected)')).backgroundColor === 'rgba(0, 0, 0, 0)'`), true, 'the open row is a card, the others are flat');
       assert.equal(await run(`document.querySelectorAll('#bot-list .bot-row').length`), 6);
       assert.equal((await selectedRows()).length, 1, 'exactly one row is selected');
       assert.equal(await run(`document.getElementById('surface-tabs')`), null, 'no pill toggle in the chat header');
@@ -120,7 +129,7 @@ if (!process.versions.electron) {
       // Search filters rows in every section; the count stays; sorting is within each section.
       await run(`(() => { const i = document.getElementById('bot-search'); i.value = 'scout'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
       await until(async () => (await sections()).replace(/\*/g, '') === 'telegram:1002 hermes-desktop:1002 native:1002', 'search across sections');
-      assert.equal(await run(`document.getElementById('bot-count').textContent`), '2');
+      assert.equal(await run(`document.getElementById('bot-list').getAttribute('aria-label')`), 'Your agents (2)');
       await run(`document.getElementById('bot-search-clear').click()`);
       await until(async () => (await sections()).replace(/\*/g, '') === 'telegram:1001+1002 hermes-desktop:1001+1002 native:1001+1002', 'search cleared');
       // An unsaved address in Settings, Chat surface survives Escape without being saved.
@@ -155,11 +164,11 @@ if (!process.versions.electron) {
       // Bot B: Hermes Desktop.
       await go('1002', 'hermes-desktop');
       await until(() => saved().chatSurfaces?.['1002'] === 'hermes-desktop', 'B choice saved');
-      const apart = () => run(`(() => { const [t, p] = ['bots-toggle', 'chat-pill'].map(id => document.getElementById(id).getBoundingClientRect()); return t.right <= p.left; })()`);
-      assert.equal(await apart(), true, 'a long bot name keeps the header pieces apart');
+      const apart = () => run(`(() => { const [t, p] = ['bots-show', 'chat-pill'].map(id => document.getElementById(id).getBoundingClientRect()); return t.right <= p.left; })()`);
+      assert.equal(await run(`getComputedStyle(document.getElementById('bots-show')).display`), 'none', 'the chat header has no toggle while the agent list shows');
       await run(`document.getElementById('bots-toggle').click()`); await until(() => run(`document.getElementById('shell').classList.contains('bots-hidden')`), 'agent list hidden');
-      assert.equal(await apart(), true, 'and with the agent list hidden');
-      await run(`document.getElementById('bots-toggle').click()`); await until(async () => !(await run(`document.getElementById('shell').classList.contains('bots-hidden')`)), 'agent list back');
+      assert.equal(await apart(), true, 'a long bot name keeps the header pieces apart with the agent list hidden');
+      await run(`document.getElementById('bots-show').click()`); await until(async () => !(await run(`document.getElementById('shell').classList.contains('bots-hidden')`)), 'agent list back');
       for (let i = 0; i < 2; i++) {
         await go('1001', 'native');
         await go('1002', 'hermes-desktop');
@@ -251,7 +260,7 @@ if (!process.versions.electron) {
     } else {
       // No Telegram bots: one built-in bot with a row under Hermes and one under Alan's Way, and no Telegram section.
       await until(async () => (await sections()).replace(/\*/g, '') === 'hermes-desktop:hermes native:hermes', 'built-in rows');
-      assert.equal(await run(`document.getElementById('bot-count').textContent`), '1');
+      assert.equal(await run(`document.getElementById('bot-list').getAttribute('aria-label')`), 'Your agents (1)');
       assert.equal(await run(`document.querySelector('${row('hermes', 'hermes-desktop')} .bot-name').textContent`), 'Hermes on localhost');
       assert.equal((await selectedRows()).length, 1);
       await go('hermes', 'native');
