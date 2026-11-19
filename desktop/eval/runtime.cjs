@@ -26,18 +26,23 @@ async function until(fn, ms, what) {
 const freePort = () => new Promise((r) => { const s = http.createServer(); s.listen(0, '127.0.0.1', () => { const n = s.address().port; s.close(() => r(n)); }); });
 
 // log: [{t, method, path, status, ms, bytes}] since last takeLog().
-async function startProxy(target, token) {
+// grant(tabId, body) may swap an action request's body for one that carries the harness's approval.
+async function startProxy(target, token, grant) {
   let log = [];
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     const t0 = Date.now();
-    const up = http.request(new URL(req.url, target.url), { method: req.method, headers: { ...req.headers, host: new URL(target.url).host } }, (r) => {
+    const chunks = []; for await (const c of req) chunks.push(c);
+    let body = Buffer.concat(chunks);
+    const action = req.method === 'POST' && /^\/v1\/tabs\/([^/?]+)\/actions/.exec(req.url);
+    if (action) body = await grant(action[1], body);
+    const up = http.request(new URL(req.url, target.url), { method: req.method, headers: { ...req.headers, host: new URL(target.url).host, ...(action ? { 'content-length': body.length } : {}) } }, (r) => {
       let bytes = 0;
       r.on('data', (c) => { bytes += c.length; });
       r.on('end', () => log.push({ t: t0, method: req.method, path: req.url.split('?')[0], status: r.statusCode, ms: Date.now() - t0, bytes }));
       res.writeHead(r.statusCode, r.headers); r.pipe(res);
     });
     up.on('error', () => { log.push({ t: t0, method: req.method, path: req.url, status: 502, ms: Date.now() - t0, bytes: 0 }); res.writeHead(502).end('{"error":"proxy"}'); });
-    req.pipe(up);
+    up.end(body);
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   return { url: `http://127.0.0.1:${server.address().port}`, token, takeLog: () => { const l = log; log = []; return l; }, close: () => server.close() };
@@ -68,7 +73,7 @@ async function startStack({ connection, fixtureHost = 'fixture.example', fixture
     await until(() => fs.existsSync(path.join(data, 'connection.json')), 60000, 'host connection.json');
     direct = JSON.parse(fs.readFileSync(path.join(data, 'connection.json')));
   }
-  const proxy = await startProxy(direct, direct.token);
+  const proxy = await startProxy(direct, direct.token, (tabId, body) => grantApproval(tabId, body));
   const connFile = path.join(dir, 'connection.json');
   fs.writeFileSync(connFile, JSON.stringify({ ...direct, url: proxy.url }));
   const botId = 'eval-bot';
@@ -76,9 +81,25 @@ async function startStack({ connection, fixtureHost = 'fixture.example', fixture
     method, headers: { Authorization: `Bearer ${direct.token}`, 'X-Hermes-Bot': botId, 'Content-Type': 'application/json', ...(epoch != null ? { 'X-Control-Epoch': String(epoch) } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}),
   }).then((r) => r.json().catch(() => ({})));
+  // The harness plays the user for a task that expects approval: only on that task's origin (approvalOrigin) and only
+  // when the model asked with commit, as it would through the router. The model never holds the receipt; every grant is
+  // recorded in approvals so results say it was the harness.
+  async function grantApproval(tabId, body) {
+    let req; try { req = JSON.parse(body); } catch { return body; }
+    if (!req.commit || !stack.approvalOrigin) return body;
+    try {
+      const snap = await raw(`/v1/tabs/${tabId}/snapshot`);
+      if (new URL(snap.url).origin !== stack.approvalOrigin) throw new Error(`page is outside ${stack.approvalOrigin}`);
+      const { harnessApproval, bindApproval } = require('../test/approval-fixture.cjs');
+      const approved = bindApproval({ ...req, approval: harnessApproval(tabId, req.epoch) }, snap);
+      stack.approvals.push({ grantedBy: 'harness', action: req.action, kind: req.commit.kind, summary: req.commit.summary });
+      return Buffer.from(JSON.stringify(approved));
+    } catch (e) { console.error('harness approval not granted: ' + e.message); return body; }
+  }
   const tabs = async () => { const r = await raw('/v1/tabs'); return Array.isArray(r) ? r : r.tabs || []; };
-  return {
+  const stack = {
     dir, connFile, proxy, botId, tabs, raw, hostUrl: direct.url,
+    approvalOrigin: null, approvals: [], takeApprovals: () => stack.approvals.splice(0),
     // Evaluate in the task's first tab straight against the host (not counted as agent work).
     // The commit gate refuses eval on pages with timers or commit-like controls. Checks only read state, so the
     // harness approves its own read-only check code with the test receipt; agent actions never get this.
@@ -97,5 +118,6 @@ async function startStack({ connection, fixtureHost = 'fixture.example', fixture
     closeTabs: async () => { for (const t of await tabs()) await raw(`/v1/tabs/${t.id}`, 'DELETE', undefined, t.epoch).catch(() => {}); },
     stop: async () => { proxy.close(); for (const c of children) c.kill(); await wait(300); try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} },
   };
+  return stack;
 }
-module.exports = { startStack };
+module.exports = { startStack, findChrome };
