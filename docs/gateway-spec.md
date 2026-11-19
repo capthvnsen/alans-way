@@ -447,14 +447,31 @@ One line each; the recommendation is the first answer.
 
 ## Unconfirmed, in one place
 
-- That the installed Hermes checkout equals the Hermes on the VM (0.23.x).
+First VM check, 2026-11-19: `docs/benchmarks/results/2026-11-19-gateway-vm/results.md` (Hermes Agent 0.23.0, source commit `2bd378ed1b`; 36 prompts).
+
+**Confirmed against the real VM**
+
+- The VM's Hermes is not the checkout this spec was written from (`ae2a81ccc00`, 2026-11-16): it is 0.23.0 at `2bd378ed1b` (2026-11-05). Everything tested on the wire matched.
+- The WebSocket is reached through the dashboard (`/api/ws`) at the Tailscale Serve HTTPS name. The dashboard refuses any other Host (`400 Invalid Host header` for the tailnet IP), and the REST API server (`8642`) is loopback-only, reachable only by an SSH tunnel. Under `HERMES_WORKSPACE_REQUIRE_TAILNET=1` the app's own rule rejects the one address that works (client bug 1 in the results).
+- The VM's password sign-in mints WebSocket tickets for a non-browser client (`signIn` PKCE, `/api/auth/ws-ticket`, single use, 30 s). Both `?ticket=` and the `hermes-gateway-ticket.<t>` subprotocol are accepted.
+- A WebSocket with no `Origin` header is accepted (Node's `WebSocket` sends none).
+- `session.resume` (`lazy:true`) works for a session created over REST; pipelined `activate` + `events.since` is answered in order, and the server dispatches a socket's RPCs one at a time in arrival order.
+- The HTTP client keeps connections alive between sends (55 ms vs 110 ms for a new connection).
+- Replay after a drop works: 10 drops mid-reply, 0 lost, 0 duplicated, text equal to history, one stored user row each.
+- The live orphan grace is **20 s**: `ws_orphan_reap_grace_s: 300` is in the config file but read only at start, and the dashboard started before it was edited. A restart of the dashboard is needed for Q3 to take effect. A running turn is not interrupted while its activity is fresher than 600 s (source; not exercised live).
+- A server request (clarify) is delivered to **all** attached sockets (2 of 2). Answering from one sends no `request.cancel` to the others; they see `tool.complete`. The spec's "closes with Answered on another device" needs that event, or a client-side rule, not `request.cancel`.
+- Approval request shape (source; `approvals.mode` is `off` on the VM so none was provoked): `command`, `description`, `choices`, `request_id` in params, answer `{choice}`. Clarify shape (live): `questions[{qid, question, choices, multi_select}]`, answer `{answers:{qid: text}}`.
+- This VM's config streams no reply text on either transport (no `message.delta`), only `thinking.delta` on the WebSocket: first token equals the whole reply.
+- Measured: round trip 55 ms; warm submit-to-admitted RT + 18 / RT + 44 (target RT + 150 / + 190); cold connect + attach 694 / 1,348 ms; reconnect 723 / 914 ms (graceful close, `wss`) and 366 / 411 ms (reset, plain HTTP tunnel).
+
+**Still unconfirmed**
+
 - How the hub pane relates to the three gateway rows in the current UI.
-- Whether the HTTP client keeps connections alive between sends (`hermes-api.cjs:92`).
 - Whether `/v1/runs/{id}/events` works for `chat/stream` runs.
-- How the 20 s orphan grace and the 600 s activity limit interact for a running turn.
-- Whether Hermes sends a server request to all attached sockets or one; whether a read change emits a session-change event.
-- Whether Hermes accepts a WebSocket with no `Origin` header on the real backend.
-- Whether `session.activate` already enters its agent build (prewarm) and whether a cursor can be added to its snapshot.
+- Whether a read change emits a session-change event.
+- Whether `session.activate` already enters its agent build (prewarm), and whether a cursor can be added to its snapshot. The first turn of a new session took about 8.4-8.7 s on both transports (n=1 each).
+- Dead-link detection of a half-open connection, laptop sleep, and a Hermes restart (epoch change) against the real server.
+- A real approval request (the VM has approvals off) and `request.cancel` timing on a second device.
+- Token streaming (`message.delta` through the adapter) against a server that streams.
 - Whether App Transport Security blocks `ws://` to a literal tailnet address on iOS.
-- Whether the VM's Webapp sign-in mints WebSocket tickets for a non-browser client.
-- Every number marked "derived" above is computed from the cited figures and code order, not measured. Nothing about the VM beyond one `/api/status` request is measured.
+- Every number marked "derived" above except those replaced by the measurements listed under Confirmed.
