@@ -145,6 +145,7 @@ const CANVAS_PAGES = { artifacts: '#/artifacts', cron: '#/cron', settings: '#/se
 const CANVAS_TABS = ['browser', 'screen', 'terminal', ...Object.keys(CANVAS_PAGES)];
 let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
 const tabs = new Map();
+vaultLock.setPeers(() => tabs.values());
 const vpsTabs = new Map();
 const recentLinkTabs = new Map();
 let vpsBrowserStatus = 'unconfigured', vpsBrowserError = '', vpsRefreshBusy = false, vpsFailures = 0, vpsTimer, vpsMirrorTimer, vpsMirrorDebounce;

@@ -82,9 +82,9 @@ app.whenReady().then(async () => {
   assert.equal(before.elements.find((e) => e.name === 'Notes').value, 'NOTE-DRAFT', 'a textarea\'s value is readable with no lock');
   assert.match(before.text, /CE-DRAFT/);
   assert.equal((await act({ action: 'eval', code: 'document.title' })).data.value, 'Login');
+  assert.equal(tab.agentScripted, true, 'an eval marks the document as scripted by the agent');
   assert.equal((await act({ action: 'cdp', method: 'Runtime.evaluate', params: { expression: '1+1', returnByValue: true } })).data.value.result.value, 2);
   assert.equal((await api(`/v1/tabs/${tab.id}/screenshot`)).status, 200);
-  assert.equal(tab.agentScripted, true, 'the agent has scripted this document');
   say('PASS: with no lock, snapshot, eval, cdp and screenshot are unchanged.');
 
   // 2. The agent has scripted this document: a fill into it is refused, with no prompt, and says to reload.
@@ -95,8 +95,28 @@ app.whenReady().then(async () => {
   assert.equal((await act({ action: 'navigate', url: `${base}/login` })).status, 200);
   await ready();
   assert.equal(tab.agentScripted, false, 'a new document is clean');
+  assert.equal((await act({ action: 'cdp', method: 'DOM.getDocument', params: {} })).status, 200);
+  assert.equal(tab.agentScripted, false, 'a read-only DevTools call does not mark it');
+  assert.equal((await act({ action: 'cdp', method: 'Runtime.evaluate', params: { expression: '1' } })).status, 200);
+  assert.equal(tab.agentScripted, true, 'a DevTools script does');
+  assert.equal((await act({ action: 'navigate', url: `${base}/login` })).status, 200);
+  await ready();
+  assert.equal(tab.agentScripted, false);
   say('PASS: a document the agent scripted is refused until it is reloaded.');
 
+  // 2b. A popup the agent opened keeps window.opener and is an agent tab of the same bot: it could script the page
+  //     after the lock if the lock were per tab. Opened before the reload that cleans the document, as an attacker would.
+  assert.equal((await act({ action: 'eval', code: `window.open('${base}/other', '_blank') && 1` })).status, 200);
+  const popupInfo = await waitFor(async () => (await api('/v1/tabs')).data.tabs.find((t) => t.id !== tab.id && /\/other/.test(t.url)));
+  const popupTab = tabs.get(popupInfo.id);
+  assert.equal(popupTab.botId, '4242');
+  const popupAct = (body) => api(`/v1/tabs/${popupTab.id}/actions`, 'POST', { epoch: popupTab.epoch, ...body });
+  assert.equal((await act({ action: 'navigate', url: `${base}/login` })).status, 200);
+  await ready();
+  assert.equal(tab.agentScripted, false);
+  assert.equal((await popupAct({ action: 'eval', code: 'opener.document.getElementById("pw").value' })).data.value, '', 'the popup can script the opener (no lock yet)');
+
+  assert.equal((await act({ action: 'read', maxChars: 100 })).status, 200); // the login page is the tab the bot last used
   // 3. While the prompt is open the tab is already locked.
   let release;
   answerPrompt = () => new Promise((resolve) => { release = resolve; });
@@ -138,6 +158,11 @@ app.whenReady().then(async () => {
   assert.equal((await act({ action: 'wait', selector: '#pw', timeout: 1000 })).status, 200, 'wait still works');
   say('PASS: eval, cdp, screenshots are refused; snapshot, read, list and effects blank every value.');
 
+  locked(await popupAct({ action: 'eval', code: 'opener.document.getElementById("pw").value' }), 'the popup\'s eval');
+  locked(await popupAct({ action: 'cdp', method: 'Runtime.evaluate', params: { expression: 'opener.document.getElementById("pw").value' } }), 'the popup\'s cdp');
+  locked(await api(`/v1/tabs/${popupTab.id}/screenshot`), 'the popup\'s screenshot');
+  say('PASS: a same-origin popup the agent opened is locked with the page it can script.');
+
   // 5. The site's "show password" toggle turns the field into plain text: its value is still not returned.
   const toggled = await act({ action: 'click', selector: '#toggle' });
   assert.equal(toggled.status, 200, JSON.stringify(toggled.data).slice(0, 200));
@@ -161,9 +186,9 @@ app.whenReady().then(async () => {
   say('PASS: clicking, typing and pressing keys still work, and the human is not locked out.');
 
   // 7. An in-page navigation keeps the lock; a new document ends it.
-  assert.equal((await act({ action: 'navigate', url: `${base}/login#frag` })).status, 200);
+  await wc.executeJavaScript('history.pushState({}, "", "#route"); location.hash = "#frag"; 0'); // the site\'s own client-side navigation
   await sleep(300);
-  assert.equal(tab.vaultLock, 'filled', 'a fragment navigation is the same document');
+  assert.equal(tab.vaultLock, 'filled', 'a fragment or pushState navigation is the same document');
   locked(await act({ action: 'eval', code: '1' }), 'eval after an in-page navigation');
   assert.equal((await act({ action: 'navigate', url: `${base}/other` })).status, 200);
   await waitFor(() => tab.vaultLock === undefined);

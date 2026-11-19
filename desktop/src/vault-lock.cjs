@@ -11,7 +11,19 @@
 const { READ_ONLY_CDP } = require('./commit-patterns.cjs');
 
 // 'prompt': a fill is waiting for the user. 'filled': it ran (or may have). Absent: no lock.
-const isLocked = (tab) => !!tab.vaultLock;
+const holds = (tab) => !!tab.vaultLock;
+// A popup the agent opened keeps window.opener, and an agent tab of the same bot on the same origin can script the
+// locked page through it. So a tab is locked when it holds the lock, or a peer of its bot at its own origin does.
+let peerTabs = () => [];
+const setPeers = (provider) => { peerTabs = provider; };
+const originOf = (tab) => { try { return new URL(tab.view.webContents.getURL()).origin; } catch { return ''; } };
+function isLocked(tab) {
+  if (holds(tab)) return true;
+  const here = originOf(tab);
+  if (!here || here === 'null') return false;
+  for (const peer of peerTabs()) if (peer !== tab && peer.botId === tab.botId && holds(peer) && originOf(peer) === here) return true;
+  return false;
+}
 const acquire = (tab) => { if (!tab.vaultLock) tab.vaultLock = 'prompt'; };
 const markFilled = (tab) => { tab.vaultLock = 'filled'; };
 // A fill that did not happen lifts only its own prompt lock, never an earlier fill's.
@@ -39,4 +51,4 @@ function watch(tab, contents) {
   contents.on('render-process-gone', () => reset(tab));
 }
 
-module.exports = { isLocked, acquire, markFilled, release, reset, isScript, noteScript, guardAction, guardScreenshot, readOptions, watch };
+module.exports = { isLocked, setPeers, acquire, markFilled, release, reset, isScript, noteScript, guardAction, guardScreenshot, readOptions, watch };

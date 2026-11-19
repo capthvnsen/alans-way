@@ -69,3 +69,33 @@ test('blank options: values are blanked exactly while locked', () => {
   assert.deepEqual(lock.readOptions({ vaultLock: 'prompt' }), { blankValues: true });
   assert.deepEqual(lock.readOptions({ vaultLock: 'filled' }), { blankValues: true });
 });
+
+// A popup the agent opened is an agent tab of the same bot that keeps `window.opener`: at the same origin it can
+// script the locked page, so the lock covers it too.
+const peerTab = (botId, url, extra = {}) => ({ botId, view: { webContents: { getURL: () => url } }, ...extra });
+
+test('a same-bot tab on the locked tab\'s origin is locked with it, whatever its own state', () => {
+  const locked = peerTab('bot1', 'https://example.com/login', { vaultLock: 'filled' });
+  const popup = peerTab('bot1', 'https://example.com/popup');
+  const elsewhere = peerTab('bot1', 'https://other.test/');
+  const otherBot = peerTab('bot2', 'https://example.com/');
+  const noUrl = { botId: 'bot1' };
+  lock.setPeers(() => [locked, popup, elsewhere, otherBot, noUrl]);
+  try {
+    assert.equal(lock.isLocked(popup), true);
+    assert.throws(() => lock.guardAction(popup, { action: 'eval', code: '1' }), (e) => e.code === 'vault_locked');
+    assert.throws(() => lock.guardScreenshot(popup), (e) => e.code === 'vault_locked');
+    assert.deepEqual(lock.readOptions(popup), { blankValues: true });
+    for (const tab of [elsewhere, otherBot, noUrl]) {
+      assert.equal(lock.isLocked(tab), false);
+      assert.doesNotThrow(() => lock.guardAction(tab, { action: 'eval', code: '1' }));
+    }
+    popup.view.webContents.getURL = () => 'https://other.test/x';
+    assert.equal(lock.isLocked(popup), false, 'the moment it is on another origin it cannot reach the page');
+    elsewhere.view.webContents.getURL = () => 'https://example.com/again';
+    assert.equal(lock.isLocked(elsewhere), true, 'and a tab that navigates onto the origin is covered from then on');
+    // Only the page\'s own state counts as holding the lock: a peer\'s lock is never released by this tab\'s refusal.
+    lock.acquire(popup); lock.release(popup);
+    assert.equal(popup.vaultLock, undefined);
+  } finally { lock.setPeers(() => []); }
+});
