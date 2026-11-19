@@ -151,12 +151,12 @@ const listen = (handler, host) => new Promise(resolve => { const s = http.create
   }
   assert.equal(webappViews().length, 1);
 
-  // Selecting a bot keeps the chosen surface; the header toggle is the way across and back.
+  // Selecting a bot keeps the chosen surface; the bot's Telegram and Hermes rows in the agent list are the way across and back.
   await run(`workspace.command('open-bot', { id: '4242' })`);
   await showing('webapp-slot');
-  await run(`document.querySelector('#surface-tabs [data-surface="telegram"]').click()`);
+  await run(`document.querySelector('.bot-row[data-bot-id="4242"][data-gateway="telegram"]').click()`);
   await showing('telegram-slot');
-  await run(`document.querySelector('#surface-tabs [data-surface="hermes-desktop"]').click()`);
+  await run(`document.querySelector('.bot-row[data-bot-id="4242"][data-gateway="hermes-desktop"]').click()`);
   await showing('webapp-slot');
   assert.equal(await view.executeJavaScript('window.kept'), 'webapp');
 

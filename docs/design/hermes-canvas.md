@@ -8,7 +8,7 @@ Three columns, closer to iMessage than to an IDE:
 
 | Left | Middle | Right: Canvas |
 |---|---|---|
-| Bots list (unchanged) | Chat: Telegram or Hermes Desktop (unchanged) | One thing at a time, picked from a small pill of tabs |
+| Agents, grouped by gateway (Telegram, Hermes, Alan's Way) | Chat on the gateway of the selected row | One thing at a time, picked from a small pill of tabs |
 
 The Canvas follows the bot whose chat is open. Each bot remembers its own tab, so
 switching from Alan (watching his screen) to Scout (browsing) and back puts each
@@ -18,7 +18,7 @@ one where you left it.
 
 - **Tabs:** `Browser` and `Bot screen`. Both reuse what exists: Browser is the
   existing browser pane; Bot screen is the existing VM live view, the same view the
-  expand button and the floating preview use (`activeTabId === 'vps'` in main).
+  expand button uses (`activeTabId === 'vps'` in main).
 - **Memory:** `prefs.canvasTabs[botId]` is `'browser'` or `'screen'`. It is written
   whenever you switch and when you leave a bot, and read when you select a bot
   and at launch. A bot with no saved choice keeps the current view.
@@ -31,16 +31,16 @@ one where you left it.
 
 ## Phase 2: state and Hermes Desktop pages
 
-- **State:** main holds `canvasTab` (`browser`, `screen`, `chat`, `artifacts`, `cron`,
+- **State:** main holds `canvasTab` (`browser`, `screen`, `terminal`, `artifacts`, `cron`,
   `settings`). `activeTabId` is now only the browser's own tab, so Bot screen no longer
   overwrites it and `browserReturnTabId` is gone. The renderer still receives
   `activeTabId: 'vps'` for Bot screen (wire compatibility for `remote.js` and the
   existing tests), plus `canvasTab` and `webappCanvas`.
-- **Collapsed pane:** choosing any Canvas tab (⌘1–⌘7, the strip, the expand button)
+- **Collapsed pane:** choosing any Canvas tab (⌘1–⌘4, the strip, the bot's name in the chat header, the expand button)
   reopens a collapsed browser pane.
-- **New tabs:** Side chat, Artifacts, Cron jobs and Bot settings are the Hermes Desktop
-  routes `#/`, `#/artifacts`, `#/cron` and `#/settings` (Hermes Desktop uses a
-  HashRouter; see `apps/desktop/src/app/routes.ts`). One `canvasView` serves all four, so
+- **New tabs:** Artifacts, Cron jobs and Bot settings are the Hermes Desktop
+  routes `#/artifacts`, `#/cron` and `#/settings` (Hermes Desktop uses a
+  HashRouter; see `apps/desktop/src/app/routes.ts`). One `canvasView` serves all three, so
   switching between them is an in-page hash change, not a reload. It is built by the same
   `guardedWebappView()` as the chat pane's view: no preload, sandboxed, same-origin only,
   partition `persist:hermes-webapp`. Sharing that partition is what lets one cookie
@@ -59,13 +59,31 @@ one where you left it.
 - **Per bot:** the choice is remembered per bot like the others, but the pages are the
   one configured Hermes Desktop host, not a per-bot profile. Mapping a bot to a Hermes
   profile is not done.
-- **Keyboard:** ⌘4–⌘7 in the View menu, listed in the Shortcuts sheet as one row.
+- **Keyboard:** ⌘4 (Artifacts) in the View menu, listed in the Shortcuts sheet.
   Arrow keys, Home and End move across the visible tabs only.
+
+## Side chat removed; Bot settings and Cron jobs from the bot's name
+
+The Side chat tab (`#/`) is gone, with its state value and shortcut. A stale saved
+`canvasTabs` entry of `chat` is ignored: that bot keeps the current view.
+
+Bot settings and Cron jobs are not in the permanent strip. The bot's name in the chat
+header (the pill beside its avatar) is a button, "<bot> settings and cron jobs", with a
+chevron (›) that appears on hover and keyboard focus. It opens that bot's Bot settings
+and shows both tabs, Bot settings and Cron jobs, at the end of the strip so you can move
+between them. Choosing Browser, Bot screen, Terminal or Artifacts removes both again, and
+clicking the name while they are open returns to the tab you came from (`canvasReturn` in
+`src/main.cjs`, command `canvas-bot-pages`). The name is a plain, unclickable label with
+no chevron unless the bot has a Hermes row and the Hermes Desktop pages are reachable,
+the same condition that shows Artifacts. The avatar beside it still opens the avatar
+editor. Both pages are still the `cron` and `settings` values of `canvasTab`, remembered
+per bot like the rest; the strip (`canvasStripTabs()` in `src/shell-support.cjs`, sent to
+the renderer as `canvasStrip`) adds them only while one is the open page. They have no
+shortcut or menu item.
 
 ## Terminal
 
-Strip order is Browser, Bot screen, Terminal, Side chat, Artifacts, Cron jobs, Bot settings
-(⌘1–⌘7). Terminal is always shown. Hermes Desktop has no route that opens its terminal (its
+Strip order is Browser, Bot screen, Terminal, Artifacts (⌘1–⌘4). Terminal is always shown. Hermes Desktop has no route that opens its terminal (its
 terminal is a pane toggled by app state, not a `#/` route), so this one is native.
 
 - **Renderer:** xterm.js (`@xterm/xterm`, `@xterm/addon-fit`, pure JS) in the Canvas area, one
@@ -110,7 +128,7 @@ Do not add a tab until it does something; empty placeholder tabs make the strip 
 
 `npm run test:canvas-tabs` drives the real main, preload and renderer. It covers
 restore at launch, click, per-bot memory across bot switches, arrow keys, Home and End,
-⌘1–⌘7 through the menu, the collapsed pane, the saved preferences, and the Hermes
+⌘1–⌘4 through the menu, the collapsed pane, the saved preferences, and the Hermes
 Desktop pages against a local stand-in: hidden without an address, shared cookie
 sign-in, no Workspace bridge, no reload between pages, fallback while unreachable,
 and, for a one-use-link host, no page tabs until the link is open and then a shared credential.

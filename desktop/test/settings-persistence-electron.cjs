@@ -151,7 +151,7 @@ async function run(){
   await explicit({vpsBrowser:{sshHost:savedAgent,brokerSshHost:'',scriptPath:'',sudo:false}});
  });
  await legacyFailureRecovery();
- for(const [slot,id,query] of [['autoOpenLinks','settings-auto-links','takeover'],['autoTakeover','settings-auto-takeover','takeover'],['preview','settings-preview','viewer']]){
+ for(const [slot,id,query] of [['autoOpenLinks','settings-auto-links','takeover'],['autoTakeover','settings-auto-takeover','takeover']]){
   await scenario(slot+' actual failed write then explicit choice',async()=>{
    await mount(query);const old=disk()[slot],n=writes(slot),t=output.transitions.length,a=failedRenameAttempts;
    failWrite=true;await activate(id);await sleep(180);failWrite=false;
@@ -221,8 +221,6 @@ async function failedLegacy(value) {
 async function legacyFailureRecovery() {
  for(const spec of [
   {slot:'autoOpenLinks',id:'settings-auto-links',query:'takeover',saved:true,failed:false},
-  {slot:'preview',id:'settings-preview',query:'viewer',saved:false,failed:true},
-  {slot:'preview',id:'settings-preview',query:'viewer',saved:true,failed:false},
   {slot:'autoTakeover',id:'settings-auto-takeover',query:'takeover',saved:true,failed:true},
  ])await scenario(`${spec.slot} failed legacy ${spec.failed} then one tracked choice without refresh`,async()=>{
   await explicit({[spec.slot]:spec.saved});await mount(spec.query);await sleep(150);
@@ -264,7 +262,7 @@ async function legacyFailureRecovery() {
   await assert('failed same-value legacy choice retains revision fence against old held work',()=>eq([h.reply.settingsWrite.status,output.diskWrites.length-w,transitions('autoOpenLinks',t),disk().autoOpenLinks],['not-applied',0,0,true],'old admission fenced'));
   await failedLegacy({autoOpenLinks:false});await sleep(350);
   await assert('failed legacy intent never automatically replays after writability returns',()=>eq([output.diskWrites.length-w,transitions('autoOpenLinks',t),disk().autoOpenLinks],[0,0,true],'no automatic replay'));
-  await command('preview-move',{x:23,y:31});await sleep(400);
-  await assert('later automatic saver flush cannot resurrect failed legacy intent',()=>{if(output.diskWrites.length===w)throw Error('No actual later saver flush');return eq([transitions('autoOpenLinks',t),disk().autoOpenLinks,disk().previewPos],[0,true,{x:23,y:31}],'failed intent absent from saver');});
+  await command('bot-sort',{mode:'alpha'});await sleep(400);
+  await assert('later automatic saver flush cannot resurrect failed legacy intent',()=>{if(output.diskWrites.length===w)throw Error('No actual later saver flush');return eq([transitions('autoOpenLinks',t),disk().autoOpenLinks,disk().botSort],[0,true,'alpha'],'failed intent absent from saver');});
  });
 }

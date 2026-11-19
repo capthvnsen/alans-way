@@ -84,19 +84,28 @@ Every other conversation (other Hermes Desktop chats, Telegram) can be read but 
 written from here; Hermes refuses it. **Continue here** copies one into a new
 conversation made here and opens it. Details: `docs/polish/same-conversation.md`.
 
-## Surfaces and one inbox
+## Gateways and one inbox
 
-The chat header has a switch with **Telegram**, **Hermes Desktop** and **Native**.
-It shows only what is set up: Telegram for a Telegram bot, Hermes Desktop once it
-has an address (marked when it can't be reached), Native once it has an address
-and key. With one surface it is hidden. Arrow keys, Home and End move along it.
+The left list groups chats by gateway, in three sections: **Telegram**, **Hermes**
+(Hermes Desktop) and **Alan's Way** (this native chat). Each section header is its
+logo, with the name as its accessible label. A bot gets one row in each section whose
+gateway is set up for it: Telegram for a Telegram bot, Hermes once Hermes Desktop has
+an address (the row says so when it can't be reached), Alan's Way once native chat has
+an address and key. The same bot can appear in more than one section; a section with
+no rows is not shown. Clicking a row opens that bot on that gateway, and exactly one
+row is selected: the bot and gateway on screen. Search filters rows in every section,
+the count is bots rather than rows, and sorting applies within each section. The
+Hermes logo is a placeholder (the Hermes bust from the avatar gallery) until the real
+one is supplied.
 
-The left list has one row per bot, whatever surface it uses. With no Telegram bots
-at all, one built-in row named after the Hermes host (`hermes`) reaches Hermes
-Desktop and Native. A row's dot means unread in Telegram or in its native
-conversation; an amber ring means it is waiting for you (an open approval or
-question in its native conversation, or a browser tab handed back to you). A new
-native wait while you are elsewhere sends one notification.
+With no Telegram bots at all, one built-in bot named after the Hermes host (`hermes`)
+has a row under Hermes and one under Alan's Way. A row's dot means unread in that
+gateway (Telegram, or the native conversation); an amber ring means it is waiting for
+you (an open approval or question in its native conversation, or a browser tab handed
+back to you, shown on every row of that bot). A row's second line belongs to its
+gateway: the Telegram row shows the last Telegram message or `@username` and Telegram
+activity, the Alan's Way row the last native reply. A new native wait while you are
+elsewhere sends one notification.
 
 **Shared between surfaces:** Hermes Desktop and Native read the same Hermes
 session store, so a conversation started in one is listed in the other.
@@ -105,8 +114,11 @@ be read from Native but not written to; Continue here forks them. Switching keep
 Desktop views stay loaded, and a native reply keeps streaming in the background
 (it marks the row unread when it finishes out of view).
 
-**Per bot** (`preferences.json`): `chatSurfaces[botId]` is the surface you last
-picked with the switch; a bot without one follows Settings, Chat surface.
+**Per bot** (`preferences.json`): `chatSurfaces[botId]` is the gateway whose row you
+last opened for that bot. A bot without one, or whose saved gateway is not set up (an
+old value from the retired header switch, say), follows Settings, Chat surface, so it
+opens on a row it has. If that default itself names a gateway with no address yet, the
+pane shows that gateway's setup help and the bot's first row is highlighted.
 `nativeSessions[botId]` is the native conversation last used with that bot. A bot
 with none opens, for a Telegram bot, the newest Telegram-source conversation on
 this Hermes host (read-only), otherwise the newest conversation made here, or a new

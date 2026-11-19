@@ -26,7 +26,6 @@ app.whenReady().then(async () => {
     const copyReport = () => {};
     state = { platform: 'darwin', telegramStatus: 'offline', inApplications: true };
     document.getElementById('home').classList.add('hidden');
-    document.getElementById('remote-preview-slot').classList.add('hidden');
     renderOnboarding(true);
   `);
   for (const [width, chatWidth, hideBots] of [[1024, 490, false], [1024, 680, false], [900, 680, false], [1024, 680, true]]) {

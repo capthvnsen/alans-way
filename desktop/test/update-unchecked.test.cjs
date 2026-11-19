@@ -75,7 +75,7 @@ for (const route of ['DIY', 'hosted', 'settings']) {
     let run;
     if (route === 'settings') {
       const start = source.indexOf("      case 'settings':");
-      const end = source.indexOf("      case 'preview-move':", start);
+      const end = source.indexOf("      case 'remote-control':", start);
       run = `async function save() { switch ('settings') { ${source.slice(start, end)} } } save();`;
     } else {
       const pending = source.indexOf('let cloudConnectPending =');
