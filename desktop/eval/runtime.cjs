@@ -25,7 +25,7 @@ async function until(fn, ms, what) {
 }
 const freePort = () => new Promise((r) => { const s = http.createServer(); s.listen(0, '127.0.0.1', () => { const n = s.address().port; s.close(() => r(n)); }); });
 
-// log: [{t, method, path, status, ms, bytes}] since last takeLog().
+// log: [{t, method, path, status, ms, bytes, act?}] since last takeLog().
 // grant(tabId, body) may swap an action request's body for one that carries the harness's approval.
 async function startProxy(target, token, grant) {
   let log = [];
@@ -35,10 +35,12 @@ async function startProxy(target, token, grant) {
     let body = Buffer.concat(chunks);
     const action = req.method === 'POST' && /^\/v1\/tabs\/([^/?]+)\/actions/.exec(req.url);
     if (action) body = await grant(action[1], body);
+    // What the call was, for diagnosing turns later: the action, and a batch's step actions.
+    let act; if (action) { try { const j = JSON.parse(body); act = j.action + (Array.isArray(j.steps) ? `[${j.steps.map((x) => x && x.action).join(',')}]` : ''); } catch {} }
     const up = http.request(new URL(req.url, target.url), { method: req.method, headers: { ...req.headers, host: new URL(target.url).host, ...(action ? { 'content-length': body.length } : {}) } }, (r) => {
       let bytes = 0;
       r.on('data', (c) => { bytes += c.length; });
-      r.on('end', () => log.push({ t: t0, method: req.method, path: req.url.split('?')[0], status: r.statusCode, ms: Date.now() - t0, bytes }));
+      r.on('end', () => log.push({ t: t0, method: req.method, path: req.url.split('?')[0], status: r.statusCode, ms: Date.now() - t0, bytes, act }));
       res.writeHead(r.statusCode, r.headers); r.pipe(res);
     });
     up.on('error', () => { log.push({ t: t0, method: req.method, path: req.url, status: 502, ms: Date.now() - t0, bytes: 0 }); res.writeHead(502).end('{"error":"proxy"}'); });
