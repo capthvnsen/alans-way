@@ -145,9 +145,9 @@ app.whenReady().then(async () => {
     await key('Delete'); await wait(state,s=>!s.tabs.some(t=>t.id===b.id));
   });
   await check('advertised agent search Down and two-stage Escape work in the search field', async () => {
-    await focus('#search-toggle'); await key('Enter'); await wc.insertText('Agent 01'); await key('ArrowDown'); assert.equal(await active(),'bot-open');
+    await focus('#bot-search'); await wc.insertText('Agent 01'); await key('ArrowDown'); assert.equal(await active(),'bot-open');
     await focus('#bot-search'); await key('Escape'); assert.equal(await js('document.getElementById("bot-search").value'),'');
-    assert.equal(await active(),'bot-search'); await key('Escape'); assert.equal(await active(),'search-toggle');
+    assert.equal(await active(),'bot-search'); await key('Escape'); assert.equal(await active(),'bot-search');
   });
 
   server=http.createServer((_req,res)=>res.end('<!doctype html><title>Shortcut fixture</title><input id="edit" value="alpha beta"><p>Local test page</p>'));

@@ -87,8 +87,8 @@ app.whenReady().then(async () => {
   assert.ok(await evaluate('!!document.getElementById("browser-collapse") && !!document.getElementById("vm-toggle")'), 'Collapse and VM buttons exist.');
   assert.equal(await evaluate('document.getElementById("browser-collapse").parentElement.className'), 'pane-actions', 'Collapse sits beside VM in the tab bar actions.');
   assert.equal(await evaluate('document.getElementById("vm-toggle").parentElement.className'), 'pane-actions');
-  const caps = await evaluate('["search-toggle","add-bot","sort-bots","bot-count"].map(id => { const r = document.getElementById(id).getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; })');
-  assert.ok(caps.every(size => size.w === caps[0].w && size.h === caps[0].h), `Caption controls share one size: ${JSON.stringify(caps)}`);
+  const caps = await evaluate('["add-bot","sort-bots"].map(id => { const r = document.getElementById(id).getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; })');
+  assert.ok(caps.every(size => size.w === caps[0].w && size.h === caps[0].h), `Search row controls share one size: ${JSON.stringify(caps)}`);
   assert.equal(await evaluate('document.getElementById("settings-button").closest(".agent-presence")?.id'), 'agent-presence', 'The settings gear lives inside the bot tile.');
 
   await invoke('settings', { showBrowser: false });

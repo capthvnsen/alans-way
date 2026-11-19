@@ -84,12 +84,13 @@ app.whenReady().then(async () => {
   }
   const rows = await js(`[...document.querySelectorAll('#bot-list .bot-row')].map(r => r.getBoundingClientRect().height)`);
   assert.equal(rows.length, bots.length);
-  for (const height of rows) assert.ok(height >= 44 && height <= 60, `bot rows stay dense but tappable: ${height}`);
+  for (const height of rows) assert.ok(height >= 52 && height <= 60, `bot rows are a 37px avatar plus 19px of padding, two lines at most 58px: ${height}`);
 
   assert.notEqual(hovered, resting, 'hover is visible');
   assert.notEqual(selected, hovered, 'selection reads differently from hover');
+  assert.equal(await js(`getComputedStyle(document.querySelector('.bot-row.selected')).borderRadius`), '6px', 'the open row is a rounded card');
   assert.equal(await js(`getComputedStyle(document.querySelector('.bot-row[data-bot-id="3"] .bot-hide')).display`), 'block', 'hover reveals hide');
-  assert.equal(await js(`document.querySelector('.bot-row[data-bot-id="3"] .bot-name').scrollWidth > document.querySelector('.bot-row[data-bot-id="3"] .bot-name').clientWidth`), true, 'long name truncates');
+  assert.equal(await js(`document.querySelector('.bot-row[data-bot-id="3"] .bot-label').scrollWidth > document.querySelector('.bot-row[data-bot-id="3"] .bot-label').clientWidth`), true, 'long name truncates');
 
   const msg = await js(`(() => { const s = getComputedStyle(document.querySelector('.hermes-msg.assistant')); return { size: parseFloat(s.fontSize), line: parseFloat(s.lineHeight) }; })()`);
   assert.ok(msg.size >= 13 && msg.line / msg.size >= 1.45, `chat text stays readable: ${JSON.stringify(msg)}`);

@@ -49,7 +49,7 @@ function renderBots() {
   $('bot-search-clear').classList.toggle('hidden', !search);
   $('bot-search-empty').classList.toggle('hidden', !search || found > 0);
   $('bot-search-status').textContent = search ? (found ? `${found} agent${found === 1 ? '' : 's'} found.` : 'No agents found.') : '';
-  $('bot-count').textContent = count;
+  list.setAttribute('aria-label', `Your agents (${count})`);
   $('empty-bots').classList.toggle('hidden', !!search || state.bots.length > 0 || !!state.hermesBot);
   $('empty-bots').querySelector('p').textContent = state.telegramStatus === 'connected' ? 'Finding your Telegram bot chats…' : 'Sign in to Telegram to load your bot chats here.';
   // One row is selected: the open bot on the gateway on screen.
@@ -88,8 +88,7 @@ function renderBots() {
       // Reveal the row's padding too, so the focus outline stays inside the clip.
       target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     } else {
-      const fallback = [$('bot-search'), $('search-toggle')].find(canFocus);
-      fallback?.focus();
+      if (canFocus($('bot-search'))) $('bot-search').focus();
     }
   }
   $('sort-bots').classList.toggle('active', (state.botSort || 'manual') !== 'manual');
@@ -104,18 +103,21 @@ function renderBotRow(parent, { bot, gateway }, { inbox, selectedKey, entryKey, 
   open.setAttribute('aria-current', String(isSelected)); open.tabIndex = key === entryKey ? 0 : -1;
   const avatar = element('span', 'avatar'); avatar.style.setProperty('--avatar-bg', colorFor(bot.id)); window.HermesAvatars.paint(avatar, bot, state);
   const copy = element('span', 'bot-copy');
-  const nameLine = element('div', 'bot-name', bot.name);
+  const nameLine = element('div', 'bot-name'), head = element('div', 'bot-head'), status = element('span', 'bot-status');
+  nameLine.append(element('span', 'bot-label', bot.name));
   if (state.primaryBotId === bot.id) nameLine.append(element('span', 'primary-badge', 'PRIMARY'));
-  const preview = gateway === 'telegram' ? bot.preview || (bot.username ? `@${bot.username}` : '') : gateway === 'native' ? flags.preview || '' : state.webappStatus === 'unreachable' ? 'Can’t reach Hermes Desktop' : '';
-  copy.append(nameLine);
+  const preview = gateway === 'telegram' ? bot.preview || (bot.username ? `@${bot.username}` : '') : gateway === 'native' ? flags.preview || '' : '';
+  head.append(nameLine, status); copy.append(head);
   if (preview) copy.append(element('div', 'bot-preview', preview));
-  if (gateway === 'telegram') copy.append(element('div', 'bot-activity'));
+  const unreachable = gateway === 'hermes-desktop' && state.webappStatus === 'unreachable';
+  if (gateway === 'telegram') status.append(element('span', 'bot-activity hidden'));
   const hide = element('button', `bot-hide${bot.id === 'hermes' ? ' hidden' : ''}`, '×'); hide.title = `Hide ${bot.name}`; hide.setAttribute('aria-label', hide.title);
   hide.tabIndex = key === entryKey ? 0 : -1;
   hide.onclick = (event) => { event.stopPropagation(); command('hide-bot', { id: bot.id }); };
   open.append(avatar, copy);
-  if (flags.waiting) { const badge = element('span', 'waiting-badge'); badge.title = 'Waiting for you'; open.append(badge); }
-  if (flags.unread ?? (gateway === 'telegram' && !!bot.unread)) open.append(element('span', 'unread'));
+  if (unreachable) { const note = element('span', 'status-text bad', 'Unreachable'); note.title = 'Can’t reach Hermes Desktop'; status.append(note); }
+  if (flags.waiting) { const badge = element('span', 'waiting-badge'); badge.title = 'Waiting for you'; status.append(badge, element('span', 'status-text waiting', 'Waiting')); }
+  if (flags.unread ?? (gateway === 'telegram' && !!bot.unread)) { const dot = element('span', 'unread'); dot.title = 'Unread'; status.append(dot); }
   row.append(open, hide);
   row.onclick = () => command('open-bot', { id: bot.id, surface: gateway });
   open.onfocus = () => {
@@ -137,15 +139,16 @@ function renderBotActivity(row, bot) {
   const status = row.querySelector('.bot-activity'), activity = bot.activity;
   if (!status) return;
   const active = activity?.state === 'active' && (!activity.expiresAt || activity.expiresAt > Date.now());
+  // Unknown activity says nothing; only a real signal (live now, or known idle) shows.
+  const shown = active || activity?.state === 'idle';
   status.replaceChildren();
   if (active) {
     const dots = element('span', 'hw-dots');
     dots.append(element('i'), element('i'), element('i'));
     if (bot.hue !== undefined) dots.style.setProperty('--h', String(bot.hue));
     status.append(dots, document.createTextNode(activity.label || 'Telegram activity'));
-  } else {
-    status.textContent = activity?.state === 'idle' ? 'Idle' : 'Activity unavailable';
-  }
+  } else if (shown) status.textContent = 'Idle';
+  status.classList.toggle('hidden', !shown);
   status.classList.toggle('active', active);
   status.title = activity?.detail || 'Live Telegram chat actions. No activity signal does not prove a bot has stopped working.';
 }
@@ -492,6 +495,7 @@ function render(next) {
   renderOnboarding(!tab && !remote && !page && !!state.onboarding);
   $('browser-toolbar').classList.toggle('hidden', remote || page);
   document.body.classList.toggle('win32', state.platform === 'win32');
+  document.body.classList.toggle('darwin', state.platform === 'darwin');
   $('new-tab').title = state.platform === 'darwin' ? 'New local browser tab (⌘T)' : 'New local browser tab (Ctrl+T)';
   const sharedTab = tab?.botId === 'shared';
   const ownerName = tab && !sharedTab ? state.bots.find((item) => item.id === tab.botId)?.name || tab.botId : '';
@@ -1018,7 +1022,7 @@ function setDialogVisible(dialog, show, initialFocus) {
     if (wasTop) {
       if (canFocus(opener)) opener.focus({ preventScroll: true });
       else if (top) focusDialog(top);
-      else [$('settings-button'), $('settings-fallback'), $('search-toggle'), $('new-tab')].find(canFocus)?.focus({ preventScroll: true });
+      else [$('settings-button'), $('settings-fallback'), $('bot-search'), $('new-tab')].find(canFocus)?.focus({ preventScroll: true });
     }
   }
 }
@@ -1979,25 +1983,18 @@ function showAddBot() {
   $('modal-body').append(form); input.focus();
 }
 function clearBotSearch() { $('bot-search').value = ''; renderBots(); $('bot-search').focus(); }
-function toggleBotSearch(show) {
-  $('bot-search-controls').classList.toggle('hidden', !show); $('bot-search').classList.toggle('hidden', !show);
-  $('search-toggle').setAttribute('aria-expanded', String(show));
-  if (show) $('bot-search').focus();
-  else { $('bot-search').value = ''; renderBots(); $('search-toggle').focus(); }
-}
-$('search-toggle').onclick = () => toggleBotSearch($('bot-search').classList.contains('hidden'));
 $('bot-search-clear').onclick = clearBotSearch;
 $('bot-search-reset').onclick = clearBotSearch;
 function handleBotSearchKey(event) {
   if (event.key === 'Escape') {
     event.preventDefault(); event.stopPropagation();
-    if ($('bot-search').value) clearBotSearch(); else toggleBotSearch(false);
+    if ($('bot-search').value) clearBotSearch();
   } else if (event.key === 'ArrowDown' && event.target === $('bot-search')) {
     const first = $('bot-list').querySelector('.bot-open');
     if (first) { event.preventDefault(); first.focus(); }
   }
 }
-$('bot-search-controls').onkeydown = handleBotSearchKey;
+document.querySelector('.side-search').onkeydown = handleBotSearchKey;
 $('bot-search-empty').onkeydown = handleBotSearchKey;
 $('bot-search').oninput = renderBots;
 $('add-bot').onclick = showAddBot;
@@ -2009,7 +2006,7 @@ $('shortcut-search').oninput = renderShortcuts;
 $('shortcut-clear').onclick = () => { $('shortcut-search').value = ''; renderShortcuts(); $('shortcut-search').focus(); };
 $('shortcut-dialog').onclick = event => { if (event.target === $('shortcut-dialog')) closeShortcuts(); };
 $('browser-collapse').onclick = () => { if (focusMode) { focusMode = false; $('shell').classList.remove('focus-workspace'); } command('settings', { showBrowser: state?.showBrowser === false }); };
-$('bots-toggle').onclick = () => command('settings', { showBots: state.showBots === false });
+$('bots-toggle').onclick = $('bots-show').onclick = () => command('settings', { showBots: state.showBots === false });
 $('sort-bots').onclick = (event) => {
   event.stopPropagation();
   const menu = $('sort-menu'), open = menu.classList.contains('hidden');
