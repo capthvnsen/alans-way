@@ -127,7 +127,17 @@
   const WIDGET_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'";
   // The widget page has its own network-blocking CSP: a srcdoc frame would
   // inherit the window's policy, which forbids inline scripts.
+  // The widget page reports its content height. Only a finite number posted from a widget frame's own window counts, and the frame stays between these bounds.
+  const WIDGET_MIN = 48, WIDGET_MAX = 480;
+  let widgetSizing = false;
+  function sizeWidgets(event) {
+    const data = event.data;
+    if (data?.type !== 'nc-widget-height' || typeof data.height !== 'number' || !Number.isFinite(data.height)) return;
+    const frame = [...document.querySelectorAll('.nc-widget iframe')].find((item) => item.contentWindow === event.source);
+    if (frame) frame.style.height = `${Math.min(WIDGET_MAX, Math.max(WIDGET_MIN, Math.ceil(data.height)))}px`;
+  }
   function widgetElement(source) {
+    if (!widgetSizing) { widgetSizing = true; window.addEventListener('message', sizeWidgets); }
     const wrap = el('div', 'nc-widget');
     const frame = document.createElement('iframe');
     frame.setAttribute('sandbox', 'allow-scripts');
@@ -571,7 +581,7 @@
     };
   }
 
-  const exported = { create: createView, blocks, parseDirective, renderMarkdown, setupMarkdown };
+  const exported = { create: createView, blocks, parseDirective, renderMarkdown, setupMarkdown, widgetElement };
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
   else window.NativeChat = exported;
 })();
