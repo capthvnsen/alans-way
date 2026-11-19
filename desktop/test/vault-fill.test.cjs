@@ -444,6 +444,7 @@ test('H1b: the tab is locked from the prompt on, kept after a fill, and released
   assert.equal(tab.vaultLock, undefined, 'nothing is locked before a fill reaches the prompt');
   assert.equal((await r.evaluate(target, fillJs())).success, true);
   assert.deepEqual(lockAtPrompt, ['prompt'], 'locked while the prompt is open, so nothing can be planted meanwhile');
+  assert.equal(tab.networkDisabled, 1, 'whatever an earlier Network.enable buffered is dropped when the lock begins');
   assert.equal(tab.vaultLock, 'filled', 'kept after the fill');
 
   // A later refused attempt on the same tab does not lift an earlier fill\'s lock.
@@ -637,4 +638,173 @@ test('L5: expired cooldowns are dropped when the map is read', async () => {
   const target = await prepare(r, 'bbbbbbbbbbbbbbbb');
   await r.evaluate(target, fillJs({ origin: 'https://s2.test', nonce: 'bbbbbbbbbbbbbbbb' }));
   assert.equal(r.vault.size().denied, 1, 'only the fresh one is left');
+});
+
+// ── second review: the context must be clean ────────────────────────────────────────────────────────────────────
+
+const refusedNotIsolated = async (r, tab, target, why) => {
+  const out = await r.evaluate(target, fillJs());
+  assert.deepEqual([out.success, out.error_type], [false, 'not_isolated'], why);
+  assert.equal(r.asks.length + ranFill(tab).length, 0, `${why}: no prompt, no script`);
+  assert.equal(tab.vaultLock, undefined, `${why}: no lock`);
+  return out;
+};
+
+test('A: a tab with a live opener, or that has opened a live tab, is never filled', async () => {
+  let r = rig(), tab = r.add();
+  const opener = r.add({ id: 'opener' });
+  tab.openerId = 'opener';
+  let target = await prepare(r);
+  assert.match((await refusedNotIsolated(r, tab, target, 'a live opener')).error, /popup|browsing context/i);
+  r.tabs.delete('opener'); // the opener closed: window.opener is null now
+  target = await prepare(r, 'bbbbbbbbbbbbbbbb');
+  assert.equal((await r.evaluate(target, fillJs({ nonce: 'bbbbbbbbbbbbbbbb' }))).success, true, 'a closed opener leaves no link');
+
+  r = rig(); tab = r.add();
+  const popup = r.add({ id: 'popup', url: 'https://other.test/help' });
+  popup.openerId = tab.id;
+  target = await prepare(r);
+  await refusedNotIsolated(r, tab, target, 'a live popup it opened');
+  r.tabs.delete('popup');
+  target = await prepare(r, 'bbbbbbbbbbbbbbbb');
+  assert.equal((await r.evaluate(target, fillJs({ nonce: 'bbbbbbbbbbbbbbbb' }))).success, true, 'the popup closed');
+  void opener;
+});
+
+test('A: a browsing-context link between other tabs, or a link through a chain, refuses too; a dead link does not', async () => {
+  // T opened P1, P1 opened P2: P2 is reachable from T through P1.
+  let r = rig(); let tab = r.add();
+  const p1 = r.add({ id: 'p1', url: 'https://a.test/' }), p2 = r.add({ id: 'p2', url: 'https://b.test/' });
+  p1.openerId = tab.id; p2.openerId = 'p1';
+  await refusedNotIsolated(r, tab, await prepare(r), 'a chain');
+  // Siblings opened by the same opener are linked to each other, and the target is one of them.
+  r = rig(); tab = r.add({ id: 'target' });
+  const parent = r.add({ id: 'parent', url: 'https://a.test/' }); tab.openerId = 'parent';
+  await refusedNotIsolated(r, tab, await prepare(r), 'a sibling of a live opener');
+  // A dead middle link breaks the chain: P2's opener is gone, so T is not linked to P2.
+  r = rig(); tab = r.add();
+  const q1 = r.add({ id: 'q1', url: 'https://a.test/' }), q2 = r.add({ id: 'q2', url: 'https://b.test/' });
+  q2.openerId = 'dead'; q1.openerId = 'dead2';
+  const target = await prepare(r);
+  assert.equal((await r.evaluate(target, fillJs())).success, true, 'tabs linked only to closed tabs are not linked to the target');
+  void parent; void p1; void p2; void q1; void q2;
+});
+
+test('A: another live tab of the bot on the bound origin refuses the fill, judged by the frame\'s origin, not its URL', async () => {
+  const cases = [
+    ['a second tab on the site', { url: `${ORIGIN}/other` }, (t) => t],
+    ['an about:blank popup that inherited the opener\'s origin', { url: 'about:blank' }, (t) => { t.frame.origin = ORIGIN; }],
+    ['a tab whose URL differs but whose frame is on the origin', { url: 'https://elsewhere.test/' }, (t) => { t.frame.origin = ORIGIN; }],
+    ['a human-controlled tab (the human may hand it back)', { url: `${ORIGIN}/mine` }, (t) => { t.controller = 'human'; }],
+  ];
+  for (const [why, opts, patch] of cases) {
+    const r = rig(), tab = r.add();
+    const other = r.add({ id: 'other', ...opts }); patch(other);
+    await refusedNotIsolated(r, tab, await prepare(r), why);
+  }
+  for (const [why, patch] of [['another origin', (t) => t.go('https://elsewhere.test/')], ['another bot', (t) => { t.botId = 'bot2'; }], ['a sandboxed frame', (t) => { t.frame.origin = 'null'; }]]) {
+    const r = rig(), tab = r.add();
+    const other = r.add({ id: 'other' }); patch(other);
+    const target = await prepare(r);
+    assert.equal((await r.evaluate(target, fillJs())).success, true, why);
+    void tab;
+  }
+});
+
+test('A: neither the document nor a script still in flight may be the agent\'s: checked before the prompt', async () => {
+  let r = rig(), tab = r.add();
+  tab.agentScripted = true;
+  let out = await r.evaluate(await prepare(r), fillJs());
+  assert.deepEqual([out.success, out.error_type], [false, 'page_scripted']);
+  r = rig(); tab = r.add();
+  tab.scriptsInFlight = 1; // a timed-out eval is still queued in the page
+  out = await r.evaluate(await prepare(r), fillJs());
+  assert.deepEqual([out.success, out.error_type], [false, 'page_scripted']);
+  assert.equal(r.asks.length, 0);
+});
+
+test('A: and again after the answer, right before the fill: a script or a popup that appeared while the prompt was open', async () => {
+  const during = [
+    ['an eval dispatched', (t) => { t.agentScripted = true; t.scriptsInFlight = 1; }, 'page_scripted'],
+    ['a script that stayed in flight', (t) => { t.scriptsInFlight = 1; }, 'page_scripted'],
+    ['a popup opened', (t, r) => { const p = r.add({ id: 'popup', url: 'https://other.test/' }); p.openerId = t.id; }, 'not_isolated'],
+    ['another tab arriving on the origin', (t, r) => { r.add({ id: 'late', url: `${ORIGIN}/second` }); }, 'not_isolated'],
+    ['the target gaining an opener', (t, r) => { r.add({ id: 'o', url: 'https://other.test/' }); t.openerId = 'o'; }, 'not_isolated'],
+  ];
+  for (const [why, change, reason] of during) {
+    const r = rig({ decision: () => { change(tab, r); return true; } }), tab = r.add();
+    const target = await prepare(r);
+    const out = await r.evaluate(target, fillJs());
+    assert.deepEqual([out.success, out.error_type], [false, reason], why);
+    assert.equal(ranFill(tab).length, 0, `${why}: nothing typed`);
+    assert.equal(tab.vaultLock, undefined, `${why}: released`);
+    noPassword(r);
+  }
+});
+
+test('L1: two unanswered, denied or withdrawn prompts in a row for a bot and site start a growing backoff of 1, 5 and 15 minutes', async () => {
+  for (const kind of ['denied', 'unanswered', 'withdrawn']) {
+    const withdraw = new AbortController();
+    const r = rig({ askMs: 15, decision: kind === 'denied' ? false : (_i, signal) => new Promise(() => { void signal; }) }), tab = r.add();
+    const attempt = async (n) => {
+      const nonce = String(n).padStart(2, '0').repeat(8);
+      const target = await prepare(r, nonce);
+      if (kind !== 'withdrawn') return r.evaluate(target, fillJs({ nonce }));
+      const ctl = new AbortController();
+      const pending = r.vault.handle({ storedId: 's1', sessionId: 'rt-s1', signal: ctl.signal, params: { session_id: 'rt-s1', action: 'vault', vault: { operation: 'evaluate', target, expression: fillJs({ nonce }) } } });
+      await new Promise((resolve) => setImmediate(resolve));
+      ctl.abort();
+      return { ...JSON.parse((await pending).value) };
+    };
+    void withdraw;
+    const reasons = [];
+    const step = async (n, minutes) => { r.clock.t += minutes * 60000 + 1; const out = await attempt(n); reasons.push(out.error_type); return out; };
+    await step(10, 0);                       // 1st negative
+    await step(11, 1.1);                     // 2nd negative (past the 60 s cooldown): backoff 1 minute starts
+    const asked = r.asks.length;
+    r.clock.t += 30000;
+    assert.equal((await attempt(12)).error_type, 'backoff', `${kind}: inside the first backoff`);
+    assert.equal(r.asks.length, asked, `${kind}: no prompt during backoff`);
+    r.clock.t += 31000;
+    await attempt(13);                       // 3rd negative: 5 minutes
+    r.clock.t += 4 * 60000;
+    assert.equal((await attempt(14)).error_type, 'backoff', `${kind}: five minutes`);
+    r.clock.t += 61000;
+    await attempt(15);                       // 4th negative: 15 minutes
+    r.clock.t += 14 * 60000;
+    assert.equal((await attempt(16)).error_type, 'backoff', `${kind}: fifteen minutes`);
+    r.clock.t += 61000;
+    assert.notEqual((await attempt(17)).error_type, 'backoff', `${kind}: over`);
+    assert.equal(tab.vaultLock === 'prompt', false);
+  }
+});
+
+test('L1: an Allow resets the streak and the backoff; another bot is not affected; an unshown prompt counts for nothing', async () => {
+  const r = rig({ decision: false }); r.add(); r.add({ id: 't2', botId: 'bot2' });
+  const attempt = async (n, storedId = 's1') => {
+    const nonce = String(n).padStart(2, '0').repeat(8);
+    const target = await r.open(storedId); await r.evaluate(target, inspectJs(nonce), storedId);
+    return r.evaluate(target, fillJs({ nonce }), storedId);
+  };
+  r.clock.t += 61000; await attempt(10); r.clock.t += 61000; await attempt(11);
+  assert.equal((await attempt(12)).error_type, 'backoff');
+  assert.notEqual((await attempt(13, 's2')).error_type, 'backoff', 'bot2 is its own');
+  r.clock.t += 61000; r.state.decision = true;
+  assert.equal((await attempt(14)).success, true, 'after the minute, an Allow');
+  r.state.decision = false; r.clock.t += 61000;
+  assert.notEqual((await attempt(15)).error_type, 'backoff', 'the Allow reset it');
+  const q = rig({ decision: 'inactive' }); q.add();
+  for (let i = 0; i < 6; i++) { const nonce = String(20 + i).repeat(8); const tg = await prepare(q, nonce); assert.equal((await q.evaluate(tg, fillJs({ nonce }))).error_type, 'app_inactive'); }
+});
+
+test('L1: breaking the three-a-minute cap also starts a backoff', async () => {
+  const r = rig({ decision: false }), tab = r.add();
+  const sites = ['https://a.test', 'https://b.test', 'https://c.test', 'https://d.test'];
+  const attempt = async (i) => { tab.go(`${sites[i % 4]}/login`); const nonce = String(i + 30).repeat(8); const tg = await prepare(r, nonce); return r.evaluate(tg, fillJs({ origin: sites[i % 4], nonce })); };
+  for (let i = 0; i < 3; i++) await attempt(i);
+  assert.equal((await attempt(3)).error_type, 'rate_limited');
+  r.clock.t += 30000;
+  assert.equal((await attempt(0)).error_type, 'backoff');
+  r.clock.t += 31000;
+  assert.equal((await attempt(0)).error_type !== 'backoff', true, 'one minute later it is over');
 });

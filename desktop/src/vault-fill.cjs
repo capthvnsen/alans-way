@@ -69,11 +69,13 @@ const REASONS = {
   opaque_origin: 'This page has an opaque (sandboxed) origin, so it is not the site the login is saved for. Nothing was filled.',
   origin_mismatch: "The tab's site is not exactly the site this login is saved for. Nothing was filled.",
   page_scripted: 'The agent has run script (eval or a DevTools write) in this page, which could read the password back. Reload the page (navigate to it again), then ask again. Nothing was filled.',
+  not_isolated: 'Another tab shares a browsing context or this site with the tab to fill (a popup or its opener, or a second tab of this bot on the same site), so it could read the password back. Close the other tabs on this site and any popups, then ask again. Nothing was filled.',
   denied: 'The user chose not to fill this login. Do not ask again this turn.',
   denied_recently: 'A fill prompt for this site was just declined or went unanswered. Do not ask again this turn.',
   no_answer: 'The user did not answer the fill prompt in time. Nothing was filled.',
   app_inactive: 'The app is not the active app, so the user was not asked. Nothing was filled; ask the user to open the app first.',
   rate_limited: 'Too many fill prompts for this bot in the last minute. Nothing was filled.',
+  backoff: 'Fill prompts for this bot are paused after repeated unanswered, denied or withdrawn requests. Nothing was filled.',
   busy: 'Another fill prompt is already open. Nothing was filled.',
   unknown_target: 'That vault target is closed or expired. Open a new one.',
   no_inspection: 'The fill does not match the page inspection that came before it. Nothing was filled.',
@@ -85,7 +87,7 @@ const REASONS = {
 const no = (type, message) => refuse(type, message || REASONS[type]);
 
 const WORLD = 'hermes-vault';
-const MAX_ANSWER = 256 * 1024, CLEAR_MS = 2000, PROMPTS_PER_MINUTE = 3;
+const MAX_ANSWER = 256 * 1024, CLEAR_MS = 2000, PROMPTS_PER_MINUTE = 3, BACKOFF_MINUTES = [1, 5, 15], MAX_STREAKS = 100;
 // A page's answer is data from the page: a string of bounded size, parsed only then.
 const pageJson = (raw) => typeof raw === 'string' && raw.length <= MAX_ANSWER ? parseJson(raw) : undefined;
 
@@ -93,12 +95,45 @@ const pageJson = (raw) => typeof raw === 'string' && raw.length <= MAX_ANSWER ? 
 // 'inactive' (the app is not the active app, nothing was shown) or null (no answer).
 function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, log = () => {}, now = Date.now,
   targetTtlMs = 5 * 60000, askMs = 30000, denyMs = 60000 }) {
-  const targets = new Map(), denied = new Map(), prompts = new Map();
+  const targets = new Map(), denied = new Map(), prompts = new Map(), streaks = new Map(), penalty = new Map();
   let asking = false;
 
   const findTab = (id) => { for (const tab of listTabs()) if (tab.id === id) return tab; return null; };
   const liveContents = (tab) => { const wc = tab?.view?.webContents; return wc && !wc.isDestroyed() && !wc.isCrashed() ? wc : null; };
   const agentTab = (tab, bot) => tab.controller === 'agent' && tab.botId === bot && !tab.extensionPage && !tab.localPdf && !tab.preflight;
+
+  const frameOrigin = (tab) => { try { return liveContents(tab).mainFrame.origin; } catch { return ''; } };
+  // The context the password goes into must be one nothing but the site can reach: no popup link to or from the tab (a
+  // popup keeps window.opener, and an about:blank one inherits the origin), no other tab of the bot on the same site
+  // (judged by the frame's own origin, not the URL), and nothing the agent scripted there, or still has in flight.
+  function unclean(tab, bound) {
+    if (tab.agentScripted || (tab.scriptsInFlight || 0) > 0) return 'page_scripted';
+    const live = [...listTabs()].filter(liveContents), ids = new Set(live.map((t) => t.id));
+    const linked = new Set([tab.id]), queue = [tab];
+    while (queue.length) {
+      const at = queue.pop();
+      for (const t of live) {
+        if (linked.has(t.id) || !((t.openerId && t.openerId === at.id) || (at.openerId && at.openerId === t.id && ids.has(at.openerId)))) continue;
+        linked.add(t.id); queue.push(t);
+      }
+    }
+    if (linked.size > 1) return 'not_isolated';
+    for (const t of live) if (t !== tab && t.botId === tab.botId && frameOrigin(t) === bound) return 'not_isolated';
+    return '';
+  }
+  const negative = (key, bot) => {
+    const n = (streaks.get(key) || 0) + 1;
+    streaks.delete(key); streaks.set(key, n);
+    while (streaks.size > MAX_STREAKS) streaks.delete(streaks.keys().next().value);
+    if (n >= 2) penalize(bot);
+  };
+  // Backoff grows 1, 5, 15 minutes per bot and starts over after an hour of quiet or an Allow.
+  function penalize(bot) {
+    let p = penalty.get(bot);
+    if (p && now() - p.until > 3600000) p = null;
+    const level = Math.min((p ? p.level : 0) + 1, BACKOFF_MINUTES.length);
+    penalty.set(bot, { level, until: now() + BACKOFF_MINUTES[level - 1] * 60000 });
+  }
 
   // The tab as the main process knows it right now, or why it cannot be filled. Page script is never asked.
   function read(target) {
@@ -196,18 +231,23 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, l
     let seen = read(target);
     if (seen.why) return no(seen.why);
     if (seen.origin !== bound) return no('origin_mismatch');
-    if (seen.tab.agentScripted) return no('page_scripted');
+    const unclear = unclean(seen.tab, bound);
+    if (unclear) return no(unclear);
 
     const key = JSON.stringify([target.botId, bound]);
     for (const [k, until] of denied) if (until <= now()) denied.delete(k);
+    const paused = penalty.get(target.botId);
+    if (paused && paused.until > now()) return no('backoff', `${REASONS.backoff} Try again in about ${Math.ceil((paused.until - now()) / 60000)} minute(s).`);
     if (denied.get(key) > now()) return no('denied_recently');
     if (asking) return no('busy');
     const recent = (prompts.get(target.botId) || []).filter((t) => t > now() - 60000);
-    if (recent.length >= PROMPTS_PER_MINUTE) return no('rate_limited');
+    if (recent.length >= PROMPTS_PER_MINUTE) { penalize(target.botId); return no('rate_limited'); }
 
     // From here until the answer, and after a fill, the agent's readers on this tab are closed.
     const tab = seen.tab;
     lock.acquire(tab);
+    // Drop what an earlier DevTools Network.enable buffered (request bodies, post data): the login's own request must not be in it.
+    Promise.resolve().then(() => command(tab, 'Network.disable', {})).catch(() => {});
     asking = true;
     let keep = false;
     try {
@@ -218,15 +258,19 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, l
       const answer = await Promise.race([Promise.resolve().then(() => ask({ botId: target.botId, botName: nameFor(target.botId) || target.botId, origin: bound }, cancel)).catch(() => null), settled]);
       if (answer === 'inactive') { prompts.set(target.botId, recent); return no('app_inactive'); }
       if (cancel.aborted || answer === null || answer === undefined) {
-        if (!signal?.aborted) denied.set(key, now() + denyMs); // a withdrawn request (Stop) is not punished
+        if (!signal?.aborted) denied.set(key, now() + denyMs); // a withdrawn request (Stop) gets no cooldown, but it counts toward the backoff
+        negative(key, target.botId);
         return no('no_answer');
       }
-      if (answer !== true) { denied.set(key, now() + denyMs); return no('denied'); }
+      if (answer !== true) { denied.set(key, now() + denyMs); negative(key, target.botId); return no('denied'); }
+      streaks.delete(key); penalty.delete(target.botId);
 
       // The same checks again, now that the user has answered: this is what the password is typed into.
       seen = read(target);
       if (seen.why) return no(seen.why);
       if (seen.origin !== bound) return no('origin_mismatch');
+      const changed = unclean(seen.tab, bound);
+      if (changed) return no(changed);
       target.filled = true;
       keep = true; // the script is about to run: assume it typed, unless it says it did not
       let raw;

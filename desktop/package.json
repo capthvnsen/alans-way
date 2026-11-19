@@ -19,7 +19,7 @@
     "test:desktop": "electron test/workspace-integration.cjs",
     "test:agent-input": "electron test/agent-input-electron.cjs",
     "test:vault-fill": "electron test/vault-fill-electron.cjs",
-    "test:vault-lock": "electron test/vault-lock-electron.cjs",
+    "test:vault-lock": "electron test/vault-lock-electron.cjs && electron test/vault-isolation-electron.cjs",
     "test:permissions": "node test/run-electron.cjs test/site-permissions-electron.cjs",
     "test:cross-host": "electron test/cross-host-electron.cjs",
     "test:extensions": "node test/extensions-electron.cjs",

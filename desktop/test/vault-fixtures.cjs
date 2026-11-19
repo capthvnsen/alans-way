@@ -34,6 +34,7 @@ function makeTab({ id = 't1', botId = 'bot1', url = `${ORIGIN}/login`, controlle
       { autocomplete: 'username', formIndex: 0, index: 0, maxLength: null, label: 'Email address', name: 'user', type: 'text' }]), fill: () => '{"filled":1}', clear: () => '{}' },
     go(next) { wc.url = next; frame.url = next; frame.origin = originOf(next); tab.generation++; },
     async cdp(method, params) {
+      if (method === 'Network.disable') { tab.networkDisabled = (tab.networkDisabled || 0) + 1; return {}; }
       if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main-frame' } } };
       if (method === 'Page.createIsolatedWorld') { tab.worlds.push(params); return { executionContextId: 100 + tab.worlds.length }; }
       if (method !== 'Runtime.evaluate' || !(params.contextId > 100) || params.returnByValue !== true) throw new Error(`unexpected ${method}`);

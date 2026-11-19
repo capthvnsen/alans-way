@@ -17,7 +17,7 @@ function tab(id, url, extra = {}) {
     view: { webContents: { getURL: () => url, isDestroyed: () => false } }, ...extra };
 }
 function snapshotFixture(entries, activeTabId) {
-  const context = vm.createContext({ tabs: new Map(entries.map(item => [item.id, item])), activeTabId,
+  const context = vm.createContext({ vaultLock: { isLocked: () => false }, tabs: new Map(entries.map(item => [item.id, item])), activeTabId,
     prefs: {}, isQuitting: false, win: { isDestroyed: () => false }, NEWTAB_URL: 'file:///fixture/newtab.html',
     createSaver: options => ({ flush: options.snapshot }),
   });
@@ -39,7 +39,7 @@ test('only user-created tabs survive a restart, even after task handback or user
 });
 
 test('shutdown does not overwrite the saved user tabs when Chromium destroys its views', () => {
-  const context = vm.createContext({ tabs: new Map(), activeTabId: 'home', isQuitting: true,
+  const context = vm.createContext({ vaultLock: { isLocked: () => false }, tabs: new Map(), activeTabId: 'home', isQuitting: true,
     prefs: { savedTabs: [{ url: 'https://user.example/', owner: 'user', active: true }] },
     win: { isDestroyed: () => false }, createSaver: options => ({ flush: options.snapshot }),
   });
@@ -49,7 +49,7 @@ test('shutdown does not overwrite the saved user tabs when Chromium destroys its
 
 function restoreFixture(savedTabs) {
   const restored = [];
-  const context = vm.createContext({ prefs: { savedTabs, canvasTabs: {} }, activeTabId: 'home', CANVAS_TABS: ['browser', 'screen'],
+  const context = vm.createContext({ vaultLock: { isLocked: () => false }, prefs: { savedTabs, canvasTabs: {} }, activeTabId: 'home', CANVAS_TABS: ['browser', 'screen'],
     fileURLToPath: require('node:url').fileURLToPath,
     createTab: options => { const created = { ...options, id: `restored-${restored.length}` }; restored.push(created); return created; },
   });
@@ -95,7 +95,7 @@ test('a popup opened while a bot controls a user tab is attributed to that bot t
   contents.setWindowOpenHandler = fn => { handler = fn; };
   const parent = tab('user', 'https://user.example/', { controller: 'agent', botId: 'bot-a' });
   parent.view.webContents = contents;
-  const context = vm.createContext({ tabs: new Map([['user', parent]]), prefs: {},
+  const context = vm.createContext({ vaultLock: { isLocked: () => false }, tabs: new Map([['user', parent]]), prefs: {},
     isExtensionUrl: () => false, agentPageUrl: value => value, normalizeUrl: value => value,
     configuredSessions: new WeakSet(), sitePermissions: { install() {} }, downloadStore: { install() {} },
     createTab: options => { created = options; return { id: 'popup', view: { webContents: {} } }; },
@@ -111,7 +111,7 @@ test('a popup opened while a bot controls a user tab is attributed to that bot t
 
 test('a task handed back from the remote browser does not become a restorable user tab', async () => {
   let created;
-  const context = vm.createContext({ tabs: new Map(), vpsTabs: new Map([['remote-task', { id: 'remote-task', botId: 'bot-a' }]]),
+  const context = vm.createContext({ vaultLock: { isLocked: () => false }, tabs: new Map(), vpsTabs: new Map([['remote-task', { id: 'remote-task', botId: 'bot-a' }]]),
     HOST_LABEL: 'mac', crypto: { randomUUID: () => 'handoff-fixture' }, prefs: { handoffs: [] },
     remoteRequest: async (_id, action) => action === 'checkpoint' ? { url: 'https://task.example/' } : {},
     createTab: options => { created = options; return { id: 'local-task', view: { webContents: {
@@ -131,7 +131,7 @@ test('Move to VM and back carries the page’s sign-in, set before the destinati
   const page = (url) => ({ isLoading: () => false, getURL: () => url, isDestroyed: () => false,
     executeJavaScript: async (code) => String(code).includes('drafts.push') ? { url, title: 'Task', scroll: { x: 0, y: 0 }, drafts: [] } : { verification: 'ready', restored: 0, skipped: 0 } });
   const macTab = { id: 'mac-task', botId: 'bot-a', controller: 'agent', owner: 'bot', queue: Promise.resolve(), view: { webContents: page('https://task.example/deal') } };
-  const context = vm.createContext({ tabs: new Map([['mac-task', macTab]]), vpsTabs: new Map([['vm-task', { id: 'vm-task', botId: 'bot-a', controller: 'agent' }]]),
+  const context = vm.createContext({ vaultLock: { isLocked: () => false }, tabs: new Map([['mac-task', macTab]]), vpsTabs: new Map([['vm-task', { id: 'vm-task', botId: 'bot-a', controller: 'agent' }]]),
     HOST_LABEL: 'mac', crypto: { randomUUID: () => 'handoff-fixture' }, prefs: { handoffs: [] },
     changeController: (id, controller) => { context.tabs.get(id).controller = controller; },
     pageCookies: async (url) => [toCdpCookie({ name: 'sid', value: 'from-mac', domain: 'task.example', path: '/', secure: true, httpOnly: true, session: true })].filter(() => url.startsWith('https://task.example/')),
@@ -160,7 +160,7 @@ test('without consent or a tailnet path a Move carries no sign-ins, and a failed
   const requests = [];
   const macTab = { id: 'mac-task', botId: 'bot-a', controller: 'agent', owner: 'bot', queue: Promise.resolve(), view: { webContents: { executeJavaScript: async () => ({ url: 'https://task.example/', drafts: [], scroll: { x: 0, y: 0 } }) } } };
   let fail = false;
-  const context = vm.createContext({ tabs: new Map([['mac-task', macTab]]), vpsTabs: new Map(), HOST_LABEL: 'mac', crypto: { randomUUID: () => 'h' }, prefs: { handoffs: [] },
+  const context = vm.createContext({ vaultLock: { isLocked: () => false }, tabs: new Map([['mac-task', macTab]]), vpsTabs: new Map(), HOST_LABEL: 'mac', crypto: { randomUUID: () => 'h' }, prefs: { handoffs: [] },
     changeController: (id, controller) => { macTab.controller = controller; },
     pageCookies: async () => { throw new Error('cookies must not be read'); },
     vpsBrowser: { request: async (route, method, body) => { if (fail) throw new Error('VPS browser SSH unavailable.'); requests.push(body); return { id: 'vm-new' }; } },
@@ -184,7 +184,7 @@ test('clicking a chat link already auto-opened by that message does not create a
   contents.setWindowOpenHandler = () => {};
   let created = 0, prevented = 0;
   const url = 'https://task.example/';
-  const context = vm.createContext({ tabs: new Map([['existing', tab('existing', url, { owner: 'bot', botId: 'bot-a' })]]),
+  const context = vm.createContext({ vaultLock: { isLocked: () => false }, tabs: new Map([['existing', tab('existing', url, { owner: 'bot', botId: 'bot-a' })]]),
     prefs: {}, activeTabId: 'home', TELEGRAM: 'https://web.telegram.org/a/',
     recentLinkTabs: new Map([[url, { tabId: 'existing', at: Date.now() }]]),
     normalizeUrl: value => value, isExtensionUrl: () => false,
@@ -205,7 +205,7 @@ test('a chat link notification arriving after the human clicked reuses the exist
   const url = 'https://task.example/', frame = {};
   const contents = { mainFrame: frame, getURL: () => 'https://web.telegram.org/a/' };
   const existing = tab('clicked', url, { botId: 'bot-a', epoch: 7 });
-  const context = vm.createContext({ telegramView: { webContents: contents }, TELEGRAM: 'https://web.telegram.org/a/',
+  const context = vm.createContext({ vaultLock: { isLocked: () => false }, telegramView: { webContents: contents }, TELEGRAM: 'https://web.telegram.org/a/',
     prefs: { bots: [{ id: 'bot-a' }] }, tabs: new Map([['clicked', existing]]),
     recentLinkTabs: new Map([[url, { tabId: 'clicked', at: Date.now() }]]),
     ipcMain: { on: (_name, fn) => { notify = fn; } }, agentPageUrl: value => value,
@@ -221,7 +221,7 @@ test('a chat link notification arriving after the human clicked reuses the exist
 test('ordinary quit keeps views alive until cookies are durable, and a repeated quit shares the drain', async () => {
   let listener, finish, saves = 0, closes = 0;
   const app = { on: (_name, fn) => { listener = fn; }, quit: () => listener({ preventDefault() {} }) };
-  const context = vm.createContext({ app, nativeChat: null, isQuitting: false, setTimeout() {}, QUIT_SAVE_MS: 8000, logError: (_label, error) => { throw error; },
+  const context = vm.createContext({ vaultLock: { isLocked: () => false }, app, nativeChat: null, isQuitting: false, setTimeout() {}, QUIT_SAVE_MS: 8000, logError: (_label, error) => { throw error; },
     savePreferences() {}, saveBrowserSession: () => { saves++; return new Promise(resolve => { finish = resolve; }); },
     hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },
     modelAuthChild: null, tray: null, apiServer: null, clearInterval() {}, clearTimeout() {},
@@ -247,7 +247,7 @@ for (const outcome of ['hangs', 'fails']) {
     let listener, closes = 0;
     const timers = [], errors = [];
     const app = { on: (_name, fn) => { listener = fn; }, quit: () => listener({ preventDefault() {} }) };
-    const context = vm.createContext({ app, nativeChat: null, isQuitting: false, setTimeout: (fn, ms) => timers.push({ fn, ms }), QUIT_SAVE_MS: 8000,
+    const context = vm.createContext({ vaultLock: { isLocked: () => false }, app, nativeChat: null, isQuitting: false, setTimeout: (fn, ms) => timers.push({ fn, ms }), QUIT_SAVE_MS: 8000,
       savePreferences() {}, saveBrowserSession: () => (outcome === 'hangs' ? new Promise(() => {}) : Promise.reject(new Error('denied'))),
       logError: (label, error) => errors.push(`${label}: ${error.message}`),
       hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },
@@ -310,7 +310,7 @@ test('shutdown retains session-only sign-ins in encrypted form without changing 
   }]));
   const safeStorage = { isAsyncEncryptionAvailable: async () => true, getSelectedStorageBackend: () => 'gnome_libsecret',
     encryptStringAsync: async text => { assert.ok(text.includes('fixture-session')); return Buffer.from('encrypted-fixture'); } };
-  const context = vm.createContext({ webappView: null, canvasView: null, prefs, session: { fromPartition: name => sessions.get(name) }, safeStorage, savePreferences() {}, persistSettingsPreferences() {},
+  const context = vm.createContext({ vaultLock: { isLocked: () => false }, webappView: null, canvasView: null, prefs, session: { fromPartition: name => sessions.get(name) }, safeStorage, savePreferences() {}, persistSettingsPreferences() {},
     WebContentsView: class { constructor() { this.webContents = { destroy() {}, debugger: { attach() {}, sendCommand: async () => ({ cookies }) } }; } },
     createBrowserSessionStore: require('node:fs').existsSync(path.join(__dirname, '../src/browser-session.cjs')) ? require('../src/browser-session.cjs').createBrowserSessionStore : undefined,
     process: { platform: 'darwin' }, Buffer,
@@ -340,7 +340,7 @@ test('on wake the app retires each local tab the VM resumed, once, and tells the
   const { continuedOnVm, requireAgentClaim } = require('../src/core.cjs');
   const tabs = new Map([['mac-1', { id: 'mac-1', botId: 'bot-a', controller: 'agent' }], ['mac-2', { id: 'mac-2', botId: 'bot-b', controller: 'agent' }], ['mac-3', { id: 'mac-3', botId: 'bot-a', controller: 'human' }]]);
   let saved = 0;
-  const context = vm.createContext({ tabs, prefs: { handoffs: [] }, continuedOnVm, Date, Object,
+  const context = vm.createContext({ vaultLock: { isLocked: () => false }, tabs, prefs: { handoffs: [] }, continuedOnVm, Date, Object,
     vpsBrowser: { request: async (route) => { assert.equal(route, '/v1/mirror/continued'); return { bots: { 'bot-a': { 'mac-1': 'vm-1', 'mac-3': 'vm-3', 'gone': 'vm-x' }, 'bot-c': { 'mac-2': 'vm-2' } } }; } },
     changeController: (id, controller) => { tabs.get(id).controller = controller; }, savePreferences: () => { saved++; }, broadcast() {} });
   vm.runInContext(section('let continuedCheckDue = true', '\nconst pushVpsMirror') + ';this.notice = () => continuedNotice;', context);

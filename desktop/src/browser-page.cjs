@@ -812,7 +812,7 @@ function snapshotExpression(opts = {}, parameterized = false) {
       textSig = sigNodes + ':' + (sigHash >>> 0).toString(36);
     } else textCut = ${p('maxChars')} <= 0 && !!document.body?.textContent?.trim();
     const challenge = ${challengeExpression()};
-    return {title:document.title,url:location.href,...(R ? { approvalContext: R.approvalContext() } : {}),sameDoc,challenge,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,...(contentRoot ? {contentRefs,contentText:contentText.slice(0,${EFFECT_TEXT_CHARS})} : {}),elements:items,seq:R ? R.n : 0,gone,overlays,truncated:{text:textCut,elements:more},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
+    return {title:blank ? '' : document.title,url:location.href,...(R ? { approvalContext: R.approvalContext() } : {}),sameDoc,challenge,loading:document.readyState === 'loading' || framesPending(document, 0),text,textSig,...(contentRoot ? {contentRefs,contentText:contentText.slice(0,${EFFECT_TEXT_CHARS})} : {}),elements:items,seq:R ? R.n : 0,gone,overlays,truncated:{text:textCut,elements:more},viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},iframes:[...document.querySelectorAll('iframe')].map(el=>({title:(el.title||'').slice(0,80),src:shortHref(typeof el.src==='string'?el.src:'')})).filter(frame=>frame.src).slice(0,8),focused,acted,settledMs};
   })()`;
 }
 
@@ -821,6 +821,13 @@ let snapshotReaderSource;
 async function cachedSnapshot(execute, opts = {}) {
   const options = JSON.stringify(snapshotOptions(opts));
   const key = 'Symbol.for("hw.snapshotReader")';
+  // Under a vault lock the answer must come from this source, evaluated here and now, never from a reader the page
+  // could have replaced: the cached one lives on the page's window, where any script of the page can swap it for a
+  // fake. (Not an isolated world: refs live in the page's world, and targeting by ref is how the login gets submitted.)
+  if (opts.blankValues === true) {
+    snapshotReaderSource ||= `async (opts) => ${snapshotExpression({}, true)}`;
+    return execute(`((opts) => { const read = ${snapshotReaderSource}; return read(opts); })(${options})`);
+  }
   const invoke = `(opts => { const s = window[${key}]; return s && s.doc === document ? s.read(opts) : { readerMissing: true }; })(${options})`;
   const result = await execute(invoke);
   if (!result?.readerMissing) return result;
