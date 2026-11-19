@@ -121,3 +121,15 @@ test('with the setting on sse, or no gateway configured, the REST+SSE path carri
   assert.deepEqual(b.sse, [['api_1', 'yo']]);
   assert.equal(b.link.sent, undefined);
 });
+
+test('answers for a run that went over REST+SSE go to REST, not the link', async () => {
+  const calls = [];
+  const link = fakeLink('live');
+  const rest = { answerApproval: async (...a) => { calls.push(['approval', ...a]); }, answerClarify: async (...a) => { calls.push(['clarify', ...a]); }, getRun: async () => ({ pending_controls: [] }), stopRun: async (id) => { calls.push(['stop', id]); } };
+  const api = createGatewayApi({ rest, link });
+  await api.answerApproval('run_9', { requestId: 'r', choice: 'once' });
+  await api.answerClarify('run_9', { requestId: 'r', answer: 'a' });
+  await api.stopRun('run_9');
+  assert.deepEqual(calls.map((c) => c[0]), ['approval', 'clarify', 'stop']);
+  assert.equal(link.answered, undefined);
+});

@@ -117,13 +117,15 @@ function createGatewayApi({ rest, link, transport = () => 'websocket' }) {
       try { await link.interrupt(idOf(runId)); } catch (e) { throw submitError(e); }
       return {};
     },
-    answerApproval: async (runId, { requestId, choice }) => {
-      if (!String(runId).startsWith(RUN_PREFIX)) return undefined;
+    answerApproval: async (runId, body) => {
+      if (!String(runId).startsWith(RUN_PREFIX)) return rest.answerApproval(runId, body);
+      const { requestId, choice } = body;
       try { await link.answer(idOf(runId), requestId, { choice }); } catch (e) { throw wireAnswerError(e); }
       return {};
     },
-    answerClarify: async (runId, { requestId, answer }) => {
-      if (!String(runId).startsWith(RUN_PREFIX)) return undefined;
+    answerClarify: async (runId, body) => {
+      if (!String(runId).startsWith(RUN_PREFIX)) return rest.answerClarify(runId, body);
+      const { requestId, answer } = body;
       const pending = link.pending(idOf(runId)).find((r) => String(r.id) === requestId);
       const qid = pending && Array.isArray(pending.params.questions) && pending.params.questions[0]?.qid;
       try { await link.answer(idOf(runId), requestId, { answers: qid ? { [qid]: answer } : {} }); } catch (e) { throw wireAnswerError(e); }

@@ -3853,21 +3853,6 @@ else {
       notify: () => { pushHermesState(); broadcast(); nudgeGatewayLink(); },
     });
     pushHermesState();
-    // One socket to the Hermes gateway for native chat, kept alive and resumed after a drop. It
-    // shares the hub's sign-in; with no gateway configured it stays idle and chat uses REST+SSE.
-    gatewayLink = createGatewayLink({
-      open: createGatewayOpener({ credentials: hermesHub.session.credentials, adoptTokens: hermesHub.session.adoptTokens, expireSignIn: hermesHub.session.expireSignIn }),
-      isOnline: () => net.isOnline(),
-      profile: () => hermesHub.session.credentials()?.profile || '',
-      log: (event, fields) => mainLog().write(event, JSON.stringify(fields)),
-    });
-    gatewayLink.start();
-    gatewayLink.on('state', () => pushNativeState());
-    powerMonitor.on('suspend', () => gatewayLink.suspend());
-    powerMonitor.on('resume', () => gatewayLink.resume());
-    // Windows and Linux fire `resume` before the network is back; the poll below sees it return.
-    let linkWasOnline = net.isOnline();
-    setInterval(() => { const online = net.isOnline(); if (online && !linkWasOnline) gatewayLink.trigger('online'); linkWasOnline = online; }, 1000).unref();
     // A cold start launched by the claim link (Windows/Linux) carries the URL in argv.
     for (const arg of process.argv) { claimTokens.push(cloudClaim.parseClaimUrl(arg)); receivePdf(arg); }
     // A session already stored means onboarding was in progress: resume it.
@@ -3932,6 +3917,22 @@ else {
     extensionStore = createExtensionStore({ root: app.getPath('userData'), session: browserSession, dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences, onChanged: broadcast,
       canInstall: frame => [...tabs.values()].some(tab => tab.id === shownTabId() && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
     await extensionStore.installStore();
+    // One socket to the Hermes gateway for native chat, kept alive and resumed after a drop. It
+    // shares the hub's sign-in; with no gateway configured it stays idle and chat uses REST+SSE.
+    gatewayLink = createGatewayLink({
+      open: createGatewayOpener({ credentials: hermesHub.session.credentials, adoptTokens: hermesHub.session.adoptTokens, expireSignIn: hermesHub.session.expireSignIn }),
+      isOnline: () => net.isOnline(),
+      profile: () => hermesHub.session.credentials()?.profile || '',
+      log: (event, fields) => mainLog().write(event, JSON.stringify(fields)),
+    });
+    gatewayLink.start();
+    gatewayLink.on('state', () => pushNativeState());
+    powerMonitor.on('suspend', () => gatewayLink.suspend());
+    powerMonitor.on('resume', () => gatewayLink.resume());
+    // Windows and Linux fire `resume` before the network is back; the poll below sees it return.
+    let linkWasOnline = net.isOnline();
+    setInterval(() => { const online = net.isOnline(); if (online && !linkWasOnline) gatewayLink.trigger('online'); linkWasOnline = online; }, 1000).unref();
+    app.on('quit', () => gatewayLink.stop());
     // Loads the last-open conversation from disk before the window exists, so it paints with no network.
     nativeChat = createNativeChat({
       dir: app.getPath('userData'), loadConfig: loadNativePersisted, saveConfig: saveNativePersisted,
@@ -3972,7 +3973,7 @@ else {
       }
       return;
     }
-    isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); nativeChat?.flush(); gatewayLink?.stop(); tray?.destroy(); apiServer?.close();
+    isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); nativeChat?.flush(); tray?.destroy(); apiServer?.close();
   });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }
