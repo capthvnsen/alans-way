@@ -77,8 +77,50 @@ test('one session per bot: output, input, resize, and kill when the bot goes', (
   assert.deepEqual(exited, ['1']);
   assert.deepEqual(terminals.ids(), ['2']);
   children[1].stdio[3].write('done\n');
+  assert.deepEqual(exited, ['1'], 'the shell ending waits for its last output to drain');
+  children[1].emit('close');
   assert.deepEqual(exited, ['1', '2'], 'the shell ending ends the session');
   terminals.start('3'); terminals.killAll();
   assert.deepEqual(terminals.ids(), []);
   assert.deepEqual(exited, ['1', '2'], 'quitting is silent');
+});
+
+// A real pty: the shell must not run its startup files (and so draw a prompt or banner) before the pane has told us its size.
+test('the shell starts at the pane size even when the size arrives after the spawn', { skip: process.platform === 'win32' }, async () => {
+  const os = require('node:os'), fs = require('node:fs'), path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'term-size-'));
+  const shell = path.join(dir, 'shell.sh');
+  fs.writeFileSync(shell, '#!/bin/sh\necho "startsize=$(stty size)"\nexit 0\n', { mode: 0o755 });
+  let out = '';
+  const ended = new Promise((resolve) => {
+    const terminals = createTerminals({ build: (options) => terminalCommand({ ...options, env: { SHELL: shell } }), onData: (_id, text) => { out += text; }, onExit: resolve });
+    terminals.start('1');
+    setTimeout(() => terminals.resize('1', 132, 41), 300);
+  });
+  try { await ended; } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  assert.match(out, /startsize=41 132/);
+});
+
+test('a shell whose pane never reports a size still starts', { skip: process.platform === 'win32' }, async () => {
+  const os = require('node:os'), fs = require('node:fs'), path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'term-size-'));
+  const shell = path.join(dir, 'shell.sh');
+  fs.writeFileSync(shell, '#!/bin/sh\necho "startsize=$(stty size)"\nexit 0\n', { mode: 0o755 });
+  let out = '';
+  const ended = new Promise((resolve) => {
+    createTerminals({ waitMs: 100, build: (options) => terminalCommand({ ...options, env: { SHELL: shell } }), onData: (_id, text) => { out += text; }, onExit: resolve }).start('1');
+  });
+  try { await ended; } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  assert.match(out, /startsize=24 80/);
+});
+
+test('an ended program whose pipeline never closes is still ended after a second', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const children = [], exited = [];
+  const terminals = createTerminals({ spawnProcess: () => { children.push(fakeChild()); return children.at(-1); }, build: () => ({ file: 'x', args: [] }), onData() {}, onExit: (id) => exited.push(id) });
+  terminals.start('1');
+  children[0].stdio[3].write('/dev/ttys042\n'); children[0].stdio[3].write('done\n');
+  assert.deepEqual(exited, []);
+  t.mock.timers.tick(1000);
+  assert.deepEqual(exited, ['1']);
 });
