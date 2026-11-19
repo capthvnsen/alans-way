@@ -31,7 +31,9 @@ const { armQuitWatchdog } = require('./update-quit.cjs');
 const releaseChannel = require('./release-channel.cjs');
 const { createNativeChat } = require('./native-chat.cjs');
 const { keyFiles, importKey } = require('./key-import.cjs');
-const { parseBaseUrl } = require('./hermes-api.cjs');
+const { parseBaseUrl, createHermesApi } = require('./hermes-api.cjs');
+const { createGatewayLink, createGatewayOpener } = require('./gateway-link.cjs');
+const { createGatewayApiFactory } = require('./gateway-api.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
 const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, deliverPendingUpdateReport, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
@@ -132,7 +134,7 @@ let activeTabId = 'home', canvasTab = 'browser', activeVpsTabId = '', apiError =
 // shows the DOM surface (the Telegram view then measures to zero and hides);
 // 'native' shows Alan's native chat on the Hermes Sessions API.
 let canvasReturn = 'browser';
-let nativeChat = null, hermesHub = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '', webappSignInError = '', webappSignInTried = false, webappPrivate = false, canvasView = null, canvasPage = '';
+let nativeChat = null, hermesHub = null, gatewayLink = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '', webappSignInError = '', webappSignInTried = false, webappPrivate = false, canvasView = null, canvasPage = '';
 const WEBAPP_PARTITION = 'persist:hermes-webapp';
 // Canvas tabs beyond Browser, Bot screen and Terminal are Hermes Desktop pages (HashRouter routes). Cron jobs and Bot
 // settings are canvasTab values like the rest, but the strip shows their tab only while one is open (canvasStripTabs).
@@ -195,7 +197,7 @@ const recordings = recorder.createRecordingStore(path.join(app.getPath('userData
 let pointerTimer, activityTimer, idleTimer, captchaTimer;
 
 function readPreferences() {
-  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', hermesWebappUrl: '', chatSurface: '', remotePlatform: 'linux', chatWidth: 490, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, canvasTabs: {}, chatSurfaces: {}, nativeSessions: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
+  const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', hermesWebappUrl: '', chatSurface: '', nativeTransport: '', remotePlatform: 'linux', chatWidth: 490, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, canvasTabs: {}, chatSurfaces: {}, nativeSessions: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
     overseerBots: String(process.env.HERMES_OVERSEER_BOTS || '').split(',').map((id) => id.trim()).filter((id) => id && id.length <= 100) };
   const file = path.join(app.getPath('userData'), 'preferences.json');
   let text;
@@ -2321,6 +2323,7 @@ function registerIpc() {
         if (['ask', 'block', 'approximate'].includes(value.locationDefault)) next.locationDefault = value.locationDefault;
         if (value.chatSurface === 'native' && !nativeChat.configured) throw new Error('Save the native chat address and API key first.');
         if (['telegram', 'hermes-desktop', 'native'].includes(value.chatSurface)) next.chatSurface = value.chatSurface;
+        if (['', 'websocket', 'sse'].includes(value.nativeTransport)) next.nativeTransport = value.nativeTransport;
         let nativeConfig = null;
         if (typeof value.nativeChatUrl === 'string') {
           const parsed = value.nativeChatUrl.trim() ? parseBaseUrl(value.nativeChatUrl) : { baseUrl: '', profile: '' };
@@ -3806,6 +3809,18 @@ function saveHermesPersisted(record) {
     }));
   } catch (error) { logError('hermes-persist', error); }
 }
+// A sign-in or address saved in the Hermes pane gives an idle or signed-out link something to try,
+// and a moved address drops the old socket. Only a change of target or credential counts.
+let linkCredentialKey = '';
+function nudgeGatewayLink() {
+  const c = hermesHub?.session.credentials();
+  const key = c ? JSON.stringify([c.base.origin, c.base.prefix, c.profile, !!c.tokens?.refreshToken, !!c.localToken]) : '';
+  if (key === linkCredentialKey) return;
+  const hadTarget = !!linkCredentialKey;
+  linkCredentialKey = key;
+  gatewayLink?.trigger('credentials');
+  if (hadTarget) gatewayLink?.trigger('wake');
+}
 const pushHermesState = coalesce(() => {
   if (win && !win.isDestroyed() && hermesHub) win.webContents.send('hermes:state', hermesHub.getState());
 }, 60);
@@ -3835,9 +3850,24 @@ else {
     hermesHub = createHermesHub({
       load: loadHermesPersisted,
       persist: saveHermesPersisted,
-      notify: () => { pushHermesState(); broadcast(); },
+      notify: () => { pushHermesState(); broadcast(); nudgeGatewayLink(); },
     });
     pushHermesState();
+    // One socket to the Hermes gateway for native chat, kept alive and resumed after a drop. It
+    // shares the hub's sign-in; with no gateway configured it stays idle and chat uses REST+SSE.
+    gatewayLink = createGatewayLink({
+      open: createGatewayOpener({ credentials: hermesHub.session.credentials, adoptTokens: hermesHub.session.adoptTokens, expireSignIn: hermesHub.session.expireSignIn }),
+      isOnline: () => net.isOnline(),
+      profile: () => hermesHub.session.credentials()?.profile || '',
+      log: (event, fields) => mainLog().write(event, JSON.stringify(fields)),
+    });
+    gatewayLink.start();
+    gatewayLink.on('state', () => pushNativeState());
+    powerMonitor.on('suspend', () => gatewayLink.suspend());
+    powerMonitor.on('resume', () => gatewayLink.resume());
+    // Windows and Linux fire `resume` before the network is back; the poll below sees it return.
+    let linkWasOnline = net.isOnline();
+    setInterval(() => { const online = net.isOnline(); if (online && !linkWasOnline) gatewayLink.trigger('online'); linkWasOnline = online; }, 1000).unref();
     // A cold start launched by the claim link (Windows/Linux) carries the URL in argv.
     for (const arg of process.argv) { claimTokens.push(cloudClaim.parseClaimUrl(arg)); receivePdf(arg); }
     // A session already stored means onboarding was in progress: resume it.
@@ -3905,6 +3935,7 @@ else {
     // Loads the last-open conversation from disk before the window exists, so it paints with no network.
     nativeChat = createNativeChat({
       dir: app.getPath('userData'), loadConfig: loadNativePersisted, saveConfig: saveNativePersisted,
+      apiFactory: createGatewayApiFactory({ restFactory: createHermesApi, link: gatewayLink, transport: () => prefs.nativeTransport === 'sse' ? 'sse' : 'websocket' }),
       openLink: (url) => openTelegramLink(url), copyText: (text) => clipboard.writeText(text), visible: () => chatTarget === 'native',
       notify: () => {
         pushNativeState();
@@ -3941,7 +3972,7 @@ else {
       }
       return;
     }
-    isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); nativeChat?.flush(); tray?.destroy(); apiServer?.close();
+    isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); nativeChat?.flush(); gatewayLink?.stop(); tray?.destroy(); apiServer?.close();
   });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

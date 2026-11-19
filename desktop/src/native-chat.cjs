@@ -12,6 +12,7 @@ const MAX_TEXT = 100000, MAX_THREAD = 2000, MAX_SESSIONS = 50, MAX_CARDS = 20, M
 const PAGE = 500, CACHE_CAP = 32 * 1024 * 1024;
 const SESSION_ID = /^[\w.-]{1,128}$/, BOT_CHAT = 'Bot Chat', LOCAL_SOURCES = new Set(['local', 'cli', 'tui', 'gui', 'desktop']);
 const REFUSED = 'Hermes does not let this app write to that conversation.';
+const GAP_NOTE = 'Part of this reply was missed and was reloaded from history.';
 const str = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
 const capText = (text) => text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}\n\n…` : text;
 const TOOL_LABELS = { terminal: 'Running a command', execute_code: 'Running code', web_search: 'Searching the web', web_extract: 'Reading a web page',
@@ -49,7 +50,17 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
   let api = null, status = 'idle', error = '', revSeq = 0, localSeq = 0, cardSeq = 0, configTimer, autoPick = !activeId, wanted = {};
   const threads = new Map(), runs = new Map(), cards = new Map(), unread = new Set(), inflight = new Map();
   const configured = () => !!(config.baseUrl && config.key);
-  const rebuild = () => { api = configured() ? apiFactory({ baseUrl: config.baseUrl, key: config.key, profile: config.profile }) : null; status = api ? 'idle' : 'unconfigured'; error = ''; };
+  let offApi = () => {};
+  const rebuild = () => {
+    offApi(); offApi = () => {};
+    api = configured() ? apiFactory({ baseUrl: config.baseUrl, key: config.key, profile: config.profile }) : null; status = api ? 'idle' : 'unconfigured'; error = '';
+    // A gateway-backed api reports its link: show it, warm the open thread when it comes up, reload a thread after a gap.
+    if (api?.onLinkState) {
+      const offs = [api.onLinkState((s) => { if (s.state === 'live' && activeId) api.warm?.(activeId); notify(); }),
+        api.onGap?.(({ storedId }) => { if (!runs.has(storedId)) revalidate(storedId); })];
+      offApi = () => offs.forEach((off) => off?.());
+    }
+  };
   const address = () => config.baseUrl ? `${config.baseUrl}${config.profile ? `/p/${config.profile}` : ''}` : '';
   const cacheFile = (id) => path.join(cacheDir, `${id}.json`);
   const bump = (t) => { t.rev = ++revSeq; };
@@ -207,7 +218,16 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
       case 'message.started': run.messageId = str(d.message?.id, 200); break;
       case 'assistant.delta': if (typeof d.delta === 'string' && run.text.length < MAX_TEXT) run.text += d.delta; break;
       case 'assistant.completed': if (typeof d.content === 'string') run.final = d.content; break;
-      case 'tool.started': run.tool = toolLabel(d.tool_name); if (d.tool_name === 'clarify' && run.runId) pollClarify(run); break;
+      case 'tool.started': run.tool = toolLabel(d.tool_name); if (d.tool_name === 'clarify' && run.runId && !run.runId.startsWith('ws:')) pollClarify(run); break;
+      // The gateway delivers a question as an event; the REST path finds it by polling the run.
+      case 'clarify.request':
+        if (!(cards.get(run.id) || []).some((c) => c.requestId === d.prompt_id)) {
+          addCard(run, { kind: 'clarify', requestId: str(d.prompt_id, 200), generation: 0, question: str(d.question, 2000),
+            choices: (Array.isArray(d.choices) ? d.choices : []).slice(0, 8).map((c) => str(String(c), 200)) });
+        }
+        break;
+      case 'request.closed': for (const card of openCards(run)) if (card.requestId === d.request_id) card.state = 'expired'; break;
+      case 'gateway.gap': run.gap = true; break;
       case 'tool.completed': case 'tool.failed':
         run.tool = '';
         for (const card of openCards(run)) card.state = card.kind === 'clarify' && card.answer ? 'answered' : 'expired';
@@ -246,6 +266,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     const text = run.final || run.text;
     if (text) { const reply = { id: `local-${++localSeq}`, role: 'assistant', text: capText(text), ts: now() / 1000 }; t.messages = [...t.messages, reply]; run.localIds.push(reply.id); }
     t.notice = err && err.code !== 'aborted' ? 'The connection dropped during the reply; it may be incomplete.'
+      : run.gap ? GAP_NOTE
       : run.outcome === 'failed' || (run.error && !text) ? (run.error || 'Hermes could not finish this reply.') : run.outcome === 'cancelled' ? 'Stopped.'
       : run.outcome === 'queued' ? 'Hermes queued this message behind a reply still running there. Refresh later to see the answer.' : '';
     setLocal(run, 'sent');
@@ -273,7 +294,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
   function setActive(id) {
     activeId = id; autoPick = false;
     unread.delete(id);
-    if (id) thread(id);
+    if (id) { thread(id); api?.warm?.(id); }
     persistConfigSoon();
     notify();
   }
@@ -400,7 +421,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     const s = sessions.find((row) => row.id === activeId);
     const run = runs.get(activeId);
     return {
-      configured: configured(), status, error, address: address(),
+      configured: configured(), status, error, address: address(), link: api?.linkState?.() || null,
       sessions: sessions.map((row) => {
         const live = runs.get(row.id);
         return { ...row, readOnly: isReadOnly(row.id), shared: isShared(row), running: !!live, waiting: !!live && openCards(live).length > 0, unread: unread.has(row.id) };

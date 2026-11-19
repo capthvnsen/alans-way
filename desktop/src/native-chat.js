@@ -194,6 +194,8 @@
     head.append(switcher, newBtn, menu);
     const notice = el('div', 'nc-notice hidden');
     notice.setAttribute('role', 'status');
+    const linkBanner = el('div', 'nc-conn hidden');
+    linkBanner.setAttribute('role', 'status');
     const scroller = el('div', 'nc-scroll');
     scroller.setAttribute('role', 'log');
     scroller.setAttribute('aria-label', 'Messages');
@@ -217,7 +219,7 @@
     composer.append(textarea, sendBtn, stopBtn);
     const readOnly = el('div', 'nc-readonly hidden');
     const setup = el('div', 'nc-setup hidden');
-    root.append(head, notice, middle, composer, readOnly, setup);
+    root.append(head, notice, linkBanner, middle, composer, readOnly, setup);
 
     async function command(name, value = {}) {
       try { return await api.command(name, value); }
@@ -482,6 +484,18 @@
       notice.classList.toggle('hidden', !text);
     }
 
+    // A short blip stays silent: reconnecting and catching up show after 3 s.
+    const LINK_TEXT = { reconnecting: 'Reconnecting…', syncing: 'Catching up…', offline: 'Offline. Messages cannot be sent.', signin: 'Sign in to Hermes again.' };
+    let linkTimer;
+    function renderLink() {
+      clearTimeout(linkTimer);
+      const link = state.link, text = link && LINK_TEXT[link.state];
+      const wait = text && ['reconnecting', 'syncing'].includes(link.state) ? link.since + 3000 - Date.now() : 0;
+      if (wait > 0) linkTimer = setTimeout(scheduleRender, wait);
+      linkBanner.textContent = text || '';
+      linkBanner.classList.toggle('hidden', !text || wait > 0);
+    }
+
     const sig = () => `${state.activeId}|${thread?.rev}|${shown}|${JSON.stringify(state.cards || [])}`;
     function render() {
       const s = state;
@@ -489,13 +503,14 @@
       setup.classList.toggle('hidden', s.configured);
       if (!s.configured) {
         if (!setup.childElementCount) setup.append(el('p', '', 'Add the native chat address and API key in Settings to start.'), button('nc-pill primary', 'Open Settings', onOpenSettings));
-        for (const node of [head, middle, composer, readOnly, notice]) node.classList.add('hidden');
+        for (const node of [head, middle, composer, readOnly, notice, linkBanner]) node.classList.add('hidden');
         return;
       }
       for (const node of [head, middle]) node.classList.remove('hidden');
       switchTitle.textContent = thread?.title || (s.activeId ? 'Untitled chat' : 'New chat');
       if (!menu.classList.contains('hidden')) renderMenu();
       renderNotice();
+      renderLink();
       const count = thread?.messages.length || 0;
       const emptyText = count || s.run || s.cards?.length ? '' : !s.activeId ? 'New conversation. Say hello.'
         : thread?.loading ? 'Loading this conversation…' : s.status === 'unreachable' || s.status === 'unauthorized' ? '' : 'No messages yet. Say hello.';

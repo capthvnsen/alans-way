@@ -46,7 +46,7 @@ function createGatewayLink(deps = {}) {
   const makeController = deps.createController || ((a) => new HermesConversation(a));
   const isOnline = deps.isOnline || (() => true);
   const log = deps.log || (() => {});
-  const profile = str(deps.profile, 200);
+  const profileOf = () => str(typeof deps.profile === 'function' ? deps.profile() : deps.profile, 200);
   const timers = { setTimeout, clearTimeout, now: Date.now, random: Math.random, ...deps.timers };
   const o = { ...DEFAULTS, ...deps.options };
   const link = new EventEmitter();
@@ -207,10 +207,10 @@ function createGatewayLink(deps = {}) {
     a.offs.push(() => ctl.removeListener('event', onEvent), () => ctl.removeListener('change', onChange));
   }
 
-  const identityOf = (a) => ({ profile: profile || 'default', sessionKey: a.sessionKey, sessionId: a.sessionId, reviewed: true });
+  const identityOf = (a) => ({ profile: profileOf() || 'default', sessionKey: a.sessionKey, sessionId: a.sessionId, reviewed: true });
 
   async function attachFresh(a, c) {
-    const resumed = await c.wire.call('session.resume', { session_id: a.storedId, ...(profile ? { profile } : {}), lazy: true, inline_images: false });
+    const resumed = await c.wire.call('session.resume', { session_id: a.storedId, ...(profileOf() ? { profile: profileOf() } : {}), lazy: true, inline_images: false });
     const sessionId = str(resumed && resumed.session_id), sessionKey = str(resumed && resumed.session_key) || a.storedId;
     if (!sessionId) throw new LinkError('contract_drift', 'session.resume did not return a session_id');
     a.sessionId = sessionId; a.sessionKey = sessionKey; a.lastSeq = 0;
@@ -300,7 +300,11 @@ function createGatewayLink(deps = {}) {
       return;
     }
     if (suspended || state === 'signin') return;
-    if (reason === 'wake') { if (conn) dropConn('wake', { keepState: true }); setState(isOnline() ? 'reconnecting' : 'offline'); generation++; running = false; clearWait(); attemptNow(); return; }
+    if (reason === 'wake') {
+      if (conn) { dropConn('wake', { keepState: true }); setState(isOnline() ? 'reconnecting' : 'offline'); generation++; running = false; }
+      clearWait(); attemptNow();
+      return;
+    }
     if (conn) { if (reason === 'online' || (reason === 'focus' && timers.now() - lastActivity > o.focusIdleMs)) probeNow(); return; }
     clearWait(); attemptNow();
   }
@@ -350,7 +354,7 @@ function createGatewayLink(deps = {}) {
 // Default `open`: probe once (cached), refresh if the access token is stale,
 // mint a ticket, connect, wait for gateway.ready. Reuses hermes-remote and the
 // wire; the credential owner (the hub) supplies and receives the tokens.
-function createGatewayOpener({ credentials, adoptTokens = () => {}, remote = createHermesRemote(), createWire, now = Date.now } = {}) {
+function createGatewayOpener({ credentials, adoptTokens = () => {}, expireSignIn = () => {}, remote = createHermesRemote(), createWire, now = Date.now } = {}) {
   const wireOf = createWire || (({ input, output }) => new HermesSessionWire({ input, output }));
   const authRequiredCache = new Map();
   const unexpired = (t) => {
@@ -372,7 +376,8 @@ function createGatewayOpener({ credentials, adoptTokens = () => {}, remote = cre
       let tokens = cred.tokens;
       if (!tokens || !tokens.refreshToken) throw new RemoteError('needs_signin', 'Sign in to this backend first.');
       const refresh = async () => {
-        tokens = await remote.refresh({ base, refreshToken: tokens.refreshToken, provider: tokens.provider, signal });
+        try { tokens = await remote.refresh({ base, refreshToken: tokens.refreshToken, provider: tokens.provider, signal }); }
+        catch (e) { if (e instanceof RemoteError && e.code === 'session_expired') expireSignIn(); throw e; }
         adoptTokens(tokens);
       };
       if (!unexpired(tokens)) await refresh();

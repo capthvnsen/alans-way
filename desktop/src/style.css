@@ -346,6 +346,8 @@ body.win32 .pane-actions{padding-right:140px}.chat-note.warn{height:auto;min-hei
 .nc-menu-meta{font-size:11px;color:#8a8a95}
 .nc-unread{position:absolute;left:9px;top:14px;width:6px;height:6px;border-radius:50%;background:#7cc7a5}
 .nc-notice{margin:0 16px 6px;padding:6px 12px;border-radius:10px;background:#1c1a15;color:#d6c597;font-size:11.5px;text-align:center}
+.nc-conn{display:flex;align-items:center;justify-content:center;gap:7px;margin:0 16px 6px;padding:6px 12px;border-radius:10px;background:#141417;border:1px solid #29292f;color:#a8a8b3;font-size:11.5px}
+.nc-conn::before{content:'';width:6px;height:6px;border-radius:50%;background:#d6c597}
 .nc-body{flex:1;min-height:0;position:relative;display:flex}
 .nc-scroll{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;padding:6px 16px 10px;scrollbar-width:thin;scrollbar-color:#2c2c31 transparent}
 .nc-list{margin-top:auto;display:flex;flex-direction:column}
