@@ -74,6 +74,19 @@ function prepareHermesHome(stack) {
   return home;
 }
 
+// hermes -z (0.23+) talks to a gateway owned by its HERMES_HOME; its own auto-start in a fresh home missed the 60 s deadline,
+// so start one here. Stop it by this child's pid only: Hermes' process scan is global, so never pkill by name.
+async function startHermesGateway(home) {
+  const [bin, ...pre] = (process.env.HERMES_CMD || 'hermes').split(' ');
+  const gw = spawn(bin, [...pre, 'gateway', 'run', '--quiet'], { env: { ...process.env, HERMES_HOME: home }, stdio: 'ignore' });
+  const t0 = Date.now();
+  while (!fs.existsSync(path.join(home, 'gateway.pid'))) {
+    if (gw.exitCode !== null || Date.now() - t0 > 180000) { gw.kill(); throw new Error('hermes gateway did not start in the throwaway home'); }
+    await wait(500);
+  }
+  return { gw, startMs: Date.now() - t0 };
+}
+
 function runHermes(prompt, task, home, timeoutMs, stack) {
   const usageFile = path.join(stack.dir, `usage-${Date.now()}.json`);
   const args = ['-z', prompt, '--usage-file', usageFile];
@@ -157,7 +170,7 @@ async function manual(picked, outDir) {
   const fixtures = await createFixtures(opt('fixture-host'));
   const stack = await startStack({ connection: opt('connection'), fixturePort: fixtures.port });
   const startedAt = new Date().toISOString();
-  let hostRttMs = null;
+  let hostRttMs = null, gateway = null, gatewayStartMs = null;
   const driver = opt('driver') || (/^(127\.|localhost$|\[::1\]$)/.test(new URL(stack.hostUrl).hostname) ? 'local' : 'remote');
   const label = opt('label', `${mode}-${driver}`);
   const rows = [];
@@ -168,6 +181,7 @@ async function manual(picked, outDir) {
     for (let i = 0; i < 5; i++) { const t = Date.now(); await stack.tabs(); rtts.push(Date.now() - t); }
     hostRttMs = rtts.sort((a, b) => a - b)[2];
     const home = mode === 'hermes' ? prepareHermesHome(stack) : null;
+    if (home && !opt('hermes-home')) { const g = await startHermesGateway(home); gateway = g.gw; gatewayStartMs = g.startMs; }
     if (mode !== 'hermes' && mode !== 'codex') tools = await connectTools(stack);
     for (const task of picked) for (let rep = 0; rep < repeat; rep++) {
       if (mode !== 'hermes' && mode !== 'codex' && (!task.oracle || task.tier === 'desktop')) { rows.push({ id: task.id, tier: task.tier, mode, label, driver, skipped: task.tier === 'desktop' ? 'desktop needs a Mac with grants' : 'no oracle yet' }); continue; }
@@ -198,6 +212,9 @@ async function manual(picked, outDir) {
         wallMs, toolCalls, maxSteps: task.maxSteps, overBudget: toolCalls > task.maxSteps,
         httpCalls: log.length, httpErrors: log.filter((l) => l.status >= 400).length, respBytes: log.reduce((a, l) => a + l.bytes, 0),
         byTool: tools ? { ...tools.metrics.byTool } : undefined,
+        toolMs: log.reduce((a, l) => a + l.ms, 0), firstToolMs: log.length ? log[0].t - t0 : null, // host-side time only; the rest of wallMs is model, MCP and CLI overhead
+        inputTokens: agent.usage?.input_tokens ?? null, outputTokens: agent.usage?.output_tokens ?? null, cacheReadTokens: agent.usage?.cache_read_tokens ?? null, cacheWriteTokens: agent.usage?.cache_write_tokens ?? null,
+        stderr: agent.crashed || agent.timedOut ? agent.err : undefined,
         agentTurns: agent.usage?.api_calls ?? null, backends: agent.backends, tokens: agent.usage?.total_tokens ?? null, costUsd: agent.usage?.estimated_cost_usd ?? null,
         timedOut: agent.timedOut, crashed: agent.crashed,
       };
@@ -207,7 +224,8 @@ async function manual(picked, outDir) {
     }
   } finally {
     fs.writeFileSync(path.join(outDir, 'results.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
-    writeMeta(outDir, { label, driver, hostRttMs, startedAt });
+    writeMeta(outDir, { label, driver, hostRttMs, gatewayStartMs, startedAt });
+    gateway?.kill('SIGTERM');
     await tools?.close().catch(() => {}); fixtures.close(); await stack.stop();
   }
   const ran = rows.filter((r) => !r.skipped), pass = ran.filter((r) => r.ok);

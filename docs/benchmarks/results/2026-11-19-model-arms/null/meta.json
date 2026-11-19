@@ -1,0 +1,15 @@
+{
+  "mode": "null",
+  "repeat": 3,
+  "tasks": "fixture,public",
+  "model": null,
+  "provider": null,
+  "gitSha": "v0.21.14-107-gd9bb82a",
+  "node": "v26.7.0",
+  "platform": "darwin-arm64",
+  "label": "null-local",
+  "driver": "local",
+  "hostRttMs": 1,
+  "startedAt": "2026-11-19T15:37:43.572Z",
+  "finishedAt": "2026-11-19T15:38:43.441Z"
+}
