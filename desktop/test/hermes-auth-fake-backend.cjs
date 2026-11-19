@@ -83,6 +83,8 @@ async function fakeBackend(cfg = {}) {
   function onUpgrade(req, socket) {
     sockets.add(socket);
     wsPeers.add(socket);
+    socket.on('error', () => {}); // a peer that vanished mid-write is a normal test event
+    socket.on('end', () => { try { socket.end(); } catch {} }); // the http server keeps half-open sockets; a peer that hung up is gone
     socket.on('close', () => { sockets.delete(socket); wsPeers.delete(socket); });
     const u = new URL(`http://h${req.url}`);
     const ticket = u.searchParams.get('ticket');
