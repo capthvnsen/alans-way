@@ -621,7 +621,16 @@ function createHermesHub(deps = {}) {
 
   function dispose() { invalidateAuth(); teardownConnection('Disposed.'); }
 
-  return { command, getState, dispose, hub };
+  // The gateway link (gateway-link.cjs) shares this sign-in instead of keeping a
+  // second one: it reads the credentials, hands back rotated tokens, and says
+  // when the sign-in is gone. Main-process only; never reaches IPC or the renderer.
+  const session = {
+    credentials: () => state.base ? { base: state.base, profile: state.profile, tokens: state.tokens, localToken: state.localToken } : null,
+    adoptTokens(tokens) { state.tokens = tokens; state.principal = { userId: tokens.userId, provider: tokens.provider }; save(); },
+    expireSignIn() { state.tokens = null; state.principal = null; save(); if (!state.conn) setStatus('needs_signin', { code: 'session_expired', message: 'Stored sign-in expired; sign in again.' }); },
+  };
+
+  return { command, getState, dispose, hub, session };
 }
 
 module.exports = { createHermesHub, HubError };

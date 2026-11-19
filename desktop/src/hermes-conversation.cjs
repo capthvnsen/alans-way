@@ -3,6 +3,8 @@
 // HermesSessionWire (desktop/src/hermes-session-wire.cjs — newline JSON-RPC to a
 // stock `python -m tui_gateway.entry` peer). Headless state/action layer only:
 // no process launch, no session discovery, no UI, no reconnect or durability.
+// A reconnect is the caller's: it builds a new controller on the new wire with
+// `resume: {epoch, lastSeq}` and calls bindResume() (see gateway-link.cjs).
 //
 // Binding model:
 // - The caller supplies the wire AND an explicit, immutable, caller-reviewed
@@ -99,7 +101,7 @@ function deepFreeze(v, seen = new Set()) {
 }
 
 class HermesConversation extends EventEmitter {
-  constructor({ wire, identity, ...limits } = {}) {
+  constructor({ wire, identity, resume, ...limits } = {}) {
     super();
     if (!wire || typeof wire.call !== 'function' || typeof wire.on !== 'function'
         || typeof wire.removeListener !== 'function'
@@ -122,8 +124,15 @@ class HermesConversation extends EventEmitter {
         throw new ConversationError('bad_limit', `limit ${k} must be an integer`);
       }
     }
+    if (resume !== undefined && (!isPlainObject(resume) || !Number.isSafeInteger(resume.lastSeq) || resume.lastSeq < 0
+        || (resume.epoch !== undefined && (typeof resume.epoch !== 'string' || !resume.epoch)))) {
+      throw new ConversationError('bad_resume', 'resume must be {epoch?: string, lastSeq: non-negative integer}');
+    }
     this.limits = l;
     this.wire = wire;
+    this._resume = resume ? { epoch: resume.epoch, lastSeq: resume.lastSeq } : null;
+    this._resumeBuffer = null;      // live events held while bindResume() reads the replay
+    this._resumeOverflow = false;
     this.identity = deepFreeze({
       profile: identity.profile,      // caller label — NOT server attestation
       sessionKey: identity.sessionKey,
@@ -145,7 +154,7 @@ class HermesConversation extends EventEmitter {
       truncated: { transcript: false, replay: false },
       epochChanged: false, needsReview: false, reclaimed: false,
       statusLine: null, sessionInfo: null,
-      lastSeq: 0,
+      lastSeq: resume ? resume.lastSeq : 0,
       stats: { foreignEvents: 0, foreignRequests: 0, duplicateEvents: 0, eventGaps: 0, droppedRequests: 0 },
       durableAdmission: false,
     };
@@ -232,24 +241,7 @@ class HermesConversation extends EventEmitter {
       this._bindingEpoch = epoch;
       if (s.epochChanged) throw new ConversationError('epoch_mismatch', 'gateway.ready epoch changed during bind');
 
-      const caps = await this.wire.call('gateway.capabilities', {});
-      if (!isPlainObject(caps) || caps.per_session_exclusive_submit !== true) {
-        throw new ConversationError('capability_missing',
-          'gateway.capabilities lacks per_session_exclusive_submit:true', caps);
-      }
-      const adv = await this.wire.call('client.capabilities', { server_requests: true });
-      if (!isPlainObject(adv) || !Array.isArray(adv.server_requests)
-          || !adv.server_requests.every((m) => typeof m === 'string')) {
-        throw new ConversationError('contract_drift', 'client.capabilities server_requests list drifted', adv);
-      }
-
-      const rows = await this.wire.call('session.active_list', {});
-      const list = isPlainObject(rows) && Array.isArray(rows.sessions) ? rows.sessions : null;
-      if (!list || !list.some((r) => isPlainObject(r) && r.id === this.identity.sessionId
-          && r.session_key === this.identity.sessionKey)) {
-        throw new ConversationError('identity_unavailable',
-          'reviewed live session_id + session_key pair not in session.active_list');
-      }
+      const { adv } = await this._negotiate();
 
       this._activationPending = true;
       const snap = await this.wire.call('session.activate', {
@@ -313,6 +305,118 @@ class HermesConversation extends EventEmitter {
       this._changed();
       return this.getState();
     } catch (e) {
+      s.phase = 'blocked';
+      this._bindingEpoch = null;
+      this._pushError(e instanceof ConversationError ? e.code : 'bind_failed', e.message || String(e));
+      this._changed();
+      throw e;
+    }
+  }
+
+  // The three independent opening calls go out together (one round trip, not
+  // three) and are checked in the old order, so a bad first answer still
+  // fails first. Returns the advertised request kinds.
+  async _negotiate() {
+    const quiet = (p) => { p.catch(() => {}); return p; };
+    const pCaps = quiet(this.wire.call('gateway.capabilities', {}));
+    const pAdv = quiet(this.wire.call('client.capabilities', { server_requests: true }));
+    const pRows = quiet(this.wire.call('session.active_list', {}));
+    const caps = await pCaps;
+    if (!isPlainObject(caps) || caps.per_session_exclusive_submit !== true) {
+      throw new ConversationError('capability_missing',
+        'gateway.capabilities lacks per_session_exclusive_submit:true', caps);
+    }
+    const adv = await pAdv;
+    if (!isPlainObject(adv) || !Array.isArray(adv.server_requests)
+        || !adv.server_requests.every((m) => typeof m === 'string')) {
+      throw new ConversationError('contract_drift', 'client.capabilities server_requests list drifted', adv);
+    }
+    const rows = await pRows;
+    const list = isPlainObject(rows) && Array.isArray(rows.sessions) ? rows.sessions : null;
+    if (!list || !list.some((r) => isPlainObject(r) && r.id === this.identity.sessionId
+        && r.session_key === this.identity.sessionKey)) {
+      throw new ConversationError('identity_unavailable',
+        'reviewed live session_id + session_key pair not in session.active_list');
+    }
+    return { adv };
+  }
+
+  // After a drop: negotiate again on a NEW wire without re-reading history.
+  // The constructor's `resume.lastSeq` is the watermark; the replay since it is
+  // applied in seq order, live frames that arrive meanwhile wait and then go
+  // through the same seq check. Resolves {applied, truncated, holes}; the
+  // caller decides what a truncation or a hole means (a history reload).
+  async bindResume({ timeoutMs = this.limits.bindTimeoutMs, expectedEpoch } = {}) {
+    const s = this._s;
+    if (!this._resume) throw new ConversationError('bad_resume', 'bindResume() needs a controller built with resume');
+    if (this._disposed || s.phase === 'disposed') throw new ConversationError('disposed', 'controller is disposed');
+    if (s.phase !== 'detached') throw new ConversationError('already_bound', `bindResume() while phase=${s.phase}`);
+    if (this.wire.state !== 'open') throw new ConversationError('wire_not_open', `wire is ${this.wire.state}`);
+    s.phase = 'binding';
+    this._resumeBuffer = [];
+    this._changed();
+    try {
+      const epoch = expectedEpoch !== undefined ? expectedEpoch : await this._waitReady(timeoutMs);
+      if (typeof epoch !== 'string' || !epoch) throw new ConversationError('bad_epoch', 'expectedEpoch must be a non-empty string');
+      if (this._resume.epoch && this._resume.epoch !== epoch) {
+        s.epochChanged = true;
+        throw new ConversationError('epoch_mismatch', 'the backend restarted since this session was bound');
+      }
+      this._bindingEpoch = epoch;
+      const { adv } = await this._negotiate();
+      // activate has no event cursor and omit_messages leaves no history to
+      // double-apply, so the replay since the watermark is the whole catch-up.
+      const pAct = this.wire.call('session.activate', { session_id: this.identity.sessionId, omit_messages: true });
+      pAct.catch(() => {});
+      const pSince = this.wire.call('session.events.since', { session_id: this.identity.sessionId, last_seen: s.lastSeq });
+      pSince.catch(() => {});
+      const snap = await pAct;
+      if (!isPlainObject(snap) || snap.session_id !== this.identity.sessionId) {
+        throw new ConversationError('identity_drift', 'session.activate returned a different session_id');
+      }
+      if (snap.session_key != null && snap.session_key !== this.identity.sessionKey) {
+        throw new ConversationError('identity_drift', 'session.activate returned a different session_key');
+      }
+      const replay = await pSince;
+      if (!isPlainObject(replay) || typeof replay.epoch !== 'string' || !Array.isArray(replay.events)
+          || !Array.isArray(replay.open_requests) || typeof replay.latest_seq !== 'number') {
+        throw new ConversationError('contract_drift', 'session.events.since result drifted', replay);
+      }
+      if (replay.epoch !== epoch) {
+        s.epochChanged = true;
+        throw new ConversationError('epoch_mismatch', 'replay epoch differs from this wire\'s gateway.ready epoch');
+      }
+      s.attested = deepFreeze({
+        sessionId: snap.session_id, sessionKey: snap.session_key ?? null,
+        storedSessionId: snap.stored_session_id ?? null, replayEpoch: epoch,
+        serverRequestMethods: adv.server_requests.slice(), perSessionExclusiveSubmit: true,
+        boundAt: new Date().toISOString(),
+      });
+      const holesBefore = s.stats.eventGaps;
+      let applied = 0;
+      const ordered = replay.events.filter((f) => isPlainObject(f) && Number.isInteger(f.seq)).sort((a, b) => a.seq - b.seq);
+      for (const frame of ordered) if (this._applyEventParams(frame)) applied += 1;
+      const buffered = this._resumeBuffer;
+      this._resumeBuffer = null;
+      for (const e of buffered) {
+        if (this._applyEventParams({ type: e.type, session_id: e.sessionId, seq: e.seq, payload: e.payload })) applied += 1;
+      }
+      for (const r of replay.open_requests) this._adoptReplayedRequest(r);
+      // A watermark the server has already moved past with nothing to show for
+      // it is a hole too: lastSeq below latest_seq after applying everything.
+      const holes = (s.stats.eventGaps - holesBefore) + (s.lastSeq < replay.latest_seq ? replay.latest_seq - s.lastSeq : 0)
+        + (this._resumeOverflow ? 1 : 0);
+      const truncated = replay.truncated === true || holes > 0;
+      if (s.epochChanged || s.reclaimed || this._disposed || this.wire.state !== 'open') {
+        throw new ConversationError('blocked', 'connection or session changed during resume');
+      }
+      if (truncated) { s.truncated.replay = true; s.needsReview = true; }
+      s.phase = truncated ? 'review' : 'bound';
+      this._bindingEpoch = null;
+      this._changed();
+      return { applied, truncated, holes, openRequests: replay.open_requests.length, latestSeq: replay.latest_seq };
+    } catch (e) {
+      this._resumeBuffer = null;
       s.phase = 'blocked';
       this._bindingEpoch = null;
       this._pushError(e instanceof ConversationError ? e.code : 'bind_failed', e.message || String(e));
@@ -644,6 +748,11 @@ class HermesConversation extends EventEmitter {
       return; // foreign/session-less events never enter bound state
     }
     if (s.phase === 'detached' || s.phase === 'blocked' || s.phase === 'disconnected') return;
+    if (this._resumeBuffer && s.phase === 'binding') {
+      if (e.type === 'session.reclaimed') { s.reclaimed = true; s.phase = 'blocked'; return; }
+      if (this._resumeBuffer.length < 4096) this._resumeBuffer.push(e); else this._resumeOverflow = true;
+      return;
+    }
     if (s.phase === 'binding' && !this._bindingSnapshotReady) {
       if (this._activationPending && !s.needsReview) {
         s.needsReview = true;

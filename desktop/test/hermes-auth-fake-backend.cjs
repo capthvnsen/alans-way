@@ -8,6 +8,7 @@
 
 const http = require('node:http');
 const crypto = require('node:crypto');
+const { createGatewayEngine } = require('./hermes-gateway-engine.cjs');
 
 function wsAccept(key) {
   return crypto.createHash('sha1').update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
@@ -52,7 +53,11 @@ function wsReadFrames(socket, cb) {
 
 // cfg: { authRequired, tokenTag, tokenDelayMs, refreshDelayMs, refreshStatus,
 //        ticketStatus, localToken, wsCloseCode, wsCloseReason, wsReadyDelayMs,
-//        wsNeverReady, epoch, sessions, extraRpc, onWsOpen }
+//        wsNeverReady, epoch, sessions, extraRpc, onWsOpen,
+//        ringMax, orphanGraceMs, deltaCount, firstDeltaMs, deltaMs }
+// The conversation gateway itself (replay ring with seq, epoch, ping, orphan
+// grace, a streaming turn) lives in hermes-gateway-engine.cjs; restart() on the
+// handle is a Hermes restart: new epoch, all sockets dropped.
 // `cfg` is returned live on the handle so a test can flip failure flags
 // mid-flight (e.g. refreshStatus = 401 to expire the stored session).
 async function fakeBackend(cfg = {}) {
@@ -64,12 +69,9 @@ async function fakeBackend(cfg = {}) {
   const pendingStates = new Map(); // pkce cookie -> client state
   const pendingUser = new Map();   // issued auth code -> username
   let ticketCounter = 0;
-  const epoch = cfg.epoch || 'epoch-1';
   const tag = cfg.tokenTag || 'be';
-  const liveSessions = (cfg.sessions !== undefined ? cfg.sessions : [
-    { id: 'sess-1', session_key: 'key-1', title: 'alpha', profile: 'default' },
-    { id: 'sess-2', session_key: 'key-2', title: 'beta', profile: 'default' },
-  ]).slice();
+  const engine = createGatewayEngine(cfg);
+  let maxWsPeers = 0;
   const mint = (user, seq = '') => ({
     access_token: `at-${tag}-${user}${seq}`,
     refresh_token: `rt-${tag}-${user}${seq}`,
@@ -78,38 +80,11 @@ async function fakeBackend(cfg = {}) {
     user_id: user,
   });
 
-  function rpcResult(method, params) {
-    switch (method) {
-      case 'gateway.capabilities': return { result: { per_session_exclusive_submit: true, modes: ['default'] } };
-      case 'client.capabilities': return { result: { server_requests: ['tool.approval'] } };
-      case 'session.active_list': return { result: { sessions: liveSessions.slice() } };
-      case 'session.list': return { result: { sessions: [] } };
-      case 'session.create': {
-        const id = `sess-new-${Math.floor(Math.random() * 1e6)}`;
-        if (!liveSessions.some((r) => r.id === id)) {
-          liveSessions.push({ id, session_key: `key-${id}`, title: id, profile: 'default' });
-        }
-        return { result: { session_id: id } };
-      }
-      case 'session.activate': {
-        const row = liveSessions.find((r) => r.id === params.session_id);
-        return { result: { session_id: params.session_id,
-          session_key: row ? row.session_key : `key-${params.session_id}`,
-          stored_session_id: `stored-${params.session_id}`, messages: [], open_requests: [], inflight: null } };
-      }
-      case 'session.events.since':
-        return { result: { epoch, events: [], open_requests: [], latest_seq: 0, truncated: false } };
-      case 'prompt.submit': return { result: { status: 'admitted', user_row_id: 'row-1' } };
-      case 'session.interrupt': return { result: { status: 'ok', interrupted: true } };
-      default:
-        if (cfg.extraRpc) { const r = cfg.extraRpc(method, params); if (r !== undefined) return r; }
-        return { error: { code: -32601, message: `unknown method ${method}` } };
-    }
-  }
-
   function onUpgrade(req, socket) {
     sockets.add(socket);
     wsPeers.add(socket);
+    socket.on('error', () => {}); // a peer that vanished mid-write is a normal test event
+    socket.on('end', () => { try { socket.end(); } catch {} }); // the http server keeps half-open sockets; a peer that hung up is gone
     socket.on('close', () => { sockets.delete(socket); wsPeers.delete(socket); });
     const u = new URL(`http://h${req.url}`);
     const ticket = u.searchParams.get('ticket');
@@ -126,8 +101,11 @@ async function fakeBackend(cfg = {}) {
     socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
       `Sec-WebSocket-Accept: ${wsAccept(req.headers['sec-websocket-key'])}\r\n\r\n`);
     if (cfg.wsCloseCode) { wsSendClose(socket, cfg.wsCloseCode, cfg.wsCloseReason || ''); return; }
+    maxWsPeers = Math.max(maxWsPeers, wsPeers.size);
+    const peer = engine.connect((o) => { if (!socket.destroyed) wsSendJson(socket, o); });
+    socket.on('close', () => engine.disconnect(peer));
     const sendReady = () => wsSendJson(socket, { jsonrpc: '2.0', method: 'event',
-      params: { type: 'gateway.ready', payload: { replay_epoch: epoch, skin: 'auth-fake', change_events: true, heartbeat_ms: 30000 } } });
+      params: { type: 'gateway.ready', payload: { replay_epoch: engine.epoch(), skin: 'auth-fake', change_events: true, heartbeat: true, heartbeat_ms: 30000 } } });
     if (cfg.wsNeverReady) { /* hold open, no ready */ } else if (cfg.wsReadyDelayMs) { setTimeout(sendReady, cfg.wsReadyDelayMs); } else sendReady();
     wsReadFrames(socket, (op, payload) => {
       if (op === 0x8) { wsSendClose(socket, 1000); return; }
@@ -137,8 +115,9 @@ async function fakeBackend(cfg = {}) {
         if (!line.trim()) continue;
         let frame; try { frame = JSON.parse(line); } catch { continue; }
         if (typeof frame.method === 'string' && frame.id !== undefined) {
-          const r = rpcResult(frame.method, frame.params || {});
-          if (r !== undefined) wsSendJson(socket, { jsonrpc: '2.0', id: frame.id, ...r });
+          Promise.resolve(engine.handle(peer, frame)).then((r) => {
+            if (r !== undefined && !socket.destroyed) wsSendJson(socket, { jsonrpc: '2.0', id: frame.id, ...r });
+          });
         }
       }
     });
@@ -223,6 +202,17 @@ async function fakeBackend(cfg = {}) {
         send(200, { ticket: t, ttl_seconds: 30 });
         return;
       }
+      // REST history, as the native chat reads it: newest-first rows, any bearer.
+      const history = /^\/api\/sessions\/([^/]+)\/messages$/.exec(u.pathname);
+      if (history && req.method === 'GET') {
+        const key = decodeURIComponent(history[1]);
+        send(200, { data: engine.history(key).slice().reverse().map((m) => ({ ...m })) });
+        return;
+      }
+      if (u.pathname === '/api/sessions' && req.method === 'GET') {
+        send(200, { data: [...engine.liveSessions().map((r) => r.session_key)].map((id) => ({ id, title: id, source: 'api_server' })) });
+        return;
+      }
       send(404, { detail: 'not_found' });
     });
   });
@@ -236,12 +226,17 @@ async function fakeBackend(cfg = {}) {
     server, hits, tickets, consumed, cfg,
     url: `http://127.0.0.1:${server.address().port}`,
     wsPeerCount: () => wsPeers.size,
+    maxWsPeers: () => maxWsPeers,
+    engine,
+    restart: (epoch) => { engine.restart(epoch); for (const p of wsPeers) p.destroy(); },
+    dropSockets: () => { for (const p of wsPeers) p.destroy(); },
     // True iff any recorded request carries a credential bearing `mark` in the
     // Authorization header or a token field. Random PKCE verifiers can contain
     // the mark by chance, so the whole body is not scanned.
     leaked: (mark) => hits.some((h) =>
       (h.headers.authorization || '').includes(mark) || ['refresh_token', 'access_token'].some((k) => String(h.body?.[k] || '').includes(mark))),
     close: () => new Promise((r) => {
+      engine.close();
       for (const s of sockets) s.destroy();
       server.close(r);
     }),
