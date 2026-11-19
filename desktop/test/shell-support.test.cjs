@@ -259,12 +259,6 @@ test('surfaceForBot: the bot’s own choice, then the global setting, then the f
   assert.equal(surfaceForBot(undefined, '', { telegram: false, nativeConfigured: true }), 'native');
 });
 
-test('surfaceForBot never answers with a surface the bot has no row for', () => {
-  assert.equal(surfaceForBot(undefined, 'hermes-desktop', { telegram: true, webapp: false }), 'telegram', 'a global default without an address');
-  assert.equal(surfaceForBot('native', 'native', { telegram: false, webapp: true, nativeConfigured: false }), 'hermes-desktop');
-  assert.equal(surfaceForBot(undefined, 'hermes-desktop', { telegram: false }), 'hermes-desktop', 'nothing usable at all: the global setting stands');
-});
-
 test('inboxRow: one set of flags per gateway row; unread and previews stay with their own gateway', () => {
   const gateways = ['telegram', 'hermes-desktop', 'native'];
   assert.deepEqual(inboxRow({ bot: { unread: 2 }, surface: 'telegram', gateways, native: { unread: false, waiting: false, preview: 'hi' } }), { surface: 'telegram', gateways, rows: {
@@ -277,12 +271,12 @@ test('inboxRow: one set of flags per gateway row; unread and previews stay with 
   assert.equal(inboxRow({ bot: {}, surface: 'native', native: null }).rows.native.unread, false);
 });
 
-test('canvasStripTabs: four permanent tabs, with Cron jobs or Bot settings only while open', () => {
+test('canvasStripTabs: four permanent tabs, with Bot settings and Cron jobs together only while one is open', () => {
   assert.deepEqual(canvasStripTabs('browser', false), ['browser', 'screen', 'terminal']);
   assert.deepEqual(canvasStripTabs('browser', true), ['browser', 'screen', 'terminal', 'artifacts']);
   assert.deepEqual(canvasStripTabs('artifacts', true), ['browser', 'screen', 'terminal', 'artifacts']);
-  assert.deepEqual(canvasStripTabs('cron', true), ['browser', 'screen', 'terminal', 'artifacts', 'cron']);
-  assert.deepEqual(canvasStripTabs('settings', true), ['browser', 'screen', 'terminal', 'artifacts', 'settings']);
+  assert.deepEqual(canvasStripTabs('cron', true), ['browser', 'screen', 'terminal', 'artifacts', 'settings', 'cron']);
+  assert.deepEqual(canvasStripTabs('settings', true), ['browser', 'screen', 'terminal', 'artifacts', 'settings', 'cron']);
   assert.deepEqual(canvasStripTabs('screen', true), ['browser', 'screen', 'terminal', 'artifacts'], 'switching away drops the temporary tab');
   assert.deepEqual(canvasStripTabs('cron', false), ['browser', 'screen', 'terminal'], 'a page tab needs Hermes Desktop');
   assert.ok(!canvasStripTabs('chat', true).includes('chat'), 'Side chat is gone');

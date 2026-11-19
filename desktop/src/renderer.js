@@ -27,7 +27,6 @@ function colorFor(value) {
   return colors[Array.from(value).reduce((sum, letter) => sum + letter.charCodeAt(0), 0) % colors.length];
 }
 const SURFACE_OF = { telegram: 'telegram', webapp: 'hermes-desktop', native: 'native' };
-const SVG_NS = 'http://www.w3.org/2000/svg';
 // Section headers are logos only; each carries its name for assistive technology.
 const GATEWAY_LOGOS = {
   telegram: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.6 4.3 3.7 10.8c-.8.3-.8 1.4 0 1.7l4.3 1.6 1.7 5.2c.2.7 1.1.9 1.6.4l2.4-2.3 4.4 3.2c.6.4 1.4.1 1.6-.6L22.1 5.5c.2-.9-.7-1.5-1.5-1.2ZM8 14.1 20.2 6.6"/></svg>',
@@ -36,11 +35,10 @@ const GATEWAY_LOGOS = {
   // The Alan's Way mark: the two slanted bars of the browser home page.
   native: '<svg viewBox="0 0 24 24" aria-hidden="true"><g transform="rotate(-24 12 12)" fill="currentColor" stroke="none"><rect x="7.4" y="4.5" width="3.3" height="15" rx="1.65"/><rect x="13.3" y="4.5" width="3.3" height="15" rx="1.65"/></g></svg>',
 };
-const CLOCK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>';
 function renderBots() {
   const list = $('bot-list'), focused = document.activeElement.closest('.bot-row');
   // Capture ownership before a zero-result filter can hide and blur the list.
-  const focusedKey = focused?.dataset.rowKey, focusedControl = focused && (document.activeElement.classList.contains('bot-hide') ? 'hide' : document.activeElement.dataset.tool || '');
+  const focusedKey = focused?.dataset.rowKey, focusedHide = !!focused && document.activeElement.classList.contains('bot-hide');
   const rowsNow = () => [...list.querySelectorAll('.bot-row')], previousKeys = rowsNow().map(row => row.dataset.rowKey), focusedIndex = previousKeys.indexOf(focusedKey);
   const search = $('bot-search').value.trim(), selectedId = state.chatBotId ?? state.selectedBotId, inbox = state.inbox || {};
   const visibleBots = state.hermesBot && !state.bots.length ? [state.hermesBot] : orderedBots();
@@ -58,8 +56,7 @@ function renderBots() {
   const shown = SURFACE_OF[state.chatTarget] || inbox[selectedId]?.surface, ownRows = rows.filter(row => row.bot.id === selectedId);
   const selected = ownRows.find(row => row.gateway === shown) || ownRows.find(row => row.gateway === inbox[selectedId]?.surface) || ownRows[0];
   const keyOf = (row) => `${row.bot.id}:${row.gateway}`, selectedKey = selected && keyOf(selected);
-  const pages = !!state.webappCanvas;
-  const signature = JSON.stringify([sections.map(({ id, rows }) => [id, rows.map(({ bot }) => { const { activity, ...rest } = bot; return rest; })]), selectedKey, state.primaryBotId, state.botSort, inbox, pages, state.webappStatus === 'unreachable']);
+  const signature = JSON.stringify([sections.map(({ id, rows }) => [id, rows.map(({ bot }) => { const { activity, ...rest } = bot; return rest; })]), selectedKey, state.primaryBotId, state.botSort, inbox, state.webappStatus === 'unreachable']);
   if (signature === botListSignature) {
     for (const row of rowsNow()) {
       const bot = rows.find(item => keyOf(item) === row.dataset.rowKey)?.bot;
@@ -80,15 +77,14 @@ function renderBots() {
     logo.setAttribute('role', 'img'); logo.setAttribute('aria-label', section.label); logo.title = section.label; logo.dataset.gateway = section.id; logo.innerHTML = GATEWAY_LOGOS[section.id];
     head.append(logo); group.append(head);
     const items = element('div', 'gateway-rows'); items.setAttribute('role', 'list'); group.append(items); list.append(group);
-    for (const entry of section.rows) renderBotRow(items, entry, { inbox, selectedKey, entryKey, keyOf, pages, list });
+    for (const entry of section.rows) renderBotRow(items, entry, { inbox, selectedKey, entryKey, keyOf, list });
   }
   if (focusedKey) {
     const target = rowsNow().find(row => row.dataset.rowKey === focusKey);
     if (target && canFocus(target.querySelector('.bot-open'))) {
       // Focusing Open aligns the roving stops before restoring the control that had focus.
       target.querySelector('.bot-open').focus({ preventScroll: true });
-      const control = focusedControl === 'hide' ? target.querySelector('.bot-hide') : focusedControl && target.querySelector(`[data-tool="${focusedControl}"]`);
-      if (control && canFocus(control)) control.focus({ preventScroll: true });
+      if (focusedHide) target.querySelector('.bot-hide').focus({ preventScroll: true });
       // Reveal the row's padding too, so the focus outline stays inside the clip.
       target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     } else {
@@ -100,7 +96,7 @@ function renderBots() {
   document.querySelectorAll('.bridge-dot').forEach((dot) => dot.classList.toggle('offline', !state.api.ready));
 }
 // One row: a bot on one gateway. Its text, unread dot and activity are that gateway's own.
-function renderBotRow(parent, { bot, gateway }, { inbox, selectedKey, entryKey, keyOf, pages, list }) {
+function renderBotRow(parent, { bot, gateway }, { inbox, selectedKey, entryKey, keyOf, list }) {
   const key = keyOf({ bot, gateway }), isSelected = key === selectedKey, flags = inbox[bot.id]?.rows?.[gateway] || {};
   const row = element('div', `bot-row${isSelected ? ' selected' : ''}${state.primaryBotId === bot.id ? ' primary' : ''}`);
   row.setAttribute('role', 'listitem'); row.draggable = (state.botSort || 'manual') === 'manual'; row.dataset.botId = bot.id; row.dataset.gateway = gateway; row.dataset.rowKey = key;
@@ -121,24 +117,9 @@ function renderBotRow(parent, { bot, gateway }, { inbox, selectedKey, entryKey, 
   if (flags.waiting) { const badge = element('span', 'waiting-badge'); badge.title = 'Waiting for you'; open.append(badge); }
   if (flags.unread ?? (gateway === 'telegram' && !!bot.unread)) open.append(element('span', 'unread'));
   row.append(open, hide);
-  // Cron jobs and Bot settings are Hermes Desktop pages: only a bot with a Hermes row, while the pages are reachable.
-  if (pages && inbox[bot.id]?.gateways?.includes('hermes-desktop')) {
-    const tools = element('span', 'bot-tools');
-    for (const [tab, label, glyph] of [['cron', 'Cron jobs', CLOCK_ICON], ['settings', 'Settings', '<span class="settings-glyph" aria-hidden="true">⚙</span>']]) {
-      const tool = element('button', 'bot-tool'); tool.type = 'button'; tool.dataset.tool = tab; tool.title = `${label} for ${bot.name}`; tool.setAttribute('aria-label', tool.title);
-      tool.tabIndex = key === entryKey ? 0 : -1; tool.innerHTML = glyph;
-      tool.onclick = async (event) => {
-        event.stopPropagation();
-        if ((state.chatBotId ?? state.selectedBotId) !== bot.id) { try { await api.command('open-bot', { id: bot.id, surface: gateway }); } catch (error) { toast(error.message); return; } }
-        command('canvas-tab', { tab });
-      };
-      tools.append(tool);
-    }
-    row.append(tools);
-  }
   row.onclick = () => command('open-bot', { id: bot.id, surface: gateway });
   open.onfocus = () => {
-    for (const item of list.querySelectorAll('.bot-row')) for (const control of item.querySelectorAll('.bot-open, .bot-hide, .bot-tool')) control.tabIndex = item === row ? 0 : -1;
+    for (const item of list.querySelectorAll('.bot-row')) for (const control of item.querySelectorAll('.bot-open, .bot-hide')) control.tabIndex = item === row ? 0 : -1;
   };
   open.onkeydown = (event) => moveNavigationFocus(event, [...list.querySelectorAll('.bot-open')], 'vertical');
   row.ondragstart = (event) => { draggingBot = bot.id; row.classList.add('dragging'); event.dataTransfer.setData('text/plain', bot.id); event.dataTransfer.effectAllowed = 'move'; };
@@ -474,6 +455,11 @@ function render(next) {
   const chatName = bot?.name || (state.chatBotId === 'hermes' ? state.hermesBot?.name : '');
   $('chat-title').textContent = hermesActive ? (hermesSelected?.title || `Hermes${state.hermes?.target ? ` · ${state.hermes.target.label}` : ''}`)
     : chatName || (webappActive ? 'Hermes Desktop' : nativeActive ? 'Alan' : 'Telegram');
+  // The name opens Bot settings and Cron jobs (Hermes Desktop pages) for this bot; without them it is plain text.
+  const pagesBot = state.webappCanvas && !!chatName && !!state.inbox?.[state.chatBotId ?? state.selectedBotId]?.gateways?.includes('hermes-desktop');
+  $('chat-name').disabled = !pagesBot; $('chat-name').classList.toggle('openable', pagesBot);
+  if (pagesBot) { $('chat-name').setAttribute('aria-label', `${chatName} settings and cron jobs`); $('chat-name').setAttribute('aria-expanded', String(['cron', 'settings'].includes(state.canvasTab))); }
+  else { $('chat-name').removeAttribute('aria-label'); $('chat-name').removeAttribute('aria-expanded'); }
   $('chat-avatar').style.display = telegramActive || (bot && !hermesActive) ? '' : 'none';
   window.HermesAvatars.paint($('chat-avatar'), bot || { id: '', name: 'Telegram' }, state);
   $('chat-avatar').title = bot ? `Customize ${bot.name} avatar` : 'Select a bot to customize its avatar';
@@ -2136,6 +2122,7 @@ $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };
 $('vm-toggle').onclick = () => { if (state?.showBrowser === false) command('settings', { showBrowser: true }); command('toggle-vps-view'); };
 $('preview-expand').onclick = () => command('toggle-vps-view');
+$('chat-name').onclick = () => command('canvas-bot-pages');
 $('canvas-tabs').onclick = (event) => { const tab = event.target.closest('[data-canvas]')?.dataset.canvas; if (!tab) return; terminalFocus = tab === 'terminal'; command('canvas-tab', { tab, start: tab === 'terminal' }); };
 $('canvas-tabs').onkeydown = (event) => {
   const shown = [...$('canvas-tabs').children].filter(button => !button.hidden), at = shown.indexOf(document.activeElement);

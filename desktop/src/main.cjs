@@ -131,6 +131,7 @@ let activeTabId = 'home', canvasTab = 'browser', activeVpsTabId = '', apiError =
 // Native Hermes chat: 'telegram' shows the Telegram WebContentsView; 'hermes'
 // shows the DOM surface (the Telegram view then measures to zero and hides);
 // 'native' shows Alan's native chat on the Hermes Sessions API.
+let canvasReturn = 'browser';
 let nativeChat = null, hermesHub = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '', webappSignInError = '', webappSignInTried = false, webappPrivate = false, canvasView = null, canvasPage = '';
 const WEBAPP_PARTITION = 'persist:hermes-webapp';
 // Canvas tabs beyond Browser, Bot screen and Terminal are Hermes Desktop pages (HashRouter routes). Cron jobs and Bot
@@ -2118,6 +2119,11 @@ function registerIpc() {
       case 'activate': await activateTab(value.id, value.host); break;
       case 'toggle-vps-view': await showCanvas(shownCanvas() === 'screen' ? 'browser' : 'screen'); break;
       case 'canvas-tab': await showCanvas(value?.tab, value?.start === true); break;
+      // The chat header's bot name: open Bot settings (with Cron jobs beside it), or go back to the tab left for them.
+      case 'canvas-bot-pages':
+        if (['cron', 'settings'].includes(shownCanvas())) await showCanvas(canvasReturn);
+        else if (usableSurfaces(surfaceContext(chatBotId())).includes('hermes-desktop')) { canvasReturn = shownCanvas(); await showCanvas('settings'); }
+        break;
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
         const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; await tab.view.webContents.loadURL(target).catch(() => {}); } break;

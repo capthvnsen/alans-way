@@ -176,7 +176,7 @@ function tailscaleSshHost({ platform = process.platform, programFiles = process.
   return '';
 }
 
-const CANVAS_PERMANENT = ['browser', 'screen', 'terminal', 'artifacts'], CANVAS_TEMPORARY = ['cron', 'settings'];
+const CANVAS_PERMANENT = ['browser', 'screen', 'terminal', 'artifacts'], CANVAS_TEMPORARY = ['settings', 'cron'];
 // An explicit choice stands; native only while it has an address and key, else it
 // falls back like no choice. Otherwise Telegram, until Hermes Desktop is configured and answers.
 function resolveChatSurface(choice, webappStatus, nativeConfigured = false) {
@@ -195,7 +195,7 @@ function surfaceForBot(choice, globalChoice, context = {}) {
   const usable = usableSurfaces(context);
   if (usable.includes(choice)) return choice;
   const fallback = resolveChatSurface(globalChoice, context.webappStatus, !!context.nativeConfigured);
-  return usable.length && !usable.includes(fallback) ? usable[0] : fallback;
+  return fallback === 'telegram' && usable.length && !usable.includes('telegram') ? usable[0] : fallback;
 }
 // A bot's flags for each gateway row: unread in Telegram or in its native conversation; waiting on an open
 // approval or question there, or (on every row) on a tab handed back to you.
@@ -203,10 +203,10 @@ function inboxRow({ bot, surface, native, handback = false, gateways = [] }) {
   const row = (unread, waiting = false, preview = '') => ({ unread, waiting: waiting || !!handback, preview });
   return { surface, gateways, rows: { telegram: row(!!bot?.unread), 'hermes-desktop': row(false), native: row(!!native?.unread, !!native?.waiting, native?.preview || '') } };
 }
-// The Canvas strip: four permanent tabs (Artifacts needs Hermes Desktop pages), plus Cron jobs or Bot
-// settings only while that page is the one open.
+// The Canvas strip: four permanent tabs (Artifacts needs Hermes Desktop pages), plus Bot settings and Cron
+// jobs together, only while one of them is the page open.
 function canvasStripTabs(canvasTab, webappCanvas) {
-  return [...CANVAS_PERMANENT.filter((tab) => tab !== 'artifacts' || webappCanvas), ...(webappCanvas && CANVAS_TEMPORARY.includes(canvasTab) ? [canvasTab] : [])];
+  return [...CANVAS_PERMANENT.filter((tab) => tab !== 'artifacts' || webappCanvas), ...(webappCanvas && CANVAS_TEMPORARY.includes(canvasTab) ? ['settings', 'cron'] : [])];
 }
 // Per-bot memory keeps only bots that still exist, and the built-in Hermes row.
 const keepBots = (map, ids) => Object.fromEntries(Object.entries(map || {}).filter(([id]) => id === 'hermes' || ids.includes(id)));
