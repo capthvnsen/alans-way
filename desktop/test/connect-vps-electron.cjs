@@ -24,7 +24,7 @@ app.whenReady().then(async () => {
   const guest = webContents.getAllWebContents().find((item) => item.getURL().endsWith('/remote.html'));
   assert.ok(guest, 'VM viewer did not load');
   for (let i = 0; i < 50; i++) {
-    const ready = await guest.executeJavaScript(`document.getElementById('remote-hint').textContent.includes('Take control')`);
+    const ready = await guest.executeJavaScript(`typeof document.getElementById('configure').onclick === 'function'`);
     if (ready) break;
     await pause(100);
   }
