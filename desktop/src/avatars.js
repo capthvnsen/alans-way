@@ -294,7 +294,7 @@
     const stage = element('div', 'avatar-stage'), preview = element('div', 'avatar-editor-preview');
     const previewCopy = element('div', 'avatar-preview-copy'), live = element('span', 'avatar-live-label');
     previewCopy.append(element('span', 'avatar-eyebrow', 'LIVE PREVIEW'), live,
-      element('p', 'settings-note', 'The glow and gaze move only while a live bot activity signal is present. Idle stays still.'));
+      element('p', 'settings-note', 'The glow and the wandering eyes run only while a live bot activity signal is present, and the eyes look at your pointer while it is over this bot’s row in the list. Idle stays still.'));
     stage.append(preview, previewCopy); wrap.append(stage);
 
     const libraryHeading = element('div', 'avatar-library-heading');
