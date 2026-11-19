@@ -77,6 +77,8 @@ test('one session per bot: output, input, resize, and kill when the bot goes', (
   assert.deepEqual(exited, ['1']);
   assert.deepEqual(terminals.ids(), ['2']);
   children[1].stdio[3].write('done\n');
+  assert.deepEqual(exited, ['1'], 'the shell ending waits for its last output to drain');
+  children[1].emit('close');
   assert.deepEqual(exited, ['1', '2'], 'the shell ending ends the session');
   terminals.start('3'); terminals.killAll();
   assert.deepEqual(terminals.ids(), []);
@@ -110,4 +112,15 @@ test('a shell whose pane never reports a size still starts', { skip: process.pla
   });
   try { await ended; } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   assert.match(out, /startsize=24 80/);
+});
+
+test('an ended program whose pipeline never closes is still ended after a second', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const children = [], exited = [];
+  const terminals = createTerminals({ spawnProcess: () => { children.push(fakeChild()); return children.at(-1); }, build: () => ({ file: 'x', args: [] }), onData() {}, onExit: (id) => exited.push(id) });
+  terminals.start('1');
+  children[0].stdio[3].write('/dev/ttys042\n'); children[0].stdio[3].write('done\n');
+  assert.deepEqual(exited, []);
+  t.mock.timers.tick(1000);
+  assert.deepEqual(exited, ['1']);
 });

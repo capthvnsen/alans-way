@@ -10,6 +10,8 @@ const userShell = (env, exists) => typeof env.SHELL === 'string' && /^\/[\w./+-]
 
 // `script` supplies the pty. macOS's refuses a socket for stdin, which is what a Node pipe is, so `cat` feeds it a real pipe.
 // The inner script is fixed: size and program arrive as separate arguments and fd 3 reports the tty path and the end of the session.
+// When the program ends, its last output is still in flight through script and cat: stdin is closed so they finish and 'close' ends the
+// session; the kill after a second is only for a pipeline that does not.
 // The program waits for one line back on fd 3, so the pane's real size can be applied before its startup files draw anything.
 function terminalCommand({ platform = process.platform, env = process.env, sshHost = '', sshOptions = [], cols, rows, exists = fs.existsSync } = {}) {
   if (platform === 'win32') return { unavailable: 'Terminal is not available on Windows yet.' };
@@ -22,7 +24,7 @@ function terminalCommand({ platform = process.platform, env = process.env, sshHo
 
 function createTerminals({ platform = process.platform, spawnProcess = spawn, run = execFile, build = terminalCommand, waitMs = 1500, onData, onExit }) {
   const sessions = new Map();
-  const end = (id, session, quiet) => { if (sessions.get(id) !== session) return; clearTimeout(session.timer); sessions.delete(id); try { process.kill(-session.child.pid, 'SIGKILL'); } catch {} if (!quiet) onExit(id); };
+  const end = (id, session, quiet) => { if (sessions.get(id) !== session) return; clearTimeout(session.timer); clearTimeout(session.grace); sessions.delete(id); try { process.kill(-session.child.pid, 'SIGKILL'); } catch {} if (!quiet) onExit(id); };
   return {
     ids: () => [...sessions.keys()],
     start(id, { sshHost = '', sshOptions = [], cols, rows } = {}) {
@@ -37,7 +39,7 @@ function createTerminals({ platform = process.platform, spawnProcess = spawn, ru
       const decoder = new StringDecoder('utf8');
       child.stdout.on('data', (chunk) => onData(id, decoder.write(chunk)));
       child.stderr.on('data', (chunk) => onData(id, String(chunk).replace(/\n/g, '\r\n')));
-      child.stdio[3].on('data', (chunk) => { for (const line of String(chunk).split('\n').filter(Boolean)) { if (session.tty === null) { session.tty = /^\/dev\/[\w/]+$/.test(line) ? line : ''; session.timer = setTimeout(session.go, waitMs).unref(); if (session.pending) this.resize(id, ...session.pending); } else end(id, session); } });
+      child.stdio[3].on('data', (chunk) => { for (const line of String(chunk).split('\n').filter(Boolean)) { if (session.tty === null) { session.tty = /^\/dev\/[\w/]+$/.test(line) ? line : ''; session.timer = setTimeout(session.go, waitMs).unref(); if (session.pending) this.resize(id, ...session.pending); } else if (!session.grace) { child.stdin.end(); session.grace = setTimeout(() => end(id, session), 1000); } } });
       for (const stream of [child.stdin, child.stdout, child.stderr, child.stdio[3]]) stream.on('error', () => {});
       child.once('error', (error) => { onData(id, `${error.message}\r\n`); end(id, session); });
       child.once('close', () => end(id, session));
