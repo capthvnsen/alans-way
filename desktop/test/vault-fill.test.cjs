@@ -7,13 +7,14 @@ const assert = require('node:assert/strict');
 const { createVaultFill, isVaultRequest } = require('../src/vault-fill.cjs');
 const { FILL } = require('../src/vault-scripts.cjs');
 const { PW, ORIGIN, inspectJs, fillJs, makeTab } = require('./vault-fixtures.cjs');
+const { clearJs } = require('../src/vault-scripts.cjs');
 
 function rig({ decision = true, ...limits } = {}) {
   const tabs = new Map(), asks = [], logs = [], answers = [], clock = { t: 1_000_000 };
   const bots = { s1: 'bot1', s2: 'bot2' };
   const rigState = { decision };
   const vault = createVaultFill({
-    botFor: (storedId) => bots[storedId] || '', nameFor: (id) => `Bot ${id}`, listTabs: () => tabs.values(),
+    botFor: (storedId) => bots[storedId] || '', nameFor: (id) => `Bot ${id}`, listTabs: () => tabs.values(), command: (tab, method, params) => tab.cdp(method, params),
     ask: async (info, signal) => { asks.push(info); return typeof rigState.decision === 'function' ? rigState.decision(info, signal) : rigState.decision; },
     log: (event, fields) => logs.push([event, fields]), now: () => clock.t, ...limits,
   });
@@ -353,7 +354,7 @@ test('what the page answers is rebuilt, not passed on', async () => {
 test('a page error that quotes the script never reaches the answer or the log', async () => {
   const r = rig(), tab = r.add();
   const target = await r.open(); await r.evaluate(target, inspectJs());
-  tab.frame.executeJavaScript = async (code) => { throw new Error(`Uncaught: ${code.slice(0, 4000)}`); };
+  tab.page.fill = (code) => { throw new Error(`Uncaught: ${code.slice(0, 4000)}`); };
   const out = await r.evaluate(target, fillJs());
   assert.deepEqual([out.success, out.error_type], [false, 'page_failed']);
   noPassword(r);
@@ -389,4 +390,251 @@ test('isVaultRequest names the vault family and nothing else', () => {
   assert.equal(isVaultRequest('preview.act', { action: 'click' }), false);
   for (const m of ['vault.code', 'vault.unlock_prompt', 'vault.save_login']) assert.equal(isVaultRequest(m, {}), true, m);
   for (const m of ['approval', 'clarify', 'preview.read', 'sudo']) assert.equal(isVaultRequest(m, { action: 'vault' }), false, m);
+});
+
+// ── review findings ─────────────────────────────────────────────────────────────────────────────────────────────
+
+const stamps = (tab) => tab.cleared.length;
+const prepare = async (r, nonce) => { const target = await r.open(); await r.evaluate(target, inspectJs(nonce)); return target; };
+
+test('H1a: every vault script runs in an isolated world of the main frame, never in the page\'s own world', async () => {
+  const r = rig(), tab = r.add();
+  const target = await r.open();
+  await r.evaluate(target, inspectJs());
+  assert.equal((await r.evaluate(target, fillJs())).success, true, 'the fake tab throws if the main world is used');
+  assert.equal(tab.worlds.length, 2, 'one world per script, both isolated');
+  for (const world of tab.worlds) assert.deepEqual([world.frameId, typeof world.worldName, world.grantUniveralAccess], ['main-frame', 'string', false]);
+});
+
+test('H1a: a CDP failure or an exception in the world is a refusal that never quotes the script', async () => {
+  for (const fail of [() => { throw new Error(`boom ${PW}`); }, () => ({ exceptionDetails: { text: `Uncaught ${PW}`, exception: { description: PW } } })]) {
+    const r = rig(), tab = r.add();
+    const target = await r.open(); await r.evaluate(target, inspectJs());
+    tab.cdp = async (method, params) => (method === 'Runtime.evaluate' ? fail() : { frameTree: { frame: { id: 'f' } }, executionContextId: 101 });
+    const out = await r.evaluate(target, fillJs());
+    assert.deepEqual([out.success, out.error_type], [false, 'page_failed']);
+    noPassword(r);
+  }
+});
+
+test('M1: a top document with an opaque origin is never filled, even though its URL matches', async () => {
+  let r = rig(), tab = r.add();
+  tab.frame.origin = 'null';
+  const opened = await r.call('s1', { operation: 'open' });
+  assert.deepEqual([opened.success, opened.error_type], [false, 'opaque_origin']);
+
+  r = rig(); tab = r.add();
+  const target = await r.open(); await r.evaluate(target, inspectJs());
+  tab.frame.origin = 'null';
+  const out = await r.evaluate(target, fillJs());
+  assert.deepEqual([out.success, out.error_type], [false, 'opaque_origin']);
+  assert.equal(r.asks.length + ranFill(tab).length, 0, 'no prompt, no script');
+
+  r = rig(); tab = r.add();
+  const t2 = await r.open(); await r.evaluate(t2, inspectJs());
+  tab.frame.origin = 'https://evil.test';
+  assert.equal((await r.evaluate(t2, fillJs())).error_type, 'page_changed', 'a frame origin that is not the URL\'s origin');
+  assert.equal(ranFill(tab).length, 0);
+});
+
+test('H1b: the tab is locked from the prompt on, kept after a fill, and released when no fill happened', async () => {
+  const lockAtPrompt = [];
+  let r = rig({ decision: () => { lockAtPrompt.push(tab.vaultLock); return true; } }), tab = r.add();
+  let target = await prepare(r);
+  assert.equal(tab.vaultLock, undefined, 'nothing is locked before a fill reaches the prompt');
+  assert.equal((await r.evaluate(target, fillJs())).success, true);
+  assert.deepEqual(lockAtPrompt, ['prompt'], 'locked while the prompt is open, so nothing can be planted meanwhile');
+  assert.equal(tab.vaultLock, 'filled', 'kept after the fill');
+
+  // A later refused attempt on the same tab does not lift an earlier fill\'s lock.
+  r.state.decision = false;
+  r.clock.t += 1000;
+  target = await prepare(r, 'aaaaaaaaaaaaaaaa');
+  assert.equal((await r.evaluate(target, fillJs({ nonce: 'aaaaaaaaaaaaaaaa' }))).error_type, 'denied');
+  assert.equal(tab.vaultLock, 'filled');
+
+  const released = [
+    ['Deny', rig({ decision: false }), 'denied'],
+    ['no answer', rig({ decision: null }), 'no_answer'],
+  ];
+  for (const [why, rr, reason] of released) {
+    const t = rr.add(), tg = await prepare(rr);
+    const out = await rr.evaluate(tg, fillJs());
+    assert.equal(out.error_type, reason, why);
+    assert.equal(t.vaultLock, undefined, `${why}: released`);
+  }
+  // The page refused (it moved) or typed nothing: released. Anything else that ran: kept.
+  for (const [why, answer, held] of [['moved', '{"refused":"origin_changed","found":"https://x.test"}', undefined], ['nothing typed', '{"filled":0}', undefined],
+    ['unreadable answer', 'garbage', 'filled'], ['page error', () => { throw new Error('x'); }, 'filled']]) {
+    const rr = rig(), t = rr.add(), tg = await prepare(rr);
+    t.page.fill = typeof answer === 'function' ? answer : () => answer;
+    await rr.evaluate(tg, fillJs());
+    assert.equal(t.vaultLock, held, why);
+  }
+  for (const [why, change] of [['a navigation after the prompt', (t) => t.go('https://evil.test/')], ['control changing hands', (t) => { t.epoch++; }]]) {
+    const rr = rig({ decision: () => { change(t); return true; } }), t = rr.add(), tg = await prepare(rr);
+    assert.equal((await rr.evaluate(tg, fillJs())).success, false, why);
+    assert.equal(t.vaultLock, undefined, `${why}: released`);
+  }
+  // A fill refused before the prompt never locks.
+  const early = rig(), et = early.add({ url: 'https://other.test/' }), eg = await prepare(early);
+  assert.equal((await early.evaluate(eg, fillJs())).error_type, 'origin_mismatch');
+  assert.equal(et.vaultLock, undefined);
+});
+
+test('H1b: a fill is refused when the agent has run script in this document, and says to reload', async () => {
+  const r = rig(), tab = r.add();
+  tab.agentScripted = true;
+  const target = await prepare(r);
+  const out = await r.evaluate(target, fillJs());
+  assert.deepEqual([out.success, out.error_type], [false, 'page_scripted']);
+  assert.match(out.error, /reload|navigate/i);
+  assert.equal(r.asks.length + ranFill(tab).length, 0);
+  assert.equal(tab.vaultLock, undefined);
+});
+
+test('M2: an unanswered prompt starts the cooldown too, but a withdrawn request does not', async () => {
+  let r = rig({ decision: null }), tab = r.add();
+  let target = await prepare(r);
+  assert.equal((await r.evaluate(target, fillJs())).error_type, 'no_answer');
+  target = await prepare(r, 'bbbbbbbbbbbbbbbb');
+  assert.equal((await r.evaluate(target, fillJs({ nonce: 'bbbbbbbbbbbbbbbb' }))).error_type, 'denied_recently');
+  assert.equal(r.asks.length, 1);
+
+  r = rig({ askMs: 15, decision: (_i, signal) => new Promise((resolve) => signal.addEventListener('abort', () => resolve(true))) }); tab = r.add();
+  target = await prepare(r);
+  assert.equal((await r.evaluate(target, fillJs())).error_type, 'no_answer');
+  target = await prepare(r, 'bbbbbbbbbbbbbbbb');
+  assert.equal((await r.evaluate(target, fillJs({ nonce: 'bbbbbbbbbbbbbbbb' }))).error_type, 'denied_recently', 'a timeout counts as no answer');
+
+  const withdraw = new AbortController();
+  r = rig({ decision: (_i, signal) => new Promise((resolve) => signal.addEventListener('abort', () => resolve(true))) }); tab = r.add();
+  target = await prepare(r);
+  const pending = r.vault.handle({ storedId: 's1', sessionId: 'rt-s1', signal: withdraw.signal, params: { session_id: 'rt-s1', action: 'vault', vault: { operation: 'evaluate', target, expression: fillJs() } } });
+  await new Promise((resolve) => setImmediate(resolve));
+  withdraw.abort(); await pending;
+  r.state.decision = true;
+  target = await prepare(r, 'bbbbbbbbbbbbbbbb');
+  assert.equal((await r.evaluate(target, fillJs({ nonce: 'bbbbbbbbbbbbbbbb' }))).success, true, 'Stop is not a refusal to be punished');
+});
+
+test('M2: three prompts a minute per bot, then refused until the minute passes', async () => {
+  const r = rig({ decision: false }), tab = r.add();
+  const nonces = ['1000000000000000', '2000000000000000', '3000000000000000', '4000000000000000', '5000000000000000'];
+  const sites = ['https://a.test', 'https://b.test', 'https://c.test', 'https://d.test'];
+  const attempt = async (i) => {
+    tab.go(`${sites[i % 4]}/login`);
+    const target = await prepare(r, nonces[i]);
+    return r.evaluate(target, fillJs({ origin: sites[i % 4], nonce: nonces[i] }));
+  };
+  assert.deepEqual([(await attempt(0)).error_type, (await attempt(1)).error_type, (await attempt(2)).error_type], ['denied', 'denied', 'denied']);
+  const fourth = await attempt(3);
+  assert.deepEqual([fourth.success, fourth.error_type], [false, 'rate_limited']);
+  assert.equal(r.asks.length, 3, 'the fourth never prompted');
+  r.clock.t += 61000;
+  assert.equal((await attempt(4)).error_type, 'denied', 'asked again after the minute');
+  assert.equal(r.asks.length, 4);
+});
+
+test('M2: when the app is not the active app nothing is queued, the user is not asked, and the reason says so', async () => {
+  const r = rig({ decision: 'inactive' }), tab = r.add();
+  let target = await prepare(r);
+  const out = await r.evaluate(target, fillJs());
+  assert.deepEqual([out.success, out.error_type], [false, 'app_inactive']);
+  assert.equal(tab.vaultLock, undefined);
+  assert.equal(ranFill(tab).length, 0);
+  r.state.decision = true;
+  target = await prepare(r, 'bbbbbbbbbbbbbbbb');
+  assert.equal((await r.evaluate(target, fillJs({ nonce: 'bbbbbbbbbbbbbbbb' }))).success, true, 'no cooldown for a prompt that was never shown');
+  // Attempts that were never shown do not use up the per-minute cap either.
+  const quiet = rig({ decision: 'inactive' }); quiet.add();
+  for (let j = 0; j < 5; j++) {
+    const nonce = String(j).repeat(16), tg = await prepare(quiet, nonce);
+    assert.equal((await quiet.evaluate(tg, fillJs({ nonce }))).error_type, 'app_inactive');
+  }
+});
+
+test('L1: an ask that never settles cannot wedge the prompt slot', async () => {
+  const r = rig({ askMs: 15, decision: () => new Promise(() => {}) }), tab = r.add();
+  let target = await prepare(r);
+  assert.equal((await r.evaluate(target, fillJs())).error_type, 'no_answer');
+  r.clock.t += 61000; r.state.decision = true;
+  target = await prepare(r, 'bbbbbbbbbbbbbbbb');
+  assert.equal((await r.evaluate(target, fillJs({ nonce: 'bbbbbbbbbbbbbbbb' }))).success, true, 'not busy afterwards');
+  void tab;
+});
+
+test('L2: a page answer that is not a string, or is over 256 KiB, is refused before it is parsed', async () => {
+  const huge = JSON.stringify([{ type: 'password', index: 1, label: 'x'.repeat(300 * 1024) }]);
+  for (const [why, answer] of [['an object', { filled: 1 }], ['a number', 1], ['over 256 KiB', huge], ['null', null]]) {
+    let r = rig(), tab = r.add();
+    tab.page.inspect = () => answer;
+    const out = await r.evaluate(await r.open(), inspectJs());
+    assert.deepEqual([out.success, out.error_type], [false, 'page_failed'], `inspect: ${why}`);
+    r = rig(); tab = r.add();
+    const target = await prepare(r);
+    tab.page.fill = () => (why === 'over 256 KiB' ? `{"filled":1,"pad":"${'x'.repeat(300 * 1024)}"}` : answer);
+    assert.equal((await r.evaluate(target, fillJs())).error_type, 'page_failed', `fill: ${why}`);
+  }
+});
+
+test('L3: the stamps an inspection left are removed when the target closes, expires, or the fill is refused or ends without a fill', async () => {
+  const nonce = '0123456789abcdef';
+  // close
+  let r = rig(), tab = r.add();
+  let target = await prepare(r);
+  assert.equal(stamps(tab), 0);
+  await r.call('s1', { operation: 'close', target });
+  assert.deepEqual(tab.cleared, [clearJs(nonce)], 'close clears this inspection\'s stamps only');
+  // an inspection that is never followed up, then the target expires
+  r = rig(); tab = r.add();
+  target = await prepare(r);
+  r.clock.t += 5 * 60000 + 1;
+  await r.evaluate(target, 'window.location.href');
+  assert.equal(stamps(tab), 1, 'expiry clears');
+  // evicted by newer targets
+  r = rig(); tab = r.add();
+  await prepare(r);
+  for (let i = 0; i < 16; i++) await r.open();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(stamps(tab), 1, 'eviction clears');
+  // refused fills
+  for (const [why, setup, expected] of [
+    ['Deny', (rr) => { rr.state.decision = false; }, 'denied'],
+    ['no answer', (rr) => { rr.state.decision = null; }, 'no_answer'],
+    ['origin mismatch', () => {}, 'origin_mismatch'],
+    ['not supported', () => {}, 'unsupported'],
+  ]) {
+    const rr = rig(), t = rr.add();
+    setup(rr);
+    const tg = await prepare(rr);
+    const out = await rr.evaluate(tg, why === 'origin mismatch' ? fillJs({ origin: 'https://other.test' }) : why === 'not supported' ? fillJs({ fills: [{ index: 1, token: 'one-time-code', value: '1' }] }) : fillJs());
+    assert.equal(out.error_type, expected, why);
+    assert.equal(stamps(t), 1, `${why}: cleared`);
+  }
+  // the page's own refusal and an empty fill leave stamps too (its script returns before removing them)
+  for (const answer of ['{"refused":"origin_changed","found":"https://x.test"}', '{"filled":0}']) {
+    const rr = rig(), t = rr.add(), tg = await prepare(rr);
+    t.page.fill = () => answer;
+    await rr.evaluate(tg, fillJs());
+    assert.equal(stamps(t), 1, answer);
+  }
+  // a successful fill removed them itself
+  const ok = rig(), ot = ok.add(), og = await prepare(ok);
+  await ok.evaluate(og, fillJs());
+  assert.equal(stamps(ot), 0);
+});
+
+test('L5: expired cooldowns are dropped when the map is read', async () => {
+  const r = rig({ decision: false }), tab = r.add();
+  for (let i = 0; i < 3; i++) {
+    tab.go(`https://s${i}.test/login`);
+    const target = await prepare(r, `${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}`);
+    await r.evaluate(target, fillJs({ origin: `https://s${i}.test`, nonce: `${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}` }));
+  }
+  assert.equal(r.vault.size().denied, 3);
+  r.clock.t += 61000;
+  const target = await prepare(r, 'bbbbbbbbbbbbbbbb');
+  await r.evaluate(target, fillJs({ origin: 'https://s2.test', nonce: 'bbbbbbbbbbbbbbbb' }));
+  assert.equal(r.vault.size().denied, 1, 'only the fresh one is left');
 });

@@ -35,6 +35,7 @@ const { parseBaseUrl, createHermesApi } = require('./hermes-api.cjs');
 const { createGatewayLink, createGatewayOpener } = require('./gateway-link.cjs');
 const { createVaultFill } = require('./vault-fill.cjs');
 const { createVaultPrompt } = require('./vault-prompt.cjs');
+const vaultLock = require('./vault-lock.cjs');
 const { createGatewayApiFactory } = require('./gateway-api.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
 const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, deliverPendingUpdateReport, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
@@ -362,7 +363,7 @@ const pushVpsMirror = createMirrorPusher({
     // A tab stuck on a dialog or a hung renderer keeps its last read instead of stalling every bot's push.
     const read = await Promise.all(agentTabs.map(async (tab) => {
       const wc = tab.view.webContents;
-      const page = await settleWithin(wc.executeJavaScript(checkpointExpression(true)), 2000, null) || mirrorPages.get(tab.id);
+      const page = await settleWithin(wc.executeJavaScript(checkpointExpression(!vaultLock.isLocked(tab))), 2000, null) || mirrorPages.get(tab.id);
       if (!page) return null;
       mirrorPages.set(tab.id, page);
       return { botId: tab.botId, tab: { id: tab.id, ...page, cookies: carry ? await pageCookies(page.url) : [] } };
@@ -973,6 +974,7 @@ function createTab({ url = 'about:blank', filePath = '', botId = prefs.selectedB
   view.setBackgroundColor('#0b0b0c');
   const tab = { id: crypto.randomUUID(), view, requestedUrl: skipLoad ? '' : targetUrl, owner, botId: String(botId).slice(0, 100), controller, extensionPage, localPdf, epoch: 1, title: filePath ? path.basename(filePath) : 'New tab', loading: false, allowedBots: [], refs: new Set(), generation: 0, queue: Promise.resolve() };
   if (controller === 'agent') tab.agentSince = Date.now();
+  vaultLock.watch(tab, view.webContents);
   tabs.set(tab.id, tab);
   tab.host = backgroundHost();
   tab.host.contentView.addChildView(view);
@@ -2916,7 +2918,7 @@ async function snapshot(tab, opts = {}) {
     // A wedged renderer leaves executeJavaScript pending forever; bound it so
     // a snapshot can never outlive the connector's own timeout.
     const read = () => Promise.race([
-      cachedSnapshot(code => { requireAgentRead(tab); return readJs(tab.view.webContents, code, 20000); }, { parseWaitMs: SNAPSHOT_PARSE_MS, ...opts, seed: tab.refSeed }),
+      cachedSnapshot(code => { requireAgentRead(tab); return readJs(tab.view.webContents, code, 20000); }, { parseWaitMs: SNAPSHOT_PARSE_MS, ...opts, seed: tab.refSeed, ...vaultLock.readOptions(tab) }),
       new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Snapshot timed out after 10s. The page may be unresponsive.'), { status: 503 })), 10000); }),
     ]).finally(() => clearTimeout(timer));
     let result = await read();
@@ -2950,7 +2952,7 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   const carry=await signInsTravel();
   let target,result,checkpoint,signIns=0;
   try {
-    checkpoint=sourceHost==='mac'?await source.view.webContents.executeJavaScript(checkpointExpression(includeDrafts)):await remoteRequest(id,'checkpoint',{includeDrafts,includeCookies:carry});
+    checkpoint=sourceHost==='mac'?await source.view.webContents.executeJavaScript(checkpointExpression(includeDrafts && !vaultLock.isLocked(source))):await remoteRequest(id,'checkpoint',{includeDrafts,includeCookies:carry});
     if(!/^https?:\/\//.test(checkpoint.url))throw new Error('Open a web page before handing it off.');
     const {cookies:remoteCookies,...page}=checkpoint;checkpoint=page;
     if(dest==='vps') {
@@ -3090,6 +3092,8 @@ async function performAction(tab, body, botId, depth = 0, isAborted = () => fals
   try { return await performStep(tab, body, botId, depth, isAborted); } finally { tab.dialogAnswer = before; }
 }
 async function performStep(tab, body, botId, depth, isAborted) {
+  // While a vault fill holds the tab: page script and DevTools are closed to the agent (see vault-lock.cjs).
+  vaultLock.guardAction(tab, body);
   const overseer = isOverseer(botId);
   requireActor(tab, botId, body.epoch, true, overseer);
   const wc = tab.view.webContents;
@@ -3140,7 +3144,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     dryRun(tab);
     requireAgentRead(tab);
     if (body.list !== undefined) {
-      const code = listReadExpression(body);
+      const code = listReadExpression(body, vaultLock.readOptions(tab));
       const data = await readJs(wc, code, 12000).catch(error => { error.status ||= 400; throw error; });
       requireActor(tab, botId, body.epoch, true, overseer);
       return finish({ ...data, dispatched: true });
@@ -3148,7 +3152,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     // A read step is the model's own baseline, so it must not plant the doc
     // marker: on a fresh document the missing marker is what lets the final
     // effect report the navigation it observed.
-    const data = await cachedSnapshot(code => { requireActor(tab, botId, body.epoch, true, overseer); return readJs(wc, code, 12000); }, { maxChars, maxElements: 0, elementMs: 5, mark: false }).catch(() => null);
+    const data = await cachedSnapshot(code => { requireActor(tab, botId, body.epoch, true, overseer); return readJs(wc, code, 12000); }, { maxChars, maxElements: 0, elementMs: 5, mark: false, ...vaultLock.readOptions(tab) }).catch(() => null);
     requireActor(tab, botId, body.epoch, true, overseer);
     if (data) { tab.lastRead = data.sameDoc === false ? null : lastReadOf(data); tab.docMarked = tab.docMarked || data.sameDoc === true; }
     return finish({ text: (data && typeof data.text === 'string' ? data.text : ''), dispatched: true });
@@ -3162,6 +3166,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     await agentInput.guard(tab, body);
     let evalTimer;
     dryRun(tab);
+    vaultLock.noteScript(tab, body);
     let value = await Promise.race([
       frameOf(wc).executeJavaScript(code, true),
       new Promise((_, reject) => { evalTimer = setTimeout(() => reject(Object.assign(new Error('eval timed out after 15s.'), { status: 408 })), 15000); }),
@@ -3237,7 +3242,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     requireActor(tab, botId, body.epoch, true, overseer);
     // A successful wait observed the page, so it becomes the read baseline:
     // the final effect must not re-report what the wait already confirmed.
-    const waited = await cachedSnapshot(code => { requireActor(tab, botId, body.epoch, true, overseer); return readJs(wc, code, 12000); }, { maxChars: 8000, maxElements: 0, elementMs: 5, mark: false }).catch(() => null);
+    const waited = await cachedSnapshot(code => { requireActor(tab, botId, body.epoch, true, overseer); return readJs(wc, code, 12000); }, { maxChars: 8000, maxElements: 0, elementMs: 5, mark: false, ...vaultLock.readOptions(tab) }).catch(() => null);
     if (waited) { tab.lastRead = waited.sameDoc === false ? null : lastReadOf(waited); tab.docMarked = tab.docMarked || waited.sameDoc === true; }
     return finish({ waited: value.waited, dispatched: true });
   }
@@ -3277,6 +3282,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     await agentInput.guard(tab, { ...body, params });
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     dryRun(tab);
+    vaultLock.noteScript(tab, body);
     let cdpTimer;
     let value = await Promise.race([
       wc.debugger.sendCommand(method, params),
@@ -3467,6 +3473,7 @@ function startApi() {
       if (req.method === 'GET' && match[2] === 'screenshot') {
         const format = url.searchParams.get('format') ?? 'jpeg';
         if (!['jpeg', 'png', 'webp'].includes(format)) throw Object.assign(new Error('format must be jpeg, png, or webp.'), { status: 400 });
+        vaultLock.guardScreenshot(tab);
         const quality = intParam(url, 'quality', 1, 100) ?? 50;
         const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 960;
         const rawCrop = url.searchParams.get('crop');
@@ -3474,6 +3481,7 @@ function startApi() {
           // Reads are gated again inside the queue so a takeover while this
           // capture waited comes back 409, not a last page peek.
           requireAgentRead(tab);
+          vaultLock.guardScreenshot(tab);
           const shot = await captureTab(tab, { format, quality, maxWidth, crop: rawCrop });
           requireAgentRead(tab);
           return shot;
@@ -3940,13 +3948,16 @@ else {
     await extensionStore.installStore();
     // One socket to the Hermes gateway for native chat, kept alive and resumed after a drop. It
     // shares the hub's sign-in; with no gateway configured it stays idle and chat uses REST+SSE.
+    const vaultFill = createVaultFill({ botFor: (storedId) => Object.keys(prefs.nativeSessions || {}).find((bot) => prefs.nativeSessions[bot] === storedId) || '',
+        nameFor: nameForBot, listTabs: () => tabs.values(), command: browserCommand, ask: createVaultPrompt({ dialog, getWindow: () => win }), log: (event, fields) => mainLog().write(event, JSON.stringify(fields)) });
+    // Test seam, only when the harness sets it: the vault gate and the real tab records, so a test can drive a fill without a gateway.
+    if (process.env.HERMES_WORKSPACE_TEST_HOOKS === '1') globalThis.__workspaceTest = { vaultFill, tabs };
     gatewayLink = createGatewayLink({
       open: createGatewayOpener({ credentials: hermesHub.session.credentials, adoptTokens: hermesHub.session.adoptTokens, expireSignIn: hermesHub.session.expireSignIn }),
       isOnline: () => net.isOnline(),
       profile: () => hermesHub.session.credentials()?.profile || '',
       log: (event, fields) => mainLog().write(event, JSON.stringify(fields)),
-      vault: createVaultFill({ botFor: (storedId) => Object.keys(prefs.nativeSessions || {}).find((bot) => prefs.nativeSessions[bot] === storedId) || '',
-        nameFor: nameForBot, listTabs: () => tabs.values(), ask: createVaultPrompt({ dialog, app, getWindow: () => win }), log: (event, fields) => mainLog().write(event, JSON.stringify(fields)) }),
+      vault: vaultFill,
     });
     gatewayLink.start();
     gatewayLink.on('state', () => pushNativeState());

@@ -5,13 +5,16 @@
 // never sees it. This module is the only door that script walks through, in the main process:
 //   - open pins one agent tab of the conversation's bot, bound to its document (generation) and control (epoch);
 //   - `window.location.href` is answered from the main process's own navigation state, never from the page;
-//   - only the exact inspection and fill scripts Hermes builds (vault-scripts.cjs) run, in the tab's top frame;
-//   - a fill needs: the tab's top-level origin exactly equal to the origin the entry is bound to, a native
-//     Allow once from the user, and the same checks again right before the page runs it.
+//   - only the exact inspection and fill scripts Hermes builds (vault-scripts.cjs) run, over CDP in an isolated world
+//     of the tab's main frame, so a page (or an agent's earlier eval) that patched its own builtins sees nothing;
+//   - a fill needs: the tab's top-level origin (not opaque) exactly equal to the origin the entry is bound to, a native
+//     Allow once from the user, and the same checks again right before the page runs it;
+//   - from the prompt on, the tab is vault-locked (vault-lock.cjs) so the agent cannot read the value back.
 // What goes back to Hermes is rebuilt here (a count, a password control's descriptor, a reason), never page text.
 // Logs carry the step and a reason code. JS strings cannot be zeroed: the secret is kept in no field of ours
 // and the request's copy is blanked as soon as the page has run it.
-const { INSPECT, FILL } = require('./vault-scripts.cjs');
+const { INSPECT, FILL, clearJs } = require('./vault-scripts.cjs');
+const lock = require('./vault-lock.cjs');
 
 const VAULT_REQUESTS = new Set(['vault.code', 'vault.unlock_prompt', 'vault.save_login']);
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -63,10 +66,14 @@ const REASONS = {
   human_has_control: 'The person has taken this tab. Nothing was filled.',
   navigating: 'The page is still navigating. Nothing was filled.',
   page_changed: 'The page changed since the vault operation started. Nothing was filled.',
+  opaque_origin: 'This page has an opaque (sandboxed) origin, so it is not the site the login is saved for. Nothing was filled.',
   origin_mismatch: "The tab's site is not exactly the site this login is saved for. Nothing was filled.",
+  page_scripted: 'The agent has run script (eval or a DevTools write) in this page, which could read the password back. Reload the page (navigate to it again), then ask again. Nothing was filled.',
   denied: 'The user chose not to fill this login. Do not ask again this turn.',
-  denied_recently: 'The user just declined this fill. Do not ask again this turn.',
+  denied_recently: 'A fill prompt for this site was just declined or went unanswered. Do not ask again this turn.',
   no_answer: 'The user did not answer the fill prompt in time. Nothing was filled.',
+  app_inactive: 'The app is not the active app, so the user was not asked. Nothing was filled; ask the user to open the app first.',
+  rate_limited: 'Too many fill prompts for this bot in the last minute. Nothing was filled.',
   busy: 'Another fill prompt is already open. Nothing was filled.',
   unknown_target: 'That vault target is closed or expired. Open a new one.',
   no_inspection: 'The fill does not match the page inspection that came before it. Nothing was filled.',
@@ -77,9 +84,16 @@ const REASONS = {
 };
 const no = (type, message) => refuse(type, message || REASONS[type]);
 
-function createVaultFill({ botFor, nameFor = () => '', listTabs, ask, log = () => {}, now = Date.now,
+const WORLD = 'hermes-vault';
+const MAX_ANSWER = 256 * 1024, CLEAR_MS = 2000, PROMPTS_PER_MINUTE = 3;
+// A page's answer is data from the page: a string of bounded size, parsed only then.
+const pageJson = (raw) => typeof raw === 'string' && raw.length <= MAX_ANSWER ? parseJson(raw) : undefined;
+
+// `command(tab, method, params)` sends one CDP command to the tab. `ask` resolves true (Allow once), false (Deny),
+// 'inactive' (the app is not the active app, nothing was shown) or null (no answer).
+function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, log = () => {}, now = Date.now,
   targetTtlMs = 5 * 60000, askMs = 30000, denyMs = 60000 }) {
-  const targets = new Map(), denied = new Map();
+  const targets = new Map(), denied = new Map(), prompts = new Map();
   let asking = false;
 
   const findTab = (id) => { for (const tab of listTabs()) if (tab.id === id) return tab; return null; };
@@ -97,13 +111,43 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, ask, log = () =
     const origin = originOf(wc.getURL()), frame = wc.mainFrame;
     // Top frame only: what the scripts run in must be the very document whose origin was just read.
     if (!origin || !frame || frame.isDestroyed?.() || frame.detached || originOf(frame.url) !== origin) return { why: 'page_changed' };
-    return { frame, origin, wc };
+    // A sandboxed document (CSP sandbox) has an opaque origin but the URL's origin in location.origin, which is what
+    // the URL comparison above and the fill script's own check both read. The frame says what it really is.
+    if (frame.origin === 'null') return { why: 'opaque_origin' };
+    if (frame.origin !== origin) return { why: 'page_changed' };
+    return { tab, origin, wc };
   }
+
+  // One script in a fresh isolated world of the tab's main frame, bounded, and its error text (which can quote
+  // the script) dropped. An isolated world has its own builtins: nothing the page or an earlier agent script
+  // patched applies to it, while the DOM, and so the page's own input and change listeners, are shared.
+  async function run(tab, expression, ms = PAGE_MS) {
+    let timer;
+    try {
+      return await Promise.race([(async () => {
+        const { frameTree } = await command(tab, 'Page.getFrameTree', {});
+        const { executionContextId } = await command(tab, 'Page.createIsolatedWorld', { frameId: frameTree.frame.id, worldName: WORLD, grantUniveralAccess: false });
+        const out = await command(tab, 'Runtime.evaluate', { contextId: executionContextId, expression, returnByValue: true });
+        if (out.exceptionDetails) throw new Error('page error');
+        return out.result && out.result.value;
+      })(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), ms); timer.unref?.(); })]);
+    } finally { clearTimeout(timer); }
+  }
+
+  // Removes the stamps an inspection left (the fill script removes its own). Best effort, bounded, never throws.
+  async function clearStamps(target) {
+    const nonce = target.nonce;
+    target.nonce = '';
+    const tab = findTab(target.tabId);
+    if (!nonce || !liveContents(tab) || tab.generation !== target.generation) return;
+    try { await run(tab, clearJs(nonce), CLEAR_MS); } catch { /* the page is gone or busy: the stamps go with it */ }
+  }
+  const forget = (id) => { const target = targets.get(id); targets.delete(id); if (target) clearStamps(target); };
 
   const lookup = (v, storedId) => {
     const target = typeof v.target === 'string' ? targets.get(v.target) : null;
-    if (target && target.expiresAt < now()) targets.delete(v.target);
-    return target && target.expiresAt >= now() && target.storedId === storedId ? target : null;
+    if (target && target.expiresAt < now()) { forget(v.target); return null; }
+    return target && target.storedId === storedId ? target : null;
   };
 
   function open({ storedId }) {
@@ -112,22 +156,13 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, ask, log = () =
     const mine = [...listTabs()].filter((t) => t.botId === bot && liveContents(t) && !t.extensionPage && !t.localPdf);
     const own = mine.filter((t) => agentTab(t, bot)).sort((a, b) => Math.max(b.agentSince || 0, b.lastAgentActivity || 0) - Math.max(a.agentSince || 0, a.lastAgentActivity || 0));
     if (!own.length) return no(mine.length ? 'human_has_control' : 'no_tab');
-    const tab = own[0], target = { storedId, botId: bot, tabId: tab.id, generation: tab.generation, epoch: tab.epoch, nonce: '', filled: false, expiresAt: now() + targetTtlMs };
+    const tab = own[0], target = { storedId, botId: bot, tabId: tab.id, generation: tab.generation, epoch: tab.epoch, nonce: '', filled: false, typed: false, expiresAt: now() + targetTtlMs };
     const seen = read(target);
     if (seen.why) return no(seen.why);
-    while (targets.size >= MAX_TARGETS) targets.delete(targets.keys().next().value);
+    while (targets.size >= MAX_TARGETS) forget(targets.keys().next().value);
     const id = require('node:crypto').randomUUID();
     targets.set(id, target);
     return ok({ target: id });
-  }
-
-  // The page runs the script in its top frame, bounded, and its error text (which can quote the script) is dropped.
-  async function run(frame, expression) {
-    let timer;
-    try {
-      return await Promise.race([Promise.resolve().then(() => frame.executeJavaScript(expression)),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), PAGE_MS); timer.unref?.(); })]);
-    } finally { clearTimeout(timer); }
   }
 
   const control = (c) => {
@@ -139,7 +174,7 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, ask, log = () =
   async function inspect(target, expression, inspection) {
     const seen = read(target);
     if (seen.why) return no(seen.why);
-    const raw = parseJson(String(await run(seen.frame, expression)));
+    const raw = pageJson(await run(seen.tab, expression));
     const after = read(target);
     if (after.why) return no(after.why);
     if (!Array.isArray(raw)) return no('page_failed');
@@ -161,26 +196,51 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, ask, log = () =
     let seen = read(target);
     if (seen.why) return no(seen.why);
     if (seen.origin !== bound) return no('origin_mismatch');
+    if (seen.tab.agentScripted) return no('page_scripted');
 
     const key = JSON.stringify([target.botId, bound]);
+    for (const [k, until] of denied) if (until <= now()) denied.delete(k);
     if (denied.get(key) > now()) return no('denied_recently');
     if (asking) return no('busy');
-    asking = true;
-    const deadline = AbortSignal.timeout(askMs), cancel = signal ? AbortSignal.any([signal, deadline]) : deadline;
-    let answer = null;
-    try { answer = await ask({ botId: target.botId, botName: nameFor(target.botId) || target.botId, origin: bound }, cancel); } catch { answer = null; } finally { asking = false; }
-    if (cancel.aborted || answer === null || answer === undefined) return no('no_answer');
-    if (answer !== true) { denied.set(key, now() + denyMs); return no('denied'); }
+    const recent = (prompts.get(target.botId) || []).filter((t) => t > now() - 60000);
+    if (recent.length >= PROMPTS_PER_MINUTE) return no('rate_limited');
 
-    // The same checks again, now that the user has answered: this is what the password is typed into.
-    seen = read(target);
-    if (seen.why) return no(seen.why);
-    if (seen.origin !== bound) return no('origin_mismatch');
-    target.filled = true;
-    const result = parseJson(String(await run(seen.frame, expression)));
-    if (isPlainObject(result) && result.refused === 'origin_changed') return ok({ result: JSON.stringify({ refused: 'origin_changed', found: originOf(seen.wc.getURL()) }) });
-    if (isPlainObject(result) && Number.isSafeInteger(result.filled) && result.filled >= 0) return ok({ result: JSON.stringify({ filled: Math.min(result.filled, 1) }) });
-    return no('page_failed');
+    // From here until the answer, and after a fill, the agent's readers on this tab are closed.
+    const tab = seen.tab;
+    lock.acquire(tab);
+    asking = true;
+    let keep = false;
+    try {
+      const deadline = AbortSignal.timeout(askMs), cancel = signal ? AbortSignal.any([signal, deadline]) : deadline;
+      const settled = new Promise((resolve) => { if (cancel.aborted) resolve(null); else cancel.addEventListener('abort', () => resolve(null), { once: true }); });
+      prompts.set(target.botId, [...recent, now()]);
+      // Raced against the abort: a prompt that never settles cannot hold the slot.
+      const answer = await Promise.race([Promise.resolve().then(() => ask({ botId: target.botId, botName: nameFor(target.botId) || target.botId, origin: bound }, cancel)).catch(() => null), settled]);
+      if (answer === 'inactive') { prompts.set(target.botId, recent); return no('app_inactive'); }
+      if (cancel.aborted || answer === null || answer === undefined) {
+        if (!signal?.aborted) denied.set(key, now() + denyMs); // a withdrawn request (Stop) is not punished
+        return no('no_answer');
+      }
+      if (answer !== true) { denied.set(key, now() + denyMs); return no('denied'); }
+
+      // The same checks again, now that the user has answered: this is what the password is typed into.
+      seen = read(target);
+      if (seen.why) return no(seen.why);
+      if (seen.origin !== bound) return no('origin_mismatch');
+      target.filled = true;
+      keep = true; // the script is about to run: assume it typed, unless it says it did not
+      let raw;
+      try { raw = pageJson(await run(seen.tab, expression)); } catch { return no('page_failed'); }
+      if (isPlainObject(raw) && raw.refused === 'origin_changed') { keep = false; return ok({ result: JSON.stringify({ refused: 'origin_changed', found: originOf(seen.wc.getURL()) }) }); }
+      if (isPlainObject(raw) && Number.isSafeInteger(raw.filled) && raw.filled >= 0) {
+        keep = raw.filled > 0; target.typed = keep;
+        return ok({ result: JSON.stringify({ filled: Math.min(raw.filled, 1) }) });
+      }
+      return no('page_failed');
+    } finally {
+      asking = false;
+      if (keep) lock.markFilled(tab); else lock.release(tab);
+    }
   }
 
   async function evaluate(v, { storedId, signal }) {
@@ -196,7 +256,10 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, ask, log = () =
     if (inspection) return inspect(target, expression, inspection);
     const script = matchFill(expression);
     if (script) {
-      try { return await fill(target, expression, script, signal); } finally { for (const f of script.fills) f.value = ''; script.fills.length = 0; }
+      try { return await fill(target, expression, script, signal); } finally {
+        for (const f of script.fills) f.value = ''; script.fills.length = 0;
+        if (!target.typed && target.nonce === script.nonce) await clearStamps(target);
+      }
     }
     return no('bad_request', 'That script is not one the vault runs in a page.');
   }
@@ -212,7 +275,7 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, ask, log = () =
       else if (op === 'evaluate') out = await evaluate(v, { storedId, signal });
       else if (op === 'close') {
         const target = lookup(v, storedId);
-        if (target) targets.delete(v.target);
+        if (target) { targets.delete(v.target); await clearStamps(target); }
         out = target ? ok() : no('unknown_target');
       } else out = no(typeof v.operation === 'string' ? 'unsupported' : 'bad_request', `The vault operation ${NOT_YET}.`);
     } catch {
@@ -224,7 +287,7 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, ask, log = () =
     return { value: JSON.stringify(out) };
   }
 
-  return { handle };
+  return { handle, size: () => ({ targets: targets.size, denied: denied.size }) };
 }
 
 module.exports = { createVaultFill, isVaultRequest, NOT_YET };

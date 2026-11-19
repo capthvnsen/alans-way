@@ -77,7 +77,7 @@ test('a vault fill request is answered by the vault handler and never held by th
 test('a real fill: open, inspect, Allow, fill, over the link, with no trace of the password', async () => {
   const tab = makeTab({ botId: 'alan' });
   const asks = [];
-  const vault = createVaultFill({ botFor: (storedId) => (storedId === 'key-1' ? 'alan' : ''), nameFor: () => 'Alan', listTabs: () => [tab],
+  const vault = createVaultFill({ botFor: (storedId) => (storedId === 'key-1' ? 'alan' : ''), nameFor: () => 'Alan', listTabs: () => [tab], command: (t, method, params) => t.cdp(method, params),
     ask: async (info) => { asks.push(info); return true; }, log: (event, fields) => r.logs.push([event, fields]) });
   const r = await rig({ vault });
   const call = async (id, v) => {
@@ -139,4 +139,17 @@ test('a withdrawn request or a dropped connection closes the prompt', async () =
   await until(() => signals.length === 2, 3000, 'second handler');
   r.conn().input.destroy(new Error('reset'));
   await until(() => signals[1].aborted, 3000, 'abort on drop');
+});
+
+test('L4: requests are told apart by id type, so withdrawing 1 does not abort "1"', async () => {
+  const signals = {};
+  const vault = { handle: ({ signal, params }) => new Promise((resolve) => { signals[params.vault.target] = signal; signal.addEventListener('abort', () => resolve({ value: '{"success":false}' })); }) };
+  const r = await rig({ vault });
+  r.conn().push({ id: 1, method: 'preview.act', params: { session_id: 'sess-1', action: 'vault', vault: { operation: 'evaluate', target: 'number', expression: 'x' } } });
+  r.conn().push({ id: '1', method: 'preview.act', params: { session_id: 'sess-1', action: 'vault', vault: { operation: 'evaluate', target: 'string', expression: 'x' } } });
+  await until(() => signals.number && signals.string, 3000, 'both handlers');
+  r.conn().push({ method: 'event', params: { type: 'request.cancel', session_id: 'sess-1', payload: { id: 1, method: 'preview.act', reason: 'interrupted' } } });
+  await until(() => signals.number.aborted, 3000, 'the numeric id aborted');
+  await sleep(30);
+  assert.equal(signals.string.aborted, false, 'the string id is a different request');
 });

@@ -92,4 +92,19 @@ const FILL = String.raw`(() => {
   return JSON.stringify({ filled });
 })()`;
 
-module.exports = { INSPECT, FILL };
+// Ours, not Hermes's: removes the stamps one inspection left on the page when no fill followed (or it was refused).
+const CLEAR = String.raw`// vault-clear
+(() => {
+  const prefix = __NONCE__ + ":";
+  (function walk(root) {
+    for (const e of root.querySelectorAll("*")) {
+      const v = e.getAttribute("data-hermes-vault-slot");
+      if (v && v.startsWith(prefix)) e.removeAttribute("data-hermes-vault-slot");
+      if (e.shadowRoot) walk(e.shadowRoot);
+    }
+  })(document);
+  return "{}";
+})()`;
+const clearJs = (nonce) => CLEAR.replace('__NONCE__', () => JSON.stringify(nonce));
+
+module.exports = { INSPECT, FILL, clearJs };

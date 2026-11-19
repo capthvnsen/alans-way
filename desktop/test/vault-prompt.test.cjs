@@ -5,10 +5,12 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createVaultPrompt } = require('../src/vault-prompt.cjs');
 
-const rig = ({ response = 1, window = { isDestroyed: () => false, isMinimized: () => false, show() { this.shown = true; } } } = {}) => {
-  const calls = [];
+const activeWindow = () => ({ isDestroyed: () => false, isMinimized: () => false, isVisible: () => true, isFocused: () => true,
+  show() { this.raised = true; }, restore() { this.raised = true; }, focus() { this.raised = true; } });
+const rig = ({ response = 1, window = activeWindow() } = {}) => {
+  const calls = [], dock = { bounced: 0, bounce() { dock.bounced++; } };
   const dialog = { showMessageBox: async (...args) => { calls.push(args); return { response }; } };
-  return { calls, window, ask: createVaultPrompt({ dialog, app: { dock: { bounce() {} } }, getWindow: () => window }) };
+  return { calls, window, dock, ask: createVaultPrompt({ dialog, getWindow: () => window }) };
 };
 const info = { botName: 'Alan', origin: 'https://example.com' };
 
@@ -21,13 +23,16 @@ test('asks as a sheet on the app window, names the bot and the site, and default
   assert.deepEqual(options.buttons, ['Deny', 'Allow once']);
   assert.deepEqual([options.defaultId, options.cancelId], [0, 0]);
   assert.match(options.message, /Alan.*https:\/\/example\.com/);
-  assert.equal(r.window.shown, true);
+  assert.match(options.detail, /page can read it/i, 'it says what Allow does');
+  assert.match(options.detail, /paused/i);
+  assert.equal(/never show|never see|cannot see/i.test(options.detail), false, 'no promise it cannot keep');
+  assert.equal(r.window.raised, undefined, 'it asks in the window the user is already in');
 });
 
 test('Deny is false, a withdrawn prompt is no answer, and an unencrypted site says so', async () => {
   assert.equal(await rig({ response: 0 }).ask(info, new AbortController().signal), false);
   const ctl = new AbortController(), r = rig({ response: 1 });
-  r.ask = createVaultPrompt({ dialog: { showMessageBox: async () => { ctl.abort(); return { response: 1 }; } }, app: {}, getWindow: () => r.window });
+  r.ask = createVaultPrompt({ dialog: { showMessageBox: async () => { ctl.abort(); return { response: 1 }; } }, getWindow: () => r.window });
   assert.equal(await r.ask(info, ctl.signal), null, 'an Allow that lands after the signal fired does not count');
   const plain = rig();
   await plain.ask({ botName: 'Alan', origin: 'http://example.com' }, new AbortController().signal);
@@ -42,4 +47,12 @@ test('with no window to ask in, it does not ask', async () => {
   assert.equal(await gone.ask(info, new AbortController().signal), null);
   const aborted = new AbortController(); aborted.abort();
   assert.equal(await rig().ask(info, aborted.signal), null);
+});
+
+test('when the app is not the active app it neither raises the window nor bounces the dock, and says so', async () => {
+  for (const [why, patch] of [['unfocused', { isFocused: () => false }], ['minimized', { isMinimized: () => true }], ['hidden', { isVisible: () => false }]]) {
+    const window = Object.assign(activeWindow(), patch), r = rig({ window });
+    assert.equal(await r.ask(info, new AbortController().signal), 'inactive', why);
+    assert.deepEqual([r.calls.length, r.dock.bounced, window.raised], [0, 0, undefined], why);
+  }
 });

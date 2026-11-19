@@ -38,6 +38,8 @@ class LinkError extends Error {
 }
 
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+// The wire tells 1 from "1"; so must anything keyed by a request id.
+const idKey = (id) => `${typeof id}:${String(id)}`;
 const str = (v, max = 300) => typeof v === 'string' ? v.slice(0, max) : '';
 // Failures that retrying cannot fix: the user (or the settings) must act.
 const SIGNIN_CODES = new Set(['session_expired', 'needs_signin', 'auth_failed']);
@@ -150,7 +152,7 @@ function createGatewayLink(deps = {}) {
 
   // One answer per vault request. A withdrawn request or a closed wire aborts the handler, which closes its prompt.
   function serveVault(c) {
-    const inflight = new Map(); // wire id -> AbortController
+    const inflight = new Map(); // idKey(wire id) -> AbortController
     const refuse = (id, message, code = -32601) => c.wire.refuseServerRequest(id, { code, message }).catch(() => {});
     c.wire.on('serverRequest', (r) => {
       if (conn !== c || !isVaultRequest(r.method, r.params)) return;
@@ -158,13 +160,13 @@ function createGatewayLink(deps = {}) {
       if (r.method !== 'preview.act') { refuse(r.id, `Vault codes and unlock are ${NOT_YET} in this app.`); return; }
       if (!vault) { refuse(r.id, `Vault fill is ${NOT_YET} in this app.`); return; }
       if (!a) { refuse(r.id, 'That conversation is not open in this app.'); return; }
-      const ctl = new AbortController(), key = String(r.id);
+      const ctl = new AbortController(), key = idKey(r.id);
       inflight.set(key, ctl);
       Promise.resolve().then(() => vault.handle({ storedId: a.storedId, sessionId: a.sessionId, params: r.params, signal: ctl.signal }))
         .then((result) => c.wire.answerServerRequest(r.id, result), () => refuse(r.id, 'The vault step failed.', -32603))
         .catch(() => {}).finally(() => inflight.delete(key));
     });
-    c.wire.on('serverRequestWithdrawn', (w) => { inflight.get(String(w.id))?.abort(); });
+    c.wire.on('serverRequestWithdrawn', (w) => { inflight.get(idKey(w.id))?.abort(); });
     c.wire.on('close', () => { for (const ctl of inflight.values()) ctl.abort(); });
   }
 
