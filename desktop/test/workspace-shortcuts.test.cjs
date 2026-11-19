@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { shortcutReference, matchesShortcut } = require('../src/workspace-shortcuts.cjs');
+const { ACCELERATORS, shortcutReference, matchesShortcut } = require('../src/workspace-shortcuts.cjs');
 const find = (query, platform = 'darwin') => shortcutReference(platform).groups.flatMap(group =>
   group.rows.filter(row => matchesShortcut(row, query)).map(row => row.id));
 
@@ -27,7 +27,7 @@ test('DOM arrow names, spoken directions and glyphs have equivalent matches', ()
 });
 test('shared scope notes and word substrings do not invent matches', () => {
   assert.deepEqual(find('comma'), ['settings']);
-  assert.deepEqual(find('settings'), ['settings', 'canvas-pages']);
+  assert.deepEqual(find('settings'), ['settings']);
   for (const query of ['com', 'command+q', 'command+shift+t', 'nonesuch-zqv']) assert.deepEqual(find(query), [], query);
   assert.equal(find('').length, 19);
 });
@@ -166,6 +166,15 @@ test('explicit key queries cannot borrow prose or combine alternative bindings',
   assert.equal(matchesShortcut({ keys: [['F2']] }, 'F2 key'), true);
   assert.equal(matchesShortcut({ keys: [['T']] }, 'T key'), true);
   assert.deepEqual(find('T key'), []);
+});
+
+test('the canvas shortcuts are four numbered tabs; Cron jobs, Bot settings and Side chat have none', () => {
+  const rows = shortcutReference('darwin').groups.flatMap(group => group.rows).filter(row => row.id.startsWith('canvas-'));
+  assert.deepEqual(rows.map(row => [row.id, row.keys.map(key => key.join(''))]), [['canvas-browser', ['⌘1']], ['canvas-screen', ['⌘2']], ['canvas-terminal', ['⌘3']], ['canvas-artifacts', ['⌘4']]]);
+  assert.deepEqual(Object.keys(ACCELERATORS).filter(id => id.startsWith('canvas-')), ['canvas-browser', 'canvas-screen', 'canvas-terminal', 'canvas-artifacts']);
+  for (const query of ['side chat', 'cron', 'bot settings', '⌘5', '⌘7']) assert.deepEqual(find(query), [], query);
+  assert.deepEqual(find('artifacts'), ['canvas-artifacts']);
+  assert.deepEqual(find('⌘4'), ['canvas-artifacts']);
 });
 
 test('opening an agent is not described as Telegram only, since each bot picks its chat surface', () => {

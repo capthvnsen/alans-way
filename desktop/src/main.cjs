@@ -12,7 +12,7 @@ const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, continuedOnVm, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
-const { resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
+const { resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
@@ -131,10 +131,12 @@ let activeTabId = 'home', canvasTab = 'browser', activeVpsTabId = '', apiError =
 // Native Hermes chat: 'telegram' shows the Telegram WebContentsView; 'hermes'
 // shows the DOM surface (the Telegram view then measures to zero and hides);
 // 'native' shows Alan's native chat on the Hermes Sessions API.
+let canvasReturn = 'browser';
 let nativeChat = null, hermesHub = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '', webappSignInError = '', webappSignInTried = false, webappPrivate = false, canvasView = null, canvasPage = '';
 const WEBAPP_PARTITION = 'persist:hermes-webapp';
-// Canvas tabs beyond Browser and Bot screen are Hermes Desktop pages (HashRouter routes).
-const CANVAS_PAGES = { chat: '#/', artifacts: '#/artifacts', cron: '#/cron', settings: '#/settings' };
+// Canvas tabs beyond Browser, Bot screen and Terminal are Hermes Desktop pages (HashRouter routes). Cron jobs and Bot
+// settings are canvasTab values like the rest, but the strip shows their tab only while one is open (canvasStripTabs).
+const CANVAS_PAGES = { artifacts: '#/artifacts', cron: '#/cron', settings: '#/settings' };
 const CANVAS_TABS = ['browser', 'screen', 'terminal', ...Object.keys(CANVAS_PAGES)];
 let cloudError = '', cloudComputer = null, cloudPollAbort = null, modelAuthChild = null;
 const tabs = new Map();
@@ -532,11 +534,11 @@ function getState() {
     botSort: prefs.botSort || 'manual',
     autoOpenLinks: prefs.autoOpenLinks !== false, autoTakeover: prefs.autoTakeover !== false, carrySignIns: prefs.carrySignIns !== false,
     // activeTabId keeps its wire meaning for the renderer: the surface on screen, 'vps' for Bot screen.
-    canvasTab: shownCanvas(), webappCanvas: webappCanvas(), terminals: terminals.ids(), terminalNote, activeTabId: shownCanvas() === 'screen' ? 'vps' : shownTabId(), activeVpsTabId, browserTabHost: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(shownTabId())?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? activeVpsTabId : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
+    canvasTab: shownCanvas(), canvasStrip: canvasStripTabs(shownCanvas(), webappCanvas()), webappCanvas: webappCanvas(), terminals: terminals.ids(), terminalNote, activeTabId: shownCanvas() === 'screen' ? 'vps' : shownTabId(), activeVpsTabId, browserTabHost: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? 'vps' : HOST_LABEL, browserContentsId: (() => { const contents = tabs.get(shownTabId())?.view?.webContents; return contents && !contents.isDestroyed() ? contents.id : null; })(), browserTabId: shownCanvas() === 'screen' && vpsTabs.has(activeVpsTabId) ? activeVpsTabId : activeTabId, avatarLibrary: avatarStore.publicLibrary(), avatarPreferences: prefs.avatarPreferences,
     locationDefault: prefs.locationDefault, sitePermissions: prefs.sitePermissions, extensions: extensionStore?.list() || [], downloads: downloadStore.list(),
     chatTarget, hermes: hermesSummary(), chatSurface: resolveChatSurface(prefs.chatSurface, webappStatus, !!nativeChat?.configured), hermesWebappUrl: prefs.hermesWebappUrl, webappStatus, nativeChat: nativeChat?.summary() || { configured: false }, nativeKeyFiles: keyFiles({ fs, home: os.homedir() }),
     webappSignIn: webappTarget ? webappSignIn.username(new URL(webappTarget).origin) : '', webappSignInError,
-    chatBotId: chatBotId(), hermesBot: builtinBot() ? { id: 'hermes', name: hermesBotName() } : null, surfaces: usableSurfaces(surfaceContext(chatBotId())),
+    chatBotId: chatBotId(), hermesBot: builtinBot() ? { id: 'hermes', name: hermesBotName() } : null,
     recording: recording ? { tabId: recording.tabId, steps: recording.steps.length, startedAt: recording.startedAt } : null, recordings: recordings.list(),
     fullscreen: !!win && !win.isDestroyed() && win.isFullScreen(), api: { url: apiPort ? `http://127.0.0.1:${apiPort}` : '', ready: !!apiPort, error: apiError } };
   state.inbox = chatInbox(state.tabs);
@@ -677,7 +679,7 @@ function rememberNativeSession() {
 const nativeInbox = () => Object.fromEntries(chatBotIds().map((id) => [id, nativeChat?.info(prefs.nativeSessions[id]) || null]));
 function chatInbox(allTabs) {
   const native = nativeInbox();
-  return Object.fromEntries(chatBotIds().map((id) => [id, inboxRow({ bot: prefs.bots.find((bot) => bot.id === id), surface: botSurface(id), native: native[id],
+  return Object.fromEntries(chatBotIds().map((id) => [id, inboxRow({ bot: prefs.bots.find((bot) => bot.id === id), surface: botSurface(id), gateways: usableSurfaces(surfaceContext(id)), native: native[id],
     handback: allTabs.some((tab) => tab.botId === id && tab.handback?.state === 'awaiting_human') })]));
 }
 // One notification per waiting episode of a bot's native conversation; handbacks notify on their own.
@@ -2117,6 +2119,11 @@ function registerIpc() {
       case 'activate': await activateTab(value.id, value.host); break;
       case 'toggle-vps-view': await showCanvas(shownCanvas() === 'screen' ? 'browser' : 'screen'); break;
       case 'canvas-tab': await showCanvas(value?.tab, value?.start === true); break;
+      // The chat header's bot name: open Bot settings (with Cron jobs beside it), or go back to the tab left for them.
+      case 'canvas-bot-pages':
+        if (['cron', 'settings'].includes(shownCanvas())) await showCanvas(canvasReturn);
+        else if (usableSurfaces(surfaceContext(chatBotId())).includes('hermes-desktop')) { canvasReturn = shownCanvas(); await showCanvas('settings'); }
+        break;
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
         const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; await tab.view.webContents.loadURL(target).catch(() => {}); } break;
@@ -2229,12 +2236,16 @@ function registerIpc() {
       case 'record-stop': return stopRecording({ save: value.save !== false, keepTyped: value.keepTyped === true });
       case 'recording-share': recordings.share(String(value.id), value.botIds); broadcast(); break;
       case 'recording-delete': recordings.remove(String(value.id)); broadcast(); break;
-      case 'open-bot': if (value.id === 'hermes' && chatBotId() === 'hermes') applySurface(); else await openBot(String(value.id)); break;
-      case 'chat-surface': {
-        const bot = chatBotId();
-        if (!usableSurfaces(surfaceContext(bot)).includes(value.surface)) throw new Error('That chat surface is not set up yet.');
-        if (bot) { prefs.chatSurfaces[bot] = value.surface; savePreferencesSoon(); }
-        showSurface(value.surface); break;
+      case 'open-bot': {
+        // With a surface (a row in the gateway list) the bot opens on that gateway, and the choice is remembered for next launch.
+        const id = String(value.id), same = chatBotId() === id;
+        if (value.surface !== undefined) {
+          if (!chatBotIds().includes(id) || !usableSurfaces(surfaceContext(id)).includes(value.surface)) throw new Error('That chat is not set up yet.');
+          prefs.chatSurfaces[id] = value.surface; savePreferencesSoon();
+        }
+        // Another gateway of the open bot only swaps the pane: openBot would navigate (or reload) Telegram for nothing.
+        if (same && (id === 'hermes' || value.surface !== undefined)) applySurface(); else await openBot(id);
+        break;
       }
       case 'show-telegram': chatTarget = 'telegram'; broadcast(); break;
       case 'show-hermes': chatTarget = 'hermes'; broadcast(); break;
@@ -3661,7 +3672,7 @@ function buildMenu() {
     ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, settings, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
     { label: 'File', submenu: [{ label: 'Open File…', accelerator: ACCELERATORS['open-file'], click: () => pickPdf().catch(error => logError('open-pdf', error)) }, { label: 'New Browser Tab', accelerator: ACCELERATORS['new-tab'], click: () => createTab({}) }, { label: 'Close Tab', accelerator: ACCELERATORS['close-tab'], click: () => extensionPopup?.browserWindow?.isFocused() ? extensionPopup.destroy() : closeTab(shownTabId()) }, ...(process.platform === 'darwin' ? [] : [{ type: 'separator' }, settings, { type: 'separator' }, { role: 'quit' }])] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: ACCELERATORS.reload, click: () => { const tab = tabs.get(shownTabId()); if (tab) reloadBrowserPage(tab); } }, { type: 'separator' }, { id: 'canvas-browser', label: 'Browser', accelerator: ACCELERATORS['canvas-browser'], click: () => showCanvas('browser').then(broadcast) }, { id: 'canvas-screen', label: 'Bot Screen', accelerator: ACCELERATORS['canvas-screen'], click: () => showCanvas('screen').then(broadcast) }, { id: 'canvas-terminal', label: 'Terminal', accelerator: ACCELERATORS['canvas-terminal'], click: () => { win.webContents.focus(); showCanvas('terminal', true).then(broadcast); } }, ...Object.entries({ chat: 'Side Chat', artifacts: 'Artifacts', cron: 'Cron Jobs', settings: 'Bot Settings' }).map(([tab, label]) => ({ id: `canvas-${tab}`, label, accelerator: ACCELERATORS[`canvas-${tab}`], click: () => showCanvas(tab).then(broadcast) })), { type: 'separator' }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
+    { label: 'View', submenu: [{ label: 'Reload Page', accelerator: ACCELERATORS.reload, click: () => { const tab = tabs.get(shownTabId()); if (tab) reloadBrowserPage(tab); } }, { type: 'separator' }, { id: 'canvas-browser', label: 'Browser', accelerator: ACCELERATORS['canvas-browser'], click: () => showCanvas('browser').then(broadcast) }, { id: 'canvas-screen', label: 'Bot Screen', accelerator: ACCELERATORS['canvas-screen'], click: () => showCanvas('screen').then(broadcast) }, { id: 'canvas-terminal', label: 'Terminal', accelerator: ACCELERATORS['canvas-terminal'], click: () => { win.webContents.focus(); showCanvas('terminal', true).then(broadcast); } }, { id: 'canvas-artifacts', label: 'Artifacts', accelerator: ACCELERATORS['canvas-artifacts'], click: () => showCanvas('artifacts').then(broadcast) }, { type: 'separator' }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
     ...(process.platform === 'darwin' ? [{ label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }] : []),
     { label: 'Help', submenu: [{ id: 'workspace-shortcuts', label: 'Keyboard Shortcuts', click: () => win.webContents.send('workspace:shortcuts') }, ...(prefs?.cloud?.sessionEnc ? [{ type: 'separator' }, { label: 'Get help', click: () => shell.openExternal(cloudView().supportUrl).catch(() => {}) }] : [])] },
   ]));
