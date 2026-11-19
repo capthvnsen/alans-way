@@ -1,0 +1,1470 @@
+{
+ "steps": {
+  "rtt": {
+   "wsPingWss": {
+    "note": "gateway.ping round trip on a warm wss socket (app level, includes server dispatch)",
+    "n": 30,
+    "p50": 55.3,
+    "p95": 57.4,
+    "min": 53.2,
+    "max": 57.5
+   },
+   "restHealthTunnel": {
+    "note": "GET /health through the SSH tunnel with node:http and its default keep-alive agent (what hermes-api.cjs uses), first discarded",
+    "n": 30,
+    "p50": 56.8,
+    "p95": 65.5,
+    "min": 54.5,
+    "max": 76.2
+   },
+   "restHealthTunnelNewConnection": {
+    "note": "same request on a new connection each time",
+    "n": 10,
+    "p50": 110.9,
+    "p95": 113.1,
+    "min": 107.9,
+    "max": 113.1
+   },
+   "wsPingTunnel": {
+    "note": "gateway.ping through the SSH tunnel to the loopback dashboard",
+    "n": 30,
+    "p50": 56.9,
+    "p95": 64.4,
+    "min": 54.3,
+    "max": 72.4
+   },
+   "tailscalePing": {
+    "note": "tailscale ping -c 10 (network path, first reply may be relayed)",
+    "direct": true,
+    "n": 10,
+    "p50": 53,
+    "p95": 65,
+    "min": 52,
+    "max": 65
+   },
+   "rttMsForTargets": 55.3,
+   "signInMs": 355.1
+  },
+  "cold": {
+   "note": "new link and opener per sample, signed in beforehand (unexpired token, so no refresh). live = probe + ticket + socket + gateway.ready; attach = session.resume + bind. totalWithoutProbe subtracts the measured /api/status probe, which the spec target skips (cached auth_required)",
+   "n": 10,
+   "live": {
+    "n": 10,
+    "p50": 429.7,
+    "p95": 1064.1,
+    "min": 415,
+    "max": 1064.1
+   },
+   "attach": {
+    "n": 10,
+    "p50": 265.5,
+    "p95": 283.9,
+    "min": 252.7,
+    "max": 283.9
+   },
+   "total": {
+    "n": 10,
+    "p50": 693.8,
+    "p95": 1348,
+    "min": 670.5,
+    "max": 1348
+   },
+   "totalWithoutProbe": {
+    "n": 10,
+    "p50": 511.1,
+    "p95": 755,
+    "min": 506,
+    "max": 755
+   },
+   "probeMs": {
+    "n": 10,
+    "p50": 172.3,
+    "p95": 594.2,
+    "min": 161.8,
+    "max": 594.2
+   },
+   "ticketMs": {
+    "n": 10,
+    "p50": 61.8,
+    "p95": 72.1,
+    "min": 55.7,
+    "max": 72.1
+   },
+   "socketMs": {
+    "n": 10,
+    "p50": 181.9,
+    "p95": 395.1,
+    "min": 175.2,
+    "max": 395.1
+   },
+   "attachRpcSequence": [
+    "session.resume",
+    "gateway.capabilities",
+    "client.capabilities",
+    "session.active_list",
+    "session.activate",
+    "session.events.since"
+   ],
+   "sampleDetail": [
+    {
+     "tLive": 1064.1,
+     "tAttach": 283.9,
+     "total": 1348,
+     "totalWithoutProbe": 755,
+     "remote": {
+      "probe": 593,
+      "wsTicket": 62.8,
+      "connectSocket": 395.1
+     },
+     "attachCalls": [
+      {
+       "m": "session.resume",
+       "ms": 91.2
+      },
+      {
+       "m": "gateway.capabilities",
+       "ms": 69.5
+      },
+      {
+       "m": "client.capabilities",
+       "ms": 69.7
+      },
+      {
+       "m": "session.active_list",
+       "ms": 69.8
+      },
+      {
+       "m": "session.activate",
+       "ms": 66.3
+      },
+      {
+       "m": "session.events.since",
+       "ms": 55.4
+      }
+     ]
+    },
+    {
+     "tLive": 415.8,
+     "tAttach": 274.4,
+     "total": 690.2,
+     "totalWithoutProbe": 511.1,
+     "remote": {
+      "probe": 179.1,
+      "wsTicket": 55.7,
+      "connectSocket": 175.2
+     },
+     "attachCalls": [
+      {
+       "m": "session.resume",
+       "ms": 72.2
+      },
+      {
+       "m": "gateway.capabilities",
+       "ms": 55.1
+      },
+      {
+       "m": "client.capabilities",
+       "ms": 55.2
+      },
+      {
+       "m": "session.active_list",
+       "ms": 56.7
+      },
+      {
+       "m": "session.activate",
+       "ms": 89.7
+      },
+      {
+       "m": "session.events.since",
+       "ms": 55.3
+      }
+     ]
+    }
+   ],
+   "sessionId": "gwvmcheck-2026-11-19T21-17-24-cold"
+  },
+  "grace": {
+   "listedBeforeDrop": true,
+   "reapedAfterMs": 20638.5,
+   "stillListedAtMs": null,
+   "pollEveryMs": 2000,
+   "note": "idle session, socket closed by the client; time until it left session.active_list"
+  },
+  "warm": {
+   "prompt": "Reply with the single word: ok",
+   "n": 10,
+   "order": "alternating, first of each discarded as warm-up",
+   "sse": {
+    "ack": {
+     "n": 10,
+     "p50": 67.8,
+     "p95": 83.4,
+     "min": 62.7,
+     "max": 83.4
+    },
+    "firstToken": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "min": 0,
+     "max": 0
+    },
+    "lastToken": {
+     "n": 10,
+     "p50": 1593.1,
+     "p95": 3160.2,
+     "min": 1361.1,
+     "max": 3160.2
+    },
+    "firstSampleDiscarded": {
+     "i": 0,
+     "ack": 146.5,
+     "first": null,
+     "last": 8672.7,
+     "deltas": 0,
+     "same": false
+    },
+    "mismatchOrErrors": 11
+   },
+   "ws": {
+    "ack": {
+     "n": 10,
+     "p50": 73.6,
+     "p95": 101.2,
+     "min": 64.2,
+     "max": 101.2
+    },
+    "firstToken": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "min": 0,
+     "max": 0
+    },
+    "lastToken": {
+     "n": 10,
+     "p50": 3436.7,
+     "p95": 4457,
+     "min": 1650.1,
+     "max": 4457
+    },
+    "firstSampleDiscarded": {
+     "i": 0,
+     "ack": 81.9,
+     "first": null,
+     "last": 8410.7,
+     "deltas": 0,
+     "same": false
+    },
+    "mismatchOrErrors": 11
+   },
+   "samples": {
+    "sse": [
+     {
+      "i": 0,
+      "ack": 146.5,
+      "first": null,
+      "last": 8672.7,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 1,
+      "ack": 77.2,
+      "first": null,
+      "last": 1586,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 2,
+      "ack": 67.2,
+      "first": null,
+      "last": 1550,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 3,
+      "ack": 63,
+      "first": null,
+      "last": 1515.8,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 4,
+      "ack": 62.7,
+      "first": null,
+      "last": 2201,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 5,
+      "ack": 83.4,
+      "first": null,
+      "last": 3111.3,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 6,
+      "ack": 67.8,
+      "first": null,
+      "last": 1865.6,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 7,
+      "ack": 73.7,
+      "first": null,
+      "last": 3160.2,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 8,
+      "ack": 76.3,
+      "first": null,
+      "last": 1361.1,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 9,
+      "ack": 63.5,
+      "first": null,
+      "last": 1593.1,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 10,
+      "ack": 77.3,
+      "first": null,
+      "last": 1638.8,
+      "deltas": 0,
+      "same": false
+     }
+    ],
+    "ws": [
+     {
+      "i": 0,
+      "ack": 81.9,
+      "first": null,
+      "last": 8410.7,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 1,
+      "ack": 67.1,
+      "first": null,
+      "last": 3211.8,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 2,
+      "ack": 76.5,
+      "first": null,
+      "last": 4337.8,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 3,
+      "ack": 101.2,
+      "first": null,
+      "last": 4248,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 4,
+      "ack": 88,
+      "first": null,
+      "last": 2621.5,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 5,
+      "ack": 73.6,
+      "first": null,
+      "last": 4457,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 6,
+      "ack": 75.8,
+      "first": null,
+      "last": 3436.7,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 7,
+      "ack": 64.2,
+      "first": null,
+      "last": 3440.8,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 8,
+      "ack": 71.1,
+      "first": null,
+      "last": 3564.3,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 9,
+      "ack": 65,
+      "first": null,
+      "last": 2858.6,
+      "deltas": 0,
+      "same": false
+     },
+     {
+      "i": 10,
+      "ack": 88.4,
+      "first": null,
+      "last": 1650.1,
+      "deltas": 0,
+      "same": false
+     }
+    ]
+   },
+   "eventNames": {
+    "sse": {
+     "run.started": 11,
+     "message.started": 11,
+     "assistant.completed": 11,
+     "run.completed": 11,
+     "done": 11
+    },
+    "ws": {
+     "run.started": 11,
+     "message.started": 11,
+     "assistant.completed": 11,
+     "run.completed": 11
+    }
+   },
+   "mismatches": [
+    {
+     "which": "sse",
+     "i": 0,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "ws",
+     "i": 0,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "ws",
+     "i": 1,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "sse",
+     "i": 1,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "sse",
+     "i": 2,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "ws",
+     "i": 2,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "ws",
+     "i": 3,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "sse",
+     "i": 3,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "sse",
+     "i": 4,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "ws",
+     "i": 4,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "ws",
+     "i": 5,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "sse",
+     "i": 5,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "sse",
+     "i": 6,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "ws",
+     "i": 6,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "ws",
+     "i": 7,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "sse",
+     "i": 7,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "sse",
+     "i": 8,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "ws",
+     "i": 8,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "ws",
+     "i": 9,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "sse",
+     "i": 9,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "sse",
+     "i": 10,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    },
+    {
+     "which": "ws",
+     "i": 10,
+     "err": null,
+     "terminal": "run.completed",
+     "streamedLen": 2,
+     "serverLen": 2,
+     "deltaJoinEqualsCompleted": false
+    }
+   ],
+   "sessions": {
+    "ws": "gwvmcheck-2026-11-19T21-20-29-warm-ws",
+    "sse": "gwvmcheck-2026-11-19T21-20-29-warm-sse"
+   }
+  },
+  "drop": {
+   "prompt": "Write a 200-word paragraph about why a private network is useful. No lists.",
+   "reconnect": {
+    "note": "ms from the drop to link `live` again (replay applied); consecutive drops within the 30 s stable window back off",
+    "n": 10,
+    "p50": 737,
+    "p95": 1992.7,
+    "min": 373,
+    "max": 1992.7
+   },
+   "totals": {
+    "replies": 5,
+    "drops": 10,
+    "dropAttemptsThatTimedOut": 0,
+    "lostEvents": 0,
+    "duplicateEvents": 0,
+    "textMismatch": 0,
+    "notExactlyOneSubmit": 0,
+    "gaps": 0,
+    "auditErrors": 0
+   },
+   "arms": [
+    {
+     "name": "tunnel-reset",
+     "reconnectMs": [
+      426.3040000000037,
+      774.9367079999938,
+      372.99312500000815,
+      806.9261669999978
+     ],
+     "replies": [
+      {
+       "p": 0,
+       "drops": [
+        {
+         "ms": 426.3,
+         "msAfterAck": 422.7,
+         "terminalSeenAtLive": null
+        },
+        {
+         "ms": 774.9,
+         "msAfterAck": 1162.7,
+         "terminalSeenAtLive": null
+        }
+       ],
+       "terminal": "run.completed",
+       "err": null,
+       "deltas": 0,
+       "textEqualsServer": true,
+       "deltaJoinEqualsCompleted": false,
+       "serverRows": 1,
+       "audit": {
+        "missingTypes": [
+         "session.info"
+        ],
+        "ringTypes": [
+         "session.info",
+         "message.start",
+         "thinking.delta",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "message.complete",
+         "session.info"
+        ],
+        "ringEvents": 27,
+        "appliedEvents": 26,
+        "lost": 1,
+        "duplicates": 0,
+        "notInRing": 0,
+        "latestSeq": 27,
+        "truncated": false,
+        "epochSame": true
+       },
+       "names": {
+        "run.started": 1,
+        "message.started": 1,
+        "assistant.completed": 1,
+        "run.completed": 1
+       }
+      },
+      {
+       "p": 1,
+       "drops": [
+        {
+         "ms": 373,
+         "msAfterAck": 420.2,
+         "terminalSeenAtLive": null
+        },
+        {
+         "ms": 806.9,
+         "msAfterAck": 1101.3,
+         "terminalSeenAtLive": null
+        }
+       ],
+       "terminal": "run.completed",
+       "err": null,
+       "deltas": 0,
+       "textEqualsServer": true,
+       "deltaJoinEqualsCompleted": false,
+       "serverRows": 1,
+       "audit": {
+        "missingTypes": [],
+        "ringTypes": [
+         "message.start",
+         "thinking.delta",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "message.complete",
+         "session.info"
+        ],
+        "ringEvents": 16,
+        "appliedEvents": 16,
+        "lost": 0,
+        "duplicates": 0,
+        "notInRing": 0,
+        "latestSeq": 43,
+        "truncated": false,
+        "epochSame": true
+       },
+       "names": {
+        "run.started": 1,
+        "message.started": 1,
+        "assistant.completed": 1,
+        "run.completed": 1
+       }
+      }
+     ],
+     "gaps": 0,
+     "gapDetail": []
+    },
+    {
+     "name": "wss-close",
+     "reconnectMs": [
+      469.38462500000014,
+      995.0864999999999,
+      462.2680409999957,
+      737.039082999996,
+      1060.3654999999999,
+      1992.692875000008
+     ],
+     "replies": [
+      {
+       "p": 0,
+       "drops": [
+        {
+         "ms": 469.4,
+         "msAfterAck": 419.4,
+         "terminalSeenAtLive": null
+        },
+        {
+         "ms": 995.1,
+         "msAfterAck": 1195.4,
+         "terminalSeenAtLive": null
+        }
+       ],
+       "terminal": "run.completed",
+       "err": null,
+       "deltas": 0,
+       "textEqualsServer": true,
+       "deltaJoinEqualsCompleted": false,
+       "serverRows": 1,
+       "audit": {
+        "missingTypes": [],
+        "ringTypes": [
+         "session.info",
+         "message.start",
+         "thinking.delta",
+         "thinking.delta",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "thinking.delta",
+         "message.complete",
+         "session.info"
+        ],
+        "ringEvents": 26,
+        "appliedEvents": 26,
+        "lost": 0,
+        "duplicates": 0,
+        "notInRing": 0,
+        "latestSeq": 26,
+        "truncated": false,
+        "epochSame": true
+       },
+       "names": {
+        "run.started": 1,
+        "message.started": 1,
+        "assistant.completed": 1,
+        "run.completed": 1
+       }
+      },
+      {
+       "p": 1,
+       "drops": [
+        {
+         "ms": 462.3,
+         "msAfterAck": 424.4,
+         "terminalSeenAtLive": null
+        },
+        {
+         "ms": 737,
+         "msAfterAck": 1195.3,
+         "terminalSeenAtLive": null
+        }
+       ],
+       "terminal": "run.completed",
+       "err": null,
+       "deltas": 0,
+       "textEqualsServer": true,
+       "deltaJoinEqualsCompleted": false,
+       "serverRows": 1,
+       "audit": {
+        "missingTypes": [],
+        "ringTypes": [
+         "message.start",
+         "thinking.delta",
+         "thinking.delta",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "message.complete",
+         "session.info"
+        ],
+        "ringEvents": 17,
+        "appliedEvents": 17,
+        "lost": 0,
+        "duplicates": 0,
+        "notInRing": 0,
+        "latestSeq": 43,
+        "truncated": false,
+        "epochSame": true
+       },
+       "names": {
+        "run.started": 1,
+        "message.started": 1,
+        "assistant.completed": 1,
+        "run.completed": 1
+       }
+      },
+      {
+       "p": 2,
+       "drops": [
+        {
+         "ms": 1060.4,
+         "msAfterAck": 412.1,
+         "terminalSeenAtLive": null
+        },
+        {
+         "ms": 1992.7,
+         "msAfterAck": 1781.2,
+         "terminalSeenAtLive": null
+        }
+       ],
+       "terminal": "run.completed",
+       "err": null,
+       "deltas": 0,
+       "textEqualsServer": true,
+       "deltaJoinEqualsCompleted": false,
+       "serverRows": 1,
+       "audit": {
+        "missingTypes": [
+         "session.info"
+        ],
+        "ringTypes": [
+         "message.start",
+         "thinking.delta",
+         "thinking.delta",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "thinking.delta",
+         "thinking.delta",
+         "session.usage",
+         "message.complete",
+         "session.info"
+        ],
+        "ringEvents": 17,
+        "appliedEvents": 16,
+        "lost": 1,
+        "duplicates": 0,
+        "notInRing": 0,
+        "latestSeq": 60,
+        "truncated": false,
+        "epochSame": true
+       },
+       "names": {
+        "run.started": 1,
+        "message.started": 1,
+        "assistant.completed": 1,
+        "run.completed": 1
+       }
+      }
+     ],
+     "gaps": 0,
+     "gapDetail": []
+    }
+   ]
+  },
+  "reconnect": {
+   "note": "idle attached session, 31000 ms between drops so the link's failure counter resets; ms = drop to link live again with replay applied",
+   "arms": [
+    {
+     "name": "wss-close",
+     "samples": [
+      {
+       "ms": 779,
+       "detectMs": 57.7,
+       "attached": 1
+      },
+      {
+       "ms": 841.6,
+       "detectMs": 65.7,
+       "attached": 1
+      },
+      {
+       "ms": 755.7,
+       "detectMs": 54.1,
+       "attached": 1
+      },
+      {
+       "ms": 716.3,
+       "detectMs": 56.2,
+       "attached": 1
+      },
+      {
+       "ms": 705.4,
+       "detectMs": 52.4,
+       "attached": 1
+      },
+      {
+       "ms": 712.4,
+       "detectMs": 54.2,
+       "attached": 1
+      },
+      {
+       "ms": 719.6,
+       "detectMs": 55.4,
+       "attached": 1
+      },
+      {
+       "ms": 914.4,
+       "detectMs": 73.4,
+       "attached": 1
+      },
+      {
+       "ms": 723.3,
+       "detectMs": 53.5,
+       "attached": 1
+      },
+      {
+       "ms": 725.5,
+       "detectMs": 54.3,
+       "attached": 1
+      }
+     ],
+     "reconnect": {
+      "n": 10,
+      "p50": 723.3,
+      "p95": 914.4,
+      "min": 705.4,
+      "max": 914.4
+     },
+     "allReattached": true
+    },
+    {
+     "name": "tunnel-reset",
+     "samples": [
+      {
+       "ms": 361.9,
+       "detectMs": 1.2,
+       "attached": 1
+      },
+      {
+       "ms": 375.8,
+       "detectMs": 0.4,
+       "attached": 1
+      },
+      {
+       "ms": 364.2,
+       "detectMs": 0.3,
+       "attached": 1
+      },
+      {
+       "ms": 360.3,
+       "detectMs": 0.9,
+       "attached": 1
+      },
+      {
+       "ms": 366,
+       "detectMs": 0.8,
+       "attached": 1
+      },
+      {
+       "ms": 392.4,
+       "detectMs": 0.4,
+       "attached": 1
+      },
+      {
+       "ms": 363.7,
+       "detectMs": 0.7,
+       "attached": 1
+      },
+      {
+       "ms": 366.5,
+       "detectMs": 0.8,
+       "attached": 1
+      },
+      {
+       "ms": 370.2,
+       "detectMs": 0.6,
+       "attached": 1
+      },
+      {
+       "ms": 410.6,
+       "detectMs": 0.5,
+       "attached": 1
+      }
+     ],
+     "reconnect": {
+      "n": 10,
+      "p50": 366,
+      "p95": 410.6,
+      "min": 360.3,
+      "max": 410.6
+     },
+     "allReattached": true
+    }
+   ]
+  },
+  "requests": {
+   "sessionId": "gwvmcheck-2026-11-19T21-40-43-requests",
+   "prompt": "Use your clarify tool to ask me exactly one question: \"Which colour do you prefer, red or blue?\" with the choices red and blue. After I answer, reply with only that colour.",
+   "reachedLinkSocket": 1,
+   "reachedSecondSocket": 1,
+   "request": {
+    "method": "clarify",
+    "params": {
+     "session_id": "e63d12c4",
+     "questions": [
+      {
+       "qid": "q0",
+       "question": "Which colour do you prefer, red or blue?",
+       "choices": [
+        "red (Recommended)",
+        "blue"
+       ],
+       "multi_select": false
+      }
+     ]
+    }
+   },
+   "answerViaAdapter": {
+    "ok": true,
+    "ms": 0.7
+   },
+   "secondSocketWithdrawn": 0,
+   "linkSocketWithdrawn": 1,
+   "withdrawDetail": [],
+   "reply": {
+    "terminal": "run.completed",
+    "text": "",
+    "err": null
+   },
+   "secondSocketEventTypes": [
+    "session.info",
+    "message.start",
+    "sessions.changed",
+    "thinking.delta",
+    "platforms.changed",
+    "tool.start",
+    "session.usage",
+    "tool.complete",
+    "message.complete"
+   ],
+   "linkEventTypes": [
+    "session.info",
+    "message.start",
+    "thinking.delta",
+    "tool.start",
+    "session.usage",
+    "tool.complete",
+    "message.complete"
+   ]
+  }
+ },
+ "runs": [
+  {
+   "stamp": "2026-11-19T21-14-00",
+   "steps": [
+    "rtt"
+   ],
+   "promptsUsed": 0,
+   "promptLog": [],
+   "sessionsCreated": [],
+   "cleanup": [],
+   "failure": null
+  },
+  {
+   "stamp": "2026-11-19T21-15-57",
+   "steps": [
+    "rtt"
+   ],
+   "promptsUsed": 0,
+   "promptLog": [],
+   "sessionsCreated": [],
+   "cleanup": [],
+   "failure": null
+  },
+  {
+   "stamp": "2026-11-19T21-16-36",
+   "steps": [
+    "cold"
+   ],
+   "promptsUsed": 0,
+   "promptLog": [],
+   "sessionsCreated": [
+    "gwvmcheck-2026-11-19T21-16-36-cold"
+   ],
+   "cleanup": [
+    {
+     "id": "gwvmcheck-2026-11-19T21-16-36-cold",
+     "deleteStatus": 200,
+     "getAfterDelete": 404
+    }
+   ],
+   "failure": null
+  },
+  {
+   "stamp": "2026-11-19T21-17-24",
+   "steps": [
+    "cold"
+   ],
+   "promptsUsed": 0,
+   "promptLog": [],
+   "sessionsCreated": [
+    "gwvmcheck-2026-11-19T21-17-24-cold"
+   ],
+   "cleanup": [
+    {
+     "id": "gwvmcheck-2026-11-19T21-17-24-cold",
+     "deleteStatus": 200,
+     "getAfterDelete": 404
+    }
+   ],
+   "failure": null
+  },
+  {
+   "stamp": "2026-11-19T21-17-46",
+   "steps": [
+    "grace"
+   ],
+   "promptsUsed": 0,
+   "promptLog": [],
+   "sessionsCreated": [
+    "gwvmcheck-2026-11-19T21-17-46-grace"
+   ],
+   "cleanup": [
+    {
+     "id": "gwvmcheck-2026-11-19T21-17-46-grace",
+     "deleteStatus": 200,
+     "getAfterDelete": 404
+    }
+   ],
+   "failure": null
+  },
+  {
+   "stamp": "2026-11-19T21-20-29",
+   "steps": [
+    "warm"
+   ],
+   "promptsUsed": 22,
+   "promptLog": [
+    "warm sse #0",
+    "warm ws #0",
+    "warm ws #1",
+    "warm sse #1",
+    "warm sse #2",
+    "warm ws #2",
+    "warm ws #3",
+    "warm sse #3",
+    "warm sse #4",
+    "warm ws #4",
+    "warm ws #5",
+    "warm sse #5",
+    "warm sse #6",
+    "warm ws #6",
+    "warm ws #7",
+    "warm sse #7",
+    "warm sse #8",
+    "warm ws #8",
+    "warm ws #9",
+    "warm sse #9",
+    "warm sse #10",
+    "warm ws #10"
+   ],
+   "sessionsCreated": [
+    "gwvmcheck-2026-11-19T21-20-29-warm-ws",
+    "gwvmcheck-2026-11-19T21-20-29-warm-sse"
+   ],
+   "cleanup": [
+    {
+     "id": "gwvmcheck-2026-11-19T21-20-29-warm-ws",
+     "deleteStatus": 200,
+     "getAfterDelete": 404
+    },
+    {
+     "id": "gwvmcheck-2026-11-19T21-20-29-warm-sse",
+     "deleteStatus": 200,
+     "getAfterDelete": 404
+    }
+   ],
+   "failure": null
+  },
+  {
+   "stamp": "2026-11-19T21-22-52",
+   "steps": [
+    "drop"
+   ],
+   "promptsUsed": 5,
+   "promptLog": [
+    "drop wss-close #0",
+    "drop wss-close #1",
+    "drop wss-close #2",
+    "drop tunnel-reset #0",
+    "drop tunnel-reset #1"
+   ],
+   "sessionsCreated": [
+    "gwvmcheck-2026-11-19T21-22-52-drop-wss-close",
+    "gwvmcheck-2026-11-19T21-22-52-drop-tunnel-reset"
+   ],
+   "cleanup": [
+    {
+     "id": "gwvmcheck-2026-11-19T21-22-52-drop-wss-close",
+     "deleteStatus": 200,
+     "getAfterDelete": 404
+    },
+    {
+     "id": "gwvmcheck-2026-11-19T21-22-52-drop-tunnel-reset",
+     "deleteStatus": 200,
+     "getAfterDelete": 404
+    }
+   ],
+   "failure": null
+  },
+  {
+   "stamp": "2026-11-19T21-24-22",
+   "steps": [
+    "drop"
+   ],
+   "promptsUsed": 5,
+   "promptLog": [
+    "drop wss-close #0",
+    "drop wss-close #1",
+    "drop wss-close #2",
+    "drop tunnel-reset #0",
+    "drop tunnel-reset #1"
+   ],
+   "sessionsCreated": [
+    "gwvmcheck-2026-11-19T21-24-22-drop-wss-close",
+    "gwvmcheck-2026-11-19T21-24-22-drop-tunnel-reset"
+   ],
+   "cleanup": [
+    {
+     "id": "gwvmcheck-2026-11-19T21-24-22-drop-wss-close",
+     "deleteStatus": 200,
+     "getAfterDelete": 404
+    },
+    {
+     "id": "gwvmcheck-2026-11-19T21-24-22-drop-tunnel-reset",
+     "deleteStatus": 200,
+     "getAfterDelete": 404
+    }
+   ],
+   "failure": null
+  },
+  {
+   "stamp": "2026-11-19T21-29-55",
+   "steps": [
+    "reconnect"
+   ],
+   "promptsUsed": 0,
+   "promptLog": [],
+   "sessionsCreated": [
+    "gwvmcheck-2026-11-19T21-29-55-reconnect-wss-close",
+    "gwvmcheck-2026-11-19T21-29-55-reconnect-tunnel-reset"
+   ],
+   "cleanup": [
+    {
+     "id": "gwvmcheck-2026-11-19T21-29-55-reconnect-wss-close",
+     "deleteStatus": 200,
+     "getAfterDelete": 404
+    },
+    {
+     "id": "gwvmcheck-2026-11-19T21-29-55-reconnect-tunnel-reset",
+     "deleteStatus": 200,
+     "getAfterDelete": 404
+    }
+   ],
+   "failure": null
+  },
+  {
+   "stamp": "2026-11-19T21-40-43",
+   "steps": [
+    "requests"
+   ],
+   "promptsUsed": 1,
+   "promptLog": [
+    "requests clarify"
+   ],
+   "sessionsCreated": [
+    "gwvmcheck-2026-11-19T21-40-43-requests"
+   ],
+   "cleanup": [
+    {
+     "id": "gwvmcheck-2026-11-19T21-40-43-requests",
+     "deleteStatus": 200,
+     "getAfterDelete": 404
+    }
+   ],
+   "failure": null
+  },
+  {
+   "stamp": "2026-11-19T21-42-12",
+   "steps": [
+    "drop"
+   ],
+   "promptsUsed": 3,
+   "promptLog": [
+    "drop wss-close #0",
+    "drop wss-close #1",
+    "drop wss-close #2"
+   ],
+   "sessionsCreated": [
+    "gwvmcheck-2026-11-19T21-42-12-drop-wss-close"
+   ],
+   "cleanup": [
+    {
+     "id": "gwvmcheck-2026-11-19T21-42-12-drop-wss-close",
+     "deleteStatus": 200,
+     "getAfterDelete": 404
+    }
+   ],
+   "failure": null
+  }
+ ],
+ "promptsUsedTotal": 36
+}
