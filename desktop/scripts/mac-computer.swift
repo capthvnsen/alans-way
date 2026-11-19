@@ -353,7 +353,19 @@ func stillSame(_ then: Seen, _ node: Node) -> Bool {
     then.key == AXKey(element: node.element) && then.signature == signature(node)
 }
 
-var refBooks: [pid_t: RefBook] = [:]
+// The app serves several bots, and refs and the selected window belong to the bot that read them.
+var currentBot = ""
+struct PerBot<Value> {
+    private var all: [String: [pid_t: Value]] = [:]
+    subscript(pid: pid_t) -> Value? {
+        get { all[currentBot]?[pid] }
+        set { all[currentBot, default: [:]][pid] = newValue }
+    }
+    var pids: Set<pid_t> { Set(all.values.flatMap { $0.keys }) }
+    mutating func drop(_ pid: pid_t) { for bot in all.keys { all[bot]?[pid] = nil } }
+}
+
+var refBooks = PerBot<RefBook>()
 
 func assignRefs(_ items: [(key: AXKey, label: String)], _ book: RefBook) -> [String] {
     var refs = [String?](repeating: nil, count: items.count)
@@ -560,7 +572,7 @@ struct Cache {
     var windowId: CGWindowID?
 }
 
-var caches: [pid_t: Cache] = [:]
+var caches = PerBot<Cache>()
 
 func snapshotFields(_ walk: Walk) -> JSON {
     var out: JSON = ["generation": walk.generation, "elements": walk.elements.map { $0.json }]
@@ -581,8 +593,8 @@ func refresh(_ pid: pid_t, menubar: Bool, windowId: CGWindowID? = nil) throws ->
     cacheOrder.removeAll { $0 == pid || NSRunningApplication(processIdentifier: $0) == nil }
     cacheOrder.append(pid)
     while cacheOrder.count > 16 { cacheOrder.removeFirst() }
-    for key in Array(caches.keys) where !cacheOrder.contains(key) { caches[key] = nil }
-    for key in Array(refBooks.keys) where !cacheOrder.contains(key) { refBooks[key] = nil }
+    for key in caches.pids where !cacheOrder.contains(key) { caches.drop(key) }
+    for key in refBooks.pids where !cacheOrder.contains(key) { refBooks.drop(key) }
     return walk
 }
 
@@ -1665,6 +1677,7 @@ func launchApp(_ request: JSON) throws -> JSON {
 }
 
 func dispatch(_ request: JSON) throws -> JSON {
+    currentBot = request["bot"] as? String ?? ""
     if let policy = request["policy"] as? JSON { setPolicy(policy) }
     switch request["cmd"] as? String ?? "" {
     case "init":

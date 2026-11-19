@@ -193,6 +193,22 @@ func fixture() throws {
         try refuses("stale_ref") { try validateWindowStep(7, ["action": "press", "ref": ref], selected) }
         attributes[AXKey(element: field)]?["AXParent"] = field
         try expectFixture(!belongsToWindow(field, selected), "parent cycles fail closed")
+    case "bot-cache":
+        fixtureIdle = 2
+        let seen = try dispatch(["cmd": "snapshot", "pid": 7, "windowId": 41, "bot": "a"])
+        guard let generation = seen["generation"] as? Int, let ref = ((seen["elements"] as? [JSON])?.first?["ref"]) as? String else { throw Fail("fixture", "snapshot missing field") }
+        let press: (String) -> JSON = { bot in respond(["cmd": "act", "pid": 7, "bot": bot, "generation": generation, "snapshot": false, "steps": [["action": "press", "ref": ref]]]) }
+        try expectFixture(press("a")["ok"] as? Bool == true, "the bot that took the snapshot can use its ref")
+        try expectFixture(press("b")["code"] as? String == "stale_ref", "another bot's ref and generation are stale: \(press("b"))")
+        try expectFixture(press("")["code"] as? String == "stale_ref", "a request naming no bot cannot use a bot's refs")
+        let own = try dispatch(["cmd": "snapshot", "pid": 7, "windowId": 41, "bot": "b"])
+        try expectFixture(own["generation"] as? Int == generation, "each bot reads its own tree")
+        try expectFixture(press("b")["ok"] as? Bool == true, "a bot's own snapshot makes its ref usable")
+        currentBot = "c"
+        try expectFixture(caches[7] == nil && refBooks[7] == nil, "a bot that never read the app inherits no window or refs")
+        currentBot = "a"
+        try expectFixture(caches[7]?.windowId == 41, "a bot keeps the window it read")
+        currentBot = ""
     case "permissions":
         for trusted in [true, false] { for screen in [true, false] {
             fixtureTrusted = trusted; fixtureScreen = screen

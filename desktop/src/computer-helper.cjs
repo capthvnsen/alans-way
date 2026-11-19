@@ -377,7 +377,7 @@ function createComputerService(driver) {
   const seen = createComputerSnapshots();
 
   async function snapshot(bot, pid, { since, menubar, windowId, delta } = {}) {
-    return seen.snapshot(bot, pid, await driver.snapshot(pid, { menubar: menubar === true, ...windowOptions(windowId) }), since, delta);
+    return seen.snapshot(bot, pid, await driver.snapshot(pid, { menubar: menubar === true, ...windowOptions(windowId), bot }), since, delta);
   }
 
   // Polls the tree until an element's name or value contains the text (or no
@@ -411,7 +411,7 @@ function createComputerService(driver) {
     // Raising a window acts on none of its content, so a lone activate may name one this bot has not read yet,
     // and one that names none brings the app forward rather than a window read earlier that may be gone.
     const onlyActivate = body.action === 'activate';
-    const window = windowOptions(body.windowId === undefined && !onlyActivate ? seen.windowId(bot, pid) : body.windowId);
+    const window = { ...windowOptions(body.windowId === undefined && !onlyActivate ? seen.windowId(bot, pid) : body.windowId), bot };
     if (!onlyActivate && seen.windowId(bot, pid) !== undefined && window.windowId !== seen.windowId(bot, pid))
       throw fail('stale_window', 'Take a snapshot of the selected window before acting.');
     const batch = body.action === 'batch';
@@ -488,6 +488,8 @@ function createComputerService(driver) {
 // platform.command(mode) -> [file, ...args]; shared by mac, Windows, and Linux.
 function createComputer({ command, env, nativeMac = false }) {
   const helper = createHelper({ command, env, busyRetry: nativeMac });
+  // Only the Mac helper keeps per-bot refs and windows; the others would ignore it.
+  const botOption = (bot) => (nativeMac && typeof bot === 'string' && bot ? { bot } : {});
   // A permission dialog must never occupy the app's AX request queue.
   const permissionHelper = nativeMac ? createHelper({ command, env }) : null;
   let windowSupport;
@@ -516,15 +518,15 @@ function createComputer({ command, env, nativeMac = false }) {
       },
     } : {}),
     apps: async () => (await helper.request({ cmd: 'apps' })).apps || [],
-    snapshot: async (pid, { menubar, pin, windowId } = {}) => {
+    snapshot: async (pid, { menubar, pin, windowId, bot } = {}) => {
       await requireWindowSupport(windowId);
-      const { id, ...tree } = await helper.request({ cmd: 'snapshot', pid, ...windowOptions(windowId), ...(menubar ? { menubar: true } : {}), ...(Number.isInteger(pin) ? { pin } : {}) });
+      const { id, ...tree } = await helper.request({ cmd: 'snapshot', pid, ...windowOptions(windowId), ...botOption(bot), ...(menubar ? { menubar: true } : {}), ...(Number.isInteger(pin) ? { pin } : {}) });
       return tree;
     },
-    act: async (pid, { steps, generation, menubar, windowId, settleMs }) => {
+    act: async (pid, { steps, generation, menubar, windowId, settleMs, bot }) => {
       await requireWindowSupport(windowId);
       const { ok, id, ...reply } = await helper.request({
-        cmd: 'act', pid, steps, ...windowOptions(windowId), ...(Number.isInteger(generation) ? { generation } : {}), ...(menubar ? { menubar: true } : {}),
+        cmd: 'act', pid, steps, ...windowOptions(windowId), ...botOption(bot), ...(Number.isInteger(generation) ? { generation } : {}), ...(menubar ? { menubar: true } : {}),
         // Only the Mac helper reads settleMs as "skip the fixed beat"; Windows and Linux read it as the whole settle (default 60 ms).
         ...(nativeMac && Number.isInteger(settleMs) ? { settleMs } : {}),
       });
