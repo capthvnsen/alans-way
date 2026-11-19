@@ -82,6 +82,7 @@ function createProxy(targetPort) {
 // ── one client stack ────────────────────────────────────────────────────────
 const KEY = 'sess-key-1';
 async function stack({ rttMs = 0, jitterMs = 0, backend: backendCfg = {}, options = {} } = {}) {
+  const clock = { skew: 0 }; // a scenario can move the link's clock forward instead of waiting
   const backend = await fakeBackend({ authRequired: true, sessions: [], tokenTag: 'be', deltaCount: 6, deltaMs: 20, ...backendCfg });
   let proxy, link;
   try { return await build(); } catch (e) { link?.stop(); await proxy?.close(); await backend.close(); throw e; }
@@ -106,7 +107,7 @@ async function stack({ rttMs = 0, jitterMs = 0, backend: backendCfg = {}, option
     } finally { live.inFlight -= 1; }
   };
   const logs = [];
-  link = createGatewayLink({ open, log: (e, f) => logs.push([e, f]), options });
+  link = createGatewayLink({ open, log: (e, f) => logs.push([e, f]), options, timers: { now: () => Date.now() + clock.skew } });
   const rest = createHermesApi({ baseUrl: url, key: 'k'.repeat(20) });
   const api = createGatewayApi({ rest, link });
   const linkEvents = [], states = [], gaps = [], lives = [];
@@ -117,7 +118,7 @@ async function stack({ rttMs = 0, jitterMs = 0, backend: backendCfg = {}, option
   link.start();
   await until(() => link.isLive(), 5000, 'the first connection');
   const bounded = (p) => Promise.race([p, sleep(5000)]); // a close that never settles must not hold the run
-  return { backend, proxy, link, api, rest, live, logs, linkEvents, states, gaps, lives, url,
+  return { backend, proxy, link, api, rest, live, logs, clock, linkEvents, states, gaps, lives, url,
     async close() { link.stop(); await bounded(proxy.close()); await bounded(backend.close()); } };
   }
 }
@@ -130,6 +131,7 @@ function reply(h, text) {
     if (name === 'assistant.delta') { out.text.push(data.delta); if (!out.first) out.first = now() - out.started; }
     if (name === 'assistant.completed') out.completed = data.content;
   } });
+  out.done.catch(() => {}); // a scenario that fails early closes the link under a pending reply; that rejection is expected, awaiting `done` still sees it
   return out;
 }
 const serverText = (h) => h.backend.engine.history(KEY).filter((m) => m.role === 'assistant').at(-1)?.content;
@@ -162,6 +164,7 @@ async function resetRuns({ runs, rttMs }) {
       const r = reply(h, text);
       await until(() => r.text.length >= 2, 5000, 'two deltas');
       const liveBefore = h.lives.length;
+      h.clock.skew += 30000; // this scenario checks loss and duplicates per drop, so each drop counts as one an occasional drop apart (the rate rule is covered by 'flapping server')
       const t0 = now();
       h.proxy.reset();
       await until(() => h.lives.length > liveBefore, 10000, 'link live again');
@@ -295,17 +298,20 @@ async function flap({ flaps, spanMs }) {
   } finally { await h.close(); }
 }
 
-// Idle link, the server closes it politely (close frame), again and again: every reconnect must be prompt,
-// because each one reached live. Bench finding: waits grew 0.4 -> 4 s with a healthy network.
+// Idle link, the server closes it politely (close frame) now and then: every reconnect must be prompt.
+// The link's clock jumps 30 s before each close (4 drops in any 2 minutes), so this is the healthy case. Eight in
+// a row at real speed is flapping by definition, and the next scenario covers that. Bench finding: waits grew
+// 0.4 -> 4 s with a healthy network.
 async function gracefulCloses({ closes, rttMs }) {
   const closers = [];
   const h = await stack({ rttMs, backend: { orphanGraceMs: 20000, onWsOpen: (c) => closers.push(c) } });
   const reconnect = [];
-  const scenario = `graceful close, ${closes} in a row, RT ${rttMs} ms`;
+  const scenario = `graceful close, ${closes} spaced 30 s, RT ${rttMs} ms`;
   try {
     await h.link.attach(KEY);
     for (let i = 0; i < closes; i++) {
-      await sleep(150); // it worked for a moment: not an accept-and-drop loop
+      await sleep(150);
+      h.clock.skew += 30000;
       const liveBefore = h.lives.length, t0 = now();
       closers.at(-1).close(1000, 'idle');
       await until(() => h.lives.length > liveBefore, 10000, 'link live again');
@@ -314,6 +320,24 @@ async function gracefulCloses({ closes, rttMs }) {
     const retries = h.logs.filter(([e]) => e === 'link.retry').map(([, f]) => f.inMs);
     check(scenario, 'reconnect p50 / p95 / max ms', `${fmt(pct(reconnect, 50))} / ${fmt(pct(reconnect, 95))} / ${fmt(Math.max(...reconnect))}`, 'p95 <= 500', pct(reconnect, 95) <= 500);
     check(scenario, 'longest scheduled wait ms', Math.max(...retries), '0', Math.max(...retries) === 0);
+    check(scenario, 'peak sockets / in-flight attempts', `${h.live.maxSockets} / ${h.live.maxInFlight}`, '1 / 1', h.live.maxSockets === 1 && h.live.maxInFlight === 1);
+  } finally { await h.close(); }
+}
+
+// A server that accepts, lets the link reach live, and closes it after 200 ms, every time: the client must not
+// reconnect in a loop against it. The first five drops reconnect at once, then the waits double up to 15 s.
+async function flappingServer({ runMs }) {
+  const opens = [];
+  const h = await stack({ backend: { onWsOpen: (c) => { opens.push(now()); setTimeout(() => c.close(1000, 'flap'), 200).unref(); } } });
+  const scenario = `server drops every 200 ms, ${runMs / 1000} s`;
+  try {
+    await sleep(runMs);
+    const retries = h.logs.filter(([e]) => e === 'link.retry').map(([, f]) => f.inMs);
+    const late = opens.filter((t) => t > opens[0] + runMs / 2).length;
+    // Unbounded this is about 4 attempts a second (80 in 20 s); the rule allows 5 free ones, then 0.25-0.5 s, 0.5-1 s, 1-2 s, 2-4 s, 4-8 s, 7.5-15 s.
+    check(scenario, 'connections opened', opens.length, '<= 14', opens.length <= 14);
+    check(scenario, 'opened in the second half', late, '<= 3', late <= 3);
+    check(scenario, 'longest wait ms (cap 15000)', Math.max(...retries), '>= 4000', Math.max(...retries) >= 4000);
     check(scenario, 'peak sockets / in-flight attempts', `${h.live.maxSockets} / ${h.live.maxInFlight}`, '1 / 1', h.live.maxSockets === 1 && h.live.maxInFlight === 1);
   } finally { await h.close(); }
 }
@@ -349,7 +373,8 @@ async function main() {
   const guarded = async (name, fn) => { if (only && !name.includes(only)) return; try { await Promise.race([fn(), sleep(SCENARIO_MS).then(() => { throw new Error(`no result in ${SCENARIO_MS / 1000} s`); })]); } catch (e) { check(name, 'scenario completed', e.message, 'completes', false); } };
   // Timing-sensitive scenarios run alone; the long waits run side by side.
   await guarded('reset RT 100', () => resetRuns({ runs, rttMs: 100 }));
-  await guarded('graceful close RT 100', () => gracefulCloses({ closes: 20, rttMs: 100 }));
+  await guarded('graceful close RT 100', () => gracefulCloses({ closes: 8, rttMs: 100 }));
+  await guarded('flapping server', () => flappingServer({ runMs: 20000 }));
   await guarded('reset RT 0', () => resetRuns({ runs: 30, rttMs: 0 }));
   await guarded('first token RT 0', () => firstToken({ rttMs: 0 }));
   await guarded('first token RT 100', () => firstToken({ rttMs: 100 }));

@@ -61,7 +61,7 @@ function rig(engineCfg = {}, linkCfg = {}) {
   const logs = [];
   const link = createGatewayLink({
     open, log: (event, f) => logs.push([event, f]),
-    options: { baseMs: 5, capMs: 40, stableMs: 40, pingIdleMs: 1e9, pingDeadMs: 50, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500 },
+    options: { baseMs: 5, capMs: 40, pingIdleMs: 1e9, pingDeadMs: 50, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500 },
     ...linkCfg,
   });
   const states = [], events = [], gaps = [];
@@ -101,39 +101,84 @@ test('backoff: first retry is immediate, then 0.5 s doubling to the 15 s cap, fu
   assert.deepEqual(half.slice(0, 3), [0, 250, 500]);
 });
 
-// Reconnect delays are the 'link.retry' log lines; the clock is fake so "how long it was live" is exact.
-function retryRig(options) {
-  let clock = 1000;
-  const r = rig({}, { options: { baseMs: 500, capMs: 15000, pingIdleMs: 1e9, pingDeadMs: 50, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500, ...options }, timers: { random: () => 1, now: () => clock } });
-  r.advance = (ms) => { clock += ms; };
-  r.retries = () => r.logs.filter(([event]) => event === 'link.retry').map(([, f]) => f.inMs);
-  r.dropNext = async (n) => { // close the socket n (1-based) and wait for socket n + 1 to be live
-    r.server.conns[n - 1].reset();
-    await until(() => r.server.opens === n + 1 && r.link.isLive(), 5000, `socket ${n + 1} live`);
+// Virtual time for the reconnect rule: the link's clock and timers are fake, so 3 minutes of flapping cost milliseconds.
+// The server, wire and controller still run for real (microtasks only); each step waits for the link, not for a duration.
+function retryRig({ random = 1 } = {}) {
+  let clock = 1000, seq = 0;
+  const queue = [];
+  const vt = {
+    now: () => clock, advance: (ms) => { clock += ms; },
+    setTimeout: (fn, ms) => { const t = { at: clock + ms, seq: seq++, fn, unref() {} }; queue.push(t); return t; },
+    clearTimeout: (t) => { const i = queue.indexOf(t); if (i >= 0) queue.splice(i, 1); },
+    fire() { queue.sort((x, y) => x.at - y.at || x.seq - y.seq); const t = queue.shift(); clock = Math.max(clock, t.at); t.fn(); },
   };
+  const r = rig({}, { options: { baseMs: 500, capMs: 15000, pingIdleMs: 1e9, pingDeadMs: 50, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500 }, timers: { random: () => random, now: vt.now, setTimeout: vt.setTimeout, clearTimeout: vt.clearTimeout } });
+  r.vt = vt;
+  r.retries = () => r.logs.filter(([event]) => event === 'link.retry').map(([, f]) => f.inMs);
+  // Close the live socket after it has been live `liveMs`, then let the scheduled reconnect run.
+  r.dropAfter = async (liveMs) => {
+    await until(() => r.link.isLive(), 5000, 'live');
+    vt.advance(liveMs);
+    r.server.conns.at(-1).reset();
+    await until(() => !r.link.isLive(), 5000, 'the drop to be seen');
+    vt.fire();
+  };
+  r.flapUntil = async (liveMs, endAt) => { while (vt.now() < endAt) await r.dropAfter(liveMs); };
   return r;
 }
 
-test('backoff: a link that reached live reconnects at once every time, however often it was closed', async () => {
+test('backoff: the first five drops of a live link in 2 minutes reconnect at once, seven idle closes 0.5 s apart never wait over 1 s', async () => {
   const r = retryRig();
   r.link.start();
+  for (let n = 0; n < 7; n++) await r.dropAfter(500);
   await until(() => r.link.isLive());
-  for (let n = 1; n <= 7; n++) { r.advance(500); await r.dropNext(n); assert.equal(r.link.getState().failures, 0, `failures after live ${n}`); }
-  assert.deepEqual(r.retries(), [0, 0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(r.retries(), [0, 0, 0, 0, 0, 500, 1000]); // random = 1: the longest each wait can be
   r.done();
 });
 
-test('backoff: a server that accepts and drops at once still backs off, a failed attempt after a healthy live starts over', async () => {
+test('backoff: an occasional drop on a healthy link reconnects at once, however many over time', async () => {
+  const r = retryRig();
+  r.link.start();
+  for (let n = 0; n < 12; n++) await r.dropAfter(30000); // 4 drops in any 2 minutes
+  assert.deepEqual(r.retries(), Array(12).fill(0));
+  r.done();
+});
+
+test('backoff: a link dropped every 200 ms settles to a handful of attempts a minute, whatever the jitter draws', async () => {
+  for (const random of [0, 0.5, 1]) {
+    const r = retryRig({ random });
+    r.link.start();
+    await r.flapUntil(200, 1000 + 180000);
+    const t0 = r.vt.now(), before = r.server.opens;
+    await r.flapUntil(200, t0 + 60000);
+    const lastMinute = r.server.opens - before;
+    assert.ok(lastMinute <= 8, `random=${random}: ${lastMinute} attempts in the last minute`);
+    assert.ok(Math.max(...r.retries()) <= 15000, 'no wait beyond the cap');
+    r.done();
+  }
+});
+
+test('backoff: a server that accepts and drops at once backs off after the free drops, up to the cap', async () => {
+  const r = retryRig();
+  r.link.start();
+  for (let n = 0; n < 11; n++) await r.dropAfter(0);
+  assert.deepEqual(r.retries(), [0, 0, 0, 0, 0, 500, 1000, 2000, 4000, 8000, 15000]);
+  r.done();
+});
+
+test('backoff: a refused attempt after a healthy drop starts the failure delays over (0, then 500)', async () => {
   const r = retryRig();
   r.link.start();
   await until(() => r.link.isLive());
-  for (let n = 1; n <= 3; n++) await r.dropNext(n); // dead the moment it was live: the clock never moves
-  assert.deepEqual(r.retries(), [500, 1000, 2000]);
-  r.advance(5000);
   r.server.fail = 1;
-  r.server.conns[3].reset(); // healthy for 5 s, then one refused attempt: its delay is the first step, not the fourth
-  await until(() => r.server.opens === 6 && r.link.isLive(), 5000, 'live after the refused attempt');
-  assert.deepEqual(r.retries(), [500, 1000, 2000, 0, 500]);
+  r.vt.advance(5000);
+  r.server.conns[0].reset();
+  await until(() => !r.link.isLive());
+  r.vt.fire(); // the drop's own immediate retry: refused
+  await until(() => r.server.opens === 2 && r.retries().length === 2, 5000, 'the refused attempt to schedule its retry');
+  r.vt.fire();
+  await until(() => r.server.opens === 3 && r.link.isLive(), 5000, 'live again');
+  assert.deepEqual(r.retries(), [0, 500]);
   r.done();
 });
 
@@ -233,7 +278,7 @@ test('a session reaped after the grace window goes the history path, quietly', a
 test('ping: silence is probed, a dead answer drops the socket and reconnects', async () => {
   // pingDeadMs is generous: answered pings must never look dead on a loaded machine. Nothing below
   // asserts how long detection took (the drop harness measures that); it waits for events.
-  const r = rig({}, { options: { baseMs: 5, capMs: 40, stableMs: 40, pingIdleMs: 20, pingDeadMs: 300, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500 } });
+  const r = rig({}, { options: { baseMs: 5, capMs: 40, pingIdleMs: 20, pingDeadMs: 300, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500 } });
   r.link.start();
   await until(() => r.link.isLive());
   const first = r.server.conns[0];
@@ -250,7 +295,7 @@ test('ping: silence is probed, a dead answer drops the socket and reconnects', a
 });
 
 test('ping: bytes from a dropped socket do not vouch for its replacement', async () => {
-  const r = rig({}, { options: { baseMs: 5, capMs: 40, stableMs: 40, pingIdleMs: 20, pingDeadMs: 300, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500 } });
+  const r = rig({}, { options: { baseMs: 5, capMs: 40, pingIdleMs: 20, pingDeadMs: 300, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500 } });
   r.link.start();
   await until(() => r.link.isLive());
   const old = r.server.conns[0];
@@ -267,7 +312,7 @@ test('ping: bytes from a dropped socket do not vouch for its replacement', async
 });
 
 test('triggers skip the wait: online ends a backoff sleep, wake drops a live socket', async () => {
-  const r = rig({}, { options: { baseMs: 60000, capMs: 60000, stableMs: 10000, pingIdleMs: 1e9, pingDeadMs: 50, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500 }, timers: { random: () => 1 } });
+  const r = rig({}, { options: { baseMs: 60000, capMs: 60000, pingIdleMs: 1e9, pingDeadMs: 50, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500 }, timers: { random: () => 1 } });
   r.server.fail = 2;
   r.link.start();
   await until(() => r.server.opens >= 2); // immediate retry, then a 60 s sleep

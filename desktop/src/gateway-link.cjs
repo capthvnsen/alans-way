@@ -24,7 +24,7 @@ const { createHermesRemote, RemoteError } = require('./hermes-remote.cjs');
 const { HermesSessionWire } = require('./hermes-session-wire.cjs');
 
 const DEFAULTS = Object.freeze({
-  baseMs: 500, capMs: 15000, quickDropMs: 25,
+  baseMs: 500, capMs: 15000, freeDrops: 5, dropWindowMs: 120000,
   connectTimeoutMs: 8000, bindTimeoutMs: 8000,
   pingIdleMs: 9000, pingDeadMs: 4000, // 13 s worst case from the last frame, inside the 14 s target and Hermes's 45 s
   offlinePollMs: 1000, focusIdleMs: 15000,
@@ -52,7 +52,7 @@ function createGatewayLink(deps = {}) {
   const link = new EventEmitter();
 
   let state = 'idle', since = timers.now(), started = false, suspended = false, stopped = false;
-  let failures = 0, quickDrops = 0, lastError = '', everLive = false, liveAt = 0;
+  let failures = 0, drops = [], lastError = '', everLive = false, liveAt = 0;
   let conn = null, generation = 0, running = false, abortCtl = null;
   let waitTimer = null, pingTimer = null, lastActivity = 0, lastEpoch = '';
   const att = new Map(); // storedId -> attachment
@@ -79,8 +79,18 @@ function createGatewayLink(deps = {}) {
     waitTimer = timers.setTimeout(() => { waitTimer = null; attemptNow(); }, ms);
     waitTimer.unref?.();
   }
-  function scheduleNext() {
-    const ms = backoffMs(failures);
+  // Drops of a link that had reached live, newest last. The first `freeDrops` in `dropWindowMs` reconnect at once;
+  // each one past that doubles the wait (capped, half-to-full jitter so luck cannot make a flapping link a loop).
+  function dropDelay() {
+    const t = timers.now();
+    drops = drops.filter((d) => t - d < o.dropWindowMs);
+    drops.push(t);
+    const over = drops.length - o.freeDrops;
+    if (over <= 0) return 0;
+    const cap = Math.min(o.capMs, o.baseMs * 2 ** (over - 1));
+    return Math.floor(cap / 2 + timers.random() * cap / 2);
+  }
+  function scheduleNext(ms = backoffMs(failures)) {
     failures += 1;
     log('link.retry', { inMs: ms, failures });
     schedule(ms);
@@ -104,7 +114,7 @@ function createGatewayLink(deps = {}) {
       if (gen !== generation || conn !== opened) return;
       everLive = true; lastError = ''; liveAt = timers.now();
       lastEpoch = opened.epoch;
-      failures = quickDrops; // a link that got here is healthy; only back-to-back instant drops keep the delay growing
+      failures = 0;
       setState('live');
       armPing();
       link.emit('live', getState());
@@ -148,8 +158,7 @@ function createGatewayLink(deps = {}) {
     if (!c) return;
     conn = null;
     timers.clearTimeout(pingTimer); pingTimer = null;
-    quickDrops = liveAt && timers.now() - liveAt < o.quickDropMs ? quickDrops + 1 : 0;
-    if (liveAt) failures = quickDrops;
+    const wasLive = liveAt > 0;
     liveAt = 0;
     for (const a of att.values()) detachController(a);
     closeConn(c);
@@ -158,7 +167,7 @@ function createGatewayLink(deps = {}) {
     if (keepState || stopped || suspended) return;
     setState(isOnline() ? 'reconnecting' : 'offline');
     generation++; running = false;
-    scheduleNext();
+    scheduleNext(wasLive ? dropDelay() : undefined);
   }
 
   function detachController(a) {
