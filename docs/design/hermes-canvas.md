@@ -8,7 +8,7 @@ Three columns, closer to iMessage than to an IDE:
 
 | Left | Middle | Right: Canvas |
 |---|---|---|
-| Bots list (unchanged) | Chat: Telegram or Hermes Desktop (unchanged) | One thing at a time, picked from a small pill of tabs |
+| Agents, grouped by gateway (Telegram, Hermes, Alan's Way) | Chat on the gateway of the selected row | One thing at a time, picked from a small pill of tabs |
 
 The Canvas follows the bot whose chat is open. Each bot remembers its own tab, so
 switching from Alan (watching his screen) to Scout (browsing) and back puts each
@@ -31,16 +31,16 @@ one where you left it.
 
 ## Phase 2: state and Hermes Desktop pages
 
-- **State:** main holds `canvasTab` (`browser`, `screen`, `chat`, `artifacts`, `cron`,
+- **State:** main holds `canvasTab` (`browser`, `screen`, `terminal`, `artifacts`, `cron`,
   `settings`). `activeTabId` is now only the browser's own tab, so Bot screen no longer
   overwrites it and `browserReturnTabId` is gone. The renderer still receives
   `activeTabId: 'vps'` for Bot screen (wire compatibility for `remote.js` and the
   existing tests), plus `canvasTab` and `webappCanvas`.
-- **Collapsed pane:** choosing any Canvas tab (⌘1–⌘7, the strip, the expand button)
+- **Collapsed pane:** choosing any Canvas tab (⌘1–⌘4, the strip, a row's Cron jobs or Settings icon, the expand button)
   reopens a collapsed browser pane.
-- **New tabs:** Side chat, Artifacts, Cron jobs and Bot settings are the Hermes Desktop
-  routes `#/`, `#/artifacts`, `#/cron` and `#/settings` (Hermes Desktop uses a
-  HashRouter; see `apps/desktop/src/app/routes.ts`). One `canvasView` serves all four, so
+- **New tabs:** Artifacts, Cron jobs and Bot settings are the Hermes Desktop
+  routes `#/artifacts`, `#/cron` and `#/settings` (Hermes Desktop uses a
+  HashRouter; see `apps/desktop/src/app/routes.ts`). One `canvasView` serves all three, so
   switching between them is an in-page hash change, not a reload. It is built by the same
   `guardedWebappView()` as the chat pane's view: no preload, sandboxed, same-origin only,
   partition `persist:hermes-webapp`. Sharing that partition is what lets one cookie
@@ -59,13 +59,28 @@ one where you left it.
 - **Per bot:** the choice is remembered per bot like the others, but the pages are the
   one configured Hermes Desktop host, not a per-bot profile. Mapping a bot to a Hermes
   profile is not done.
-- **Keyboard:** ⌘4–⌘7 in the View menu, listed in the Shortcuts sheet as one row.
+- **Keyboard:** ⌘4 (Artifacts) in the View menu, listed in the Shortcuts sheet.
   Arrow keys, Home and End move across the visible tabs only.
+
+## Side chat removed, Cron jobs and Bot settings on the bot's row
+
+The Side chat tab (`#/`) is gone, with its state value and shortcut. A stale saved
+`canvasTabs` entry of `chat` is ignored: that bot keeps the current view.
+
+Cron jobs and Bot settings are not in the permanent strip. Each bot's rows in the
+agent list carry a clock and a gear button (visible on hover, on keyboard focus and on
+the selected row; "Cron jobs for <bot>", "Settings for <bot>"). They appear only for a
+bot that has a Hermes row while the Hermes Desktop pages are reachable, the same
+condition that shows Artifacts. A button selects its bot first, on the gateway of the
+row it is on, if that bot is not selected, then opens the page. They are still the
+`cron` and `settings` values of `canvasTab`, remembered per bot like the rest; the
+strip (`canvasStripTabs()` in `src/shell-support.cjs`, sent to the renderer as
+`canvasStrip`) adds that tab at the end only while it is the one open, and it leaves
+the strip as soon as another tab is chosen. They have no shortcut or menu item.
 
 ## Terminal
 
-Strip order is Browser, Bot screen, Terminal, Side chat, Artifacts, Cron jobs, Bot settings
-(⌘1–⌘7). Terminal is always shown. Hermes Desktop has no route that opens its terminal (its
+Strip order is Browser, Bot screen, Terminal, Artifacts (⌘1–⌘4). Terminal is always shown. Hermes Desktop has no route that opens its terminal (its
 terminal is a pane toggled by app state, not a `#/` route), so this one is native.
 
 - **Renderer:** xterm.js (`@xterm/xterm`, `@xterm/addon-fit`, pure JS) in the Canvas area, one
@@ -110,7 +125,7 @@ Do not add a tab until it does something; empty placeholder tabs make the strip 
 
 `npm run test:canvas-tabs` drives the real main, preload and renderer. It covers
 restore at launch, click, per-bot memory across bot switches, arrow keys, Home and End,
-⌘1–⌘7 through the menu, the collapsed pane, the saved preferences, and the Hermes
+⌘1–⌘4 through the menu, the collapsed pane, the saved preferences, and the Hermes
 Desktop pages against a local stand-in: hidden without an address, shared cookie
 sign-in, no Workspace bridge, no reload between pages, fallback while unreachable,
 and, for a one-use-link host, no page tabs until the link is open and then a shared credential.

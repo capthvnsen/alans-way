@@ -207,8 +207,8 @@ replaces the Webapp view is changing the address. Sign-in cookies stay in the pa
 
 **Bots.** Selecting a bot now keeps the chosen surface instead of forcing Telegram. It still
 updates the hidden Telegram chat, and picks which bot's tabs the Browser pane shows. With
-Hermes Desktop chosen, sidebar rows move between the two for the current session without
-changing the saved choice.
+Hermes Desktop chosen, the agent list's Telegram and Hermes rows move between the two
+without changing the saved default (`chatSurface`); each bot remembers the row last opened.
 
 Code: `resolveChatSurface()` in `src/shell-support.cjs`, `hermesWebappUrl()` in
 `src/tailnet.cjs`, `syncWebapp()` and `checkWebapp()` in `src/main.cjs`,
