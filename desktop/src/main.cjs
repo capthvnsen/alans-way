@@ -3936,7 +3936,8 @@ else {
     // Loads the last-open conversation from disk before the window exists, so it paints with no network.
     nativeChat = createNativeChat({
       dir: app.getPath('userData'), loadConfig: loadNativePersisted, saveConfig: saveNativePersisted,
-      apiFactory: createGatewayApiFactory({ restFactory: createHermesApi, link: gatewayLink, transport: () => prefs.nativeTransport === 'sse' ? 'sse' : 'websocket' }),
+      // shortcut: WebSocket is opt-in until it has run against a real Hermes backend; make it the default after the VM baseline.
+      apiFactory: createGatewayApiFactory({ restFactory: createHermesApi, link: gatewayLink, transport: () => prefs.nativeTransport === 'websocket' ? 'websocket' : 'sse' }),
       openLink: (url) => openTelegramLink(url), copyText: (text) => clipboard.writeText(text), visible: () => chatTarget === 'native',
       notify: () => {
         pushNativeState();
