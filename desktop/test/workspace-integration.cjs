@@ -139,25 +139,56 @@ app.whenReady().then(async () => {
   try { gaze = await evaluate(`(async () => {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const real = await window.workspace.getState();
-    const fixture = { ...real, bots: real.bots.map(bot => ({ ...bot, activity: { state: 'active', expiresAt: Date.now() + 6000, label: 'Test fixture' } })) };
-    const face = document.getElementById('presence-avatar');
-    const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    // The browser normalises calc(-50% + 3%) to calc(-47%), so read the offset back relative to the -50% centring.
+    const offsets = (node) => [...node.querySelectorAll('.hermes-eye')].map(eye => (/translate\\(calc\\((-?[\\d.]+)%\\), calc\\((-?[\\d.]+)%\\)\\)/.exec(eye.style.transform) || []).slice(1).map(value => Number(value) + 50));
+    const shift = (node) => offsets(node).map(([x]) => x);
+    const rest = (node) => offsets(node).every(pair => pair.length === 2 && pair.every(value => Math.abs(value) < 0.005));
+    const marble = real.avatarLibrary.find(item => item.builtIn);
+    const bots = real.bots.map((bot, index) => ({ ...bot, activity: index === 0 ? { state: 'active', expiresAt: Date.now() + 60000, label: 'Test fixture' } : { state: 'idle' } }));
+    const fixture = { ...real, bots, avatarPreferences: { ...real.avatarPreferences, [bots[0].id]: { selectedId: marble.id, tint: 'blue' }, [bots[1].id]: { selectedId: marble.id } } };
     window.HermesAvatars.update(fixture);
-    window.HermesAvatars.receivePointer({ x: -500, y: 300 }); await frame();
-    const left = [...face.querySelectorAll('.hermes-pupil')].map(p => p.style.transform);
-    window.HermesAvatars.receivePointer({ x: innerWidth + 500, y: 300 }); await frame();
-    const right = [...face.querySelectorAll('.hermes-pupil')].map(p => p.style.transform);
-    const active = face.classList.contains('hermes-avatar-active');
-    window.HermesAvatars.update({ ...fixture, bots: fixture.bots.map(bot => ({ ...bot, activity: { state: 'idle' } })) });
-    const idle = !face.classList.contains('hermes-avatar-active');
-    const neutral = [...face.querySelectorAll('.hermes-pupil')].every(p => p.style.transform === 'translate(-50%, -50%)');
+    // The list rows are painted by the real renderer; paint them from the fixture without waiting for a broadcast.
+    const rows = [...document.querySelectorAll('#bot-list .bot-row')];
+    rows.forEach((row, index) => window.HermesAvatars.paint(row.querySelector('.avatar'), bots.find(bot => bot.id === row.dataset.botId), fixture));
+    const [working, other] = [rows.find(row => row.dataset.botId === bots[0].id), rows.find(row => row.dataset.botId === bots[1].id)].map(row => row.querySelector('.avatar'));
+    const seen = new Set();
+    for (let i = 0; i < 12; i++) { await sleep(250); seen.add(shift(working).join()); }
+    const workingMoved = seen.size > 3, otherStill = rest(other), working2 = working.classList.contains('hermes-avatar-active');
+    const rowOf = (node) => node.closest('.bot-row'), point = (node, dx, dy) => { const r = node.getBoundingClientRect(); return { clientX: r.x + r.width / 2 + dx, clientY: r.y + r.height / 2 + dy, bubbles: true }; };
+    const hover = async (node, dx, dy) => { rowOf(node).dispatchEvent(new PointerEvent('pointermove', point(node, dx, dy))); await sleep(500); return shift(node); };
+    const left = await hover(other, -150, 0), right = await hover(other, 150, 0), up = await hover(working, 0, -30);
+    const workingEyesWhileOtherHovered = shift(working);
+    document.getElementById('bot-list').dispatchEvent(new PointerEvent('pointerleave'));
+    await sleep(900);
+    const returned = rest(other);
+    window.HermesAvatars.update({ ...fixture, bots: bots.map(bot => ({ ...bot, activity: { state: 'idle' } })) });
+    const idleNow = rest(working);
+    // Flat eyes and tint: only the marble image is filtered; the eyes stay pure black; pictures without eye data get no overlay.
+    const probe = (selectedId, tint) => { const node = document.createElement('span'); node.style.cssText = 'width:100px;height:100px;display:block'; document.body.append(node); window.HermesAvatars.paint(node, { id: 'probe', name: 'Probe', avatar: bots[0].avatar }, real, { selectedId, tint }); return node; };
+    const tinted = probe(marble.id, 'red'), plain = probe('telegram', 'red');
+    const eye = tinted.querySelector('.hermes-eye'), style = getComputedStyle(eye);
+    const result = { left, right, up, workingMoved, otherStill, working2, returned, idleNow, workingEyesWhileOtherHovered,
+      eyes: tinted.querySelectorAll('.hermes-eye').length, plainEyes: plain.querySelectorAll('.hermes-eye').length, plainTint: plain.dataset.tint || '', plainFilter: getComputedStyle(plain.querySelector('img') || plain).filter,
+      flat: style.backgroundColor === 'rgb(0, 0, 0)' && style.backgroundImage === 'none' && style.boxShadow === 'none' && style.filter === 'none' && eye.children.length === 0,
+      tint: tinted.dataset.tint, imageFilter: getComputedStyle(tinted.querySelector('img')).filter,
+      reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches };
+    tinted.remove(); plain.remove();
     window.HermesAvatars.update(real);
-    return { left, right, active, idle, neutral, reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches };
+    return result;
   })()`); } finally { wc.send = originalSend; }
-  assert.equal(gaze.left.length, 2);
-  if (!gaze.reducedMotion) assert.notDeepEqual(gaze.left, gaze.right, 'Active eyes follow the pointer.');
-  assert.ok(gaze.active && gaze.idle && gaze.neutral, 'Idle avatars stop and return to neutral pupils.');
-  console.log('PASS: fixture-driven live avatar gaze and immediate idle reset in the real renderer.');
+  assert.equal(gaze.eyes, 2); assert.equal(gaze.plainEyes, 0, 'Pictures without eye data get no eye overlay.');
+  assert.equal(gaze.plainTint, ''); assert.equal(gaze.plainFilter, 'none', 'Tint never touches non-marble pictures.');
+  assert.ok(gaze.flat, 'Marble eyes are plain flat black ovals.');
+  assert.equal(gaze.tint, 'red'); assert.notEqual(gaze.imageFilter, 'none', 'Tint filters the marble image.');
+  assert.ok(gaze.working2 && gaze.idleNow && gaze.otherStill, 'Working bots light up and idle bots keep still eyes: ' + JSON.stringify(gaze));
+  if (!gaze.reducedMotion) {
+    assert.ok(gaze.workingMoved, 'A working bot\'s eyes drift and glance.');
+    assert.ok(gaze.left.every((value, index) => value < gaze.right[index]), 'Hovering a row left/right of its avatar turns that bot\'s eyes that way.');
+    assert.ok(gaze.up.length === 2, 'Hover tracking works on a working bot too.');
+    assert.ok(gaze.returned, 'Eyes ease back to centre when the pointer leaves the list.');
+  }
+  console.log('PASS: real-renderer flat eyes, working drift, row-hover gaze, tint and no-overlay fallback.');
 
   // The update popup is a DOM overlay painted below every attached view:
   // showing it must hide the Telegram view and take native focus off it, and

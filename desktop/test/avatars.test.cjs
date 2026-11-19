@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { isActive, activityLabel, normalizeEyes, resolveAvatar, gazeOffset } = require('../src/avatars.js');
+const { isActive, activityLabel, normalizeEyes, normalizeTint, resolveAvatar, gazeOffset, easeGaze, eyePose, createWander } = require('../src/avatars.js');
 
 test('animation requires an active signal and stops when its lease expires', () => {
   for (const activity of [undefined, {}, { state: 'idle' }, { state: 'unknown' }, { state: 'typing' }, { label: 'working' }, { state: 'active', expiresAt: 100 }, { state: 'active', expiresAt: '999' }]) {
@@ -33,8 +33,8 @@ test('eye configuration rejects invalid input and bounds the editable geometry',
   assert.equal(eyes.radius, 0.045);
   assert.equal(eyes.aspect, 3);
   assert.equal(eyes.style, 'classic');
-  assert.deepEqual(eyes.left, { x: 0.05, y: 0.43, scaleX: 0.5 });
-  assert.deepEqual(eyes.right, { x: 0.95, y: 0.43, scaleX: 1.5 });
+  assert.deepEqual(eyes.left, { x: 0.05, y: 0.43, scaleX: 0.5, scaleY: 1, rotate: 0 });
+  assert.deepEqual(eyes.right, { x: 0.95, y: 0.43, scaleX: 1.5, scaleY: 1, rotate: 0 });
   assert.equal(normalizeEyes({ enabled: true }).enabled, true);
 });
 
@@ -62,4 +62,99 @@ test('each marble avatar ships with an original image and calibrated enabled eye
     assert.equal(entry.eyes.style, 'obsidian');
     assert.deepEqual(normalizeEyes(entry.eyes), entry.eyes);
   }
+});
+
+test('every marble avatar records in-range eye geometry measured from its original eyes', () => {
+  const directory = path.join(__dirname, '../assets/avatars');
+  const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8'));
+  for (const { id, eyes } of manifest) {
+    const { left, right } = eyes;
+    for (const [side, eye] of [['left', left], ['right', right]]) {
+      const rx = eyes.radius * eye.scaleX, ry = eyes.radius * eyes.aspect * eye.scaleY;
+      assert.ok(rx > 0.01 && rx < 0.03 && ry > 0.025 && ry < 0.06, `${id} ${side} radii ${rx} x ${ry}`);
+      assert.ok(eye.x - rx > 0.2 && eye.x + rx < 0.8 && eye.y - ry > 0.2 && eye.y + ry < 0.6, `${id} ${side} sits on the face`);
+      assert.ok(Math.abs(eye.rotate) <= 10, `${id} ${side} tilt ${eye.rotate}`);
+    }
+    assert.ok(left.x + eyes.radius < right.x - eyes.radius * right.scaleX, `${id} eyes do not overlap`);
+    for (const edge of ['left', 'right', 'up', 'down']) assert.ok(eyes.travel[edge] > 0 && eyes.travel[edge] <= 0.05, `${id} travel.${edge}`);
+  }
+});
+
+test('gaze eases towards a target without overshooting and returns to centre', () => {
+  let look = { x: 0.9, y: -0.6 };
+  for (let ms = 0; ms < 1000; ms += 16) {
+    const next = easeGaze(look, { x: 0, y: 0 }, 16, 90);
+    assert.ok(Math.abs(next.x) <= Math.abs(look.x) && Math.abs(next.y) <= Math.abs(look.y));
+    look = next;
+  }
+  assert.ok(Math.hypot(look.x, look.y) < 0.001);
+  assert.deepEqual(easeGaze({ x: 1, y: 1 }, { x: 0, y: 0 }, 1e9, 90), { x: 0, y: 0 });
+  assert.deepEqual(easeGaze({ x: 0.3, y: 0.1 }, { x: 1, y: 1 }, 0, 90), { x: 0.3, y: 0.1 });
+});
+
+test('eye pose clamps travel to the avatar-specific reach and is neutral without a gaze', () => {
+  const eyes = normalizeEyes({ enabled: true, style: 'obsidian', radius: 0.02, aspect: 2, travel: { left: 0.02, right: 0.01, up: 0.005, down: 0.01 } });
+  assert.deepEqual(eyePose(eyes, 'left', { x: 0, y: 0 }), { x: 0, y: 0, scaleY: 1 });
+  assert.deepEqual(eyePose(eyes, 'left', undefined), { x: 0, y: 0, scaleY: 1 });
+  assert.deepEqual(eyePose(eyes, 'left', { x: NaN, y: 1 }), { x: 0, y: 0, scaleY: 1 });
+  // reach / eye width: a full right glance moves 0.01 of the image = 25% of a 0.04-wide eye
+  assert.ok(Math.abs(eyePose(eyes, 'left', { x: 1, y: 0 }).x - 25) < 1e-9);
+  assert.ok(Math.abs(eyePose(eyes, 'left', { x: -1, y: 0 }).x + 50) < 1e-9);
+  assert.deepEqual(eyePose(eyes, 'left', { x: 500, y: 0 }), eyePose(eyes, 'left', { x: 1, y: 0 }));
+  const diagonal = eyePose(eyes, 'right', { x: 30, y: -40 });
+  assert.ok(Math.abs(diagonal.x - eyePose(eyes, 'right', { x: 0.6, y: -0.8 }).x) < 1e-9);
+  assert.ok(Math.abs(eyePose(eyes, 'left', { x: 0, y: -9 }).y + 0.005 / (2 * 0.02 * 2) * 100) < 1e-9);
+  assert.equal(eyePose(eyes, 'left', { x: 0, y: 0 }, 1).scaleY.toFixed(2), '0.08');
+  assert.equal(eyePose(eyes, 'left', { x: 0, y: 0 }, 7).scaleY.toFixed(2), '0.08');
+});
+
+test('a working bot wanders organically: bounded glances, irregular blinks, never a fixed loop', () => {
+  let seed = 12345;
+  const random = () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
+  const sample = createWander(random);
+  const looks = new Set(), blinkStarts = [];
+  let blinking = false;
+  for (let now = 0; now < 120000; now += 16) {
+    const { x, y, blink } = sample(now);
+    assert.ok(Math.hypot(x, y) <= 1, `gaze (${x}, ${y}) stays in the unit disk`);
+    assert.ok(blink >= 0 && blink <= 1);
+    looks.add(`${Math.round(x * 4)},${Math.round(y * 4)}`);
+    if (blink > 0 && !blinking) blinkStarts.push(now);
+    blinking = blink > 0;
+  }
+  assert.ok(looks.size > 12, 'many different glances');
+  assert.ok(blinkStarts.length >= 15 && blinkStarts.length <= 60, `blinks in 2 minutes: ${blinkStarts.length}`);
+  const gaps = blinkStarts.slice(1).map((time, index) => time - blinkStarts[index]);
+  assert.ok(Math.max(...gaps) - Math.min(...gaps) > 1500, 'blink spacing varies');
+  assert.deepEqual([0, 1, 2].map((i) => createWander(() => 0.5)(i * 16).blink), [0, 0, 0]);
+});
+
+test('tint choices fall back to none and travel with the bot', () => {
+  for (const value of ['red', 'blue', 'yellow', 'none']) assert.equal(normalizeTint(value), value);
+  for (const value of [undefined, null, '', 'green', 'RED', 7, {}, ['red']]) assert.equal(normalizeTint(value), 'none');
+  const bot = { id: '7', name: 'Test' };
+  const state = { avatarLibrary: [{ id: 'marble-a', name: 'A', builtIn: true, cutout: true, dataUrl: 'a.png', eyes: { enabled: true, style: 'obsidian' } }],
+    avatarPreferences: { 7: { selectedId: 'marble-a', tint: 'blue' }, 8: { selectedId: 'marble-a', tint: 'chartreuse' }, 9: { selectedId: 'marble-a' } } };
+  assert.equal(resolveAvatar(bot, state).tint, 'blue');
+  assert.equal(resolveAvatar({ id: '8' }, state).tint, 'none');
+  assert.equal(resolveAvatar({ id: '9' }, state).tint, 'none');
+  assert.equal(resolveAvatar({ id: '10' }, state).tint, 'none');
+  assert.equal(resolveAvatar(bot, state, { selectedId: 'marble-a', tint: 'red' }).tint, 'red');
+});
+
+test('marble busts always draw the manifest eyes; photos and imported pictures stay as they were', () => {
+  const bot = { id: '7', name: 'Test', avatar: 'telegram.png' };
+  const state = { avatarLibrary: [
+    { id: 'marble-a', name: 'A', builtIn: true, cutout: true, dataUrl: 'a.png', eyes: { enabled: false, style: 'obsidian', radius: 0.02 } },
+    { id: 'custom-1', name: 'Mine', dataUrl: 'mine.png', eyes: { enabled: false } }],
+    avatarPreferences: { 7: { selectedId: 'marble-a', eyes: { enabled: false, radius: 0.1 }, tint: 'red' } } };
+  const marble = resolveAvatar(bot, state);
+  assert.equal(marble.eyes.enabled, true);
+  assert.equal(marble.eyes.radius, 0.02, 'a stale saved calibration cannot move the eyes off the eyeless image');
+  for (const selectedId of ['custom-1', 'telegram', 'gone']) {
+    const plain = resolveAvatar(bot, state, { selectedId, tint: 'red' });
+    assert.equal(plain.eyes.enabled, false, `${selectedId} has no eye data, so no overlay is drawn`);
+    assert.equal(plain.cutout, false, 'and is not treated as a tintable cutout');
+  }
+  assert.equal(resolveAvatar({ id: '1', name: 'No picture' }, {}).eyes.enabled, false);
 });
