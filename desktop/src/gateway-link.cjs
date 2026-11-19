@@ -24,7 +24,7 @@ const { createHermesRemote, RemoteError } = require('./hermes-remote.cjs');
 const { HermesSessionWire } = require('./hermes-session-wire.cjs');
 
 const DEFAULTS = Object.freeze({
-  baseMs: 500, capMs: 15000, quickDropMs: 100,
+  baseMs: 500, capMs: 15000, quickDropMs: 25,
   connectTimeoutMs: 8000, bindTimeoutMs: 8000,
   pingIdleMs: 9000, pingDeadMs: 4000, // 13 s worst case from the last frame, inside the 14 s target and Hermes's 45 s
   offlinePollMs: 1000, focusIdleMs: 15000,

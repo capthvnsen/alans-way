@@ -204,7 +204,7 @@ Replies: `streaming`, `waiting` (an approval or question is open), `done`, `inte
 
 | Setting | Value (start values, tuned by the harness) |
 |---|---|
-| Delay | 0.5 s x 2^n with full jitter, cap 15 s; reset when an attempt reaches `live` (a link that drops within 100 ms of going live keeps its count) |
+| Delay | 0.5 s x 2^n with full jitter, cap 15 s; reset when an attempt reaches `live` (a link that drops within 25 ms of going live keeps its count) |
 | Immediate attempt (skip the wait) | network path becomes available, resume from sleep, window regains focus after more than 15 s, user presses Retry |
 | One attempt at a time | yes; a new trigger cancels the wait, not a running attempt |
 | Connect timeout | 8 s (today 15 s: `hermes-remote.cjs:264`, `hermes-hub.cjs:248-251`) |
