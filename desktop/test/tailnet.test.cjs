@@ -48,3 +48,20 @@ test('the Hermes Webapp pane loads only Tailscale Serve names and this machine',
   for (const url of ['', null, 'not a url', 'http://vm.tail1234.ts.net/', 'https://ts.net/', 'https://evil-ts.net/', 'https://vm.ts.net.evil.example/', 'https://127.0.0.1:9120/', 'http://127.0.0.2:9120/',
     `http://${ip}:9120/`, 'file:///etc/passwd', 'https://user:pw@vm.tail1234.ts.net/', 'https://vm.tail1234.ts.net/?ticket=x', 'http://127.0.0.1:9120/webapp/launch#ticket=x']) assert.equal(hermesWebappUrl(url), '', String(url));
 });
+
+test('the Hermes gateway accepts the Tailscale Serve name over https/wss and nothing looser', () => {
+  const { tailnetUrl } = require('../src/tailnet.cjs');
+  const gateway = (value) => { try { return tailnetUrl(new URL(value), true); } catch { return false; } };
+  for (const url of ['https://vm.tail1234.ts.net', 'https://vm.tail1234.ts.net/p/work', 'https://vm.tail1234.ts.net:8443', 'HTTPS://VM.tail1234.TS.NET', 'wss://vm.tail1234.ts.net/api/ws?ticket=x', `http://${ip}:9119`]) assert.equal(gateway(url), true, url);
+  for (const url of ['http://vm.tail1234.ts.net', 'ws://vm.tail1234.ts.net/api/ws', 'https://ts.net', 'https://.ts.net', 'https://a..ts.net', 'https://vm.tail1234.ts.net.', 'https://ts.net.evil.com', 'https://vm.ts.net.evil.com', 'https://evil-ts.net', 'https://evilts.net', 'https://vm.ts.net@evil.example', 'https://evil.example@vm.tail1234.ts.net', 'https://vm.tail1234.ts.net%2eevil.com',
+    'https://xn--vm-6ma.tail1234.ts.net', 'https://vm.tѕ.net', 'https://vm.ts。net.evil.com', 'https://203.0.113.7', 'https://localhost', 'ftp://vm.tail1234.ts.net']) assert.equal(gateway(url), false, url);
+  assert.equal(normalizeBaseUrl('https://vm.tail1234.ts.net/p/work/').origin, 'https://vm.tail1234.ts.net');
+  for (const url of ['http://vm.tail1234.ts.net', 'https://ts.net.evil.com', 'https://user:pw@vm.tail1234.ts.net']) assert.throws(() => normalizeBaseUrl(url), /bad|Use|credentials/, url);
+});
+
+test('the serve-name allowance is opt-in: desktop and viewer addresses stay literal tailnet IPs', () => {
+  for (const url of ['https://vm.tail1234.ts.net/vnc.html', 'wss://vm.tail1234.ts.net/websockify']) {
+    assert.throws(() => parseRemoteUrl(url), /literal Tailscale IP/, url);
+    assert.equal(viewerUrl(url), '', url);
+  }
+});

@@ -49,7 +49,7 @@ function normalizeBaseUrl(raw) {
   if (url.username || url.password) {
     throw new RemoteError('bad_url', 'Do not embed credentials in the URL; sign in instead.');
   }
-  if (!tailnetUrl(url)) throw new RemoteError('bad_url', 'Use a literal Tailscale IP address for the Hermes backend.');
+  if (!tailnetUrl(url, true)) throw new RemoteError('bad_url', 'Use an https://….ts.net address or a literal Tailscale IP address for the Hermes backend.');
   url.hash = '';
   url.search = '';
   const prefix = url.pathname.replace(/\/+$/, '');
@@ -65,7 +65,7 @@ const joinPath = (prefix, route) => `${prefix}${route}`;
 // superseded attempt releases the socket now instead of at timeout.
 function requestJson({ origin, prefix, method, route, headers = {}, body, timeoutMs = REQUEST_TIMEOUT_MS, cookieJar, signal }) {
   return new Promise((resolve, reject) => {
-    if (!tailnetUrl(new URL(origin))) { reject(new RemoteError('bad_url', 'Use a literal Tailscale IP address.')); return; }
+    if (!tailnetUrl(new URL(origin), true)) { reject(new RemoteError('bad_url', 'Use an https://….ts.net address or a literal Tailscale IP address.')); return; }
     const abortErr = () => signal?.reason instanceof RemoteError ? signal.reason
       : new RemoteError('aborted', `${method} ${route} aborted`);
     if (signal?.aborted) { reject(abortErr()); return; }
@@ -270,7 +270,7 @@ function createHermesRemote() {
       if (signal?.aborted) throw abortErr();
       let onAbort = null;
       const ws = await new Promise((resolve, reject) => {
-        if (!tailnetUrl(new URL(url))) { reject(new RemoteError('bad_url', 'Use a literal Tailscale IP address.')); return; }
+        if (!tailnetUrl(new URL(url), true)) { reject(new RemoteError('bad_url', 'Use an https://….ts.net address or a literal Tailscale IP address.')); return; }
         const sock = new WebSocket(url);
         let settled = false;
         // Reject BEFORE closing: close() on a connecting socket can fire

@@ -44,7 +44,7 @@ test('a token, ticket, password or message never appears in a log', async () => 
     // Expired access token: every connect refreshes (refresh token on the wire) then mints a ticket.
     const open = createGatewayOpener({ credentials: () => ({ base, tokens: { ...tokens, expiresAt: 1 } }), adoptTokens: () => {}, expireSignIn: () => { expired = true; }, remote });
     link = createGatewayLink({ open, log: (event, fields) => log.write(event, JSON.stringify(fields)),
-      options: { baseMs: 5, capMs: 40, stableMs: 20, connectTimeoutMs: 1000 } });
+      options: { baseMs: 5, capMs: 40, connectTimeoutMs: 1000 } });
     link.on('state', (s) => reported.push(JSON.stringify(s)));
     link.on('gap', (g) => reported.push(JSON.stringify(g)));
     link.start();

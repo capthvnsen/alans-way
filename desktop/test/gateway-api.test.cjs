@@ -65,6 +65,20 @@ test('a reply over the link maps to the events native chat already handles, in o
   assert.deepEqual(chat.getState().thread.messages.map((m) => m.text), ['hi', 'pong']);
 });
 
+// The real server streams only thinking.delta (and session.usage) until message.complete, seconds later.
+// Native chat draws "Thinking" for any live run with no text and no tool (native-chat.js, renderLive),
+// so the pending state is already there from the send; thinking.delta must not disturb it.
+test('between the send and the first token the run is pending with no text, and thinking.delta leaves it so', async () => {
+  const { chat, link } = rig();
+  await chat.command('send', { sessionId: 'api_1', text: 'hi' });
+  await until(() => chat.getState().run?.status === 'running', 'the run to be admitted');
+  assert.deepEqual({ text: chat.getState().run.text, tool: chat.getState().run.tool }, { text: '', tool: '' });
+  link.ev('message.start', 1); link.ev('thinking.delta', 2, { text: 'hm' }); link.ev('session.usage', 3, {});
+  assert.deepEqual({ status: chat.getState().run.status, text: chat.getState().run.text, tool: chat.getState().run.tool }, { status: 'running', text: '', tool: '' });
+  link.ev('message.complete', 4, { text: 'pong', status: 'complete' });
+  await until(() => chat.getState().run === null, 'the run to finish');
+});
+
 test('a gap during a reply ends it with the history note and reloads from REST', async () => {
   const { chat, link } = rig();
   await chat.command('send', { sessionId: 'api_1', text: 'hi' });

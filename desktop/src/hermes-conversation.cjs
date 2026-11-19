@@ -245,9 +245,14 @@ class HermesConversation extends EventEmitter {
       const { adv } = await this._negotiate();
 
       this._activationPending = true;
-      const snap = await this.wire.call('session.activate', {
+      const pAct = this.wire.call('session.activate', {
         session_id: this.identity.sessionId, omit_messages: !!omitMessages,
       });
+      pAct.catch(() => {});
+      const pSince = this.wire.call('session.events.since',
+        { session_id: this.identity.sessionId, last_seen: 0 });
+      pSince.catch(() => {});
+      const snap = await pAct;
       if (!isPlainObject(snap) || snap.session_id !== this.identity.sessionId) {
         throw new ConversationError('identity_drift', 'session.activate returned a different session_id');
       }
@@ -266,8 +271,7 @@ class HermesConversation extends EventEmitter {
       this._bindingSnapshotReady = true;
 
       // Replay check: epoch must match this wire's epoch; truncation is honest.
-      const replay = await this.wire.call('session.events.since',
-        { session_id: this.identity.sessionId, last_seen: 0 });
+      const replay = await pSince;
       if (!isPlainObject(replay) || typeof replay.epoch !== 'string'
           || !Array.isArray(replay.events) || !Array.isArray(replay.open_requests)
           || typeof replay.latest_seq !== 'number') {

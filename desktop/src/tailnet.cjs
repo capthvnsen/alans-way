@@ -16,10 +16,16 @@ function isTailnetHost(value) {
   return isTailnetAddress(host) || (process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK === '1' && ['127.0.0.1', '::1'].includes(host));
 }
 
-function tailnetUrl(url) {
+// A Tailscale Serve name: ASCII labels under ts.net. Not the bare domain, no trailing dot, no punycode.
+const isServeName = (host) => /^(?:(?!xn--)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+ts\.net$/.test(host);
+
+// serveName: also accept an https/wss Tailscale Serve name, for a backend that answers only its public name.
+// Callers that dial a raw tailnet host (desktop viewer, noVNC) leave it off.
+function tailnetUrl(url, serveName = false) {
   const host = url.hostname.replace(/^\[|\]$/g, '');
+  const serve = serveName && ['https:', 'wss:'].includes(url.protocol) && !url.username && !url.password && isServeName(host);
   // Existing fixture opt-in also covers loopback CDP; never set it on a service.
-  return !requireTailnet || isTailnetAddress(host) || (process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK === '1' && ['127.0.0.1', '::1', 'localhost'].includes(host));
+  return !requireTailnet || isTailnetAddress(host) || serve || (process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK === '1' && ['127.0.0.1', '::1', 'localhost'].includes(host));
 }
 
 // The Hermes Webapp address the chat pane may load, or '' when refused. A Webapp
@@ -32,7 +38,7 @@ function hermesWebappUrl(value) {
     const url = new URL(String(value || '').trim());
     if (url.username || url.password || url.search || url.hash) return '';
     const host = url.hostname.toLowerCase();
-    const allowed = url.protocol === 'https:' ? host.endsWith('.ts.net') : url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(host);
+    const allowed = url.protocol === 'https:' ? isServeName(host) : url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(host);
     return allowed ? url.href : '';
   } catch { return ''; }
 }
