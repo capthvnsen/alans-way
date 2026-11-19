@@ -138,7 +138,8 @@ function createGatewayLink(deps = {}) {
     conn = c;
     lastActivity = timers.now();
     // Any inbound byte is proof of life; the ping only fires after real silence.
-    c.wire.input?.on?.('data', () => { lastActivity = timers.now(); });
+    // Only the current socket's bytes count: a late frame from a dropped one must not vouch for the new one.
+    c.wire.input?.on?.('data', () => { if (conn === c) lastActivity = timers.now(); });
     c.wire.on('close', (info) => { if (conn === c) dropConn(`wire_${info && info.state || 'closed'}`); });
   }
 

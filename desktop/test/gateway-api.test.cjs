@@ -14,6 +14,10 @@ const { createGatewayApi } = require('../src/gateway-api.cjs');
 const { LinkError } = require('../src/gateway-link.cjs');
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+async function until(pred, what, ms = 5000) {
+  const end = Date.now() + ms;
+  while (!pred()) { if (Date.now() > end) throw new Error(`timed out waiting for ${what}`); await tick(2); }
+}
 
 function fakeLink(state = 'live') {
   const link = new EventEmitter();
@@ -56,8 +60,7 @@ test('a reply over the link maps to the events native chat already handles, in o
   assert.equal(chat.getState().run.text, 'pong');
   assert.equal(chat.getState().thread.messages.find((m) => m.state).state, 'sent');
   link.ev('message.complete', 6, { text: 'pong', status: 'complete' });
-  await tick(20);
-  assert.equal(chat.getState().run, null);
+  await until(() => chat.getState().run === null && chat.getState().thread.messages.every((m) => typeof m.id === 'number'), 'the run to finish and history to load');
   assert.equal(chat.getState().thread.notice, '');
   assert.deepEqual(chat.getState().thread.messages.map((m) => m.text), ['hi', 'pong']);
 });
@@ -68,7 +71,7 @@ test('a gap during a reply ends it with the history note and reloads from REST',
   await tick();
   link.ev('message.delta', 1, { text: 'po' });
   link.emit('gap', { storedId: 'api_1', reason: 'truncated' });
-  await tick(20);
+  await until(() => chat.getState().run === null && chat.getState().thread.messages.every((m) => typeof m.id === 'number'), 'the gap to end the run and history to load');
   const t = chat.getState().thread;
   assert.equal(t.notice, 'Part of this reply was missed and was reloaded from history.');
   assert.deepEqual(t.messages.map((m) => m.id), [1, 2], 'history replaced the partial local reply');
@@ -79,7 +82,7 @@ test('a gap with no reply running reloads the thread quietly', async () => {
   const { chat, link } = rig();
   chat.getState();
   link.emit('gap', { storedId: 'api_1', reason: 'reaped' });
-  await tick(20);
+  await until(() => chat.getState().thread.messages.length === 2, 'history to reload');
   assert.deepEqual(chat.getState().thread.messages.map((m) => m.id), [1, 2]);
   assert.equal(chat.getState().thread.notice, '');
 });
@@ -90,7 +93,7 @@ test('link state shows in getState; a send while the link is down fails like a d
   link.setState('reconnecting');
   assert.equal(chat.getState().link.state, 'reconnecting');
   await chat.command('send', { sessionId: 'api_1', text: 'hi' });
-  await tick(20);
+  await until(() => chat.getState().thread.messages.some((m) => m.state === 'failed'), 'the send to fail');
   const state = chat.getState();
   assert.deepEqual(state.thread.messages.map((m) => m.state), ['failed']);
   assert.equal(state.thread.notice, 'That message was not sent.');

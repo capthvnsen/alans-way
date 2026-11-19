@@ -22,7 +22,7 @@ function createGatewayEngine(cfg = {}) {
   const timers = new Set();
   const submits = [];
   const applied = [];            // every event emitted: { sessionId, seq, type }
-  let rowSeq = 0, newSeq = 0, closed = false;
+  let rowSeq = 0, newSeq = 0, closed = false, pings = 0;
   const nowSec = () => Math.floor(Date.now() / 1000);
   const later = (fn, ms) => {
     const t = setTimeout(() => { timers.delete(t); if (!closed) fn(); }, ms);
@@ -83,7 +83,7 @@ function createGatewayEngine(cfg = {}) {
 
   function rpc(peer, method, params) {
     switch (method) {
-      case 'gateway.ping': return { result: { ok: true } };
+      case 'gateway.ping': pings += 1; return { result: { ok: true } };
       case 'gateway.capabilities': return { result: { per_session_exclusive_submit: true, modes: ['default'] } };
       case 'client.capabilities': return { result: { server_requests: ['tool.approval'] } };
       case 'session.active_list': return { result: { sessions: [...live.values()].map(row) } };
@@ -136,6 +136,7 @@ function createGatewayEngine(cfg = {}) {
   return {
     epoch: () => epoch,
     submits, applied,
+    pings: () => pings,
     liveSessions: () => [...live.values()],
     session: (id) => live.get(id),
     stored: (key) => stored.get(key),

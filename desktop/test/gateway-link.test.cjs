@@ -12,7 +12,7 @@ const { createGatewayLink, LinkError } = require('../src/gateway-link.cjs');
 const { createGatewayEngine } = require('./hermes-gateway-engine.cjs');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function until(pred, ms = 2000, what = 'condition') {
+async function until(pred, ms = 5000, what = 'condition') {
   const end = Date.now() + ms;
   while (!pred()) { if (Date.now() > end) throw new Error(`timed out waiting for ${what}`); await sleep(2); }
 }
@@ -23,7 +23,7 @@ function memConn(engine, server) {
   input.on('error', () => {}); // the real adapter keeps the same permanent sink
   const wire = new HermesSessionWire({ input, output });
   const peer = engine.connect((o) => { if (!conn.silent && !input.destroyed) input.write(JSON.stringify(o) + '\n'); });
-  const conn = { wire, epoch: engine.epoch(), silent: false, closed: false };
+  const conn = { wire, input, epoch: engine.epoch(), silent: false, closed: false };
   let rest = '';
   output.on('data', (c) => {
     rest += c.toString('utf8');
@@ -128,7 +128,7 @@ test('duplicate and out-of-order replay is applied once and in order', async () 
   await r.link.submit('k1', 'hi');
   await until(() => seqs(r.events).length >= 2);
   r.server.conns[0].reset();
-  await sleep(150); // the turn finishes with nobody attached
+  await until(() => r.engine.applied.some((e) => e.type === 'message.complete'), 5000, 'the turn to finish with nobody attached');
   gate();
   await until(() => r.events.some((e) => e.type === 'message.complete'));
   const s = seqs(r.events);
@@ -146,7 +146,7 @@ test('truncated replay: gap reported, no error state, next send works', async ()
   await r.link.submit('k1', 'hi');
   await until(() => seqs(r.events).length >= 2);
   r.server.conns[0].reset();
-  await sleep(200);
+  await until(() => r.engine.applied.some((e) => e.type === 'message.complete'), 5000, 'the turn to finish with nobody attached');
   gate();
   await until(() => r.gaps.length === 1 && r.link.isLive());
   assert.equal(r.gaps[0].reason, 'truncated');
@@ -186,8 +186,7 @@ test('a session reaped after the grace window goes the history path, quietly', a
   await until(() => seqs(r.events).length >= 1);
   const gate = r.hold();
   r.server.conns[0].reset();
-  await sleep(120);
-  assert.equal(r.engine.liveSessions().length, 0, 'the engine reaped the orphan');
+  await until(() => r.engine.liveSessions().length === 0, 5000, 'the engine to reap the orphan');
   gate();
   await until(() => r.gaps.length === 1 && r.link.isLive());
   assert.equal(r.gaps[0].reason, 'reaped');
@@ -196,18 +195,38 @@ test('a session reaped after the grace window goes the history path, quietly', a
 });
 
 test('ping: silence is probed, a dead answer drops the socket and reconnects', async () => {
-  const r = rig({}, { options: { baseMs: 5, capMs: 40, stableMs: 40, pingIdleMs: 30, pingDeadMs: 40, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500 } });
+  // pingDeadMs is generous: answered pings must never look dead on a loaded machine. Nothing below
+  // asserts how long detection took (the drop harness measures that); it waits for events.
+  const r = rig({}, { options: { baseMs: 5, capMs: 40, stableMs: 40, pingIdleMs: 20, pingDeadMs: 300, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500 } });
   r.link.start();
   await until(() => r.link.isLive());
   const first = r.server.conns[0];
-  await sleep(120); // idle pings are answered: still the same socket
-  assert.equal(r.server.opens, 1);
+  await until(() => r.engine.pings() >= 2, 5000, 'two answered idle pings');
+  assert.equal(r.server.opens, 1, 'answered pings keep the same socket');
   first.silent = true;
-  const t0 = Date.now();
-  await until(() => r.link.getState().state !== 'live');
-  assert.ok(Date.now() - t0 < 200, 'detected within idle + dead');
-  await until(() => r.link.isLive() && r.server.opens === 2);
+  // The link goes live -> reconnecting -> syncing -> live in a few ms; read the recorded
+  // transitions, not a poll that can land after the whole round trip.
+  await until(() => r.server.opens === 2 && r.link.isLive(), 5000, 'a second socket after the silence');
+  assert.ok(r.states.indexOf('reconnecting') > r.states.indexOf('live'), 'the silence was seen as a drop');
+  assert.ok(r.logs.some(([event, f]) => event === 'link.dropped' && f.reason === 'ping_timeout'));
   assert.equal(r.server.maxOpen, 1);
+  r.done();
+});
+
+test('ping: bytes from a dropped socket do not vouch for its replacement', async () => {
+  const r = rig({}, { options: { baseMs: 5, capMs: 40, stableMs: 40, pingIdleMs: 20, pingDeadMs: 300, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500 } });
+  r.link.start();
+  await until(() => r.link.isLive());
+  const old = r.server.conns[0];
+  r.link.trigger('wake');
+  await until(() => r.server.opens === 2 && r.link.isLive());
+  // The second socket goes dead while the first one, long dropped, keeps emitting bytes.
+  r.server.conns[1].silent = true;
+  const noise = setInterval(() => old.input.write('\n'), 2);
+  try {
+    await until(() => r.server.opens === 3 && r.link.isLive(), 5000, 'the dead second socket to be noticed');
+  } finally { clearInterval(noise); }
+  assert.ok(r.logs.some(([event, f]) => event === 'link.dropped' && f.reason === 'ping_timeout'));
   r.done();
 });
 
@@ -254,7 +273,8 @@ test('suspend closes the socket and attempts nothing; resume reconnects at once'
   r.link.suspend();
   assert.equal(r.link.getState().state, 'suspended');
   assert.equal(r.server.open, 0);
-  await sleep(100); // longer than the grace
+  await until(() => r.engine.liveSessions().length === 0, 5000, 'the grace window to pass');
+  await sleep(50); // a negative check: nothing may be attempted while suspended
   assert.equal(r.server.opens, 1, 'no attempt while suspended');
   r.link.resume();
   await until(() => r.link.isLive());
