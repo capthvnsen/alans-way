@@ -32,7 +32,7 @@
   function activityLabel(activity, now = Date.now()) {
     if (isActive(activity, now)) return activity.label || 'Activity detected';
     if (activity?.state === 'idle' || (activity?.state === 'active' && Number.isFinite(activity.expiresAt) && activity.expiresAt <= now)) return 'Idle · no live activity signal';
-    return 'Activity unavailable';
+    return '';
   }
 
   function resolveAvatar(bot, state, override) {
@@ -177,7 +177,7 @@
     const idle = activity?.state === 'idle' || (activity?.state === 'active' && Number.isFinite(activity.expiresAt) && activity.expiresAt <= Date.now());
     record.node.dataset.activity = active ? 'active' : idle ? 'idle' : 'unknown';
     if (!record.decorative) {
-      record.node.title = `${record.bot?.name || 'Telegram'} · ${activityLabel(record.bot?.activity)}`;
+      record.node.title = [record.bot?.name || 'Telegram', activityLabel(record.bot?.activity)].filter(Boolean).join(' · ');
       record.node.setAttribute('aria-label', record.node.title);
     }
     // The same live-activity signal that lights the avatar ring is what makes the eyes wander. Idle eyes are still.

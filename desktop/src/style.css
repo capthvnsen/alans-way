@@ -133,7 +133,7 @@ body.win32 .pane-actions{padding-right:140px}.chat-note.warn{height:auto;min-hei
 .bot-status .unread{margin:0}.bot-status .waiting-badge{margin:0}.bot-status .status-text.waiting{color:#f0b45a}.bot-status .status-text.bad{color:#ef7d7d}
 .gateway-rows .bot-hide{top:50%;margin-top:-11px}
 .gateway-rows .bot-row.primary{box-shadow:none}.gateway-rows .primary-badge{flex-shrink:0;padding:2px 6px;line-height:1}
-.gateway-logo{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px}.gateway-logo svg{width:16px;height:16px}.gateway-logo img{width:16px;height:16px;border-radius:50%;object-fit:cover;opacity:.85}
+.gateway-logo{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px}.gateway-logo svg{width:16px;height:16px}.gateway-logo img{width:16px;height:16px;border-radius:4px;object-fit:cover}
 .bot-open:focus-visible,.tab-select:focus-visible{outline:2px solid #8baaf1;outline-offset:3px}
 .side-search{position:relative;flex-shrink:0;display:flex;align-items:center;gap:4px;margin:12px 0;padding:0 13px 0 18px}
 .search-field{flex:1;min-width:0;height:28px;display:flex;align-items:center;gap:7px;border-radius:6px;color:var(--muted)}
@@ -306,17 +306,13 @@ body.win32 .pane-actions{padding-right:140px}.chat-note.warn{height:auto;min-hei
 .hermes-send,.hermes-stop{margin:0;padding:9px 15px;font-size:11.5px}
 .hermes-send:disabled,.hermes-stop:disabled{opacity:.45;cursor:default}
 
-/* Sidebar section + setup card */
-.hermes-caption{padding-top:16px}
-.hermes-list{padding:0 10px}
-.hermes-row{min-height:0;padding:8px 10px;margin-bottom:2px}
-.hermes-row .bot-open{font-size:11.5px}
-.hermes-connect{padding:2px 10px 8px}
-.hermes-connect-row{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:7px 9px;border-radius:9px;font-size:11px;color:#9a9aa6}
-.hermes-connect-row:hover{background:#202022}
-.hermes-dot{width:7px;height:7px;border-radius:50%;background:#52525c;flex-shrink:0}
-.hermes-dot.on{background:#69c79a}
-.hermes-connect-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Session strip + setup card */
+.hermes-sessions{display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line)}
+.hermes-sessions>.secondary-button{flex-shrink:0;margin:0}
+.hermes-list{display:flex;flex-wrap:wrap;gap:6px;min-width:0;max-height:96px;overflow-y:auto}
+.hermes-chip{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:5px 10px;border-radius:999px;border:1px solid #34343e;font-size:11px;color:#c9c9d1}
+.hermes-chip:hover{background:#202022}.hermes-chip.selected{background:#ffffff14;color:var(--text)}
+.hermes-list .hermes-note{align-self:center;padding:0}
 .hermes-setup{flex:1;min-height:0;overflow-y:auto;padding:26px 22px}
 .hermes-setup-card h2{font-size:15px;font-weight:550;margin:0 0 10px}
 .hermes-field{width:100%;margin:7px 0;background:#0f0f13;border:1px solid #34343e;border-radius:9px;color:var(--text);padding:10px 12px;font-size:12px}

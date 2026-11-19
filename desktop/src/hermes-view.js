@@ -296,7 +296,7 @@
       if (!shown) {
         const emptyReady = state.storedSessionsError
           ? `No live conversation is selected. ${state.storedSessionsError}`
-          : state.storedSessions?.length ? 'Resume a saved conversation from the sidebar, or start a new session.'
+          : state.storedSessions?.length ? 'Resume a saved conversation above, or start a new session.'
             : state.sessions?.length ? 'Select a live conversation to start.'
               : 'No live or saved conversations on this backend. Use New Hermes session to start.';
         transcript.append(el('div', 'hermes-empty',

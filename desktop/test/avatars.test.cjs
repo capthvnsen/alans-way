@@ -11,7 +11,8 @@ test('animation requires an active signal and stops when its lease expires', () 
   assert.equal(isActive({ state: 'active', expiresAt: 101 }, 100), true);
   assert.equal(isActive({ state: 'active' }), true);
   assert.equal(activityLabel({ state: 'active', expiresAt: 100 }, 100), 'Idle · no live activity signal');
-  assert.equal(activityLabel({ state: 'unknown' }), 'Activity unavailable');
+  assert.equal(activityLabel({ state: 'unknown' }), '');
+  assert.equal(activityLabel(undefined), '');
 });
 
 test('avatar selection falls back to Telegram without applying a different gallery asset', () => {
