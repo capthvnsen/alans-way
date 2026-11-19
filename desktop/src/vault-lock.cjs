@@ -35,9 +35,25 @@ const reset = (tab) => { delete tab.vaultLock; tab.agentScripted = (tab.scriptsI
 // run code, so only its enable and disable count as plain.
 const isScript = (body) => body.action === 'eval'
   || (body.action === 'cdp' && (!READ_ONLY_CDP.test(String(body.method || '')) || (/^Runtime\./.test(body.method) && !/^Runtime\.(?:enable|disable)$/.test(body.method))));
+// Every origin on which any bot's agent has run script, for the life of the app process. A script can leave state the
+// controller check cannot see (a service worker, storage, a handler the site stores), so a fill on such an origin is
+// refused until restart.
+const scriptedOrigins = new Set();
+function effectiveOrigin(tab) {
+  try {
+    const wc = tab.view.webContents, frame = wc.mainFrame && wc.mainFrame.origin;
+    if (frame && frame !== 'null') return frame;
+    const origin = new URL(wc.getURL()).origin;
+    return origin === 'null' ? '' : origin;
+  } catch { return ''; }
+}
+const isScriptedOrigin = (origin) => scriptedOrigins.has(origin);
+const resetScriptedOrigins = () => scriptedOrigins.clear();
 // Called synchronously right before the script is dispatched. Returns the function to call when the dispatch settles.
 function beginScript(tab, body) {
   if (!isScript(body)) return () => {};
+  const origin = effectiveOrigin(tab);
+  if (origin) scriptedOrigins.add(origin);
   tab.agentScripted = true;
   tab.scriptsInFlight = (tab.scriptsInFlight || 0) + 1;
   let ended = false;
@@ -84,9 +100,15 @@ function guardSelectors(tab, body) {
   if (isLocked(tab) && badSelector(body)) throw refusal(SELECTOR_REFUSAL);
 }
 
+// Shift with a key that extends a selection: the selection can then be copied, dragged or typed over.
+const SELECTING = new Set(['end', 'home', 'pageup', 'pagedown', 'arrowleft', 'arrowright', 'arrowup', 'arrowdown']);
+const selectionKey = (body) => body.action === 'press' && typeof body.key === 'string' && SELECTING.has(body.key.toLowerCase()) && Array.isArray(body.modifiers) && body.modifiers.includes('shift');
+
 function guardAction(tab, body) {
   if (!isLocked(tab)) return;
   if (body.action === 'eval' || body.action === 'cdp') throw refusal();
+  if (body.action === 'drag') throw refusal('vault_locked: drag is paused while a saved password is filled.');
+  if (selectionKey(body)) throw refusal('vault_locked: key combinations that extend a selection are paused while a saved password is filled.');
   if (clipboardKey(body)) throw refusal('vault_locked: clipboard key combinations are paused while a saved password is filled.');
   guardSelectors(tab, body);
 }
@@ -95,12 +117,21 @@ function guardNewTab(botId) { if (isBotLocked(botId)) throw refusal(); }
 // Options every page reader adds for this tab.
 const readOptions = (tab) => isLocked(tab) ? { blankValues: true } : {};
 
-// The document is gone once a cross-document navigation commits (did-navigate is not sent for in-page ones) or
-// its renderer dies; a back or forward step loads a fresh document too.
-function watch(tab, contents) {
-  contents.on('did-navigate', () => reset(tab));
-  contents.on('render-process-gone', () => reset(tab));
+// Page.getNavigationHistory titles are page-controlled text: they never reach an agent, lock or no lock.
+function scrubCdpResult(method, value) {
+  if (method !== 'Page.getNavigationHistory' || !value || typeof value !== 'object' || !Array.isArray(value.entries)) return value;
+  return { ...value, entries: value.entries.map((entry) => { if (!entry || typeof entry !== 'object') return entry; const { title, ...rest } = entry; return rest; }) };
 }
 
-module.exports = { isLocked, isBotLocked, setPeers, acquire, markFilled, release, reset, isScript, beginScript, cdpParamError, clipboardKey, simpleSelector,
+// The document is gone once a cross-document navigation commits (did-navigate is not sent for in-page ones) or
+// its renderer dies; a back or forward step loads a fresh document too.
+// documentSeq counts documents, not reads: unlike tab.generation (every snapshot and every history.replaceState bumps
+// that) it advances only here, so a check that compares it refuses a real navigation and nothing else.
+function watch(tab, contents) {
+  const gone = () => { tab.documentSeq = (tab.documentSeq || 0) + 1; reset(tab); };
+  contents.on('did-navigate', gone);
+  contents.on('render-process-gone', gone);
+}
+
+module.exports = { isScriptedOrigin, resetScriptedOrigins, scrubCdpResult, isLocked, isBotLocked, setPeers, acquire, markFilled, release, reset, isScript, beginScript, cdpParamError, clipboardKey, simpleSelector,
   guardAction, guardSelectors, guardScreenshot, guardNewTab, readOptions, watch };

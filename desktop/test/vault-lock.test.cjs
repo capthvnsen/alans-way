@@ -4,6 +4,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const lock = require('../src/vault-lock.cjs');
+const { afterEach } = require('node:test');
+afterEach(() => lock.resetScriptedOrigins());
 
 test('prompt, filled and released: a refused fill never lifts the lock an earlier fill set', () => {
   const tab = {};
@@ -27,7 +29,7 @@ test('eval and cdp are refused while locked, with the reason and a 403; everythi
     { action: 'cdp', method: 'DOMSnapshot.captureSnapshot' }, { action: 'cdp', method: 'Page.captureScreenshot' }]) {
     assert.throws(() => lock.guardAction(tab, body), (error) => error.status === 403 && error.code === 'vault_locked' && /paused|locked/i.test(error.message) && /page changes|navigat/i.test(error.message), JSON.stringify(body));
   }
-  for (const action of ['click', 'double_click', 'right_click', 'type', 'press', 'select', 'scroll', 'move', 'drag', 'navigate', 'back', 'forward', 'reload', 'read', 'wait', 'batch', 'viewport', 'if', 'repeat']) {
+  for (const action of ['click', 'double_click', 'right_click', 'type', 'press', 'select', 'scroll', 'move', 'navigate', 'back', 'forward', 'reload', 'read', 'wait', 'batch', 'viewport', 'if', 'repeat']) {
     assert.doesNotThrow(() => lock.guardAction(tab, { action }), action);
   }
   lock.release(tab);
@@ -113,8 +115,7 @@ test('selectors while locked: ids, classes, tags, descendant and child combinato
   for (const sel of bad) assert.equal(lock.simpleSelector(sel), false, JSON.stringify(sel));
   const tab = { vaultLock: 'filled' };
   const places = [
-    { action: 'wait', selector: '#pw[value^="C"]' }, { action: 'click', selector: '#pw[value^="C"]' }, { action: 'type', selector: 'input:valid', text: 'x' }, { action: 'drag', selector: '#a', toSelector: '#b[x]' },
-    { action: 'read', selector: '#f[x]', maxChars: 5 }, { action: 'read', list: { selector: 'li[x]', fields: { t: { type: 'text' } } } }, { action: 'read', list: { selector: 'li', fields: { t: { type: 'text', selector: 'b[x]' } } } },
+    { action: 'wait', selector: '#pw[value^="C"]' }, { action: 'click', selector: '#pw[value^="C"]' }, { action: 'type', selector: 'input:valid', text: 'x' }, { action: 'read', selector: '#f[x]', maxChars: 5 }, { action: 'read', list: { selector: 'li[x]', fields: { t: { type: 'text' } } } }, { action: 'read', list: { selector: 'li', fields: { t: { type: 'text', selector: 'b[x]' } } } },
     { action: 'wait', name: 'x', selector: '#pw:not(.y)' },
     { action: 'batch', steps: [{ action: 'if', when: { selector: '#pw[value^="C"]' }, then: [{ action: 'read' }], else: [] }] },
     { action: 'batch', steps: [{ action: 'repeat', until: { selector: '#pw[value]' }, steps: [{ action: 'scroll' }] }] },
@@ -176,4 +177,63 @@ test('blank options: values are blanked exactly while locked', () => {
   assert.deepEqual(lock.readOptions({}), {});
   assert.deepEqual(lock.readOptions({ vaultLock: 'prompt' }), { blankValues: true });
   assert.deepEqual(lock.readOptions({ vaultLock: 'filled' }), { blankValues: true });
+});
+
+const onOrigin = (origin) => ({ view: { webContents: { getURL: () => `${origin}/x`, mainFrame: { origin } } } });
+
+test('M1c: the origin of every eval or non-read-only cdp call is remembered, across tabs and bots; read-only calls and refusals leave nothing', () => {
+  assert.equal(lock.isScriptedOrigin('https://a.test'), false);
+  lock.beginScript({ botId: 'bot1', ...onOrigin('https://a.test') }, { action: 'eval', code: '1' })();
+  lock.beginScript({ botId: 'bot2', ...onOrigin('https://b.test') }, { action: 'cdp', method: 'Runtime.evaluate' })();
+  lock.beginScript({ botId: 'bot2', ...onOrigin('https://c.test') }, { action: 'cdp', method: 'DOM.setAttributeValue' })();
+  for (const origin of ['https://a.test', 'https://b.test', 'https://c.test']) assert.equal(lock.isScriptedOrigin(origin), true, origin);
+  for (const body of [{ action: 'cdp', method: 'DOM.getDocument' }, { action: 'cdp', method: 'Page.getNavigationHistory' }, { action: 'cdp', method: 'Emulation.setDeviceMetricsOverride' }, { action: 'click' }, { action: 'read' }]) {
+    lock.beginScript({ botId: 'bot1', ...onOrigin('https://clean.test') }, body)();
+  }
+  assert.equal(lock.isScriptedOrigin('https://clean.test'), false, 'read-only DevTools calls do not count');
+  // An opaque or unknown origin records nothing; a frame origin wins over the URL (an about:blank popup inherits).
+  lock.beginScript({ view: { webContents: { getURL: () => 'about:blank', mainFrame: { origin: 'null' } } } }, { action: 'eval' })();
+  lock.beginScript({}, { action: 'eval' })();
+  lock.beginScript({ view: { webContents: { getURL: () => 'about:blank', mainFrame: { origin: 'https://inherited.test' } } } }, { action: 'eval' })();
+  assert.equal(lock.isScriptedOrigin('null'), false);
+  assert.equal(lock.isScriptedOrigin('https://inherited.test'), true);
+  // A call the lock refuses is never dispatched, so it records nothing: guardAction throws before beginScript.
+  const locked = { vaultLock: 'filled', ...onOrigin('https://refused.test') };
+  assert.throws(() => lock.guardAction(locked, { action: 'eval' }));
+  assert.equal(lock.isScriptedOrigin('https://refused.test'), false);
+});
+
+test('a drag, and Shift with an extending key (Home, End, a page or arrow key), is refused while locked, with or without Control or Meta', () => {
+  const tab = { vaultLock: 'filled' };
+  assert.throws(() => lock.guardAction(tab, { action: 'drag', ref: 'e1', toRef: 'e2' }), (e) => e.code === 'vault_locked' && /drag/.test(e.message));
+  for (const key of ['End', 'Home', 'PageUp', 'PageDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
+    for (const modifiers of [['shift'], ['shift', 'control'], ['shift', 'meta'], ['shift', 'alt']]) {
+      assert.throws(() => lock.guardAction(tab, { action: 'press', key, modifiers }), (e) => e.code === 'vault_locked' && /selection|key/i.test(e.message), `${modifiers}+${key}`);
+    }
+    assert.doesNotThrow(() => lock.guardAction(tab, { action: 'press', key }), `a plain ${key}`);
+    assert.doesNotThrow(() => lock.guardAction(tab, { action: 'press', key, modifiers: ['alt'] }), `alt+${key}`);
+  }
+  assert.doesNotThrow(() => lock.guardAction(tab, { action: 'press', key: 'Tab', modifiers: ['shift'] }), 'shift+Tab moves focus, it does not select');
+  assert.doesNotThrow(() => lock.guardAction(tab, { action: 'press', key: 'Enter', modifiers: ['shift'] }));
+  assert.doesNotThrow(() => lock.guardAction({}, { action: 'drag', ref: 'e1', toRef: 'e2' }), 'no lock, no change');
+  assert.doesNotThrow(() => lock.guardAction({}, { action: 'press', key: 'End', modifiers: ['shift'] }));
+});
+
+test('L1: Page.getNavigationHistory loses its titles, whatever the lock; other results are untouched', () => {
+  const history = { currentIndex: 1, entries: [{ id: 1, url: 'https://a.test/', userTypedURL: 'https://a.test/', title: 'LEAK:secret', transitionType: 'typed' }, { id: 2, url: 'https://a.test/b', title: '' }] };
+  const out = lock.scrubCdpResult('Page.getNavigationHistory', history);
+  assert.deepEqual(out, { currentIndex: 1, entries: [{ id: 1, url: 'https://a.test/', userTypedURL: 'https://a.test/', transitionType: 'typed' }, { id: 2, url: 'https://a.test/b' }] });
+  assert.equal(JSON.stringify(history).includes('LEAK'), true, 'the input is not mutated');
+  for (const bad of [null, 'x', 7, { entries: 'no' }, {}]) assert.deepEqual(lock.scrubCdpResult('Page.getNavigationHistory', bad), bad);
+  const other = { entries: [{ title: 'kept' }] };
+  assert.equal(lock.scrubCdpResult('DOM.getDocument', other), other);
+});
+
+test('L2: the document counter advances on a cross-document navigation or a crash, and on nothing else', () => {
+  const wc = new EventEmitter(), tab = {};
+  lock.watch(tab, wc);
+  for (const event of ['did-navigate-in-page', 'did-start-navigation', 'did-frame-navigate', 'did-finish-load']) wc.emit(event);
+  assert.equal(tab.documentSeq || 0, 0);
+  wc.emit('did-navigate'); assert.equal(tab.documentSeq, 1);
+  wc.emit('render-process-gone'); assert.equal(tab.documentSeq, 2);
 });

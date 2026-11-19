@@ -39,7 +39,7 @@ const waitFor = async (read, predicate = Boolean, timeout = 15000) => {
   for (;;) { const value = await read(); if (predicate(value)) return value; if (Date.now() > deadline) throw new Error('timed out'); await sleep(40); }
 };
 const form = '<form id="f" onsubmit="event.preventDefault(); window.submitted = pw.value; document.title = \'submitted\'"><input id="user" name="username" autocomplete="username" aria-label="Email"><input id="pw" type="password" name="password" autocomplete="current-password" aria-label="Password"><textarea id="ta" aria-label="Notes">NOTE-DRAFT</textarea><div id="ce" contenteditable="true" role="textbox" aria-label="Editor">CE-DRAFT</div><button type="button" id="toggle" onclick="pw.type = pw.type === \'password\' ? \'text\' : \'password\'">Show password</button><button type="submit" id="signin">Sign in</button></form>';
-let server, failed = false;
+let server, scratchServer, failed = false;
 
 app.whenReady().then(async () => {
   server = http.createServer((req, res) => {
@@ -49,6 +49,11 @@ app.whenReady().then(async () => {
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
+  // An origin any agent has scripted is refused for a fill until restart, so the steps that script run on this one and
+  // the fills run on `base`, which no agent script ever touches before its last fill.
+  scratchServer = http.createServer(server.listeners('request')[0]);
+  await new Promise((resolve) => scratchServer.listen(0, '127.0.0.1', resolve));
+  const scratch = `http://127.0.0.1:${scratchServer.address().port}`;
   const connection = JSON.parse(await waitFor(() => { try { return fs.readFileSync(path.join(profile, 'connection.json'), 'utf8'); } catch { return ''; } }));
   const { vaultFill, tabs } = await waitFor(() => globalThis.__workspaceTest);
   const replies = [];
@@ -58,7 +63,7 @@ app.whenReady().then(async () => {
     replies.push(text);
     return { status: res.status, data: JSON.parse(text) };
   };
-  const created = (await api('/v1/tabs', 'POST', { url: `${base}/login`, background: false })).data;
+  const created = (await api('/v1/tabs', 'POST', { url: `${scratch}/login`, background: false })).data;
   const tab = tabs.get(created.id), wc = tab.view.webContents;
   const ready = () => waitFor(() => wc.executeJavaScript('document.readyState === "complete" && !!document.getElementById("pw")').catch(() => false));
   await ready();
@@ -85,24 +90,35 @@ app.whenReady().then(async () => {
   assert.equal(tab.agentScripted, true, 'an eval marks the document as scripted by the agent');
   assert.equal((await act({ action: 'cdp', method: 'Runtime.evaluate', params: { expression: '1+1', returnByValue: true } })).data.value.result.value, 2);
   assert.equal((await api(`/v1/tabs/${tab.id}/screenshot`)).status, 200);
+  await act({ action: 'eval', code: 'document.title = "LEAK-TITLE"; 1' });
+  const history = (await act({ action: 'cdp', method: 'Page.getNavigationHistory', params: {} })).data.value;
+  assert.ok(history.entries.length >= 1);
+  assert.equal(history.entries.some((e) => 'title' in e), false, 'history titles never reach the agent, lock or no lock');
+  assert.equal(JSON.stringify(history).includes('LEAK-TITLE'), false);
+  assert.equal(typeof history.entries[0].url, 'string', 'the rest of the history is untouched');
   say('PASS: with no lock, snapshot, eval, cdp and screenshot are unchanged.');
 
   // 2. The agent has scripted this document: a fill into it is refused, with no prompt, and says to reload.
-  const scripted = await (await startFill())();
+  const scripted = await (await startFill(scratch))();
   assert.deepEqual([scripted.success, scripted.error_type], [false, 'page_scripted']);
   assert.equal(prompts.length, 0);
   assert.equal(tab.vaultLock, undefined);
-  assert.equal((await act({ action: 'navigate', url: `${base}/login` })).status, 200);
+  assert.equal((await act({ action: 'navigate', url: `${scratch}/login` })).status, 200);
   await ready();
   assert.equal(tab.agentScripted, false, 'a new document is clean');
   assert.equal((await act({ action: 'cdp', method: 'DOM.getDocument', params: {} })).status, 200);
   assert.equal(tab.agentScripted, false, 'a read-only DevTools call does not mark it');
   assert.equal((await act({ action: 'cdp', method: 'Runtime.evaluate', params: { expression: '1' } })).status, 200);
   assert.equal(tab.agentScripted, true, 'a DevTools script does');
-  assert.equal((await act({ action: 'navigate', url: `${base}/login` })).status, 200);
+  assert.equal((await act({ action: 'navigate', url: `${scratch}/login` })).status, 200);
   await ready();
   assert.equal(tab.agentScripted, false);
-  say('PASS: a document the agent scripted is refused until it is reloaded.');
+  const rememembered = await (await startFill(scratch))();
+  assert.deepEqual([rememembered.success, rememembered.error_type], [false, 'origin_scripted'], 'a clean document on a scripted origin is still refused');
+  assert.equal(prompts.length, 0);
+  assert.equal((await act({ action: 'navigate', url: `${base}/login` })).status, 200);
+  await ready();
+  say('PASS: a document the agent scripted, and its origin, are refused.');
 
   // 3. While the prompt is open the tab is already locked.
   let release;
@@ -117,6 +133,12 @@ app.whenReady().then(async () => {
   assert.match(prompts[0].detail, /page can read it/);
   assert.match(prompts[0].detail, /paused/);
   assert.deepEqual(prompts[0].buttons, ['Deny', 'Allow once']);
+  // Reads and a history.replaceState while the prompt is open bump tab.generation; none of them is a new document.
+  const generationBefore = tab.generation;
+  await snapshot();
+  await wc.executeJavaScript('history.replaceState({}, "", "#replaced"); 0');
+  assert.ok(tab.generation > generationBefore);
+  assert.match(prompts[0].detail, /Page: \/login/, 'the prompt names the page, from the main process\'s own state');
   release(1);
   const filled = await filling;
   assert.deepEqual([filled.success, filled.result], [true, '{"filled":1}'], JSON.stringify(filled));
@@ -172,7 +194,7 @@ app.whenReady().then(async () => {
   await sleep(300);
   assert.equal(tab.vaultLock, 'filled', 'a fragment or pushState navigation is the same document');
   locked(await act({ action: 'eval', code: '1' }), 'eval after an in-page navigation');
-  assert.equal((await act({ action: 'navigate', url: `${base}/other` })).status, 200);
+  assert.equal((await act({ action: 'navigate', url: `${scratch}/other` })).status, 200);
   await waitFor(() => tab.vaultLock === undefined);
   assert.equal((await act({ action: 'eval', code: 'document.title' })).data.value, 'Other', 'the lock ended with the document');
   assert.equal((await act({ action: 'back' })).status, 200);
@@ -180,6 +202,16 @@ app.whenReady().then(async () => {
   assert.equal(await value('pw'), '', 'going back loads a fresh document: no password in it');
   assert.equal((await snapshot()).elements.find((e) => e.name === 'Notes').value, 'NOTE-DRAFT', 'reads are unblanked again');
   say('PASS: the lock ends with the document, not with a snapshot or an in-page navigation.');
+
+  // 8a. A real navigation between the prompt and the Allow still refuses, and releases the lock it took.
+  assert.equal((await act({ action: 'navigate', url: `${base}/login` })).status, 200);
+  await ready();
+  answerPrompt = async () => { assert.equal((await act({ action: 'navigate', url: `${base}/login?again` })).status, 200); return 1; };
+  const moved = await (await startFill())();
+  assert.deepEqual([moved.success, moved.error_type], [false, 'page_changed']);
+  assert.equal(await value('pw'), '', 'nothing typed into the new document');
+  assert.equal(tab.vaultLock, undefined);
+  say('PASS: a navigation after the prompt still refuses.');
 
   // 8. Deny and no-answer release the lock. (A fresh document, then the next prompt.)
   assert.equal((await act({ action: 'navigate', url: `${base}/login` })).status, 200);
@@ -204,7 +236,7 @@ app.whenReady().then(async () => {
   assert.equal(JSON.stringify(prompts).includes('CANARY'), false);
   say(`PASS: no reply to the bot (${replies.length} of them) and no prompt carried the password.`);
 }).catch((error) => { failed = true; console.error(error.stack); }).finally(() => {
-  server?.closeAllConnections?.(); server?.close();
+  server?.closeAllConnections?.(); server?.close(); scratchServer?.closeAllConnections?.(); scratchServer?.close();
   const deadline = setTimeout(() => app.exit(1), 5000); deadline.unref();
   app.exit(failed ? 1 : 0);
   fs.rmSync(profile, { recursive: true, force: true });

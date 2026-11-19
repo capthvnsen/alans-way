@@ -91,7 +91,7 @@ test('a real fill: open, inspect, Allow, fill, over the link, with no trace of t
   assert.equal((await call('a3', { operation: 'evaluate', target: opened.target, expression: inspectJs() })).success, true);
   const filled = await call('a4', { operation: 'evaluate', target: opened.target, expression: fillJs() });
   assert.deepEqual([filled.success, filled.result], [true, '{"filled":1}']);
-  assert.deepEqual(asks, [{ botId: 'alan', botName: 'Alan', origin: ORIGIN }]);
+  assert.deepEqual(asks, [{ botId: 'alan', botName: 'Alan', origin: ORIGIN, page: '/login' }]);
   assert.equal((await call('a5', { operation: 'close', target: opened.target })).success, true);
   const everything = JSON.stringify([r.conn().answers, r.logs, r.requests, r.closed, r.link.getState(), r.link.pending('key-1')]);
   assert.equal(everything.includes('CANARY'), false);

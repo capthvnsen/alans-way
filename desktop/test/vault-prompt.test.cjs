@@ -56,3 +56,35 @@ test('when the app is not the active app it neither raises the window nor bounce
     assert.deepEqual([r.calls.length, r.dock.bounced, window.raised], [0, 0, undefined], why);
   }
 });
+
+test('M1a: the origin leads, the page follows as plain text, truncated in the middle; controls and bidi overrides are stripped', async () => {
+  const r = rig();
+  await r.ask({ botName: 'Alan', origin: 'https://example.com', page: '/search?q=hello' }, new AbortController().signal);
+  const [, options] = r.calls[0];
+  assert.match(options.message, /https:\/\/example\.com/, 'the site is in the headline');
+  assert.equal(options.message.includes('/search'), false, 'the page is not mixed into it');
+  assert.match(options.detail, /Page: \/search\?q=hello/);
+  assert.ok(options.detail.indexOf('https://example.com') < options.detail.indexOf('/search'), 'origin first, then the page');
+
+  const nasty = '/login?x=\u202eevil\u202c\u2066a\u2069\u200f\u0007\u001b[31m\r\nspoof: Allowed\u0085\u2028<b>bold</b>&amp;%00';
+  const s = rig();
+  await s.ask({ botName: 'Al\u202ean', origin: 'https://example.com', page: nasty }, new AbortController().signal);
+  const shown = s.calls[0][1];
+  for (const text of [shown.message, shown.detail]) assert.equal(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/.test(text), false, 'no control characters or bidi overrides');
+  assert.equal(shown.detail.split('\n').filter((line) => /^spoof/.test(line)).length, 0, 'a newline in the query cannot start a line of its own');
+  assert.match(shown.detail, /<b>bold<\/b>&amp;%00/, 'markup is shown as it is, not interpreted');
+
+  const long = `/${'a'.repeat(300)}?q=${'z'.repeat(300)}END`;
+  const l = rig();
+  await l.ask({ botName: 'Alan', origin: 'https://example.com', page: long }, new AbortController().signal);
+  const line = l.calls[0][1].detail.split('\n').find((x) => x.startsWith('Page: '));
+  assert.ok(line.length <= 'Page: '.length + 120, `capped: ${line.length}`);
+  assert.match(line, /^Page: \/a+…z+END$/, 'the middle is elided, both ends kept');
+
+  const root = rig();
+  await root.ask({ botName: 'Alan', origin: 'https://example.com', page: '/' }, new AbortController().signal);
+  assert.match(root.calls[0][1].detail, /Page: \//);
+  const none = rig();
+  await none.ask({ botName: 'Alan', origin: 'https://example.com' }, new AbortController().signal);
+  assert.equal(/Page:/.test(none.calls[0][1].detail), false, 'no page, no line');
+});

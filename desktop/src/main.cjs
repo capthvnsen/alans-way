@@ -3309,6 +3309,7 @@ async function performStep(tab, body, botId, depth, isAborted) {
     ]).finally(() => clearTimeout(cdpTimer));
     // Seal mid-flight takeovers: the result is the human's page state then.
     requireActor(tab, botId, body.epoch, true, overseer);
+    value = vaultLock.scrubCdpResult(method, value); // history titles are page-controlled text
     const cdpSerialized = typeof value === 'string' ? value : JSON.stringify(value);
     if (cdpSerialized && cdpSerialized.length > 48000) value = cdpSerialized.slice(0, 48000) + '…[truncated]';
     return finish({ value, dispatched: true });

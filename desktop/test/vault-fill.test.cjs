@@ -8,6 +8,9 @@ const { createVaultFill, isVaultRequest } = require('../src/vault-fill.cjs');
 const { FILL } = require('../src/vault-scripts.cjs');
 const { PW, ORIGIN, inspectJs, fillJs, makeTab } = require('./vault-fixtures.cjs');
 const { clearJs } = require('../src/vault-scripts.cjs');
+const lockModule = require('../src/vault-lock.cjs');
+const { afterEach } = require('node:test');
+afterEach(() => lockModule.resetScriptedOrigins());
 
 function rig({ decision = true, ...limits } = {}) {
   const tabs = new Map(), asks = [], logs = [], answers = [], clock = { t: 1_000_000 };
@@ -46,7 +49,7 @@ test('fills the password on the exact origin after Allow once, and says nothing 
   const done = await r.evaluate(target, fillJs());
   assert.deepEqual([done.success, done.result], [true, '{"filled":1}']);
   assert.equal(r.asks.length, 1);
-  assert.deepEqual(r.asks[0], { botId: 'bot1', botName: 'Bot bot1', origin: ORIGIN });
+  assert.deepEqual(r.asks[0], { botId: 'bot1', botName: 'Bot bot1', origin: ORIGIN, page: '/login' });
   assert.equal(ranFill(tab).length, 1);
   assert.ok(ranFill(tab)[0].includes('const nonce = "0123456789abcdef"'));
   assert.equal(JSON.parse(ranFill(tab)[0].match(/const fills = (.*);\n/)[1])[0].value, PW, 'the page received the exact password');
@@ -210,7 +213,6 @@ test('anything that changes between the prompt and the fill refuses and types no
   const changes = [
     ['a navigation to another site', (tab) => tab.go('https://evil.test/')],
     ['a navigation inside the same site', (tab) => tab.go(`${ORIGIN}/other`)],
-    ['an in-page navigation', (tab) => { tab.generation++; }],
     ['a navigation that has started', (tab) => { tab.navigationUrl = 'https://evil.test/'; }],
     ['the page failing to load', (tab) => { tab.error = 'This page stopped.'; }],
     ['the human taking the tab', (tab) => { tab.controller = 'human'; }],
@@ -327,7 +329,7 @@ test('what the page answers is rebuilt, not passed on', async () => {
   const controls = JSON.parse(inspected.result);
   assert.deepEqual(controls.map((c) => c.index), [1, 4], 'only password controls, with a sane index');
   assert.deepEqual(Object.keys(controls[0]).sort(), ['autocomplete', 'formIndex', 'index', 'label', 'maxLength', 'name', 'type']);
-  assert.ok(controls[0].label.length <= 200);
+  assert.ok(controls[0].label.length <= 64, 'a page-derived label is capped at 64 characters');
   assert.equal(controls[1].formIndex, null);
   assert.equal(inspected.raw.includes('from-page'), false);
 
@@ -402,7 +404,7 @@ test('H1a: every vault script runs in an isolated world of the main frame, never
   const target = await r.open();
   await r.evaluate(target, inspectJs());
   assert.equal((await r.evaluate(target, fillJs())).success, true, 'the fake tab throws if the main world is used');
-  assert.equal(tab.worlds.length, 2, 'one world per script, both isolated');
+  assert.equal(tab.worlds.length, 4, 'one world per script (inspection, two service-worker looks, fill), all isolated');
   for (const world of tab.worlds) assert.deepEqual([world.frameId, typeof world.worldName, world.grantUniveralAccess], ['main-frame', 'string', false]);
 });
 
@@ -472,7 +474,7 @@ test('H1b: the tab is locked from the prompt on, kept after a fill, and released
     await rr.evaluate(tg, fillJs());
     assert.equal(t.vaultLock, held, why);
   }
-  for (const [why, change] of [['a navigation after the prompt', (t) => t.go('https://evil.test/')], ['control changing hands', (t) => { t.epoch++; }]]) {
+  for (const [why, change] of [['a navigation after the prompt', (t) => t.go('https://evil.test/')], ['control changing hands', (t) => { t.epoch++; }], ['a reload (a new document at the same address)', (t) => t.go(t.wc.url)]]) {
     const rr = rig({ decision: () => { change(t); return true; } }), t = rr.add(), tg = await prepare(rr);
     assert.equal((await rr.evaluate(tg, fillJs())).success, false, why);
     assert.equal(t.vaultLock, undefined, `${why}: released`);
@@ -807,4 +809,91 @@ test('L1: breaking the three-a-minute cap also starts a backoff', async () => {
   assert.equal((await attempt(0)).error_type, 'backoff');
   r.clock.t += 31000;
   assert.equal((await attempt(0)).error_type !== 'backoff', true, 'one minute later it is over');
+});
+
+// ── third review ────────────────────────────────────────────────────────────────────────────────────────────────
+
+test('M1a: the prompt gets the page (path and query) from the main process\'s navigation state, not just the origin', async () => {
+  const r = rig(), tab = r.add({ url: `${ORIGIN}/search?q=%3Cscript%3Ex%3C/script%3E&b=1#frag` });
+  const target = await prepare(r);
+  assert.equal((await r.evaluate(target, fillJs())).success, true);
+  assert.deepEqual(r.asks[0], { botId: 'bot1', botName: 'Bot bot1', origin: ORIGIN, page: '/search?q=%3Cscript%3Ex%3C/script%3E&b=1' }, 'no fragment');
+  void tab;
+});
+
+test('M1b: a document controlled by a service worker is refused before the lock, with no prompt; an uncontrolled one fills', async () => {
+  let r = rig(), tab = r.add();
+  tab.page.controlled = true;
+  let target = await prepare(r);
+  const out = await r.evaluate(target, fillJs());
+  assert.deepEqual([out.success, out.error_type], [false, 'service_worker']);
+  assert.match(out.error, /service worker/i);
+  assert.equal(r.asks.length + ranFill(tab).length, 0);
+  assert.equal(tab.vaultLock, undefined);
+  assert.equal(tab.swChecks, 1, 'asked once, in the isolated world');
+  assert.equal(tab.worlds.length >= 2, true);
+
+  r = rig(); tab = r.add();
+  target = await prepare(r);
+  assert.equal((await r.evaluate(target, fillJs())).success, true);
+  assert.equal(tab.swChecks, 2, 'before the prompt and again after the answer');
+
+  // One that takes the page over while the prompt is open (clients.claim) is caught by the second look.
+  r = rig({ decision: () => { tab.page.controlled = true; return true; } }); tab = r.add();
+  target = await prepare(r);
+  const claimed = await r.evaluate(target, fillJs());
+  assert.deepEqual([claimed.success, claimed.error_type], [false, 'service_worker']);
+  assert.equal(ranFill(tab).length, 0);
+  assert.equal(tab.vaultLock, undefined, 'released');
+
+  // If the page cannot say, it is not filled.
+  r = rig(); tab = r.add();
+  tab.page.sw = () => 'garbage';
+  target = await prepare(r);
+  assert.equal((await r.evaluate(target, fillJs())).error_type, 'page_failed');
+  assert.equal(r.asks.length, 0);
+});
+
+test('M1c: an origin any agent has scripted is refused until restart, whichever bot did it, and read-only DevTools calls do not count', async () => {
+  const scripter = makeTab({ id: 'other-bot-tab', botId: 'bot9', url: `${ORIGIN}/elsewhere` });
+  lockModule.beginScript(scripter, { action: 'cdp', method: 'Runtime.evaluate' })();
+  let r = rig(), tab = r.add({ url: `${ORIGIN}/login` });
+  let out = await r.evaluate(await prepare(r), fillJs());
+  assert.deepEqual([out.success, out.error_type], [false, 'origin_scripted']);
+  assert.equal(r.asks.length + ranFill(tab).length, 0);
+  assert.equal(tab.vaultLock, undefined);
+  // A different origin is untouched, and a read-only call on it leaves nothing.
+  lockModule.resetScriptedOrigins();
+  const reader = makeTab({ id: 'reader', url: `${ORIGIN}/x` });
+  for (const method of ['DOM.getDocument', 'Page.getNavigationHistory', 'Page.reload', 'Emulation.setDeviceMetricsOverride']) lockModule.beginScript(reader, { action: 'cdp', method })();
+  r = rig(); tab = r.add();
+  assert.equal((await r.evaluate(await prepare(r), fillJs())).success, true);
+});
+
+test('M1c: and again after the answer, for a script that arrived while the prompt was open', async () => {
+  const r = rig({ decision: () => { lockModule.beginScript(makeTab({ id: 'x', url: `${ORIGIN}/y` }), { action: 'eval' })(); return true; } }), tab = r.add();
+  const out = await r.evaluate(await prepare(r), fillJs());
+  assert.deepEqual([out.success, out.error_type], [false, 'origin_scripted']);
+  assert.equal(ranFill(tab).length, 0);
+  assert.equal(tab.vaultLock, undefined);
+});
+
+test('L2: a snapshot or a history.replaceState between the prompt and the Allow does not refuse; a new document does', async () => {
+  const bumps = [['a snapshot', (t) => { t.generation++; }], ['replaceState', (t) => { t.generation += 3; }]];
+  for (const [why, bump] of bumps) {
+    const r = rig({ decision: () => { bump(tab); return true; } }), tab = r.add();
+    const out = await r.evaluate(await prepare(r), fillJs());
+    assert.equal(out.success, true, why);
+    assert.equal(ranFill(tab).length, 1, why);
+  }
+  // The same bumps between open and the fill, too.
+  const r = rig(), tab = r.add();
+  const target = await r.open(); await r.evaluate(target, inspectJs());
+  tab.generation += 5;
+  assert.equal((await r.evaluate(target, 'window.location.href')).success, true);
+  assert.equal((await r.evaluate(target, fillJs())).success, true);
+  // A real navigation (a counter advance) does refuse, at every step.
+  const q = rig(), qt = q.add();
+  const t2 = await q.open(); qt.go(`${ORIGIN}/other`);
+  assert.equal((await q.evaluate(t2, 'window.location.href')).error_type, 'page_changed');
 });

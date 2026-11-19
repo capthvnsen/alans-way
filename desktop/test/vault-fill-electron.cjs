@@ -106,7 +106,7 @@ app.whenReady().then(async () => {
   assert.equal(await field(wc.mainFrame, 'user'), '', 'the identifier is not typed');
   assert.equal(await field(innerFrame(), 'ipw'), '', 'the cross-origin iframe is untouched');
   assert.equal(await wc.mainFrame.executeJavaScript('document.querySelectorAll("[data-hermes-vault-slot]").length'), 0, 'the stamps are gone');
-  assert.deepEqual(asks, [{ botId: 'alan', botName: 'Alan', origin: outerOrigin }]);
+  assert.deepEqual(asks, [{ botId: 'alan', botName: 'Alan', origin: outerOrigin, page: '/login' }]);
   say('PASS: the password lands in the top document only, after one Allow.');
 
   // 2. An entry bound to the iframe's origin cannot be filled while the top document is another site.

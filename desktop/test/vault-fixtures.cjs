@@ -28,11 +28,11 @@ function makeTab({ id = 't1', botId = 'bot1', url = `${ORIGIN}/login`, controlle
     executeJavaScript: async () => { throw new Error('the main world must not run a vault script'); } };
   const wc = { url, getURL: () => wc.url, mainFrame: frame, destroyed: false, isDestroyed: () => wc.destroyed, isCrashed: () => false,
     executeJavaScript: async () => { throw new Error('the main world must not run a vault script'); } };
-  const tab = { id, botId, controller, owner: 'bot', epoch: 1, generation: 1, navigationUrl: '', recoveryUrl: '', error: '', extensionPage: false, localPdf: false,
+  const tab = { id, botId, controller, owner: 'bot', epoch: 1, generation: 1, documentSeq: 1, navigationUrl: '', recoveryUrl: '', error: '', extensionPage: false, localPdf: false,
     view: { webContents: wc }, frame, wc, worlds: [], cleared: [],
     page: { inspect: () => JSON.stringify([{ autocomplete: 'current-password', formIndex: 0, index: 1, maxLength: null, label: 'Password', name: 'pw login', type: 'password' },
-      { autocomplete: 'username', formIndex: 0, index: 0, maxLength: null, label: 'Email address', name: 'user', type: 'text' }]), fill: () => '{"filled":1}', clear: () => '{}' },
-    go(next) { wc.url = next; frame.url = next; frame.origin = originOf(next); tab.generation++; },
+      { autocomplete: 'username', formIndex: 0, index: 0, maxLength: null, label: 'Email address', name: 'user', type: 'text' }]), fill: () => '{"filled":1}', clear: () => '{}', controlled: false },
+    go(next) { wc.url = next; frame.url = next; frame.origin = originOf(next); tab.generation++; tab.documentSeq++; },
     async cdp(method, params) {
       if (method === 'Network.disable') { tab.networkDisabled = (tab.networkDisabled || 0) + 1; return {}; }
       if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main-frame' } } };
@@ -40,6 +40,7 @@ function makeTab({ id = 't1', botId = 'bot1', url = `${ORIGIN}/login`, controlle
       if (method !== 'Runtime.evaluate' || !(params.contextId > 100) || params.returnByValue !== true) throw new Error(`unexpected ${method}`);
       const code = params.expression;
       if (code.includes('// vault-clear')) { tab.cleared.push(code); return { result: { value: tab.page.clear(code) } }; }
+      if (code.includes('serviceWorker')) { tab.swChecks = (tab.swChecks || 0) + 1; return { result: { value: tab.page.sw ? tab.page.sw(code) : JSON.stringify({ controlled: tab.page.controlled }) } }; }
       frame.ran.push(code);
       return { result: { value: code.includes('const expectedOrigin') ? tab.page.fill(code) : tab.page.inspect(code) } };
     } };

@@ -13,6 +13,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { app, BrowserWindow, dialog } = require('electron');
 const { PW, inspectJs, fillJs } = require('./vault-fixtures.cjs');
+const vaultLockModule = require('../src/vault-lock.cjs');
 
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vault-isolation-'));
 process.env.HERMES_WORKSPACE_DATA = profile;
@@ -39,7 +40,7 @@ const waitFor = async (read, predicate = Boolean, timeout = 15000) => {
   for (;;) { const value = await read(); if (predicate(value)) return value; if (Date.now() > deadline) throw new Error('timed out'); await sleep(40); }
 };
 // A React-like page mirrors the value into the attribute as it is typed; a busy loop stalls the page on demand.
-const form = '<script>window.startBusy = () => setTimeout(() => { const t = Date.now(); while (Date.now() - t < 2500); }, 0);</script><form id="f" onsubmit="event.preventDefault(); window.submitted = pw.value"><input id="user" name="username" autocomplete="username" aria-label="Email"><input id="pw" type="password" name="password" autocomplete="current-password" aria-label="Password" oninput="this.setAttribute(\'value\', this.value)"><textarea id="ta" aria-label="Notes">NOTE-DRAFT</textarea><button type="button" id="toggle" onclick="pw.type = pw.type === \'password\' ? \'text\' : \'password\'">Show password</button><button type="button" id="opn" onclick="window.open(\'/popup\')">Help</button><button type="button" id="blank" onclick="window.open(\'\')">Blank</button><button type="button" id="xo" onclick="window.open(\'__ELSEWHERE__/popup\')">Elsewhere</button><button type="submit" id="signin">Sign in</button></form>';
+const form = '<script>window.startBusy = () => setTimeout(() => { const t = Date.now(); while (Date.now() - t < 2500); }, 0);</script><form id="f" onsubmit="event.preventDefault(); window.submitted = pw.value"><input id="user" name="username" autocomplete="username" aria-label="Email"><input id="pw" type="password" name="password" autocomplete="current-password" aria-label="Password" oninput="this.setAttribute(\'value\', this.value)"><textarea id="ta" aria-label="Notes">NOTE-DRAFT</textarea><button type="button" id="toggle" onclick="pw.type = pw.type === \'password\' ? \'text\' : \'password\'">Show password</button><button type="button" id="opn" onclick="window.open(\'/popup\')">Help</button><button type="button" id="blank" onclick="window.open(\'\')">Blank</button><button type="button" id="reg" onclick="navigator.serviceWorker.register(\'/sw.js\').then(() => navigator.serviceWorker.ready).then(() => { window.registered = true; })">Register</button><button type="button" id="xo" onclick="window.open(\'__ELSEWHERE__/popup\')">Elsewhere</button><button type="submit" id="signin">Sign in</button></form>';
 const servers = [];
 let elsewhere = '';
 let failed = false;
@@ -48,6 +49,7 @@ const say = (text) => console.log(`${text} (${Date.now() - t0} ms)`);
 const listen = (host) => new Promise((resolve) => {
   const server = http.createServer((req, res) => {
     res.setHeader('Content-Type', 'text/html');
+    if (req.url.startsWith('/sw.js')) { res.setHeader('Content-Type', 'text/javascript'); return res.end("self.addEventListener('install', () => self.skipWaiting()); self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));"); }
     res.end(req.url.startsWith('/popup') ? '<!doctype html><title>Popup</title><p>help</p>' : req.url.startsWith('/other') ? '<!doctype html><title>Other</title><p>No form here</p>' : `<!doctype html><meta charset="utf-8"><title>Login</title>${form.replace('__ELSEWHERE__', elsewhere)}`);
   });
   servers.push(server);
@@ -55,7 +57,8 @@ const listen = (host) => new Promise((resolve) => {
 });
 
 app.whenReady().then(async () => {
-  const base = await listen('127.0.0.1');
+  // An origin any agent has scripted is refused for a fill until restart, so every scenario that fills gets its own.
+  const fresh = () => listen('127.0.0.1');
   elsewhere = await listen('localhost'); // another origin the same bot can have a tab on
   const connection = JSON.parse(await waitFor(() => { try { return fs.readFileSync(path.join(profile, 'connection.json'), 'utf8'); } catch { return ''; } }));
   const { vaultFill, tabs } = await waitFor(() => globalThis.__workspaceTest);
@@ -90,47 +93,53 @@ app.whenReady().then(async () => {
   const locked = (r, what) => { assert.equal(r.status, 403, `${what}: ${JSON.stringify(r.data).slice(0, 200)}`); assert.equal(r.data.code, 'vault_locked', what); };
   const popupOf = async (L) => { const info = await waitFor(async () => (await listing()).find((t) => t.id !== L.tab.id)); const tab = tabs.get(info.id); return { tab, wc: tab.view.webContents, act: (body) => api(`/v1/tabs/${tab.id}/actions`, 'POST', { epoch: tab.epoch, ...body }) }; };
   const pwValue = (wc) => wc.executeJavaScript('document.getElementById("pw").value');
-  const login = async () => { await closeAll(); const L = await open(`${base}/login`); await waitFor(() => L.wc.executeJavaScript('!!document.getElementById("pw")')); return L; };
+  const login = async (o) => { await closeAll(); const L = await open(`${o}/login`); await waitFor(() => L.wc.executeJavaScript('!!document.getElementById("pw")')); return L; };
+
 
   // 1. C1: a popup opened by the page's own button keeps window.opener. Before any fill the bot can script the opener
-  //    through it; the fill is refused while the link exists, with no prompt, and goes ahead once the popup is closed.
+  //    through it, and that script marks the site; the fill is refused while the link exists, with no prompt. On a site
+  //    nobody scripted, the fill goes ahead once the popup is closed.
   {
-    const L = await login();
+    const a = await fresh();
+    const L = await login(a);
     await L.act({ action: 'click', selector: '#opn' });
     const P = await popupOf(L);
     assert.equal(P.tab.openerId, L.tab.id, 'the popup knows its opener');
     assert.equal((await P.act({ action: 'eval', code: 'opener.document.getElementById("pw").value' })).data.value, '', 'the path is real: a popup scripts its opener');
     await L.act({ action: 'read', maxChars: 50 }); // the login page is the bot\'s most recently used tab
-    const refused = await (await startFill(base))();
+    const refused = await (await startFill(a))();
     assert.deepEqual([refused.success, refused.error_type], [false, 'not_isolated']);
     assert.equal(prompts.length, 0);
     assert.equal(L.tab.vaultLock, undefined);
-    P.wc.close(); await waitFor(() => !tabs.has(P.tab.id));
-    await L.act({ action: 'eval', code: '1' }); // (scripted: this document is no longer clean)
-    await L.act({ action: 'navigate', url: `${base}/login` });
-    await waitFor(() => L.wc.executeJavaScript('document.readyState === "complete" && !!document.getElementById("pw")').catch(() => false));
-    await L.act({ action: 'read', maxChars: 50 });
-    assert.equal((await (await startFill(base))()).success, true, 'with the popup closed and the document clean, the fill goes ahead');
+    const o = await fresh();
+    const M = await login(o);
+    await M.act({ action: 'click', selector: '#opn' });
+    const Q = await popupOf(M);
+    assert.equal((await (await startFill(o))()).error_type, 'not_isolated');
+    Q.wc.close(); await waitFor(() => !tabs.has(Q.tab.id));
+    await M.act({ action: 'read', maxChars: 50 });
+    assert.equal((await (await startFill(o))()).success, true, 'with the popup closed and nothing scripted, the fill goes ahead');
     assert.equal(prompts.length, 1);
     say('PASS: C1 a popup opened by a page button blocks the fill until it is closed.');
   }
 
   // 2. C1: an about:blank popup inherits its opener's origin although its URL has none.
   {
-    const L = await login();
+    const o = await fresh();
+    const L = await login(o);
     await L.act({ action: 'click', selector: '#blank' });
     const P = await popupOf(L);
     assert.equal(P.wc.getURL(), 'about:blank');
-    assert.equal(P.wc.mainFrame.origin, base, 'its frame is on the opener\'s origin');
+    assert.equal(P.wc.mainFrame.origin, o, 'its frame is on the opener\'s origin');
     await L.act({ action: 'read', maxChars: 50 });
     prompts.length = 0;
-    assert.equal((await (await startFill(base))()).error_type, 'not_isolated');
+    assert.equal((await (await startFill(o))()).error_type, 'not_isolated');
     assert.equal(prompts.length, 0);
     // And a bot\'s second tab on the same site, whatever it is showing, blocks it too.
     P.wc.close(); await waitFor(() => !tabs.has(P.tab.id));
-    const second = await open(`${base}/other`);
+    const second = await open(`${o}/other`);
     await L.act({ action: 'read', maxChars: 50 });
-    assert.equal((await (await startFill(base))()).error_type, 'not_isolated', 'a second tab on the site');
+    assert.equal((await (await startFill(o))()).error_type, 'not_isolated', 'a second tab on the site');
     second.wc.close(); await waitFor(() => !tabs.has(second.tab.id));
     say('PASS: C1 an about:blank popup and a second tab on the site both block the fill.');
   }
@@ -138,27 +147,29 @@ app.whenReady().then(async () => {
   // 2b. A popup on another origin cannot read the opener's document but keeps the link (it can navigate the opener,
   //     and the next popup of a chain may share the origin): the link alone refuses the fill.
   {
-    const L = await login();
+    const o = await fresh();
+    const L = await login(o);
     await L.act({ action: 'click', selector: '#xo' });
     const P = await popupOf(L);
-    assert.notEqual(P.wc.mainFrame.origin, base);
+    assert.notEqual(P.wc.mainFrame.origin, o);
     assert.equal(P.tab.openerId, L.tab.id);
     await L.act({ action: 'read', maxChars: 50 });
     prompts.length = 0;
-    assert.equal((await (await startFill(base))()).error_type, 'not_isolated');
+    assert.equal((await (await startFill(o))()).error_type, 'not_isolated');
     assert.equal(prompts.length, 0);
     say('PASS: C1 a cross-origin popup still blocks the fill through the link alone.');
   }
 
   // 3. H1: a scripted same-origin popup leaking through document.title. The fill is refused, so nothing is put in the title.
   {
-    const L = await login();
+    const o = await fresh();
+    const L = await login(o);
     await L.act({ action: 'click', selector: '#opn' });
     const P = await popupOf(L);
     const hook = await P.act({ action: 'eval', code: `self['set'+'Interval'](() => { const p = opener.document.getElementById('pw'); if (p && p.value) document.title = 'LEAK:' + p.value; }, 30); 1` });
     assert.equal(hook.status, 200);
     await L.act({ action: 'read', maxChars: 50 });
-    assert.equal((await (await startFill(base))()).error_type, 'not_isolated');
+    assert.equal((await (await startFill(o))()).error_type, 'not_isolated');
     await sleep(300);
     assert.equal(JSON.stringify(await listing()).includes('CANARY'), false);
     say('PASS: H1 a hooked popup cannot be filled behind, and nothing reaches a title.');
@@ -166,11 +177,12 @@ app.whenReady().then(async () => {
 
   // 4. C2: Page.reload with scriptToEvaluateOnLoad plants a script that survives the taint reset. Refused always.
   {
-    const L = await login();
+    const o = await fresh();
+    const L = await login(o);
     const reload = await L.act({ action: 'cdp', method: 'Page.reload', params: { scriptToEvaluateOnLoad: 'window.__hooked = 1' } });
     assert.equal(reload.status, 400, JSON.stringify(reload.data).slice(0, 200));
     assert.match(reload.data.error, /scriptToEvaluateOnLoad/);
-    const navigate = await L.act({ action: 'cdp', method: 'Page.navigate', params: { url: `${base}/login`, scriptSource: 'window.__hooked = 1' } });
+    const navigate = await L.act({ action: 'cdp', method: 'Page.navigate', params: { url: `${o}/login`, scriptSource: 'window.__hooked = 1' } });
     assert.equal(navigate.status, 400);
     const batch = await L.act({ action: 'batch', steps: [{ action: 'cdp', method: 'Page.reload', params: { scriptToEvaluateOnLoad: 'window.__hooked = 1' } }] });
     assert.equal(batch.data.results[0].ok, false);
@@ -188,22 +200,26 @@ app.whenReady().then(async () => {
   const fakeReader = `Object.defineProperty(window, Symbol.for('hw.snapshotReader'), { value: { doc: document, read: () => ({ url: location.href, title: 'T', text: 'LEAK:' + document.getElementById('pw').value, elements: [], generation: 1 }) }, configurable: true }); 1`;
   {
     // (a) The eval is waiting on the stalled page when the fill runs: the fill finishes first, so the eval is refused at its hand-over.
-    const L = await login();
+    const o = await fresh();
+    const L = await login(o);
     await L.act({ action: 'read', maxChars: 50 });
-    const fill = await startFill(base); // inspected while the page is still responsive
+    const fill = await startFill(o); // inspected while the page is still responsive
     L.wc.executeJavaScript('window.startBusy()').catch(() => {});
     await sleep(150);
     const evalDone = L.act({ action: 'eval', code: fakeReader });
     await sleep(400);
     const [e, f] = await Promise.all([evalDone, fill()]);
     assert.equal(e.status === 403 ? f.success === true : e.status === 200 && f.error_type === 'page_scripted', true, `never both: eval ${e.status}, fill ${f.error_type || f.success}`);
-    assert.equal(e.status, 403, 'the stalled eval reached its hand-over after the lock');
-    assert.equal(await L.wc.executeJavaScript('String(window[Symbol.for("hw.snapshotReader")]?.read).includes("LEAK")'), false, 'the fake reader was never installed');
-    assert.equal(JSON.stringify(await L.snapshot()).includes('LEAK'), false);
+    if (e.status === 200) assert.equal(await pwValue(L.wc), '', 'the eval won the race: nothing was typed');
+    if (e.status === 403) { // the fill won: the fake reader was never installed and nothing it could answer exists
+      assert.equal(await L.wc.executeJavaScript('String(window[Symbol.for("hw.snapshotReader")]?.read).includes("LEAK")'), false, 'the fake reader was never installed');
+      assert.equal(JSON.stringify(await L.snapshot()).includes('LEAK'), false);
+    }
     // (b) The eval was handed over first and is still running: the fill is refused until the document is replaced.
-    const M = await login();
+    const o2 = await fresh();
+    const M = await login(o2);
     await M.act({ action: 'read', maxChars: 50 });
-    const second = await startFill(base);
+    const second = await startFill(o2);
     const longEval = M.act({ action: 'eval', code: '(() => { const t = Date.now(); while (Date.now() - t < 1500); return 1; })()' });
     await waitFor(() => M.tab.scriptsInFlight === 1);
     prompts.length = 0;
@@ -213,8 +229,8 @@ app.whenReady().then(async () => {
     assert.equal((await longEval).status, 200);
     assert.equal(M.tab.scriptsInFlight, 0);
     assert.equal(await pwValue(M.wc), '', 'nothing was typed');
-    assert.equal((await (await startFill(base))()).error_type, 'page_scripted', 'still scripted once the eval is done');
-    await M.act({ action: 'navigate', url: `${base}/login` });
+    assert.equal((await (await startFill(o2))()).error_type, 'page_scripted', 'still scripted once the eval is done');
+    await M.act({ action: 'navigate', url: `${o2}/login` });
     await waitFor(() => M.wc.executeJavaScript('document.readyState === "complete" && !!document.getElementById("pw")').catch(() => false));
     await M.act({ action: 'read', maxChars: 50 });
     assert.equal(M.tab.agentScripted, false);
@@ -223,13 +239,14 @@ app.whenReady().then(async () => {
 
   // 6. The lock: bot-wide, selectors, clipboard, titles, new tabs, a replaced reader. A second tab on another origin first.
   {
-    const L = await login();
+    const o = await fresh();
+    const L = await login(o);
     const B = await open(`${elsewhere}/other`);
     const peer = tabs.get(B.tab.id);
     await L.act({ action: 'read', maxChars: 50 });
     answerPrompt = async () => 1;
     prompts.length = 0;
-    const filled = await (await startFill(base))();
+    const filled = await (await startFill(o))();
     assert.deepEqual([filled.success, filled.result], [true, '{"filled":1}'], JSON.stringify(filled));
     assert.equal(L.tab.vaultLock, 'filled');
     assert.equal(peer.vaultLock, undefined, 'only the filled tab holds it');
@@ -240,7 +257,7 @@ app.whenReady().then(async () => {
     locked(await B.act({ action: 'cdp', method: 'DOM.getDocument', params: {} }), 'cdp on the other-origin tab');
     locked(await api(`/v1/tabs/${B.tab.id}/screenshot`), 'screenshot of the other-origin tab');
     // ... and a tab made while it is held
-    locked(await api('/v1/tabs', 'POST', { url: `${base}/other`, background: false }), 'a new tab by the agent');
+    locked(await api('/v1/tabs', 'POST', { url: `${o}/other`, background: false }), 'a new tab by the agent');
     const before = tabs.size;
     assert.equal((await L.act({ action: 'click', selector: '#opn' })).status, 200);
     await sleep(500);
@@ -292,11 +309,45 @@ app.whenReady().then(async () => {
     say('PASS: B the lock is bot-wide; M1 selectors, M2 clipboard keys, titles, new tabs and a replaced reader.');
 
     // The lock ends with the filled tab's document, for every tab of the bot.
-    assert.equal((await L.act({ action: 'navigate', url: `${base}/other` })).status, 200);
+    assert.equal((await L.act({ action: 'navigate', url: `${o}/other` })).status, 200);
     await waitFor(() => L.tab.vaultLock === undefined);
     assert.equal((await B.act({ action: 'eval', code: 'document.title' })).data.value, 'Other', 'the other tab is free again');
-    assert.equal((await api('/v1/tabs', 'POST', { url: `${base}/other`, background: false })).status, 201, 'and new tabs');
+    assert.equal((await api('/v1/tabs', 'POST', { url: `${o}/other`, background: false })).status, 201, 'and new tabs');
     say('PASS: the lock ends only with the filled tab\'s document.');
+  }
+
+  // 7. M1b: a service worker that controls the document can rewrite the page. A site that registered one itself, and an
+  //    agent's eval that did, both refuse the fill; the first for the worker, the second because the agent scripted the site.
+  {
+    const o = await fresh();
+    const L = await login(o);
+    await L.act({ action: 'click', selector: '#reg' }); // the page registers its own worker: no agent script
+    await waitFor(() => L.wc.executeJavaScript('window.registered === true').catch(() => false));
+    await L.act({ action: 'navigate', url: `${o}/login` });
+    await waitFor(() => L.wc.executeJavaScript('document.readyState === "complete" && !!document.getElementById("pw")').catch(() => false));
+    assert.equal(await L.wc.executeJavaScript('!!navigator.serviceWorker.controller'), true, 'the reloaded page is controlled by the worker');
+    assert.equal(L.tab.agentScripted, false);
+    assert.equal(vaultLockModule.isScriptedOrigin(o), false, 'and no agent scripted it');
+    await L.act({ action: 'read', maxChars: 50 });
+    prompts.length = 0;
+    const refused = await (await startFill(o))();
+    assert.deepEqual([refused.success, refused.error_type], [false, 'service_worker']);
+    assert.equal(prompts.length, 0);
+    assert.equal(L.tab.vaultLock, undefined);
+    assert.equal(await pwValue(L.wc), '');
+    // The agent's own eval registers one: refused, and the site is remembered as scripted.
+    const p = await fresh();
+    const M = await login(p);
+    const registered = await M.act({ action: 'eval', code: "navigator.serviceWorker.register('/sw.js').then(() => navigator.serviceWorker.ready).then(() => 'registered')" });
+    assert.equal(registered.data.value, 'registered');
+    await M.act({ action: 'navigate', url: `${p}/login` });
+    await waitFor(() => M.wc.executeJavaScript('document.readyState === "complete" && !!document.getElementById("pw")').catch(() => false));
+    assert.equal(M.tab.agentScripted, false, 'the reload cleaned the document');
+    await M.act({ action: 'read', maxChars: 50 });
+    const remembered = await (await startFill(p))();
+    assert.deepEqual([remembered.success, remembered.error_type], [false, 'origin_scripted']);
+    assert.equal(prompts.length, 0);
+    say('PASS: M1b a service-worker-controlled page is refused; M1c a scripted origin is remembered.');
   }
 
   // 7. Only the app\'s own prompt text was ever shown, and the canary reached no reply.

@@ -3,14 +3,15 @@
 // requests Hermes sends the client that owns the browser (tools/browser_vault_preview.py, operation
 // open | evaluate | close). Hermes resolves the secret on its side and sends it INSIDE the fill script; the model
 // never sees it. This module is the only door that script walks through, in the main process:
-//   - open pins one agent tab of the conversation's bot, bound to its document (generation) and control (epoch);
+//   - open pins one agent tab of the conversation's bot, bound to its document (a counter only a new document advances) and control (epoch);
 //   - `window.location.href` is answered from the main process's own navigation state, never from the page;
 //   - only the exact inspection and fill scripts Hermes builds (vault-scripts.cjs) run, over CDP in an isolated world
 //     of the tab's main frame, so a page (or an agent's earlier eval) that patched its own builtins sees nothing;
 //   - a fill needs: the tab's top-level origin (not opaque) exactly equal to the origin the entry is bound to, a native
 //     Allow once from the user, and the same checks again right before the page runs it;
 //   - from the prompt on, the tab is vault-locked (vault-lock.cjs) so the agent cannot read the value back.
-// What goes back to Hermes is rebuilt here (a count, a password control's descriptor, a reason), never page text.
+// What goes back to Hermes is rebuilt here: a count, a reason, and for the inspection a descriptor of each password input
+// whose label, name and autocomplete text is page-derived (capped at 64 characters, control characters stripped).
 // Logs carry the step and a reason code. JS strings cannot be zeroed: the secret is kept in no field of ours
 // and the request's copy is blanked as soon as the page has run it.
 const { INSPECT, FILL, clearJs } = require('./vault-scripts.cjs');
@@ -69,6 +70,8 @@ const REASONS = {
   opaque_origin: 'This page has an opaque (sandboxed) origin, so it is not the site the login is saved for. Nothing was filled.',
   origin_mismatch: "The tab's site is not exactly the site this login is saved for. Nothing was filled.",
   page_scripted: 'The agent has run script (eval or a DevTools write) in this page, which could read the password back. Reload the page (navigate to it again), then ask again. Nothing was filled.',
+  origin_scripted: 'An agent has run script on this site since the app started, which can leave state this check cannot see. Fills on this site are refused until the app restarts. Nothing was filled.',
+  service_worker: 'This page is controlled by a service worker, which can rewrite the page or read what is typed into it. Nothing was filled.',
   not_isolated: 'Another tab shares a browsing context or this site with the tab to fill (a popup or its opener, or a second tab of this bot on the same site), so it could read the password back. Close the other tabs on this site and any popups, then ask again. Nothing was filled.',
   denied: 'The user chose not to fill this login. Do not ask again this turn.',
   denied_recently: 'A fill prompt for this site was just declined or went unanswered. Do not ask again this turn.',
@@ -119,6 +122,7 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, l
     }
     if (linked.size > 1) return 'not_isolated';
     for (const t of live) if (t !== tab && t.botId === tab.botId && frameOrigin(t) === bound) return 'not_isolated';
+    if (lock.isScriptedOrigin(bound)) return 'origin_scripted';
     return '';
   }
   const negative = (key, bot) => {
@@ -142,7 +146,7 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, l
     if (tab.controller !== 'agent') return { why: 'human_has_control' };
     if (!agentTab(tab, target.botId)) return { why: 'no_tab' };
     if (tab.navigationUrl) return { why: 'navigating' };
-    if (tab.recoveryUrl || tab.error || tab.generation !== target.generation || tab.epoch !== target.epoch) return { why: 'page_changed' };
+    if (tab.recoveryUrl || tab.error || (tab.documentSeq || 0) !== target.documentSeq || tab.epoch !== target.epoch) return { why: 'page_changed' };
     const origin = originOf(wc.getURL()), frame = wc.mainFrame;
     // Top frame only: what the scripts run in must be the very document whose origin was just read.
     if (!origin || !frame || frame.isDestroyed?.() || frame.detached || originOf(frame.url) !== origin) return { why: 'page_changed' };
@@ -151,6 +155,16 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, l
     if (frame.origin === 'null') return { why: 'opaque_origin' };
     if (frame.origin !== origin) return { why: 'page_changed' };
     return { tab, origin, wc };
+  }
+
+  // A service worker that controls the document can rewrite the page or read what is typed into it; one registered earlier
+  // (by an agent's eval, another bot, or a hostile page) survives a reload. Asked of the page from the isolated world, which
+  // sees the same navigator.serviceWorker.controller. If the page cannot say, it is not filled.
+  const SW_CHECK = '(() => JSON.stringify({ controlled: !!(navigator.serviceWorker && navigator.serviceWorker.controller) }))()';
+  async function workerRefusal(tab) {
+    let answer;
+    try { answer = pageJson(await run(tab, SW_CHECK)); } catch { return 'page_failed'; }
+    return isPlainObject(answer) && typeof answer.controlled === 'boolean' ? (answer.controlled ? 'service_worker' : '') : 'page_failed';
   }
 
   // One script in a fresh isolated world of the tab's main frame, bounded, and its error text (which can quote
@@ -174,7 +188,7 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, l
     const nonce = target.nonce;
     target.nonce = '';
     const tab = findTab(target.tabId);
-    if (!nonce || !liveContents(tab) || tab.generation !== target.generation) return;
+    if (!nonce || !liveContents(tab) || (tab.documentSeq || 0) !== target.documentSeq) return;
     try { await run(tab, clearJs(nonce), CLEAR_MS); } catch { /* the page is gone or busy: the stamps go with it */ }
   }
   const forget = (id) => { const target = targets.get(id); targets.delete(id); if (target) clearStamps(target); };
@@ -191,7 +205,7 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, l
     const mine = [...listTabs()].filter((t) => t.botId === bot && liveContents(t) && !t.extensionPage && !t.localPdf);
     const own = mine.filter((t) => agentTab(t, bot)).sort((a, b) => Math.max(b.agentSince || 0, b.lastAgentActivity || 0) - Math.max(a.agentSince || 0, a.lastAgentActivity || 0));
     if (!own.length) return no(mine.length ? 'human_has_control' : 'no_tab');
-    const tab = own[0], target = { storedId, botId: bot, tabId: tab.id, generation: tab.generation, epoch: tab.epoch, nonce: '', filled: false, typed: false, expiresAt: now() + targetTtlMs };
+    const tab = own[0], target = { storedId, botId: bot, tabId: tab.id, documentSeq: tab.documentSeq || 0, epoch: tab.epoch, nonce: '', filled: false, typed: false, expiresAt: now() + targetTtlMs };
     const seen = read(target);
     if (seen.why) return no(seen.why);
     while (targets.size >= MAX_TARGETS) forget(targets.keys().next().value);
@@ -201,9 +215,9 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, l
   }
 
   const control = (c) => {
-    const text = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
+    const text = (v) => typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').slice(0, 64) : '';
     const int = (v) => Number.isSafeInteger(v) && v >= 0 ? v : null;
-    return { autocomplete: text(c.autocomplete, 100), formIndex: int(c.formIndex), index: c.index, label: text(c.label, 200), maxLength: int(c.maxLength), name: text(c.name, 200), type: 'password' };
+    return { autocomplete: text(c.autocomplete), formIndex: int(c.formIndex), index: c.index, label: text(c.label), maxLength: int(c.maxLength), name: text(c.name), type: 'password' };
   };
 
   async function inspect(target, expression, inspection) {
@@ -214,7 +228,8 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, l
     if (after.why) return no(after.why);
     if (!Array.isArray(raw)) return no('page_failed');
     target.nonce = inspection.nonce;
-    // Only password controls: all a password fill needs, and the least of the page that has to leave this app.
+    // Only password inputs, each as a descriptor whose text is page-derived (capped, control characters stripped): the
+    // least of the page that Hermes needs to choose the field, and it does go to Hermes.
     const controls = raw.filter((c) => isPlainObject(c) && c.type === 'password' && Number.isSafeInteger(c.index) && c.index >= 0).slice(0, MAX_CONTROLS).map(control);
     return ok({ result: JSON.stringify(controls) });
   }
@@ -233,6 +248,9 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, l
     if (seen.origin !== bound) return no('origin_mismatch');
     const unclear = unclean(seen.tab, bound);
     if (unclear) return no(unclear);
+    const tab = seen.tab;
+    const worker = await workerRefusal(tab);
+    if (worker) return no(worker);
 
     const key = JSON.stringify([target.botId, bound]);
     for (const [k, until] of denied) if (until <= now()) denied.delete(k);
@@ -243,8 +261,10 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, l
     const recent = (prompts.get(target.botId) || []).filter((t) => t > now() - 60000);
     if (recent.length >= PROMPTS_PER_MINUTE) { penalize(target.botId); return no('rate_limited'); }
 
+    // The page the user is asked about, from the main process's own navigation state (never from the page).
+    let page = '';
+    try { const u = new URL(seen.wc.getURL()); page = `${u.pathname}${u.search}`; } catch { /* the origin alone */ }
     // From here until the answer, and after a fill, the agent's readers on this tab are closed.
-    const tab = seen.tab;
     lock.acquire(tab);
     // Drop what an earlier DevTools Network.enable buffered (request bodies, post data): the login's own request must not be in it.
     Promise.resolve().then(() => command(tab, 'Network.disable', {})).catch(() => {});
@@ -255,7 +275,7 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, l
       const settled = new Promise((resolve) => { if (cancel.aborted) resolve(null); else cancel.addEventListener('abort', () => resolve(null), { once: true }); });
       prompts.set(target.botId, [...recent, now()]);
       // Raced against the abort: a prompt that never settles cannot hold the slot.
-      const answer = await Promise.race([Promise.resolve().then(() => ask({ botId: target.botId, botName: nameFor(target.botId) || target.botId, origin: bound }, cancel)).catch(() => null), settled]);
+      const answer = await Promise.race([Promise.resolve().then(() => ask({ botId: target.botId, botName: nameFor(target.botId) || target.botId, origin: bound, page }, cancel)).catch(() => null), settled]);
       if (answer === 'inactive') { prompts.set(target.botId, recent); return no('app_inactive'); }
       if (cancel.aborted || answer === null || answer === undefined) {
         if (!signal?.aborted) denied.set(key, now() + denyMs); // a withdrawn request (Stop) gets no cooldown, but it counts toward the backoff
@@ -271,6 +291,11 @@ function createVaultFill({ botFor, nameFor = () => '', listTabs, command, ask, l
       if (seen.origin !== bound) return no('origin_mismatch');
       const changed = unclean(seen.tab, bound);
       if (changed) return no(changed);
+      const taken = await workerRefusal(seen.tab);
+      if (taken) return no(taken);
+      const again = read(target); // the worker check was a round trip to the page: the page must not have moved during it
+      if (again.why) return no(again.why);
+      if (again.origin !== bound) return no('origin_mismatch');
       target.filled = true;
       keep = true; // the script is about to run: assume it typed, unless it says it did not
       let raw;
