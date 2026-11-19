@@ -24,7 +24,7 @@ const { createHermesRemote, RemoteError } = require('./hermes-remote.cjs');
 const { HermesSessionWire } = require('./hermes-session-wire.cjs');
 
 const DEFAULTS = Object.freeze({
-  baseMs: 500, capMs: 15000, stableMs: 30000,
+  baseMs: 500, capMs: 15000, quickDropMs: 100,
   connectTimeoutMs: 8000, bindTimeoutMs: 8000,
   pingIdleMs: 9000, pingDeadMs: 4000, // 13 s worst case from the last frame, inside the 14 s target and Hermes's 45 s
   offlinePollMs: 1000, focusIdleMs: 15000,
@@ -52,9 +52,9 @@ function createGatewayLink(deps = {}) {
   const link = new EventEmitter();
 
   let state = 'idle', since = timers.now(), started = false, suspended = false, stopped = false;
-  let failures = 0, lastError = '', everLive = false, liveAt = 0;
+  let failures = 0, quickDrops = 0, lastError = '', everLive = false, liveAt = 0;
   let conn = null, generation = 0, running = false, abortCtl = null;
-  let waitTimer = null, pingTimer = null, stableTimer = null, lastActivity = 0, lastEpoch = '';
+  let waitTimer = null, pingTimer = null, lastActivity = 0, lastEpoch = '';
   const att = new Map(); // storedId -> attachment
 
   const emitState = () => link.emit('state', getState());
@@ -104,9 +104,7 @@ function createGatewayLink(deps = {}) {
       if (gen !== generation || conn !== opened) return;
       everLive = true; lastError = ''; liveAt = timers.now();
       lastEpoch = opened.epoch;
-      timers.clearTimeout(stableTimer);
-      stableTimer = timers.setTimeout(() => { failures = 0; }, o.stableMs);
-      stableTimer.unref?.();
+      failures = quickDrops; // a link that got here is healthy; only back-to-back instant drops keep the delay growing
       setState('live');
       armPing();
       link.emit('live', getState());
@@ -150,8 +148,8 @@ function createGatewayLink(deps = {}) {
     if (!c) return;
     conn = null;
     timers.clearTimeout(pingTimer); pingTimer = null;
-    timers.clearTimeout(stableTimer); stableTimer = null;
-    if (liveAt && timers.now() - liveAt >= o.stableMs) failures = 0;
+    quickDrops = liveAt && timers.now() - liveAt < o.quickDropMs ? quickDrops + 1 : 0;
+    if (liveAt) failures = quickDrops;
     liveAt = 0;
     for (const a of att.values()) detachController(a);
     closeConn(c);
@@ -338,7 +336,6 @@ function createGatewayLink(deps = {}) {
     stopped = true; clearWait();
     abortCtl?.abort();
     if (conn) dropConn('stop', { keepState: true });
-    timers.clearTimeout(stableTimer);
     generation++; running = false;
     setState('stopped');
   }

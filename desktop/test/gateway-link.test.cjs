@@ -101,6 +101,42 @@ test('backoff: first retry is immediate, then 0.5 s doubling to the 15 s cap, fu
   assert.deepEqual(half.slice(0, 3), [0, 250, 500]);
 });
 
+// Reconnect delays are the 'link.retry' log lines; the clock is fake so "how long it was live" is exact.
+function retryRig(options) {
+  let clock = 1000;
+  const r = rig({}, { options: { baseMs: 500, capMs: 15000, pingIdleMs: 1e9, pingDeadMs: 50, offlinePollMs: 10, connectTimeoutMs: 500, bindTimeoutMs: 500, ...options }, timers: { random: () => 1, now: () => clock } });
+  r.advance = (ms) => { clock += ms; };
+  r.retries = () => r.logs.filter(([event]) => event === 'link.retry').map(([, f]) => f.inMs);
+  r.dropNext = async (n) => { // close the socket n (1-based) and wait for socket n + 1 to be live
+    r.server.conns[n - 1].reset();
+    await until(() => r.server.opens === n + 1 && r.link.isLive(), 5000, `socket ${n + 1} live`);
+  };
+  return r;
+}
+
+test('backoff: a link that reached live reconnects at once every time, however often it was closed', async () => {
+  const r = retryRig();
+  r.link.start();
+  await until(() => r.link.isLive());
+  for (let n = 1; n <= 7; n++) { r.advance(500); await r.dropNext(n); assert.equal(r.link.getState().failures, 0, `failures after live ${n}`); }
+  assert.deepEqual(r.retries(), [0, 0, 0, 0, 0, 0, 0]);
+  r.done();
+});
+
+test('backoff: a server that accepts and drops at once still backs off, a failed attempt after a healthy live starts over', async () => {
+  const r = retryRig();
+  r.link.start();
+  await until(() => r.link.isLive());
+  for (let n = 1; n <= 3; n++) await r.dropNext(n); // dead the moment it was live: the clock never moves
+  assert.deepEqual(r.retries(), [500, 1000, 2000]);
+  r.advance(5000);
+  r.server.fail = 1;
+  r.server.conns[3].reset(); // healthy for 5 s, then one refused attempt: its delay is the first step, not the fourth
+  await until(() => r.server.opens === 6 && r.link.isLive(), 5000, 'live after the refused attempt');
+  assert.deepEqual(r.retries(), [500, 1000, 2000, 0, 500]);
+  r.done();
+});
+
 test('a reply streaming at a reset arrives whole: replay since lastSeq, nothing lost, nothing doubled', async () => {
   const r = rig();
   r.link.start();

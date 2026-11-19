@@ -106,7 +106,7 @@ async function stack({ rttMs = 0, jitterMs = 0, backend: backendCfg = {}, option
     } finally { live.inFlight -= 1; }
   };
   const logs = [];
-  link = createGatewayLink({ open, log: (e, f) => logs.push([e, f]), options: { stableMs: 50, ...options } });
+  link = createGatewayLink({ open, log: (e, f) => logs.push([e, f]), options });
   const rest = createHermesApi({ baseUrl: url, key: 'k'.repeat(20) });
   const api = createGatewayApi({ rest, link });
   const linkEvents = [], states = [], gaps = [], lives = [];
@@ -295,6 +295,29 @@ async function flap({ flaps, spanMs }) {
   } finally { await h.close(); }
 }
 
+// Idle link, the server closes it politely (close frame), again and again: every reconnect must be prompt,
+// because each one reached live. Bench finding: waits grew 0.4 -> 4 s with a healthy network.
+async function gracefulCloses({ closes, rttMs }) {
+  const closers = [];
+  const h = await stack({ rttMs, backend: { orphanGraceMs: 20000, onWsOpen: (c) => closers.push(c) } });
+  const reconnect = [];
+  const scenario = `graceful close, ${closes} in a row, RT ${rttMs} ms`;
+  try {
+    await h.link.attach(KEY);
+    for (let i = 0; i < closes; i++) {
+      await sleep(150); // it worked for a moment: not an accept-and-drop loop
+      const liveBefore = h.lives.length, t0 = now();
+      closers.at(-1).close(1000, 'idle');
+      await until(() => h.lives.length > liveBefore, 10000, 'link live again');
+      reconnect.push(h.lives.at(-1) - t0);
+    }
+    const retries = h.logs.filter(([e]) => e === 'link.retry').map(([, f]) => f.inMs);
+    check(scenario, 'reconnect p50 / p95 / max ms', `${fmt(pct(reconnect, 50))} / ${fmt(pct(reconnect, 95))} / ${fmt(Math.max(...reconnect))}`, 'p95 <= 500', pct(reconnect, 95) <= 500);
+    check(scenario, 'longest scheduled wait ms', Math.max(...retries), '0', Math.max(...retries) === 0);
+    check(scenario, 'peak sockets / in-flight attempts', `${h.live.maxSockets} / ${h.live.maxInFlight}`, '1 / 1', h.live.maxSockets === 1 && h.live.maxInFlight === 1);
+  } finally { await h.close(); }
+}
+
 // Warm first token: send to first delta at the adapter (the model's first chunk is 50 ms).
 async function firstToken({ rttMs, n = 10 }) {
   const h = await stack({ rttMs, backend: { firstDeltaMs: 50, deltaCount: 3, deltaMs: 5 } });
@@ -326,6 +349,7 @@ async function main() {
   const guarded = async (name, fn) => { if (only && !name.includes(only)) return; try { await Promise.race([fn(), sleep(SCENARIO_MS).then(() => { throw new Error(`no result in ${SCENARIO_MS / 1000} s`); })]); } catch (e) { check(name, 'scenario completed', e.message, 'completes', false); } };
   // Timing-sensitive scenarios run alone; the long waits run side by side.
   await guarded('reset RT 100', () => resetRuns({ runs, rttMs: 100 }));
+  await guarded('graceful close RT 100', () => gracefulCloses({ closes: 20, rttMs: 100 }));
   await guarded('reset RT 0', () => resetRuns({ runs: 30, rttMs: 0 }));
   await guarded('first token RT 0', () => firstToken({ rttMs: 0 }));
   await guarded('first token RT 100', () => firstToken({ rttMs: 100 }));
