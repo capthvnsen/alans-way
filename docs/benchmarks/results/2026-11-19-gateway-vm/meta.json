@@ -1,0 +1,39 @@
+{
+ "date": "2026-11-19T21:44:17.231Z",
+ "machine": {
+  "model": "Apple M5 Pro",
+  "memGB": 48,
+  "os": "macOS 27.2"
+ },
+ "versions": {
+  "gitRev": "121b79532185e5e10dd9385a16989173949d9ef7",
+  "branch": "agent/g3-gateway-vm-check",
+  "node": "v26.7.0",
+  "hermesAgent": "0.23.0 (GET /api/status; installed source commit 2bd378ed1b, 2026-11-05)",
+  "app": "0.21.14"
+ },
+ "target": {
+  "host": "hermes-orgo",
+  "vm": "Hermes Agent on the agent VM, reached over the tailnet; wss via Tailscale Serve (HTTPS to the dashboard), REST via an SSH loopback tunnel to the API server",
+  "defaultModel": "grok-4.7 (xai-oauth), from the VM config"
+ },
+ "settings": {
+  "warmSamples": 10,
+  "warmDiscarded": 1,
+  "coldSamples": 10,
+  "coldSettledGapMs": 400,
+  "reconnectSamplesPerArm": 10,
+  "reconnectGapMs": 31000,
+  "promptsTotal": 36,
+  "promptCap": 40,
+  "warmPrompt": "Reply with the single word: ok",
+  "dropPrompt": "Write a 200-word paragraph about why a private network is useful. No lists."
+ },
+ "notes": [
+  "Prompts spent: 22 warm (11 per transport) + 5 first drop attempt (no drop fired: it waited for message.delta, which this server never sends) + 5 drop (3 wss-close attempts were no-ops, a bench bug) + 1 clarify + 3 wss-close rerun = 36.",
+  "warm and the 5-prompt drop run used the harness before it recorded first-content time and corrected the delta check; see results.md",
+  "Only first of each transport is a warm-up and is excluded; both transports alternate order each round.",
+  "Reconnect and drop figures: wss path = real Tailscale Serve HTTPS name with a locally closed socket; tunnel path = loopback SSH tunnel through a local TCP proxy that resets the connection.",
+  "secrets: none stored; the bench refuses to write results containing the sign-in, API key or any token it handled"
+ ]
+}
