@@ -18,7 +18,7 @@ one where you left it.
 
 - **Tabs:** `Browser` and `Bot screen`. Both reuse what exists: Browser is the
   existing browser pane; Bot screen is the existing VM live view, the same view the
-  expand button and the floating preview use (`activeTabId === 'vps'` in main).
+  expand button uses (`activeTabId === 'vps'` in main).
 - **Memory:** `prefs.canvasTabs[botId]` is `'browser'` or `'screen'`. It is written
   whenever you switch and when you leave a bot, and read when you select a bot
   and at launch. A bot with no saved choice keeps the current view.

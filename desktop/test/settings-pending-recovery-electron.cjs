@@ -33,7 +33,7 @@ app.getVersion = () => JSON.parse(fs.readFileSync(path.join(TARGET, 'package.jso
 fs.writeFileSync(path.join(PROFILE, 'preferences.json'), JSON.stringify({
   onboarded: true, macSshHost: '', remoteUrl: '', vpsBrowser: { sshHost: '', scriptPath: '', sudo: false },
   bots: [{id:'81001',name:'Cedar',username:'cedar_fixture_bot'},{id:'81002',name:'Maple',username:'maple_fixture_bot'}], order: [], hidden: [], selectedBotId: '81001', accountId: '', savedTabs: [],
-  autoOpenLinks: false, autoTakeover: true, preview: true, showBots: true, showBrowser: true,
+  autoOpenLinks: false, autoTakeover: true, showBots: true, showBrowser: true,
   browserExtensions: [], cloud: {}, versionCache: {}, lastVersion: app.getVersion()
 }));
 app.setAsDefaultProtocolClient = () => { journal.blocked.push({ kind: 'protocol registration' }); return false; };
@@ -150,7 +150,7 @@ ipcMain.handle = (channel, handler) => {
     if (mine?.phase === 'before') await mine.promise;
     if (mine?.errorBefore) throw Error(mine.errorBefore);
     const result = await handler(event, name, value);
-    record.returned = {settingsWrite:result?.settingsWrite,state:result?.state&&Object.fromEntries(['uiStateRevision','selectedBotId','autoOpenLinks','autoTakeover','preview','macSshHost','vpsBrowser','remoteUrl','remotePlatform'].map(k=>[k,result.state[k]]))};
+    record.returned = {settingsWrite:result?.settingsWrite,state:result?.state&&Object.fromEntries(['uiStateRevision','selectedBotId','autoOpenLinks','autoTakeover','macSshHost','vpsBrowser','remoteUrl','remotePlatform'].map(k=>[k,result.state[k]]))};
     if (mine?.phase === 'after') await mine.promise;
     if (mine?.errorAfter) throw Error(mine.errorAfter);
     return result;
@@ -195,7 +195,7 @@ async function open() { await click(await js('document.getElementById("settings-
 async function reopen() { await key('Escape'); await open(); }
 async function show(id) {
   await click(id==='settings-auto-links'||id==='settings-auto-takeover'?'#settings-category-general':'#settings-category-connections');
-  if (id==='settings-preview'||id==='remote-url') await js('document.getElementById("settings-remote-details").open=true');
+  if (id==='remote-url') await js('document.getElementById("settings-remote-details").open=true');
   if (id==='settings-save-addresses'||id==='mac-ssh-host') await js('document.getElementById("settings-agent-details").open=true');
 }
 const count = key => journal.commands.filter(c=>c.name==='settings' && Object.hasOwn(c.value||{},key)).length;
@@ -223,7 +223,7 @@ async function geometry(selector) {
 }
 async function run() {
   await open();
-  for (const spec of [{id:'settings-auto-links',key:'autoOpenLinks'},{id:'settings-auto-takeover',key:'autoTakeover'},{id:'settings-preview',key:'preview'}]) {
+  for (const spec of [{id:'settings-auto-links',key:'autoOpenLinks'},{id:'settings-auto-takeover',key:'autoTakeover'}]) {
     for(const phase of ['before','after']) await test(`${spec.key}: ${phase} write survives reopen and blocks duplicate`,async()=>{
       await show(spec.id); const old=disk()[spec.key], before=count(spec.key), writes=persists(spec.key), h=hold(spec.key,phase);
       await click('#'+spec.id);await until(()=>held.has(h.id));
@@ -374,19 +374,19 @@ async function run() {
     await key('Tab');assert.equal(await js('document.activeElement.id'),'settings-auto-takeover');h.release();await sleep(80);
     (journal.geometry ||= []).push({requested:[width,height],...effective,switch:g,recovery:recoveryGeometry});
   });
-  for(const spec of [{id:'settings-preview',key:'preview',check:'settings-preview-check-save'}, {id:'mac-ssh-host',key:'macSshHost',check:'mac-ssh-host-check-save'}, {id:'remote-url',key:'remoteUrl',check:'remote-url-check-save'}]) await test(`${spec.id}: pending recovery geometry across four sizes`,async()=>{
-    await show(spec.id);const selector=spec.id==='settings-preview'?'#'+spec.id:saveFor(spec.id);
+  for(const spec of [{id:'mac-ssh-host',key:'macSshHost',check:'mac-ssh-host-check-save'}, {id:'remote-url',key:'remoteUrl',check:'remote-url-check-save'}]) await test(`${spec.id}: pending recovery geometry across four sizes`,async()=>{
+    await show(spec.id);const selector=saveFor(spec.id);
     if(spec.id==='mac-ssh-host')await edit(spec.id,`geometry@${fixtureTailnet}`);if(spec.id==='remote-url')await edit(spec.id,`https://${fixtureTailnet}/geometry.invalid/vnc.html`);
     const h=hold(spec.key,'before');await click(selector);await until(()=>held.has(h.id));await until(()=>js(`!document.getElementById(${JSON.stringify(spec.check)}).hidden`),7000);
     for(const [width,height] of [[1280,900],[1120,760],[1024,680],[840,520]]) {
       await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');const effective=await resizeWindow(win,width,height);await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width:effective.width,height:effective.height,deviceScaleFactor:1,mobile:false});
       await js(`document.querySelector(${JSON.stringify(selector)}).focus()`);await key('Tab');
-      if(spec.id!=='settings-preview')await key('Tab');assert.equal(await js('document.activeElement.id'),spec.check);
+      await key('Tab');assert.equal(await js('document.activeElement.id'),spec.check);
       const g=await geometry('#'+spec.check);assert.ok(g.focused&&g.complete&&g.outline>=2,JSON.stringify(g));await shot(`${spec.id}-recovery-${width}`);
       (journal.geometry ||= []).push({id:spec.id,requested:[width,height],...effective,recovery:g});
     }
     await key('Enter');await settled(selector);assert.equal(await js(`document.activeElement===document.querySelector(${JSON.stringify(selector)})`),true);h.release();await sleep(60);
-    if(spec.id!=='settings-preview')await click(spec.id==='remote-url'?'#settings-discard-viewer':'#settings-discard-addresses');
+    await click(spec.id==='remote-url'?'#settings-discard-viewer':'#settings-discard-addresses');
   });
   await test('external viewer stays inert throughout Settings checks',async()=>{
     assert.ok(journal.blocked.some(b=>b.kind==='Remote viewer replaced with inert local document'));

@@ -222,27 +222,6 @@ app.whenReady().then(async () => {
     return r.width > 20 && r.right <= window.innerWidth + 0.5 && r.bottom <= window.innerHeight + 0.5;
   })()`);
   rec('narrow-send-onscreen', sendVisible === true);
-  // The remote preview card must not paint over the chat surface. Its layout
-  // box can extend past a collapsed workspace pane — what matters is the
-  // painted part, i.e. the layout box clipped by the pane (or unclipped when
-  // the browser-hidden mode floats it position:fixed).
-  const previewClear = await evaluate(`(() => {
-    const pane = document.querySelector('.workspace-pane').getBoundingClientRect();
-    const convo = document.getElementById('hermes-convo').getBoundingClientRect();
-    const overlaps = (el) => {
-      if (!el || el.classList.contains('hidden')) return false;
-      const r = el.getBoundingClientRect();
-      const fixed = getComputedStyle(el).position === 'fixed';
-      const clip = fixed ? { left: -1e9, right: 1e9, top: -1e9, bottom: 1e9 } : pane;
-      const vis = { left: Math.max(r.left, clip.left), right: Math.min(r.right, clip.right),
-                    top: Math.max(r.top, clip.top), bottom: Math.min(r.bottom, clip.bottom) };
-      if (vis.right - vis.left < 2 || vis.bottom - vis.top < 2) return false;
-      return !(vis.right <= convo.left || vis.left >= convo.right || vis.bottom <= convo.top || vis.top >= convo.bottom);
-    };
-    return !overlaps(document.getElementById('remote-preview-slot'))
-        && !overlaps(document.getElementById('preview-chip'));
-  })()`);
-  rec('preview-not-over-composer', previewClear === true);
   // The Telegram empty-state promo must be bounded inside the bot region so it
   // can never paint over the Hermes section below it.
   const sidebarClear = await evaluate(`(() => {
