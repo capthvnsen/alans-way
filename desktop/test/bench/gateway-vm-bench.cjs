@@ -202,7 +202,7 @@ async function stepRtt() {
   } catch (e) { out.wsPingTunnel = { error: String(e.code || e.message).slice(0, 120) }; }
   // network level: tailscale ping
   try {
-    const text = await new Promise((resolve, reject) => execFile('tailscale', ['ping', '-c', '10', '--until-direct=false', '--timeout', '3s', process.env.GW_TS_HOST || 'hermes-orgo'], { timeout: 40000 }, (e, so, se) => resolve(String(so) + String(se))));
+    const text = await new Promise((resolve, reject) => execFile('tailscale', ['ping', '-c', '10', '--until-direct=false', '--timeout', '3s', process.env.GW_TS_HOST || 'the agent VM'], { timeout: 40000 }, (e, so, se) => resolve(String(so) + String(se))));
     const ms = [...text.matchAll(/in (\d+(?:\.\d+)?)ms/g)].map((m) => Number(m[1]));
     out.tailscalePing = { note: 'tailscale ping -c 10 (network path, first reply may be relayed)', direct: /via \d+\.\d+\.\d+\.\d+:\d+/.test(text) && !/DERP/.test(text.split('\n').slice(1).join('\n')), ...stats(ms) };
   } catch (e) { out.tailscalePing = { error: String(e.message).slice(0, 100) }; }

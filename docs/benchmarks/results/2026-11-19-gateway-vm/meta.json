@@ -13,7 +13,7 @@
   "app": "0.21.14"
  },
  "target": {
-  "host": "hermes-orgo",
+  "host": "the agent VM",
   "vm": "Hermes Agent on the agent VM, reached over the tailnet; wss via Tailscale Serve (HTTPS to the dashboard), REST via an SSH loopback tunnel to the API server",
   "defaultModel": "grok-4.7 (xai-oauth), from the VM config"
  },
