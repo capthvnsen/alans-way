@@ -1297,3 +1297,9 @@ test('the not_found hint covers bad menu and file paths, not only a quit app', (
   assert.match(next.not_found, /menu or file path/);
   assert.match(next.not_found, /workspace_computer_apps/);
 });
+
+test('a click refused for aiming outside the app window tells the agent nothing was sent', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/browser-mcp.cjs'), 'utf8');
+  const next = require('node:vm').runInNewContext(source.slice(source.indexOf('const COMPUTER_NEXT ='), source.indexOf('function singleContinuedFromArgv')) + '\nCOMPUTER_NEXT;');
+  assert.match(next.wrong_window, /Nothing was sent/);
+});
