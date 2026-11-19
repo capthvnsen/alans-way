@@ -3946,7 +3946,7 @@ else {
       profile: () => hermesHub.session.credentials()?.profile || '',
       log: (event, fields) => mainLog().write(event, JSON.stringify(fields)),
       vault: createVaultFill({ botFor: (storedId) => Object.keys(prefs.nativeSessions || {}).find((bot) => prefs.nativeSessions[bot] === storedId) || '',
-        nameFor: nameForBot, listTabs: () => tabs.values(), ask: createVaultPrompt({ dialog, app }), log: (event, fields) => mainLog().write(event, JSON.stringify(fields)) }),
+        nameFor: nameForBot, listTabs: () => tabs.values(), ask: createVaultPrompt({ dialog, app, getWindow: () => win }), log: (event, fields) => mainLog().write(event, JSON.stringify(fields)) }),
     });
     gatewayLink.start();
     gatewayLink.on('state', () => pushNativeState());

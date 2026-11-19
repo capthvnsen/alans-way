@@ -157,6 +157,16 @@ test('Deny refuses, and a retry inside the cooldown does not ask again', async (
   noPassword(r);
 });
 
+test('only a plain true is an Allow', async () => {
+  for (const decision of [1, 'allow', 'true', {}, [true]]) {
+    const r = rig({ decision }), tab = r.add();
+    const target = await r.open(); await r.evaluate(target, inspectJs());
+    const out = await r.evaluate(target, fillJs());
+    assert.equal(out.success, false, String(decision));
+    assert.equal(ranFill(tab).length, 0, String(decision));
+  }
+});
+
 test('no answer, a withdrawn request or a timeout all refuse', async () => {
   let r = rig({ decision: null }); let tab = r.add();
   let target = await r.open(); await r.evaluate(target, inspectJs());
