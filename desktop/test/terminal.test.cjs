@@ -82,3 +82,32 @@ test('one session per bot: output, input, resize, and kill when the bot goes', (
   assert.deepEqual(terminals.ids(), []);
   assert.deepEqual(exited, ['1', '2'], 'quitting is silent');
 });
+
+// A real pty: the shell must not run its startup files (and so draw a prompt or banner) before the pane has told us its size.
+test('the shell starts at the pane size even when the size arrives after the spawn', { skip: process.platform === 'win32' }, async () => {
+  const os = require('node:os'), fs = require('node:fs'), path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'term-size-'));
+  const shell = path.join(dir, 'shell.sh');
+  fs.writeFileSync(shell, '#!/bin/sh\necho "startsize=$(stty size)"\nexit 0\n', { mode: 0o755 });
+  let out = '';
+  const ended = new Promise((resolve) => {
+    const terminals = createTerminals({ build: (options) => terminalCommand({ ...options, env: { SHELL: shell } }), onData: (_id, text) => { out += text; }, onExit: resolve });
+    terminals.start('1');
+    setTimeout(() => terminals.resize('1', 132, 41), 300);
+  });
+  try { await ended; } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  assert.match(out, /startsize=41 132/);
+});
+
+test('a shell whose pane never reports a size still starts', { skip: process.platform === 'win32' }, async () => {
+  const os = require('node:os'), fs = require('node:fs'), path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'term-size-'));
+  const shell = path.join(dir, 'shell.sh');
+  fs.writeFileSync(shell, '#!/bin/sh\necho "startsize=$(stty size)"\nexit 0\n', { mode: 0o755 });
+  let out = '';
+  const ended = new Promise((resolve) => {
+    createTerminals({ waitMs: 100, build: (options) => terminalCommand({ ...options, env: { SHELL: shell } }), onData: (_id, text) => { out += text; }, onExit: resolve }).start('1');
+  });
+  try { await ended; } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  assert.match(out, /startsize=24 80/);
+});
