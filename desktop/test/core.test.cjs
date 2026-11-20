@@ -657,3 +657,13 @@ test('a Mac tab the VM resumed while away is retired once, pointing agents at th
   assert.equal(continuedOnVm({ ...tab, handoff: { ...record, phase: 'reviewed' } }, 'vm-9'), null, 'the human reopened it for agents after this move');
   assert.ok(continuedOnVm({ ...tab, handoff: { ...record, phase: 'reviewed' } }, 'vm-10'), 'a later move is retired again');
 });
+
+test('a favicon body is read up to its cap and no further, even when the page serves an endless one', { timeout: 3000 }, async () => {
+  const { readCapped } = require('../src/core.cjs');
+  let pulled = 0;
+  const endless = new Response(new ReadableStream({ pull(controller) { pulled += 65536; controller.enqueue(new Uint8Array(65536)); } }), { headers: { 'content-type': 'image/png' } });
+  assert.equal(await readCapped(endless, 262144), null);
+  assert.ok(pulled <= 262144 + 4 * 65536, `read ${pulled} bytes of an endless body`);
+  assert.equal(await readCapped(new Response(new Uint8Array(10)), 262144).then((buffer) => buffer.length), 10);
+  assert.equal(await readCapped(new Response(new Uint8Array(10), { headers: { 'content-length': '999999999' } }), 262144), null);
+});

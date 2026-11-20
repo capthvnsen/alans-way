@@ -10,7 +10,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, continuedOnVm, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
+const { readCapped, normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, continuedOnVm, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
 const { queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
@@ -930,14 +930,15 @@ async function fetchFavicon(pageUrlNow, target) {
       response = await fetch(target, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
       const location = response.headers.get('location');
       if (response.status >= 300 && response.status < 400 && location) {
+        response.body?.cancel().catch(() => {});
         target = faviconTarget(pageUrlNow, new URL(location, target).href);
         if (!target) return '';
       } else break;
     }
     const mime = response.headers.get('content-type')?.split(';')[0]?.trim() || '';
     if (!response.ok || !mime.startsWith('image/')) return '';
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (!buffer.length || buffer.length > 262144) return '';
+    const buffer = await readCapped(response, 262144);
+    if (!buffer?.length) return '';
     const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`;
     if (faviconCache.size > 300) faviconCache.clear();
     faviconCache.set(target, dataUrl);
