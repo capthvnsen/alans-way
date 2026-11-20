@@ -175,6 +175,23 @@ func fixture() throws {
             try refuses("unresponsive") { _ = try runStep(7, step, windowId: 41) }
             try expectFixture(performed.count == 1 && !postedMouse, "\(step["action"] ?? ""): one attempt, no second press: \(performed), mouse \(postedMouse)")
         }
+    case "slider-direction":
+        // A vertical slider has its maximum at the top; a vertical scroll bar has its minimum there.
+        var frame = CGRect(x: 0, y: 100, width: 20, height: 200)
+        let vertical = AXValueCreate(.cgRect, &frame)!
+        var wide = CGRect(x: 0, y: 100, width: 200, height: 20)
+        let horizontal = AXValueCreate(.cgRect, &wide)!
+        fixtureHit = field
+        func dragged(_ role: String, _ shape: AXValue, to end: CGPoint) throws -> Double {
+            attributes[AXKey(element: field)] = ["AXRole": role, "AXMinValue": 0, "AXMaxValue": 100, "AXFrame": shape, "AXParent": window]
+            try expectFixture(setSliderValue(pid: 7, from: CGPoint(x: 10, y: 200), to: end), "\(role) drag was refused")
+            return (attributes[AXKey(element: field)]?["AXValue"] as? NSNumber)?.doubleValue ?? -1
+        }
+        try expectFixture(try dragged("AXSlider", vertical, to: CGPoint(x: 10, y: 100)) == 100, "dragging a vertical slider to its top gives the maximum")
+        try expectFixture(try dragged("AXSlider", vertical, to: CGPoint(x: 10, y: 300)) == 0, "dragging a vertical slider to its bottom gives the minimum")
+        try expectFixture(try dragged("AXSlider", vertical, to: CGPoint(x: 10, y: 150)) == 75, "a quarter down a vertical slider is three quarters of the range")
+        try expectFixture(try dragged("AXSlider", horizontal, to: CGPoint(x: 150, y: 110)) == 75, "a horizontal slider still grows to the right")
+        try expectFixture(try dragged("AXScrollBar", vertical, to: CGPoint(x: 10, y: 100)) == 0, "a vertical scroll bar still starts at the top")
     case "launch":
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".app")
         try FileManager.default.createDirectory(at: dir.appendingPathComponent("Contents"), withIntermediateDirectories: true)

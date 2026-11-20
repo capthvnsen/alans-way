@@ -825,7 +825,9 @@ func setSliderValue(pid: pid_t, from: CGPoint, to: CGPoint) -> Bool {
     let span = horizontal ? frame.width : frame.height
     let origin = horizontal ? frame.minX : frame.minY
     let end = horizontal ? to.x : to.y
-    let fraction = span <= 0 ? 0 : min(1, max(0, (end - origin) / span))
+    var fraction = span <= 0 ? 0 : min(1, max(0, (end - origin) / span))
+    // A vertical slider has its maximum at the top (screen y grows downward); a vertical scroll bar has its minimum there.
+    if !horizontal && role == "AXSlider" { fraction = 1 - fraction }
     return AXUIElementSetAttributeValue(element, "AXValue" as CFString, NSNumber(value: low + fraction * (high - low))) == .success
 }
 
