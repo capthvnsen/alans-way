@@ -12,7 +12,7 @@ const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const { readCapped, normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, continuedOnVm, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
-const { queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
+const { sameOriginWindow, queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
@@ -139,6 +139,7 @@ let activeTabId = 'home', canvasTab = 'browser', activeVpsTabId = '', apiError =
 let canvasReturn = 'browser';
 let nativeChat = null, hermesHub = null, gatewayLink = null, chatTarget = 'telegram', webappStatus = 'unconfigured', webappTarget = '', webappSignInError = '', webappSignInTried = false, webappPrivate = false, canvasView = null, canvasPage = '';
 const WEBAPP_PARTITION = 'persist:hermes-webapp';
+const WEBAPP_PREFERENCES = { partition: WEBAPP_PARTITION, navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true };
 // Canvas tabs beyond Browser, Bot screen and Terminal are Hermes Desktop pages (HashRouter routes). Cron jobs and Bot
 // settings are canvasTab values like the rest, but the strip shows their tab only while one is open (canvasStripTabs).
 const CANVAS_PAGES = { artifacts: '#/artifacts', cron: '#/cron', settings: '#/settings' };
@@ -751,14 +752,21 @@ async function loadPrivateCanvasPage(url) {
   await boundedJs(contents, `for (const [key, token] of ${JSON.stringify(grants)}) sessionStorage.setItem(key, token)`, 10000);
   if (canvasView === view) contents.loadURL(url).catch(() => {});
 }
-function guardedWebappView(url, report = () => {}) {
-  const view = new WebContentsView({ webPreferences: { partition: WEBAPP_PARTITION, navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true } });
-  view.setBackgroundColor('#09090a');
-  const contents = view.webContents, { origin } = new URL(webappTarget);
-  sitePermissions.install(contents.session, 'browser');
+const webappWindows = new Set();
+// The Webapp's pop-outs (New Window, a session or the Browser in its own window) are window.open calls to its own origin
+// (apps/desktop/src/lib/browser-window.ts): they get a real window on the same partition with the view's settings. Any other
+// address goes to the Browser pane, and a window opened this way is held to the same rules.
+function guardWebappContents(contents, origin) {
   const toBrowser = (url) => { try { if (new URL(url).origin !== origin) openTelegramLink(url); } catch {} };
-  // shortcut: Webapp New Window and session pop-outs are refused here and so do nothing; allow same-origin child windows when embedding ships.
-  contents.setWindowOpenHandler(({ url }) => { toBrowser(url); return { action: 'deny' }; });
+  contents.setWindowOpenHandler(({ url }) => {
+    if (!sameOriginWindow(url, origin)) { toBrowser(url); return { action: 'deny' }; }
+    return { action: 'allow', overrideBrowserWindowOptions: { parent: win, width: 1100, height: 780, backgroundColor: '#09090a', webPreferences: WEBAPP_PREFERENCES } };
+  });
+  contents.on('did-create-window', (child) => {
+    webappWindows.add(child);
+    child.once('closed', () => webappWindows.delete(child));
+    guardWebappContents(child.webContents, origin);
+  });
   // shortcut: keeps password sign-in only, because leaving the origin breaks Nous OAuth; allowlist the provider if that is ever needed.
   const stay = (event, url) => {
     if (!event.isMainFrame) return;
@@ -768,6 +776,13 @@ function guardedWebappView(url, report = () => {}) {
   };
   contents.on('will-navigate', stay);
   contents.on('will-redirect', stay);
+}
+function guardedWebappView(url, report = () => {}) {
+  const view = new WebContentsView({ webPreferences: WEBAPP_PREFERENCES });
+  view.setBackgroundColor('#09090a');
+  const contents = view.webContents;
+  sitePermissions.install(contents.session, 'browser');
+  guardWebappContents(contents, new URL(webappTarget).origin);
   contents.on('did-navigate', (_event, url) => {
     const { pathname } = new URL(url);
     if (pathname.endsWith('/webapp/launch')) return;
@@ -802,6 +817,7 @@ async function checkWebapp() {
   const target = hermesWebappUrl(prefs.hermesWebappUrl);
   if (target !== webappTarget) {
     for (const view of [webappView, canvasView].filter(Boolean)) { win.contentView.removeChildView(view); view.webContents.close(); }
+    for (const popup of [...webappWindows]) popup.close();
     webappView = canvasView = null; canvasPage = '';
   }
   webappTarget = target;
