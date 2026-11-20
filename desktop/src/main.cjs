@@ -1,4 +1,5 @@
-try { require('node:module').enableCompileCache?.(); } catch {}
+// Linux's default cache dir sits in a shared /tmp where another user could plant bytecode; keep it under the user's own home there.
+try { const { join } = require('node:path'); require('node:module').enableCompileCache?.(process.platform === 'linux' ? join(process.env.XDG_CACHE_HOME || join(require('node:os').homedir(), '.cache'), 'alans-way', 'compile-cache') : undefined); } catch {}
 const bootTimer = require('./boot-timing.cjs').createBootTimer();
 bootTimer.mark('process-start');
 const { SSH_OPTIONS: TAILNET_SSH_OPTIONS, hermesWebappUrl } = require('./tailnet.cjs');
@@ -3875,6 +3876,7 @@ function createWindow() {
   for (const name of ['show', 'hide', 'minimize', 'restore', 'focus', 'blur']) win.on(name, () => {
     sendPollTier();
     pointerFeed?.setVisible(windowVisible());
+    scheduleActivity();
   });
   for (const name of ['show', 'restore', 'focus']) win.on(name, () => {
     if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:remote-retry');
@@ -3894,7 +3896,7 @@ function createWindow() {
     send: (point) => { if (win && !win.isDestroyed()) win.webContents.send('workspace:pointer', point); },
   });
   pointerFeed.setVisible(windowVisible());
-  const scheduleActivity = () => {
+  function scheduleActivity() {
     clearTimeout(activityTimer);
     if (isQuitting) return;
     const hasAgentTab = [...tabs.values()].some((t) => t.controller === 'agent') || [...vpsTabs.values()].some((t) => t.controller === 'agent');
@@ -3906,7 +3908,7 @@ function createWindow() {
       scheduleActivity();
     }, delay);
     activityTimer.unref();
-  };
+  }
   scheduleActivity();
   idleTimer = setInterval(() => {
     const idleMs = Math.max(1, Number(process.env.HERMES_AGENT_IDLE_MINUTES) || prefs.agentIdleMinutes || 15) * 60000, now = Date.now();
@@ -3921,7 +3923,7 @@ function createWindow() {
     const configured = Boolean(prefs?.vpsBrowser?.brokerSshHost || prefs?.vpsBrowser?.sshHost);
     if (configured) await refreshVpsTabs();
     const baseDelay = configured ? backoffDelay(vpsFailures) : 30000;
-    const delay = configured && !windowVisible() && !waitingVpsTabs.size ? Math.max(20000, baseDelay) : baseDelay;
+    const delay = configured && !windowVisible() && !waitingVpsTabs.size ? Math.max(10000, baseDelay) : baseDelay;
     vpsTimer = setTimeout(vpsTick, delay);
     vpsTimer.unref();
   };
@@ -4132,8 +4134,8 @@ else {
     extensionActiveContentsId = undefined;
     extensionStore = createExtensionStore({ root: app.getPath('userData'), session: browserSession, dialog, nativeImage, getWindow: () => win, getPreferences: () => prefs, savePreferences, onChanged: broadcast,
       canInstall: frame => [...tabs.values()].some(tab => tab.id === shownTabId() && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
-    await extensionStore.installStore();
-    await extensionStore.restore();
+    // The rest of the boot tail must not hang on, or die with, the extension store.
+    try { await extensionStore.installStore(); await extensionStore.restore(); } catch (error) { logError('extensions', error); }
     broadcast();
     seedMacSshHost();
     // A connector copy setup.sh left behind runs ahead of the app's own and

@@ -2472,11 +2472,12 @@ let terminalFocus = false, terminalLast = { id: '', shown: false }, xtermLoader 
 function loadXterm() {
   if (typeof window.Terminal === 'function' && window.FitAddon?.FitAddon) return Promise.resolve();
   if (xtermLoader) return xtermLoader;
-  const loadScript = (src) => new Promise((resolve, reject) => {
-    const el = document.createElement('script'); el.src = src; el.onload = resolve; el.onerror = () => reject(new Error(`Failed to load ${src}`)); document.head.append(el);
+  const load = (el, src) => new Promise((resolve, reject) => {
+    el.onload = resolve; el.onerror = () => { el.remove(); reject(new Error(`Failed to load ${src}`)); }; document.head.append(el);
   });
-  const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '../node_modules/@xterm/xterm/css/xterm.css'; document.head.append(link);
-  xtermLoader = loadScript('../node_modules/@xterm/xterm/lib/xterm.js')
+  const loadScript = (src) => { const el = document.createElement('script'); el.src = src; return load(el, src); };
+  const sheet = '../node_modules/@xterm/xterm/css/xterm.css', link = document.createElement('link'); link.rel = 'stylesheet'; link.href = sheet;
+  xtermLoader = Promise.all([load(link, sheet), loadScript('../node_modules/@xterm/xterm/lib/xterm.js')])
     .then(() => loadScript('../node_modules/@xterm/addon-fit/lib/addon-fit.js'))
     .then(() => {
       for (const [id, events] of terminalPending) {
@@ -2489,7 +2490,7 @@ function loadXterm() {
       terminalPending.clear();
       if (state) renderTerminal();
     })
-    .catch((error) => { xtermLoader = null; toast(error.message); });
+    .catch((error) => toast(error.message));
   return xtermLoader;
 }
 function terminalView(id) {

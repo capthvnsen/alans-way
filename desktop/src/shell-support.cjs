@@ -253,7 +253,7 @@ function sameOriginWindow(url, origin) {
 
 // Movement-only pointer feed: sends only when coordinates change, slows polling
 // after the pointer stays still, and stops its timer completely while hidden.
-function createPointerFeed({ activeMs = 50, idleMs = 200, stillAfterMs = 2500, now = Date.now, read, send }) {
+function createPointerFeed({ activeMs = 50, idleMs = 100, stillAfterMs = 2500, now = Date.now, read, send }) {
   let timer, last = null, lastMovedAt = 0, visible = false, stopped = false;
   function schedule(delay) {
     clearTimeout(timer);

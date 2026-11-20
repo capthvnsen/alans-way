@@ -79,6 +79,7 @@ test('renderer lazy-loads xterm on first terminal data/open and flushes buffered
     write(chunk) { written.push(chunk); }
   };
   headNodes.find((n) => n.tag === 'script').onload();
+  headNodes.find((n) => n.tag === 'link').onload();
   await new Promise((r) => setImmediate(r));
   const fitScript = headNodes.filter((n) => n.tag === 'script')[1];
   assert.ok(fitScript && fitScript.src.includes('addon-fit.js'));
