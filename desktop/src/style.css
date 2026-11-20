@@ -70,7 +70,7 @@ button{cursor:pointer;color:inherit;background:none;border:0}
 svg{width:19px;height:19px;stroke:currentColor;stroke-width:1.45;fill:none;stroke-linecap:round;stroke-linejoin:round}
 .drag{-webkit-app-region:drag}
 .no-drag,button,input{-webkit-app-region:no-drag}
-.hidden{display:none!important}
+[hidden],.hidden{display:none!important}
 .muted{color:var(--color-text-3)}
 
 /* Shell: sidebar · chat · splitter · canvas. */
@@ -160,7 +160,6 @@ body:not(.darwin) .bots-hidden .chat-header{padding-left:52px}
 .tabs{display:flex;gap:2px;align-items:center;flex:0 1 auto;min-width:0;overflow-x:auto;scrollbar-width:none}
 .tabs::-webkit-scrollbar{display:none}
 .tab{position:relative;display:flex;align-items:center;gap:6px;height:var(--h-lg);min-width:44px;padding:0 var(--space-2);border-radius:var(--radius-sm);color:var(--color-text-2);font-size:var(--fs-sm);cursor:pointer;flex:0 1 200px;-webkit-app-region:no-drag}
-.tab[hidden]{display:none}
 .tab.pinned{flex:none;padding:0 var(--space-3) 0 10px}
 /* In a narrow canvas the pinned tabs keep their icons (and tooltips) and give the labels back to the page tabs. */
 @container (max-width:620px){.tab.pinned .tab-title{display:none}.tab.pinned{padding:0 9px}}
@@ -553,7 +552,7 @@ body.win32 .pane-actions{padding-right:140px}.chat-note.warn{height:auto;min-hei
 
 .terminal-panel{position:absolute;inset:0;display:flex;flex-direction:column;background:#09090a;padding:8px 0 4px 10px}.terminal-host{flex:1;min-height:0;min-width:0}.terminal-host .xterm-viewport{background-color:#09090a!important}.terminal-idle{margin:auto;text-align:center;display:flex;flex-direction:column;align-items:center;gap:14px;color:#8a8a94;font-size:13px}.terminal-idle p{margin:0;max-width:320px;line-height:1.5}.terminal-idle button{padding:7px 16px;border-radius:999px}.terminal-panel.ended .terminal-idle{order:1;margin:0;flex-direction:row;justify-content:center;padding:10px 10px 6px 0;border-top:1px solid var(--line)}
 .chat-header .chat-pill{min-width:47px;flex-shrink:1}
-.chat-name{display:flex;align-items:center;gap:3px;min-width:0;padding:2px 4px;margin:-2px -4px;border-radius:var(--radius-sm);color:inherit;font-size:inherit;line-height:inherit}.chat-name:disabled{cursor:default;color:inherit}
+.chat-name{display:flex;align-items:center;gap:3px;min-width:0;min-height:var(--h-sm);padding:2px 4px;margin:-4px -4px;border-radius:var(--radius-sm);color:inherit;font-size:inherit;line-height:inherit}.chat-name:disabled{cursor:default;color:inherit}
 .chat-chevron{display:none;color:#a3a3ab;font-size:16px;line-height:1}.chat-name.openable{cursor:pointer}.chat-name.openable .chat-chevron{display:inline;visibility:hidden}.chat-name.openable:hover,.chat-name.openable:focus-visible{background:#26262a}.chat-name.openable:hover .chat-chevron,.chat-name.openable:focus-visible .chat-chevron{visibility:visible}
 .waiting-badge{width:9px;height:9px;flex-shrink:0;border-radius:50%;border:2px solid #f0b45a;margin-right:1px}
 

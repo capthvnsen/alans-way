@@ -238,6 +238,7 @@ function renderTabs() {
       const close = element('button', 'tab-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
       close.tabIndex = selected ? 0 : -1;
       close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id, host: tab.host }); }; node.append(close);
+      node.onmousedown = (event) => { if (event.button === 1) event.preventDefault(); };
       node.onauxclick = (event) => { if (event.button === 1) { event.preventDefault(); command('close-tab', { id: tab.id, host: tab.host }); } };
     }
     container.append(node);
@@ -672,7 +673,7 @@ function renderUpdatePopup() {
   now.disabled = !!u.busy; later.disabled = !!u.busy;
   now.textContent = u.busy ? 'Updating…' : 'Update now';
 }
-// The bottom bar's versions and "Update everything". The dialog shows the
+// The versions (Settings → About) and "Update everything". The dialog shows the
 // plan first and nothing runs until its button is clicked; then it shows each
 // step's progress, the closing summary and, when the app staged an update,
 // "Restart to finish".
@@ -2082,7 +2083,7 @@ function menuKeys(menu, close, trigger) {
   });
   trigger.addEventListener('keydown', (event) => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-    event.preventDefault(); event.stopPropagation(); trigger.click();
+    event.preventDefault(); event.stopPropagation(); if (menu.classList.contains('hidden')) trigger.click();
     const items = [...menu.querySelectorAll('[role^=menuitem]')];
     (event.key === 'ArrowDown' ? items.find(item => item.getAttribute('aria-checked') === 'true') || items[0] : items.at(-1))?.focus({ preventScroll: true });
   });

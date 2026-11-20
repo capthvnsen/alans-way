@@ -32,6 +32,11 @@ const until = async (read, why, ms = 15000) => { const end = Date.now() + ms; fo
   const bottom = await run('document.querySelector(".workspace-pane").getBoundingClientRect().bottom - document.getElementById("browser-slot").getBoundingClientRect().bottom');
   assert.ok(bottom <= 16, `the page frame runs to the bottom of the window, ${bottom}px`);
 
+  // Every remaining icon button has a tooltip and an accessible name, and every visible control is at least a 24px target.
+  assert.deepEqual(await run(`[...document.querySelectorAll('#shell button')].filter(b => b.offsetParent && !b.textContent.trim() && !b.getAttribute('aria-label')).map(b => b.id || b.className)`), [], 'every icon button has an accessible name');
+  assert.deepEqual(await run(`[...document.querySelectorAll('#shell .icon-button')].filter(b => !b.title).map(b => b.id || b.className)`), [], 'and a tooltip');
+  assert.deepEqual(await run(`[...document.querySelectorAll('#shell button')].filter(b => b.offsetParent && (b.getBoundingClientRect().width < 24 || b.getBoundingClientRect().height < 24)).map(b => (b.id || b.className) + ' ' + Math.round(b.getBoundingClientRect().width) + 'x' + Math.round(b.getBoundingClientRect().height))`), [], 'hit targets are at least 24px');
+
   // A real connector error is announced and reachable; an update gets the pill and a dot.
   await patch({ api: { ready: false, error: 'listen EADDRINUSE' } });
   assert.equal(await run('document.getElementById("connector-banner").classList.contains("hidden")'), false, 'a failed connector shows a banner');

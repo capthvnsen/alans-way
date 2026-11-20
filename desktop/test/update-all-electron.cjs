@@ -1,7 +1,7 @@
 const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
 require('./window-fixture.cjs');
 // Run: npx electron test/update-all-electron.cjs
-// The bottom bar's versions and the "Update everything" dialog, end to end in
+// Settings → About's versions, the Update pill and the "Update everything" dialog, end to end in
 // the real window with every machine-touching step stubbed: no ssh, no hermes,
 // no GitHub. The plugin stays behind on purpose to cover the warning UI,
 // then succeeds so a full run stages the app restart.
@@ -369,6 +369,6 @@ app.whenReady().then(async () => {
   assert.equal(await evaluate(`${setupButton}.disabled`), false);
   await click('modal-close');
 
-  console.log('PASS: the bottom bar shows versions with details on hover; Update everything confirms first, runs in order under one lock, warns when a plugin stays behind, finishes a clean run, and reports once.');
+  console.log('PASS: Settings → About shows versions with details in Updates, the pill opens the plan; Update everything confirms first, runs in order under one lock, warns when a plugin stays behind, finishes a clean run, and reports once.');
   app.quit();
 }).catch(error => { console.error(error.stack); app.exit(1); });

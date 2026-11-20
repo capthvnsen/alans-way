@@ -124,7 +124,7 @@ const vmUpdater = createVmUpdater({ log: (label, error) => logError(label, error
 const vmProgress = {};
 let vmRetrying = false;
 let hermesUpdating = false;
-// "Update everything" from the bottom bar: its lock flag and the last run's
+// "Update everything" (the Update pill, Settings → About): its lock flag and the last run's
 // step rows, closing summary and whether a staged app update awaits a restart.
 let updatingAll = false;
 let pendingUpdateDelivery = null;
@@ -1511,7 +1511,7 @@ function noteVmResult(result) {
 }
 // After relaunch (and at every start) each saved VM reports its checkout
 // version; a VM behind the app surfaces through update.vmRetry. The same
-// probe feeds the bottom bar: the machine's Hermes, plugin and gateway, plus
+// probe feeds Settings → About and the Update pill: the machine's Hermes, plugin and gateway, plus
 // the newest plugin tag on GitHub. No saved server means the Hermes on this
 // computer. Callers skip it while an update holds the machine: `hermes update
 // --check` fetches into the same checkout `hermes update` is moving.
@@ -2521,7 +2521,7 @@ function registerIpc() {
         } finally { hermesUpdating = false; }
       }
       case 'versions-refresh': checkVersionsWhenIdle(); checkAppVersions(); break;
-      // The bottom bar's "Update everything", sent only after the user
+      // "Update everything", sent only after the user
       // confirmed the plan in the popover. Server first (Hermes, then the
       // plugin that must match it), then the browser host, then this app,
       // which only stages: the restart waits for "Restart to finish". Then
