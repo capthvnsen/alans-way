@@ -6,7 +6,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
-const { calls, context, remainingMs, checkCall, READ_BUDGET_MS } = require('../src/call-budget.cjs');
+const { calls, context, remainingMs, checkCall, waitInCall, READ_BUDGET_MS } = require('../src/call-budget.cjs');
 const { performance } = require('node:perf_hooks');
 const { createMacPermissionHelp } = require('../src/mac-permissions.cjs');
 
@@ -15,7 +15,7 @@ function connectorRequest(fetch, connection = { url: 'http://127.0.0.1:9', token
   return require('node:vm').runInNewContext(source.slice(source.indexOf('const connectionKey ='), source.indexOf('let hostCaps =')) + '\nrequestOnce;', {
     legacyCredentialWarned: false, process: { env, stderr: { write() {} } },
     fs: { readFileSync: () => JSON.stringify(connection) },
-    file: 'fixture', botId: 'fixture', botName: '', URL, fetch, calls, remainingMs, checkCall, READ_BUDGET_MS,
+    file: 'fixture', botId: 'fixture', botName: '', URL, fetch, calls, remainingMs, checkCall, waitInCall, READ_BUDGET_MS, Buffer, setTimeout,
     AbortSignal: { timeout: (ms) => ({ deadline: Date.now() + ms }) },
   });
 }
