@@ -1,4 +1,4 @@
-// Local pre-push check for the files you changed: node scripts/check-diff.cjs [base] [--deep]
+// Local pre-push check for the files you changed: node scripts/check-diff.cjs [base] [--deep] [--no-fallback]
 // (npm run check:diff [-- base] [--deep]). Syntax-checks changed desktop JS, then runs only
 // the unit tests whose own imports or text name a changed file (--deep: imports of
 // imports too, several times slower); any change it cannot place
@@ -55,8 +55,9 @@ if (require.main === module) {
     if (fs.existsSync(path.join(top, 'desktop', f.slice(8))) && spawnSync(process.execPath, ['--check', path.join(top, 'desktop', f.slice(8))], { stdio: 'inherit' }).status) process.exit(1);
   }
   const picked = select(desktop, changed, deep ? Infinity : 1);
-  const files = picked || fs.readdirSync(path.join(desktop, 'test')).filter((n) => n.endsWith('.test.cjs')).map((n) => path.join(desktop, 'test', n));
-  console.log(`${changed.length} changed file(s); ${picked ? `${files.length} unit test file(s) can reach them` : 'cannot place a change, running all unit tests'}`);
+  const skipAll = !picked && process.argv.includes('--no-fallback');
+  const files = skipAll ? [] : picked || fs.readdirSync(path.join(desktop, 'test')).filter((n) => n.endsWith('.test.cjs')).map((n) => path.join(desktop, 'test', n));
+  console.log(`${changed.length} changed file(s); ${skipAll ? 'cannot place a change, leaving the unit tests to the full jobs' : picked ? `${files.length} unit test file(s) can reach them` : 'cannot place a change, running all unit tests'}`);
   const status = files.length ? spawnSync(process.execPath, ['--test', ...files], { cwd: desktop, stdio: 'inherit' }).status : 0;
   console.log(`check:diff finished in ${((Date.now() - started) / 1000).toFixed(1)} s (CI still runs everything)`);
   process.exit(status || 0);
