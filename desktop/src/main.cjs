@@ -744,10 +744,10 @@ function syncCanvasView() {
 async function loadPrivateCanvasPage(url) {
   if (!canvasView) canvasView = guardedWebappView(new URL('webapp/launch', webappTarget).href);
   const view = canvasView, contents = view.webContents;
-  const grants = (await webappView.webContents.executeJavaScript(`Object.entries(sessionStorage).filter(([key]) => key.startsWith('hermes.webapp.session.v1:'))`))
+  const grants = (await boundedJs(webappView.webContents, `Object.entries(sessionStorage).filter(([key]) => key.startsWith('hermes.webapp.session.v1:'))`, 10000))
     .filter(([key, token]) => typeof key === 'string' && key.length < 300 && /^[A-Za-z0-9_-]{43}$/.test(token));
-  if (contents.isLoading()) await new Promise((resolve) => contents.once('did-stop-loading', resolve));
-  await contents.executeJavaScript(`for (const [key, token] of ${JSON.stringify(grants)}) sessionStorage.setItem(key, token)`);
+  if (contents.isLoading()) await new Promise((resolve) => { const timer = setTimeout(resolve, 15000); contents.once('did-stop-loading', () => { clearTimeout(timer); resolve(); }); });
+  await boundedJs(contents, `for (const [key, token] of ${JSON.stringify(grants)}) sessionStorage.setItem(key, token)`, 10000);
   if (canvasView === view) contents.loadURL(url).catch(() => {});
 }
 function guardedWebappView(url, report = () => {}) {
@@ -1453,14 +1453,14 @@ async function openBot(id) {
   if (!prefs.bots.some((bot) => bot.id === id)) throw new Error('Select a verified Telegram bot.');
   selectAgent(id);
   savePreferences(); broadcast();
-  const selected = await telegramView.webContents.executeJavaScript(`(() => {
+  const selected = await boundedJs(telegramView.webContents, `(() => {
     const link = [...document.querySelectorAll('#LeftColumn a[href]')].find(el => el.hash?.slice(1).split('_')[0] === '${id}');
     if (link) {
       link.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
       link.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0 }));
       link.click(); return true;
     } return false;
-  })()`).catch(() => false);
+  })()`, 5000).catch(() => false);
   if (!selected) await openTelegramHash(id);
 }
 let openingTelegramUsername = false;
@@ -1733,14 +1733,14 @@ function startCloudOnboarding() {
 async function telegramFirstName() {
   try {
     if (!telegramView || telegramView.webContents.isDestroyed()) return '';
-    return await telegramView.webContents.executeJavaScript(`(async () => {
+    return await boundedJs(telegramView.webContents, `(async () => {
       const request = indexedDB.open('tt-data');
       const db = await new Promise((resolve) => { request.onsuccess = () => resolve(request.result); request.onerror = request.onupgradeneeded = () => resolve(null); });
       if (!db || !db.objectStoreNames.contains('store')) return '';
       const get = db.transaction('store', 'readonly').objectStore('store').get('tt-global-state');
       const state = await new Promise((resolve) => { get.onsuccess = () => resolve(get.result || null); get.onerror = () => resolve(null); });
       return String(state?.users?.byId?.[state?.currentUserId]?.firstName || '');
-    })()`);
+    })()`, 8000);
   } catch { return ''; }
 }
 // One env write + a gateway restart, shared by the API-key, model and bot-token
@@ -2198,13 +2198,14 @@ function registerIpc() {
         }
         if (!point) throw new Error('The bot chat opened but no message box appeared.');
         if (!tg.debugger.isAttached()) tg.debugger.attach('1.3');
+        const send = (method, params) => withTimeout(tg.debugger.sendCommand(method, params), CDP_COMMAND_MS);
         try {
-          await tg.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
-          await tg.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
-          await tg.debugger.sendCommand('Input.insertText', { text: `${title}\n${url}` });
+          await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
+          await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
+          await send('Input.insertText', { text: `${title}\n${url}` });
           const enter = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
-          await tg.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', ...enter });
-          await tg.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', ...enter });
+          await send('Input.dispatchKeyEvent', { type: 'keyDown', ...enter });
+          await send('Input.dispatchKeyEvent', { type: 'keyUp', ...enter });
         }
         finally { tg.debugger.detach(); }
         break;
@@ -2964,7 +2965,7 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   const carry=await signInsTravel();
   let target,result,checkpoint,signIns=0;
   try {
-    checkpoint=sourceHost==='mac'?await source.view.webContents.executeJavaScript(checkpointExpression(includeDrafts && !vaultLock.isLocked(source))):await remoteRequest(id,'checkpoint',{includeDrafts,includeCookies:carry});
+    checkpoint=sourceHost==='mac'?await boundedJs(source.view.webContents,checkpointExpression(includeDrafts && !vaultLock.isLocked(source)),10000):await remoteRequest(id,'checkpoint',{includeDrafts,includeCookies:carry});
     if(sourceHost==='mac'&&vaultLock.isLocked(source))checkpoint={...checkpoint,title:'',drafts:[]};
     if(!/^https?:\/\//.test(checkpoint.url))throw new Error('Open a web page before handing it off.');
     const {cookies:remoteCookies,...page}=checkpoint;checkpoint=page;
@@ -2989,7 +2990,7 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
     target=createTab({url:checkpoint.url,botId:source.botId,controller:'human',owner:source.owner || 'bot',activate:false});target.handoff=handoff;
     for(let n=0;n<100;n++){if(!target.view.webContents.isLoading()&&target.view.webContents.getURL()!=='about:blank')break;await new Promise(r=>setTimeout(r,100));}
     if(target.view.webContents.isLoading()){try{closeTab(target.id)}catch{}throw new Error(`${HOST_LABEL==='windows'?'PC':'Mac'} destination is still loading. Its tab was closed. Retry the handoff.`);}
-    result=await target.view.webContents.executeJavaScript(restoreExpression(checkpoint));
+    result=await boundedJs(target.view.webContents,restoreExpression(checkpoint),15000);
   }
   const record={...handoff,destinationTabId:target.id,verification:result.verification,restoredDrafts:result.restored,skippedDrafts:result.skipped};
   if(dest==='mac')target.handoff=record;

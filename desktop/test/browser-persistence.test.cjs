@@ -111,7 +111,7 @@ test('a popup opened while a bot controls a user tab is attributed to that bot t
 
 test('a task handed back from the remote browser does not become a restorable user tab', async () => {
   let created;
-  const context = vm.createContext({ vaultLock: { isLocked: () => false }, tabs: new Map(), vpsTabs: new Map([['remote-task', { id: 'remote-task', botId: 'bot-a' }]]),
+  const context = vm.createContext({ boundedJs: require('../src/agent-input.cjs').boundedJs, vaultLock: { isLocked: () => false }, tabs: new Map(), vpsTabs: new Map([['remote-task', { id: 'remote-task', botId: 'bot-a' }]]),
     HOST_LABEL: 'mac', crypto: { randomUUID: () => 'handoff-fixture' }, prefs: { handoffs: [] },
     remoteRequest: async (_id, action) => action === 'checkpoint' ? { url: 'https://task.example/' } : {},
     createTab: options => { created = options; return { id: 'local-task', view: { webContents: {
@@ -131,7 +131,7 @@ test('Move to VM and back carries the page’s sign-in, set before the destinati
   const page = (url) => ({ isLoading: () => false, getURL: () => url, isDestroyed: () => false,
     executeJavaScript: async (code) => String(code).includes('drafts.push') ? { url, title: 'Task', scroll: { x: 0, y: 0 }, drafts: [] } : { verification: 'ready', restored: 0, skipped: 0 } });
   const macTab = { id: 'mac-task', botId: 'bot-a', controller: 'agent', owner: 'bot', queue: Promise.resolve(), view: { webContents: page('https://task.example/deal') } };
-  const context = vm.createContext({ vaultLock: { isLocked: () => false }, tabs: new Map([['mac-task', macTab]]), vpsTabs: new Map([['vm-task', { id: 'vm-task', botId: 'bot-a', controller: 'agent' }]]),
+  const context = vm.createContext({ boundedJs: require('../src/agent-input.cjs').boundedJs, vaultLock: { isLocked: () => false }, tabs: new Map([['mac-task', macTab]]), vpsTabs: new Map([['vm-task', { id: 'vm-task', botId: 'bot-a', controller: 'agent' }]]),
     HOST_LABEL: 'mac', crypto: { randomUUID: () => 'handoff-fixture' }, prefs: { handoffs: [] },
     changeController: (id, controller) => { context.tabs.get(id).controller = controller; },
     pageCookies: async (url) => [toCdpCookie({ name: 'sid', value: 'from-mac', domain: 'task.example', path: '/', secure: true, httpOnly: true, session: true })].filter(() => url.startsWith('https://task.example/')),
@@ -160,7 +160,7 @@ test('without consent or a tailnet path a Move carries no sign-ins, and a failed
   const requests = [];
   const macTab = { id: 'mac-task', botId: 'bot-a', controller: 'agent', owner: 'bot', queue: Promise.resolve(), view: { webContents: { executeJavaScript: async () => ({ url: 'https://task.example/', drafts: [], scroll: { x: 0, y: 0 } }) } } };
   let fail = false;
-  const context = vm.createContext({ vaultLock: { isLocked: () => false }, tabs: new Map([['mac-task', macTab]]), vpsTabs: new Map(), HOST_LABEL: 'mac', crypto: { randomUUID: () => 'h' }, prefs: { handoffs: [] },
+  const context = vm.createContext({ boundedJs: require('../src/agent-input.cjs').boundedJs, vaultLock: { isLocked: () => false }, tabs: new Map([['mac-task', macTab]]), vpsTabs: new Map(), HOST_LABEL: 'mac', crypto: { randomUUID: () => 'h' }, prefs: { handoffs: [] },
     changeController: (id, controller) => { macTab.controller = controller; },
     pageCookies: async () => { throw new Error('cookies must not be read'); },
     vpsBrowser: { request: async (route, method, body) => { if (fail) throw new Error('VPS browser SSH unavailable.'); requests.push(body); return { id: 'vm-new' }; } },
@@ -176,6 +176,18 @@ test('without consent or a tailnet path a Move carries no sign-ins, and a failed
   assert.equal(requests[0].cookies, undefined);
   assert.equal(out.signIns, 0);
   assert.equal(out.signInsCarried, false);
+});
+
+test('a Move from a page that never answers fails and gives the tab back instead of hanging', { timeout: 3000 }, async () => {
+  const { boundedJs } = require('../src/agent-input.cjs');
+  const macTab = { id: 'mac-task', botId: 'bot-a', controller: 'agent', owner: 'bot', queue: Promise.resolve(), view: { webContents: { executeJavaScript: () => new Promise(() => {}) } } };
+  const context = vm.createContext({ boundedJs: (wc, code) => boundedJs(wc, code, 30), vaultLock: { isLocked: () => false }, tabs: new Map([['mac-task', macTab]]), vpsTabs: new Map(), HOST_LABEL: 'mac', crypto: { randomUUID: () => 'h' }, prefs: { handoffs: [] },
+    changeController: (id, controller) => { macTab.controller = controller; },
+    remoteRequest: async () => ({}), restoreExpression() {}, checkpointExpression: require('../src/browser-page.cjs').checkpointExpression, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => false,
+  });
+  vm.runInContext(section('async function handoffTab(', '\n// History navigation has no promise.'), context);
+  await assert.rejects(context.handoffTab({ id: 'mac-task', destination: 'vps' }), /stopped responding/);
+  assert.equal(macTab.controller, 'agent');
 });
 
 test('clicking a chat link already auto-opened by that message does not create another tab', () => {
