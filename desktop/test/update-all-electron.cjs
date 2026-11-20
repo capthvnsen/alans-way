@@ -1,7 +1,7 @@
 const { ip: fixtureTailnet, otherIp: fixtureTailnetOther } = require('./tailnet-fixture.cjs');
 require('./window-fixture.cjs');
 // Run: npx electron test/update-all-electron.cjs
-// The bottom bar's versions and the "Update everything" dialog, end to end in
+// Settings → About's versions, the Update pill and the "Update everything" dialog, end to end in
 // the real window with every machine-touching step stubbed: no ssh, no hermes,
 // no GitHub. The plugin stays behind on purpose to cover the warning UI,
 // then succeeds so a full run stages the app restart.
@@ -113,20 +113,31 @@ app.whenReady().then(async () => {
   const text = (id) => evaluate(`document.getElementById(${JSON.stringify(id)}).textContent`);
   const hidden = (id) => evaluate(`document.getElementById(${JSON.stringify(id)}).classList.contains('hidden')`);
   const click = (id) => evaluate(`document.getElementById(${JSON.stringify(id)}).click()`);
+  // The footer's version line and Update button moved: versions live in Settings → About, the update pill sits by the gear.
+  const bar = async () => (await evaluate('window.workspace.getState()')).versions?.text || '';
+  const openAll = () => evaluate('openUpdateAll()');
   const lines = () => evaluate('[...document.querySelectorAll("#update-all-steps .update-line")].map((p) => p.className.replace("update-line", "").trim() + "|" + p.textContent)');
   const version = app.getVersion();
   // Probes (start, dialog open, after the run) are reads; `work` is what changed things.
   const work = () => calls.filter((c) => !c.startsWith('check'));
 
-  // The bar: compact versions, the update arrow, and the details on hover.
-  const bar = await waitFor(() => text('version-label'), (t) => t.includes('Hermes'), 12000, 'the versions in the bar');
-  assert.equal(bar, `Alan’s Workspace ${version} · Hermes 0.21.6 (server) · Plugin 0.21.0`);
-  const tooltip = await evaluate('document.getElementById("version-label").title');
+  // The versions (Settings → About) and the details (Settings → Updates), and the update pill by the gear.
+  const versions = await waitFor(bar, (t) => t.includes('Hermes'), 12000, 'the versions');
+  assert.equal(versions, `Alan’s Workspace ${version} · Hermes 0.21.6 (server) · Plugin 0.21.0`);
+  assert.equal(await evaluate('!!document.querySelector(".workspace-footer, #version-label, #update-all, #build-badge")'), false, 'no footer on the main screen');
+  const tooltip = (await evaluate('window.workspace.getState()')).versions.tooltip;
   assert.match(tooltip, /Hermes 0\.21\.6 on the server · 0\.21\.7 available/);
   assert.match(tooltip, /alans-way \(default\) 0\.21\.0 · 0\.21\.1 on GitHub/);
   assert.match(tooltip, new RegExp(`Browser host 0\\.21\\.3 on the server · ${version.replace(/\./g, '\\.')} goes with this app`));
   assert.match(tooltip, /Checked /);
-  assert.equal(await text('update-all'), '↑ Update');
+  assert.equal(await hidden('update-note'), false, 'an available update shows the pill');
+  assert.equal(await text('update-note'), 'Update');
+  assert.equal(await evaluate('document.querySelector("#settings-button .bridge-dot").classList.contains("hidden")'), false, 'and a dot on the gear');
+  await evaluate('document.getElementById("settings-button").click()'); await waitFor(() => evaluate('!!document.getElementById("settings-category-about")'), Boolean);
+  await evaluate('document.getElementById("settings-category-about").click()');
+  const about = await waitFor(() => evaluate('document.getElementById("settings-about")?.textContent || ""'), (t) => t.includes('Hermes'), 5000, 'the About rows');
+  assert.ok(about.includes(`v${version}`) && about.includes('Hermes0.21.6') && about.includes('Browser connector'), about);
+  await evaluate('document.getElementById("modal-close").click()');
   await waitFor(() => JSON.parse(fs.readFileSync(path.join(profile, 'preferences.json'), 'utf8')).pendingUpdateReport,
     value => value === undefined, 5000, 'the previous run to be delivered and cleared');
   assert.deepEqual(calls.filter(c => c.startsWith('report ')), [`report Update everything finished. The app is now on ${version}.`]);
@@ -135,7 +146,7 @@ app.whenReady().then(async () => {
 
   // The confirmation lists exactly what changes and warns about the restart;
   // Cancel leaves everything untouched.
-  await click('update-all');
+  await click('update-note');
   assert.equal(await hidden('update-all-popup'), false);
   assert.deepEqual(await lines(), ['|Hermes: 0.21.6 → 0.21.7', '|Alan’s Way plugin: 0.21.0 → 0.21.1', `|Browser host: 0.21.3 → ${version}`,
     `|Alan’s Workspace: ${version} · latest not checked yet`,
@@ -147,13 +158,13 @@ app.whenReady().then(async () => {
   assert.ok(calls.filter((c) => c === 'check agent').length >= 2, 'opening the dialog re-checks the machine');
 
   // Confirm: Hermes runs first and quietly (the bot reports at the end).
-  await click('update-all');
+  await openAll();
   await click('update-all-go');
   await waitFor(() => calls, (c) => c.includes('hermes agent quiet=true'), 5000, 'the Hermes step');
   await waitFor(lines, (l) => l[0]?.startsWith('running|'), 5000, 'the running row');
   assert.deepEqual((await lines()).map((l) => l.split('|')[0]), ['running', 'pending', 'pending']);
   assert.equal(await evaluate('document.getElementById("update-all-cancel").disabled'), true, 'no closing mid-run');
-  assert.equal(await text('update-all'), 'Updating…');
+  assert.equal(await text('update-note'), 'Updating…');
 
   // One lock: every other update entry point refuses while this runs.
   assert.equal((await invoke('server-setup', { plan: '{}' })).ok, false);
@@ -179,12 +190,12 @@ app.whenReady().then(async () => {
   assert.deepEqual(work().slice(before), ['plugin agent', `host agent v${version}`,
     `report Update everything finished with warnings. plugin unchanged 0.21.0 (wanted 0.21.1): Plugin alans-way (default) on 0.21.0 (wanted 0.21.1): registry unreachable. Now on Hermes 0.21.7, browser host ${version}.`]);
   assert.equal(await hidden('update-all-go'), true, 'no app update staged, so no restart offered');
-  assert.equal(await text('version-label'), `Alan’s Workspace ${version} · Hermes 0.21.7 (server) · Plugin 0.21.0`, 'the bar shows the refreshed versions');
+  assert.equal(await bar(), `Alan’s Workspace ${version} · Hermes 0.21.7 (server) · Plugin 0.21.0`, 'the versions show the refresh');
 
   // Closing works once the run is over; reopening shows a fresh plan.
   await evaluate('document.getElementById("update-all-popup").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))');
   assert.equal(await hidden('update-all-popup'), true);
-  await click('update-all');
+  await openAll();
   assert.deepEqual((await lines()).slice(0, 2), ['|Alan’s Way plugin: 0.21.0 → 0.21.1', `|Browser host: 0.21.3 → ${version}`], 'Hermes is current now');
 
   await click('update-all-cancel');
@@ -205,7 +216,7 @@ app.whenReady().then(async () => {
   // A paired bot can chat without a home channel: the final dialog must
   // retain the delivery reason and tell the user where to set the target.
   noHomeReport = true;
-  await click('update-all');
+  await openAll();
   await waitFor(lines, (l) => l.length > 0, 3000, 'the plan without a Telegram home');
   await click('update-all-go');
   await waitFor(() => evaluate('document.getElementById("update-all-cancel").disabled'), d => d === false, 8000, 'the report failure');
@@ -217,7 +228,7 @@ app.whenReady().then(async () => {
 
   // An error that escapes the steps lands in the dialog, never a blank run.
   failReport = true;
-  await click('update-all');
+  await openAll();
   await waitFor(lines, (l) => l.length > 0, 3000, 'the plan');
   await click('update-all-go');
   await waitFor(() => text('update-all-copy'), (t) => t.startsWith('Update everything stopped:'), 8000, 'the error in the dialog');
@@ -233,7 +244,7 @@ app.whenReady().then(async () => {
   stagedUpdater.emit('update-downloaded', { version: appVersion });
   await waitFor(() => hidden('update-all-popup'), Boolean);
   const start = calls.length;
-  await click('update-all');
+  await openAll();
   await waitFor(lines, (l) => l[0]?.includes('Hermes:'), 3000, 'the four-step plan');
   assert.deepEqual(await lines(), ['|Hermes: 0.21.6 → 0.21.7', '|Alan’s Way plugin: 0.21.0 → 0.21.1',
     `|Browser host: 0.21.3 → ${appVersion}`, `|Alan’s Workspace: ${version} → ${appVersion}`,
@@ -306,8 +317,8 @@ app.whenReady().then(async () => {
   stagedUpdater.emit('update-not-available', { version });
   checkFixture = { ok: true, hermesVersion: 'Hermes Agent v0.22.1', hermesCheck: 'up to date', plugins: [] };
   await invoke('versions-refresh');
-  await waitFor(() => text('version-label'), t => t.includes('0.22.1'));
-  await click('update-all');
+  await waitFor(bar, t => t.includes('0.22.1'));
+  await openAll();
   assert.doesNotMatch(await text('update-all-copy'), /Everything is up to date/);
   const missing = (await lines()).join('\n');
   assert.match(missing, /Alan’s Way plugin: not installed/);
@@ -326,7 +337,7 @@ app.whenReady().then(async () => {
   checkFixture = { ok: true, hostVersion: '0.21.5', hermesVersion: 'Hermes Agent v0.21.7', hermesCheck: 'up to date',
     plugins: [{ name: 'alans-way', profile: 'default', version: '0.21.1' }] };
   await invoke('versions-refresh');
-  await click('update-all');
+  await openAll();
   await waitFor(lines, (l) => l.some(row => row === '|Browser host: 0.21.5 → 0.21.6'), 3000, 'the stable host target for an RC app');
   const rcStart = calls.length;
   await click('update-all-go');
@@ -358,6 +369,6 @@ app.whenReady().then(async () => {
   assert.equal(await evaluate(`${setupButton}.disabled`), false);
   await click('modal-close');
 
-  console.log('PASS: the bottom bar shows versions with details on hover; Update everything confirms first, runs in order under one lock, warns when a plugin stays behind, finishes a clean run, and reports once.');
+  console.log('PASS: Settings → About shows versions with details in Updates, the pill opens the plan; Update everything confirms first, runs in order under one lock, warns when a plugin stays behind, finishes a clean run, and reports once.');
   app.quit();
 }).catch(error => { console.error(error.stack); app.exit(1); });

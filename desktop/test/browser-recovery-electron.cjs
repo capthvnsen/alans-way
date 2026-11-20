@@ -232,7 +232,7 @@ if (typeof electron === 'string') {
     const crashed = await state();
     result.crashed = crashed.tabs.find(t => t.id === a.id);
     result.chromiumAfterCrash = { loading: page.isLoading(), loadingMainFrame: page.isLoadingMainFrame(), crashed: page.isCrashed() };
-    const recoveryUi = await shell.executeJavaScript('({status:document.getElementById("workspace-status").textContent,reload:document.getElementById("reload").getAttribute("aria-label")||document.getElementById("reload").title,reloadDisabled:document.getElementById("reload").disabled,bannerVisible:!!document.getElementById("browser-error-banner")?.offsetHeight,recoveryAction:document.getElementById("browser-error-reload")?.textContent})');
+    const recoveryUi = await shell.executeJavaScript('({reload:document.getElementById("reload").getAttribute("aria-label")||document.getElementById("reload").title,reloadDisabled:document.getElementById("reload").disabled,bannerVisible:!!document.getElementById("browser-error-banner")?.offsetHeight,recoveryAction:document.getElementById("browser-error-reload")?.textContent})');
     check('renderer exit settles in-flight loading and keeps an actionable error', !result.crashed.loading && !!result.crashed.error && !recoveryUi.reloadDisabled && /reload/i.test(recoveryUi.reload), { tab: result.crashed, chromium: result.chromiumAfterCrash, ui: recoveryUi });
     check('failed tab has a named page-local recovery action', recoveryUi.bannerVisible && recoveryUi.recoveryAction === 'Reload page', recoveryUi);
     await capture('renderer-exited');
@@ -241,11 +241,11 @@ if (typeof electron === 'string') {
     await click('reload');
     await until(state, s => !s.tabs.find(t => t.id === a.id)?.loading && !page.isCrashed());
     result.recovered = (await state()).tabs.find(t => t.id === a.id);
-    await until(() => shell.executeJavaScript('!document.getElementById("workspace-status").textContent.includes("Loading") && !document.getElementById("browser-error-banner")?.offsetHeight'));
+    await until(() => shell.executeJavaScript('!document.querySelector("#tabs .tab.active .tab-spinner") && !document.getElementById("browser-error-banner")?.offsetHeight'));
     check('reload recovers the interrupted destination once', result.recovered.url === base + '/slow' && !result.recovered.error && result.commands.filter(c => c.name === 'history').length === dispatches + 1, result.recovered);
     check('sibling live tab and draft unchanged', JSON.stringify(await other.executeJavaScript('({value:draft.value,count:inputCount,url:location.href})')) === JSON.stringify(otherBefore));
     check('conversation draft and selected owner unchanged', JSON.stringify(await conversation.executeJavaScript('({value:conversation.value,url:location.href})')) === JSON.stringify(conversationBefore) && (await state()).selectedBotId === before.selectedBotId);
-    check('recovery UI settles with current URL and human control', await shell.executeJavaScript(`document.getElementById('address').value === ${JSON.stringify(base + '/slow')} && document.getElementById('control-button').textContent === 'Give to Cedar' && !document.getElementById('browser-error-banner')?.offsetHeight && !document.getElementById('workspace-status').textContent.includes('Loading')`));
+    check('recovery UI settles with current URL and human control', await shell.executeJavaScript(`document.getElementById('address').value === ${JSON.stringify(base + '/slow')} && document.getElementById('control-button').textContent === 'Give to Cedar' && !document.getElementById('browser-error-banner')?.offsetHeight && !document.querySelector('#tabs .tab.active .tab-spinner')`));
     await capture('reload-recovered');
     for (const response of pending) response.destroy();
     await navigating;

@@ -124,7 +124,7 @@ const vmUpdater = createVmUpdater({ log: (label, error) => logError(label, error
 const vmProgress = {};
 let vmRetrying = false;
 let hermesUpdating = false;
-// "Update everything" from the bottom bar: its lock flag and the last run's
+// "Update everything" (the Update pill, Settings → About): its lock flag and the last run's
 // step rows, closing summary and whether a staged app update awaits a restart.
 let updatingAll = false;
 let pendingUpdateDelivery = null;
@@ -1511,7 +1511,7 @@ function noteVmResult(result) {
 }
 // After relaunch (and at every start) each saved VM reports its checkout
 // version; a VM behind the app surfaces through update.vmRetry. The same
-// probe feeds the bottom bar: the machine's Hermes, plugin and gateway, plus
+// probe feeds Settings → About and the Update pill: the machine's Hermes, plugin and gateway, plus
 // the newest plugin tag on GitHub. No saved server means the Hermes on this
 // computer. Callers skip it while an update holds the machine: `hermes update
 // --check` fetches into the same checkout `hermes update` is moving.
@@ -2134,7 +2134,6 @@ function registerIpc() {
       case 'close-tab':
         if (isVpsTarget(value.id, value.host)) { if(activeTabId===value.id)prefs.remoteControl=false; await vpsBrowser.request(`/v1/tabs/${value.id}`,'DELETE',undefined,{human:true}); vpsTabs.delete(value.id); if(activeTabId===value.id)activeTabId='home'; applyLayout(); } else closeTab(value.id); break;
       case 'activate': await activateTab(value.id, value.host); break;
-      case 'toggle-vps-view': await showCanvas(shownCanvas() === 'screen' ? 'browser' : 'screen'); break;
       case 'canvas-tab': await showCanvas(value?.tab, value?.start === true); break;
       // The chat header menu's Bot settings and Cron jobs (each opens its page, with the other beside it), or go back to
       // the tab left for them: choosing the page already open, or with no `tab`, the old name toggle.
@@ -2522,7 +2521,7 @@ function registerIpc() {
         } finally { hermesUpdating = false; }
       }
       case 'versions-refresh': checkVersionsWhenIdle(); checkAppVersions(); break;
-      // The bottom bar's "Update everything", sent only after the user
+      // "Update everything", sent only after the user
       // confirmed the plan in the popover. Server first (Hermes, then the
       // plugin that must match it), then the browser host, then this app,
       // which only stages: the restart waits for "Restart to finish". Then
@@ -3730,7 +3729,7 @@ function buildMenu() {
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { label: 'View', submenu: [{ label: 'Reload Page', accelerator: ACCELERATORS.reload, click: () => { const tab = tabs.get(shownTabId()); if (tab) reloadBrowserPage(tab); } }, { type: 'separator' }, { id: 'canvas-browser', label: 'Browser', accelerator: ACCELERATORS['canvas-browser'], click: () => showCanvas('browser').then(broadcast) }, { id: 'canvas-screen', label: 'Bot Screen', accelerator: ACCELERATORS['canvas-screen'], click: () => showCanvas('screen').then(broadcast) }, { id: 'canvas-terminal', label: 'Terminal', accelerator: ACCELERATORS['canvas-terminal'], click: () => { win.webContents.focus(); showCanvas('terminal', true).then(broadcast); } }, { id: 'canvas-artifacts', label: 'Artifacts', accelerator: ACCELERATORS['canvas-artifacts'], click: () => showCanvas('artifacts').then(broadcast) }, { type: 'separator' }, { role: 'togglefullscreen' }, ...(app.isPackaged ? [] : [{ label: 'App Developer Tools', accelerator: 'Alt+CmdOrCtrl+I', click: () => win.webContents.toggleDevTools() }])] },
     ...(process.platform === 'darwin' ? [{ label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }] }] : []),
-    { label: 'Help', submenu: [{ id: 'workspace-shortcuts', label: 'Keyboard Shortcuts', click: () => win.webContents.send('workspace:shortcuts') }, ...(prefs?.cloud?.sessionEnc ? [{ type: 'separator' }, { label: 'Get help', click: () => shell.openExternal(cloudView().supportUrl).catch(() => {}) }] : [])] },
+    { label: 'Help', submenu: [{ id: 'workspace-shortcuts', label: 'Keyboard Shortcuts', accelerator: 'CmdOrCtrl+/', click: () => win.webContents.send('workspace:shortcuts') }, ...(prefs?.cloud?.sessionEnc ? [{ type: 'separator' }, { label: 'Get help', click: () => shell.openExternal(cloudView().supportUrl).catch(() => {}) }] : [])] },
   ]));
 }
 function restoreBrowserTabs() {

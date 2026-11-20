@@ -1,54 +1,69 @@
-const { resizeWindow } = require('./window-fixture.cjs');
+// Run: node test/run-electron.cjs test/footer-status-electron.cjs
+// The main screen has no footer: versions, the release channel and the connector status live in Settings → About, and only
+// a real problem (connector down) or an available update reaches the main screen, as a banner, a gear dot and an Update pill.
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, Menu } = require('electron');
+const { prepareFixture, quitFixture } = require('./electron-fixture.cjs');
 const profile = process.env.HERMES_TEST_PROFILE;
 assert.ok(profile, 'run with node test/run-electron.cjs test/footer-status-electron.cjs');
-app.setPath('userData', profile);
-app.setPath('sessionData', profile);
+prepareFixture(profile);
+fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, bots: [{ id: '1001', isBot: true, name: 'Alan' }], selectedBotId: '1001' }));
+require('../src/main.cjs');
+const until = async (read, why, ms = 15000) => { const end = Date.now() + ms; for (;;) { const v = await read(); if (v) return v; if (Date.now() > end) throw new Error(`Timed out: ${why}`); await new Promise(r => setTimeout(r, 40)); } };
 
-const measure = `(() => {
-  const box = (id) => {
-    const el = document.getElementById(id);
-    const style = getComputedStyle(el);
-    return { id, display: style.display, w: el.getBoundingClientRect().width, overflow: el.scrollWidth - el.clientWidth };
-  };
-  return {
-    width: innerWidth,
-    footer: Math.round(document.querySelector('.workspace-footer').getBoundingClientRect().width),
-    version: box('version-label'),
-    status: box('workspace-status'),
-    connection: box('connection-status'),
-    more: box('status-more'),
-    shortcuts: box('shortcuts-button'),
-  };
-})()`;
+(async () => {
+  const win = await until(() => BrowserWindow.getAllWindows()[0], 'workspace window');
+  const shell = win.webContents;
+  await until(() => !shell.isLoading() && shell.getURL().endsWith('index.html'), 'workspace page');
+  const run = (js) => shell.executeJavaScript(js);
+  await until(() => run('typeof state === "object" && !!state?.api'), 'first state');
+  const patch = (extra) => run(`render({ ...JSON.parse(JSON.stringify(state)), uiStateRevision: (state.uiStateRevision ?? 0) + 100000, ...${JSON.stringify(extra)} })`);
 
-app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: false, width: 1550, height: 980, useContentSize: true,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
-  await win.loadFile(path.join(__dirname, '../src/index.html'));
-  await win.webContents.executeJavaScript(`document.getElementById('version-label').textContent = 'Alan’s Workspace 0.21.14'; document.getElementById('workspace-status').textContent = 'You in control · Mac'; document.getElementById('connection-status').textContent = 'Browser connector ready';`);
-  // CI screens can be narrower than the app's minimum window, so pin the footer
-  // (the container the CSS queries) to the widths 1550 and 1120 windows give it.
-  const footerWidth = (w) => win.webContents.executeJavaScript(`document.querySelector('.workspace-footer').style.cssText = 'width:${w}px;flex:none'`);
-  await resizeWindow(win, 1550, 980);
-  await footerWidth(799);
-  const wide = await win.webContents.executeJavaScript(measure);
-  assert.notEqual(wide.status.display, 'none', JSON.stringify(wide));
-  assert.notEqual(wide.connection.display, 'none', JSON.stringify(wide));
-  assert.equal(wide.status.overflow, 0, JSON.stringify(wide));
-  console.log('PASS: wide footer keeps both status lines', JSON.stringify(wide));
+  // No footer, no version, status or channel on the main screen; the footer's controls are gone with it.
+  const gone = ['workspace-footer', 'version-label', 'update-all', 'build-badge', 'workspace-status', 'connection-status', 'status-more', 'status-panel', 'shortcuts-button'];
+  assert.deepEqual(await run(`${JSON.stringify(gone)}.filter(id => document.getElementById(id) || document.querySelector('.' + id))`), [], 'the footer is gone');
+  assert.equal(await run('document.body.innerText.includes("Browser connector ready") || /\\bv?\\d+\\.\\d+\\.\\d+/.test(document.querySelector("#shell").innerText.replace(/\\s+/g, " ").replace(/\\d+px/g, ""))'), false, 'no ready text or version number anywhere on the main screen');
+  await until(() => run('state.api.ready'), 'the connector ready');
+  assert.equal(await run('document.getElementById("connector-banner").classList.contains("hidden")'), true, 'ready shows nothing');
+  assert.equal(await run('[...document.querySelectorAll(".bridge-dot")].every(dot => dot.classList.contains("hidden"))'), true, 'no dot on the gear while all is well');
+  assert.equal(await run('document.getElementById("update-note").classList.contains("hidden")'), true, 'no Update pill without an update');
+  const bottom = await run('document.querySelector(".workspace-pane").getBoundingClientRect().bottom - document.getElementById("browser-slot").getBoundingClientRect().bottom');
+  assert.ok(bottom <= 16, `the page frame runs to the bottom of the window, ${bottom}px`);
 
-  await resizeWindow(win, 1120, 680);
-  await footerWidth(397);
-  const narrow = await win.webContents.executeJavaScript(measure);
-  assert.equal(narrow.status.display, 'none', JSON.stringify(narrow));
-  assert.equal(narrow.connection.display, 'none', JSON.stringify(narrow));
-  assert.notEqual(narrow.more.display, 'none', JSON.stringify(narrow));
-  assert.ok(narrow.more.w >= 16, JSON.stringify(narrow));
-  assert.notEqual(narrow.shortcuts.display, 'none', JSON.stringify(narrow));
-  assert.equal(narrow.version.overflow, 0, JSON.stringify(narrow));
-  console.log('PASS: minimum window hides clipped status and keeps the version readable', JSON.stringify(narrow));
-  app.exit(0);
-}).catch((error) => { console.error(error.stack || error); app.exit(1); });
+  // Every remaining icon button has a tooltip and an accessible name, and every visible control is at least a 24px target.
+  assert.deepEqual(await run(`[...document.querySelectorAll('#shell button')].filter(b => b.offsetParent && !b.textContent.trim() && !b.getAttribute('aria-label')).map(b => b.id || b.className)`), [], 'every icon button has an accessible name');
+  assert.deepEqual(await run(`[...document.querySelectorAll('#shell .icon-button')].filter(b => !b.title).map(b => b.id || b.className)`), [], 'and a tooltip');
+  assert.deepEqual(await run(`[...document.querySelectorAll('#shell button')].filter(b => b.offsetParent && (b.getBoundingClientRect().width < 24 || b.getBoundingClientRect().height < 24)).map(b => (b.id || b.className) + ' ' + Math.round(b.getBoundingClientRect().width) + 'x' + Math.round(b.getBoundingClientRect().height))`), [], 'hit targets are at least 24px');
+
+  // A real connector error is announced and reachable; an update gets the pill and a dot.
+  await patch({ api: { ready: false, error: 'listen EADDRINUSE' } });
+  assert.equal(await run('document.getElementById("connector-banner").classList.contains("hidden")'), false, 'a failed connector shows a banner');
+  assert.match(await run('document.getElementById("connector-banner-text").textContent'), /connector is unavailable/);
+  assert.equal(await run('document.getElementById("connector-banner").getAttribute("role")'), 'alert');
+  assert.equal(await run('document.querySelector("#settings-button .bridge-dot").dataset.tone'), 'danger');
+  assert.match(await run('document.getElementById("settings-button").getAttribute("aria-label")'), /unavailable/);
+  await run('document.getElementById("connector-banner-details").click()');
+  await until(() => run('!!document.getElementById("settings-about")'), 'About opened from the banner');
+  assert.match(await run('document.getElementById("settings-about").textContent'), /Browser connectorUnavailable/);
+  await run('document.getElementById("modal-close").click()');
+  await patch({ api: { ready: true }, update: { available: '9.9.9', ready: false, busy: false, error: '', justUpdatedFrom: '', popup: false, vms: [] } });
+  assert.equal(await run('document.getElementById("connector-banner").classList.contains("hidden")'), true);
+  assert.equal(await run('document.getElementById("update-note").textContent'), 'Update');
+  assert.equal(await run('document.querySelector("#settings-button .bridge-dot").dataset.tone'), 'accent');
+
+  // Settings → About carries what the footer did: version, channel, Hermes, plugin, connector; Shortcuts too.
+  await run('document.getElementById("settings-button").click()');
+  await until(() => run('!!document.getElementById("settings-category-about")'), 'Settings');
+  await run('document.getElementById("settings-category-about").click()');
+  const about = await until(() => run('document.getElementById("settings-about")?.textContent'), 'the About section');
+  assert.ok(about.includes(`v${app.getVersion()}`), `the app version is in About: ${about}`);
+  assert.match(about, /Release channel/);
+  assert.match(about, /Browser connectorReady/);
+  assert.deepEqual(await run('[...document.querySelectorAll("#settings-content .about-actions button")].map(b => b.textContent)'), ['Release notes', 'Review updates', 'Keyboard shortcuts']);
+  await run('document.getElementById("modal-close").click()');
+  assert.equal(Menu.getApplicationMenu().getMenuItemById('workspace-shortcuts').accelerator, 'CmdOrCtrl+/', 'Shortcuts keep a key');
+  console.log('PASS: no footer; About carries versions, channel and connector; only errors and updates reach the main screen.');
+  quitFixture();
+})().catch((error) => { console.error(error.stack || error); app.exit(1); });
