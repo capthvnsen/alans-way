@@ -7,9 +7,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-// Same exemption as tmp-cleanup.cjs, plus the product's own ssh control-socket folder. The prefix below is short on
+// Same exemption as tmp-cleanup.cjs, plus Node's own compile cache and the product's own scratch folders (ssh control sockets; the update check's, which
+// dies with the app when a suite quits mid-check). The prefix below is short on
 // purpose: unix socket paths under the temp folder cap at 104 bytes.
-const ALLOWED = /^(workspace-|.*evidence|hw-tailnet-ssh-)/;
+const ALLOWED = /^(workspace-|.*evidence|hw-tailnet-ssh-|node-compile-cache$|vm-update-check\.)/;
 function privateTmp() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ht-'));
   return {

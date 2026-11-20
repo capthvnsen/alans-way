@@ -1,9 +1,29 @@
 // Opt-in for agents that cannot look at the screen: with HERMES_WORKSPACE_TEST_HIDDEN=1 the app under test never shows
 // a window, takes focus, bounces the Dock, opens a native dialog, banner or external app, yet still lays out and paints.
 // Inert unless the app is unpackaged; with the variable unset the product only passes its window options through.
-const electron = require('electron');
-const { app } = electron;
-const hidden = typeof electron === 'object' && !!app && !app.isPackaged && process.env.HERMES_WORKSPACE_TEST_HIDDEN === '1';
+const Module = require('node:module');
+
+let electron = null, hidden = false;
+// Preloaded with NODE_OPTIONS, `electron` is not resolvable yet (it is just the npm package's path), so a preload waits
+// for the app's own first require of it; main.cjs requires this file directly and installs at once.
+function install(candidate) {
+  if (electron || typeof candidate !== 'object' || !candidate?.app) return;
+  electron = candidate;
+  hidden = !electron.app.isPackaged && process.env.HERMES_WORKSPACE_TEST_HIDDEN === '1';
+  if (hidden) installHidden();
+}
+function start() {
+  if (!process.versions.electron) return;
+  // Early on there is no main script yet, and resolving `electron` now would cache the npm package's path over the real
+  // module for every later require, so wait for the app's own first require instead.
+  if (require.main) return install(require('electron'));
+  const load = Module._load;
+  Module._load = function (request) {
+    const exports = load.apply(this, arguments);
+    if (!electron && request === 'electron') install(exports);
+    return exports;
+  };
+}
 
 const states = new WeakMap();
 const stateOf = win => states.get(win) || states.set(win, { visible: false, focused: false, minimized: false }).get(win);
@@ -37,7 +57,7 @@ function simulateWindows() {
 }
 
 function silenceNativeUi() {
-  const { dialog, shell, Notification, systemPreferences } = electron;
+  const { app, dialog, shell, Notification, systemPreferences } = electron;
   for (const name of ['showMessageBox', 'showOpenDialog', 'showSaveDialog']) {
     dialog[name] = async () => ({ response: 0, checkboxChecked: false, canceled: true, filePaths: [], filePath: '' });
     dialog[`${name}Sync`] = () => (name === 'showMessageBox' ? 0 : undefined);
@@ -52,10 +72,12 @@ function silenceNativeUi() {
     systemPreferences.askForMediaAccess = async () => false;
   }
   app.focus = () => {};
+  app.setAsDefaultProtocolClient = app.removeAsDefaultProtocolClient = () => false; // a system-wide setting, not ours to change
   if (app.dock) for (const name of ['bounce', 'show', 'setBadge']) app.dock[name] = () => {};
 }
 
-if (hidden) {
+function installHidden() {
+  const { app } = electron;
   const proto = electron.BrowserWindow.prototype, nativeVisible = proto.isVisible, nativeHide = proto.hide;
   if (process.platform === 'darwin') { app.dock?.hide(); app.setActivationPolicy('accessory'); }
   app.commandLine.appendSwitch('use-mock-keychain'); // a Keychain prompt is a window too
@@ -71,4 +93,5 @@ if (hidden) {
   });
 }
 
-module.exports = { hidden, windowOptions, newWindow };
+start();
+module.exports = { isHidden: () => hidden, windowOptions, newWindow };
