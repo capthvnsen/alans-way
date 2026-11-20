@@ -250,6 +250,12 @@ if (!process.versions.electron) {
       await streamDelay(1500);
       await type('hello world', true);
       await until(async () => (await native()).run, 'turn started');
+      // Enter while the reply streams sends nothing, keeps the draft and says why.
+      await type('typed ahead', true);
+      await until(() => run(`!document.querySelector('#native-pane .nc-hint').classList.contains('hidden')`), 'hint shown');
+      assert.equal(await run(`document.querySelector('#native-pane .nc-hint').textContent`), 'Wait for the reply to finish, or press Stop');
+      assert.equal(await draft(), 'typed ahead', 'the draft waits in the box');
+      await type('', false);
       await go('1002', 'hermes-desktop');
       assert.ok((await native()).run, 'still running in the background');
       await until(async () => !(await native()).run, 'turn finished in the background', 30000);
