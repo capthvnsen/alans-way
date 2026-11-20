@@ -40,6 +40,13 @@ test('logs redact secrets before either current or rotated files reach disk', ()
   if (process.platform !== 'win32') assert.equal(fs.statSync(log.file).mode & 0o777, 0o600);
 });
 
+test('logs written before redaction existed are made private on the first write', { skip: process.platform === 'win32' }, () => {
+  const dir = tmp();
+  for (const name of ['main.log', 'main.log.old']) fs.writeFileSync(path.join(dir, name), 'Authorization: Bearer from-an-old-build\n', { mode: 0o644 });
+  createLog(dir).write('started');
+  for (const name of ['main.log', 'main.log.old']) assert.equal(fs.statSync(path.join(dir, name)).mode & 0o777, 0o600, name);
+});
+
 test('main-process errors redact secrets before printing to stderr', () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
   const printed = [], logged = [];
