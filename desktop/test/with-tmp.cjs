@@ -17,7 +17,8 @@ const CHROMIUM = ['Crashpad', 'Local Storage', 'Network', 'GPUCache', 'Code Cach
   'blob_storage', 'DawnGraphiteCache', 'DawnWebGPUCache', 'shared_proto_db', 'WebStorage', 'DIPS', 'SingletonLock', 'SingletonCookie', 'SingletonSocket'];
 const isProfile = dir => { try { return CHROMIUM.some(name => fs.existsSync(path.join(dir, name))); } catch { return false; } };
 function privateTmp() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ht-'));
+  // /tmp keeps paths short: macOS's own temp folder is 49 characters, and unix sockets under it cap at 104.
+  const dir = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'ht-'));
   return {
     dir,
     env: { TMPDIR: dir, TMP: dir, TEMP: dir,
