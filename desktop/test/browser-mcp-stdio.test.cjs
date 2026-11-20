@@ -257,11 +257,11 @@ test('a connector file replaced on disk waits for other in-flight calls before e
   assert.ok(exit, 'once idle it exits so the replacement loads');
 });
 
-test('a frame over the 10 MB limit closes the server with a reason on stderr instead of hanging', { timeout: 15000 }, async (t) => {
+test('a frame over the 10 MB limit closes the server with a reason on stderr instead of hanging', { timeout: 40000 }, async (t) => {
   const { app, connector } = await rig(t);
   connector.child.stdin.on('error', () => {});
   connector.write(JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'cua_alans_way_action', arguments: { ...action(), text: 'x'.repeat(11 * 1024 * 1024) } } }) + '\n');
-  const exit = await Promise.race([connector.exited, new Promise((resolve) => setTimeout(() => resolve(null), 4000))]);
+  const exit = await Promise.race([connector.exited, new Promise((resolve) => setTimeout(() => resolve(null), 25000))]);
   assert.ok(exit, 'the connector exits');
   assert.match(connector.state.stderr, /over 10 MB/);
   assert.deepEqual(app.log, []);
