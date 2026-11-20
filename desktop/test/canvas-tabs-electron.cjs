@@ -82,6 +82,8 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   const canvasView = () => webContents.getAllWebContents().find(item => !item.isDestroyed() && item.session === session.fromPartition('persist:hermes-webapp') && item.getURL().includes('#/'));
   const pick = (id) => run(`workspace.command('open-bot', { id: '${id}' })`);
   const name = `document.getElementById('chat-name')`;
+  // The name opens the header menu; its Bot settings and Cron jobs entries open the pages.
+  const openPage = async (page = 'settings') => { await run(`${name}.click()`); await run(`document.querySelector('#chat-menu [data-page="${page}"]').click()`); };
   const rowIcons = () => run(`document.querySelectorAll('.bot-tool, .bot-row [data-tool]').length`);
   const nameOpens = (expected) => until(async () => (await run(`!${name}.disabled`)) === expected, `the name ${expected ? 'opens' : 'does not open'} pages`);
   const saved = () => JSON.parse(fs.readFileSync(prefsFile, 'utf8'));
@@ -148,16 +150,19 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   // The bot's name in the chat header becomes a button; its chevron shows on hover.
   await pick('1001'); await showing('screen'); await run(`document.getElementById('canvas-browser').click()`); await showing('browser');
   await nameOpens(true);
-  assert.equal(await run(`${name}.getAttribute('aria-label')`), 'Alan settings and cron jobs');
+  assert.equal(await run(`${name}.getAttribute('aria-label')`), 'Alan menu');
   assert.equal(await rowIcons(), 0, 'no icons on the rows');
   assert.equal(await run(`getComputedStyle(${name}.querySelector('.chat-chevron')).visibility`), 'hidden');
   const at = await run(`(() => { const r = ${name}.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
   shell.sendInputEvent({ type: 'mouseMove', x: at.x, y: at.y });
   await until(async () => (await run(`getComputedStyle(${name}.querySelector('.chat-chevron')).visibility`)) === 'visible', 'chevron on hover');
-  // Clicking it opens Bot settings, and Cron jobs joins it in the strip.
-  await run(`${name}.click()`); await showing('settings');
-  assert.equal(await visible(), 'browser,screen,terminal,artifacts,settings,cron');
+  // Its menu lists the gateways, a divider, then Bot settings and Cron jobs; choosing Bot settings opens it, and Cron jobs joins it in the strip.
+  await run(`${name}.click()`);
   assert.equal(await run(`${name}.getAttribute('aria-expanded')`), 'true');
+  assert.deepEqual(await run(`[...document.querySelectorAll('#chat-menu > *')].map(n => n.getAttribute('role') + ':' + n.textContent.replace('✓', '').trim())`), ['menuitemradio:Telegram', 'menuitemradio:Hermes', 'separator:', 'menuitem:Bot settings', 'menuitem:Cron jobs']);
+  await run(`document.querySelector('#chat-menu [data-page="settings"]').click()`); await showing('settings');
+  assert.equal(await visible(), 'browser,screen,terminal,artifacts,settings,cron');
+  assert.equal(await run(`${name}.getAttribute('aria-expanded')`), 'false', 'choosing an entry closes the menu');
   await stripFits('six tabs');
   await run(`document.getElementById('canvas-cron').click()`); await showing('cron');
   assert.equal(await visible(), 'browser,screen,terminal,artifacts,settings,cron', 'both stay while either is open');
@@ -178,13 +183,13 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   assert.equal(await view.executeJavaScript('window.kept'), 1, 'switching pages does not reload Hermes Desktop');
   assert.equal(canvasView(), view, 'one Canvas view serves every page');
   // Clicking the name again returns to the tab that was open before.
-  await run(`${name}.click()`); await showing('settings');
-  await run(`${name}.click()`); await showing('artifacts');
+  await openPage(); await showing('settings');
+  await openPage(); await showing('artifacts');
   assert.equal(await visible(), 'browser,screen,terminal,artifacts');
   // Scout: his own name opens his Bot settings, remembered for him.
   await pick('1002'); await until(async () => (await state()).selectedBotId === '1002', 'Scout selected'); await nameOpens(true);
-  assert.equal(await run(`${name}.getAttribute('aria-label')`), 'Scout settings and cron jobs');
-  await run(`${name}.click()`); await showing('settings'); await until(() => view.getURL() === `${address}#/settings`, '#/settings');
+  assert.equal(await run(`${name}.getAttribute('aria-label')`), 'Scout menu');
+  await openPage(); await showing('settings'); await until(() => view.getURL() === `${address}#/settings`, '#/settings');
   await until(() => saved().canvasTabs?.['1002'] === 'settings', 'the page tab is remembered for Scout');
   // Arrow keys cross the visible tabs, including the two pages; reaching a permanent tab removes both.
   await run(`document.getElementById('canvas-artifacts').focus(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))`);
@@ -194,7 +199,7 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   await run(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))`);
   await showing('artifacts'); assert.equal(await visible(), 'browser,screen,terminal,artifacts');
   // Hermes Desktop closes its Cron overlay by navigating; picking the tab again reopens it.
-  await run(`${name}.click()`); await run(`document.getElementById('canvas-cron').click()`); await showing('cron');
+  await openPage(); await run(`document.getElementById('canvas-cron').click()`); await showing('cron');
   await view.executeJavaScript(`location.hash = '#/'`);
   await until(() => view.getURL() === `${address}#/`, 'overlay closed');
   await run(`document.getElementById('canvas-cron').click()`);
@@ -212,8 +217,10 @@ const listen = (handler) => new Promise(resolve => { const s = http.createServer
   statusUp = false; await run(`workspace.command('webapp-retry')`);
   await showing('browser');
   assert.equal(await visible(), 'browser,screen,terminal');
-  await nameOpens(false);
-  assert.equal(await run(`getComputedStyle(${name}.querySelector('.chat-chevron')).display`), 'none', 'no reachable pages: no chevron');
+  await nameOpens(true);
+  await run(`${name}.click()`);
+  assert.deepEqual(await run(`[...document.querySelectorAll('#chat-menu [role^=menuitem]')].map(n => n.dataset.gateway || n.dataset.page)`), ['telegram', 'hermes-desktop'], 'no reachable pages: the gateways stay, the page entries go');
+  await run(`${name}.click()`);
   assert.equal(saved().canvasTabs['1002'], 'cron');
   statusUp = true; await run(`workspace.command('webapp-retry')`);
   await showing('cron');

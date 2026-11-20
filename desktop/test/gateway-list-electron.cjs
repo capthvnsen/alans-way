@@ -1,6 +1,6 @@
-// The agent list grouped by gateway (Telegram, Hermes, Alan's Way) and one inbox, end to end: real main,
+// The agent list (one row per bot) with a gateway menu in the chat header and one inbox, end to end: real main,
 // preload and renderer with two fake Telegram bots, a local stand-in Hermes Webapp and the native chat mock.
-// Three launches share one throwaway profile: the grouped list and switching, a relaunch (with an old
+// Three launches share one throwaway profile: the list, the menu and switching, a relaunch (with an old
 // preference that names no gateway), then zero Telegram bots.
 // Run: npm run test:gateway-list
 const fs = require('node:fs');
@@ -52,7 +52,7 @@ if (!process.versions.electron) {
   prepareFixture(profile);
   const prefsFile = path.join(profile, 'preferences.json');
   if (phase === '1') fs.writeFileSync(prefsFile, JSON.stringify({ onboarded: true, preview: false, hermesWebappUrl: process.env.WEBAPP_URL,
-    bots: [{ id: '1001', isBot: true, name: 'Alan', username: 'alan_bot' }, { id: '1002', isBot: true, name: 'Scout Research Assistant' }], selectedBotId: '1001' }));
+    bots: [{ id: '1001', isBot: true, name: 'Alan', username: 'alan_bot' }, { id: '1002', isBot: true, name: 'Scout Research Assistant', unread: 3 }], selectedBotId: '1001' }));
   // Notifications are recorded instead of shown.
   const shown = [];
   Notification.prototype.show = function show() { shown.push({ title: this.title, body: this.body }); };
@@ -78,14 +78,26 @@ if (!process.versions.electron) {
     const state = () => run('workspace.getState()');
     const native = () => run('nativeChat.getState()');
     const saved = () => JSON.parse(fs.readFileSync(prefsFile, 'utf8'));
-    // The list as [gateway, bot ids]; rows other than the selected one carry no star.
-    const sections = () => run(`[...document.querySelectorAll('#bot-list .gateway-section')].map(s => s.querySelector('.gateway-logo').dataset.gateway + ':' + [...s.querySelectorAll('.bot-row')].map(r => r.dataset.botId + (r.classList.contains('selected') ? '*' : '')).join('+')).join(' ')`);
-    const selectedRows = () => run(`[...document.querySelectorAll('#bot-list .bot-row.selected')].map(r => r.dataset.botId + '@' + r.dataset.gateway)`);
-    const showing = (surface, id) => until(async () => (await state()).chatTarget === { telegram: 'telegram', 'hermes-desktop': 'webapp', native: 'native' }[surface]
-      && (await selectedRows()).length === 1 && (!id || (await selectedRows())[0] === `${id}@${surface}`), `${surface} showing`);
-    // A click on a row opens that bot on that row's gateway.
-    const go = async (id, surface) => { await run(`document.querySelector('${row(id, surface)}').click()`); await until(async () => (await state()).chatBotId === id, `bot ${id}`); await showing(surface, id); };
-    const row = (id, surface = 'telegram') => `#bot-list .bot-row[data-bot-id="${id}"][data-gateway="${surface}"]`;
+    // The list as bot ids, the selected one starred; one row per bot.
+    const bots = () => run(`[...document.querySelectorAll('#bot-list .bot-row')].map(r => r.dataset.botId + (r.classList.contains('selected') ? '*' : '')).join(' ')`);
+    const selectedRows = () => run(`[...document.querySelectorAll('#bot-list .bot-row.selected')].map(r => r.dataset.botId)`);
+    const TARGET = { telegram: 'telegram', 'hermes-desktop': 'webapp', native: 'native' };
+    const showing = (surface, id) => until(async () => (await state()).chatTarget === TARGET[surface] && (await selectedRows()).length === 1 && (!id || (await selectedRows())[0] === id), `${surface} showing`);
+    const row = (id) => `#bot-list .bot-row[data-bot-id="${id}"]`;
+    const menuHidden = () => run(`document.getElementById('chat-menu').classList.contains('hidden')`);
+    const openMenu = async () => { if (await menuHidden()) await run(`document.getElementById('chat-name').click()`); await until(async () => !(await menuHidden()), 'menu open'); };
+    const closeMenu = async () => { if (!(await menuHidden())) await run(`document.getElementById('chat-name').click()`); await until(menuHidden, 'menu closed'); };
+    // The menu's entries as key, a star on the checked one, a bang on one with unread.
+    const menuItems = () => run(`[...document.querySelectorAll('#chat-menu [role^=menuitem]')].map(b => (b.dataset.gateway || b.dataset.page) + (b.getAttribute('aria-checked') === 'true' ? '*' : '') + (b.querySelector('.unread') ? '!' : ''))`);
+    const menu = async () => { await openMenu(); const items = await menuItems(); await closeMenu(); return items; };
+    const choose = async (key) => { await openMenu(); await run(`document.querySelector('#chat-menu [data-gateway="${key}"], #chat-menu [data-page="${key}"]').click()`); await until(menuHidden, 'menu closed'); };
+    // A click on a row opens that bot on the gateway it remembers; the header menu switches gateway.
+    const go = async (id, surface) => {
+      if ((await state()).chatBotId !== id) { await run(`document.querySelector('${row(id)}').click()`); await until(async () => (await state()).chatBotId === id, `bot ${id}`); }
+      if ((await state()).chatTarget !== TARGET[surface]) await choose(surface);
+      await showing(surface, id);
+    };
+    const chips = (selector) => run(`[...document.querySelectorAll(${JSON.stringify(selector + ' .gateway-chip')})].map(c => c.dataset.gateway).join()`);
     const has = (selector) => run(`!!document.querySelector(${JSON.stringify(selector)})`);
     const scroller = '#native-pane .nc-scroll';
     const scrollTop = () => run(`document.querySelector('${scroller}').scrollTop`);
@@ -104,15 +116,22 @@ if (!process.versions.electron) {
     };
 
     if (phase === '1') {
-      // Only the gateways that are set up get a section: Telegram and Hermes now, no Alan's Way section yet, and no empty header.
-      await until(async () => (await sections()).replace(/\*/g, '') === 'telegram:1001+1002 hermes-desktop:1001+1002', 'Telegram and Hermes sections');
-      assert.equal(await run(`document.querySelectorAll('#bot-list .gateway-section').length`), 2);
+      // Two gateways set up: one row per bot, no sections or headers, and the open bot's menu offers just those two.
+      await until(async () => (await bots()).replace(/\*/g, '') === '1001 1002', 'one row per bot');
+      assert.equal(await run(`document.querySelectorAll('#bot-list .gateway-section, #bot-list .gateway-head, #bot-list h3, #bot-list .gateway-logo').length`), 0, 'no gateway sections or headers');
+      await until(async () => (await menu()).filter((key) => key !== 'settings' && key !== 'cron').join() === 'telegram,hermes-desktop*', 'Telegram and Hermes, Hermes on screen');
       await run(`workspace.command('settings', { nativeChatUrl: ${JSON.stringify(process.env.NATIVE_CHAT_URL)}, nativeChatKey: ${JSON.stringify(KEY)} })`);
-      // Three gateways, in order, each header a logo with only an accessible name; each bot is on all three; two bots, six rows.
-      await until(async () => (await sections()).replace(/\*/g, '') === 'telegram:1001+1002 hermes-desktop:1001+1002 native:1001+1002', 'three sections');
-      assert.deepEqual(await run(`[...document.querySelectorAll('#bot-list .gateway-head')].map(h => [h.textContent.trim(), h.querySelector('[role=img]').getAttribute('aria-label'), h.querySelector('[role=img]').title])`), [['', 'Telegram', 'Telegram'], ['', 'Hermes', 'Hermes'], ['', 'Alan\'s Way', 'Alan\'s Way']]);
-      assert.deepEqual(await run(`[...document.querySelectorAll('#bot-list .gateway-section')].map(s => [s.getAttribute('role'), document.getElementById(s.getAttribute('aria-labelledby')).textContent.trim() === '' && s.querySelector('[role=img]').getAttribute('aria-label')])`), [['group', 'Telegram'], ['group', 'Hermes'], ['group', 'Alan\'s Way']]);
-      assert.equal(await run(`document.getElementById('bot-list').getAttribute('aria-label')`), 'Your agents (2)', 'the count is bots, not rows, and only in the list name');
+      // Alan's Way joins: still one row per bot, and the menu lists the three gateways in order with a check on the one shown.
+      await until(async () => (await menu()).filter((key) => key !== 'settings' && key !== 'cron').join() === 'telegram,hermes-desktop*,native', 'three gateways in the menu');
+      assert.equal(await run(`document.querySelectorAll('#bot-list .bot-row').length`), 2, 'still one row per bot');
+      assert.equal(await run(`document.getElementById('bot-list').getAttribute('aria-label')`), 'Your agents (2)', 'the count is bots');
+      assert.equal(await run(`document.getElementById('bot-list').getAttribute('role')`), 'list');
+      // The pages join the menu below a divider whenever Hermes Desktop has them.
+      await openMenu();
+      assert.deepEqual(await run(`(() => { const m = document.getElementById('chat-menu'); return [m.getAttribute('role'), m.querySelectorAll('[role=menuitemradio]').length, m.querySelectorAll('[role=separator]').length, [...m.querySelectorAll('[role=menuitemradio] .gateway-logo')].map(l => l.querySelector('img, svg') && l.querySelector('img, svg').tagName.toLowerCase()).join()]; })()`), ['menu', 3, (await run(`!!document.querySelector('#chat-menu [data-page]')`)) ? 1 : 0, 'svg,img,img'], 'menu semantics: radios with a logo each');
+      assert.deepEqual(await run(`[...document.querySelectorAll('#chat-menu [data-gateway] .gateway-logo img')].map(i => i.getAttribute('src'))`), ['../assets/hermes-icon.png', '../assets/alans-way-logo-64.png'], 'Alan\'s Way wears the new logo');
+      assert.equal(await run(`getComputedStyle(document.querySelector('#chat-menu [aria-checked="true"] .chat-menu-check')).visibility + getComputedStyle(document.querySelector('#chat-menu [aria-checked="false"] .chat-menu-check')).visibility`), 'visiblehidden', 'only the shown gateway has a check');
+      await closeMenu();
       // The sidebar header: one line beside the window buttons, a search field that is always there, no label or count.
       assert.deepEqual(await run(`(() => { const t = document.querySelector('.side-title'), s = document.getElementById('bots-toggle'), top = document.querySelector('.side-top').getBoundingClientRect(), r = t.getBoundingClientRect(), b = s.getBoundingClientRect(); return [t.textContent, Math.round(r.height) <= 20, r.left >= b.right, r.bottom <= top.bottom, getComputedStyle(t.querySelector('b')).fontWeight > getComputedStyle(t).fontWeight]; })()`), ['Alan\'s Workspace', true, true, true, true], 'title on one line, right of the toggle, first word heavier');
       assert.equal(await run(`getComputedStyle(document.querySelector('.side-top')).webkitAppRegion + ' ' + getComputedStyle(document.getElementById('bots-toggle')).webkitAppRegion`), 'drag no-drag', 'the top row drags except on its button');
@@ -122,16 +141,15 @@ if (!process.versions.electron) {
       assert.equal(await run(`/YOUR AGENTS/.test(document.querySelector(".sidebar").textContent)`), false, 'no YOUR AGENTS label');
       assert.equal(await run(`/Activity unavailable/.test(document.getElementById('bot-list').textContent) || !!document.querySelector('.bot-activity:not(.hidden):empty')`), false, 'unknown activity takes no line');
       assert.equal(await run(`getComputedStyle(document.querySelector('#bot-list .bot-row.selected')).backgroundColor !== 'rgba(0, 0, 0, 0)' && getComputedStyle(document.querySelector('#bot-list .bot-row:not(.selected)')).backgroundColor === 'rgba(0, 0, 0, 0)'`), true, 'the open row is a card, the others are flat');
-      assert.equal(await run(`document.querySelectorAll('#bot-list .bot-row').length`), 6);
       assert.equal((await selectedRows()).length, 1, 'exactly one row is selected');
       assert.equal(await run(`document.getElementById('surface-tabs')`), null, 'no pill toggle in the chat header');
       assert.equal(await run(`document.getElementById('bot-list').textContent.includes('Telegram bot')`), false, 'no row claims to be a Telegram bot');
-      // Search filters rows in every section; the count stays; sorting is within each section.
+      // Search filters the rows; the count stays.
       await run(`(() => { const i = document.getElementById('bot-search'); i.value = 'scout'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-      await until(async () => (await sections()).replace(/\*/g, '') === 'telegram:1002 hermes-desktop:1002 native:1002', 'search across sections');
+      await until(async () => (await bots()).replace(/\*/g, '') === '1002', 'search narrows to Scout');
       assert.equal(await run(`document.getElementById('bot-list').getAttribute('aria-label')`), 'Your agents (2)');
       await run(`document.getElementById('bot-search-clear').click()`);
-      await until(async () => (await sections()).replace(/\*/g, '') === 'telegram:1001+1002 hermes-desktop:1001+1002 native:1001+1002', 'search cleared');
+      await until(async () => (await bots()).replace(/\*/g, '') === '1001 1002', 'search cleared');
       // An unsaved address in Settings, Chat surface survives Escape without being saved.
       const openSettings = async () => { await run(`document.getElementById('settings-fallback').click()`); await until(() => run(`!document.getElementById('modal').classList.contains('hidden') && !!document.getElementById('settings-native-url')`), 'chat surface settings'); };
       await openSettings();
@@ -151,10 +169,12 @@ if (!process.versions.electron) {
       await webappView.executeJavaScript('window.kept = "webapp"');
       await telegramView.executeJavaScript('window.kept = "telegram"');
 
-      // Bot A on Alan's Way: Arrow keys cross sections one row at a time; Enter on a row opens that gateway; the newest Telegram-source conversation opens read-only.
-      await run(`document.querySelector('${row('1001', 'hermes-desktop')} .bot-open').focus(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))`);
-      assert.equal(await run(`document.activeElement.closest('.bot-row').dataset.botId + '@' + document.activeElement.closest('.bot-row').dataset.gateway`), '1002@hermes-desktop');
-      await run(`document.querySelector('${row('1001', 'native')} .bot-open').focus(); document.activeElement.click()`);
+      // Bot A on Alan's Way: Arrow keys move one row at a time; Enter on a row opens that bot; the menu picks Alan's Way; the newest Telegram-source conversation opens read-only.
+      await run(`document.querySelector('${row('1001')} .bot-open').focus(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))`);
+      assert.equal(await run(`document.activeElement.closest('.bot-row').dataset.botId`), '1002');
+      await run(`document.querySelector('${row('1001')} .bot-open').focus(); document.activeElement.click()`);
+      await until(async () => (await state()).chatBotId === '1001', 'bot 1001 opened by its row');
+      await choose('native');
       await showing('native', '1001');
       assert.equal(await run(`document.querySelectorAll('#bot-list .bot-open[tabindex="0"]').length`), 1, 'roving tab stop');
       await until(async () => (await native()).thread?.source === 'telegram', 'telegram-source conversation');
@@ -164,6 +184,24 @@ if (!process.versions.electron) {
       // Bot B: Hermes Desktop.
       await go('1002', 'hermes-desktop');
       await until(() => saved().chatSurfaces?.['1002'] === 'hermes-desktop', 'B choice saved');
+      // Scout has Telegram unread (3), and Hermes Desktop is on screen: his row and the header pill both show a Telegram chip, the menu a dot.
+      assert.equal(await chips(row('1002')), 'telegram', 'the row shows the logo of the gateway with unread, in place of the dot');
+      assert.equal(await has(`${row('1002')} .bot-status > .unread`), false, 'no plain dot beside the chips');
+      assert.equal(await chips('#chat-name'), 'telegram', 'the pill points at the gateway to switch to');
+      assert.match(await run(`document.getElementById('chat-name').getAttribute('aria-label')`), /Unread in Telegram$/);
+      assert.match(await run(`document.querySelector('${row('1002')} .bot-open').getAttribute('aria-label')`), /unread in telegram$/);
+      assert.equal(await run(`document.querySelector('${row('1002')} .gateway-chips').getAttribute('aria-label')`), 'Unread in Telegram');
+      assert.deepEqual((await menu()).filter((key) => key !== 'settings' && key !== 'cron'), ['telegram!', 'hermes-desktop*', 'native']);
+      await openMenu();
+      assert.equal(await run(`document.querySelector('#chat-menu [data-gateway="telegram"] .sr-only').textContent`), ', unread', 'the dot has a text equivalent');
+      await closeMenu();
+      // Telegram on screen: the pill drops that chip (it is the one shown); the row keeps it.
+      await choose('telegram'); await showing('telegram', '1002');
+      assert.equal(await chips('#chat-name'), '', 'no pill chip for the gateway on screen');
+      assert.equal(await chips(row('1002')), 'telegram');
+      assert.equal(await run(`document.getElementById('chat-name').getAttribute('aria-label').includes('Unread')`), false);
+      await choose('hermes-desktop'); await showing('hermes-desktop', '1002');
+      await telegramView.executeJavaScript('window.kept = "telegram"');
       const apart = () => run(`(() => { const [t, p] = ['bots-show', 'chat-pill'].map(id => document.getElementById(id).getBoundingClientRect()); return t.right <= p.left; })()`);
       assert.equal(await run(`getComputedStyle(document.getElementById('bots-show')).display`), 'none', 'the chat header has no toggle while the agent list shows');
       await run(`document.getElementById('bots-toggle').click()`); await until(() => run(`document.getElementById('shell').classList.contains('bots-hidden')`), 'agent list hidden');
@@ -212,28 +250,86 @@ if (!process.versions.electron) {
       await go('1002', 'hermes-desktop');
       assert.ok((await native()).run, 'still running in the background');
       await until(async () => !(await native()).run, 'turn finished in the background', 30000);
-      await until(() => has(`${row('1001', 'native')} .unread`), 'A row unread');
-      assert.equal((await state()).inbox['1001'].rows.native.preview, 'pong: hello world', 'row previews the native reply');
-      assert.equal(await has(`${row('1001')} .unread`), false, 'native unread is not Telegram unread');
-      assert.equal(await run(`document.querySelector('${row('1001')} .bot-preview').textContent`), '@alan_bot', 'the Telegram row keeps its own line');
-      await until(async () => (await run(`document.querySelector('${row('1001', 'native')} .bot-preview').textContent`)) === 'pong: hello world', 'preview line');
+      await until(() => has(`${row('1001')} .gateway-chip[data-gateway="native"]`), 'A row unread on Alan\'s Way');
+      assert.equal(await chips(row('1001')), 'native', 'one gateway unread shows one chip');
+      assert.match(await run(`document.querySelector('${row('1001')} .bot-open').getAttribute('aria-label')`), /unread in alan's way$/);
+      assert.equal((await state()).inbox['1001'].rows.native.preview, 'pong: hello world', 'native keeps its own preview');
+      assert.equal((await state()).inbox['1001'].rows.telegram.unread, false, 'native unread is not Telegram unread');
+      assert.equal((await state()).inbox['1001'].rows['hermes-desktop'].unread, false, 'Hermes Desktop exposes no unread');
+      await until(async () => (await run(`document.querySelector('${row('1001')} .bot-preview').textContent`)) === 'pong: hello world', 'the row shows its latest activity');
       await go('1001', 'native');
-      await until(async () => !(await has(`${row('1001', 'native')} .unread`)), 'opening native clears unread');
+      await until(async () => (await chips(row('1001'))) === '', 'opening native clears unread');
+
+      // The same turn finishing while A is open on another of its own gateways: the row and the pill both point at Alan's Way.
+      await streamDelay(1500);
+      await type('second turn', true);
+      await until(async () => (await native()).run, 'second turn started');
+      await choose('telegram'); await showing('telegram', '1001');
+      await until(async () => !(await native()).run, 'second turn finished behind Telegram', 30000);
+      await until(async () => (await chips('#chat-name')) === 'native', 'the pill points at Alan\'s Way');
+      assert.equal(await chips(row('1001')), 'native');
+      assert.match(await run(`document.getElementById('chat-name').getAttribute('aria-label')`), /Unread in Alan's Way$/);
+      assert.deepEqual((await menu()).filter((key) => key !== 'settings' && key !== 'cron'), ['telegram*', 'hermes-desktop', 'native!']);
+      // Choosing the gateway with unread shows it and clears both indicators; the choice is the bot's, remembered.
+      await choose('native'); await showing('native', '1001');
+      await until(async () => (await chips('#chat-name')) === '' && (await chips(row('1001'))) === '', 'indicators cleared');
+      await until(() => saved().chatSurfaces?.['1001'] === 'native', 'the menu choice is remembered per bot');
+      await streamDelay(0);
+
+      // The choice is remembered per bot: Telegram for A, then Scout and back, A is still on Telegram.
+      await choose('telegram'); await showing('telegram', '1001');
+      await until(() => saved().chatSurfaces?.['1001'] === 'telegram', 'A on Telegram saved');
+      await go('1002', 'hermes-desktop');
+      await run(`document.querySelector('${row('1001')}').click()`);
+      await showing('telegram', '1001');
+      await go('1001', 'native');
+
+      // Keyboard: ArrowDown on the pill opens the menu on its first entry, the arrows and Home/End move, Enter chooses, Escape closes and returns to the pill.
+      shell.debugger.attach('1.3');
+      const key = async (name) => {
+        const params = { key: name, code: name, windowsVirtualKeyCode: { Enter: 13, Escape: 27, End: 35, Home: 36, ArrowUp: 38, ArrowDown: 40 }[name] };
+        await shell.debugger.sendCommand('Input.dispatchKeyEvent', { ...params, type: 'keyDown', ...(name === 'Enter' ? { text: '\r' } : {}) });
+        await shell.debugger.sendCommand('Input.dispatchKeyEvent', { ...params, type: 'keyUp' });
+      };
+      const focusedIn = () => run(`document.activeElement.id + '/' + (document.activeElement.dataset.gateway || document.activeElement.dataset.page || '')`);
+      shell.focus();
+      await run(`document.getElementById('chat-name').focus()`);
+      await key('ArrowDown');
+      await until(async () => !(await menuHidden()), 'ArrowDown opens the menu');
+      assert.equal(await focusedIn(), '/telegram');
+      assert.equal(await run(`document.getElementById('chat-name').getAttribute('aria-expanded')`), 'true');
+      await key('ArrowDown'); await until(async () => (await focusedIn()) === '/hermes-desktop', 'ArrowDown moves on');
+      await key('End'); await until(async () => (await run(`document.activeElement === [...document.querySelectorAll('#chat-menu [role^=menuitem]')].at(-1)`)), 'End reaches the last entry');
+      await key('Home'); await until(async () => (await focusedIn()) === '/telegram', 'Home returns to the first');
+      await key('ArrowUp'); await until(async () => (await run(`document.activeElement === [...document.querySelectorAll('#chat-menu [role^=menuitem]')].at(-1)`)), 'ArrowUp wraps');
+      await key('Home'); await until(async () => (await focusedIn()) === '/telegram', 'Home again');
+      await key('ArrowDown'); await until(async () => (await focusedIn()) === '/hermes-desktop', 'Down to Hermes');
+      await key('Enter');
+      await showing('hermes-desktop', '1001');
+      assert.equal(await menuHidden(), true, 'Enter chooses and closes');
+      assert.equal(await run(`document.activeElement.id`), 'chat-name', 'focus returns to the pill');
+      assert.equal(await run(`document.getElementById('chat-name').getAttribute('aria-expanded')`), 'false');
+      await openMenu(); await key('Escape');
+      await until(menuHidden, 'Escape closes');
+      assert.equal(await run(`document.activeElement.id`), 'chat-name');
+      await openMenu(); await run(`document.getElementById('bot-search').click()`);
+      await until(menuHidden, 'a click outside closes');
+      shell.debugger.detach();
+      await go('1001', 'native');
 
       // An approval request while away: waiting badge, its label, one notification.
       await type('APPROVE please', true);
       await until(async () => (await native()).run, 'approval turn started');
       await go('1002', 'hermes-desktop');
-      await until(() => has(`${row('1001', 'native')} .waiting-badge`), 'waiting badge', 30000);
-      assert.match(await run(`document.querySelector('${row('1001', 'native')} .bot-open').getAttribute('aria-label')`), /waiting for you$/);
+      await until(() => has(`${row('1001')} .waiting-badge`), 'waiting badge', 30000);
+      assert.match(await run(`document.querySelector('${row('1001')} .bot-open').getAttribute('aria-label')`), /waiting for you$/);
       assert.equal(await has(`#bot-list [data-bot-id="1002"] .waiting-badge`), false);
-      assert.equal(await has(`${row('1001')} .waiting-badge`), false, 'waiting on a native approval is not waiting on Telegram');
       await sleep(600);
       assert.deepEqual(shown, [{ title: 'Alan', body: 'is waiting for you' }], 'one notification per waiting episode');
       await go('1001', 'native');
       await until(() => has('#native-pane .nc-prompt.approval.open'), 'approval card');
       await run(`[...document.querySelectorAll('#native-pane .nc-prompt.approval button')].find(b => b.textContent === 'Allow once').click()`);
-      await until(async () => !(await has(`${row('1001', 'native')} .waiting-badge`)), 'waiting cleared');
+      await until(async () => !(await has(`${row('1001')} .waiting-badge`)), 'waiting cleared');
       await streamDelay(0);
       await until(async () => !(await native()).run, 'approval turn finished', 30000);
 
@@ -253,20 +349,35 @@ if (!process.versions.electron) {
       assert.equal(saved().chatSurfaces['1002'], 'pill-toggle-leftover');
       await run(`workspace.command('open-bot', { id: '1002' })`);
       await until(async () => (await state()).selectedBotId === '1002', 'B opened');
-      await until(async () => (await selectedRows()).length === 1 && (await selectedRows())[0].startsWith('1002@'), 'one row selected for B');
-      await go('1002', 'hermes-desktop');
+      await until(async () => (await selectedRows()).length === 1 && (await selectedRows())[0] === '1002', 'one row selected for B');
+      // Nothing was chosen yet, so the stale value stays until the menu overwrites it.
+      await choose('telegram'); await choose('hermes-desktop'); await showing('hermes-desktop', '1002');
       await go('1001', 'native');
       assert.deepEqual(saved().chatSurfaces, { 1001: 'native', 1002: 'hermes-desktop' });
     } else {
-      // No Telegram bots: one built-in bot with a row under Hermes and one under Alan's Way, and no Telegram section.
-      await until(async () => (await sections()).replace(/\*/g, '') === 'hermes-desktop:hermes native:hermes', 'built-in rows');
+      // No Telegram bots: one built-in bot with one row, a menu of Hermes and Alan's Way (no Telegram), and no sections.
+      await until(async () => (await bots()) === 'hermes*', 'built-in row');
       assert.equal(await run(`document.getElementById('bot-list').getAttribute('aria-label')`), 'Your agents (1)');
-      assert.equal(await run(`document.querySelector('${row('hermes', 'hermes-desktop')} .bot-name').textContent`), 'Hermes on localhost');
+      assert.equal(await run(`document.querySelector('${row('hermes')} .bot-name').textContent`), 'Hermes on localhost');
       assert.equal((await selectedRows()).length, 1);
+      await until(async () => (await menu()).filter((key) => key !== 'settings' && key !== 'cron').length === 2, 'two gateways');
+      assert.deepEqual((await menu()).filter((key) => key !== 'settings' && key !== 'cron').map((key) => key.replace('*', '')), ['hermes-desktop', 'native']);
       await go('hermes', 'native');
       await go('hermes', 'hermes-desktop');
       await until(() => saved().chatSurfaces?.hermes === 'hermes-desktop', 'built-in choice saved');
       await assert.rejects(run(`workspace.command('open-bot', { id: 'hermes', surface: 'telegram' })`), /not set up/);
+      // One gateway left: the gateway group goes, and only the two page entries stay (when Hermes Desktop has pages).
+      await run(`workspace.command('settings', { nativeChatUrl: '' })`);
+      await until(async () => (await state()).inbox.hermes.gateways.join() === 'hermes-desktop', 'only Hermes Desktop');
+      await until(async () => (await menu()).join() === 'settings,cron' || (await run(`document.getElementById('chat-name').disabled`)), 'only the page entries, or no menu without pages');
+      if (!(await run(`document.getElementById('chat-name').disabled`))) {
+        await openMenu();
+        assert.equal(await run(`document.querySelectorAll('#chat-menu [role=menuitemradio], #chat-menu [role=separator]').length`), 0, 'no gateway group and no divider');
+        await run(`document.querySelector('#chat-menu [data-page="cron"]').click()`);
+        await until(async () => (await state()).canvasTab === 'cron', 'Cron jobs opens its page');
+        await openMenu(); await run(`document.querySelector('#chat-menu [data-page="settings"]').click()`);
+        await until(async () => (await state()).canvasTab === 'settings', 'Bot settings opens its page');
+      }
     }
     console.log(`PASS gateway list phase ${phase}`);
     quitFixture();

@@ -70,34 +70,55 @@
       scaleY: 1 - 0.92 * bounded(blink, 0, 1, 0) };
   }
 
-  // A working bot's gaze: unhurried glances between a few spots (often back to centre), a faint continuous
-  // drift, and blinks at irregular intervals, now and then a double. Returns a sampler of (ms) => { x, y, blink }.
-  function createWander(random = Math.random) {
+  // Unhurried glances between a few spots (often back to centre), a faint continuous drift, and blinks at irregular
+  // intervals, now and then a double. A working bot uses it as is; an idle one passes smaller `reach` and slower `hold`
+  // (both multipliers). Returns a sampler of (ms) => { x, y, blink }.
+  function createWander(random = Math.random, { reach: reachScale = 1, hold = 1 } = {}) {
     const between = (low, high) => low + (high - low) * random();
     let glanceAt, blinkAt, blinkFrom = -Infinity, blinkFor = 150, target = { x: 0, y: 0 };
     return (now) => {
-      if (glanceAt === undefined) { glanceAt = now + between(500, 1600); blinkAt = now + between(1200, 3200); }
+      if (glanceAt === undefined) { glanceAt = now + between(500, 1600) * hold; blinkAt = now + between(1200, 3200); }
       if (now >= glanceAt) {
-        const angle = between(0, 2 * Math.PI), reach = between(0.35, 0.85);
+        const angle = between(0, 2 * Math.PI), reach = between(0.35, 0.85) * reachScale;
         target = random() < 0.3 ? { x: 0, y: 0 } : { x: Math.cos(angle) * reach, y: Math.sin(angle) * reach * 0.7 };
-        glanceAt = now + between(900, 2800);
+        glanceAt = now + between(900, 2800) * hold;
       }
       if (now >= blinkAt) {
         blinkFrom = now; blinkFor = between(120, 190);
         blinkAt = now + (random() < 0.18 ? blinkFor + between(60, 140) : between(2400, 6500));
       }
       const t = (now - blinkFrom) / blinkFor;
-      return { x: target.x + 0.06 * Math.sin(now / 1700) + 0.04 * Math.sin(now / 713 + 1), y: target.y + 0.05 * Math.sin(now / 1130 + 2),
+      return { x: target.x + reachScale * (0.06 * Math.sin(now / 1700) + 0.04 * Math.sin(now / 713 + 1)), y: target.y + reachScale * 0.05 * Math.sin(now / 1130 + 2),
         blink: t >= 0 && t < 1 ? Math.sin(Math.PI * t) : 0 };
     };
   }
 
-  const exported = { normalizeEyes, normalizeTint, TINTS, isActive, activityLabel, resolveAvatar, gazeOffset, easeGaze, eyePose, createWander };
+  // One avatar's gaze: at the pointer while it has moved within `still` ms and is inside the window, otherwise the
+  // wander (working: wide glances; idle: small, slow ones). Blinks always come from the wander.
+  // pointer(point | null, now): point in window px, null once the pointer has left. sample(now, { busy, centre, range }).
+  function createGaze({ random = Math.random, still = 2200 } = {}) {
+    const idle = createWander(random, { reach: 0.4, hold: 2.2 }), working = createWander(random);
+    let last = null, inside = false, movedAt = -Infinity;
+    return {
+      pointer(point, now) {
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) { inside = false; return; }
+        if (!last || Math.hypot(point.x - last.x, point.y - last.y) >= 2) movedAt = now;
+        last = point; inside = true;
+      },
+      sample(now, { busy = false, centre, range = 100 } = {}) {
+        const wander = (busy ? working : idle)(now), following = inside && !!centre && now - movedAt < still;
+        const look = following ? gazeOffset(last, centre, 1, 1, range) : wander;
+        return { x: look.x, y: look.y, blink: wander.blink, following };
+      },
+    };
+  }
+
+  const exported = { normalizeEyes, normalizeTint, TINTS, isActive, activityLabel, resolveAvatar, gazeOffset, easeGaze, eyePose, createWander, createGaze };
   if (typeof module === 'object' && module.exports) module.exports = exported;
   if (!root?.document) return;
 
   const document = root.document;
-  let currentState = {}, expireTimer, scheduledExpiry = Infinity, frameId = 0, lastFrame = 0, hoverRow, hoverRecord;
+  let currentState = {}, expireTimer, scheduledExpiry = Infinity, frameId = 0, lastFrame = 0;
   const mounted = new Map(), editors = new Set(), live = new Set();
   const reduceMotion = root.matchMedia('(prefers-reduced-motion: reduce)');
   function element(tag, className, text) {
@@ -147,25 +168,25 @@
     if (record.look.x || record.look.y || record.blink) { record.look = { x: 0, y: 0 }; record.blink = 0; pose(record); }
   }
 
+  // Only an avatar painted with { animate: true } (the presence avatar) is ever live; every other one is a still picture.
   function frame(now) {
     frameId = 0;
     if (document.hidden) return;
     const dt = lastFrame ? Math.min(now - lastFrame, 64) : 16;
     lastFrame = now;
     for (const record of live) {
-      if (!record.node.isConnected || reduceMotion.matches) { rest(record); continue; }
-      let target = { x: 0, y: 0 }, blink = 0;
-      if (record.working) { const sample = record.wander(now); target = sample; blink = sample.blink; }
-      if (record.hoverTarget) target = record.hoverTarget;
-      record.look = easeGaze(record.look, target, dt, record.hoverTarget ? 90 : 160);
-      record.blink = blink;
+      if (!record.node.isConnected || !record.node.offsetParent || reduceMotion.matches) { rest(record); continue; }
+      const rect = record.face.getBoundingClientRect(), { left, right } = record.config;
+      const sample = record.gaze.sample(now, { busy: record.working, range: Math.max(20, rect.width * 0.65),
+        centre: { x: rect.x + rect.width * (left.x + right.x) / 2, y: rect.y + rect.height * (left.y + right.y) / 2 } });
+      record.look = easeGaze(record.look, sample, dt, sample.following ? 90 : 260);
+      record.blink = sample.blink;
       pose(record);
-      if (!record.working && !record.hoverTarget && Math.hypot(record.look.x, record.look.y) < 0.004) rest(record);
     }
     if (live.size) frameId = root.requestAnimationFrame(frame);
   }
   function wake(record) {
-    if (!record.eyes.length || reduceMotion.matches) return;
+    if (!record.animate || !record.eyes.length || reduceMotion.matches) return;
     live.add(record);
     if (!frameId && !document.hidden) { lastFrame = 0; frameId = root.requestAnimationFrame(frame); }
   }
@@ -180,10 +201,9 @@
       record.node.title = [record.bot?.name || 'Telegram', activityLabel(record.bot?.activity)].filter(Boolean).join(' · ');
       record.node.setAttribute('aria-label', record.node.title);
     }
-    // The same live-activity signal that lights the avatar ring is what makes the eyes wander. Idle eyes are still.
-    record.working = active && !reduceMotion.matches;
-    if (record.working) { record.wander ||= createWander(); wake(record); }
-    else if (!record.hoverTarget) rest(record);
+    // The same live-activity signal that lights the avatar ring widens the glances; an animated avatar otherwise idles.
+    record.working = active;
+    if (record.animate && !reduceMotion.matches) wake(record); else rest(record);
   }
 
   function paint(node, bot, state = currentState, override, options = {}) {
@@ -208,11 +228,11 @@
       }
       const ring = element('span', 'hermes-avatar-ring'); ring.setAttribute('aria-hidden', 'true');
       node.classList.add('hermes-avatar'); node.classList.toggle('hermes-avatar-cutout', avatar.cutout); node.replaceChildren(face, ring);
-      record = { node, face, signature, bot, override, eyes: avatar.src ? drawEyes(face, avatar.eyes) : [], config: avatar.eyes, look: { x: 0, y: 0 }, blink: 0 };
+      record = { node, face, signature, bot, override, eyes: avatar.src ? drawEyes(face, avatar.eyes) : [], config: avatar.eyes, look: { x: 0, y: 0 }, blink: 0, gaze: createGaze() };
       pose(record);
       mounted.set(node, record);
     }
-    record.bot = bot; record.override = override; record.decorative = options.decorative === true;
+    record.bot = bot; record.override = override; record.decorative = options.decorative === true; record.animate = options.animate === true;
     // Only the marble busts are tinted; photos and imported pictures render as they always did.
     if (avatar.cutout && avatar.tint !== 'none') node.dataset.tint = avatar.tint; else delete node.dataset.tint;
     setActivity(record);
@@ -224,30 +244,11 @@
     return node;
   }
 
-  // The pointer over a bot's own row in the list makes that bot's eyes look at it.
-  function aim(record, x, y) {
-    const rect = record.face.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    const { left, right } = record.config;
-    const centre = { x: rect.x + rect.width * (left.x + right.x) / 2, y: rect.y + rect.height * (left.y + right.y) / 2 };
-    record.hoverTarget = gazeOffset({ x, y }, centre, 1, 1, Math.max(20, rect.width * 0.65));
-    wake(record);
-  }
-  function releaseHover() {
-    if (hoverRecord) { hoverRecord.hoverTarget = null; wake(hoverRecord); }
-    hoverRow = hoverRecord = undefined;
-  }
-  function hoverRowAt(event) {
-    const row = event.target.closest?.('.bot-row');
-    if (row !== hoverRow) { releaseHover(); hoverRow = row; hoverRecord = row && mounted.get(row.querySelector('.hermes-avatar')); }
-    if (hoverRecord?.eyes.length && !reduceMotion.matches) aim(hoverRecord, event.clientX, event.clientY);
-  }
-  // The workspace also reports the pointer while it is over native child views (where DOM events do not
-  // arrive): once it is outside the list, nothing is hovered.
-  function receivePointer(point) {
-    if (!hoverRow || !point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
-    const rect = hoverRow.parentElement?.getBoundingClientRect();
-    if (!rect || point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom) releaseHover();
+  // The workspace reports the pointer every 50 ms, also over native child views and outside the window (where DOM
+  // events do not arrive); the eyes of animated avatars follow it while it moves inside the window.
+  function receivePointer(point, now = root.performance.now()) {
+    const inside = point && Number.isFinite(point.x) && Number.isFinite(point.y) && point.x >= 0 && point.y >= 0 && point.x <= root.innerWidth && point.y <= root.innerHeight;
+    for (const record of live) record.gaze.pointer(inside ? point : null, now);
   }
   function pruneAndExpire() {
     clearTimeout(expireTimer);
@@ -274,7 +275,7 @@
     for (const [node, record] of mounted) {
       if (!node.isConnected) { mounted.delete(node); live.delete(record); continue; }
       const bot = state.bots?.find((item) => item.id === record.bot?.id);
-      if (bot) paint(node, bot, state, record.override, { decorative: record.decorative });
+      if (bot) paint(node, bot, state, record.override, { decorative: record.decorative, animate: record.animate });
     }
     pruneAndExpire();
   }
@@ -294,7 +295,7 @@
     const stage = element('div', 'avatar-stage'), preview = element('div', 'avatar-editor-preview');
     const previewCopy = element('div', 'avatar-preview-copy'), live = element('span', 'avatar-live-label');
     previewCopy.append(element('span', 'avatar-eyebrow', 'LIVE PREVIEW'), live,
-      element('p', 'settings-note', 'The glow and the wandering eyes run only while a live bot activity signal is present, and the eyes look at your pointer while it is over this bot’s row in the list. Idle stays still.'));
+      element('p', 'settings-note', 'The glow shows only while a live bot activity signal is present. The eyes move on the bot’s picture at the bottom of the agent list.'));
     stage.append(preview, previewCopy); wrap.append(stage);
 
     const libraryHeading = element('div', 'avatar-library-heading');
@@ -332,7 +333,7 @@
     tintField.append(tintLabel, tintRow); wrap.append(tintField);
 
     const toggleRow = element('label', 'avatar-eye-toggle'), enabled = element('input'); enabled.type = 'checkbox';
-    toggleRow.append(enabled, element('span', '', 'Eyes follow my mouse while this bot is active')); wrap.append(toggleRow);
+    toggleRow.append(enabled, element('span', '', 'Show eyes on this picture')); wrap.append(toggleRow);
     const controls = element('details', 'avatar-calibration');
     controls.append(element('summary', '', 'Adjust eye placement and appearance'));
     controls.append(element('p', 'settings-note', 'Select an eye, then click its center on the preview. Use the arrow keys on the preview for fine adjustments.'));
@@ -448,13 +449,12 @@
     return () => { editors.delete(editor); mounted.delete(preview); };
   }
 
-  const list = document.getElementById('bot-list');
-  list?.addEventListener('pointermove', hoverRowAt, { passive: true });
-  list?.addEventListener('pointerleave', releaseHover);
+  document.addEventListener('pointermove', (event) => receivePointer({ x: event.clientX, y: event.clientY }), { passive: true });
+  document.documentElement.addEventListener('mouseleave', () => receivePointer(null));
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { root.cancelAnimationFrame(frameId); frameId = 0; }
     else if (live.size && !frameId) { lastFrame = 0; frameId = root.requestAnimationFrame(frame); }
   });
-  reduceMotion.addEventListener('change', () => { releaseHover(); pruneAndExpire(); });
+  reduceMotion.addEventListener('change', pruneAndExpire);
   root.HermesAvatars = { ...exported, paint, update, receivePointer, mountEditor };
 })(typeof window === 'object' ? window : undefined);

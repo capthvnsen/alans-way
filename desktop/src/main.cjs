@@ -2136,11 +2136,14 @@ function registerIpc() {
       case 'activate': await activateTab(value.id, value.host); break;
       case 'toggle-vps-view': await showCanvas(shownCanvas() === 'screen' ? 'browser' : 'screen'); break;
       case 'canvas-tab': await showCanvas(value?.tab, value?.start === true); break;
-      // The chat header's bot name: open Bot settings (with Cron jobs beside it), or go back to the tab left for them.
-      case 'canvas-bot-pages':
-        if (['cron', 'settings'].includes(shownCanvas())) await showCanvas(canvasReturn);
-        else if (usableSurfaces(surfaceContext(chatBotId())).includes('hermes-desktop')) { canvasReturn = shownCanvas(); await showCanvas('settings'); }
+      // The chat header menu's Bot settings and Cron jobs (each opens its page, with the other beside it), or go back to
+      // the tab left for them: choosing the page already open, or with no `tab`, the old name toggle.
+      case 'canvas-bot-pages': {
+        const page = value?.tab === 'cron' ? 'cron' : 'settings', open = ['cron', 'settings'].includes(shownCanvas());
+        if (open && (!value?.tab || shownCanvas() === page)) await showCanvas(canvasReturn);
+        else if (usableSurfaces(surfaceContext(chatBotId())).includes('hermes-desktop')) { if (!open) canvasReturn = shownCanvas(); await showCanvas(page); }
         break;
+      }
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
         const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; await tab.view.webContents.loadURL(target).catch(() => {}); } break;
