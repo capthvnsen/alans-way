@@ -131,6 +131,46 @@ final class TelegramModelMapperTests: XCTestCase {
         XCTAssertFalse(TelegramHistory.merge(page: [], into: short.messages).hasMore)
     }
 
+    func testRefreshAfterAnOfflineGapDropsOldCacheInsteadOfShowingAHole() async throws {
+        // Cache: 10, 20 (old) and 90 (pushed by updateChatLastMessage). Server: 30...90 in two pages of newest-first.
+        let cache = [text(id: 10), text(id: 20), text(id: 90)]
+        let server = [90, 80, 70, 60, 50, 40, 30].map { text(id: Int64($0)) }
+        var asked: [Int64] = []
+        let result = try await TelegramHistory.refreshNewest(current: cache, maxPages: 2) { from in
+            asked.append(from)
+            let older = server.filter { from == 0 || $0.id <= from }
+            return Array(older.prefix(4))
+        }
+        XCTAssertEqual(asked, [0, 60])
+        XCTAssertEqual(result.messages.map(\.id), [30, 40, 50, 60, 70, 80, 90])
+        XCTAssertTrue(result.gapped, "Older cached messages are dropped and Earlier messages is offered again.")
+    }
+
+    func testRefreshThatReachesTheCacheJustFillsTheGap() async throws {
+        let cache = [text(id: 10), text(id: 20), text(id: 90)]
+        let server = [90, 80, 70, 20, 10].map { text(id: Int64($0)) }
+        let result = try await TelegramHistory.refreshNewest(current: cache) { from in
+            Array(server.filter { from == 0 || $0.id <= from }.prefix(3))
+        }
+        XCTAssertEqual(result.messages.map(\.id), [10, 20, 70, 80, 90])
+        XCTAssertFalse(result.gapped)
+    }
+
+    func testRefreshThatReachesTheStartOfTheChatKeepsTheCache() async throws {
+        let cache = [text(id: 10), text(id: 90)]
+        let server = [90, 80, 10].map { text(id: Int64($0)) }
+        let result = try await TelegramHistory.refreshNewest(current: cache) { from in server.filter { from == 0 || $0.id <= from } }
+        XCTAssertEqual(result.messages.map(\.id), [10, 80, 90])
+        XCTAssertFalse(result.gapped)
+    }
+
+    func testRefreshWithNothingNewLeavesTheCacheAlone() async throws {
+        let cache = [text(id: 10), text(id: 20)]
+        let result = try await TelegramHistory.refreshNewest(current: cache) { _ in [] }
+        XCTAssertEqual(result.messages, cache)
+        XCTAssertFalse(result.gapped)
+    }
+
     @MainActor
     func testOverlappingChatLoadsShareOneRun() async throws {
         let flight = SingleFlight()

@@ -158,7 +158,9 @@ public final class TelegramStore {
         errorMessage = nil
         if let client { try? await client.openChat(chatId: chatID) }
         // Updates can cache a chat's newest messages before it is opened, so check for loaded history instead.
-        if !historyLoadedChatIDs.contains(chatID) {
+        if historyLoadedChatIDs.contains(chatID) {
+            await refreshNewestMessages(chatID: chatID)
+        } else {
             do {
                 // TDLib's first page is often just the cached last message; fetch a little more to fill the screen.
                 for _ in 0..<3 {
@@ -257,6 +259,23 @@ public final class TelegramStore {
         if merged.hasMore { hasMoreMessages.insert(chatID) }
         else { hasMoreMessages.remove(chatID) }
         for item in converted { scheduleAttachmentDownload(item) }
+    }
+
+    /// Re-reads the newest page of an already loaded chat so messages TDLib skipped while offline do not leave a hole.
+    func refreshNewestMessages(chatID: Int64) async {
+        guard let client, historyLoadedChatIDs.contains(chatID), !loadingChatIDs.contains(chatID),
+              let current = messagesByChat[chatID], !current.isEmpty else { return }
+        loadingChatIDs.insert(chatID)
+        defer { loadingChatIDs.remove(chatID) }
+        let users = usersByID
+        guard let refreshed = try? await TelegramHistory.refreshNewest(current: current, fetchPage: { from in
+            let result = try await client.getChatHistory(chatId: chatID, fromMessageId: from, limit: 50, offset: 0, onlyLocal: false)
+            return (result.messages ?? []).map { TelegramModelMapper.message($0, users: users) }
+        }) else { return }
+        // Updates may have landed during the fetch; keep anything newer than what was read.
+        let latest = messagesByChat[chatID, default: []]
+        messagesByChat[chatID] = TelegramHistory.merge(page: latest, into: refreshed.messages).messages
+        if refreshed.gapped { hasMoreMessages.insert(chatID) }
     }
 
     public func sendText(_ text: String, chatID: Int64) async throws {
@@ -446,7 +465,11 @@ public final class TelegramStore {
                 authState = .configuring
             }
         case .updateConnectionState(let value):
+            let wasOffline = connectionStatus != nil
             connectionStatus = TelegramModelMapper.connectionStatus(value.state)
+            if wasOffline, connectionStatus == nil, let open = selectedChatID {
+                Task { await refreshNewestMessages(chatID: open) }
+            }
         case .updateNewChat(let value):
             apply(value.chat)
         case .updateChatTitle(let value):
@@ -812,6 +835,40 @@ enum TelegramHistory {
         let known = Set(current.map(\.id))
         let additions = page.filter { !known.contains($0.id) }
         return ((additions + current).sorted { $0.id < $1.id }, !additions.isEmpty)
+    }
+
+    /// After a long offline gap TDLib may skip `updateNewMessage` and only report the newest message, leaving a hole.
+    /// Walks back from the newest page until the fetched range reaches the newest cached message it did not return
+    /// (cached newest alone proves nothing). If that takes more than `maxPages`, the cache older than what was fetched
+    /// is dropped (`gapped`) so no hole is shown, and Earlier messages fetches it again.
+    static func refreshNewest(
+        current: [TelegramMessage], maxPages: Int = 3,
+        fetchPage: (_ fromMessageID: Int64) async throws -> [TelegramMessage]
+    ) async throws -> (messages: [TelegramMessage], gapped: Bool) {
+        let cached = Set(current.map(\.id))
+        var fetched: [TelegramMessage] = []
+        var from: Int64 = 0
+        // The newest cached message below the fetched range's top that the fetch did not return: the range must reach it.
+        func anchor() -> Int64? {
+            let ids = Set(fetched.map(\.id))
+            guard let newest = ids.max() else { return nil }
+            return cached.subtracting(ids).filter { $0 < newest }.max()
+        }
+        for _ in 0..<maxPages {
+            let page = try await fetchPage(from)
+            let known = Set(fetched.map(\.id))
+            let added = page.filter { !known.contains($0.id) }
+            guard !added.isEmpty else { break }
+            fetched += added
+            let oldest = fetched.map(\.id).min()!
+            if anchor().map({ oldest <= $0 }) ?? true { break }
+            from = oldest
+        }
+        guard let oldest = fetched.map(\.id).min() else { return (current, false) }
+        guard let missing = anchor(), oldest > missing else { return (merge(page: fetched, into: current).messages, false) }
+        let ids = Set(fetched.map(\.id))
+        let newer = current.filter { $0.id >= oldest && !ids.contains($0.id) }
+        return ((fetched + newer).sorted { $0.id < $1.id }, true)
     }
 }
 
