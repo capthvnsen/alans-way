@@ -30,11 +30,28 @@ if (process.platform !== 'win32')
   watched.push(path.join(__dirname, '..', 'src', process.platform === 'darwin' ? 'computer.cjs' : 'vps-computer.cjs'));
 const fileMtime = (file) => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } };
 const started = Object.fromEntries(watched.map((file) => [file, fileMtime(file)]));
+// A replaced connector file is a reason to restart, never to cut another call off: exit once idle.
+let replaced = false, active = 0;
 const reloadIfReplaced = () => {
-  const current = Object.fromEntries(watched.map((file) => [file, fileMtime(file)]));
-  if (!connectorReplaced(started, current)) return;
-  setTimeout(() => process.exit(0), 50).unref();
+  replaced ||= connectorReplaced(started, Object.fromEntries(watched.map((file) => [file, fileMtime(file)])));
+  if (replaced && active === 0) setTimeout(() => { if (active === 0) process.exit(0); }, 50).unref();
 };
+// The client going away (stdin closed, SIGTERM) cancels every call still waiting on the app, then exits.
+const shutdownCalls = new AbortController();
+function shutdown() {
+  if (shutdownCalls.signal.aborted) return;
+  shutdownCalls.abort();
+  try { if (localDriver && require.cache[require.resolve(localDriver)]) require(localDriver).close(); } catch { /* the helper exits on its own stdin EOF */ }
+  setTimeout(() => process.exit(0), 300).unref();
+}
+if (!process.argv.includes('--health') && !process.argv.includes('--version')) {
+  process.stdin.on('end', shutdown).on('close', shutdown);
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, shutdown);
+  // Nothing a single call does may take the server, and every other call, down with it.
+  process.on('unhandledRejection', (error) => process.stderr.write(`workspace-mcp: unhandled rejection: ${String(error?.message || error).slice(0, 200)}\n`));
+  process.on('uncaughtException', (error) => { process.stderr.write(`workspace-mcp: uncaught ${error?.code || error?.name || 'error'}\n`); if (error?.code === 'EPIPE') shutdown(); });
+  process.stdout.on('error', shutdown);
+}
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
@@ -417,8 +434,11 @@ async function request(endpoint, method = 'GET', body, epoch, approvedConnection
 const server = new Server({ name: 'hermes-cua-alans-way', version: VERSION }, { capabilities: { tools: {} } });
 // shortcut: Hermes keys omit app version and env, so startup may reuse schemas for 60s; version the config if immediate invalidation is needed.
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools, ttlMs: 60_000 }));
+// A caller may send a fractional budget; dropping it would leave the call, and the app's approval wait, unbounded.
+const budgetMs = (value) => Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
 server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => calls.run(
-  context(params._meta?.['alans-way/remainingMs'], extra.signal, params.name.startsWith('workspace_computer_') && params.name !== 'workspace_computer_action' ? READ_BUDGET_MS : Infinity), async () => {
+  context(budgetMs(params._meta?.['alans-way/remainingMs']), AbortSignal.any([extra.signal, shutdownCalls.signal]), params.name.startsWith('workspace_computer_') && params.name !== 'workspace_computer_action' ? READ_BUDGET_MS : Infinity), async () => {
+  active++;
   try {
     checkCall();
     const args = params.arguments || {}; let result;
@@ -546,7 +566,7 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => cal
     const next = params.name.startsWith('workspace_computer_') ? COMPUTER_NEXT[error.code || error.browserRequest?.code] : undefined;
     return { isError: true, content: [{ type: 'text', text: withContinuedTab(error, continued) + (next ? ' ' + next : '') }],
       ...(error.browserRequest ? { _meta: { browserRequest: error.browserRequest } } : {}) };
-  } finally { reloadIfReplaced(); }
+  } finally { active--; reloadIfReplaced(); }
 }));
 if (process.argv.includes('--health')) {
   // Only named fields are printed: the status reply is the host's to extend.
@@ -554,4 +574,9 @@ if (process.argv.includes('--health')) {
     (status) => process.stdout.write(JSON.stringify({ ok: true, version: VERSION, node: process.version, capabilities: Array.isArray(status?.capabilities) ? status.capabilities : [] }) + '\n'),
     (error) => { process.exitCode = 1; process.stdout.write(JSON.stringify({ ok: false, version: VERSION, node: process.version, error: error.message }) + '\n'); },
   );
-} else server.connect(new StdioServerTransport()).catch(() => { process.stderr.write('Browser MCP connection failed.\n'); process.exit(1); });
+} else {
+  // Parse failures and over-size frames are the client's; say so without echoing what it sent.
+  server.onerror = (error) => process.stderr.write(`workspace-mcp: protocol error (${/exceeded maximum size/.test(error?.message) ? 'a message over 10 MB, closing' : error?.name || 'Error'})\n`);
+  server.onclose = shutdown;
+  server.connect(new StdioServerTransport()).catch(() => { process.stderr.write('Browser MCP connection failed.\n'); process.exit(1); });
+}
