@@ -40,7 +40,7 @@ Top packages inside `Contents/Resources/app/node_modules/`:
 
 All 8 entries in `desktop/package.json` `dependencies` are genuinely used at runtime (none are test/build-only).
 
-**`asar` analysis:** External MCP clients (Hermes on Mac, Hermes on VPS over SSH, Grok Bot, `scripts/install-mac.sh`, `README.md`, `docs/products.md`) execute `/Applications/alans-way-localapp.app/Contents/Resources/app/scripts/browser-mcp.cjs` directly with **system `node`** (not Electron). Plain Node cannot read inside `app.asar`, and enabling `asar: true` removes `Contents/Resources/app/` in favor of `app.asar` + `app.asar.unpacked/`. Moreover, `asar` is an uncompressed archive, so it does not shrink compressed `.zip`/`.dmg` downloads. Therefore `asar: false` is kept intentionally to preserve the external connector path contract without duplicating `node_modules` and `src/` twice.
+**`asar` analysis:** External MCP clients (Hermes on Mac, Hermes on VPS over SSH, Grok Bot, `scripts/install-mac.sh`, `README.md`, `docs/products.md`) execute `/Applications/alans-way-localapp.app/Contents/Resources/app/scripts/browser-mcp.cjs` directly with **system `node`** (not Electron). Plain Node cannot read inside `app.asar`, and enabling `asar: true` removes `Contents/Resources/app/` in favor of `app.asar` + `app.asar.unpacked/`. Moreover, `asar` is an uncompressed archive, so it does not shrink compressed `.zip`/`.dmg` downloads. Therefore `asar: false` is kept intentionally to preserve the external connector path contract without duplicating `node_modules` and `src/` twice. See §3.6 for the decision record.
 
 ### 1.2 Main-process startup (`desktop/src/main.cjs`)
 
@@ -139,18 +139,99 @@ Always-on renderer costs:
 
 ---
 
-## 2. Opt-in Startup Timing Hook
+## 2. Opt-in startup timing hook
 
-*(Added during optimization — see usage below.)*
+Run the packaged app (or `npm start`) from a terminal with `HERMES_WORKSPACE_PROFILE_BOOT=1`; each milestone prints once to stderr as `[boot-timing] <name> +<ms>ms`, measured from the first line of `main.cjs`:
 
----
-
-## 3. After Measurements
-
-*(Filled in after all optimizations are implemented and re-measured.)*
+`process-start` → `app-ready` → `prefs-loaded` → `window-created` (the window object exists and `index.html` is loading) → `first-paint` (`did-finish-load` of `index.html`, so scripts have run; it is not a compositor paint) → `ui-interactive` (the renderer has rendered the first state). Without the variable nothing is logged and the IPC handler returns at once. Code: `src/boot-timing.cjs`, test `test/boot-timing.test.cjs`. These numbers need a window, so they are **not** in the tables below.
 
 ---
 
-## 4. Not Done and Why
+## 3. After (branch `agent/p1-performance`)
 
-*(Populated at the end with ranked follow-up opportunities.)*
+Built with `npx electron-builder --mac zip --publish never` in `desktop/` (arm64, ad-hoc signed, no window opened). Sizes are bytes, 1 MB = 10^6 B.
+
+### 3.1 Size
+
+| | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Download (`OpenAlan-mac.zip`) | 148,899,011 B (148.9 MB) | 122,860,711 B (122.9 MB) | **-26.0 MB (-17.5%)** |
+| Installed `.app`, apparent bytes | 364,758,985 B (364.8 MB) | 289,231,445 B (289.2 MB) | **-75.5 MB (-20.7%)** |
+| Installed, `du` on disk | 361 MB | 283 MB (289,520 KiB) | -78 MB |
+| Files in the bundle | 3,709 | 1,991 | -1,718 |
+| Electron locale folders | 220 `.lproj` (48 MB) | `en`, `en_GB` | -47 MB |
+| Built-in avatar PNGs | 9.70 MB (1254×1254) | 1.17 MB (384×384) | -8.5 MB |
+| `node_modules` shipped | 25.1 MB | 15.1 MB | `.map`, `.d.ts`, ESM/duplicate builds, READMEs removed |
+
+Where it came from: locales (`electronLanguages: ['en']`), avatar resize + PNG optimise, `.map` / `.d.ts` / unused ESM builds / dev docs / bench and build scripts left out of the package (`electron-builder.cjs`). Verified on the built app: every relative `require`, `path.join(__dirname, …)` and `index.html` script/link target resolves, except two that are expected (`docs/setup-prompt.md`, which ships as `Resources/setup-prompt.md`, and `win-computer.exe`, which exists only in Windows builds), and `node …/Resources/app/scripts/browser-mcp.cjs --bot-id x` loads the MCP SDK from the packaged tree and exits cleanly on stdin EOF.
+
+Visible effect of the locale trim: only English Chromium UI strings ship, so Chromium-drawn text (a few native dialogs) is English on a non-English macOS. The app's own UI was already English only. Spell-check language comes from the OS, not from these files.
+
+### 3.2 Boot path (main process)
+
+| Work | Before | After |
+| --- | --- | --- |
+| V8 bytecode | recompiled every launch | compile cache on (`module.enableCompileCache`; on Linux under `~/.cache/alans-way`, not shared `/tmp`) |
+| Tailscale probe | `execFileSync`, up to 3 s, before the window | async, after the window; result applied when it lands |
+| `electron-chrome-extensions` + `extension-store` (+ `adm-zip`, web-store hook) | required and `await installStore()` before the window | required after `createWindow()`; store awaits last, failures are logged and no longer stop the rest of the boot tail |
+| `computer`/`win-computer`/`vps-computer`, `mac-permissions`, `server-setup`, `batch-flow` | required at load | required on first use (proxies; `hostComputer.launch` stays absent off macOS as before) |
+| `remote.html` view (noVNC) | created and loaded before the window | created when `index.html` finishes loading, or at once if the Screen tab is shown |
+| `electron-updater` (~124 ms cold) + update network check | right after `createWindow()` | 1 s after load (2.5 s at the latest) |
+| Stale-connector cleanup, webapp probe, cloud polling | before the window | after it |
+| Still before the window, on purpose | `readPreferences`, hermes hub, `browserSessionStore.restore()` (≤5 s cap; cookies must be back before restored tabs load) | unchanged |
+
+Plain-node cold `require` of the main-process modules, measured by the first pass: median 34.9 ms → 27.1 ms with lazy loading, and 42.7 → 34.9 ms warm with the compile cache.
+
+### 3.3 Renderer first load
+
+| | Before | After |
+| --- | ---: | ---: |
+| Boot JS (parsed before the UI renders) | 886.7 KB, 12 files | 419.8 KB, 10 files (xterm 477 KB + addon-fit load on the first Terminal use) |
+| Boot CSS | 90.1 KB, 3 files | 85.2 KB, 2 files (xterm.css loads with xterm; the terminal waits for it) |
+
+Left as is: `markdown-it` (101 KB), `native-chat.js` (37 KB), `hermes-view.js` (35 KB). `renderer.js` constructs the native chat and Hermes views at start-up whenever their bridges exist, so loading them later needs a renderer restructure that cannot be verified without a window. `defer` on the existing tags would gain nothing: they already sit after the markup at the end of `<body>` and must keep their order. The presence avatar's `requestAnimationFrame` loop already stops when `document.hidden`, rests when the node is not laid out or the user prefers reduced motion, and only runs for an avatar painted with `animate: true`.
+
+### 3.4 Idle work (window open, nothing happening, VPS configured)
+
+Counts are derived from the code, not profiled.
+
+| Timer | Before | After |
+| --- | --- | --- |
+| Pointer feed | 20 wakeups/s **and 20 IPC/s** | up to 20/s only while the pointer moves; 10/s after 2.5 s still; **0 IPC/s** when still; **0 wakeups when hidden/minimised** |
+| Activity / bot-work check | 2/s always (stringifies the work map each time) | 2/s visible; 0.2/s hidden with nothing active; work map only recomputed when an agent tab exists |
+| CAPTCHA watch | 1/s always | 0/s; starts only while a tab awaits a CAPTCHA and stops after |
+| Online checks (gateway + Telegram) | 1/s + 0.33/s, two pollers | one poller: 0.2/s online, 1/s offline |
+| VPS tab poll | 0.2/s (backs off on failure) | 0.2/s visible; 0.1/s hidden with nothing waiting; 0.03/s when no VM is configured. Showing or restoring the window refreshes at once |
+| VPS mirror push | 0.1/s | 0.1/s, skipped unless connected |
+| Terminal output | one IPC per stdout chunk | at most one IPC per 16 ms (first chunk goes out at once; flush at 64 KB) |
+| **Total wakeups/s, visible, pointer still** | ~24.7 | ~12.5 |
+| **Total wakeups/s, hidden** | ~24.7 | ~0.6 |
+
+### 3.5 VM side
+
+| Change | Effect |
+| --- | --- |
+| `vps-computer.py` `Bus.many()` blocks in the GLib main loop (`iteration(True)` with a deadline wake-up) instead of `iteration(False)` + `sleep(0.5 ms)` | No 2,000 wakeups/s spin during every desktop snapshot or tree walk. Results, errors and timeout handling unchanged |
+| Chromium flags `--disable-sync`, `--no-default-browser-check` added to `AGENT_BROWSER_FLAGS` | Removes work that does nothing on an agent VM. No `--disable-features` on purpose (Chromium keeps only the last one and would replace the user's own) |
+| Looked at and left | `vps-chromium-host` 3 s health check is the crash-restart supervisor (the launcher can exit while Chromium lives, so `exit` events are not enough); host 1 s CAPTCHA tick and 5 s script-mtime check are a few microseconds each. The host does not capture or stream anything while idle, and the Python helper is already a persistent `serve` process |
+
+### 3.6 asar decision: stay off
+
+- `/Applications/alans-way-localapp.app/Contents/Resources/app/scripts/browser-mcp.cjs` is the documented, hard-coded launch path (`README.md:59`, `desktop/README.md:78-104`, `docs/products.md:30`, `scripts/install-mac.sh`), run by the user's own system `node`, which cannot read inside `app.asar`.
+- asar turns `Resources/app/` into `Resources/app.asar` (+ `app.asar.unpacked/`), so that path would break for every existing Hermes/MCP configuration. A compatibility symlink `Resources/app → app.asar.unpacked` is possible in an `afterPack` hook, but I could not show without launching the packaged app that Electron then still loads `app.asar` rather than the symlinked folder, and a code-signed, auto-updated bundle with a symlink in `Resources` is a release risk of its own.
+- Gain is small: asar is not compressed, so the zip would shrink by roughly 0.2 MB (one zip header per removed file, ~1,700 files). The real gain would be fewer small-file `stat`/`open` calls at start-up, which cannot be measured here without a window (estimate: tens of ms on a cold disk cache, mostly on slow disks).
+- To revisit: `asar: true` + `asarUnpack: ['scripts/**', 'src/**', 'node_modules/@modelcontextprotocol/**', 'node_modules/zod/**', …everything browser-mcp requires]`, the `afterPack` symlink above, and a manual launch of a signed build to confirm both the app and `node …/Resources/app/scripts/browser-mcp.cjs` still work.
+
+---
+
+## 4. Not done, and why (ranked by likely payoff)
+
+1. **Restore browser tabs lazily** (`restoreBrowserTabs()` creates up to 40 `WebContentsView`s and loads them all, with throttling off). Likely the biggest remaining boot and memory cost for heavy users. It changes what agents can see of "open" tabs, so it needs a design decision and a windowed test.
+2. **Load `native-chat.js`, `markdown-it`, `hermes-view.js` on first use** (~170 KB of parse). Needs the renderer's start-up wiring reshaped; untestable without a window.
+3. **Put avatar data URLs out of `preferences.json`** (it is read synchronously at boot and rewritten whole on every save). Needs a migration.
+4. **Defer Telegram web view load** until the Telegram surface is shown. It is a heavy third-party page loaded at every start; changes when unread badges first appear.
+5. **Stop background-throttling-off for inactive human tabs** (agent tabs need it; human ones may not). Behaviour-affecting.
+6. **Reap idle agent tabs on the VM on a timer**, not only on the next `open()` (frees renderer RAM). Could close a tab an agent expects to resume.
+7. **asar** — see §3.6.
+8. **Windowed measurements**: first paint, time to interactive, memory and CPU at idle, before/after. Needs the timing hook (§2) run on a real window; none of it was run here.
+9. **Electron-driven tests** (`npm run test:*`) cover the lazy Terminal tab, the delayed remote view and the extension host start-up; not run here. They should be run in CI or by hand.
