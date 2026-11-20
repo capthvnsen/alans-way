@@ -13,7 +13,8 @@ const { spawn } = require('node:child_process');
 const ALLOWED = /^(workspace-|.*evidence|hw-tailnet-ssh-|node-compile-cache$|vm-update-check\.)/;
 // Chromium rewrites an Electron profile while it shuts down, after the last line of test code, so a profile folder that
 // comes back is swept without failing the run.
-const CHROMIUM = ['Crashpad', 'Local Storage', 'Network', 'GPUCache', 'Code Cache', 'Session Storage', 'Shared Dictionary'];
+const CHROMIUM = ['Crashpad', 'Local Storage', 'Network', 'GPUCache', 'Code Cache', 'Session Storage', 'Shared Dictionary', 'Partitions', 'Local State', 'Preferences',
+  'blob_storage', 'DawnGraphiteCache', 'DawnWebGPUCache', 'shared_proto_db', 'WebStorage', 'DIPS', 'SingletonLock', 'SingletonCookie', 'SingletonSocket'];
 const isProfile = dir => { try { return CHROMIUM.some(name => fs.existsSync(path.join(dir, name))); } catch { return false; } };
 function privateTmp() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ht-'));
