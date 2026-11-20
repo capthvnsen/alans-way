@@ -70,4 +70,81 @@ const skeleton = (name, gap) => plainName(fold(String(name ?? '').normalize('NFK
 const readings = (name) => [plainName(name), normalizeName(name), skeleton(name, ''), skeleton(name, ' ')];
 const looksLikeCommit = (name) => readings(name).some(isCommitName);
 
-module.exports = { COMMIT_PATTERNS, isCommitName, plainName, normalizeName, readings, looksLikeCommit, isActionUrl, READ_ONLY_CDP };
+// Whether a page script provably only reads the page, so the commit gate has nothing to judge. An allowlist over
+// tokens, not a search for bad words: every name after a dot, and every bare name that is not declared in the script
+// itself, must be a known read. Anything else (a call to click or fetch, a write, a computed or dynamic member,
+// `new`, `this`, comments, regexes, `${}`) is not provably read-only, and the caller gates it. Not a sandbox: it
+// only decides whether the commit check can be skipped.
+const READ_MEMBERS = new Set(`title innerText textContent innerHTML outerHTML length href pathname origin search hash host hostname protocol readyState body head
+documentElement links forms images children childElementCount parentElement firstElementChild lastElementChild nextElementSibling previousElementSibling tagName id className
+classList dataset getAttribute hasAttribute getAttributeNames querySelector querySelectorAll getElementById getElementsByClassName getElementsByTagName closest matches contains
+getBoundingClientRect top left right bottom width height x y map filter find findIndex some every forEach reduce slice join includes indexOf lastIndexOf flat flatMap trim
+toLowerCase toUpperCase startsWith endsWith split substring charAt at isArray from keys values entries stringify parse min max round floor ceil abs toString toFixed
+isNaN isInteger parseInt parseFloat`.split(/\s+/));
+const READ_GLOBALS = new Set(['document', 'location', 'Array', 'Math', 'JSON', 'Number', 'String', 'Boolean', 'undefined', 'NaN', 'Infinity', 'innerWidth', 'innerHeight']);
+const KEYWORDS = new Set(['typeof', 'const', 'let', 'return', 'if', 'else', 'for', 'of', 'in', 'function']);
+const WORDS = new Set([...KEYWORDS, 'null', 'true', 'false']);
+const SCRIPT_TOKEN = /\s+|(?<str>"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\$]|\\.|\$(?!\{))*`)|(?<num>\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|(?<id>[A-Za-z_$][\w$]*)|(?<op>\.\.\.|\+\+|--|\?\.|=>|===|!==|==|!=|<=|>=|&&|\|\||\?\?|[-+*%!<>=?:,;.(){}[\]])/y;
+function isReadOnlyScript(source) {
+  const tokens = [];
+  SCRIPT_TOKEN.lastIndex = 0;
+  const text = String(source);
+  while (SCRIPT_TOKEN.lastIndex < text.length) {
+    const m = SCRIPT_TOKEN.exec(text);
+    if (!m) return false;
+    if (m.groups.str !== undefined) tokens.push({ t: 'str', v: m.groups.str });
+    else if (m.groups.num !== undefined) tokens.push({ t: 'num', v: m.groups.num });
+    else if (m.groups.id !== undefined) tokens.push({ t: 'id', v: m.groups.id });
+    else if (m.groups.op !== undefined) tokens.push({ t: 'op', v: m.groups.op });
+  }
+  if (!tokens.length) return false;
+  const locals = new Set();
+  const isId = (tok) => tok?.t === 'id';
+  // Names the script declares itself: const/let names and the parameters of function expressions and arrows.
+  for (let i = 0; i < tokens.length; i++) {
+    const { t, v } = tokens[i];
+    if (t === 'id' && (v === 'const' || v === 'let') && isId(tokens[i + 1])) locals.add(tokens[i + 1].v);
+    if (t === 'op' && v === '=>') {
+      if (isId(tokens[i - 1])) locals.add(tokens[i - 1].v);
+      else if (tokens[i - 1]?.v === ')') for (let j = i - 2; j >= 0 && tokens[j].v !== '('; j--) if (isId(tokens[j])) locals.add(tokens[j].v);
+    }
+    if (t === 'id' && v === 'function' && tokens[i + 1]?.v === '(') for (let j = i + 2; j < tokens.length && tokens[j].v !== ')'; j++) if (isId(tokens[j])) locals.add(tokens[j].v);
+  }
+  const depth = { '(': 0, '[': 0, '{': 0 };
+  const close = { ')': '(', ']': '[', '}': '{' };
+  for (let i = 0; i < tokens.length; i++) {
+    const { t, v } = tokens[i];
+    const prev = tokens[i - 1];
+    const next = tokens[i + 1];
+    const afterValue = prev && (prev.t === 'op' ? prev.v === ')' || prev.v === ']' : !KEYWORDS.has(prev.v));
+    if (t === 'str') { if (v[0] === '`' && afterValue) return false; continue; }
+    if (t === 'num') continue;
+    if (t === 'id') {
+      if (prev?.v === '.' || prev?.v === '?.') { if (!READ_MEMBERS.has(v)) return false; continue; }
+      if (WORDS.has(v)) {
+        // `function` only as an anonymous expression; `in` and `of` are loop and test words.
+        if (v === 'function' && next?.v !== '(') return false;
+        continue;
+      }
+      if (READ_GLOBALS.has(v) || locals.has(v)) continue;
+      // A key in an object literal: `{ count: rows.length }`.
+      if (next?.v === ':' && (prev?.v === '{' || prev?.v === ',')) continue;
+      return false;
+    }
+    if (v === '=') {
+      if (!(isId(prev) && locals.has(prev.v) && tokens[i - 2]?.v !== '.' && tokens[i - 2]?.v !== '?.')) return false;
+      continue;
+    }
+    if (v === '++' || v === '--') return false;
+    if (v === '.' || v === '?.') { if (!isId(next)) return false; continue; }
+    if (v === '[') {
+      // Index with a plain number only; any other computed member could spell fetch or click.
+      if (afterValue && !(next?.t === 'num' && tokens[i + 2]?.v === ']')) return false;
+    }
+    if (v in depth) depth[v]++;
+    if (v in close && --depth[close[v]] < 0) return false;
+  }
+  return !depth['('] && !depth['['] && !depth['{'];
+}
+
+module.exports = { isReadOnlyScript, COMMIT_PATTERNS, isCommitName, plainName, normalizeName, readings, looksLikeCommit, isActionUrl, READ_ONLY_CDP };

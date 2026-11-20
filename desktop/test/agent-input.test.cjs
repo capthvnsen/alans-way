@@ -620,7 +620,7 @@ test('an approval counts once, within 120s, on its own tab and epoch, and a bad 
 test('page scripts, acting DevTools calls, reloads and action addresses are refused while the page shows a commit control', async () => {
   const live = fixture({ page: PAGE_WITH_ORDER });
   const refuse = (body, pattern) => assert.rejects(live.agent.guard(live.tab, body), pattern, JSON.stringify(body));
-  await refuse({ action: 'eval', code: '1' }, /commit_required: a page script here could set off "Place order"/);
+  await refuse({ action: 'eval', code: 'go()' }, /commit_required: a page script here could set off "Place order"/);
   for (const method of ['Runtime.evaluate', 'Runtime.callFunctionOn', 'Input.dispatchMouseEvent', 'DOM.setAttributeValue'])
     await refuse({ action: 'cdp', method }, new RegExp(`the DevTools call ${method.replace('.', '\\.')} here`));
   await refuse({ action: 'reload' }, /reloading here could resubmit/);
@@ -632,10 +632,17 @@ test('page scripts, acting DevTools calls, reloads and action addresses are refu
     { action: 'cdp', method: 'Page.addScriptToEvaluateOnNewDocument' }])
     await live.agent.guard(live.tab, body);
   const quiet = fixture();
-  await quiet.agent.guard(quiet.tab, { action: 'eval', code: '1' });
+  await quiet.agent.guard(quiet.tab, { action: 'eval', code: 'go()' });
   await quiet.agent.guard(quiet.tab, { action: 'reload' });
+  for (const code of ['document.title', 'document.querySelectorAll("a").length', 'location.href', 'document.body.innerText', 'document.querySelector("h1").getBoundingClientRect().top']) {
+    await live.agent.guard(live.tab, { action: 'eval', code });
+    const silent = fixture({ page: 'no answer' });
+    await silent.agent.guard(silent.tab, { action: 'eval', code });
+  }
+  await refuse({ action: 'eval', code: 'document.querySelector("#place").click()' }, /commit_required: a page script here could set off "Place order"/);
+  await refuse({ action: 'eval', code: 'document.title = "x"' }, /commit_required: a page script here could set off "Place order"/);
   const silent = fixture({ page: 'no answer' });
-  await assert.rejects(silent.agent.guard(silent.tab, { action: 'eval', code: '1' }), /did not answer the commit check/, 'a page that does not answer fails closed for scripts');
+  await assert.rejects(silent.agent.guard(silent.tab, { action: 'eval', code: 'go()' }), /did not answer the commit check/, 'a page that does not answer fails closed for scripts');
   await silent.agent.guard(silent.tab, { action: 'navigate', url: 'https://shop.example/pay' });
 });
 
