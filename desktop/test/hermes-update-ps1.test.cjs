@@ -183,7 +183,13 @@ test('the Windows update script carries the guarded kill and the capped reserve'
 
 test('gateways stop and restart around a successful update that still fits the budget', e2e, () => {
   const f = makeHermes();
-  const res = runScript(f);
+  // The update's share is budget - reserve - 8 - time already spent stopping
+  // gateways. At 100 s that left 32 s, so a runner that spends more than 12 s
+  // before the update (a slow Windows runner does: 24 s for a whole run) starved
+  // it and failed the test on speed alone. At 250 s the case this test exists
+  // for still fails if the reserve is uncapped (4 x 60 s leaves nothing), while
+  // the capped 125 s reserve tolerates ~97 s spent before the update.
+  const res = runScript(f, { ALANS_WAY_HERMES_BUDGET: '250' });
   const result = lastJson(res);
   assert.equal(res.status, 0, res.stderr + res.stdout);
   assert.equal(result.ok, true);
