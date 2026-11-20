@@ -21,10 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     outputs:
-      desktop: ${{ steps.filter.outputs.desktop }}
+      # The filter step only runs for pull requests; every other event runs everything.
+      desktop: ${{ steps.filter.outputs.desktop || 'true' }}
     steps:
-      - if: github.event_name != 'pull_request'
-        run: echo "desktop=true" >> "$GITHUB_OUTPUT"
       - if: github.event_name == 'pull_request'
         uses: actions/checkout@v4
         with:
