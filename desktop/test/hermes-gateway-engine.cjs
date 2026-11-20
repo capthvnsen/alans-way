@@ -123,7 +123,7 @@ function createGatewayEngine(cfg = {}) {
       case 'gateway.capabilities': return { result: { per_session_exclusive_submit: true, modes: ['default'] } };
       case 'client.capabilities': return { result: { server_requests: ['tool.approval'] } };
       case 'session.active_list': return { result: { sessions: [...live.values()].map(row) } };
-      case 'session.list': return { result: { sessions: [...stored.values()].map((r) => ({ id: r.id, title: r.title })) } };
+      case 'session.list': return { result: { sessions: [...stored.values()].map((r) => ({ id: r.id, title: r.title, preview: r.messages.at(-1)?.content ?? '' })) } };
       case 'session.create': {
         const id = `sess-new-${++newSeq}-${Math.floor(Math.random() * 1e6)}`;
         addSession(id, `key-${id}`, id);

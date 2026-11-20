@@ -31,6 +31,18 @@ import XCTest
         XCTAssertEqual(store.conversations.map(\.title), ["Alpha"])
     }
 
+    func testARowShowsTheNewestMessageAlreadyInHandAndNeverFetchesOne() async throws {
+        let s = server.addConversation(key: "k1", title: "Alpha", rows: [("user", "hi"), ("assistant", "first line\nsecond line")])
+        server.addConversation(key: "k2", title: "Beta")
+        store.start(); await settle()
+        let beta = try XCTUnwrap(store.conversations.first { $0.id == "k2" })
+        XCTAssertEqual(store.preview(for: beta), "", "nothing listed, nothing opened: the row keeps its prompt")
+        store.open("k1"); await settle()
+        XCTAssertEqual(store.preview(for: try XCTUnwrap(store.conversations.first { $0.id == "k1" })), "first line second line")
+        server.complete(s, text: "A newer reply"); await settle()
+        XCTAssertEqual(store.preview(for: try XCTUnwrap(store.conversations.first { $0.id == "k1" })), "A newer reply")
+    }
+
     func testApprovingACommandAnswersHermesAndClearsTheCard() async throws {
         let s = server.addConversation(key: "k1", title: "Alpha")
         store.start(); await settle(); store.open("k1"); await settle()

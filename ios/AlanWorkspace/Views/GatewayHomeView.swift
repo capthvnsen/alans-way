@@ -76,7 +76,7 @@ struct GatewayHomeView: View {
         } else {
             LazyVStack(spacing: 10) {
                 ForEach(gateway.conversations) { conversation in
-                    NavigationLink(value: conversation.id) { GatewayConversationRow(conversation: conversation) }
+                    NavigationLink(value: conversation.id) { GatewayConversationRow(conversation: conversation, preview: gateway.preview(for: conversation)) }
                         .buttonStyle(.plain).accessibilityIdentifier("gatewayConversation-\(conversation.id)")
                 }
             }
@@ -95,6 +95,7 @@ struct GatewayHomeView: View {
 
 struct GatewayConversationRow: View {
     let conversation: GatewayConversation
+    let preview: String
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
@@ -109,7 +110,7 @@ struct GatewayConversationRow: View {
                         Text(GatewayFormat.short(date)).font(.system(.caption2, design: .monospaced)).foregroundStyle(WorkspaceTheme.secondary)
                     }
                 }
-                Text(conversation.preview.isEmpty ? "Pick up your conversation" : conversation.preview)
+                Text(preview.isEmpty ? "Pick up your conversation" : preview)
                     .font(.footnote).foregroundStyle(WorkspaceTheme.secondary).lineLimit(2).lineSpacing(3)
             }
             Image(systemName: "chevron.right").scaledFont(11, weight: .semibold).foregroundStyle(WorkspaceTheme.secondary)

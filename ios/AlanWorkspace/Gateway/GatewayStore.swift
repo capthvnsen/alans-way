@@ -162,6 +162,13 @@ final class GatewayStore {
         }
     }
 
+    /// The newest message already in hand: a conversation that was opened shows its latest text, otherwise what the
+    /// gateway listed. Nothing is fetched for a row.
+    func preview(for conversation: GatewayConversation) -> String {
+        let latest = threads[conversation.id]?.rows.last { !$0.text.isEmpty }?.text ?? conversation.preview
+        return latest.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+    }
+
     func newConversation() async throws -> String {
         guard let link, link.isLive else { throw GatewayError("not_live", "Connect to Hermes first.") }
         let made = try await link.create()
