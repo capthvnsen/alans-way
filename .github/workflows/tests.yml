@@ -53,6 +53,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # Three balanced slices of the unit tests; keep the 3 below in step.
+        shard: [1, 2, 3]
     runs-on: ${{ matrix.os }}
     # About twice the measured p95 run (Linux 170 s, macOS 434 s); the default is 6 hours.
     timeout-minutes: ${{ matrix.os == 'macos-latest' && 15 || 6 }}
@@ -67,9 +69,11 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
-      - run: npm run check
+      - run: npm run check:syntax
+        if: matrix.shard == 1
+      - run: node scripts/test-shard.cjs ${{ matrix.shard }} 3 | xargs node test/with-tmp.cjs node --test
       - name: Verify credential ownership across OS users
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.shard == 1
         run: sudo "$(command -v node)" --test test/bot-auth.test.cjs test/cleanup-workspace-logs.test.cjs
 
   desktop-electron:
