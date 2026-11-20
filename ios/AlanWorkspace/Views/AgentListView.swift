@@ -59,7 +59,7 @@ struct AgentListView: View {
                                 NavigationLink {
                                     ConversationView(chat: chat)
                                 } label: {
-                                    AgentRow(chat: chat, avatar: settings.avatar(for: chat.id))
+                                    AgentRow(chat: chat, avatar: settings.avatar(for: chat.id), tint: settings.tint(for: chat.id).rawValue)
                                 }.buttonStyle(.plain).accessibilityIdentifier("agentChat-\(chat.id)")
                             }
                         }
@@ -122,13 +122,14 @@ struct ConnectionBanner: View {
 private struct AgentRow: View {
     let chat: TelegramChat
     let avatar: String
+    let tint: String
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         // At accessibility sizes the text needs the full row width, so the portrait moves above it.
         let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(spacing: 16))
         layout {
-            AgentPortrait(name: avatar, size: 68)
+            AgentPortrait(name: avatar, size: 68, tint: tint, title: chat.title)
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
                     Text(chat.title).scaledFont(17, weight: .semibold).lineLimit(typeSize.isAccessibilitySize ? 3 : 1)

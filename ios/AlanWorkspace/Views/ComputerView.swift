@@ -132,12 +132,23 @@ struct AgentSettingsView: View {
                         ForEach(WorkspaceSettings.availableAvatars, id: \.self) { avatar in
                             Button { settings.setAvatar(avatar, for: chat.id) } label: {
                                 VStack(spacing: 8) {
-                                    AgentPortrait(name: avatar, size: 78)
+                                    AgentPortrait(name: avatar, size: 78, tint: settings.tint(for: chat.id).rawValue)
                                         .overlay(RoundedRectangle(cornerRadius: 24).stroke(settings.avatar(for: chat.id) == avatar ? WorkspaceTheme.mint : .clear, lineWidth: 2))
                                     Text(avatar.capitalized).scaledFont(11).foregroundStyle(WorkspaceTheme.secondary)
                                 }
                             }.accessibilityLabel("\(avatar.capitalized) avatar")
                                 .accessibilityValue(settings.avatar(for: chat.id) == avatar ? "Selected" : "")
+                        }
+                    }
+                    Text("MARBLE TINT").scaledFont(10, weight: .medium, design: .monospaced).tracking(2).foregroundStyle(WorkspaceTheme.secondary)
+                    HStack(spacing: 14) {
+                        ForEach(AvatarTint.allCases, id: \.self) { tint in
+                            Button { settings.setTint(tint, for: chat.id) } label: {
+                                Circle().fill(tint.swatch).frame(width: 30, height: 30)
+                                    .overlay(Circle().stroke(settings.tint(for: chat.id) == tint ? WorkspaceTheme.mint : .white.opacity(0.2), lineWidth: settings.tint(for: chat.id) == tint ? 2.5 : 1))
+                                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                            }.accessibilityLabel(tint == .none ? "No tint" : "\(tint.rawValue.capitalized) tint")
+                                .accessibilityValue(settings.tint(for: chat.id) == tint ? "Selected" : "")
                         }
                     }
                     Text("Your avatar choice appears in this app and its call screen. Your bot’s Telegram profile stays as it is.")

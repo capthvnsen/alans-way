@@ -33,6 +33,7 @@ final class WorkspaceSettings {
     private let defaults: UserDefaults
     private var viewers: [String: String]
     private var avatars: [String: String]
+    private var tints: [String: String]
     private(set) var hasCompletedOnboarding: Bool
     static let availableAvatars = ["hermes", "athena", "apollo", "artemis", "zeus", "poseidon", "hades", "medusa", "faun", "minotaur"]
 
@@ -41,6 +42,7 @@ final class WorkspaceSettings {
         releaseChannel = ReleaseChannel(rawValue: defaults.string(forKey: "workspace.releaseChannel") ?? "") ?? .stable
         viewers = defaults.dictionary(forKey: "workspace.viewerURLs") as? [String: String] ?? [:]
         avatars = defaults.dictionary(forKey: "workspace.avatars") as? [String: String] ?? [:]
+        tints = defaults.dictionary(forKey: "workspace.avatarTints") as? [String: String] ?? [:]
         hasCompletedOnboarding = defaults.bool(forKey: "workspace.onboardingComplete")
     }
 
@@ -54,6 +56,11 @@ final class WorkspaceSettings {
         guard Self.availableAvatars.contains(avatar) else { return }
         avatars[String(chatID)] = avatar
         defaults.set(avatars, forKey: "workspace.avatars")
+    }
+    func tint(for chatID: Int64) -> AvatarTint { AvatarTint(normalizing: tints[String(chatID)]) }
+    func setTint(_ tint: AvatarTint, for chatID: Int64) {
+        tints[String(chatID)] = tint.rawValue
+        defaults.set(tints, forKey: "workspace.avatarTints")
     }
     func viewerURL(for chatID: Int64) -> URL? { viewers[String(chatID)].flatMap(ViewerAddress.parse) }
     func viewerAddress(for chatID: Int64) -> String { viewers[String(chatID)] ?? "" }

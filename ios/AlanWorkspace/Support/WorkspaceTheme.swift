@@ -36,22 +36,6 @@ extension View {
     }
 }
 
-struct AgentPortrait: View {
-    var name: String = "hermes"
-    var size: CGFloat = 52
-
-    var body: some View {
-        Image(name)
-            .resizable()
-            .scaledToFit()
-            .padding(.top, size * 0.1)
-            .frame(width: size, height: size)
-            .background(WorkspaceTheme.raised)
-            .clipShape(RoundedRectangle(cornerRadius: size * 0.30, style: .continuous))
-            .accessibilityHidden(true)
-    }
-}
-
 struct WorkspacePrimaryButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
