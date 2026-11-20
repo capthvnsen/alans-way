@@ -124,3 +124,25 @@ test('Linux basic_text is not treated as secure storage', async () => {
   await f.store.save();
   assert.equal(f.prefs().sessionCookies, undefined);
 });
+
+test('a save queued while a slow restore runs waits for it, so no restored sign-in is lost', async () => {
+  const prefs = { sessionCookies: Buffer.from(JSON.stringify({ 'persist:browser': [cookie] })).toString('base64') };
+  const order = []; let release; const slowSet = new Promise(resolve => { release = resolve; });
+  class SlowView {
+    constructor() {
+      this.webContents = { destroy() {}, debugger: { attach() {}, sendCommand: async method => {
+        order.push(method);
+        if (method === 'Network.setCookies') await slowSet;
+        return method === 'Network.getAllCookies' ? { cookies: [cookie] } : {};
+      } } };
+    }
+  }
+  const store = createBrowserSessionStore({ WebContentsView: SlowView, getPreferences: () => prefs, savePreferences() {}, safeStorage: {
+    isAsyncEncryptionAvailable: async () => true, getSelectedStorageBackend: () => 'gnome_libsecret',
+    encryptStringAsync: async value => Buffer.from(value), decryptStringAsync: async value => ({ result: value.toString() }) } });
+  const restoring = store.restore(), saving = store.save();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(order, ['Network.setCookies'], 'the save has not yet read the half-restored cookie jar');
+  release(); await Promise.all([restoring, saving]);
+  assert.equal(order[1], 'Network.getAllCookies');
+});

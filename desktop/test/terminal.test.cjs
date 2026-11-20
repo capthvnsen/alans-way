@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { PassThrough } = require('node:stream');
-const { terminalCommand, createTerminals } = require('../src/terminal.cjs');
+const { terminalCommand, createTerminals, killProcessGroup } = require('../src/terminal.cjs');
 
 const exists = (file) => file === '/bin/zsh';
 const inner = (command) => command.args.slice(command.args.indexOf('sh', 2) + 1);
@@ -153,4 +153,28 @@ test('burst stdout chunks coalesce per frame, respect the buffer cap, and flush 
   children[0].emit('close');
   assert.deepEqual(data, [['1', 'first'], ['1', 'trailing']]);
   assert.deepEqual(exited, ['1']);
+});
+
+test('killProcessGroup refuses non-positive, non-integer, and pid=1 targets, and injected spawns never signal the host', (t) => {
+  const calls = [];
+  const spy = (pid, sig) => calls.push([pid, sig]);
+  for (const bad of [1, 0, -1, -42, undefined, null, NaN, 1.5, '42']) killProcessGroup(bad, spy);
+  assert.deepEqual(calls, []);
+  killProcessGroup(4242, spy);
+  assert.deepEqual(calls, [[-4242, 'SIGKILL']]);
+
+  const hostKills = [];
+  t.mock.method(process, 'kill', (pid, sig) => hostKills.push([pid, sig]));
+  for (const pid of [1, 0, undefined, 4242]) {
+    let child;
+    const terminals = createTerminals({
+      spawnProcess: () => { child = Object.assign(fakeChild(), { pid }); return child; },
+      build: () => ({ file: 'x', args: [] }),
+      onData() {},
+      onExit() {},
+    });
+    terminals.start('1');
+    child.emit('close');
+  }
+  assert.deepEqual(hostKills, []);
 });
