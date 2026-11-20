@@ -127,6 +127,11 @@ public final class TelegramStore {
         try await client.setAuthenticationPhoneNumber(phoneNumber: phone, settings: nil)
     }
 
+    public func resendCode() async throws {
+        guard let client else { throw TelegramStoreError.notAuthorized }
+        _ = try await client.resendAuthenticationCode(reason: .resendCodeReasonUserRequest)
+    }
+
     public func submitCode(_ code: String) async throws {
         guard let client else { throw TelegramStoreError.notAuthorized }
         try await client.checkAuthenticationCode(code: code)

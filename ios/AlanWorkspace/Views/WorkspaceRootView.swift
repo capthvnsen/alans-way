@@ -82,9 +82,11 @@ struct TelegramSignInView: View {
     @State private var emailCode = ""
     @State private var busy = false
     @State private var errorText: String?
+    @State private var changingNumber = false
 
     private var title: String {
-        switch telegram.authState {
+        if changingNumber { return "Try another number" }
+        return switch telegram.authState {
         case .waitCode: "Check your Telegram"
         case .waitEmailAddress, .waitEmailCode: "Check your email"
         case .waitPassword: "One more step"
@@ -164,6 +166,22 @@ struct TelegramSignInView: View {
                             .disabled(busy)
                             .accessibilityIdentifier("resetAppCredentials")
                     }
+                    if changingNumber {
+                        Button("Keep the current number") { changingNumber = false; errorText = nil }
+                            .font(.footnote).foregroundStyle(WorkspaceTheme.secondary).frame(maxWidth: .infinity, minHeight: 44)
+                            .disabled(busy)
+                            .accessibilityIdentifier("keepNumber")
+                    } else if canChangeNumber {
+                        HStack(spacing: 24) {
+                            if telegram.authState == .waitCode || telegram.authState == .waitEmailCode {
+                                Button("Resend code", action: resend).accessibilityIdentifier("resendCode")
+                            }
+                            Button("Use a different number") { changingNumber = true; errorText = nil }
+                                .accessibilityIdentifier("changeNumber")
+                        }
+                        .font(.footnote).foregroundStyle(WorkspaceTheme.secondary).frame(maxWidth: .infinity, minHeight: 44)
+                        .disabled(busy)
+                    }
                     Spacer(minLength: 12)
                     Text("CONNECTED THROUGH TELEGRAM")
                         .font(.system(size: 9, weight: .medium, design: .monospaced)).tracking(1.7)
@@ -181,7 +199,8 @@ struct TelegramSignInView: View {
     }
 
     private var explanation: String {
-        switch telegram.authState {
+        if changingNumber { return "Enter the phone number you use for Telegram. Telegram sends a new code to it." }
+        return switch telegram.authState {
         case .waitPhoneNumber: "Sign in with the phone number you use for Telegram. Your bots and conversations will be right here."
         case .waitCode: "Enter the sign-in code Telegram sent you. Your existing conversations stay connected across devices."
         case .waitPassword: "Your Telegram account has two-step verification. Enter your password to finish signing in."
@@ -194,12 +213,12 @@ struct TelegramSignInView: View {
 
     @ViewBuilder private var fields: some View {
         switch telegram.authState {
+        case _ where changingNumber:
+            phoneField
         case .closed:
             EmptyView()
         case .waitPhoneNumber:
-            TextField("Phone number, including country code", text: $phone)
-                .keyboardType(.phonePad).textContentType(.telephoneNumber).modifier(WorkspaceField())
-                .accessibilityIdentifier("telegramPhone")
+            phoneField
         case .waitCode:
             TextField("Sign-in code", text: $code)
                 .keyboardType(.numberPad).textContentType(.oneTimeCode).modifier(WorkspaceField())
@@ -243,6 +262,20 @@ struct TelegramSignInView: View {
         }
     }
 
+    private var phoneField: some View {
+        TextField("Phone number, including country code", text: $phone)
+            .keyboardType(.phonePad).textContentType(.telephoneNumber).modifier(WorkspaceField())
+            .accessibilityIdentifier("telegramPhone")
+    }
+
+    /// A wrong number leaves sign-in at the code step, so that step needs a way to resend or start over with another number.
+    private var canChangeNumber: Bool {
+        switch telegram.authState {
+        case .waitCode, .waitEmailAddress, .waitEmailCode: true
+        default: false
+        }
+    }
+
     private func instruction(_ number: Int, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Text("\(number)").font(.system(size: 12, weight: .semibold, design: .monospaced))
@@ -260,7 +293,8 @@ struct TelegramSignInView: View {
     }
 
     private var canSubmit: Bool {
-        switch telegram.authState {
+        if changingNumber { return phone.trimmingCharacters(in: .whitespaces).count >= 7 }
+        return switch telegram.authState {
         case .closed: true
         case .waitPhoneNumber: phone.trimmingCharacters(in: .whitespaces).count >= 7
         case .waitCode: !code.trimmingCharacters(in: .whitespaces).isEmpty
@@ -272,6 +306,7 @@ struct TelegramSignInView: View {
     }
 
     private var buttonTitle: String {
+        if changingNumber { return "Send a new code" }
         if telegram.authState == .closed { return "Sign in again" }
         return telegram.authState == .configuring ? "Connect Telegram" : "Continue"
     }
@@ -285,11 +320,25 @@ struct TelegramSignInView: View {
         }
     }
 
+    private func resend() {
+        busy = true; errorText = nil
+        Task {
+            defer { busy = false }
+            do { try await telegram.resendCode() }
+            catch { errorText = TelegramErrorText.describe(error) }
+        }
+    }
+
     private func submit() {
         busy = true; errorText = nil
         Task {
             defer { busy = false }
             do {
+                if changingNumber {
+                    try await telegram.submitPhoneNumber(phone)
+                    changingNumber = false
+                    return
+                }
                 switch telegram.authState {
                 case .closed: await telegram.restoreSession()
                 case .waitPhoneNumber: try await telegram.submitPhoneNumber(phone)
