@@ -29,6 +29,9 @@ SSH_OPTIONS = ((
 ) if REQUIRE_TAILNET else ()) + (
     "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
     "-o", "ConnectTimeout=5",
+    # A Mac that sleeps or drops off the tailnet leaves ssh waiting on TCP for
+    # hours; ~30 s of silence ends the session so Hermes reconnects.
+    "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
 )
 
 
