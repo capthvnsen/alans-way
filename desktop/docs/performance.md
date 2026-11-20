@@ -178,7 +178,7 @@ Visible effect of the locale trim: only English Chromium UI strings ship, so Chr
 | `remote.html` view (noVNC) | created and loaded before the window | created when `index.html` finishes loading, or at once if the Screen tab is shown |
 | `electron-updater` (~124 ms cold) + update network check | right after `createWindow()` | 1 s after load (2.5 s at the latest) |
 | Stale-connector cleanup, webapp probe, cloud polling | before the window | after it |
-| Still before the window, on purpose | `readPreferences`, hermes hub, `browserSessionStore.restore()` (≤5 s cap; cookies must be back before restored tabs load) | unchanged |
+| Still before the window, on purpose | `readPreferences`, hermes hub | unchanged. `browserSessionStore.restore()` no longer belongs here; see §3.7 |
 
 Plain-node cold `require` of the main-process modules, measured by the first pass: median 34.9 ms → 27.1 ms with lazy loading, and 42.7 → 34.9 ms warm with the compile cache.
 
@@ -221,6 +221,26 @@ Counts are derived from the code, not profiled.
 - asar turns `Resources/app/` into `Resources/app.asar` (+ `app.asar.unpacked/`), so that path would break for every existing Hermes/MCP configuration. A compatibility symlink `Resources/app → app.asar.unpacked` is possible in an `afterPack` hook, but I could not show without launching the packaged app that Electron then still loads `app.asar` rather than the symlinked folder, and a code-signed, auto-updated bundle with a symlink in `Resources` is a release risk of its own.
 - Gain is small: asar is not compressed, so the zip would shrink by roughly 0.2 MB (one zip header per removed file, ~1,700 files). The real gain would be fewer small-file `stat`/`open` calls at start-up, which cannot be measured here without a window (estimate: tens of ms on a cold disk cache, mostly on slow disks).
 - To revisit: `asar: true` + `asarUnpack: ['scripts/**', 'src/**', 'node_modules/@modelcontextprotocol/**', 'node_modules/zod/**', …everything browser-mcp requires]`, the `afterPack` symlink above, and a manual launch of a signed build to confirm both the app and `node …/Resources/app/scripts/browser-mcp.cjs` still work.
+
+### 3.7 Window before sign-in restore (branch `agent/p4-window-before-restore`)
+
+**Measured on the owner's real profile** (installed app, `HERMES_WORKSPACE_PROFILE_BOOT=1`), before this change:
+
+```
+app-ready +49.3ms   prefs-loaded +50.0ms   window-created +5125.7ms   first-paint +5262.5ms   ui-interactive +5272.5ms
+```
+
+`window-created` sits 5,075 ms after `prefs-loaded`, which is the 5 s cap on `browserSessionStore.restore()` plus window setup. So on that machine the restore does not finish in 5 s on a normal launch; the cap fires every time, and the user stares at nothing for it.
+
+**Why the restore is slow (evidence, not proof).** On a throwaway profile in hidden mode (`test/probe-session-restore.cjs`) the whole restore, including the throwaway views, debugger attach and `Network.setCookies` for both partitions, takes about 40 ms, and each `setCookies` answers in 3 to 15 ms on a view that was never loaded. So the "debugger on an unloaded view never answers" theory is ruled out. The only step left that can take seconds is the macOS Keychain call (`isAsyncEncryptionAvailable` or `decryptStringAsync`): a locked or slow Keychain, or a Keychain access prompt that nobody sees. The probe uses Chromium's mock keychain, so it **cannot** reproduce or rule out a slow real Keychain; `keychainDelayMs` only imitates one. The marks below will name the slow step on the next real launch.
+
+**Change.** The restore now starts, and the window is created in the same tick without waiting for it. `src/sign-in-gate.cjs` is the one gate: it opens when the restore settles, fails, or the same 5 s cap passes. Waiting on it (`main.cjs`): every tab load in `createTab` (restored tabs, tabs from the local API, extension tabs, Telegram links, handoffs), the Telegram view's first load, `openTelegramHash`, a typed navigation, the local API server's start (so agent tab creation and navigation cannot run first), and the extension store's restore. Not waiting: the window, `index.html`, the UI shell and everything else. The Hermes Desktop webapp uses `persist:hermes-webapp`, which the restore never touches, so it is not gated. A restore failure is still logged as `browser-restore` (no detail) and opens the gate. After the cap the restore keeps running; pages already loaded do not see its cookies until they reload (same as before the cap was added, but the window is no longer held for it).
+
+Also: `restore()` now joins the store's save queue, so a save triggered by the restore's own cookie changes (or by quitting) waits for it instead of overwriting the saved sign-ins with a half-restored set.
+
+**New boot marks** (print only with `HERMES_WORKSPACE_PROFILE_BOOT=1`), in order: `restore-start`, `restore-keychain-available` (the `isAsyncEncryptionAvailable` Keychain check returned), `restore-decrypted` (`decryptStringAsync` returned), then per partition `restore-browser-attached` / `restore-browser-set` and `restore-telegram-attached` / `restore-telegram-set` (debugger attached; `Network.setCookies` answered), and `restore-done`. Read the gaps: start to keychain-available is the availability check, keychain-available to decrypted is the decrypt (the Keychain), decrypted to the first `attached` is view creation and first partition use (the cookie database load), `attached` to `set` is the CDP command.
+
+**What a re-measure should show** on the owner's profile: `window-created` back to roughly 100 to 200 ms after `prefs-loaded` (about +250 ms, not +5,126 ms) and `first-paint` about 5 s earlier. The `restore-*` marks then appear after `window-created`, and the restored tabs begin loading when `restore-done` prints, or at about +5 s if it is slower than that. Hidden-mode simulation (throwaway profile, Keychain decrypt delayed 8 s, `node test/probe-session-restore.cjs 20 8000`): before, `window-created` +5171.7 ms and `first-paint` +5268.7 ms; after, `window-created` +117 ms and `first-paint` +196 ms, with the saved tab's first request arriving about 5.1 s in (the cap) while the restore finished at +8.1 s. With no delay: `window-created` +118 ms, restore done +186 ms, tab request after it.
 
 ---
 
