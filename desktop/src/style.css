@@ -123,7 +123,7 @@ body.win32 .pane-actions{padding-right:140px}.chat-note.warn{height:auto;min-hei
 /* Agent rows: a flat list with one lighter card on the open row. --row-bg is that row's colour, for the rings round unread chips. */
 .bot-row{--row-bg:#111112}.bot-row:hover{--row-bg:#1a1a1b}.bot-row.selected{--row-bg:#242425}
 .bot-list .bot-row{align-items:center;border-radius:6px;padding:10px 10px 9px;margin-bottom:5px;min-height:0}
-.bot-list .bot-row:hover{background:#ffffff0a}.bot-list .bot-row.selected{background:#ffffff14}
+.bot-list .bot-row:hover,.bot-list .bot-row.selected{background:var(--row-bg)}
 .bot-list .bot-open{gap:11px}
 .bot-head{display:flex;align-items:center;gap:8px;min-height:18px}
 .bot-list .bot-name{flex:1;min-width:0;font-size:13px;line-height:18px;font-weight:520;color:color-mix(in srgb,var(--text) 76%,var(--panel))}.bot-list .bot-row.selected .bot-name{color:var(--text)}
@@ -323,7 +323,7 @@ body.win32 .pane-actions{padding-right:140px}.chat-note.warn{height:auto;min-hei
 .canvas-tabs{display:flex;align-self:center;gap:2px;padding:3px;margin-right:8px;border-radius:999px;background:#18181b;border:1px solid #29292d;min-width:0;overflow-x:auto;scrollbar-width:none}.canvas-tabs button{flex:0 1 auto;min-width:40px;overflow:hidden;text-overflow:ellipsis;border-radius:999px;padding:5px 10px;font-size:11.5px;color:#8a8a94;white-space:nowrap}.canvas-tabs button:hover{color:#dcdce3}.canvas-tabs button[aria-selected=true]{background:#2e2e33;color:#f1f1f5;box-shadow:0 1px 2px #0006}
 .chat-header .chat-pill{min-width:47px;flex-shrink:1}
 .chat-name{display:flex;align-items:center;gap:3px;min-width:0;padding:2px 4px;margin:-2px -4px;border-radius:8px;color:inherit;font-size:inherit;line-height:inherit}.chat-name:disabled{cursor:default;color:inherit}
-.chat-chevron{display:none;color:#a3a3ab;font-size:16px;line-height:1}.chat-name.openable{cursor:pointer}.chat-name.openable .chat-chevron{display:inline;visibility:hidden}.chat-name.openable:hover,.chat-name.openable:focus-visible{background:#26262a}.chat-name.openable:hover .chat-chevron,.chat-name.openable:focus-visible .chat-chevron{visibility:visible}
+.chat-chevron{display:none;color:#a3a3ab;font-size:16px;line-height:1}.chat-name.openable{cursor:pointer}.chat-name.openable .chat-chevron{display:inline;visibility:hidden}.chat-name.openable:hover,.chat-name.openable:focus-visible{background:var(--row-bg)}.chat-name.openable:hover .chat-chevron,.chat-name.openable:focus-visible .chat-chevron{visibility:visible}
 .waiting-badge{width:9px;height:9px;flex-shrink:0;border-radius:50%;border:2px solid #f0b45a;margin-right:1px}
 
 /* ── Alan's native chat ── */
@@ -450,13 +450,13 @@ button.nc-card:hover{background:#ffffff0d}
 .native-settings-actions{display:flex;gap:8px;margin-top:8px}.native-settings-actions[hidden]{display:none}
 /* Unread gateways: round logo chips fanned like cards (each shifted 40% of its width over the one before, the newest on top), ringed in the colour behind them. */
 .gateway-chips{display:inline-flex;align-items:center;flex-shrink:0}
-.gateway-chip{position:relative;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:15px;height:15px;border-radius:50%;overflow:hidden;background:#26262a;color:#fff;box-shadow:0 0 0 1.5px var(--row-bg,#111112)}
-.gateway-chip+.gateway-chip{margin-left:-9px}
-.gateway-chip svg{width:10px;height:10px;stroke-width:2}.gateway-chip img{width:100%;height:100%;object-fit:cover}
+.gateway-chip{position:relative;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:20px;height:20px;border-radius:50%;overflow:hidden;background:#26262a;color:#fff;box-shadow:0 0 0 2px var(--row-bg,#111112)}
+.gateway-chip+.gateway-chip{margin-left:-12px}
+.gateway-chip svg{width:13px;height:13px;stroke-width:2}.gateway-chip img{width:100%;height:100%;object-fit:cover}
 .gateway-chip[data-gateway=telegram]{background:#2a9fd8}.gateway-chip[data-gateway=native] img{object-fit:contain}
 /* The chat header menu */
 .chat-pill{position:relative;--row-bg:#1b1b1d}
-.chat-name.openable:hover,.chat-name.openable:focus-visible,.chat-name.active{--row-bg:#26262a}.chat-name.active{background:#26262a}.chat-name.openable.active .chat-chevron{visibility:visible}
+.chat-name.openable:hover,.chat-name.openable:focus-visible,.chat-name.active{--row-bg:#26262a}.chat-name.active{background:var(--row-bg)}.chat-name.openable.active .chat-chevron{visibility:visible}
 .chat-menu{position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);z-index:80;min-width:210px;padding:4px;background:#1c1c1f;border:1px solid #35353c;border-radius:12px;box-shadow:0 12px 40px #000c;white-space:nowrap}
 .chat-menu-item{display:flex;align-items:center;gap:9px;width:100%;padding:7px 9px;border-radius:8px;font-size:12px;color:#c9c9d1;text-align:left}
 .chat-menu-item:hover,.chat-menu-item:focus-visible{background:#26262b;color:#fff}

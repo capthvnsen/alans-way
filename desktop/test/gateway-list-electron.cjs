@@ -191,6 +191,9 @@ if (!process.versions.electron) {
       assert.match(await run(`document.getElementById('chat-name').getAttribute('aria-label')`), /Unread in Telegram$/);
       assert.match(await run(`document.querySelector('${row('1002')} .bot-open').getAttribute('aria-label')`), /unread in telegram$/);
       assert.equal(await run(`document.querySelector('${row('1002')} .gateway-chips').getAttribute('aria-label')`), 'Unread in Telegram');
+      // The chips are 20 px in the row and the header pill, each ringed in the colour of what is behind it.
+      assert.equal(await run(`['${row('1002')}', '#chat-name'].map((s) => getComputedStyle(document.querySelector(s + ' .gateway-chip')).width).join()`), '20px,20px', 'chips are 20 px');
+      assert.equal(await run(`(() => { const row = document.querySelector('${row('1002')}'); return getComputedStyle(row.querySelector('.gateway-chip')).boxShadow.startsWith(getComputedStyle(row).backgroundColor); })()`), true, 'the selected row\'s ring is its own background');
       assert.deepEqual((await menu()).filter((key) => key !== 'settings' && key !== 'cron'), ['telegram!', 'hermes-desktop*', 'native']);
       await openMenu();
       assert.equal(await run(`document.querySelector('#chat-menu [data-gateway="telegram"] .sr-only').textContent`), ', unread', 'the dot has a text equivalent');
