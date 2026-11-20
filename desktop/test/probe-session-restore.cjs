@@ -1,5 +1,6 @@
 // Measures startup with saved session-only sign-ins, hidden, on a throwaway profile (never the real one):
-//   node test/probe-session-restore.cjs [cookiesPerPartition=20] [keychainDelayMs=0]
+//   node test/probe-session-restore.cjs [cookiesPerPartition=20] [keychainDelayMs=0] [blank]
+// With `blank` it also does what test:desktop does first, in hidden mode: stop the Telegram view and `await loadURL('about:blank')`.
 // Also seeds one saved tab on a loopback server and prints when that server first sees a request (+ms since the app was
 // spawned, so it also includes Electron's own startup before the app's clock starts), to show restored tabs waiting for the restore or its cap.
 // Seeds preferences.json with sessionCookies sealed by the mock keychain, launches the app hidden under the
@@ -25,7 +26,7 @@ if (typeof electron === 'string') {
   const server = http.createServer((req, res) => { if (req.url === '/tab') console.log(`PROBE tab-request +${(performance.now() - spawned).toFixed(0)}ms`); res.end('<!doctype html><title>probe</title>'); });
   const run = phase => new Promise(resolve => {
     spawned = performance.now();
-    const child = spawn(binary, [`--user-data-dir=${profile}`, __filename, phase], { env: { ...env, HERMES_WORKSPACE_PROFILE_BOOT: phase === 'boot' ? '1' : '' }, stdio: ['ignore', 'inherit', 'pipe'] });
+    const child = spawn(binary, [`--user-data-dir=${profile}`, __filename, phase], { env: { ...env, HERMES_WORKSPACE_PROFILE_BOOT: phase === 'seed' ? '' : '1' }, stdio: ['ignore', 'inherit', 'pipe'] });
     let aborted = '';
     const stop = watchdog(child, reason => { aborted = reason; console.error(`WATCHDOG ABORT: ${reason}`); });
     const deadline = setTimeout(() => { aborted ||= 'deadline'; try { process.kill(child.pid, 'SIGKILL'); } catch {} }, 60000);
@@ -36,7 +37,7 @@ if (typeof electron === 'string') {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     env.HERMES_PROBE_TAB = `http://127.0.0.1:${server.address().port}/tab`;
     let result = await run('seed');
-    if (!result.code) result = await run('boot');
+    if (!result.code) result = await run(process.argv[4] === 'blank' ? 'blank' : 'boot');
     console.log(`probe exit ${result.code}${result.aborted ? ` aborted: ${result.aborted}` : ' (watchdog did not fire)'}`);
   })().finally(() => { server.close(); fs.rmSync(profile, { recursive: true, force: true }); tmp.finish(); });
 } else {
@@ -49,7 +50,7 @@ if (typeof electron === 'string') {
       const cookie = (name, i) => ({ name: `${name}${i}`, value: 'x'.repeat(200), domain: 'probe.example', path: '/', secure: true, httpOnly: true, hostOnly: true, session: true, sameSite: 'lax', size: 210 });
       const records = { 'persist:browser': Array.from({ length: count }, (_, i) => cookie('b', i)), 'persist:telegram': Array.from({ length: count }, (_, i) => cookie('t', i)) };
       const sealed = (await electron.safeStorage.encryptStringAsync(JSON.stringify(records))).toString('base64');
-      fs.writeFileSync(path.join(process.env.HERMES_WORKSPACE_DATA, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, sessionCookies: sealed, savedTabs: [{ url: process.env.HERMES_PROBE_TAB, botId: 'shared', owner: 'user' }] }));
+      fs.writeFileSync(path.join(process.env.HERMES_WORKSPACE_DATA, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, sessionCookies: sealed, bots: [{ id: '123', name: 'Probe bot', isBot: true }], selectedBotId: '123', savedTabs: [{ url: process.env.HERMES_PROBE_TAB, botId: 'shared', owner: 'user' }] }));
       console.error('PROBE seeded');
       app.exit(0);
     });
@@ -69,6 +70,13 @@ if (typeof electron === 'string') {
     const { prepareFixture, quitFixture } = require('./electron-fixture.cjs');
     prepareFixture(process.env.HERMES_WORKSPACE_DATA);
     require('../src/main.cjs');
+    if (phase === 'blank') app.whenReady().then(async () => {
+      const { webContents, session } = electron;
+      const telegram = webContents.getAllWebContents().find(item => item.session === session.fromPartition('persist:telegram'));
+      telegram.stop();
+      await telegram.loadURL('about:blank');
+      console.error(`PROBE blank-ok url=${telegram.getURL()}`);
+    }).catch(error => console.error(`PROBE blank-failed ${error.message}`));
     // Let ui-interactive and the boot tail print their marks, then quit.
     setTimeout(() => { console.error('PROBE done'); quitFixture(); }, 12000);
   }

@@ -1114,7 +1114,7 @@ function createTab({ url = 'about:blank', filePath = '', openerId = '', botId = 
   view.webContents.on('destroyed', () => { if (!isQuitting && tabs.has(tab.id) && !tab.host?.isDestroyed()) closeTab(tab.id); });
   if (activate) { prefs.remoteControl = false; activeTabId = tab.id; canvasTab = 'browser'; }
   applyLayout(); broadcast();
-  if (!skipLoad) signInGate.after(() => { if (!view.webContents.isDestroyed()) view.webContents.loadURL(targetUrl).catch(() => {}); });
+  if (!skipLoad) signInGate.load(view.webContents, targetUrl, { alive: () => tabs.has(tab.id) });
   savePreferencesSoon();
   return tab;
 }
@@ -1547,14 +1547,13 @@ async function openTelegramUsername(username) {
 // Changing only the hash keeps Telegram's session loaded; a full reload is for
 // when the hash already matches and the page is stuck.
 async function openTelegramHash(hash) {
-  await signInGate.ready();
   const wc = telegramView.webContents, target = `${TELEGRAM}#${hash}`;
   if (wc.getURL() === target) { wc.reload(); return; }
   // If Telegram ignores the hash change (the open chat does not move), reload once.
   const read = () => wc.executeJavaScript(`(document.querySelector('#MiddleColumn .MiddleHeader')?.textContent || '') + '|' + !!document.querySelector('#MiddleColumn .Composer')`);
   // The baseline read goes out before the navigation so it sees the old chat.
   watchChange({ read, delayMs: 1500, onStuck: () => { if (!wc.isDestroyed() && wc.getURL() === target) wc.reload(); } });
-  await wc.loadURL(target).catch(() => {});
+  await signInGate.load(wc, target, { alive: () => telegramView?.webContents === wc });
 }
 // The guest script narrates phases ("Updating agent plugins…"); fold them
 // into the VM's detail line so the popup shows what it is doing.
@@ -1622,7 +1621,8 @@ const checkVersionsWhenIdle = () => {
 };
 const webappSignIn = createWebappSignIn({ safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs) });
 // Every page load that needs restored sign-ins (persist:browser, persist:telegram) goes through signInGate; the window does not.
-const signInGate = createSignInGate({ settleWithin, capMs: BROWSER_RESTORE_WAIT_MS, onError: () => logError('browser-restore', new Error('Saved browser sign-ins could not be restored.')) });
+const signInGate = createSignInGate({ settleWithin, capMs: BROWSER_RESTORE_WAIT_MS, onError: () => logError('browser-restore', new Error('Saved browser sign-ins could not be restored.')),
+  onTaskError: error => logError('sign-in-gate', error), isQuitting: () => isQuitting });
 const browserSessionStore = createBrowserSessionStore({ WebContentsView, safeStorage, getPreferences: () => prefs, savePreferences: () => persistSettingsPreferences(prefs), mark: bootTimer.mark });
 async function saveBrowserSession() {
   savePreferences();
@@ -2216,7 +2216,7 @@ function registerIpc() {
       }
       case 'navigate': {
         if (isVpsTab(value.id)) { await navigateVps(value.id,value.url); break; }
-        const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; await signInGate.ready(); if (!tab.view.webContents.isDestroyed()) await tab.view.webContents.loadURL(target).catch(() => {}); } break;
+        const tab = tabs.get(value.id); if (tab) { changeController(tab.id, 'human'); const target = pageUrl(value.url); tab.requestedUrl = target; await signInGate.load(tab.view.webContents, target, { alive: () => tabs.has(tab.id) }); } break;
       }
       case 'history': {
         if (isVpsTab(value.id)) { await remoteRequest(value.id,'control',{controller:'human'}); await remoteRequest(value.id,'human-actions',{action:value.action}); break; }
@@ -3885,7 +3885,8 @@ function createWindow() {
   bootTimer.mark('window-created');
   win.webContents.once('did-finish-load', () => { bootTimer.mark('first-paint'); ensureRemoteView(); });
   if (shownCanvas() === 'screen') ensureRemoteView();
-  signInGate.after(() => { if (!telegramView.webContents.isDestroyed()) telegramView.webContents.loadURL(prefs.selectedBotId ? `${TELEGRAM}#${prefs.selectedBotId}` : TELEGRAM).catch(() => {}); });
+  const telegramContents = telegramView.webContents;
+  signInGate.load(telegramContents, () => prefs.selectedBotId ? `${TELEGRAM}#${prefs.selectedBotId}` : TELEGRAM, { alive: () => telegramView?.webContents === telegramContents });
   restoreBrowserTabs();
   pdfWindowReady = true;
   for (const file of pendingPdfs.splice(0)) receivePdf(file);
@@ -4161,7 +4162,7 @@ else {
       canInstall: frame => [...tabs.values()].some(tab => tab.id === shownTabId() && tab.controller === 'human' && tab.view.webContents.mainFrame === frame && !layout.obscured) });
     // The rest of the boot tail must not hang on, or die with, the extension store.
     // Bounded too: a store that never answers would otherwise keep the update and Hermes Desktop checks from ever starting.
-    await Promise.race([(async () => { await signInGate.ready(); await extensionStore.installStore(); await extensionStore.restore(); })().catch(error => logError('extensions', error)).then(broadcast),
+    await Promise.race([(async () => { await signInGate.ready(); if (isQuitting) return; await extensionStore.installStore(); await extensionStore.restore(); })().catch(error => logError('extensions', error)).then(broadcast),
       new Promise(resolve => setTimeout(resolve, 10000).unref())]);
     broadcast();
     seedMacSshHost();
