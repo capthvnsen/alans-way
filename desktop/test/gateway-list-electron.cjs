@@ -139,7 +139,7 @@ if (!process.versions.electron) {
       assert.equal(await run(`document.getElementById('search-toggle')`), null, 'no search toggle');
       assert.equal(await run(`['bot-count', 'sort-bots', 'add-bot'].map((id) => !!document.getElementById(id)).join()`), 'false,true,true');
       assert.equal(await run(`/YOUR AGENTS/.test(document.querySelector(".sidebar").textContent)`), false, 'no YOUR AGENTS label');
-      assert.equal(await run(`/Activity unavailable/.test(document.getElementById('bot-list').textContent) || !!document.querySelector('.bot-activity:not(.hidden):empty')`), false, 'unknown activity takes no line');
+      assert.equal(await run(`/Idle|Unreachable|Waiting|Activity unavailable/.test(document.getElementById('bot-list').textContent) || !!document.querySelector('.bot-activity, #presence-status:not(:empty)')`), false, 'idle and unknown activity take no line or label');
       assert.equal(await run(`getComputedStyle(document.querySelector('#bot-list .bot-row.selected')).backgroundColor !== 'rgba(0, 0, 0, 0)' && getComputedStyle(document.querySelector('#bot-list .bot-row:not(.selected)')).backgroundColor === 'rgba(0, 0, 0, 0)'`), true, 'the open row is a card, the others are flat');
       assert.equal((await selectedRows()).length, 1, 'exactly one row is selected');
       assert.equal(await run(`document.getElementById('surface-tabs')`), null, 'no pill toggle in the chat header');

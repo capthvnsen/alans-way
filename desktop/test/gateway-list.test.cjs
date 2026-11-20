@@ -1,5 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const Avatars = require('../src/avatars.js');
 const { GATEWAYS, labelOf, botRows, unreadLabel, createUnreadOrder, previewOrder } = require('../src/gateway-list.js');
 
 const alan = { id: '1', name: 'Alan', username: 'alan_bot' };
@@ -71,4 +75,55 @@ test('the row preview comes from the gateway with the newest unread, then the on
   assert.deepEqual(previewOrder({ gateways, shown: 'hermes-desktop', unread: [] }), ['hermes-desktop', 'telegram', 'native']);
   assert.deepEqual(previewOrder({ gateways, shown: 'hermes-desktop', unread: ['telegram', 'native'] }), ['native', 'telegram', 'hermes-desktop']);
   assert.deepEqual(previewOrder({ gateways: ['telegram'], shown: 'native', unread: [] }), ['telegram'], 'a gateway the bot is not on is never offered');
+});
+
+// The row status helpers are sliced out of renderer.js and run against a minimal fake DOM, as hermes-pane.test.cjs does.
+const renderer = fs.readFileSync(path.join(__dirname, '../src/renderer.js'), 'utf8');
+const slice = (from, to) => renderer.slice(renderer.indexOf(from), renderer.indexOf(to, renderer.indexOf(from)));
+function fakeNode(className = '') {
+  const node = { className, title: '', attributes: {}, dataset: {}, props: {}, classes: new Set(className.split(' ').filter(Boolean)), children: [], style: { setProperty: (key, value) => { node.props[key] = value; } },
+    setAttribute: (key, value) => { node.attributes[key] = String(value); }, classList: { toggle: (name, on) => { node.classes[on ? 'add' : 'delete'](name); }, contains: (name) => node.classes.has(name) },
+    querySelector: (selector) => (selector === '.bot-open' ? node.open : null) };
+  return node;
+}
+function rowStatus(state, shownSurface) {
+  const context = { state, window: { HermesAvatars: Avatars }, element: (_tag, cls) => fakeNode(cls), shownGateway: () => shownSurface };
+  vm.runInNewContext(`${slice('function colorFor', 'const SURFACE_OF')}\n${slice('function renderBotActivity', '// The chat header')}\nthis.api = { colorFor, isUnreachable, errorBadge, renderBotActivity };`, context);
+  return context.api;
+}
+const render = (api, bot) => { const row = fakeNode('bot-row'), open = fakeNode('bot-open'); open.dataset.label = `Open ${bot.name}`; row.open = open; api.renderBotActivity(row, bot); return { row, open }; };
+
+test('an idle bot, or one with no activity signal, shows nothing: no working class and the plain accessible name', () => {
+  const api = rowStatus({}, 'telegram');
+  for (const activity of [{ state: 'idle' }, undefined, { state: 'unknown' }, { state: 'active', expiresAt: Date.now() - 1 }]) {
+    const { row, open } = render(api, { id: '1', name: 'Alan', activity });
+    assert.equal(row.classList.contains('working'), false);
+    assert.equal(open.attributes['aria-label'], 'Open Alan');
+    assert.equal(open.title, '');
+  }
+});
+
+test('a working bot glows in its colour and says "working" to screen readers', () => {
+  const api = rowStatus({}, 'telegram');
+  const { row, open } = render(api, { id: '1', name: 'Alan', activity: { state: 'active', label: 'typing…' } });
+  assert.equal(row.classList.contains('working'), true);
+  assert.equal(row.props['--glow'], api.colorFor('1'), 'a bot with no tint glows in its row colour');
+  assert.equal(open.attributes['aria-label'], 'Open Alan, working');
+  assert.equal(open.title, 'typing…');
+  const tinted = rowStatus({ avatarLibrary: [{ id: 'bust', cutout: true, builtIn: true, dataUrl: 'x' }], avatarPreferences: { 2: { selectedId: 'bust', tint: 'red' } } }, 'telegram');
+  assert.equal(render(tinted, { id: '2', name: 'Mira', activity: { state: 'active' } }).row.props['--glow'], 'var(--glow-red)', 'a tinted marble bust glows in its tint');
+});
+
+test('unreachable is a badge carrying the reason, and only while Hermes Desktop is the surface that cannot be reached', () => {
+  assert.equal(rowStatus({ webappStatus: 'unreachable' }, 'hermes-desktop').isUnreachable('1'), true);
+  assert.equal(rowStatus({ webappStatus: 'unreachable' }, 'telegram').isUnreachable('1'), false);
+  assert.equal(rowStatus({ webappStatus: 'reachable' }, 'hermes-desktop').isUnreachable('1'), false);
+  const badge = rowStatus({}, 'telegram').errorBadge('Can’t reach Hermes Desktop');
+  assert.deepEqual([badge.className, badge.attributes.role, badge.attributes['aria-label'], badge.title], ['error-badge', 'img', 'Unreachable: Can’t reach Hermes Desktop', 'Can’t reach Hermes Desktop']);
+});
+
+test('the working glow holds still under reduced motion, and no status text is left in the row or presence card', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../src/style.css'), 'utf8');
+  assert.match(css, /@media\(prefers-reduced-motion:no-preference\)\{\.bot-row\.working::after[^}]*animation:glow-pulse/);
+  for (const text of ["'Idle'", "'Unreachable'", "'Waiting'", "'status-text"]) assert.equal(renderer.includes(text), false, `${text} is gone from renderer.js`);
 });
