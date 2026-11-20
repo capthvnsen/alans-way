@@ -21,6 +21,29 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # A fast first answer on pull requests: syntax of the whole tree, then only the
+  # unit tests the diff reaches (desktop/scripts/check-diff.cjs). It runs next to
+  # the full jobs below and never replaces them, so nothing is checked less.
+  quick:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      # HEAD is the merge commit; its first parent is the base tip.
+      - run: node scripts/check-diff.cjs HEAD^1 --no-fallback
+
   # Pull requests that only touch ios/ cannot affect the desktop jobs (nothing
   # under desktop/ reads ios/). Pushes to main, merge queue runs and manual runs
   # always run everything.
