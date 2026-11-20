@@ -171,7 +171,7 @@ body:not(.darwin) .bots-hidden .chat-header{padding-left:52px}
 .tab-spinner{width:14px;height:14px;margin:1px;border:2px solid var(--color-border-strong);border-top-color:var(--color-text-2);border-radius:50%;animation:tab-spin .8s linear infinite}
 @keyframes tab-spin{to{transform:rotate(360deg)}}
 .tab-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.tab:not(.pinned) .tab-title{flex:1;text-overflow:clip;-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 14px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 14px),transparent)}
+.tab:not(.pinned) .tab-title{flex:1;text-overflow:clip;-webkit-mask-image:linear-gradient(to right,black calc(100% - 14px),transparent);mask-image:linear-gradient(to right,black calc(100% - 14px),transparent)}
 .tab-select{display:flex;align-items:center;gap:6px;min-width:0;flex:1;height:100%;padding:0;color:inherit;font-size:inherit;text-align:left;border-radius:var(--radius-sm)}
 .tab-close{position:absolute;right:var(--space-1);top:50%;margin-top:-12px;width:var(--h-sm);height:var(--h-sm);display:grid;place-items:center;border-radius:var(--radius-sm);color:var(--color-text-2);font-size:16px;line-height:1;opacity:0;background:var(--color-surface-3)}
 .tab:hover .tab-close,.tab.active .tab-close,.tab-close:focus-visible{opacity:1}

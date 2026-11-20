@@ -265,7 +265,9 @@ function fitTabs() {
   if (!container.querySelector('.tab [role=tab][tabindex="0"]')) {
     const first = container.querySelector('.tab [role=tab]'); if (first) first.tabIndex = 0;
   }
-  container.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  // Scroll the strip itself; scrollIntoView would also scroll the clipped canvas pane around it.
+  const active = container.querySelector('.tab.active');
+  if (active) { const a = active.getBoundingClientRect(), c = container.getBoundingClientRect(); container.scrollLeft += a.left < c.left ? a.left - c.left : a.right > c.right ? a.right - c.right : 0; }
   if (!scrolls) setTabsPanel(false);
   else if (!$('tabs-panel').classList.contains('hidden')) renderTabsPanel();
 }
