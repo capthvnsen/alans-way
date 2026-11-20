@@ -336,13 +336,15 @@ test('native resume and window recovery reach the viewer through the preload bri
   let vmChecks = 0;
   const start = main.indexOf("  powerMonitor.on('resume'");
   const focus = main.indexOf("  for (const name of ['show', 'restore', 'focus'])");
-  vm.runInNewContext(main.slice(start, main.indexOf('  let wasOnline', start)) + main.slice(focus, main.indexOf('  buildMenu();', focus)), {
+  vm.runInNewContext(main.slice(start, main.indexOf('\n}\n', start)) + main.slice(focus, main.indexOf('  buildMenu();', focus)), {
     powerMonitor, win, remoteView, setTimeout: () => ({ unref() {} }), refreshVpsTabs: () => { vmChecks++; },
+    prefs: { vpsBrowser: { sshHost: 'user@vm.example' } }, sendPollTier() {}, scheduleActivity() {}, windowVisible: () => true, pointerFeed: null,
   });
   powerMonitor.emit('resume');
   assert.equal(vmChecks, 1, 'waking re-checks the VM browser at once, for tasks it resumed');
   for (const event of ['show', 'restore', 'focus']) win.emit(event);
   assert.equal(retries, 4);
+  assert.equal(vmChecks, 3, 'showing or restoring the window re-checks the VM, since hidden polling is slower; focus alone does not');
   destroyed = true;
   powerMonitor.emit('resume'); win.emit('focus');
   assert.equal(retries, 4, 'closed renderers are ignored');

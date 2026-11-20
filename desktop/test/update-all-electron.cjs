@@ -122,7 +122,7 @@ app.whenReady().then(async () => {
   const work = () => calls.filter((c) => !c.startsWith('check'));
 
   // The versions (Settings → About) and the details (Settings → Updates), and the update pill by the gear.
-  const versions = await waitFor(bar, (t) => t.includes('Hermes'), 12000, 'the versions');
+  const versions = await waitFor(bar, (t) => t.includes('Plugin'), 12000, 'the versions');
   assert.equal(versions, `Alan’s Workspace ${version} · Hermes 0.21.6 (server) · Plugin 0.21.0`);
   assert.equal(await evaluate('!!document.querySelector(".workspace-footer, #version-label, #update-all, #build-badge")'), false, 'no footer on the main screen');
   const tooltip = (await evaluate('window.workspace.getState()')).versions.tooltip;
@@ -130,7 +130,7 @@ app.whenReady().then(async () => {
   assert.match(tooltip, /alans-way \(default\) 0\.21\.0 · 0\.21\.1 on GitHub/);
   assert.match(tooltip, new RegExp(`Browser host 0\\.21\\.3 on the server · ${version.replace(/\./g, '\\.')} goes with this app`));
   assert.match(tooltip, /Checked /);
-  assert.equal(await hidden('update-note'), false, 'an available update shows the pill');
+  await waitFor(() => hidden('update-note'), (h) => h === false, 5000, 'an available update shows the pill');
   assert.equal(await text('update-note'), 'Update');
   assert.equal(await evaluate('document.querySelector("#settings-button .bridge-dot").classList.contains("hidden")'), false, 'and a dot on the gear');
   await evaluate('document.getElementById("settings-button").click()'); await waitFor(() => evaluate('!!document.getElementById("settings-category-about")'), Boolean);

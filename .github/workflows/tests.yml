@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 env:
@@ -12,8 +13,41 @@ env:
 permissions:
   contents: read
 
+concurrency:
+  # A newer push to the same pull request cancels its older run. Pushes to main
+  # and manual runs get a unique group, so they are never cancelled or replaced
+  # while pending.
+  group: tests-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Pull requests that only touch ios/ cannot affect the desktop jobs (nothing
+  # under desktop/ reads ios/). Pushes to main, merge queue runs and manual runs
+  # always run everything.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      # The filter step only runs for pull requests; every other event runs everything.
+      desktop: ${{ steps.filter.outputs.desktop || 'true' }}
+    steps:
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: filter
+        if: github.event_name == 'pull_request'
+        run: |
+          # HEAD is the merge commit; its first parent is the base tip.
+          if files=$(git diff --name-only HEAD^1 HEAD); then
+            printf '%s\n' "$files" | python3 scripts/ci_changes.py >> "$GITHUB_OUTPUT"
+          else
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+          fi
+
   desktop:
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     # The release build runs check on macOS, so PRs must too.
     strategy:
       fail-fast: false
@@ -22,6 +56,8 @@ jobs:
         # Three balanced slices of the unit tests; keep the 3 below in step.
         shard: [1, 2, 3]
     runs-on: ${{ matrix.os }}
+    # About twice the measured p95 run (Linux 170 s, macOS 434 s); the default is 6 hours.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 15 || 6 }}
     defaults:
       run:
         working-directory: desktop
@@ -35,12 +71,14 @@ jobs:
       - run: npm ci
       - run: npm run check:syntax
         if: matrix.shard == 1
-      - run: node scripts/test-shard.cjs ${{ matrix.shard }} 3 | xargs node --test
+      - run: node scripts/test-shard.cjs ${{ matrix.shard }} 3 | xargs node test/with-tmp.cjs node --test
       - name: Verify credential ownership across OS users
         if: runner.os == 'Linux' && matrix.shard == 1
         run: sudo "$(command -v node)" --test test/bot-auth.test.cjs test/cleanup-workspace-logs.test.cjs
 
   desktop-electron:
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     runs-on: macos-latest
     timeout-minutes: 20
     defaults:
@@ -136,6 +174,8 @@ jobs:
         timeout-minutes: 3
 
   desktop-windows:
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     runs-on: windows-latest
     timeout-minutes: 15
     defaults:
@@ -182,6 +222,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python: ['3.11', '3.12']
     runs-on: ${{ matrix.os }}
+    # About twice the measured p95 run (Linux 40 s, macOS 68 s); the default is 6 hours.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 5 || 3 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -202,3 +244,16 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Publication safety checks
         run: python scripts/check_publication.py
+
+  # The one check to require. It fails when any job failed or was cancelled, and
+  # accepts a skipped job only where `changes` skipped it on purpose.
+  gate:
+    if: always()
+    needs: [changes, desktop, desktop-electron, desktop-windows, package-and-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/ci_gate.py
+        env:
+          NEEDS: ${{ toJSON(needs) }}

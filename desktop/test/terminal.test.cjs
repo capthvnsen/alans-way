@@ -124,3 +124,33 @@ test('an ended program whose pipeline never closes is still ended after a second
   t.mock.timers.tick(1000);
   assert.deepEqual(exited, ['1']);
 });
+
+test('burst stdout chunks coalesce per frame, respect the buffer cap, and flush before exit', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const children = [], data = [], exited = [];
+  const terminals = createTerminals({
+    spawnProcess: () => { children.push(fakeChild()); return children.at(-1); },
+    build: () => ({ file: 'x', args: [] }),
+    flushMs: 16,
+    maxBufferBytes: 100,
+    onData: (id, text) => data.push([id, text]),
+    onExit: (id) => exited.push(id),
+  });
+  terminals.start('1');
+  // 200 small chunks inside one frame coalesce into leading chunk + cap flushes + trailing batch.
+  for (let i = 0; i < 50; i++) children[0].stdout.write(`L${i}\n`);
+  assert.ok(data.length < 10, `expected coalesced writes, got ${data.length}`);
+  t.mock.timers.tick(16);
+  const expected = Array.from({ length: 50 }, (_, i) => `L${i}\n`).join('');
+  assert.equal(data.map(([, text]) => text).join(''), expected);
+
+  // Let the quiet window expire, then verify buffered data flushes synchronously before onExit fires.
+  t.mock.timers.tick(16);
+  data.length = 0;
+  children[0].stdout.write('first');
+  children[0].stdout.write('trailing');
+  assert.equal(data.length, 1);
+  children[0].emit('close');
+  assert.deepEqual(data, [['1', 'first'], ['1', 'trailing']]);
+  assert.deepEqual(exited, ['1']);
+});

@@ -25,7 +25,7 @@ function fixture(cloud, { sshRun, sshWrite, telegramView = null, openBot = async
     cloudConnect: require('../src/cloud-connect.cjs'), telegramView, broadcast() {}, readPreferences: () => prefs, cloudMigrate, cloudComputer: null, cloudError: '',
     cloudClaim: { apiBase: () => 'https://cloud.example' },
     cloudSession: () => prefs.cloud.sessionEnc ? 'fixture-session' : '',
-    trustSender: () => {}, seedMacSshHost: () => {}, applyLayout: () => {}, broadcastNow: () => {},
+    bootTimer: { mark() {} }, trustSender: () => {}, seedMacSshHost: () => {}, applyLayout: () => {}, broadcastNow: () => {},
     createHermesHub: () => ({ getState: () => ({}) }), loadHermesPersisted: () => null, saveHermesPersisted() {}, pushHermesState() {},
     activeTabId: 'settings', savePreferences: () => saved.push(structuredClone(prefs)),
     openTelegramUsername: async username => { await openBot(username); prefs.selectedBotId = 'fixture-bot-id'; },

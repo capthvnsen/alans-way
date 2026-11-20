@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const path = require('node:path');
 const { fileURLToPath } = require('node:url');
-const { execFileSync } = require('node:child_process');
+const { execFile, execFileSync } = require('node:child_process');
 const { isSshTarget } = require('./core.cjs');
 const { isTailnetAddress } = require('./tailnet.cjs');
 
@@ -169,23 +169,42 @@ async function watchChange({ read, delayMs, onStuck }) {
 // `tailscale ip -4` answers this computer's tailnet IPv4, which is the address
 // an agent VM uses to SSH back here. The CLI is not always on PATH: on macOS
 // it lives inside the app bundle, on Windows under Program Files.
-function tailscaleSshHost({ platform = process.platform, programFiles = process.env.ProgramFiles, username = '', run, exists = fs.existsSync } = {}) {
-  if (!username) return '';
-  const candidates = platform === 'darwin'
+function tailscaleCandidates(platform, programFiles) {
+  return platform === 'darwin'
     ? ['/Applications/Tailscale.app/Contents/MacOS/Tailscale', 'tailscale']
     : platform === 'win32'
       ? [`${programFiles || 'C:\\Program Files'}\\Tailscale\\tailscale.exe`, 'tailscale.exe']
       : ['tailscale'];
+}
+function parseTailscaleSshHost(out, username) {
+  const ip = String(out).split('\n').map((line) => line.trim()).find(isTailnetAddress);
+  if (!ip) return '';
+  const host = `${username}@${ip}`;
+  return isSshTarget(host) ? host : '';
+}
+function tailscaleSshHost({ platform = process.platform, programFiles = process.env.ProgramFiles, username = '', run, exists = fs.existsSync } = {}) {
+  if (!username) return '';
   const invoke = run || ((file, args) => execFileSync(file, args, { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }));
-  for (const cli of candidates) {
+  for (const cli of tailscaleCandidates(platform, programFiles)) {
     if ((cli.includes('/') || cli.includes('\\')) && !exists(cli)) continue;
     let out;
     try { out = invoke(cli, ['ip', '-4']); } catch { continue; }
-    const ip = String(out).split('\n').map((line) => line.trim()).find(isTailnetAddress);
-    if (ip) {
-      const host = `${username}@${ip}`;
-      return isSshTarget(host) ? host : '';
-    }
+    const host = parseTailscaleSshHost(out, username);
+    if (host) return host;
+  }
+  return '';
+}
+async function tailscaleSshHostAsync({ platform = process.platform, programFiles = process.env.ProgramFiles, username = '', run, exists = fs.existsSync } = {}) {
+  if (!username) return '';
+  const invoke = run || ((file, args) => new Promise((resolve, reject) => {
+    execFile(file, args, { encoding: 'utf8', timeout: 3000 }, (error, stdout) => error ? reject(error) : resolve(stdout));
+  }));
+  for (const cli of tailscaleCandidates(platform, programFiles)) {
+    if ((cli.includes('/') || cli.includes('\\')) && !exists(cli)) continue;
+    let out;
+    try { out = await invoke(cli, ['ip', '-4']); } catch { continue; }
+    const host = parseTailscaleSshHost(out, username);
+    if (host) return host;
   }
   return '';
 }
@@ -232,4 +251,38 @@ function sameOriginWindow(url, origin) {
   try { const parsed = new URL(url); return /^https?:$/.test(parsed.protocol) && parsed.origin === origin; } catch { return false; }
 }
 
-module.exports = { sameOriginWindow, queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, plainLine, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost };
+// Movement-only pointer feed: sends only when coordinates change, slows polling
+// after the pointer stays still, and stops its timer completely while hidden.
+function createPointerFeed({ activeMs = 50, idleMs = 100, stillAfterMs = 2500, now = Date.now, read, send }) {
+  let timer, last = null, lastMovedAt = 0, visible = false, stopped = false;
+  function schedule(delay) {
+    clearTimeout(timer);
+    timer = undefined;
+    if (!visible || stopped) return;
+    timer = setTimeout(tick, delay);
+    timer.unref?.();
+  }
+  function tick() {
+    timer = undefined;
+    if (!visible || stopped) return;
+    const point = read();
+    if (!point) { visible = false; return; }
+    const ts = now();
+    const moved = !last || Math.abs(point.x - last.x) >= 0.5 || Math.abs(point.y - last.y) >= 0.5;
+    if (moved) { last = point; lastMovedAt = ts; send(point); }
+    schedule(ts - lastMovedAt >= stillAfterMs ? idleMs : activeMs);
+  }
+  return {
+    setVisible(next) {
+      const want = Boolean(next);
+      if (want === visible) return;
+      visible = want;
+      if (!visible) { clearTimeout(timer); timer = undefined; }
+      else if (!stopped) { lastMovedAt = now(); schedule(activeMs); }
+    },
+    stop() { stopped = true; visible = false; clearTimeout(timer); timer = undefined; },
+    get running() { return Boolean(timer); },
+  };
+}
+
+module.exports = { sameOriginWindow, queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, plainLine, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost, tailscaleSshHostAsync, createPointerFeed };

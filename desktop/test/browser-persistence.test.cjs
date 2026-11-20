@@ -269,7 +269,7 @@ test('ordinary quit keeps views alive until cookies are durable, and a repeated 
     savePreferences() {}, saveBrowserSession: () => { saves++; return new Promise(resolve => { finish = resolve; }); },
     hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },
     modelAuthChild: null, tray: null, apiServer: null, clearInterval() {}, clearTimeout() {},
-    pointerTimer: 0, activityTimer: 0, idleTimer: 0, captchaTimer: 0, vpsTimer: 0, vpsMirrorTimer: 0, vpsMirrorDebounce: 0,
+    pointerFeed: null, onlineTimer: 0, activityTimer: 0, idleTimer: 0, captchaTimer: 0, vpsTimer: 0, vpsMirrorTimer: 0, vpsMirrorDebounce: 0,
   });
   const start = source.includes('  let browserQuitPending') ? '  let browserQuitPending' : "  app.on('before-quit',";
   vm.runInContext(section(start, "  app.on('window-all-closed'"), context);
@@ -296,7 +296,7 @@ for (const outcome of ['hangs', 'fails']) {
       logError: (label, error) => errors.push(`${label}: ${error.message}`),
       hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },
       modelAuthChild: null, tray: null, apiServer: null, clearInterval() {}, clearTimeout() {},
-      pointerTimer: 0, activityTimer: 0, idleTimer: 0, captchaTimer: 0, vpsTimer: 0, vpsMirrorTimer: 0, vpsMirrorDebounce: 0,
+      pointerFeed: null, onlineTimer: 0, activityTimer: 0, idleTimer: 0, captchaTimer: 0, vpsTimer: 0, vpsMirrorTimer: 0, vpsMirrorDebounce: 0,
     });
     vm.runInContext(section('  let browserQuitPending', "  app.on('window-all-closed'"), context);
     listener({ preventDefault() {} });
