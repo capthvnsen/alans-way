@@ -3017,6 +3017,13 @@ async function navigateVps(id,url) {
   await remoteRequest(id,'control',{controller:'human'});
   await remoteRequest(id,'human-actions',{action:'navigate',url:normalizeUrl(url)});
 }
+const handoffRequests = new Map();
+// A restore whose reply was lost may still have landed: the VM tab carries the
+// handoff id the host stored, which is the operation's identity.
+async function restoredOnVm(tabId,handoffId) {
+  const seen=await remoteRequest(tabId,'',undefined).catch(()=>null),stored=seen?.handoff;
+  return stored?.id===handoffId?{verification:stored.verification,restored:stored.restoredDrafts,skipped:stored.skippedDrafts,tab:seen}:null;
+}
 async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   const source=tabs.get(id) || vpsTabs.get(id); if(!source)throw new Error('Source tab not found.');
   const sourceHost=tabs.has(id)?'mac':'vps';
@@ -3024,14 +3031,17 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   // stays accepted as the compat wire name for the user's own computer.
   const dest=destination===HOST_LABEL?'mac':destination;
   if(!['mac','vps'].includes(dest)||dest===sourceHost)throw new Error('Choose the other computer.');
+  if(handoffRequests.has(id))return handoffRequests.get(id);
+  if(source.handoff?.phase==='handed_off')throw new Error('This page already moved. Continue at its destination or use Move back.');
+  const work=(async()=>{
   const wasController=source.controller;
-  if(sourceHost==='mac') { changeController(id,'human'); await source.queue; }
-  else await remoteRequest(id,'control',{controller:'human'});
-  // Sign-in cookies for the page's own URL ride along (see signInsTravel);
-  // site storage, page memory and passwords never do.
-  const carry=await signInsTravel();
-  let target,result,checkpoint,signIns=0;
+  let target,result,checkpoint,handoff,signIns=0;
   try {
+    if(sourceHost==='mac') { changeController(id,'human'); await source.queue; }
+    else await remoteRequest(id,'control',{controller:'human'});
+    // Sign-in cookies for the page's own URL ride along (see signInsTravel);
+    // site storage, page memory and passwords never do.
+    const carry=await signInsTravel();
     checkpoint=sourceHost==='mac'?await boundedJs(source.view.webContents,checkpointExpression(includeDrafts && !vaultLock.isLocked(source)),10000):await remoteRequest(id,'checkpoint',{includeDrafts,includeCookies:carry});
     if(sourceHost==='mac'&&vaultLock.isLocked(source))checkpoint={...checkpoint,title:'',drafts:[]};
     if(!/^https?:\/\//.test(checkpoint.url))throw new Error('Open a web page before handing it off.');
@@ -3044,30 +3054,40 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
       const jar=session.fromPartition('persist:browser').cookies;
       for(const cookie of toElectronCookies(remoteCookies,checkpoint.url))if(await jar.set(cookie).then(()=>true,()=>false))signIns++;
     }
+    handoff={id:crypto.randomUUID(),sourceHost,sourceTabId:id,destinationHost:dest,createdAt:Date.now(),note:String(note).slice(0,4000),phase:'review_required',signIns,signInsCarried:carry};
+    if(dest==='vps') {
+      result=await remoteRequest(target.id,'restore',{checkpoint,handoff}).catch(async(error)=>{const landed=await restoredOnVm(target.id,handoff.id);if(landed)return landed;throw error;});target=result.tab;
+    } else {
+      target=createTab({url:checkpoint.url,botId:source.botId,controller:'human',owner:source.owner || 'bot',activate:false});target.handoff=handoff;
+      for(let n=0;n<100;n++){if(!target.view.webContents.isLoading()&&target.view.webContents.getURL()!=='about:blank')break;await new Promise(r=>setTimeout(r,100));}
+      if(target.view.webContents.isLoading())throw new Error(`${HOST_LABEL==='windows'?'PC':'Mac'} destination is still loading. Its tab was closed. Retry the handoff.`);
+      result=await boundedJs(target.view.webContents,restoreExpression(checkpoint),15000);
+    }
   } catch(error) {
-    // Nothing exists on the other side yet: give the source back to whoever had it.
+    // The source is not retired yet, so it is still the one live copy: drop a destination that was
+    // not confirmed and give the source back, which also brings its Move button back.
+    if(target){
+      if(dest==='mac'){try{if(tabs.has(target.id))closeTab(target.id)}catch{}}
+      else await vpsBrowser.request(`/v1/tabs/${target.id}`,'DELETE',undefined,{human:true}).then(()=>vpsTabs.delete(target.id),(e)=>logError('handoff discard',e));
+    }
     if(sourceHost==='mac'&&tabs.has(id)&&wasController==='agent')changeController(id,'agent','agent');
     else if(sourceHost==='vps'&&wasController==='agent')await remoteRequest(id,'control',{controller:'agent'}).catch(()=>{});
     throw error;
   }
-  const handoff={id:crypto.randomUUID(),sourceHost,sourceTabId:id,destinationHost:dest,createdAt:Date.now(),note:String(note).slice(0,4000),phase:'review_required',signIns,signInsCarried:carry};
-  if(dest==='vps') {
-    result=await remoteRequest(target.id,'restore',{checkpoint,handoff});target=result.tab;
-  } else {
-    target=createTab({url:checkpoint.url,botId:source.botId,controller:'human',owner:source.owner || 'bot',activate:false});target.handoff=handoff;
-    for(let n=0;n<100;n++){if(!target.view.webContents.isLoading()&&target.view.webContents.getURL()!=='about:blank')break;await new Promise(r=>setTimeout(r,100));}
-    if(target.view.webContents.isLoading()){try{closeTab(target.id)}catch{}throw new Error(`${HOST_LABEL==='windows'?'PC':'Mac'} destination is still loading. Its tab was closed. Retry the handoff.`);}
-    result=await boundedJs(target.view.webContents,restoreExpression(checkpoint),15000);
-  }
   const record={...handoff,destinationTabId:target.id,verification:result.verification,restoredDrafts:result.restored,skippedDrafts:result.skipped};
-  if(dest==='mac')target.handoff=record;
-  else {target.handoff=record;vpsTabs.set(target.id,target);}
   const retired={id:record.id,phase:'handed_off',sourceHost,destinationHost:dest,destinationTabId:target.id,createdAt:record.createdAt};
   if(sourceHost==='mac')source.handoff=retired;
   else record.sourceRetired=await remoteRequest(id,'control',{controller:'human',handoff:retired}).then(()=>true,()=>false);
+  if(record.sourceRetired===false)record.verification='review_required';
+  if(dest==='mac')target.handoff=record;
+  else {target.handoff=record;vpsTabs.set(target.id,target);}
   prefs.remoteControl=false; prefs.handoffs=[record,...prefs.handoffs].slice(0,20);if(dest==='vps')canvasTab='screen';else{canvasTab='browser';activeTabId=target.id;}
-  if(dest==='vps')await remoteRequest(target.id,'activate',{});
-  savePreferences();applyLayout();broadcast();return record;
+  savePreferences();applyLayout();broadcast();
+  if(dest==='vps')await remoteRequest(target.id,'activate',{}).catch(error=>logError('handoff activate',error));
+  return record;
+  })();
+  handoffRequests.set(id,work);
+  try{return await work;}finally{handoffRequests.delete(id);}
 }
 // History navigation has no promise. Listeners go on before the trigger so a
 // fast (cached or same-document) navigation cannot finish unobserved.

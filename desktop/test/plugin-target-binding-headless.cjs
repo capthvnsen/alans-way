@@ -186,6 +186,8 @@ async function startClient(elicitation = true) {
   fs.writeFileSync(path.join(evidence, 'results.json'), JSON.stringify(results, null, 2));
   fs.writeFileSync(path.join(evidence, 'stderr.json'), JSON.stringify(children.map(p => p.stderrText()), null, 2));
   cdp?.socket.close(); await Promise.all(children.map(stop));
+  // A Chromium helper that outlives the browser (crashpad) keeps the inherited stdio pipes open and the process alive; close our ends.
+  for (const p of children) for (const stream of [p.stdin, p.stdout, p.stderr]) stream?.destroy();
   for (const server of servers) { server.closeAllConnections(); server.close(); }
   fs.rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });

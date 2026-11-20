@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { app, BrowserWindow, webContents, session, Notification } = require('electron');
+const { quitFixture } = require('./electron-fixture.cjs');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-workspace-needs-human-'));
 process.env.HERMES_WORKSPACE_DATA = profile;
 fs.writeFileSync(path.join(profile, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false,
@@ -292,5 +293,5 @@ app.whenReady().then(async () => {
   assert.equal(failures.length, 0, failures.map(error => error.stack).join('\n'));
 
   console.log('PASS: a release with a reason badges the tab, shows an escaped banner, notifies once, and holds the tab until the human gives it back.');
-  server.close(); app.quit();
+  quitFixture(server);
 }).catch(error => { console.error(error.stack); server?.close(); app.exit(1); });
