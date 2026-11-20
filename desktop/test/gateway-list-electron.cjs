@@ -327,6 +327,7 @@ if (!process.versions.electron) {
       await go('1001', 'native');
 
       // An approval request while away: waiting badge, its label, one notification.
+      await streamDelay(800);
       await type('APPROVE please', true);
       await until(async () => (await native()).run, 'approval turn started');
       await go('1002', 'hermes-desktop');
