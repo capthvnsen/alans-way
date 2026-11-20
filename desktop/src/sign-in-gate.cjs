@@ -8,7 +8,8 @@ function createSignInGate({ settleWithin, capMs, onError }) {
   return {
     start(restore) {
       open = false;
-      const run = Promise.resolve().then(restore).catch(onError);
+      // The async wrapper turns a synchronous throw into a rejection.
+      const run = (async () => restore())().catch(onError);
       waiting = settleWithin(run, capMs).then(() => { open = true; });
       return run;
     },

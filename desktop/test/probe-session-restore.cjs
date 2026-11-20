@@ -1,5 +1,7 @@
 // Measures startup with saved session-only sign-ins, hidden, on a throwaway profile (never the real one):
 //   node test/probe-session-restore.cjs [cookiesPerPartition=20] [keychainDelayMs=0]
+// Also seeds one saved tab on a loopback server and prints when that server first sees a request (+ms since the app was
+// spawned, about 100 ms ahead of the app's own clock), to show restored tabs waiting for the restore or its cap.
 // Seeds preferences.json with sessionCookies sealed by the mock keychain, launches the app hidden under the
 // watchdog with HERMES_WORKSPACE_PROFILE_BOOT=1, and prints the [boot-timing] lines. Not part of `npm test`.
 // The mock keychain answers at once, so by default this times only the CDP/view steps. keychainDelayMs delays
@@ -13,12 +15,16 @@ if (typeof electron === 'string') {
   const { spawn } = require('node:child_process');
   const { hiddenEnv, watchdog } = require('./hidden-env.cjs');
   const { privateTmp } = require('./with-tmp.cjs');
+  const http = require('node:http');
   const count = Number(process.argv[2]) || 20, delay = Number(process.argv[3]) || 0;
   const tmp = privateTmp({ strict: false });
   const profile = fs.mkdtempSync(path.join(tmp.dir, 'probe-'));
   const { env, binary } = hiddenEnv({ ...process.env, ...tmp.env, HERMES_WORKSPACE_DATA: profile, HERMES_PROBE_COOKIES: String(count), HERMES_PROBE_KEYCHAIN_DELAY_MS: String(delay) });
   delete env.ELECTRON_RUN_AS_NODE;
+  let spawned = 0;
+  const server = http.createServer((req, res) => { if (req.url === '/tab') console.log(`PROBE tab-request +${(performance.now() - spawned).toFixed(0)}ms`); res.end('<!doctype html><title>probe</title>'); });
   const run = phase => new Promise(resolve => {
+    spawned = performance.now();
     const child = spawn(binary, [`--user-data-dir=${profile}`, __filename, phase], { env: { ...env, HERMES_WORKSPACE_PROFILE_BOOT: phase === 'boot' ? '1' : '' }, stdio: ['ignore', 'inherit', 'pipe'] });
     let aborted = '';
     const stop = watchdog(child, reason => { aborted = reason; console.error(`WATCHDOG ABORT: ${reason}`); });
@@ -27,10 +33,12 @@ if (typeof electron === 'string') {
     child.once('close', code => { clearTimeout(deadline); stop(); resolve({ code, aborted }); });
   });
   (async () => {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    env.HERMES_PROBE_TAB = `http://127.0.0.1:${server.address().port}/tab`;
     let result = await run('seed');
     if (!result.code) result = await run('boot');
     console.log(`probe exit ${result.code}${result.aborted ? ` aborted: ${result.aborted}` : ' (watchdog did not fire)'}`);
-  })().finally(() => { fs.rmSync(profile, { recursive: true, force: true }); tmp.finish(); });
+  })().finally(() => { server.close(); fs.rmSync(profile, { recursive: true, force: true }); tmp.finish(); });
 } else {
   const { app } = electron;
   const phase = process.argv.at(-1);
@@ -41,7 +49,7 @@ if (typeof electron === 'string') {
       const cookie = (name, i) => ({ name: `${name}${i}`, value: 'x'.repeat(200), domain: 'probe.example', path: '/', secure: true, httpOnly: true, hostOnly: true, session: true, sameSite: 'lax', size: 210 });
       const records = { 'persist:browser': Array.from({ length: count }, (_, i) => cookie('b', i)), 'persist:telegram': Array.from({ length: count }, (_, i) => cookie('t', i)) };
       const sealed = (await electron.safeStorage.encryptStringAsync(JSON.stringify(records))).toString('base64');
-      fs.writeFileSync(path.join(process.env.HERMES_WORKSPACE_DATA, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, sessionCookies: sealed, savedTabs: [] }));
+      fs.writeFileSync(path.join(process.env.HERMES_WORKSPACE_DATA, 'preferences.json'), JSON.stringify({ onboarded: true, preview: false, sessionCookies: sealed, savedTabs: [{ url: process.env.HERMES_PROBE_TAB, botId: 'shared', owner: 'user' }] }));
       console.error('PROBE seeded');
       app.exit(0);
     });
