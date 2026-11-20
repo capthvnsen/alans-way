@@ -53,7 +53,7 @@ test('a message sent while Hermes is unreachable waits as queued and goes, in or
   assert.equal(new Set(r.calls.map((c) => c.cmid)).size, 2, 'each message has its own client id');
   assert.ok(r.calls.every((c) => /^[\w-]{8,64}$/.test(c.cmid)));
   await until(() => r.states().join() === 'one:server,two:server', 'the server rows to replace the local ones');
-  assert.equal(fs.existsSync(path.join(r.dir, 'native-chat-queue', `${SID}.json`)), false, 'a delivered queue leaves no file');
+  await until(() => !fs.existsSync(path.join(r.dir, 'native-chat-queue', `${SID}.json`)), 'a delivered queue to leave no file');
 });
 
 test('only one prompt is submitted at a time per conversation; the next goes when the reply is finished', async () => {
@@ -91,6 +91,27 @@ test('the queue survives a restart and is delivered once', async () => {
   await until(() => !fs.existsSync(file), 'the queue file to go');
   await tick(60);
   assert.equal(second.calls.length, 1);
+});
+
+const onDisk = (dir) => { try { return JSON.parse(fs.readFileSync(path.join(dir, 'native-chat-queue', `${SID}.json`), 'utf8')).items; } catch { return []; } };
+test('a message is on disk before send is acknowledged and before its request leaves, so a crash right after loses nothing', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-queue-'));
+  const offline = rig({ dir, ready: false });
+  await offline.chat.command('send', { sessionId: SID, text: 'typed' }); // no flush, no wait: the app dies here
+  assert.deepEqual(onDisk(dir).map((i) => [i.text, i.state]), [['typed', 'queued']]);
+  const seen = [];
+  const online = rig({ dir, ready: true, stream: async ({ state }) => { seen.push(onDisk(dir).map((i) => [i.state, i.attempts])); state.hold = true; await new Promise(() => {}); } });
+  await until(() => online.calls.length === 1, 'the restored message to go');
+  assert.deepEqual(seen, [[['sending', 1]]], 'the attempt is on disk before the request leaves');
+});
+
+test('a cancelled message leaves the disk at once, so a crash right after does not bring it back', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-chat-queue-'));
+  const r = rig({ dir, ready: false });
+  await r.chat.command('send', { sessionId: SID, text: 'a' });
+  await r.chat.command('send', { sessionId: SID, text: 'b' });
+  r.chat.command('cancel', { sessionId: SID, localId: r.rows().find((m) => m.text === 'a').id });
+  assert.deepEqual(onDisk(dir).map((i) => i.text), ['b']);
 });
 
 test('after a drop the history is read first: a message Hermes already has is not sent again', async () => {

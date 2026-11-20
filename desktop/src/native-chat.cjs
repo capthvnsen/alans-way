@@ -133,8 +133,8 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
   // Every send is an item here first. It goes straight out when Hermes is reachable and the
   // conversation is idle; otherwise it waits (queued), in order, one prompt at a time, and goes
   // when the link returns or the retry timer finds Hermes. Items live on disk, so a restart keeps them.
-  // shortcut: an item is written to disk 250 ms after it is queued or changes (a send that is admitted sooner never
-  // touches disk), so a hard crash inside that window loses it; a normal quit flushes at once.
+  // An item is on disk before a send is acknowledged and before its request leaves, and a cancel removes it at once;
+  // other changes are written 250 ms later (a crash inside that window repeats a step that the history check absorbs).
   const queueFile = (id) => path.join(queueDir, `${id}.json`);
   const queuedRow = (item) => ({ id: item.localId ||= `local-${++localSeq}`, role: 'user', text: item.text, ts: item.createdAt / 1000, state: item.state });
   function writeQueue(id) {
@@ -230,6 +230,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
     if (!item.attempts) item.afterId = t.messages.reduce((top, m) => typeof m.id === 'number' && m.id > top ? m.id : top, 0);
     item.attempts += 1; item.attemptedAt = now();
     setItemState(id, item, 'sending');
+    writeQueue(id);
     startRun(id, item);
   }
 
@@ -518,7 +519,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
       if (items.length >= QUEUE_MAX || items.reduce((n, i) => n + i.text.length, 0) + text.length > QUEUE_BYTES) throw new Error('Too many messages are waiting to send. Wait for them to go, or delete some.');
       const item = { cmid: crypto.randomUUID(), text, createdAt: now(), state: 'queued', attempts: 0, attemptedAt: 0, afterId: 0, ...(compact === false ? { noCompact: true } : {}) };
       queues.set(id, [...items, item]);
-      t.messages = [...t.messages, queuedRow(item)]; t.notice = ''; bump(t); saveQueueSoon(id);
+      t.messages = [...t.messages, queuedRow(item)]; t.notice = ''; bump(t); writeQueue(id);
       const s = sessions.find((row) => row.id === id);
       if (s) { s.lastActive = now() / 1000; sessions = [s, ...sessions.filter((row) => row !== s)]; }
       drain(id);
@@ -540,6 +541,7 @@ function createNativeChat({ dir, loadConfig = () => ({}), saveConfig = () => {},
       const item = queues.get(id)?.find((i) => i.localId === localId && i.state !== 'sending');
       if (!item) throw new Error('Nothing to cancel.');
       dropItem(id, item, { row: true });
+      writeQueue(id);
       drain(id); notify();
       return { ok: true };
     },
