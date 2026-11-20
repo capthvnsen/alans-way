@@ -6,6 +6,7 @@ import importlib
 import json
 import logging
 import os
+import threading
 from email.utils import parsedate_to_datetime
 import urllib.error
 import urllib.request
@@ -99,6 +100,9 @@ def _plugin_home() -> Path:
 
 class MobileVoicePlugin:
     config_error = ""
+    # Shared by every instance: /call can arrive on more than one Hermes thread,
+    # and a second start() would find the first one's port taken and drop its broker.
+    _start_lock = threading.Lock()
 
     def __init__(self, ctx):
         self.ctx = ctx
@@ -128,6 +132,10 @@ class MobileVoicePlugin:
         Dashboard/CLI plugin discovery must never reserve the gateway socket
         or capture credentials from an unscoped multiplex loader.
         """
+        with self._start_lock:
+            self._start()
+
+    def _start(self):
         if self.broker:
             return
         if self.config_error:

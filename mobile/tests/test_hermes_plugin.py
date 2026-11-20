@@ -176,6 +176,43 @@ class StartTests(unittest.TestCase):
         self.assertIsNone(plugin.broker)
 
 
+class ConcurrentStartTests(unittest.TestCase):
+    def test_simultaneous_calls_start_one_listener(self):
+        import threading
+        import time
+        started = []
+
+        class Listener:
+            def __init__(self, *args, **kwargs):
+                self.host, self.port = "127.0.0.1", kwargs.get("port")
+
+            def start(self):
+                time.sleep(0.05)
+                started.append(self)
+
+            def stop(self):
+                pass
+
+        class Broker:
+            def __init__(self, **kwargs):
+                self.db = MagicMock()
+                self.audio = kwargs["audio"]
+
+        stub = types.ModuleType("mobile.voice.server")
+        stub.BrokerListener, stub.VoiceBroker = Listener, Broker
+        stub.HermesAudio = lambda *args, **kwargs: MagicMock()
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+                sys.modules, {**hermes_modules(temp), "mobile.voice.server": stub}):
+            plugin = MobileVoicePlugin(Context(app_url="https://voice.example.test/call"))
+            threads = [threading.Thread(target=plugin.start) for _ in range(6)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(len(started), 1)
+        self.assertIsNotNone(plugin.broker)
+
+
 class CallCommandTests(unittest.IsolatedAsyncioTestCase):
     def plugin(self):
         with patch.dict(sys.modules, hermes_modules()):
