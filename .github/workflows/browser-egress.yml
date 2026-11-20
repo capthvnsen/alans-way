@@ -11,6 +11,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # A newer push to the same pull request cancels its older run. Pushes to main
+  # and manual runs get a unique group, so they are never cancelled or replaced
+  # while pending.
+  group: browser-egress-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   kernel-filter:
     runs-on: ubuntu-latest
