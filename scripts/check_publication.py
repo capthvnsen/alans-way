@@ -53,6 +53,8 @@ PINNED_REF = re.compile(r"(?:[0-9a-fA-F]{40}|v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)
 BINARY_ASSETS = {"desktop/assets/icon.png": b"\x89PNG\r\n\x1a\n", "desktop/assets/icon.icns": b"icns",
                  "desktop/assets/icon.ico": b"\x00\x00\x01\x00",
                  "desktop/assets/hermes-icon.png": b"\x89PNG\r\n\x1a\n",
+                 "desktop/assets/alans-way-logo.png": b"\x89PNG\r\n\x1a\n",
+                 "desktop/assets/alans-way-logo-64.png": b"\x89PNG\r\n\x1a\n",
                  "desktop/src/newtab-backdrop.png": b"\x89PNG\r\n\x1a\n"}
 AVATAR_ASSETS = frozenset(f"desktop/assets/avatars/{name}.png" for name in (
     "apollo", "artemis", "athena", "faun", "hades", "hermes", "medusa",
