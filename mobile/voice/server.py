@@ -29,6 +29,9 @@ TURN_ID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 MAX_TEXT_FIELD_BYTES = 256
 MAX_JSON_BODY_BYTES = 64 * 1024
+# A client that opens a request and stops sending must not hold its handler forever.
+BODY_READ_SECONDS = 10
+UPLOAD_READ_SECONDS = 60
 MAX_MULTIPART_PARTS = 8
 CAPABILITIES_CACHE_SECONDS = 45
 LISTENER_START_SECONDS = 10
@@ -222,10 +225,14 @@ class VoiceBroker:
         if request.content_length is not None and request.content_length > MAX_JSON_BODY_BYTES:
             raise web.HTTPRequestEntityTooLarge(max_size=MAX_JSON_BODY_BYTES, actual_size=request.content_length)
         raw = b""
-        while chunk := await request.content.read(8192):
-            raw += chunk
-            if len(raw) > MAX_JSON_BODY_BYTES:
-                raise web.HTTPRequestEntityTooLarge(max_size=MAX_JSON_BODY_BYTES, actual_size=len(raw))
+        try:
+            async with asyncio.timeout(BODY_READ_SECONDS):
+                while chunk := await request.content.read(8192):
+                    raw += chunk
+                    if len(raw) > MAX_JSON_BODY_BYTES:
+                        raise web.HTTPRequestEntityTooLarge(max_size=MAX_JSON_BODY_BYTES, actual_size=len(raw))
+        except TimeoutError:
+            raise web.HTTPRequestTimeout(text="Request body was not received in time") from None
         try:
             body = json.loads(raw)
         except ValueError:
@@ -285,23 +292,27 @@ class VoiceBroker:
                     raise web.HTTPRequestEntityTooLarge(max_size=MAX_TEXT_FIELD_BYTES, actual_size=len(data))
             return data.decode("utf-8", "replace").strip()
 
-        while part := await reader.next():
-            parts += 1
-            if parts > MAX_MULTIPART_PARTS:
-                raise web.HTTPBadRequest(text="Too many form parts")
-            if part.name == "turn_id":
-                turn_id = await small_text(part)
-            elif part.name in ("mime_type", "content_type"):
-                mime = (await small_text(part)).split(";", 1)[0] or mime
-            elif part.name == "audio":
-                mime = (part.headers.get("Content-Type") or mime).split(";", 1)[0]
-                chunks = []
-                while chunk := await part.read_chunk(64 * 1024):
-                    total += len(chunk)
-                    if total > MAX_AUDIO_BYTES:
-                        raise web.HTTPRequestEntityTooLarge(max_size=MAX_AUDIO_BYTES, actual_size=total)
-                    chunks.append(chunk)
-                audio = b"".join(chunks)
+        try:
+            async with asyncio.timeout(UPLOAD_READ_SECONDS):
+                while part := await reader.next():
+                    parts += 1
+                    if parts > MAX_MULTIPART_PARTS:
+                        raise web.HTTPBadRequest(text="Too many form parts")
+                    if part.name == "turn_id":
+                        turn_id = await small_text(part)
+                    elif part.name in ("mime_type", "content_type"):
+                        mime = (await small_text(part)).split(";", 1)[0] or mime
+                    elif part.name == "audio":
+                        mime = (part.headers.get("Content-Type") or mime).split(";", 1)[0]
+                        chunks = []
+                        while chunk := await part.read_chunk(64 * 1024):
+                            total += len(chunk)
+                            if total > MAX_AUDIO_BYTES:
+                                raise web.HTTPRequestEntityTooLarge(max_size=MAX_AUDIO_BYTES, actual_size=total)
+                            chunks.append(chunk)
+                        audio = b"".join(chunks)
+        except TimeoutError:
+            raise web.HTTPRequestTimeout(text="Upload was not received in time") from None
         if not TURN_ID_RE.fullmatch(turn_id):
             raise web.HTTPBadRequest(text="turn_id must be a UUID")
         if not audio or mime.strip().lower() not in AUDIO_MIME_TYPES:

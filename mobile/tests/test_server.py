@@ -122,6 +122,32 @@ class VoiceHttpProtocolTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(bad.status, 400)
         self.assertEqual((await self._create_call())["expires_in"], 3600)
 
+    async def _stalled_request(self, head, patch_name):
+        """Send headers and part of a body, then go quiet; return the status line the server answers with."""
+        from mobile.voice import server as server_module
+        with patch.object(server_module, patch_name, 0.3):
+            reader, writer = await asyncio.open_connection("127.0.0.1", self.client.server.port)
+            try:
+                writer.write(head)
+                await writer.drain()
+                return await asyncio.wait_for(reader.readline(), timeout=3)
+            finally:
+                writer.close()
+
+    async def test_a_client_that_stalls_mid_body_is_cut_off_on_the_unauthenticated_route(self):
+        status = await self._stalled_request(
+            b"POST /v1/calls HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n{",
+            "BODY_READ_SECONDS")
+        self.assertIn(b"408", status)
+
+    async def test_a_client_that_stalls_mid_upload_is_cut_off_and_frees_the_call(self):
+        call = await self._create_call()
+        status = await self._stalled_request(
+            (f"POST /v1/calls/{call['call_id']}/turns HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {call['access_token']}\r\n"
+             "Content-Type: multipart/form-data; boundary=b\r\nContent-Length: 5000\r\n\r\n--b\r\n").encode(),
+            "UPLOAD_READ_SECONDS")
+        self.assertIn(b"408", status)
+
     async def test_concurrent_capability_probes_make_one_upstream_request(self):
         calls = []
 
