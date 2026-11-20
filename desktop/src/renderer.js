@@ -1377,7 +1377,7 @@ const SETTINGS_CATEGORIES = [
 ];
 const SETTINGS_SECTIONS = [
   { id: 'keyboard', category: 'general', title: 'Keyboard shortcuts', description: 'Find the keys for moving between agents, browser tabs and dialogs.', words: 'keyboard navigation keys guide shortcuts search', mount(body) { const button = element('button', 'secondary-button', 'Keyboard shortcuts'); button.id = 'settings-shortcuts'; button.onclick = showShortcuts; body.append(button); } },
-  { id: 'chat-surface', category: 'general', title: 'Chat surface', description: 'Choose which chat an agent opens on first: Telegram, Hermes Desktop or Alan’s native chat.', words: 'telegram hermes desktop webapp chat surface tailscale address sign in compact context summarise idle', mount: mountChatSurface },
+  { id: 'chat-surface', category: 'general', title: 'Chat surface', description: 'Choose which chat an agent opens on first: Telegram, Hermes Desktop or Alan’s native chat.', words: 'telegram hermes desktop webapp chat surface tailscale address sign in compact context summarise idle cache hour minutes', mount: mountChatSurface },
   { id: 'tab-behavior', category: 'general', title: 'Links and tab control', description: 'Choose how links from bot chats open and when bots can take back browser tabs.', words: 'automatic takeover auto open links control browser hand back', mount: mountTabBehavior },
   { id: 'bot-appearance', category: 'bots', title: 'Bot appearance', description: 'Choose a marble avatar or import an image for your selected bot.', words: 'avatars image customize appearance eyes', mount(body) { const button = element('button', 'secondary-button', 'Customize bot avatars'); button.onclick = () => openSettingsDetail(() => showAvatarEditor()); body.append(button, element('p', 'settings-note', 'Eyes follow your mouse only while Telegram reports activity.')); } },
   { id: 'primary-bot', category: 'bots', title: 'Primary bot', description: 'Pin one bot at the top of your sidebar. Without a preference, the overseer bot is used.', words: 'default primary pinned order sidebar', mount: mountPrimaryBot },
@@ -1799,6 +1799,12 @@ function mountChatSurface(body) {
   body.append(element('p', 'settings-note', "It talks to the Hermes API server (API_SERVER_ENABLED=true and API_SERVER_KEY in the profile's .env). Use http://127.0.0.1:8642 through an SSH tunnel, or the https address Tailscale Serve gives port 8642."));
   const compact = settingsToggle(body, 'settings-native-compact', 'Compact long or idle chats before sending', 'compactBeforeSend');
   body.append(element('p', 'settings-note', 'When a conversation is nearly full, or has been idle long enough that Hermes has forgotten its cached context, Alan’s native chat asks Hermes to summarise it first. You can turn that off for one message from the note above the message box.'));
+  const ttlRow = element('div', 'setting-row'), ttl = element('select'); ttl.id = 'settings-native-cache-ttl'; ttl.setAttribute('aria-label', 'Treat a chat as idle after');
+  for (const [value, label] of [['5m', '5 minutes (Hermes default)'], ['1h', '1 hour']]) { const option = element('option', '', label); option.value = value; ttl.append(option); }
+  ttlRow.append(element('span', '', 'Treat a chat as idle after'), ttl); body.append(ttlRow);
+  const ttlStatus = settingsStatus(body);
+  ttl.onchange = async () => { await runSettingsAction(ttl, ttlStatus, () => api.command('settings', { promptCacheTtl: ttl.value }), 'Saving…', 'Saved.'); ttl.value = state.promptCacheTtl; };
+  body.append(element('p', 'settings-note', 'Pick 1 hour if your Hermes config uses the 1-hour prompt cache (prompt_caching.cache_ttl: "1h", or "auto" for chats you type into).'));
   const refresh = () => {
     if (document.activeElement !== surface) surface.value = state.chatSurface;
     surface.querySelector('option[value="native"]').disabled = !state.nativeChat?.configured;
@@ -1812,6 +1818,7 @@ function mountChatSurface(body) {
     for (const button of nativeImport.children) button.hidden = !files.includes(button.dataset.name);
     nativeImport.hidden = !files.length;
     status.textContent = state.webappStatus === 'unconfigured' ? 'Not set up. Enter the address of your Hermes server above.' : webappStatusText();
+    if (document.activeElement !== ttl) ttl.value = state.promptCacheTtl;
     compact();
   };
   refresh(); return refresh;
