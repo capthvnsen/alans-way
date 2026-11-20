@@ -2511,5 +2511,6 @@ new ResizeObserver(() => { for (const id of terminalViews.keys()) fitTerminal(id
 // A narrow pane scrolls the Canvas strip; keep the selected tab in view.
 function showSelectedCanvasTab() { $('canvas-tabs').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
 new ResizeObserver(showSelectedCanvasTab).observe($('canvas-tabs'));
+new ResizeObserver(() => { if (state) fitTabs(); }).observe(document.querySelector('.tab-bar'));
 window.addEventListener('resize', scheduleLayout);
 api.getState().then(render).catch((error) => toast(error.message));

@@ -153,7 +153,7 @@ body:not(.darwin) .bots-hidden .chat-header{padding-left:52px}
 
 /* Canvas: one tab strip (pinned views, then browser tabs), the browser toolbar, then the frame. */
 .workspace-pane{position:relative;display:flex;flex-direction:column;min-width:0;padding:0 var(--space-3) var(--space-3);background:var(--color-bg);overflow:hidden}
-.tab-bar{container-type:inline-size;position:relative;display:flex;gap:var(--space-1);height:var(--bar-h);align-items:center;flex-shrink:0}
+.tab-bar{container:tabbar/inline-size;position:relative;display:flex;gap:var(--space-1);height:var(--bar-h);align-items:center;flex-shrink:0}
 .canvas-tabs{display:flex;gap:2px;flex-shrink:0}
 .tab-divider{width:1px;height:16px;margin:0 var(--space-1);background:var(--color-border-strong);flex-shrink:0}
 .tab-divider:has(+.tabs:empty){display:none}
@@ -162,7 +162,7 @@ body:not(.darwin) .bots-hidden .chat-header{padding-left:52px}
 .tab{position:relative;display:flex;align-items:center;gap:6px;height:var(--h-lg);min-width:44px;padding:0 var(--space-2);border-radius:var(--radius-sm);color:var(--color-text-2);font-size:var(--fs-sm);cursor:pointer;flex:0 1 200px;-webkit-app-region:no-drag}
 .tab.pinned{flex:none;padding:0 var(--space-3) 0 10px}
 /* In a narrow canvas the pinned tabs keep their icons (and tooltips) and give the labels back to the page tabs. */
-@container (max-width:620px){.tab.pinned .tab-title{display:none}.tab.pinned{padding:0 9px}}
+@container tabbar (max-width:620px){.tab.pinned .tab-title{display:none}.tab.pinned{padding:0 9px}}
 .tab:hover{background:var(--color-surface-2);color:var(--color-text)}
 .tab.active{background:var(--color-surface-3);color:var(--color-text)}
 .tab-glyph{width:14px;height:14px;flex:none}
@@ -171,7 +171,7 @@ body:not(.darwin) .bots-hidden .chat-header{padding-left:52px}
 .tab-spinner{width:14px;height:14px;margin:1px;border:2px solid var(--color-border-strong);border-top-color:var(--color-text-2);border-radius:50%;animation:tab-spin .8s linear infinite}
 @keyframes tab-spin{to{transform:rotate(360deg)}}
 .tab-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.tab:not(.pinned) .tab-title{flex:1}
+.tab:not(.pinned) .tab-title{flex:1;text-overflow:clip;-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 14px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 14px),transparent)}
 .tab-select{display:flex;align-items:center;gap:6px;min-width:0;flex:1;height:100%;padding:0;color:inherit;font-size:inherit;text-align:left;border-radius:var(--radius-sm)}
 .tab-close{position:absolute;right:var(--space-1);top:50%;margin-top:-12px;width:var(--h-sm);height:var(--h-sm);display:grid;place-items:center;border-radius:var(--radius-sm);color:var(--color-text-2);font-size:16px;line-height:1;opacity:0;background:var(--color-surface-3)}
 .tab:hover .tab-close,.tab.active .tab-close,.tab-close:focus-visible{opacity:1}
