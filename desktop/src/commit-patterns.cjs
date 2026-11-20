@@ -100,15 +100,18 @@ function isReadOnlyScript(source) {
   if (!tokens.length) return false;
   const locals = new Set();
   const isId = (tok) => tok?.t === 'id';
+  // Parameters are plain names only: a destructured one (`({ submit: s }) => ...`) would pull out a method by a name
+  // this check never sees after a dot, and forEach(s, form) would then call it.
+  const param = (tok) => tok.v === ',' || (isId(tok) && !WORDS.has(tok.v) && Boolean(locals.add(tok.v)));
   // Names the script declares itself: const/let names and the parameters of function expressions and arrows.
   for (let i = 0; i < tokens.length; i++) {
     const { t, v } = tokens[i];
     if (t === 'id' && (v === 'const' || v === 'let') && isId(tokens[i + 1])) locals.add(tokens[i + 1].v);
     if (t === 'op' && v === '=>') {
       if (isId(tokens[i - 1])) locals.add(tokens[i - 1].v);
-      else if (tokens[i - 1]?.v === ')') for (let j = i - 2; j >= 0 && tokens[j].v !== '('; j--) if (isId(tokens[j])) locals.add(tokens[j].v);
+      else if (tokens[i - 1]?.v === ')') for (let j = i - 2; j >= 0 && tokens[j].v !== '('; j--) if (!param(tokens[j])) return false;
     }
-    if (t === 'id' && v === 'function' && tokens[i + 1]?.v === '(') for (let j = i + 2; j < tokens.length && tokens[j].v !== ')'; j++) if (isId(tokens[j])) locals.add(tokens[j].v);
+    if (t === 'id' && v === 'function' && tokens[i + 1]?.v === '(') for (let j = i + 2; j < tokens.length && tokens[j].v !== ')'; j++) if (!param(tokens[j])) return false;
   }
   const depth = { '(': 0, '[': 0, '{': 0 };
   const close = { ')': '(', ']': '[', '}': '{' };

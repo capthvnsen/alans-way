@@ -159,7 +159,8 @@ const GATED_SCRIPTS = [
   'document.title = "x"', 'document.title++', 'count += 1', 'x = 1', 'document.body.innerHTML = ""', 'document.querySelector("a").remove()', 'document.body.appendChild(document.createElement("a"))',
   'document.querySelector("a").dispatchEvent(new Event("click"))', 'document.querySelector("a").onclick = go', 'document.body.addEventListener("click", go)',
   'document.querySelector("a").constructor.constructor("return 1")()', 'document.title.constructor', 'Object.assign(document.body, {})', 'document[k]', 'document.title["length"]',
-  'document.querySelector("a")?.click?.()', 'this.fetch("/x")', 'var x = document.title', 'function f() { return 1 } f()', 'const { cookie } = document', 'const f = async () => 1',
+  'document.querySelector("a")?.click?.()', 'this.fetch("/x")', 'var x = document.title', 'function f() { return 1 } f()', 'const { cookie } = document', '(({submit: s}, f) => [0].forEach(s, f))(document.forms[0], document.forms[0])', '(({cookie}) => cookie)(document)',
+  '(function({click: c}, e) { return [0].map(c, e) })(document.body, document.body)', '(([a]) => a)(document.links)', '((a = document.cookie) => a)()', 'const f = async () => 1',
   'document.title\u0020; fetch("/x")', 'document.title /* c */', 'document.title.replace(/a/g, "b")', 'tag`${document.title}`', '`${document.cookie}`', 'document.title; \u0066etch("/x")',
   'get', 'while (true) {}', 'document.designMode = "on"', 'document.querySelector("a").scrollIntoView()', 'document.querySelector("input").focus()', '', '(', 'document.title)'];
 
