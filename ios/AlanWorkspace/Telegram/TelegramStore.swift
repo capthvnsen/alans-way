@@ -39,6 +39,7 @@ public final class TelegramStore {
     @ObservationIgnored private var activeFileSends = 0
     @ObservationIgnored private let fileManager = FileManager.default
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
+    @ObservationIgnored private let chatsLoad = SingleFlight()
 
     public init() {}
 
@@ -207,6 +208,10 @@ public final class TelegramStore {
 
     /// Loads Telegram's main conversation list and keeps it current through TDLib updates.
     public func loadChats() async throws {
+        try await chatsLoad.run { [self] in try await fetchChats() }
+    }
+
+    private func fetchChats() async throws {
         guard let client else { throw TelegramStoreError.notAuthorized }
         isLoadingChats = true
         defer { isLoadingChats = false }
@@ -781,6 +786,22 @@ enum TelegramModelMapper {
             } }
         default: return []
         }
+    }
+}
+
+/// Callers that arrive while a run is in flight share it, so overlapping triggers cannot end each other's loading state.
+@MainActor
+final class SingleFlight {
+    private var task: Task<Void, any Swift.Error>?
+
+    func run(_ work: @escaping @MainActor () async throws -> Void) async throws {
+        if let task { return try await task.value }
+        let task = Task { @MainActor in
+            defer { self.task = nil }
+            try await work()
+        }
+        self.task = task
+        try await task.value
     }
 }
 

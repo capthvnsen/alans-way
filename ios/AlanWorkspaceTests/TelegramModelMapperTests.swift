@@ -131,6 +131,25 @@ final class TelegramModelMapperTests: XCTestCase {
         XCTAssertFalse(TelegramHistory.merge(page: [], into: short.messages).hasMore)
     }
 
+    @MainActor
+    func testOverlappingChatLoadsShareOneRun() async throws {
+        let flight = SingleFlight()
+        var runs = 0
+        var release: CheckedContinuation<Void, Never>?
+        let first = Task { @MainActor in
+            try await flight.run { runs += 1; await withCheckedContinuation { release = $0 } }
+        }
+        while release == nil { await Task.yield() }
+        let second = Task { @MainActor in try await flight.run { runs += 1 } }
+        await Task.yield()
+        release?.resume()
+        try await first.value
+        try await second.value
+        XCTAssertEqual(runs, 1, "A second caller joins the run in flight instead of starting another.")
+        try await flight.run { runs += 1 }
+        XCTAssertEqual(runs, 2, "Once finished, the next call runs again.")
+    }
+
     private func text(id: Int64) -> TelegramMessage {
         TelegramMessage(id: id, chatID: 4, senderName: "Bot", isOutgoing: false, date: .distantPast, text: "\(id)")
     }
