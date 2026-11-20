@@ -53,7 +53,7 @@ function wsReadFrames(socket, cb) {
 
 // cfg: { authRequired, tokenTag, tokenDelayMs, refreshDelayMs, refreshStatus,
 //        ticketStatus, localToken, wsCloseCode, wsCloseReason, wsReadyDelayMs,
-//        wsNeverReady, epoch, sessions, extraRpc, onWsOpen,
+//        wsNeverReady, epoch, sessions, extraRpc, onWsOpen, onWsResponse,
 //        ringMax, orphanGraceMs, deltaCount, firstDeltaMs, deltaMs }
 // The conversation gateway itself (replay ring with seq, epoch, ping, orphan
 // grace, a streaming turn) lives in hermes-gateway-engine.cjs; restart() on the
@@ -114,6 +114,7 @@ async function fakeBackend(cfg = {}) {
       for (const line of payload.toString('utf8').split('\n')) {
         if (!line.trim()) continue;
         let frame; try { frame = JSON.parse(line); } catch { continue; }
+        if (frame.method === undefined && frame.id !== undefined) cfg.onWsResponse?.(frame); // the client answering a server request
         if (typeof frame.method === 'string' && frame.id !== undefined) {
           Promise.resolve(engine.handle(peer, frame)).then((r) => {
             if (r !== undefined && !socket.destroyed) wsSendJson(socket, { jsonrpc: '2.0', id: frame.id, ...r });

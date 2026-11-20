@@ -10,9 +10,12 @@ const MAX_BYTES = 1000000;
 
 function createLog(dir, { maxBytes = MAX_BYTES, now = () => new Date() } = {}) {
   const file = path.join(dir, 'main.log');
+  let tightened = false;
   function write(label, detail = '') {
     try {
       fs.mkdirSync(dir, { recursive: true });
+      // Logs from before redaction were created world-readable and may still hold secrets.
+      if (!tightened) { tightened = true; for (const old of [file, `${file}.old`]) try { fs.chmodSync(old, 0o600); } catch {} }
       const line = redactReport(`${now().toISOString()} ${label}${detail ? `: ${detail}` : ''}\n`);
       if (fs.existsSync(file) && fs.statSync(file).size + line.length > maxBytes) fs.renameSync(file, `${file}.old`);
       fs.appendFileSync(file, line, { mode: 0o600 });

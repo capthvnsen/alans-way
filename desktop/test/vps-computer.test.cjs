@@ -181,3 +181,58 @@ test('a snapshot on the agent desktop fails loudly when python3-gi is missing', 
   assert.equal(reply.code, 'needs_gi');
   assert.match(reply.error, /python3-gi/);
 });
+
+// Waiting for AT-SPI replies blocks in the main loop instead of spinning at 2 kHz.
+test('Bus.many waits by blocking in the GLib main loop and returns every reply or a timeout', () => {
+  const manyDriver = `
+import importlib.util, json, sys, time
+spec = importlib.util.spec_from_file_location('vc', sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+queue, iterations, sleeps, destroyed = [], [], [], []
+class Source:
+    def set_callback(self, fn): pass
+    def attach(self, context): pass
+    def destroy(self): destroyed.append(1)
+class Context:
+    def iteration(self, may_block):
+        iterations.append(may_block)
+        if queue: queue.pop(0)()
+        return True
+class GLib:
+    class VariantType:
+        @staticmethod
+        def new(reply): return reply
+    class MainContext:
+        @staticmethod
+        def default(): return Context()
+    @staticmethod
+    def timeout_source_new(ms): return Source()
+class Gio:
+    class DBusCallFlags: NONE = 0
+class Res:
+    def __init__(self, value, fail=False): self.value, self.fail = value, fail
+class Conn:
+    def call(self, dest, path, iface, method, args, reply, flags, ms, cancel, done, index):
+        res = Res(dest, fail=(dest == 'bad'))
+        class Source2:
+            def call_finish(self, r):
+                if r.fail: raise RuntimeError('boom')
+                class U:
+                    def unpack(self_inner): return r.value
+                return U()
+        queue.append(lambda: done(Source2(), res, index))
+bus = m.Bus.__new__(m.Bus)
+bus.GLib, bus.Gio, bus.conn = GLib, Gio, Conn()
+time.sleep = lambda *_: sleeps.append(1)
+out = bus.many([('a', '/', 'i', 'm', None, '(s)'), ('bad', '/', 'i', 'm', None, '(s)'), ('c', '/', 'i', 'm', None, '(s)')])
+print(json.dumps({'values': [x if isinstance(x, str) else type(x).__name__ for x in out], 'iterations': iterations, 'sleeps': len(sleeps), 'destroyed': len(destroyed)}))
+`;
+  const result = spawnSync(python, ['-c', manyDriver, script], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+  assert.equal(result.status, 0, result.stderr);
+  const reply = JSON.parse(result.stdout.trim().split('\n').pop());
+  assert.deepEqual(reply.values, ['a', 'RuntimeError', 'c']);
+  assert.deepEqual(reply.iterations, [true, true, true]);
+  assert.equal(reply.sleeps, 0);
+  assert.equal(reply.destroyed, 1);
+});

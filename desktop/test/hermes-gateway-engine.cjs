@@ -13,11 +13,16 @@ const { HermesSessionWire } = require('../src/hermes-session-wire.cjs');
 //
 // cfg: { epoch, sessions, ringMax=512, orphanGraceMs=20000, deltaCount=3,
 //        firstDeltaMs=0, deltaMs=0, wholeReply=false, extraRpc, mangleReplay(events),
-//        context: { used, max }, contextPerTurn=0, compressMs=0, compressTo=0.2, compressFails }
+//        context: { used, max }, contextPerTurn=0, compressMs=0, compressTo=0.2, compressFails,
+//        beforeTurn(session, text) }
+// beforeTurn: runs when a turn is admitted; a returned promise holds the reply until it settles (a turn waiting on an
+// approval or a question the way Hermes does). The hook may send server requests through session.peers[i].send.
 // wholeReply: no message.delta at all, only message.start and a message.complete that carries the text (a Hermes
 // with streaming off, as the VM is).
 // context: the context window a session reports (session.usage, message.complete.usage); absent, a session reports no
-// context fields at all, like a Hermes session whose agent has not run yet. compress: session.compress takes compressMs,
+// context fields at all, like a Hermes session whose agent has not run yet: a resumed session (session.resume builds its agent off
+// the response path, tui_gateway/methods_session.py:963) answers session.usage with counters only until its first turn, because
+// agent/context_breakdown.py:132-135 context_usage_fields returns nothing while the compressor's last_prompt_tokens is 0. compress: session.compress takes compressMs,
 // leaves compressTo of the context behind, and refuses with compressFails (a message) when set.
 function createGatewayEngine(cfg = {}) {
   let epoch = cfg.epoch || 'epoch-1';
@@ -83,9 +88,14 @@ function createGatewayEngine(cfg = {}) {
   }
 
   function startTurn(s, text) {
+    s.turn = { text };
+    const hold = cfg.beforeTurn ? cfg.beforeTurn(s, text) : null;
+    if (hold) Promise.resolve(hold).then(() => { if (!closed && !s.reaped) streamTurn(s, text); }); else streamTurn(s, text);
+  }
+
+  function streamTurn(s, text) {
     const n = cfg.deltaCount ?? 3;
     const tokens = cfg.tokens ? cfg.tokens(text) : Array.from({ length: n }, (_, i) => `w${i} `);
-    s.turn = { text };
     let i = 0;
     const step = () => {
       if (i === 0) emit(s, 'message.start', {});
@@ -117,7 +127,7 @@ function createGatewayEngine(cfg = {}) {
       case 'gateway.capabilities': return { result: { per_session_exclusive_submit: true, modes: ['default'] } };
       case 'client.capabilities': return { result: { server_requests: ['tool.approval'] } };
       case 'session.active_list': return { result: { sessions: [...live.values()].map(row) } };
-      case 'session.list': return { result: { sessions: [...stored.values()].map((r) => ({ id: r.id, title: r.title })) } };
+      case 'session.list': return { result: { sessions: [...stored.values()].map((r) => ({ id: r.id, title: r.title, preview: r.messages.at(-1)?.content ?? '' })) } };
       case 'session.create': {
         const id = `sess-new-${++newSeq}-${Math.floor(Math.random() * 1e6)}`;
         addSession(id, `key-${id}`, id);

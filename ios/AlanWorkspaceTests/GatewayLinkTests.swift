@@ -262,14 +262,45 @@ import XCTest
         XCTAssertTrue(server.submits.isEmpty)
     }
 
+    func testAnApprovalWaitsForAnAnswerAndTheAnswerGoesOnTheWire() async throws {
+        makeLink(); link.start(); await settle()
+        let s = server.addConversation(key: "k1", title: "one")
+        _ = try await link.open("k1")
+        var got: [(String, String)] = [], closed: [String] = []
+        link.onRequest = { id, r in got.append((id, r.method)) }
+        link.onRequestClosed = { key, _, _ in closed.append(key) }
+        server.request(s, id: "srv-1", method: "approval", params: ["command": .string("rm -rf build")])
+        server.request(s, id: "srv-2", method: "approval")
+        XCTAssertEqual(got.map(\.1), ["approval", "approval"]); XCTAssertEqual(got.first?.0, "k1")
+        XCTAssertTrue(server.requestAnswers.isEmpty, "nothing is answered or refused until the person decides")
+        try link.answerRequest("srv-1", result: .object(["choice": .string("once")]))
+        XCTAssertEqual(server.requestAnswers.map(\.id), ["srv-1"]); XCTAssertEqual(server.requestAnswers.first?.result?["choice"]?.string, "once")
+        do { try link.answerRequest("srv-1", result: .object([:])); XCTFail("one answer per request") }
+        catch let e as GatewayError { XCTAssertEqual(e.code, "request_closed") }
+        // Hermes withdraws the other one; a drop ends whatever is still open.
+        server.emit(s, "request.cancel", ["id": .string("srv-2")])
+        XCTAssertEqual(closed, ["srv-2"])
+    }
+
+    func testRequestsStillOpenWhenTheConnectionDropsAreReportedClosed() async throws {
+        makeLink(); link.start(); await settle()
+        let s = server.addConversation(key: "k1", title: "one")
+        _ = try await link.open("k1")
+        var closed: [(String, Bool)] = []
+        link.onRequestClosed = { key, _, dropped in closed.append((key, dropped)) }
+        server.request(s, id: "srv-3", method: "clarify")
+        server.dropAll(); await settle()
+        XCTAssertEqual(closed.map(\.0), ["srv-3"]); XCTAssertEqual(closed.map(\.1), [true])
+    }
+
     func testServerRequestsAreRefusedOnTheWireAndReported() async throws {
         makeLink(); link.start(); await settle()
         let s = server.addConversation(key: "k1", title: "one")
         _ = try await link.open("k1")
         var refused: [String] = []
         link.onRefusedRequest = { _, method in refused.append(method) }
-        server.lastSocket?.deliver(.object(["jsonrpc": .string("2.0"), "id": .string("srv-9"), "method": .string("approval"), "params": .object(["session_id": .string(s.id)])]))
-        XCTAssertEqual(refused, ["approval"])
+        server.lastSocket?.deliver(.object(["jsonrpc": .string("2.0"), "id": .string("srv-9"), "method": .string("sudo"), "params": .object(["session_id": .string(s.id)])]))
+        XCTAssertEqual(refused, ["sudo"])
         XCTAssertTrue(server.lastSocket?.sent.last?.contains("srv-9") == true && server.lastSocket?.sent.last?.contains("-32601") == true)
     }
 }

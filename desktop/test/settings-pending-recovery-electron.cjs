@@ -36,6 +36,8 @@ fs.writeFileSync(path.join(PROFILE, 'preferences.json'), JSON.stringify({
   autoOpenLinks: false, autoTakeover: true, showBots: true, showBrowser: true,
   browserExtensions: [], cloud: {}, versionCache: {}, lastVersion: app.getVersion()
 }));
+// persists() compares each write with the one before it, so the starting file is the baseline; otherwise the first write of the run goes uncounted.
+journal.persistence = [{ at: Date.now(), data: JSON.parse(fs.readFileSync(path.join(PROFILE, 'preferences.json'), 'utf8')) }];
 app.setAsDefaultProtocolClient = () => { journal.blocked.push({ kind: 'protocol registration' }); return false; };
 app.relaunch = () => { throw block('relaunch'); };
 app.focus = () => { journal.blocked.push({kind:'app focus suppressed'}); };

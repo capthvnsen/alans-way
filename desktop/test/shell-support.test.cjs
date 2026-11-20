@@ -306,3 +306,27 @@ test('a queued task that never settles is released at its deadline and the next 
   await assert.rejects(failed.work, { status: 409 });
   assert.equal(timedOut, 1);
 });
+
+test('tailscaleSshHostAsync resolves non-blocking without execFileSync', async () => {
+  const { tailscaleSshHostAsync } = require('../src/shell-support.cjs');
+  const seen = [];
+  const run = async (file, argv) => { seen.push([file, argv]); return `${fixtureTailnet}\n`; };
+  assert.equal(await tailscaleSshHostAsync({ platform: 'darwin', username: 'me', run, exists: () => true }), `me@${fixtureTailnet}`);
+  assert.deepEqual(seen[0], ['/Applications/Tailscale.app/Contents/MacOS/Tailscale', ['ip', '-4']]);
+  assert.equal(await tailscaleSshHostAsync({ platform: 'linux', username: 'me', run: async () => { throw new Error('missing'); } }), '');
+  assert.equal(await tailscaleSshHostAsync({ platform: 'linux', username: '', run }), '');
+});
+
+test('an embedded Hermes Desktop pop-out becomes a window only for an http(s) address on its own origin', () => {
+  const { sameOriginWindow } = require('../src/shell-support.cjs');
+  const origin = 'https://hermes.example.ts.net:8443';
+  assert.equal(sameOriginWindow(`${origin}/?win=secondary&profile=default&hello=1#/abc`, origin), true, 'a session pop-out');
+  assert.equal(sameOriginWindow(`${origin}/webapp/window#channel=x&route=%2F`, origin), true, 'the launch-link window');
+  assert.equal(sameOriginWindow('https://hermes.example.ts.net:9443/', origin), false, 'another port');
+  assert.equal(sameOriginWindow('http://hermes.example.ts.net:8443/', origin), false, 'another scheme');
+  assert.equal(sameOriginWindow('https://evil.example/', origin), false);
+  assert.equal(sameOriginWindow('about:blank', origin), false);
+  assert.equal(sameOriginWindow('javascript:alert(1)', origin), false);
+  assert.equal(sameOriginWindow('not a url', origin), false);
+  assert.equal(sameOriginWindow(undefined, origin), false);
+});

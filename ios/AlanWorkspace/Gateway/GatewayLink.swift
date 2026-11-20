@@ -63,8 +63,12 @@ struct GatewaySessionEvent: Equatable, Sendable {
     var onEvent: ((GatewaySessionEvent) -> Void)?
     var onGap: ((_ storedId: String, _ reason: String) -> Void)?
     var onLive: (() -> Void)?
-    /// A server request (approval, question) this app cannot answer was refused on the wire.
+    /// A server request this app cannot answer was refused on the wire.
     var onRefusedRequest: ((_ storedId: String?, _ method: String) -> Void)?
+    /// An approval or question for a bound conversation, left open until `answerRequest`.
+    var onRequest: ((_ storedId: String, _ request: GatewayWire.ServerRequest) -> Void)?
+    /// An open request ended without an answer from here: Hermes withdrew it, or `dropped` with the connection.
+    var onRequestClosed: ((_ key: String, _ storedId: String, _ dropped: Bool) -> Void)?
     var isLive: Bool { state == .live && conn != nil }
 
     private let openFn: OpenFunction
@@ -90,6 +94,7 @@ struct GatewaySessionEvent: Equatable, Sendable {
     }
     private var atts: [String: Attachment] = [:]
     private var bySession: [String: Attachment] = [:]
+    private var openRequests: [String: (storedId: String, id: JSONValue)] = [:]
 
     init(open: @escaping OpenFunction, clock: GatewayClock, isOnline: @escaping () -> Bool = { true },
          random: @escaping () -> Double = { Double.random(in: 0..<1) }, options: Options = Options()) {
@@ -168,10 +173,29 @@ struct GatewaySessionEvent: Equatable, Sendable {
         c.wire.onFrame = { [weak self, weak c] in if let self, self.conn === c { self.lastActivity = self.clock.now } }
         c.wire.onClose = { [weak self, weak c] code in if let self, let c, self.conn === c { self.dropConn("wire_\(code)") } }
         c.wire.onEvent = { [weak self, weak c] e in if let self, self.conn === c { self.route(e) } }
-        c.wire.onServerRequest = { [weak self, weak c] r in if let self, let c, self.conn === c { self.refuse(r, on: c) } }
+        c.wire.onServerRequest = { [weak self, weak c] r in if let self, let c, self.conn === c { self.handle(r, on: c) } }
+        c.wire.onServerRequestWithdrawn = { [weak self, weak c] id in
+            guard let self, let c, self.conn === c, let key = GatewayPrompt.key(id), let open = self.openRequests.removeValue(forKey: key) else { return }
+            self.onRequestClosed?(key, open.storedId, false)
+        }
     }
 
-    /// Approvals and questions need a card this app does not have yet. Say so on the wire rather than leave Hermes waiting.
+    /// Approvals and questions for a bound conversation wait for the person; anything else is refused on the wire so Hermes is not left waiting.
+    private func handle(_ r: GatewayWire.ServerRequest, on c: GatewayConnection) {
+        guard r.method == "approval" || r.method == "clarify", let sid = r.sessionId, let a = bySession[sid],
+              let key = GatewayPrompt.key(r.id), openRequests[key] == nil else { refuse(r, on: c); return }
+        openRequests[key] = (a.storedId, r.id)
+        onRequest?(a.storedId, r)
+    }
+
+    /// Sends the person's answer to a request `onRequest` reported. It can be sent once.
+    func answerRequest(_ key: String, result: JSONValue) throws {
+        guard let c = conn, state == .live, let open = openRequests.removeValue(forKey: key) else {
+            throw GatewayError("request_closed", "Alan is no longer waiting for this answer.")
+        }
+        c.wire.answerServerRequest(id: open.id, result: result)
+    }
+
     private func refuse(_ r: GatewayWire.ServerRequest, on c: GatewayConnection) {
         c.wire.refuseServerRequest(id: r.id, message: "This app cannot answer \(r.method) yet.")
         onRefusedRequest?(r.sessionId.flatMap { bySession[$0]?.storedId }, r.method)
@@ -186,6 +210,8 @@ struct GatewaySessionEvent: Equatable, Sendable {
         liveSince = nil
         for a in atts.values { a.bound = false; a.buffer = nil; a.attaching?.cancel(); a.attaching = nil }
         bySession.removeAll()
+        let orphaned = openRequests; openRequests = [:]
+        for (key, open) in orphaned { onRequestClosed?(key, open.storedId, true) }
         c.close()
         if keepState || stopped || suspended { return }
         state = isOnline() ? .reconnecting : .offline
@@ -369,6 +395,7 @@ struct GatewaySessionEvent: Equatable, Sendable {
     }
 
     func detach(_ storedId: String) {
+        openRequests = openRequests.filter { $0.value.storedId != storedId }
         guard let a = atts.removeValue(forKey: storedId) else { return }
         if !a.sessionId.isEmpty { bySession.removeValue(forKey: a.sessionId) }
         a.attaching?.cancel()

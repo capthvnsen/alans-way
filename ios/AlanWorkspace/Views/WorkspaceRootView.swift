@@ -25,7 +25,7 @@ struct WorkspaceRootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             if telegram.isInterfacePreview {
                 Text("INTERFACE PREVIEW · SAMPLE DATA")
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced)).tracking(1)
+                    .scaledFont(9, weight: .semibold, design: .monospaced).tracking(1)
                     .foregroundStyle(WorkspaceTheme.mint)
                     .frame(maxWidth: .infinity).padding(7).background(WorkspaceTheme.surface)
             }
@@ -82,9 +82,14 @@ struct TelegramSignInView: View {
     @State private var emailCode = ""
     @State private var busy = false
     @State private var errorText: String?
+    @State private var changingNumber = false
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .caption) private var badge: CGFloat = 24
 
     private var title: String {
-        switch telegram.authState {
+        if changingNumber { return "Try another number" }
+        return switch telegram.authState {
+        case .starting: "Opening Telegram…"
         case .waitCode: "Check your Telegram"
         case .waitEmailAddress, .waitEmailCode: "Check your email"
         case .waitPassword: "One more step"
@@ -114,12 +119,12 @@ struct TelegramSignInView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     HStack(spacing: 10) {
                         Image(systemName: "circle.hexagongrid.fill").foregroundStyle(WorkspaceTheme.mint)
-                        Text("ALAN’S WORKSPACE").font(.system(size: 11, weight: .semibold, design: .monospaced)).tracking(2)
+                        Text("ALAN’S WORKSPACE").scaledFont(11, weight: .semibold, design: .monospaced).tracking(2)
                         Spacer()
                     }
                     .padding(.top, 24)
 
-                    if !showsAppCredentials {
+                    if !showsAppCredentials && !typeSize.isAccessibilitySize {
                         ZStack {
                             Circle().fill(WorkspaceTheme.mint.opacity(0.035)).frame(width: 270, height: 270)
                             Circle().stroke(WorkspaceTheme.mint.opacity(0.13), lineWidth: 0.5).frame(width: 265, height: 265)
@@ -131,10 +136,10 @@ struct TelegramSignInView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 12) {
-                        if !settings.hasCompletedOnboarding && telegram.authState != .closed { OnboardingStepLabel(text: step) }
-                        Text(title).font(.system(size: 34, weight: .medium, design: .serif)).tracking(-0.7)
+                        if !settings.hasCompletedOnboarding && telegram.authState != .closed && telegram.authState != .starting { OnboardingStepLabel(text: step) }
+                        Text(title).scaledFont(34, weight: .medium, design: .serif).tracking(-0.7)
                         Text(explanation)
-                            .font(.system(size: 15)).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(5)
+                            .scaledFont(15).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(5)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -146,17 +151,19 @@ struct TelegramSignInView: View {
                             .accessibilityIdentifier("signInError")
                     }
 
-                    Button(action: submit) {
-                        HStack(spacing: 10) {
-                            if busy { ProgressView().tint(WorkspaceTheme.background) }
-                            Text(buttonTitle)
-                            if !busy { Image(systemName: "arrow.right") }
+                    if telegram.authState != .starting {
+                        Button(action: submit) {
+                            HStack(spacing: 10) {
+                                if busy { ProgressView().tint(WorkspaceTheme.background) }
+                                Text(buttonTitle)
+                                if !busy { Image(systemName: "arrow.right") }
+                            }
                         }
+                        .buttonStyle(WorkspacePrimaryButton())
+                        .disabled(busy || !canSubmit)
+                        .opacity(canSubmit ? 1 : 0.5)
+                        .accessibilityIdentifier("signInContinue")
                     }
-                    .buttonStyle(WorkspacePrimaryButton())
-                    .disabled(busy || !canSubmit)
-                    .opacity(canSubmit ? 1 : 0.5)
-                    .accessibilityIdentifier("signInContinue")
 
                     if telegram.authState == .waitPhoneNumber && !telegram.hasBundledCredentials {
                         Button("Use different app credentials", action: resetCredentials)
@@ -164,9 +171,25 @@ struct TelegramSignInView: View {
                             .disabled(busy)
                             .accessibilityIdentifier("resetAppCredentials")
                     }
+                    if changingNumber {
+                        Button("Keep the current number") { changingNumber = false; errorText = nil }
+                            .font(.footnote).foregroundStyle(WorkspaceTheme.secondary).frame(maxWidth: .infinity, minHeight: 44)
+                            .disabled(busy)
+                            .accessibilityIdentifier("keepNumber")
+                    } else if canChangeNumber {
+                        HStack(spacing: 24) {
+                            if telegram.authState == .waitCode || telegram.authState == .waitEmailCode {
+                                Button("Resend code", action: resend).accessibilityIdentifier("resendCode")
+                            }
+                            Button("Use a different number") { changingNumber = true; errorText = nil }
+                                .accessibilityIdentifier("changeNumber")
+                        }
+                        .font(.footnote).foregroundStyle(WorkspaceTheme.secondary).frame(maxWidth: .infinity, minHeight: 44)
+                        .disabled(busy)
+                    }
                     Spacer(minLength: 12)
                     Text("CONNECTED THROUGH TELEGRAM")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced)).tracking(1.7)
+                        .scaledFont(9, weight: .medium, design: .monospaced).tracking(1.7)
                         .foregroundStyle(WorkspaceTheme.secondary).frame(maxWidth: .infinity)
                 }
                 .padding(.horizontal, 28)
@@ -181,7 +204,9 @@ struct TelegramSignInView: View {
     }
 
     private var explanation: String {
-        switch telegram.authState {
+        if changingNumber { return "Enter the phone number you use for Telegram. Telegram sends a new code to it." }
+        return switch telegram.authState {
+        case .starting: "Picking up your saved session."
         case .waitPhoneNumber: "Sign in with the phone number you use for Telegram. Your bots and conversations will be right here."
         case .waitCode: "Enter the sign-in code Telegram sent you. Your existing conversations stay connected across devices."
         case .waitPassword: "Your Telegram account has two-step verification. Enter your password to finish signing in."
@@ -194,12 +219,14 @@ struct TelegramSignInView: View {
 
     @ViewBuilder private var fields: some View {
         switch telegram.authState {
+        case _ where changingNumber:
+            phoneField
+        case .starting:
+            ProgressView().frame(maxWidth: .infinity).accessibilityIdentifier("telegramStarting")
         case .closed:
             EmptyView()
         case .waitPhoneNumber:
-            TextField("Phone number, including country code", text: $phone)
-                .keyboardType(.phonePad).textContentType(.telephoneNumber).modifier(WorkspaceField())
-                .accessibilityIdentifier("telegramPhone")
+            phoneField
         case .waitCode:
             TextField("Sign-in code", text: $code)
                 .keyboardType(.numberPad).textContentType(.oneTimeCode).modifier(WorkspaceField())
@@ -222,7 +249,7 @@ struct TelegramSignInView: View {
                 instruction(1, "Open my.telegram.org and log in with your Telegram phone number.")
                 Link(destination: URL(string: "https://my.telegram.org/apps")!) {
                     Label("Open my.telegram.org/apps", systemImage: "arrow.up.right.square")
-                        .font(.system(size: 14, weight: .medium))
+                        .scaledFont(14, weight: .medium)
                 }
                 .padding(.leading, 36)
                 .accessibilityIdentifier("telegramDeveloperLink")
@@ -243,12 +270,26 @@ struct TelegramSignInView: View {
         }
     }
 
+    private var phoneField: some View {
+        TextField("Phone number, including country code", text: $phone)
+            .keyboardType(.phonePad).textContentType(.telephoneNumber).modifier(WorkspaceField())
+            .accessibilityIdentifier("telegramPhone")
+    }
+
+    /// A wrong number leaves sign-in at the code step, so that step needs a way to resend or start over with another number.
+    private var canChangeNumber: Bool {
+        switch telegram.authState {
+        case .waitCode, .waitEmailAddress, .waitEmailCode: true
+        default: false
+        }
+    }
+
     private func instruction(_ number: Int, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Text("\(number)").font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .frame(width: 24, height: 24).background(WorkspaceTheme.surface, in: Circle())
+            Text("\(number)").scaledFont(12, weight: .semibold, design: .monospaced)
+                .frame(width: badge, height: badge).background(WorkspaceTheme.surface, in: Circle())
                 .foregroundStyle(WorkspaceTheme.mint)
-            Text(text).font(.system(size: 14)).foregroundStyle(WorkspaceTheme.secondary)
+            Text(text).scaledFont(14).foregroundStyle(WorkspaceTheme.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)
@@ -260,7 +301,8 @@ struct TelegramSignInView: View {
     }
 
     private var canSubmit: Bool {
-        switch telegram.authState {
+        if changingNumber { return phone.trimmingCharacters(in: .whitespaces).count >= 7 }
+        return switch telegram.authState {
         case .closed: true
         case .waitPhoneNumber: phone.trimmingCharacters(in: .whitespaces).count >= 7
         case .waitCode: !code.trimmingCharacters(in: .whitespaces).isEmpty
@@ -272,6 +314,7 @@ struct TelegramSignInView: View {
     }
 
     private var buttonTitle: String {
+        if changingNumber { return "Send a new code" }
         if telegram.authState == .closed { return "Sign in again" }
         return telegram.authState == .configuring ? "Connect Telegram" : "Continue"
     }
@@ -285,11 +328,25 @@ struct TelegramSignInView: View {
         }
     }
 
+    private func resend() {
+        busy = true; errorText = nil
+        Task {
+            defer { busy = false }
+            do { try await telegram.resendCode() }
+            catch { errorText = TelegramErrorText.describe(error) }
+        }
+    }
+
     private func submit() {
         busy = true; errorText = nil
         Task {
             defer { busy = false }
             do {
+                if changingNumber {
+                    try await telegram.submitPhoneNumber(phone)
+                    changingNumber = false
+                    return
+                }
                 switch telegram.authState {
                 case .closed: await telegram.restoreSession()
                 case .waitPhoneNumber: try await telegram.submitPhoneNumber(phone)

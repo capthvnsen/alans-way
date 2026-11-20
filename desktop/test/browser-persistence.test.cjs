@@ -118,7 +118,7 @@ test('a task handed back from the remote browser does not become a restorable us
       isLoading: () => false, getURL: () => options.url, executeJavaScript: async () => ({ verification: {}, restored: [], skipped: [] }),
     } } }; }, restoreExpression() {}, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => false,
   });
-  vm.runInContext(section('async function handoffTab(', '\n// History navigation has no promise.'), context);
+  vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
   await context.handoffTab({ id: 'remote-task', destination: 'mac' });
   assert.equal(created.owner, 'bot');
   assert.equal(created.controller, 'human', 'handoff review must still require human control');
@@ -142,7 +142,7 @@ test('Move to VM and back carries the page’s sign-in, set before the destinati
     createTab: (options) => { events.push(['open', options.url]); return { id: 'mac-back', view: { webContents: page(options.url) } }; },
     restoreExpression() {}, checkpointExpression: require('../src/browser-page.cjs').checkpointExpression, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => true,
   });
-  vm.runInContext(section('async function handoffTab(', '\n// History navigation has no promise.'), context);
+  vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
   const out = await context.handoffTab({ id: 'mac-task', destination: 'vps' });
   const open = requests.find(([route]) => route === '/v1/tabs')[1];
   assert.equal(open.url, 'https://task.example/deal');
@@ -167,7 +167,7 @@ test('without consent or a tailnet path a Move carries no sign-ins, and a failed
     remoteRequest: async () => ({ verification: 'ready', restored: 0, skipped: 0, tab: { id: 'vm-new' } }),
     restoreExpression() {}, checkpointExpression: require('../src/browser-page.cjs').checkpointExpression, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => false,
   });
-  vm.runInContext(section('async function handoffTab(', '\n// History navigation has no promise.'), context);
+  vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
   fail = true;
   await assert.rejects(context.handoffTab({ id: 'mac-task', destination: 'vps' }), /SSH unavailable/);
   assert.equal(macTab.controller, 'agent', 'the agent keeps its tab when the VM side never opened');
@@ -185,7 +185,7 @@ test('a Move from a page that never answers fails and gives the tab back instead
     changeController: (id, controller) => { macTab.controller = controller; },
     remoteRequest: async () => ({}), restoreExpression() {}, checkpointExpression: require('../src/browser-page.cjs').checkpointExpression, savePreferences() {}, applyLayout() {}, broadcast() {}, signInsTravel: async () => false,
   });
-  vm.runInContext(section('async function handoffTab(', '\n// History navigation has no promise.'), context);
+  vm.runInContext(section('const handoffRequests =', '\n// History navigation has no promise.'), context);
   await assert.rejects(context.handoffTab({ id: 'mac-task', destination: 'vps' }), /stopped responding/);
   assert.equal(macTab.controller, 'agent');
 });
@@ -269,7 +269,7 @@ test('ordinary quit keeps views alive until cookies are durable, and a repeated 
     savePreferences() {}, saveBrowserSession: () => { saves++; return new Promise(resolve => { finish = resolve; }); },
     hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },
     modelAuthChild: null, tray: null, apiServer: null, clearInterval() {}, clearTimeout() {},
-    pointerTimer: 0, activityTimer: 0, idleTimer: 0, captchaTimer: 0, vpsTimer: 0, vpsMirrorTimer: 0, vpsMirrorDebounce: 0,
+    pointerFeed: null, onlineTimer: 0, activityTimer: 0, idleTimer: 0, captchaTimer: 0, vpsTimer: 0, vpsMirrorTimer: 0, vpsMirrorDebounce: 0,
   });
   const start = source.includes('  let browserQuitPending') ? '  let browserQuitPending' : "  app.on('before-quit',";
   vm.runInContext(section(start, "  app.on('window-all-closed'"), context);
@@ -296,7 +296,7 @@ for (const outcome of ['hangs', 'fails']) {
       logError: (label, error) => errors.push(`${label}: ${error.message}`),
       hostComputer: { close: () => { closes++; } }, prefsSaver: { flush() {} },
       modelAuthChild: null, tray: null, apiServer: null, clearInterval() {}, clearTimeout() {},
-      pointerTimer: 0, activityTimer: 0, idleTimer: 0, captchaTimer: 0, vpsTimer: 0, vpsMirrorTimer: 0, vpsMirrorDebounce: 0,
+      pointerFeed: null, onlineTimer: 0, activityTimer: 0, idleTimer: 0, captchaTimer: 0, vpsTimer: 0, vpsMirrorTimer: 0, vpsMirrorDebounce: 0,
     });
     vm.runInContext(section('  let browserQuitPending', "  app.on('window-all-closed'"), context);
     listener({ preventDefault() {} });

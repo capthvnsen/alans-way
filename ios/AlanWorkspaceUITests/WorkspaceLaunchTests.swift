@@ -120,7 +120,10 @@ final class WorkspaceLaunchTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.staticTexts["INTERFACE PREVIEW · SAMPLE DATA"].waitForExistence(timeout: 10))
         app.buttons["workspaceSettings"].tap()
-        XCTAssertTrue(app.staticTexts["No crash or hang reports on this device"].waitForExistence(timeout: 5))
+        // The list builds only the rows on screen, and Diagnostics sits below the fold.
+        let reports = app.staticTexts["No crash or hang reports on this device"]
+        for _ in 0..<4 where !reports.exists { app.swipeUp() }
+        XCTAssertTrue(reports.waitForExistence(timeout: 5))
         app.buttons["Done"].tap()
         app.buttons["agentChat-101"].tap()
         XCTAssertTrue(app.textFields["messageComposer"].waitForExistence(timeout: 5))
@@ -156,7 +159,7 @@ final class WorkspaceLaunchTests: XCTestCase {
     func testConversationTextFollowsDynamicType() {
         func messageHeight(_ size: String) -> CGFloat {
             let app = XCUIApplication()
-            app.launchArguments = ["--ui-testing", "--interface-preview", "-UIPreferredContentSizeCategoryName", size]
+            app.launchArguments = ["--ui-testing", "--interface-preview", "-UIPreferredContentSizeCategoryName", size] + Self.onboarded
             app.launch()
             app.buttons["agentChat-101"].tap()
             let text = app.staticTexts["Pick up where we left off."]

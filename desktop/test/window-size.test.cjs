@@ -15,7 +15,7 @@ function windowOptions(workAreaSize) {
   const captured = new Error('window options captured');
   assert.throws(() => vm.runInNewContext(`${createWindow}; createWindow();`, {
     nativeTheme: {}, screen: { getPrimaryDisplay: () => ({ workAreaSize }) },
-    BrowserWindow: class { constructor(value) { options = value; throw captured; } },
+    newWindow: value => { options = value; throw captured; },
     app: { getName: () => 'Fixture' }, process: { platform: 'darwin' }, path, ROOT: '/fixture',
   }), error => error === captured);
   return [options.width, options.height, options.minWidth, options.minHeight];
