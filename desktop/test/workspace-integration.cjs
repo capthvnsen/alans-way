@@ -513,7 +513,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({ status: 503,
     { action: 'scroll', x: 0, y: 120 },
     { action: 'press', key: 'Tab' },
   ] }, 'overseer-bot');
-  assert.equal(batched.results.length, 3, 'Batch returns one result per step.');
+  assert.equal(batched.results.length, 3, `Batch returns one result per step: ${JSON.stringify(batched.results)}`);
   assert.equal(batched.results[0].value, 'blue', 'eval inside batch returns the page result.');
   const evaluated = await api(`/v1/tabs/${colored[1].id}/actions`, 'POST', { action: 'eval', code: 'document.title + "!"', epoch: seizedTab.epoch }, 'overseer-bot');
   assert.equal(evaluated.value, 'blue!', 'eval returns a JSON value.');

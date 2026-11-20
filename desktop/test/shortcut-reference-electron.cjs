@@ -183,8 +183,10 @@ app.whenReady().then(async () => {
   });
   await check('actual menu callbacks create, reload, close local tabs and invoke the PDF picker', async () => {
     const items=Menu.getApplicationMenu().items.flatMap(i=>i.submenu?.items||[]), find=label=>items.find(i=>i.label===label);
+    // A closed tab's page lingers until its async close finishes; only contents that did not exist before the click can be the new tab.
+    const known=new Set(webContents.getAllWebContents().map(c=>c.id));
     const before=(await state()).tabs.length; find('New Browser Tab').click(); await wait(state,s=>s.tabs.length===before+1);
-    const created=(await state()).activeTabId, fresh=await wait(()=>webContents.getAllWebContents().find(c=>c.getURL().endsWith('/newtab.html')));
+    const created=(await state()).activeTabId, fresh=await wait(()=>webContents.getAllWebContents().find(c=>!known.has(c.id)&&c.getURL().endsWith('/newtab.html')));
     await fresh.loadURL(url+'menu-reload'); let loaded=0; const onLoad=()=>loaded++;fresh.on('did-finish-load',onLoad);
     find('Reload Page').click();await wait(()=>loaded>0);fresh.removeListener('did-finish-load',onLoad);
     find('Close Tab').click();await wait(state,s=>!s.tabs.some(t=>t.id===created));
@@ -214,9 +216,9 @@ app.whenReady().then(async () => {
         const receipt=JSON.parse(response.stdout); assert.equal(receipt.ok,true); native.push({key,receipt}); await pause(100);
       };
       await chord('CmdOrCtrl+,'); await wait(()=>visible('modal')); assert.equal(await js('document.getElementById("modal-title").textContent'),'Workspace settings');
-      await key('Escape'); wc.focus(); const before=(await state()).tabs.length;
+      await key('Escape'); wc.focus(); const before=(await state()).tabs.length, known=new Set(webContents.getAllWebContents().map(c=>c.id));
       await chord('CmdOrCtrl+T'); await wait(state,s=>s.tabs.length===before+1);
-      const created=(await state()).activeTabId, fresh=webContents.getAllWebContents().find(c=>c.getURL().endsWith('/newtab.html'));
+      const created=(await state()).activeTabId, fresh=await wait(()=>webContents.getAllWebContents().find(c=>!known.has(c.id)&&c.getURL().endsWith('/newtab.html')));
       assert.ok(fresh); await fresh.loadURL(url+'reload'); fresh.focus(); let reloads=0; const onLoad=()=>reloads++; fresh.on('did-finish-load',onLoad);
       await chord('CmdOrCtrl+R'); await wait(()=>reloads>0); fresh.removeListener('did-finish-load',onLoad);
       await chord('CmdOrCtrl+W'); await wait(state,s=>!s.tabs.some(t=>t.id===created));
