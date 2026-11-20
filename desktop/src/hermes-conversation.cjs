@@ -530,7 +530,7 @@ class HermesConversation extends EventEmitter {
   // Explicit user send. Captures the immutable bound target at call time.
   // `text` omitted sends the current draft. An admitted send clears the draft
   // only when the sent text is exactly the draft (unrelated drafts survive).
-  async send(text) {
+  async send(text, { clientMessageId } = {}) {
     const s = this._s;
     this._requireOperable('send');
     const body = text === undefined ? s.draft.text : text;
@@ -550,7 +550,7 @@ class HermesConversation extends EventEmitter {
       admitted: false, at: submission.at });
     this._changed();
     try {
-      const result = await this.wire.call('prompt.submit', { session_id: target.sessionId, text: body });
+      const result = await this.wire.call('prompt.submit', { session_id: target.sessionId, text: body, ...(typeof clientMessageId === 'string' && clientMessageId ? { client_message_id: clientMessageId } : {}) });
       const status = isPlainObject(result) ? result.status ?? null : null;
       row.status = status || 'admitted';
       row.admitted = true;

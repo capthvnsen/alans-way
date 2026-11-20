@@ -15,7 +15,10 @@ process.env.HERMES_WORKSPACE_ALLOW_LOOPBACK = '1'; // loopback fixtures under HE
 //
 // DROP_RUNS=<n> overrides the 100 reset runs (the scenario that dominates run time).
 // DROP_ONLY=<text> runs only the scenarios whose name contains the text.
+const fs = require('node:fs');
 const net = require('node:net');
+const os = require('node:os');
+const path = require('node:path');
 const assert = require('node:assert/strict');
 const { performance } = require('node:perf_hooks');
 const { fakeBackend } = require('./hermes-auth-fake-backend.cjs');
@@ -23,6 +26,7 @@ const { createHermesRemote } = require('../src/hermes-remote.cjs');
 const { createHermesApi } = require('../src/hermes-api.cjs');
 const { createGatewayLink, createGatewayOpener } = require('../src/gateway-link.cjs');
 const { createGatewayApi } = require('../src/gateway-api.cjs');
+const { createNativeChat } = require('../src/native-chat.cjs');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const now = () => performance.now();
@@ -186,6 +190,66 @@ async function resetRuns({ runs, rttMs }) {
       rttMs === 100 ? 'p95 <= 500' : 'info', rttMs === 100 ? pct(reconnect, 95) <= 500 : true);
     check(scenario, 'peak sockets / in-flight attempts', `${h.live.maxSockets} / ${h.live.maxInFlight}`, '1 / 1', h.live.maxSockets === 1 && h.live.maxInFlight === 1);
   } finally { await h.close(); }
+}
+
+// The offline send queue through the real native chat: messages typed while the link is down wait and go in
+// order; a cut right behind a write leaves a send in doubt, which the history read resolves. Every message
+// must reach the server once (the fake Hermes has no dedupe and logs every prompt.submit with its client id).
+async function sendQueue({ n, rttMs }) {
+  const h = await stack({ rttMs, backend: { orphanGraceMs: 20000 } });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gateway-drop-queue-'));
+  const scenario = `send queue, ${n} messages across forced drops, RT ${rttMs} ms`;
+  let seed = 7, attempts = 0;
+  const rand = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
+  let sampler;
+  try {
+    await h.link.attach(KEY);
+    const chat = createNativeChat({ dir, retryMs: 100, apiFactory: () => ({ ...h.api, streamChat: (...a) => { attempts++; return h.api.streamChat(...a); } }),
+      loadConfig: () => ({ baseUrl: h.url, key: 'k'.repeat(20), lastSessionId: KEY, sessions: [{ id: KEY, source: 'api_server', title: 'queue' }] }) });
+    chat.getState();
+    const diag = () => `submits ${h.backend.engine.submits.length}/${n}, link ${JSON.stringify(h.link.getState())}, proxyOpen ${h.proxy.open()}, run ${chat.getState().run?.status}, rows ${chat.getState().thread.messages.filter((m) => m.state).map((m) => `${m.text}:${m.state}`).join(' ')}`;
+    const sent = [], waited = new Set();
+    sampler = setInterval(() => { for (const m of chat.getState().thread?.messages || []) if (m.state === 'queued') waited.add(m.text); }, 5);
+    const send = async (text) => {
+      const give = now() + 20000;
+      for (;;) {
+        try { await chat.command('send', { sessionId: KEY, text }); sent.push(text); return; }
+        catch (e) { if (!/Wait for the reply/.test(e.message)) throw e; if (now() > give) throw new Error(`a reply never finished; ${diag()}`); await sleep(5); }
+      }
+    };
+    let i = 0, drops = 0;
+    for (let k = 0; i < n; k++) {
+      await until(() => h.link.isLive(), 20000, 'the link before the next burst').catch((e) => { throw new Error(`${e.message}; ${diag()}`); });
+      await until(() => !chat.getState().run, 20000, 'the last reply to finish').catch((e) => { throw new Error(`${e.message}; ${diag()}`); });
+      if (k % 2 === 0) { // the link is down while typing: refused, so the messages wait
+        h.clock.skew += 30000; // each drop counts as an occasional one: the flapping back-off has its own scenario
+        h.proxy.refuse(true); h.proxy.reset(); drops++;
+        await until(() => !h.link.isLive(), 5000, 'the link to notice the drop');
+        for (let j = 0; j < 2 && i < n; j++) await send(`m${i++}`);
+        await sleep(150);
+        h.proxy.refuse(false);
+      } else { // cut at a random point behind the write
+        await send(`m${i++}`);
+        await sleep(Math.floor(rand() * (rttMs + 40)));
+        h.clock.skew += 30000;
+        h.proxy.reset(); drops++;
+      }
+    }
+    await until(() => h.link.isLive(), 30000, 'the link after the last drop');
+    await until(() => h.backend.engine.submits.length >= n && !chat.getState().run && !chat.getState().thread.messages.some((m) => m.state), 30000, 'every message to be delivered and settled').catch((e) => { throw new Error(`${e.message}; ${diag()}`); });
+    await sleep(500); // a late duplicate would land here
+    const submits = h.backend.engine.submits.filter((s) => /^m\d+$/.test(s.text));
+    const count = (t) => submits.filter((s) => s.text === t).length;
+    const wrong = sent.filter((t) => count(t) !== 1);
+    const ids = submits.map((s) => s.clientMessageId);
+    check(scenario, 'messages / forced drops', `${sent.length} / ${drops}`, `${n} / >= 1`, sent.length === n && drops >= 1);
+    check(scenario, 'delivered != once (lost or doubled)', `${wrong.length}${wrong.length ? ` (${wrong.join(',')})` : ''}`, '0', wrong.length === 0);
+    check(scenario, 'server order equals send order', submits.map((s) => s.text).join() === sent.join() ? 'yes' : 'no', 'yes', submits.map((s) => s.text).join() === sent.join());
+    check(scenario, 'client ids on the wire, all distinct', `${new Set(ids.filter(Boolean)).size} of ${submits.length}`, `${n} of ${n}`, ids.every(Boolean) && new Set(ids).size === n);
+    check(scenario, 'messages that waited as queued', waited.size, '>= 1', waited.size >= 1);
+    check(scenario, 'send attempts (more than messages = retried after a cut)', attempts, 'info', true);
+    check(scenario, 'peak sockets / in-flight attempts', `${h.live.maxSockets} / ${h.live.maxInFlight}`, '1 / 1', h.live.maxSockets === 1 && h.live.maxInFlight === 1);
+  } finally { clearInterval(sampler); await h.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
 // Blackhole: stop forwarding, keep sockets open, then heal.
@@ -376,6 +440,8 @@ async function main() {
   await guarded('graceful close RT 100', () => gracefulCloses({ closes: 8, rttMs: 100 }));
   await guarded('flapping server', () => flappingServer({ runMs: 20000 }));
   await guarded('reset RT 0', () => resetRuns({ runs: 30, rttMs: 0 }));
+  await guarded('send queue RT 100', () => sendQueue({ n: 12, rttMs: 100 }));
+  await guarded('send queue RT 0', () => sendQueue({ n: 12, rttMs: 0 }));
   await guarded('first token RT 0', () => firstToken({ rttMs: 0 }));
   await guarded('first token RT 100', () => firstToken({ rttMs: 100 }));
   await Promise.all([

@@ -389,6 +389,8 @@ Neither is in phases 1 to 3.
   | queue time limit | message marked `failed`, not silently dropped, not sent |
   | doubt race (old socket's bytes arrive after the read) | recorded as a measured residual rate, expected near 0; closes with Q4 |
 
+**As built (first cut).** The queue lives in `desktop/src/native-chat.cjs` (one file per conversation in `native-chat-queue/`), not a new `gateway-outbox.cjs`, and works on both transports. States shown: waiting to send (Cancel), sending, not sent (Retry, Delete). The doubt check reads the REST history before any resend and matches a user row newer than the first try; there is no `checking` state and no ask card yet, so two identical messages inside 60 s can be mistaken for one another. The client id goes out as `client_message_id` on `prompt.submit` and in the SSE body; Hermes ignores it today. Harness: `send queue` rows in `gateway-netdrop.cjs`.
+
 **Explicitly out:** cross-device queue, editing a queued message beyond Cancel and Edit-after-fail, attachments, any Hermes change unless Q4 is yes.
 
 ### Phase 3: second device and the iOS client

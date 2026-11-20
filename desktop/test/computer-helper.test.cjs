@@ -226,6 +226,17 @@ test('an action is never replayed when the helper dies mid-action', async (t) =>
   assert.deepEqual(modes, ['serve'], 'an uncertain action never starts another helper');
 });
 
+test('a press the app did not answer is reported as maybe run and sent to the helper once per request', async (t) => {
+  const helper = fakeHelper('press-may-have-run', { busyRetry: true });
+  t.after(() => helper.close());
+  const body = { cmd: 'act', pid: 5, steps: [{ action: 'press', ref: 'c1' }] };
+  for (let act = 1; act <= 2; act++) {
+    const [result] = (await helper.request(body)).results;
+    assert.equal(result.code, 'unresponsive');
+    assert.ok(result.error.endsWith(`may have run (act ${act}).`), `one act per request, never replayed: ${result.error}`);
+  }
+});
+
 test('helper failures carry their code', async (t) => {
   const helper = fakeHelper('ok');
   t.after(() => helper.close());

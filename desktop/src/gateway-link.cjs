@@ -379,7 +379,7 @@ function createGatewayLink(deps = {}) {
   return Object.assign(link, {
     start, stop, suspend, resume, trigger, getState, attach,
     detach(storedId) { const a = att.get(storedId); if (a) { a.wanted = false; detachController(a); att.delete(storedId); } },
-    submit: async (storedId, text) => { await attach(storedId); return controllerOf(storedId).send(text); },
+    submit: async (storedId, text, opts) => { await attach(storedId); return controllerOf(storedId).send(text, opts); },
     interrupt: (storedId) => controllerOf(storedId).stop(),
     answer: (storedId, requestId, result) => controllerOf(storedId).answerRequest(requestId, result),
     pending: (storedId) => { try { return controllerOf(storedId).getState().pendingRequests.filter((r) => r.attributed); } catch { return []; } },

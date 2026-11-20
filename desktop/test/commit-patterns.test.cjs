@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { COMMIT_PATTERNS, isCommitName, plainName, normalizeName, looksLikeCommit, isActionUrl } = require('../src/commit-patterns.cjs');
+const { COMMIT_PATTERNS, isCommitName, plainName, normalizeName, looksLikeCommit, isActionUrl, isReadOnlyScript } = require('../src/commit-patterns.cjs');
 
 const COMMITS = ['Place order', 'Place your order', 'Pay', 'Buy now', 'Buy-now', 'buy_now', 'Purchase', 'Confirm and pay', 'Complete booking', 'Book now', 'Reserve',
   'Request to book', 'Confirm order', 'Submit order', 'Order now', 'Send', 'Post', 'Publish', 'Submit', 'Easy Apply', 'Delete', 'Subscribe', 'Donate', 'Transfer',
@@ -141,4 +141,30 @@ test('the app and running-router fixture contract agrees on names and action lin
     // The router checks link addresses privately; test_commit_gate.py sends
     // these exact fixtures over MCP and verifies no blocked click forwards.
   }
+});
+
+const READ_ONLY_SCRIPTS = ['document.title', 'document.body.innerText', 'document.body.innerText.slice(0, 200)', 'document.querySelectorAll("a").length', 'location.href',
+  'document.querySelector("h1").getBoundingClientRect().top', 'JSON.stringify(document.querySelector("h1").getBoundingClientRect())',
+  '[...document.querySelectorAll("li")].map(li => li.textContent.trim()).join("|")', 'Array.from(document.querySelectorAll("a"), a => a.href).filter(h => h.includes("/doc"))',
+  '(() => { const rows = document.querySelectorAll("tr"); return { count: rows.length, first: rows[0].innerText, url: location.href }; })()',
+  '(function () { let n = 0; for (const a of document.links) { n = n + 1; } return n; })()', 'document.querySelector("a").getAttribute("onclick")',
+  'document.querySelector(\'a[href^="javascript:"]\') ? 1 : 0', 'document.readyState === "complete" && location.pathname.startsWith("/a")', 'document.querySelector("button").classList.contains("on")'];
+const GATED_SCRIPTS = [
+  'document.querySelector("button").click()', 'const f = document.querySelector("button").click', 'document.querySelector("#go")["cl"+"ick"]()',
+  'window["fe"+"tch"]("/orders", { method: "POST" })', 'window[`fe${"tch"}`]("/x")', 'globalThis.fetch("/x")', 'self.fetch("/x")', 'fetch("/x")', 'new XMLHttpRequest()', 'navigator.sendBeacon("/x")',
+  'document.forms[0].submit()', 'document.forms[0].requestSubmit()', 'document["forms"][0]["submit"]()', 'document.forms[0].elements.q.value = "x"', 'document.querySelector("input").value = "x"',
+  'document.querySelector("input").setAttribute("value", "x")', 'document.cookie', 'document.cookie = "a=b"', 'localStorage.getItem("k")', 'sessionStorage.clear()', 'indexedDB.open("x")',
+  'location = "/other"', 'location.href = "/other"', 'location.assign("/other")', 'location.replace("/other")', 'location.reload()', 'history.back()', 'window.open("/x")',
+  'eval("1")', '(0, eval)("1")', 'new Function("return 1")()', 'Function("return 1")()', 'setTimeout(() => 1, 5)', 'import("/x.js")', 'document.write("x")',
+  'document.title = "x"', 'document.title++', 'count += 1', 'x = 1', 'document.body.innerHTML = ""', 'document.querySelector("a").remove()', 'document.body.appendChild(document.createElement("a"))',
+  'document.querySelector("a").dispatchEvent(new Event("click"))', 'document.querySelector("a").onclick = go', 'document.body.addEventListener("click", go)',
+  'document.querySelector("a").constructor.constructor("return 1")()', 'document.title.constructor', 'Object.assign(document.body, {})', 'document[k]', 'document.title["length"]',
+  'document.querySelector("a")?.click?.()', 'this.fetch("/x")', 'var x = document.title', 'function f() { return 1 } f()', 'const { cookie } = document', '(({submit: s}, f) => [0].forEach(s, f))(document.forms[0], document.forms[0])', '(({cookie}) => cookie)(document)',
+  '(function({click: c}, e) { return [0].map(c, e) })(document.body, document.body)', '(([a]) => a)(document.links)', '((a = document.cookie) => a)()', 'const f = async () => 1',
+  'document.title\u0020; fetch("/x")', 'document.title /* c */', 'document.title.replace(/a/g, "b")', 'tag`${document.title}`', '`${document.cookie}`', 'document.title; \u0066etch("/x")',
+  'get', 'while (true) {}', 'document.designMode = "on"', 'document.querySelector("a").scrollIntoView()', 'document.querySelector("input").focus()', '', '(', 'document.title)'];
+
+test('a script that can only read the page is read-only; anything that could write, navigate, send or run dynamic code is not', () => {
+  for (const code of READ_ONLY_SCRIPTS) assert.equal(isReadOnlyScript(code), true, code);
+  for (const code of GATED_SCRIPTS) assert.equal(isReadOnlyScript(code), false, code);
 });

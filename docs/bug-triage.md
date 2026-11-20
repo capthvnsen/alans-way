@@ -19,7 +19,7 @@
 | S2 secrets written to logs before redaction | #246 |
 | S3 human-held VPS tab metadata leaks to bots | #249 |
 | S4 failed env read can overwrite credentials | #266 |
-| CU-7 approval wait not subtracted from the connector's budget | Mostly resolved: the connector now sends `X-Alans-Way-Remaining-Ms` for actions, and `computer-http.cjs` runs the approval and the action in that call context, so `checkCall()` stops the steps when the caller's time runs out. What remains: the approval prompt itself still waits its full 40 s and does not stop at the caller's deadline. Low priority. |
+| CU-7 approval wait not subtracted from the connector's budget | Fixed: the connector sends `X-Alans-Way-Remaining-Ms` for actions, `computer-http.cjs` runs the approval and the action in that call context, and the approval wait now ends at the caller's deadline (403 `desktop_approval_timeout`, prompt closed once nobody waits on it). |
 
 ## Test suite on main
 
@@ -39,8 +39,8 @@ Ranked by harm: lost or doubled input first, then wrong guidance to the agent, t
 | 6 | CU-11 the `not_found` hint sends the agent to `workspace_computer_apps` for a bad menu or file path | Connector messages | **Fixed in this branch** |
 | 7 | CU-13 VM pixel input is not bounded to the target window | VM accuracy and policy | Needs a decision (below) |
 | 8 | CU-8 Mac: refs and the selected window are cached per pid, not per bot | Mac concurrency | Needs a decision (below) |
-| 9 | CU-14 smaller VM issues (xdotool failures read as `no_window`, exited pid gives an empty tree, `menu_bars` has no deadline, shot fallback geometry) | VM | Open, not fixed: each one is small and was reported from code reading only |
-| 10 | CU-15 smaller Mac issues (interrupted drag skips `restoreCursor`, vertical slider inverted, partly visible ref clicked at full-frame centre) | Mac | Open, not fixed: each needs a real Mac GUI to reproduce |
+| 9 | CU-14 smaller VM issues (xdotool failures read as `no_window`, exited pid gives an empty tree, `menu_bars` has no deadline, shot fallback geometry) | VM | Partly fixed in this branch: a failing xdotool is now reported as such and an exited pid answers `not_found`. Open: the `menu_bars` deadline and the shot fallback geometry |
+| 10 | CU-15 smaller Mac issues (interrupted drag skips `restoreCursor`, vertical slider inverted, partly visible ref clicked at full-frame centre) | Mac | Partly fixed in this branch: a vertical slider now has its maximum at the top (also on the VM for non-scroll-bar sliders). Open: the interrupted drag and the partly visible ref, which need a real Mac GUI to reproduce |
 | 11 | `mac-computer.test.cjs` "builds and its self test passes" falls back to an older prebuilt helper when the source does not compile, so it can pass against old code | Tests | Open. The "oldest macOS" compile test in the same file still fails on a compile error, so a full run catches it. A run filtered to the self test does not. |
 | 12 | Low-contrast and sub-11px text in the sidebar caption, loading label and footer | Desktop UI | Needs a decision (below) |
 
