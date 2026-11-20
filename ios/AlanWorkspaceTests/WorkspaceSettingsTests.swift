@@ -63,4 +63,11 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertTrue(settings.hasCompletedOnboarding)
         XCTAssertTrue(WorkspaceSettings(defaults: defaults).hasCompletedOnboarding)
     }
+
+    func testFixedDesignSizesScaleAlongTheNearestTextStyle() {
+        XCTAssertEqual(ScaledFont.style(for: 10), .caption2)
+        XCTAssertEqual(ScaledFont.style(for: 15), .subheadline)
+        XCTAssertEqual(ScaledFont.style(for: 17), .body)
+        XCTAssertEqual(ScaledFont.style(for: 36), .largeTitle)
+    }
 }

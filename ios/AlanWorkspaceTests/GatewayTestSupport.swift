@@ -87,6 +87,8 @@ import Foundation
     var beforeSince: (() -> Void)?
     var onSubmit: ((Live) -> Void)?   // runs before prompt.submit is answered, as a fast reply would
     var mangleReplay: (([JSONValue]) -> [JSONValue])?
+    /// The app's replies to server requests, by request id.
+    private(set) var requestAnswers: [(id: String, result: JSONValue?, error: String?)] = []
     var failSubmit: String?         // answer prompt.submit with this JSON-RPC error message
     private var rowSeq = 0, runtimeSeq = 0
     private(set) var connects = 0
@@ -144,7 +146,18 @@ import Foundation
 
     // MARK: rpc
 
+    /// A request from Hermes to the app, as a server request frame to every socket bound to the session.
+    func request(_ s: Live, id: String, method: String, params: [String: JSONValue] = [:]) {
+        var p = params; p["session_id"] = .string(s.id)
+        let frame: JSONValue = .object(["jsonrpc": .string("2.0"), "id": .string(id), "method": .string(method), "params": .object(p)])
+        for peer in s.sockets { peer.deliver(frame) }
+    }
+
     private func receive(_ text: String, from socket: FakeGatewaySocket) {
+        if let f = JSONValue.parse(text), f["method"] == nil, let id = f["id"]?.string {
+            requestAnswers.append((id, f["result"], f["error"]?["message"]?.string))
+            return
+        }
         guard let frame = JSONValue.parse(text), let method = frame["method"]?.string, let id = frame["id"] else { return }
         let params = frame["params"] ?? .object([:])
         let answer: (JSONValue?, String?) -> Void = { result, error in

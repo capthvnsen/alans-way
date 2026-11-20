@@ -20,7 +20,7 @@ struct GatewayHomeView: View {
                         }
                         Spacer()
                         Button { showSettings = true } label: {
-                            Image(systemName: "slider.horizontal.3").font(.system(size: 19)).frame(width: 46, height: 46).background(WorkspaceTheme.surface, in: Circle())
+                            Image(systemName: "slider.horizontal.3").scaledFont(19).frame(minWidth: 46, minHeight: 46).background(WorkspaceTheme.surface, in: Circle())
                         }.accessibilityLabel("Alan’s Way settings").accessibilityIdentifier("gatewaySettings")
                     }
 
@@ -33,7 +33,7 @@ struct GatewayHomeView: View {
 
                     Button(action: newConversation) {
                         HStack(spacing: 10) {
-                            if creating { ProgressView() } else { Image(systemName: "plus").font(.system(size: 15)) }
+                            if creating { ProgressView() } else { Image(systemName: "plus").scaledFont(15) }
                             Text("New conversation").font(.subheadline.weight(.medium))
                         }
                         .frame(maxWidth: .infinity, minHeight: 44).padding(.vertical, 12)
@@ -76,7 +76,7 @@ struct GatewayHomeView: View {
         } else {
             LazyVStack(spacing: 10) {
                 ForEach(gateway.conversations) { conversation in
-                    NavigationLink(value: conversation.id) { GatewayConversationRow(conversation: conversation) }
+                    NavigationLink(value: conversation.id) { GatewayConversationRow(conversation: conversation, preview: gateway.preview(for: conversation)) }
                         .buttonStyle(.plain).accessibilityIdentifier("gatewayConversation-\(conversation.id)")
                 }
             }
@@ -95,22 +95,25 @@ struct GatewayHomeView: View {
 
 struct GatewayConversationRow: View {
     let conversation: GatewayConversation
+    let preview: String
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        HStack(spacing: 16) {
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(spacing: 16))
+        layout {
             AgentPortrait(name: "hermes", size: 68)
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text(conversation.title).font(.headline).lineLimit(2)
+                    Text(conversation.title).font(.headline).lineLimit(typeSize.isAccessibilitySize ? 4 : 2)
                     Spacer(minLength: 0)
                     if let date = conversation.lastActive {
                         Text(GatewayFormat.short(date)).font(.system(.caption2, design: .monospaced)).foregroundStyle(WorkspaceTheme.secondary)
                     }
                 }
-                Text(conversation.preview.isEmpty ? "Pick up your conversation" : conversation.preview)
+                Text(preview.isEmpty ? "Pick up your conversation" : preview)
                     .font(.footnote).foregroundStyle(WorkspaceTheme.secondary).lineLimit(2).lineSpacing(3)
             }
-            Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(WorkspaceTheme.secondary)
+            Image(systemName: "chevron.right").scaledFont(11, weight: .semibold).foregroundStyle(WorkspaceTheme.secondary)
         }
         .padding(16).frame(minHeight: 44)
         .background(WorkspaceTheme.surface).clipShape(RoundedRectangle(cornerRadius: 23))

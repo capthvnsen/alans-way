@@ -29,13 +29,18 @@ struct ComputerView: View {
                         }
                     }
                 } else {
-                    VStack(spacing: 22) {
-                        Image(systemName: "desktopcomputer").font(.system(size: 48, weight: .ultraLight)).foregroundStyle(WorkspaceTheme.mint)
-                        Text("A window into their work.").font(.system(size: 26, weight: .medium, design: .serif))
+                    let empty = VStack(spacing: 22) {
+                        Image(systemName: "desktopcomputer").scaledFont(48, weight: .ultraLight).foregroundStyle(WorkspaceTheme.mint)
+                        Text("A window into their work.").scaledFont(26, weight: .medium, design: .serif)
                         Text("Connect \(botName)’s existing desktop viewer to see what your agent is doing, wherever you are.")
-                            .font(.system(size: 14)).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(5).multilineTextAlignment(.center)
+                            .scaledFont(14).foregroundStyle(WorkspaceTheme.secondary).lineSpacing(5).multilineTextAlignment(.center)
                         Button("Connect computer") { showSettings = true }.buttonStyle(WorkspacePrimaryButton()).padding(.top, 6)
-                    }.padding(32).frame(maxWidth: 480).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }.padding(32).frame(maxWidth: 480).frame(maxWidth: .infinity)
+                    // Centered when it fits; scrolls at the largest text sizes.
+                    ViewThatFits(in: .vertical) {
+                        empty.frame(maxHeight: .infinity)
+                        ScrollView { empty }
+                    }
                 }
             }
             .background(WorkspaceTheme.background)
@@ -119,17 +124,17 @@ struct AgentSettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(chat.title).font(.system(size: 30, weight: .medium, design: .serif))
+                        Text(chat.title).scaledFont(30, weight: .medium, design: .serif)
                         if let username = chat.username { Text("@\(username)").font(.footnote).foregroundStyle(WorkspaceTheme.secondary) }
                     }
-                    Text("CHOOSE THEIR FACE").font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(2).foregroundStyle(WorkspaceTheme.secondary)
+                    Text("CHOOSE THEIR FACE").scaledFont(10, weight: .medium, design: .monospaced).tracking(2).foregroundStyle(WorkspaceTheme.secondary)
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 84))], spacing: 16) {
                         ForEach(WorkspaceSettings.availableAvatars, id: \.self) { avatar in
                             Button { settings.setAvatar(avatar, for: chat.id) } label: {
                                 VStack(spacing: 8) {
                                     AgentPortrait(name: avatar, size: 78)
                                         .overlay(RoundedRectangle(cornerRadius: 24).stroke(settings.avatar(for: chat.id) == avatar ? WorkspaceTheme.mint : .clear, lineWidth: 2))
-                                    Text(avatar.capitalized).font(.system(size: 11)).foregroundStyle(WorkspaceTheme.secondary)
+                                    Text(avatar.capitalized).scaledFont(11).foregroundStyle(WorkspaceTheme.secondary)
                                 }
                             }.accessibilityLabel("\(avatar.capitalized) avatar")
                                 .accessibilityValue(settings.avatar(for: chat.id) == avatar ? "Selected" : "")

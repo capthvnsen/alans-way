@@ -7,7 +7,7 @@ import UIKit
 @MainActor
 @Observable
 public final class TelegramStore {
-    public private(set) var authState: TelegramAuthState = .configuring
+    public private(set) var authState: TelegramAuthState
     public private(set) var chats: [TelegramChat] = []
     public var selectedChatID: Int64?
     public private(set) var messagesByChat: [Int64: [TelegramMessage]] = [:]
@@ -39,8 +39,9 @@ public final class TelegramStore {
     @ObservationIgnored private var activeFileSends = 0
     @ObservationIgnored private let fileManager = FileManager.default
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
+    @ObservationIgnored private let chatsLoad = SingleFlight()
 
-    public init() {}
+    public init(authState: TelegramAuthState = .starting) { self.authState = authState }
 
     #if DEBUG
     /// Safe simulator-only fixtures for reviewing the interface without a Telegram account.
@@ -126,6 +127,11 @@ public final class TelegramStore {
         try await client.setAuthenticationPhoneNumber(phoneNumber: phone, settings: nil)
     }
 
+    public func resendCode() async throws {
+        guard let client else { throw TelegramStoreError.notAuthorized }
+        _ = try await client.resendAuthenticationCode(reason: .resendCodeReasonUserRequest)
+    }
+
     public func submitCode(_ code: String) async throws {
         guard let client else { throw TelegramStoreError.notAuthorized }
         try await client.checkAuthenticationCode(code: code)
@@ -157,7 +163,9 @@ public final class TelegramStore {
         errorMessage = nil
         if let client { try? await client.openChat(chatId: chatID) }
         // Updates can cache a chat's newest messages before it is opened, so check for loaded history instead.
-        if !historyLoadedChatIDs.contains(chatID) {
+        if historyLoadedChatIDs.contains(chatID) {
+            await refreshNewestMessages(chatID: chatID)
+        } else {
             do {
                 // TDLib's first page is often just the cached last message; fetch a little more to fill the screen.
                 for _ in 0..<3 {
@@ -207,6 +215,10 @@ public final class TelegramStore {
 
     /// Loads Telegram's main conversation list and keeps it current through TDLib updates.
     public func loadChats() async throws {
+        try await chatsLoad.run { [self] in try await fetchChats() }
+    }
+
+    private func fetchChats() async throws {
         guard let client else { throw TelegramStoreError.notAuthorized }
         isLoadingChats = true
         defer { isLoadingChats = false }
@@ -252,6 +264,23 @@ public final class TelegramStore {
         if merged.hasMore { hasMoreMessages.insert(chatID) }
         else { hasMoreMessages.remove(chatID) }
         for item in converted { scheduleAttachmentDownload(item) }
+    }
+
+    /// Re-reads the newest page of an already loaded chat so messages TDLib skipped while offline do not leave a hole.
+    func refreshNewestMessages(chatID: Int64) async {
+        guard let client, historyLoadedChatIDs.contains(chatID), !loadingChatIDs.contains(chatID),
+              let current = messagesByChat[chatID], !current.isEmpty else { return }
+        loadingChatIDs.insert(chatID)
+        defer { loadingChatIDs.remove(chatID) }
+        let users = usersByID
+        guard let refreshed = try? await TelegramHistory.refreshNewest(current: current, fetchPage: { from in
+            let result = try await client.getChatHistory(chatId: chatID, fromMessageId: from, limit: 50, offset: 0, onlyLocal: false)
+            return (result.messages ?? []).map { TelegramModelMapper.message($0, users: users) }
+        }) else { return }
+        // Updates may have landed during the fetch; keep anything newer than what was read.
+        let latest = messagesByChat[chatID, default: []]
+        messagesByChat[chatID] = TelegramHistory.merge(page: latest, into: refreshed.messages).messages
+        if refreshed.gapped { hasMoreMessages.insert(chatID) }
     }
 
     public func sendText(_ text: String, chatID: Int64) async throws {
@@ -384,7 +413,7 @@ public final class TelegramStore {
         parametersRequestInFlight = false
         self.apiID = apiID
         self.apiHash = apiHash
-        authState = .configuring
+        authState = .starting
     }
 
     /// TDLib asks to be told about every network change so it reconnects at once instead of after its retry backoff.
@@ -407,41 +436,33 @@ public final class TelegramStore {
     private func consume(_ update: Update, receivedBy client: TDLibClient) async {
         switch update {
         case .updateAuthorizationState(let value):
+            authState = TelegramModelMapper.authState(value.authorizationState)
             switch value.authorizationState {
             case .authorizationStateWaitTdlibParameters:
                 waitingForParameters = true
                 do { try await configureParameters(for: client) }
                 catch { fail(error) }
-            case .authorizationStateWaitPhoneNumber:
-                authState = .waitPhoneNumber
-            case .authorizationStateWaitCode:
-                authState = .waitCode
-            case .authorizationStateWaitPassword:
-                authState = .waitPassword
-            case .authorizationStateWaitEmailAddress:
-                authState = .waitEmailAddress
-            case .authorizationStateWaitEmailCode:
-                authState = .waitEmailCode
             case .authorizationStateReady:
-                authState = .ready
                 if let me = try? await client.getMe() { userID = me.id }
                 Task { try? await loadChats() }
             case .authorizationStateClosed:
-                authState = .closed
                 chats.removeAll()
                 messagesByChat.removeAll()
                 historyLoadedChatIDs.removeAll()
                 selectedChatID = nil
                 self.client = nil
-                self.manager = nil
                 connectionStatus = nil
                 waitingForParameters = false
                 parametersRequestInFlight = false
             default:
-                authState = .configuring
+                break
             }
         case .updateConnectionState(let value):
+            let wasOffline = connectionStatus != nil
             connectionStatus = TelegramModelMapper.connectionStatus(value.state)
+            if wasOffline, connectionStatus == nil, let open = selectedChatID {
+                Task { await refreshNewestMessages(chatID: open) }
+            }
         case .updateNewChat(let value):
             apply(value.chat)
         case .updateChatTitle(let value):
@@ -489,6 +510,7 @@ public final class TelegramStore {
                 let mapped = TelegramModelMapper.content(value.newContent)
                 messages[index].text = mapped.0
                 messages[index].attachment = mapped.1
+                messages[index].entities = TelegramModelMapper.entities(value.newContent)
                 messagesByChat[value.chatId] = messages
                 scheduleAttachmentDownload(messages[index])
             }
@@ -686,6 +708,21 @@ public final class TelegramStore {
 }
 
 enum TelegramModelMapper {
+    /// States that only wait on TDLib map to `.starting`, so the app-credentials form shows only when it is really needed.
+    static func authState(_ state: AuthorizationState) -> TelegramAuthState {
+        switch state {
+        case .authorizationStateWaitPhoneNumber: .waitPhoneNumber
+        case .authorizationStateWaitCode: .waitCode
+        case .authorizationStateWaitPassword: .waitPassword
+        case .authorizationStateWaitEmailAddress: .waitEmailAddress
+        case .authorizationStateWaitEmailCode: .waitEmailCode
+        case .authorizationStateReady: .ready
+        case .authorizationStateClosed: .closed
+        case .authorizationStateWaitTdlibParameters, .authorizationStateLoggingOut, .authorizationStateClosing: .starting
+        default: .configuring
+        }
+    }
+
     static func connectionStatus(_ state: ConnectionState) -> String? {
         switch state {
         case .connectionStateWaitingForNetwork: "Waiting for network…"
@@ -734,8 +771,56 @@ enum TelegramModelMapper {
             date: Date(timeIntervalSince1970: TimeInterval(message.date)),
             text: mapped.0,
             attachment: mapped.1,
-            buttonRows: buttons(message.replyMarkup)
+            buttonRows: buttons(message.replyMarkup),
+            entities: entities(message.content)
         )
+    }
+
+    /// Telegram's own formatting for the text or caption, with bare URLs and e-mail addresses made tappable.
+    static func entities(_ content: MessageContent) -> [TelegramTextEntity] {
+        let formatted: FormattedText
+        switch content {
+        case .messageText(let value): formatted = value.text
+        case .messagePhoto(let value): formatted = value.caption
+        case .messageVideo(let value): formatted = value.caption
+        case .messageVoiceNote(let value): formatted = value.caption
+        case .messageAudio(let value): formatted = value.caption
+        case .messageDocument(let value): formatted = value.caption
+        case .messageAnimation(let value): formatted = value.caption
+        default: return []
+        }
+        let text = formatted.text as NSString
+        return formatted.entities.compactMap { entity in
+            let kind: TelegramTextEntity.Kind
+            switch entity.type {
+            case .textEntityTypeBold: kind = .bold
+            case .textEntityTypeItalic: kind = .italic
+            case .textEntityTypeUnderline: kind = .underline
+            case .textEntityTypeStrikethrough: kind = .strikethrough
+            case .textEntityTypeCode, .textEntityTypePre, .textEntityTypePreCode: kind = .code
+            case .textEntityTypeTextUrl(let value):
+                guard let url = linkURL(value.url) else { return nil }
+                kind = .link(url)
+            case .textEntityTypeUrl:
+                guard NSMaxRange(NSRange(location: entity.offset, length: entity.length)) <= text.length,
+                      let url = linkURL(text.substring(with: NSRange(location: entity.offset, length: entity.length))) else { return nil }
+                kind = .link(url)
+            case .textEntityTypeEmailAddress:
+                guard NSMaxRange(NSRange(location: entity.offset, length: entity.length)) <= text.length,
+                      let url = linkURL("mailto:" + text.substring(with: NSRange(location: entity.offset, length: entity.length))) else { return nil }
+                kind = .link(url)
+            default: return nil
+            }
+            return TelegramTextEntity(offset: entity.offset, length: entity.length, kind: kind)
+        }
+    }
+
+    /// A tappable link only for web, mail and phone addresses; a bare `example.com` is read as https.
+    static func linkURL(_ raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let full = trimmed.contains(":") ? trimmed : "https://" + trimmed
+        guard let url = URL(string: full), ["http", "https", "mailto", "tel"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        return url
     }
 
     static func content(_ content: MessageContent) -> (String, TelegramAttachment?) {
@@ -784,6 +869,22 @@ enum TelegramModelMapper {
     }
 }
 
+/// Callers that arrive while a run is in flight share it, so overlapping triggers cannot end each other's loading state.
+@MainActor
+final class SingleFlight {
+    private var task: Task<Void, any Swift.Error>?
+
+    func run(_ work: @escaping @MainActor () async throws -> Void) async throws {
+        if let task { return try await task.value }
+        let task = Task { @MainActor in
+            defer { self.task = nil }
+            try await work()
+        }
+        self.task = task
+        try await task.value
+    }
+}
+
 enum TelegramHistory {
     /// TDLib may return fewer messages than requested before the start of a chat, so only a page
     /// that adds nothing marks the history as complete.
@@ -791,6 +892,40 @@ enum TelegramHistory {
         let known = Set(current.map(\.id))
         let additions = page.filter { !known.contains($0.id) }
         return ((additions + current).sorted { $0.id < $1.id }, !additions.isEmpty)
+    }
+
+    /// After a long offline gap TDLib may skip `updateNewMessage` and only report the newest message, leaving a hole.
+    /// Walks back from the newest page until the fetched range reaches the newest cached message it did not return
+    /// (cached newest alone proves nothing). If that takes more than `maxPages`, the cache older than what was fetched
+    /// is dropped (`gapped`) so no hole is shown, and Earlier messages fetches it again.
+    static func refreshNewest(
+        current: [TelegramMessage], maxPages: Int = 3,
+        fetchPage: (_ fromMessageID: Int64) async throws -> [TelegramMessage]
+    ) async throws -> (messages: [TelegramMessage], gapped: Bool) {
+        let cached = Set(current.map(\.id))
+        var fetched: [TelegramMessage] = []
+        var from: Int64 = 0
+        // The newest cached message below the fetched range's top that the fetch did not return: the range must reach it.
+        func anchor() -> Int64? {
+            let ids = Set(fetched.map(\.id))
+            guard let newest = ids.max() else { return nil }
+            return cached.subtracting(ids).filter { $0 < newest }.max()
+        }
+        for _ in 0..<maxPages {
+            let page = try await fetchPage(from)
+            let known = Set(fetched.map(\.id))
+            let added = page.filter { !known.contains($0.id) }
+            guard !added.isEmpty else { break }
+            fetched += added
+            let oldest = fetched.map(\.id).min()!
+            if anchor().map({ oldest <= $0 }) ?? true { break }
+            from = oldest
+        }
+        guard let oldest = fetched.map(\.id).min() else { return (current, false) }
+        guard let missing = anchor(), oldest > missing else { return (merge(page: fetched, into: current).messages, false) }
+        let ids = Set(fetched.map(\.id))
+        let newer = current.filter { $0.id >= oldest && !ids.contains($0.id) }
+        return ((fetched + newer).sorted { $0.id < $1.id }, true)
     }
 }
 
