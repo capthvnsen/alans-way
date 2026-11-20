@@ -147,3 +147,42 @@ class RetentionTests(unittest.TestCase):
             self.assertIsNotNone(turns.get("new", "t2"))
             with store._connection() as db:
                 self.assertEqual(db.execute("SELECT call_id FROM calls").fetchall(), [("new",)])
+
+
+class SchemaSetupTests(unittest.TestCase):
+    def test_the_schema_is_prepared_once_per_database_not_per_request(self):
+        import sqlite3
+        from unittest.mock import patch
+        statements = []
+
+        class Spy:
+            def __init__(self, db):
+                self._db = db
+
+            def execute(self, sql, *args):
+                statements.append(sql.split()[0].upper())
+                return self._db.execute(sql, *args)
+
+            def __getattr__(self, name):
+                return getattr(self._db, name)
+
+        real = sqlite3.connect
+        with tempfile.TemporaryDirectory() as temp:
+            store = LaunchTicketStore(Path(temp) / "voice.sqlite3")
+            store.create_call("c", "t", LaunchBinding("default", "9001", "42", "42", "session"))
+            with patch("mobile.voice.protocol.sqlite3.connect", side_effect=lambda *a, **k: Spy(real(*a, **k))):
+                for _ in range(5):
+                    self.assertIsNotNone(store.get_call("c", "t"))
+        self.assertNotIn("CREATE", statements)
+        self.assertNotIn("ALTER", statements)
+
+    def test_a_deleted_database_is_recreated_on_the_next_request(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "voice.sqlite3"
+            store = LaunchTicketStore(path)
+            binding = LaunchBinding("default", "9001", "42", "42", "session")
+            store.issue(binding)
+            for leftover in Path(temp).glob("voice.sqlite3*"):
+                leftover.unlink()
+            ticket = store.issue(binding)
+            self.assertIsNotNone(store.consume(ticket, user_id="42"))
