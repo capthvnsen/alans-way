@@ -159,6 +159,7 @@ const BATCH_BUDGET_MS = 50000;
 const batchFlow = require('./batch-flow.cjs');
 const FLOW = Symbol('batch-flow');
 const QUIT_SAVE_MS = 8000;
+const BROWSER_RESTORE_WAIT_MS = 5000;
 // What one queued tab task may hold the tab's queue for. An action may run a 50s batch plus a 30s wait, and the connector gives up at 90s.
 const TAB_ACTION_MS = 100000, TAB_READ_MS = 45000, CAPTURE_MS = 20000, CDP_COMMAND_MS = 15000;
 const NAVIGATE_PARSE_MS = 3000;
@@ -3924,8 +3925,8 @@ else {
     const stale = staleConnector();
     if (stale) try { fs.rmSync(stale, { recursive: true, force: true }); } catch (error) { logError('stale-connector', error); }
     const browserSession = session.fromPartition('persist:browser');
-    try { await browserSessionStore.restore(); }
-    catch { logError('browser-restore', new Error('Saved browser sign-ins could not be restored.')); }
+    // A keychain prompt nobody answers must not hold back the window and the connector API: the restore keeps going in the background.
+    await settleWithin(browserSessionStore.restore().catch(() => logError('browser-restore', new Error('Saved browser sign-ins could not be restored.'))), BROWSER_RESTORE_WAIT_MS);
     const saveCookiesSoon = coalesce(() => browserSessionStore.save().catch(() => logError('browser-save', new Error('Browser sign-ins could not be saved.'))), 250);
     for (const partition of ['persist:browser', 'persist:telegram']) session.fromPartition(partition).cookies.on('changed', saveCookiesSoon);
     for (const target of [session.defaultSession, browserSession, session.fromPartition('persist:telegram')]) {
