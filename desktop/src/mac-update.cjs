@@ -64,10 +64,17 @@ async function checkLatest() {
   return tag ? { tag, version: tag.replace(/^v/, '') } : null;
 }
 
-async function download(url, file) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`The update download failed (${res.status}).`);
-  fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+// Without a deadline a stalled connection leaves "update-now" pending, and its busy flag locks every other update path.
+const DOWNLOAD_MS = 15 * 60 * 1000, CHECKSUM_MS = 30000;
+async function download(url, file, { timeoutMs = DOWNLOAD_MS } = {}) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) throw new Error(`The update download failed (${res.status}).`);
+    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+  } catch (error) {
+    if (error?.name === 'TimeoutError') throw new Error('The update download timed out. Check the connection and try again.');
+    throw error;
+  }
 }
 
 // Downloaded by the app itself, the image carries no quarantine flag, so the
@@ -79,7 +86,7 @@ async function installMacUpdate({ tag, bundlePath }) {
   const dmg = path.join(dir, 'OpenAlan-mac.dmg'), mount = path.join(dir, 'mnt');
   try {
     await download(`${base}/OpenAlan-mac.dmg`, dmg);
-    const sums = await fetch(`${base}/OpenAlan-mac.dmg.sha512`);
+    const sums = await fetch(`${base}/OpenAlan-mac.dmg.sha512`, { signal: AbortSignal.timeout(CHECKSUM_MS) });
     const want = sums.ok ? (await sums.text()).trim().split(/\s+/)[0] : '';
     const got = crypto.createHash('sha512').update(fs.readFileSync(dmg)).digest('hex');
     if (!want || want !== got) throw new Error('The downloaded update did not match its checksum.');
@@ -106,4 +113,4 @@ async function installMacUpdate({ tag, bundlePath }) {
   }
 }
 
-module.exports = { bundleLocation, isNewer, canSelfUpdate, isDeveloperIdSigned, updaterDriver, checkLatest, installMacUpdate };
+module.exports = { download, bundleLocation, isNewer, canSelfUpdate, isDeveloperIdSigned, updaterDriver, checkLatest, installMacUpdate };

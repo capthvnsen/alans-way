@@ -27,3 +27,14 @@ test('bundleLocation accepts only /Applications/<productName>.app', () => {
   assert.equal(at('/Volumes/alans-way-localapp 0.4.0/alans-way-localapp.app').kind, 'dmg');
   assert.equal(at('/Users/you/Desktop/alans-way-localapp.app').kind, 'other');
 });
+
+test('an update download that stalls fails at its deadline instead of holding the update lock forever', { timeout: 3000 }, async () => {
+  const http = require('node:http'), fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const { download } = require('../src/mac-update.cjs');
+  const server = http.createServer(() => {}).listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mac-update-'));
+  try {
+    await assert.rejects(download(`http://127.0.0.1:${server.address().port}/update.dmg`, path.join(dir, 'update.dmg'), { timeoutMs: 100 }), /timed out/);
+  } finally { server.closeAllConnections(); server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
