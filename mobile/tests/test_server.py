@@ -13,8 +13,11 @@ import types
 from unittest.mock import patch
 from pathlib import Path
 
-from aiohttp.test_utils import TestClient, TestServer
-from aiohttp import web
+try:
+    from aiohttp.test_utils import TestClient, TestServer
+    from aiohttp import web
+except ImportError:
+    raise unittest.SkipTest("aiohttp is not installed; run: pip install -r mobile/requirements.txt")
 
 from mobile.voice.protocol import LaunchBinding
 from mobile.voice.server import BrokerListener, HermesAudio, VoiceBroker
@@ -511,7 +514,7 @@ class PluginRuntimeTests(unittest.TestCase):
             ctx = Context()
             with patch.dict(sys.modules, {"agent.secret_scope": scope, "plugins.plugin_storage": storage}), patch.dict(
                 os.environ, {"TELEGRAM_BOT_TOKEN": "wrong-launch-profile", "HERMES_HOME": "/wrong-home"}
-            ), patch("mobile.voice.hermes_plugin.BrokerListener") as listener:
+            ), patch("mobile.voice.server.BrokerListener") as listener:
                 plugin = MobileVoicePlugin(ctx)
                 self.assertIsNone(plugin.broker)
                 listener.assert_not_called()
