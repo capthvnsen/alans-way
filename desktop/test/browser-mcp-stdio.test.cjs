@@ -290,3 +290,10 @@ test('a bot id that cannot travel in an HTTP header is refused at startup', { ti
   assert.equal(run.status, 1);
   assert.match(run.stderr, /Usage/);
 });
+
+test('null for an optional argument is treated as left out, not as a wrong type', { timeout: 15000 }, async (t) => {
+  const { app, connector } = await rig(t);
+  const result = await connector.call('cua_alans_way_action', action({ remainingMs: null }));
+  assert.doesNotMatch(text(result), /Invalid arguments/);
+  assert.equal(app.log.length, 1);
+});

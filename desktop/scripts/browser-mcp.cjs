@@ -227,7 +227,8 @@ const tools = [
 // Checks the schema subset the tools use. Fields a schema does not list pass untouched: the plugin adds
 // approval and hosts add their own, so only what is declared is held to its type.
 function schemaProblem(schema, value, where) {
-  if (!schema || value === undefined) return '';
+  // Models often send null for an optional field they mean to leave out; the app already treats it as absent.
+  if (!schema || value == null) return '';
   const type = schema.type, kind = Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;
   if (type === 'integer' ? !Number.isInteger(value) : type === 'number' ? kind !== 'number' || !Number.isFinite(value) : type && kind !== type)
     return `${where} must be ${type === 'integer' ? 'an integer' : `a ${type}`}`;
@@ -242,7 +243,7 @@ function schemaProblem(schema, value, where) {
     if (schema.maxLength !== undefined && value.length > schema.maxLength) return `${where} is too long`;
   }
   if (type === 'object') {
-    for (const key of schema.required || []) if (value[key] === undefined) return `${where ? where + '.' : ''}${key} is required`;
+    for (const key of schema.required || []) if (value[key] == null) return `${where ? where + '.' : ''}${key} is required`;
     for (const [key, sub] of Object.entries(schema.properties || {})) {
       const problem = schemaProblem(sub, value[key], `${where ? where + '.' : ''}${key}`);
       if (problem) return problem;
