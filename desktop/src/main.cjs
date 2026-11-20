@@ -15,7 +15,7 @@ const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const { readCapped, normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, continuedOnVm, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
-const { sameOriginWindow, queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost, tailscaleSshHostAsync } = require('./shell-support.cjs');
+const { sameOriginWindow, queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost, tailscaleSshHostAsync, createPointerFeed } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
@@ -222,7 +222,7 @@ const downloadStore = createDownloadStore({ getPreferences: () => prefs, savePre
   confirmOpen: async (name) => (await dialog.showMessageBox(win, { type: 'warning', buttons: ['Cancel', 'Open anyway'], defaultId: 0, cancelId: 0,
     message: `Open ${name}?`, detail: 'This file can run programs on your computer. Only open it if you trust where it came from.' })).response === 1 });
 const recordings = recorder.createRecordingStore(path.join(app.getPath('userData'), 'recordings'));
-let pointerTimer, activityTimer, idleTimer, captchaTimer;
+let pointerFeed, activityTimer, idleTimer, captchaTimer, onlineTimer;
 
 function readPreferences() {
   const defaults = { bots: [], order: [], hidden: [], selectedBotId: '', accountId: '', remoteUrl: '', hermesWebappUrl: '', chatSurface: '', nativeTransport: '', remotePlatform: 'linux', chatWidth: 490, showBots: true, showBrowser: true, savedTabs: [], avatarLibrary: [], avatarPreferences: {}, locationDefault: 'approximate', sitePermissions: {}, browserExtensions: [], vpsBrowser: {}, agentIdleMinutes: 15, agentLastTabs: {}, canvasTabs: {}, chatSurfaces: {}, nativeSessions: {}, handoffs: [], downloads: [], updateSnoozedUntil: 0, releaseChannel: 'stable', vmUpdates: {}, versionCache: {}, desktopTrustedBots: [],
@@ -1218,6 +1218,7 @@ function changeController(id, controller, source = 'human', handback = null) {
   tab.refs.clear();
   agentInput.clear(tab).catch(() => {});
   scheduleVpsMirror();
+  syncCaptchaWatch();
   notifyHandback(describeTab(tab));
   broadcast();
   return describeTab(tab);
@@ -1336,15 +1337,31 @@ function handleChallenge(tab, raw) {
 // While a tab waits on a human for a CAPTCHA, a cheap page probe each second
 // hands it back once the challenge it saw has cleared (see captchaWatchStep).
 // The human can still give it back themselves.
+function hasWatchableCaptcha() {
+  for (const tab of tabs.values()) {
+    const h = liveHandback(tab), wc = tab.view?.webContents;
+    if (h?.state === 'awaiting_human' && h.reason === 'captcha' && h.watch !== false && wc && !wc.isDestroyed()) return true;
+  }
+  return false;
+}
+function syncCaptchaWatch() {
+  if (hasWatchableCaptcha()) {
+    if (!captchaTimer) { captchaTimer = setInterval(watchCaptchas, 1000); captchaTimer.unref(); }
+  } else if (captchaTimer) {
+    clearInterval(captchaTimer); captchaTimer = undefined;
+  }
+}
 function watchCaptchas() {
+  let watching = false;
   for (const tab of tabs.values()) {
     const h = liveHandback(tab), wc = tab.view.webContents;
     if (h?.state !== 'awaiting_human' || h.reason !== 'captcha' || h.watch === false || wc.isDestroyed()) { tab.captchaWatch = undefined; continue; }
+    watching = true;
     if (tab.captchaProbing) continue;
     tab.captchaProbing = true;
     readJs(wc, challengeProbeExpression(), 2000).catch(() => null).then((probe) => {
       tab.captchaProbing = false;
-      if (!tabs.has(tab.id) || liveHandback(tab) !== h) return;
+      if (!tabs.has(tab.id) || liveHandback(tab) !== h) { syncCaptchaWatch(); return; }
       tab.captchaWatch = captchaWatchStep(tab.captchaWatch || { seen: h.auto === true, clear: 0, typing: '' }, probe);
       if (!tab.captchaWatch.resume) return;
       tab.captchaWatch = undefined;
@@ -1353,6 +1370,7 @@ function watchCaptchas() {
       broadcast();
     });
   }
+  if (!watching && captchaTimer) { clearInterval(captchaTimer); captchaTimer = undefined; }
 }
 const HANDBACK_TEXT = { captcha: 'Solve the CAPTCHA, then give the tab back.', login: 'Sign in, then give the tab back.', two_factor: 'Enter the verification code, then give the tab back.', payment_details: 'Enter the card details, then give the tab back.', review: 'Review the page, then give the tab back.', other: 'Take a look, then give the tab back.' };
 // One notification per handback. Notifications are kept per tab so a click
@@ -3763,13 +3781,6 @@ function watchTelegram(wc) {
     if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:remote-retry');
     const timer = setTimeout(() => { if (stuck()) telegramRecovery.now(); }, 3000); timer.unref?.();
   });
-  let wasOnline = net.isOnline();
-  const timer = setInterval(() => {
-    const online = net.isOnline();
-    if (online && !wasOnline && telegramStatus === 'offline') telegramRecovery.now();
-    wasOnline = online;
-  }, 3000);
-  timer.unref();
 }
 // A claimed cloud computer keeps a permanent way back to support; the menu is
 // rebuilt when a session lands or clears so the item tracks cloud.sessionEnc.
@@ -3860,36 +3871,66 @@ function createWindow() {
     if (process.platform === 'darwin' || tray) { event.preventDefault(); win.hide(); }
     else if (process.platform === 'linux') { event.preventDefault(); win.minimize(); }
   });
-  for (const name of ['show', 'hide', 'minimize', 'restore', 'focus', 'blur']) win.on(name, () => sendPollTier());
+  const windowVisible = () => Boolean(win && !win.isDestroyed() && win.isVisible() && !win.isMinimized());
+  for (const name of ['show', 'hide', 'minimize', 'restore', 'focus', 'blur']) win.on(name, () => {
+    sendPollTier();
+    pointerFeed?.setVisible(windowVisible());
+  });
   for (const name of ['show', 'restore', 'focus']) win.on(name, () => {
     if (remoteView && !remoteView.webContents.isDestroyed()) remoteView.webContents.send('workspace:remote-retry');
+    if (name !== 'focus' && (prefs?.vpsBrowser?.brokerSshHost || prefs?.vpsBrowser?.sshHost)) refreshVpsTabs();
   });
   buildMenu();
   startApi();
   // Read the real pointer position, even over native child views or another app.
-  // This never installs a global input hook or moves the system cursor.
-  pointerTimer = setInterval(() => {
-    if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return;
-    const point = screen.getCursorScreenPoint(), bounds = win.getContentBounds();
-    const zoom = win.webContents.getZoomFactor();
-    win.webContents.send('workspace:pointer', { x: (point.x - bounds.x) / zoom, y: (point.y - bounds.y) / zoom });
-  }, 50);
-  pointerTimer.unref();
-  activityTimer = setInterval(() => { if (activity.expire() || JSON.stringify(computeBotWork()) !== lastBotWorkSignature) broadcast(); }, 500);
-  activityTimer.unref();
+  // Sends only on movement, slows when still, and pauses while hidden.
+  pointerFeed = createPointerFeed({
+    read: () => {
+      if (!windowVisible()) return null;
+      const point = screen.getCursorScreenPoint(), bounds = win.getContentBounds();
+      const zoom = win.webContents.getZoomFactor();
+      return { x: (point.x - bounds.x) / zoom, y: (point.y - bounds.y) / zoom };
+    },
+    send: (point) => { if (win && !win.isDestroyed()) win.webContents.send('workspace:pointer', point); },
+  });
+  pointerFeed.setVisible(windowVisible());
+  const scheduleActivity = () => {
+    clearTimeout(activityTimer);
+    if (isQuitting) return;
+    const hasAgentTab = [...tabs.values()].some((t) => t.controller === 'agent') || [...vpsTabs.values()].some((t) => t.controller === 'agent');
+    const delay = !windowVisible() && !activity.hasActive() && !hasAgentTab ? 5000 : 500;
+    activityTimer = setTimeout(() => {
+      const expired = activity.hasActive() ? activity.expire() : false;
+      const workChanged = (hasAgentTab || lastBotWorkSignature !== '{}') && JSON.stringify(computeBotWork()) !== lastBotWorkSignature;
+      if (expired || workChanged) broadcast();
+      scheduleActivity();
+    }, delay);
+    activityTimer.unref();
+  };
+  scheduleActivity();
   idleTimer = setInterval(() => {
     const idleMs = Math.max(1, Number(process.env.HERMES_AGENT_IDLE_MINUTES) || prefs.agentIdleMinutes || 15) * 60000, now = Date.now();
     for (const tab of tabs.values()) {
-      if (tab.handback && !liveHandback(tab, now)) { tab.handback = null; broadcast(); }
+      if (tab.handback && !liveHandback(tab, now)) { tab.handback = null; syncCaptchaWatch(); broadcast(); }
       if (tab.controller !== 'agent' || tab.extensionPage || tab.pendingActions > 0 || agentInput.isDispatching(tab)) continue;
       if (now - Math.max(tab.agentSince || 0, tab.lastAgentActivity || 0) > idleMs) changeController(tab.id, 'human', 'idle');
     }
   }, 30000).unref();
-  captchaTimer = setInterval(watchCaptchas, 1000);
-  captchaTimer.unref();
-  const vpsTick = async () => { await refreshVpsTabs(); vpsTimer = setTimeout(vpsTick, backoffDelay(vpsFailures)); vpsTimer.unref(); };
+  syncCaptchaWatch();
+  const vpsTick = async () => {
+    const configured = Boolean(prefs?.vpsBrowser?.brokerSshHost || prefs?.vpsBrowser?.sshHost);
+    if (configured) await refreshVpsTabs();
+    const baseDelay = configured ? backoffDelay(vpsFailures) : 30000;
+    const delay = configured && !windowVisible() && !waitingVpsTabs.size ? Math.max(20000, baseDelay) : baseDelay;
+    vpsTimer = setTimeout(vpsTick, delay);
+    vpsTimer.unref();
+  };
   vpsTick();
-  vpsMirrorTimer = setInterval(pushVpsMirror, 10000); vpsMirrorTimer.unref();
+  vpsMirrorTimer = setInterval(() => {
+    if (!(prefs?.vpsBrowser?.brokerSshHost || prefs?.vpsBrowser?.sshHost) || vpsBrowserStatus !== 'connected') return;
+    pushVpsMirror();
+  }, 10000);
+  vpsMirrorTimer.unref();
 }
 // ── Native Hermes chat: hub construction + persisted connection ─────────────
 // Secrets (refresh token, loopback token) are stored only when safeStorage can
@@ -4028,9 +4069,22 @@ else {
     gatewayLink.on('state', () => pushNativeState());
     powerMonitor.on('suspend', () => gatewayLink.suspend());
     powerMonitor.on('resume', () => gatewayLink.resume());
-    // Windows and Linux fire `resume` before the network is back; the poll below sees it return.
+    // Windows and Linux fire `resume` before the network is back; one adaptive
+    // poller covers both gatewayLink and Telegram (5s while online, 1s while offline).
     let linkWasOnline = net.isOnline();
-    setInterval(() => { const online = net.isOnline(); if (online && !linkWasOnline) gatewayLink.trigger('online'); linkWasOnline = online; }, 1000).unref();
+    const pollOnline = () => {
+      if (isQuitting) return;
+      const online = net.isOnline();
+      if (online && !linkWasOnline) {
+        gatewayLink.trigger('online');
+        if (telegramStatus === 'offline') telegramRecovery?.now();
+      }
+      linkWasOnline = online;
+      onlineTimer = setTimeout(pollOnline, online ? 5000 : 1000);
+      onlineTimer.unref();
+    };
+    onlineTimer = setTimeout(pollOnline, linkWasOnline ? 5000 : 1000);
+    onlineTimer.unref();
     app.on('quit', () => gatewayLink.stop());
     // Loads the last-open conversation from disk before the window exists, so it paints with no network.
     nativeChat = createNativeChat({
@@ -4114,7 +4168,7 @@ else {
       }
       return;
     }
-    isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} clearInterval(pointerTimer); clearInterval(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); nativeChat?.flush(); tray?.destroy(); apiServer?.close();
+    isQuitting = true; hostComputer?.close(); try { modelAuthChild?.kill(); } catch {} pointerFeed?.stop(); clearTimeout(activityTimer); clearInterval(idleTimer); clearInterval(captchaTimer); clearTimeout(onlineTimer); clearTimeout(vpsTimer); clearInterval(vpsMirrorTimer); clearTimeout(vpsMirrorDebounce); prefsSaver.flush(); nativeChat?.flush(); tray?.destroy(); apiServer?.close();
   });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

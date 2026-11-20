@@ -251,4 +251,38 @@ function sameOriginWindow(url, origin) {
   try { const parsed = new URL(url); return /^https?:$/.test(parsed.protocol) && parsed.origin === origin; } catch { return false; }
 }
 
-module.exports = { sameOriginWindow, queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, plainLine, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost, tailscaleSshHostAsync };
+// Movement-only pointer feed: sends only when coordinates change, slows polling
+// after the pointer stays still, and stops its timer completely while hidden.
+function createPointerFeed({ activeMs = 50, idleMs = 200, stillAfterMs = 2500, now = Date.now, read, send }) {
+  let timer, last = null, lastMovedAt = 0, visible = false, stopped = false;
+  function schedule(delay) {
+    clearTimeout(timer);
+    timer = undefined;
+    if (!visible || stopped) return;
+    timer = setTimeout(tick, delay);
+    timer.unref?.();
+  }
+  function tick() {
+    timer = undefined;
+    if (!visible || stopped) return;
+    const point = read();
+    if (!point) { visible = false; return; }
+    const ts = now();
+    const moved = !last || Math.abs(point.x - last.x) >= 0.5 || Math.abs(point.y - last.y) >= 0.5;
+    if (moved) { last = point; lastMovedAt = ts; send(point); }
+    schedule(ts - lastMovedAt >= stillAfterMs ? idleMs : activeMs);
+  }
+  return {
+    setVisible(next) {
+      const want = Boolean(next);
+      if (want === visible) return;
+      visible = want;
+      if (!visible) { clearTimeout(timer); timer = undefined; }
+      else if (!stopped) { lastMovedAt = now(); schedule(activeMs); }
+    },
+    stop() { stopped = true; visible = false; clearTimeout(timer); timer = undefined; },
+    get running() { return Boolean(timer); },
+  };
+}
+
+module.exports = { sameOriginWindow, queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, plainLine, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost, tailscaleSshHostAsync, createPointerFeed };
