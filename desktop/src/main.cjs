@@ -10,9 +10,9 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
-const { normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, continuedOnVm, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
+const { readCapped, normalizeUrl, agentPageUrl, agentHostBarrier, faviconTarget, faviconQueue, redactTabForBot, continuedOnVm, cdpMethodError, parseRemoteUrl, isSshTarget, normalizeHost, requireActor: requireActorCore, requireAgentRead, requireAgentClaim, takeoverDelay, reviewedHandoff, isAuthorized, sanitizeBots, errorMessage, followVmRemoteUrl, handbackRequest, liveHandback, nextHandback, dialogAnswer, answerDialog, challengeReply, captchaHandback, captchaWatchStep, cdpChallengeSafe } = require('./core.cjs');
 const { createAvatarStore, AVATAR_SCHEME } = require('./avatar-store.cjs');
-const { resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
+const { queueWithDeadline, resolveChatSurface, usableSurfaces, surfaceForBot, inboxRow, canvasStripTabs, keepBots, writePrivateJson, normalizePreferences, coalesce, createSaver, createRetry, hostAllowed, fileUrlMatches, linuxTrayUsable, pollTier, watchChange, tailscaleSshHost } = require('./shell-support.cjs');
 const { buildAgentPrompt } = require('./agent-prompt.cjs');
 const { shouldOnboard, pinOnboarding, cloudStep, nextCloudStep, setCloudStep } = require('./onboarding.cjs');
 const cloudClaim = require('./cloud-claim.cjs');
@@ -40,7 +40,7 @@ const { createGatewayApiFactory } = require('./gateway-api.cjs');
 const { createVmUpdater, vmTargets, snoozeUntil, vmRetryState, vmCheckEntry, pruneVmUpdates, shouldShowUpdatePopup, hermesUpdateDetail, updateLocked, LOCAL_TARGET } = require('./vm-update.cjs');
 const { latestPluginTag, latestHostRelease, stableHostTarget, versionRecord, describeVersions, runSteps, summarizeRun, reportText, reportDeliveryText, deliverPendingUpdateReport, restartWarning, pluginStepResult, runLogText } = require('./update-all.cjs');
 const { describeBuild, readBuildInfo } = require('./build-channel.cjs');
-const { createAgentInput, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
+const { createAgentInput, withTimeout, PREFLIGHT_READY, APPROVED, refuseChallenge, tintScript, botAccent, boundedJs, readJs, frameOf, INPUT_ACTIONS } = require('./agent-input.cjs');
 const { createHermesHub } = require('./hermes-hub.cjs');
 const { createActivityTracker } = require('./activity.cjs');
 const { createSitePermissions } = require('./site-permissions.cjs');
@@ -159,6 +159,9 @@ const BATCH_BUDGET_MS = 50000;
 const batchFlow = require('./batch-flow.cjs');
 const FLOW = Symbol('batch-flow');
 const QUIT_SAVE_MS = 8000;
+const BROWSER_RESTORE_WAIT_MS = 5000;
+// What one queued tab task may hold the tab's queue for. An action may run a 50s batch plus a 30s wait, and the connector gives up at 90s.
+const TAB_ACTION_MS = 100000, TAB_READ_MS = 45000, CAPTURE_MS = 20000, CDP_COMMAND_MS = 15000;
 const NAVIGATE_PARSE_MS = 3000;
 const OPEN_PARSE_MS = 8000;
 // A snapshot waits this long for a still-parsing document; the wait ends at DOMContentLoaded.
@@ -742,10 +745,10 @@ function syncCanvasView() {
 async function loadPrivateCanvasPage(url) {
   if (!canvasView) canvasView = guardedWebappView(new URL('webapp/launch', webappTarget).href);
   const view = canvasView, contents = view.webContents;
-  const grants = (await webappView.webContents.executeJavaScript(`Object.entries(sessionStorage).filter(([key]) => key.startsWith('hermes.webapp.session.v1:'))`))
+  const grants = (await boundedJs(webappView.webContents, `Object.entries(sessionStorage).filter(([key]) => key.startsWith('hermes.webapp.session.v1:'))`, 10000))
     .filter(([key, token]) => typeof key === 'string' && key.length < 300 && /^[A-Za-z0-9_-]{43}$/.test(token));
-  if (contents.isLoading()) await new Promise((resolve) => contents.once('did-stop-loading', resolve));
-  await contents.executeJavaScript(`for (const [key, token] of ${JSON.stringify(grants)}) sessionStorage.setItem(key, token)`);
+  if (contents.isLoading()) await new Promise((resolve) => { const timer = setTimeout(resolve, 15000); contents.once('did-stop-loading', () => { clearTimeout(timer); resolve(); }); });
+  await boundedJs(contents, `for (const [key, token] of ${JSON.stringify(grants)}) sessionStorage.setItem(key, token)`, 10000);
   if (canvasView === view) contents.loadURL(url).catch(() => {});
 }
 function guardedWebappView(url, report = () => {}) {
@@ -927,14 +930,15 @@ async function fetchFavicon(pageUrlNow, target) {
       response = await fetch(target, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
       const location = response.headers.get('location');
       if (response.status >= 300 && response.status < 400 && location) {
+        response.body?.cancel().catch(() => {});
         target = faviconTarget(pageUrlNow, new URL(location, target).href);
         if (!target) return '';
       } else break;
     }
     const mime = response.headers.get('content-type')?.split(';')[0]?.trim() || '';
     if (!response.ok || !mime.startsWith('image/')) return '';
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (!buffer.length || buffer.length > 262144) return '';
+    const buffer = await readCapped(response, 262144);
+    if (!buffer?.length) return '';
     const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`;
     if (faviconCache.size > 300) faviconCache.clear();
     faviconCache.set(target, dataUrl);
@@ -1029,7 +1033,7 @@ function createTab({ url = 'about:blank', filePath = '', openerId = '', botId = 
     }
   };
   view.webContents.on('did-frame-finish-load', installViewerDrop);
-  view.webContents.on('page-title-updated', (_event, title) => { tab.title = tab.localPdf && /^file:/.test(view.webContents.getURL()) ? path.basename(fileURLToPath(view.webContents.getURL())) : title; broadcast(); });
+  view.webContents.on('page-title-updated', (_event, title) => { tab.title = tab.localPdf && /^file:/.test(view.webContents.getURL()) ? path.basename(fileURLToPath(view.webContents.getURL())) : String(title).slice(0, 500); broadcast(); });
   view.webContents.on('did-start-loading', () => { tab.loading = true; tab.error = ''; broadcast(); });
   view.webContents.on('did-start-navigation', (_event, url, inPlace, isMainFrame) => {
     if (!isMainFrame || inPlace) return;
@@ -1451,14 +1455,14 @@ async function openBot(id) {
   if (!prefs.bots.some((bot) => bot.id === id)) throw new Error('Select a verified Telegram bot.');
   selectAgent(id);
   savePreferences(); broadcast();
-  const selected = await telegramView.webContents.executeJavaScript(`(() => {
+  const selected = await boundedJs(telegramView.webContents, `(() => {
     const link = [...document.querySelectorAll('#LeftColumn a[href]')].find(el => el.hash?.slice(1).split('_')[0] === '${id}');
     if (link) {
       link.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
       link.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0 }));
       link.click(); return true;
     } return false;
-  })()`).catch(() => false);
+  })()`, 5000).catch(() => false);
   if (!selected) await openTelegramHash(id);
 }
 let openingTelegramUsername = false;
@@ -1731,14 +1735,14 @@ function startCloudOnboarding() {
 async function telegramFirstName() {
   try {
     if (!telegramView || telegramView.webContents.isDestroyed()) return '';
-    return await telegramView.webContents.executeJavaScript(`(async () => {
+    return await boundedJs(telegramView.webContents, `(async () => {
       const request = indexedDB.open('tt-data');
       const db = await new Promise((resolve) => { request.onsuccess = () => resolve(request.result); request.onerror = request.onupgradeneeded = () => resolve(null); });
       if (!db || !db.objectStoreNames.contains('store')) return '';
       const get = db.transaction('store', 'readonly').objectStore('store').get('tt-global-state');
       const state = await new Promise((resolve) => { get.onsuccess = () => resolve(get.result || null); get.onerror = () => resolve(null); });
       return String(state?.users?.byId?.[state?.currentUserId]?.firstName || '');
-    })()`);
+    })()`, 8000);
   } catch { return ''; }
 }
 // One env write + a gateway restart, shared by the API-key, model and bot-token
@@ -2196,13 +2200,14 @@ function registerIpc() {
         }
         if (!point) throw new Error('The bot chat opened but no message box appeared.');
         if (!tg.debugger.isAttached()) tg.debugger.attach('1.3');
+        const send = (method, params) => withTimeout(tg.debugger.sendCommand(method, params), CDP_COMMAND_MS);
         try {
-          await tg.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
-          await tg.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
-          await tg.debugger.sendCommand('Input.insertText', { text: `${title}\n${url}` });
+          await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
+          await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
+          await send('Input.insertText', { text: `${title}\n${url}` });
           const enter = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
-          await tg.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', ...enter });
-          await tg.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', ...enter });
+          await send('Input.dispatchKeyEvent', { type: 'keyDown', ...enter });
+          await send('Input.dispatchKeyEvent', { type: 'keyUp', ...enter });
         }
         finally { tg.debugger.detach(); }
         break;
@@ -2921,7 +2926,7 @@ const intParam = (url, key, min, max) => {
   return Math.max(min, Math.min(max, value));
 };
 async function snapshot(tab, opts = {}) {
-  const work = tab.queue.then(async () => {
+  const { work, tail } = queueWithDeadline(tab.queue, async () => {
     requireAgentRead(tab);
     const generation = ++tab.generation;
     let timer;
@@ -2939,8 +2944,8 @@ async function snapshot(tab, opts = {}) {
     requireAgentRead(tab);
     const settled = settleSnapshot(tab, result, generation, opts.since);
     return { ...settled, ...handleChallenge(tab, settled.challenge), tab: describeTab(tab, true) };
-  });
-  tab.queue = work.catch(() => {});
+  }, TAB_READ_MS);
+  tab.queue = tail;
   return work;
 }
 async function navigateVps(id,url) {
@@ -2962,7 +2967,7 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
   const carry=await signInsTravel();
   let target,result,checkpoint,signIns=0;
   try {
-    checkpoint=sourceHost==='mac'?await source.view.webContents.executeJavaScript(checkpointExpression(includeDrafts && !vaultLock.isLocked(source))):await remoteRequest(id,'checkpoint',{includeDrafts,includeCookies:carry});
+    checkpoint=sourceHost==='mac'?await boundedJs(source.view.webContents,checkpointExpression(includeDrafts && !vaultLock.isLocked(source)),10000):await remoteRequest(id,'checkpoint',{includeDrafts,includeCookies:carry});
     if(sourceHost==='mac'&&vaultLock.isLocked(source))checkpoint={...checkpoint,title:'',drafts:[]};
     if(!/^https?:\/\//.test(checkpoint.url))throw new Error('Open a web page before handing it off.');
     const {cookies:remoteCookies,...page}=checkpoint;checkpoint=page;
@@ -2987,7 +2992,7 @@ async function handoffTab({id,destination,includeDrafts=false,note=''}) {
     target=createTab({url:checkpoint.url,botId:source.botId,controller:'human',owner:source.owner || 'bot',activate:false});target.handoff=handoff;
     for(let n=0;n<100;n++){if(!target.view.webContents.isLoading()&&target.view.webContents.getURL()!=='about:blank')break;await new Promise(r=>setTimeout(r,100));}
     if(target.view.webContents.isLoading()){try{closeTab(target.id)}catch{}throw new Error(`${HOST_LABEL==='windows'?'PC':'Mac'} destination is still loading. Its tab was closed. Retry the handoff.`);}
-    result=await target.view.webContents.executeJavaScript(restoreExpression(checkpoint));
+    result=await boundedJs(target.view.webContents,restoreExpression(checkpoint),15000);
   }
   const record={...handoff,destinationTabId:target.id,verification:result.verification,restoredDrafts:result.restored,skippedDrafts:result.skipped};
   if(dest==='mac')target.handoff=record;
@@ -3037,10 +3042,10 @@ function waitForNavigationCommit(wc, load, timeout = 15000) {
 function browserCommand(tab, method, params) {
   const wc = tab.view.webContents;
   if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
-  return wc.debugger.sendCommand(method, params);
+  return withTimeout(wc.debugger.sendCommand(method, params), CDP_COMMAND_MS);
 }
 async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0, crop = null } = {}) {
-  const capture = backgroundCaptureQueue.then(async () => {
+  const { work: capture, tail } = queueWithDeadline(backgroundCaptureQueue, async () => {
     const wc = tab.view.webContents;
     const viewport = await boundedJs(wc, '({ width: globalThis.visualViewport?.width ?? innerWidth, height: globalThis.visualViewport?.height ?? innerHeight, pageLeft: globalThis.visualViewport?.pageLeft ?? scrollX, pageTop: globalThis.visualViewport?.pageTop ?? scrollY, deviceScaleFactor: devicePixelRatio })');
     const { clip, crop: region } = screenshotClip(viewport, crop, maxWidth);
@@ -3054,7 +3059,7 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0, cro
       if (crop !== null || format === 'webp') return viaDevTools(format);
       // capturePage copies the last composited frame and fails (UnknownVizError)
       // when a just-opened surface has not produced one; DevTools renders one.
-      let image = await wc.capturePage(undefined, { stayHidden: true }).catch(() => null);
+      let image = await withTimeout(wc.capturePage(undefined, { stayHidden: true }), 8000).catch(() => null);
       if (!image || image.isEmpty()) return viaDevTools(format);
       if (maxWidth && image.getSize().width > maxWidth) image = image.resize({ width: maxWidth });
       return (format === 'jpeg' ? image.toJPEG(quality) : image.toPNG()).toString('base64');
@@ -3072,8 +3077,8 @@ async function captureTab(tab, { format = 'png', quality = 80, maxWidth = 0, cro
       return await result();
     }
     finally { if (!heldFocus && !wc.isDestroyed()) await browserCommand(tab, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {}); }
-  });
-  backgroundCaptureQueue = capture.catch(() => {});
+  }, CAPTURE_MS);
+  backgroundCaptureQueue = tail;
   return capture;
 }
 const EMPTY_EFFECT = { navigated: false, changed: false, text: '' };
@@ -3500,7 +3505,7 @@ function startApi() {
         const quality = intParam(url, 'quality', 1, 100) ?? 50;
         const maxWidth = intParam(url, 'maxWidth', 1, 10000) ?? 960;
         const rawCrop = url.searchParams.get('crop');
-        const capture = tab.queue.then(async () => {
+        const { work: capture, tail } = queueWithDeadline(tab.queue, async () => {
           // Reads are gated again inside the queue so a takeover while this
           // capture waited comes back 409, not a last page peek.
           requireAgentRead(tab);
@@ -3508,8 +3513,8 @@ function startApi() {
           const shot = await captureTab(tab, { format, quality, maxWidth, crop: rawCrop });
           requireAgentRead(tab);
           return shot;
-        });
-        tab.queue = capture.catch(() => {});
+        }, TAB_READ_MS + CAPTURE_MS);
+        tab.queue = tail;
         const { base64, viewport, crop } = await capture;
         return send(200, { mimeType: { jpeg: 'image/jpeg', webp: 'image/webp', png: 'image/png' }[format], base64, viewport, ...(crop ? { crop } : {}), tab: describeTab(tab, true) });
       }
@@ -3521,7 +3526,8 @@ function startApi() {
         // queued action run later against whatever the page became.
         let closed = false;
         res.on('close', () => { if (!res.writableFinished) closed = true; });
-        const action = tab.queue.then(async () => {
+        // A deadline marks the request closed too, so the abandoned action's remaining steps stop instead of landing late.
+        const { work: action, tail } = queueWithDeadline(tab.queue, async () => {
           if (closed) throw Object.assign(new Error('The request was closed before this action started.'), { status: 499 });
           // A malformed action must not cost the human their tab.
           if (!body || typeof body !== 'object' || typeof body.action !== 'string') throw Object.assign(new Error('action is required.'), { status: 400 });
@@ -3567,9 +3573,9 @@ function startApi() {
             if (([400, 403, 409].includes(error?.status) || error?.code === 'stale_ref') && unrun()) giveBack();
             throw takeoverError(error);
           } finally { if (!wc.isDestroyed()) wc.off('did-start-navigation', onMove); }
-        })
-          .finally(() => { tab.pendingActions--; tab.lastAgentActivity = Date.now(); });
-        tab.queue = action.catch(() => {});
+        }, TAB_ACTION_MS, () => { closed = true; });
+        action.then(() => {}, () => {}).finally(() => { tab.pendingActions--; tab.lastAgentActivity = Date.now(); });
+        tab.queue = tail;
         const result = await action;
         // The bot is acting on the tab again; human_returned has done its job.
         if (tab.handback?.state === 'human_returned') { tab.handback = null; broadcast(); }
@@ -3749,6 +3755,14 @@ function restoreBrowserTabs() {
   }
   if (CANVAS_TABS.includes(prefs.canvasTabs[prefs.selectedBotId])) canvasTab = prefs.canvasTabs[prefs.selectedBotId];
 }
+// The two bridge-bearing pages are the whole UI. Nothing reloaded one after its renderer crashed, so the window stayed blank
+// until the next launch; reload it, backing off when it keeps crashing and forgetting the backoff once a load has held for 30s.
+function reloadWhenGone(contents) {
+  let stable;
+  const retry = createRetry({ run: () => { if (!isQuitting && !contents.isDestroyed()) contents.reload(); } });
+  contents.on('render-process-gone', (_event, details) => { clearTimeout(stable); if (details.reason !== 'clean-exit') retry.schedule(); });
+  contents.on('did-finish-load', () => { clearTimeout(stable); stable = setTimeout(() => retry.reset(), 30000); stable.unref(); });
+}
 function createWindow() {
   nativeTheme.themeSource = 'dark';
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
@@ -3759,6 +3773,7 @@ function createWindow() {
       : { titleBarStyle: 'hidden', titleBarOverlay: { color: '#111112', symbolColor: '#e7e7eb', height: 40 } }),
     webPreferences: { preload: path.join(ROOT, 'preload.bundle.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   lockDown(win.webContents, INDEX_FILE);
+  reloadWhenGone(win.webContents);
   telegramView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'telegram-preload.bundle.cjs'), partition: 'persist:telegram', navigateOnDragDrop: false, contextIsolation: true, nodeIntegration: false, sandbox: true } });
   telegramView.setBackgroundColor('#09090a');
   configureContents(telegramView.webContents, true);
@@ -3767,6 +3782,7 @@ function createWindow() {
   remoteView = new WebContentsView({ webPreferences: { preload: path.join(ROOT, 'preload.bundle.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   remoteView.setBackgroundColor('#101011');
   lockDown(remoteView.webContents, REMOTE_FILE);
+  reloadWhenGone(remoteView.webContents);
   remoteView.webContents.on('before-input-event',(event,input)=>{
     const hostModifier = process.platform === 'darwin' ? input.meta : input.control;
     if(prefs.remoteControl && remoteStatus==='connected' && hostModifier && input.type==='keyDown' && /^[altrwf]$/i.test(input.key)){
@@ -3920,8 +3936,8 @@ else {
     const stale = staleConnector();
     if (stale) try { fs.rmSync(stale, { recursive: true, force: true }); } catch (error) { logError('stale-connector', error); }
     const browserSession = session.fromPartition('persist:browser');
-    try { await browserSessionStore.restore(); }
-    catch { logError('browser-restore', new Error('Saved browser sign-ins could not be restored.')); }
+    // A keychain prompt nobody answers must not hold back the window and the connector API: the restore keeps going in the background.
+    await settleWithin(browserSessionStore.restore().catch(() => logError('browser-restore', new Error('Saved browser sign-ins could not be restored.'))), BROWSER_RESTORE_WAIT_MS);
     const saveCookiesSoon = coalesce(() => browserSessionStore.save().catch(() => logError('browser-save', new Error('Browser sign-ins could not be saved.'))), 250);
     for (const partition of ['persist:browser', 'persist:telegram']) session.fromPartition(partition).cookies.on('changed', saveCookiesSoon);
     for (const target of [session.defaultSession, browserSession, session.fromPartition('persist:telegram')]) {

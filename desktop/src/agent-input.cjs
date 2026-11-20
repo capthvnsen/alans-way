@@ -588,7 +588,9 @@ function watchNavigation(wc, delay) {
   };
 }
 
-function createAgentInput({ command, requireActor, botName = () => 'Agent', onBusy = () => {}, isVisible = () => true, delay = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now }) {
+function createAgentInput({ command: rawCommand, commandMs = 10000, requireActor, botName = () => 'Agent', onBusy = () => {}, isVisible = () => true, delay = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now }) {
+  // A page stuck in a script loop never answers a DevTools command: unbounded, the cleanup below would wedge the tab's queue for good.
+  const command = (tab, method, params) => withTimeout(Promise.resolve().then(() => rawCommand(tab, method, params)), commandMs);
   const states = new WeakMap();
   const usedNonces = new Map();
   const preflightApprovals = new WeakMap(), carriedApprovals = new WeakMap();
@@ -764,7 +766,7 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
     // inputsSent counts what reached the page (a hover alone does not), so a
     // takeover for an action refused before then can be undone.
     const dry = () => { if (tab.preflight) throw PREFLIGHT_READY; };
-    const send = async (method, params) => { check(); dry(); if (method.startsWith('Input.') && params?.type !== 'mouseMoved') tab.inputsSent = (tab.inputsSent || 0) + 1; const result = await withTimeout(command(tab, method, params), 10000); check(); return result; };
+    const send = async (method, params) => { check(); dry(); if (method.startsWith('Input.') && params?.type !== 'mouseMoved') tab.inputsSent = (tab.inputsSent || 0) + 1; const result = await command(tab, method, params); check(); return result; };
     const visible = isVisible(tab) !== false;
     const accent = botAccent(botId);
     let mouseDown = null, keyDown = null;
@@ -1131,4 +1133,4 @@ function createAgentInput({ command, requireActor, botName = () => 'Agent', onBu
   return { perform, clear, isDispatching, approve, carryApproval, guard };
 }
 
-module.exports = { createAgentInput, PREFLIGHT_READY, APPROVED, APPROVAL_BINDING_VERSION, approvalActionKey, refuseChallenge, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };
+module.exports = { createAgentInput, withTimeout, PREFLIGHT_READY, APPROVED, APPROVAL_BINDING_VERSION, approvalActionKey, refuseChallenge, tintScript, botAccent, cursorPath, INPUT_ACTIONS, keyboardEvent, locateElement, boundedJs, readJs, frameOf, watchNavigation };

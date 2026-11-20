@@ -18,7 +18,7 @@ function fixture(options = {}) {
     focus: () => { throw new Error('Native focus must never be used.'); },
     sendInputEvent: () => { throw new Error('Native input must never be used.'); },
   }) } };
-  const agent = createAgentInput({ requireActor, now: options.now, isVisible: () => options.visible !== false, delay: options.delay || (async () => {}), command: async (_tab, method, params) => { assert.equal(_tab, tab); calls.push({ method, ...params }); await hook(method, params); return {}; } });
+  const agent = createAgentInput({ requireActor, now: options.now, commandMs: options.commandMs, isVisible: () => options.visible !== false, delay: options.delay || (async () => {}), command: async (_tab, method, params) => { assert.equal(_tab, tab); calls.push({ method, ...params }); await hook(method, params); return {}; } });
   return { tab, agent, calls, scripts, shortcuts, hook: callback => { hook = callback; }, perform: body => agent.perform(tab, { epoch: 1, ...body }, 'bot') };
 }
 const pointer = f => f.calls.filter(call => call.method === 'Input.dispatchMouseEvent').map(({ type, x, y, button, buttons, clickCount }) => ({ type, x, y, button, buttons, clickCount }));
@@ -825,4 +825,16 @@ test('a changed policy meaning or approval target at the final hit receives no p
     await assert.rejects(useApproval ? approved(f, click) : f.perform(click), /commit_required|approval_invalid/);
     assert.equal(pointer(f).some(call => call.type === 'mousePressed'), false);
   }
+});
+
+test('a hung DevTools command cannot wedge input cleanup or clear', { timeout: 3000 }, async () => {
+  const f = fixture({ commandMs: 40 });
+  let pressed = false;
+  // A renderer stuck in a script loop: the press and everything after it never answers.
+  f.hook(async (method, params) => { if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') pressed = true; if (pressed && method !== 'evaluate') await new Promise(() => {}); });
+  await assert.rejects(f.perform({ action: 'click', ref: 'e1' }), /stopped responding/);
+  assert.equal(f.agent.isDispatching(f.tab), false);
+  f.tab.focusEmulation = true;
+  await f.agent.clear(f.tab);
+  assert.equal(f.tab.focusEmulation, false);
 });
