@@ -249,6 +249,12 @@ if (!process.versions.electron) {
         await until(async () => (await rows()).length === 6, 'fork paints the copied history');
       }
 
+      // Focus in the message box shows the same 2 px blue ring as every other control (#8baaf1 is 8:1 on the page).
+      shell.focus();
+      await run(`document.querySelector('#native-pane textarea').focus()`);
+      assert.equal(await run(`(() => { const c = getComputedStyle(document.querySelector('#native-pane .nc-composer')); return [c.outlineStyle, c.outlineWidth, c.outlineColor].join(' '); })()`), 'solid 2px rgb(139, 170, 241)', 'the message box has a focus ring');
+      await run(`document.activeElement.blur()`);
+      assert.equal(await run(`getComputedStyle(document.querySelector('#native-pane .nc-composer')).outlineStyle`), 'none', 'and only while focused');
       // The profile's Bot Chat is the one conversation of another surface native can write: same session id, no fork.
       const bot = (await native()).sessions.find((s) => s.title === 'Bot Chat');
       assert.ok(bot && bot.shared && !bot.readOnly, 'the Bot Chat is listed as shared');
