@@ -28,7 +28,11 @@ app.whenReady().then(async () => {
   const invoke = (name, value) => evaluate(`window.workspace.command(${JSON.stringify(name)}, ${JSON.stringify(value || {})})`);
 
   await waitFor(() => evaluate('!document.getElementById("home").classList.contains("hidden")'), Boolean);
-  assert.equal(await evaluate('document.querySelectorAll("#tabs .tab").length'), 0, 'An empty workspace renders no Start chip.');
+  assert.equal(await evaluate('document.querySelectorAll("#tabs .tab:not(.placeholder)").length'), 0, 'An empty workspace renders no Start chip.');
+  assert.equal(await evaluate('document.querySelector("#tabs .tab.placeholder.active .tab-title")?.textContent'), 'New tab', 'The strip shows a New tab for the empty backdrop, as any browser does.');
+  assert.ok((await evaluate('document.querySelector("#tabs .tab.placeholder img.tab-favicon").src')).endsWith('/assets/favicon.svg'), 'A tab that is not on a website yet wears the default favicon.');
+  assert.equal(await evaluate('!!document.querySelector(".workspace-footer, #version-label, #build-badge, #workspace-status, #connection-status, #status-more, #shortcuts-button, #home .home-symbol, .home-bottom, #vm-toggle")'), false, 'No footer, version, status or home logo on the main screen.');
+  assert.equal(await evaluate('document.getElementById("home").textContent.includes("Local Chromium")'), false);
   assert.ok((await evaluate('getComputedStyle(document.getElementById("home")).backgroundImage')).includes('newtab-backdrop.png'), 'The empty state keeps the backdrop image.');
 
   const tab = await invoke('create-tab');
@@ -67,10 +71,14 @@ app.whenReady().then(async () => {
   assert.equal(fallback.status, 200, await fallback.clone().text());
   assert.ok(!nativeImage.createFromBuffer(Buffer.from((await fallback.json()).base64, 'base64')).isEmpty(), 'A failed compositor copy falls back to a DevTools capture.');
 
-  server = http.createServer((req, res) => res.end('<title>fixture</title>'));
+  // A site with its own icon: same origin, so the app fetches it and the tab wears it; the blank tab keeps the default.
+  const icon = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  server = http.createServer((req, res) => req.url === '/icon.png' ? (res.setHeader('Content-Type', 'image/png'), res.end(icon)) : res.end('<title>fixture</title><link rel="icon" href="/icon.png">'));
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const httpTab = await invoke('create-tab', { url: `http://127.0.0.1:${server.address().port}` });
   const httpWc = await waitFor(() => webContents.getAllWebContents().find(item => item !== wc && item.getURL().startsWith('http://127.0.0.1')), Boolean);
+  await waitFor(() => evaluate(`(() => { const img = document.querySelector('#tabs .tab[data-tab-id="${httpTab.id}"] img.tab-favicon'); return img && img.src.startsWith('data:image/png') && !img.classList.contains('default'); })()`), Boolean);
+  assert.ok((await evaluate(`document.querySelector('#tabs .tab[data-tab-id="${tab.id}"] img.tab-favicon').src`)).endsWith('/assets/favicon.svg'), 'The blank tab keeps the default favicon beside a site tab.');
   await invoke('navigate', { id: httpTab.id, url: 'about:blank' });
   await waitFor(() => httpWc.getURL(), url => url.endsWith('/newtab.html'));
   state = await evaluate('window.workspace.getState()');
@@ -80,13 +88,13 @@ app.whenReady().then(async () => {
   await invoke('close-tab', { id: tab.id });
   state = await evaluate('window.workspace.getState()');
   assert.equal(state.activeTabId, 'home', 'Closing the last tab returns to the empty backdrop state.');
-  assert.equal(await evaluate('document.querySelectorAll("#tabs .tab").length'), 0);
+  assert.equal(await evaluate('document.querySelectorAll("#tabs .tab:not(.placeholder)").length'), 0);
 
   // Workspace chrome: compact header, equal-size caption controls, no removed labels.
   assert.equal(await evaluate('document.querySelectorAll(".workspace-header, .agent-browser-row, #restore-bots, .side-footnote, .workspace-label").length'), 0, 'Removed labels and the restore control are gone.');
-  assert.ok(await evaluate('!!document.getElementById("browser-collapse") && !!document.getElementById("vm-toggle")'), 'Collapse and VM buttons exist.');
-  assert.equal(await evaluate('document.getElementById("browser-collapse").parentElement.className'), 'pane-actions', 'Collapse sits beside VM in the tab bar actions.');
-  assert.equal(await evaluate('document.getElementById("vm-toggle").parentElement.className'), 'pane-actions');
+  assert.ok(await evaluate('!!document.getElementById("browser-collapse") && !document.getElementById("vm-toggle")'), 'The collapse button exists; the expand-bot-screen button is gone.');
+  assert.equal(await evaluate('document.getElementById("browser-collapse").parentElement.className'), 'pane-actions', 'Collapse sits in the tab bar actions.');
+  assert.equal(await evaluate('document.querySelectorAll(".pane-actions > *").length'), 1, 'It is the only top-right button.');
   const caps = await evaluate('["add-bot","sort-bots"].map(id => { const r = document.getElementById(id).getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; })');
   assert.ok(caps.every(size => size.w === caps[0].w && size.h === caps[0].h), `Search row controls share one size: ${JSON.stringify(caps)}`);
   assert.equal(await evaluate('document.getElementById("settings-button").closest(".agent-presence")?.id'), 'agent-presence', 'The settings gear lives inside the bot tile.');
@@ -96,7 +104,6 @@ app.whenReady().then(async () => {
   assert.equal((await evaluate('window.workspace.getState()')).showBrowser, false);
   assert.equal(await evaluate('document.querySelector(".workspace-pane").getBoundingClientRect().width'), 0, 'Hiding the browser collapses the workspace pane.');
   assert.ok(await evaluate('document.getElementById("browser-collapse").getBoundingClientRect().width > 0'), 'The collapse button stays pinned when hidden.');
-  assert.ok(await evaluate('document.getElementById("vm-toggle").getBoundingClientRect().width > 0'), 'The VM button stays pinned when hidden.');
   assert.ok(await evaluate('document.querySelector(".chat-pane").getBoundingClientRect().width > innerWidth - 320'), 'The chat pane expands into the freed space.');
 
   // Collapsing the bot list while the browser is hidden must not break the grid.

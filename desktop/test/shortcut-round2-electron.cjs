@@ -58,10 +58,9 @@ app.whenReady().then(async () => {
   };
   let opener;
   const open = async () => {
-    const toolbarVisible = await js('document.getElementById("shortcuts-button").getBoundingClientRect().width > 0');
-    opener = toolbarVisible ? 'shortcuts-button' : 'status-more';
+    opener = 'new-tab';
     await focus('#' + opener);
-    if (toolbarVisible) await key('Enter'); else menu('Keyboard Shortcuts').click();
+    menu('Keyboard Shortcuts').click();
     await frame();
   };
   const close = async () => { await key('Escape'); await frame(); };

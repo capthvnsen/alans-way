@@ -71,7 +71,8 @@ app.whenReady().then(async () => {
     await shot('settings-entry'); await key('Escape'); await frame();
     assert.equal(await active(), 'settings-shortcuts'); assert.equal(await visible('modal'), true);
     await key('Escape'); await frame();
-    await focus('#shortcuts-button'); await key('Enter'); await frame(); assert.equal(await active(), 'shortcut-search');
+    await focus('#new-tab'); menuItem('workspace-shortcuts').click(); await frame(); assert.equal(await active(), 'shortcut-search');
+    assert.equal(menuItem('workspace-shortcuts').accelerator, 'CmdOrCtrl+/', 'Help → Keyboard Shortcuts has a key of its own');
   });
   await check('search matches descriptions and key names and announces no results', async () => {
     await wc.insertText('first'); await frame();
@@ -97,7 +98,7 @@ app.whenReady().then(async () => {
     await focus('#shortcut-close'); await key('Tab'); assert.equal(await active(), 'shortcut-search');
     await key('Tab', true); assert.equal(await active(), 'shortcut-close');
     await focus('#new-tab'); assert.equal(await js('document.getElementById("shortcut-dialog").contains(document.activeElement)'), true);
-    await key('Escape'); await frame(); assert.equal(await active(), 'shortcuts-button');
+    await key('Escape'); await frame(); assert.equal(await active(), 'new-tab');
   });
   await check('repeated Help opens preserve one dialog and its search draft', async () => {
     menuItem('workspace-shortcuts').click(); await frame(); await wc.insertText('agent');

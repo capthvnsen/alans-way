@@ -71,7 +71,6 @@ function renderBots() {
       const bot = rows.find(item => item.bot.id === row.dataset.botId)?.bot;
       if (bot) { window.HermesAvatars.paint(row.querySelector('.avatar'), bot, state); renderBotActivity(row, bot); }
     }
-    document.querySelectorAll('.bridge-dot').forEach((dot) => dot.classList.toggle('offline', !state.api.ready));
     return;
   }
   const remainingKeys = new Set(rows.map(row => row.bot.id));
@@ -94,7 +93,6 @@ function renderBots() {
     }
   }
   $('sort-bots').classList.toggle('active', (state.botSort || 'manual') !== 'manual');
-  document.querySelectorAll('.bridge-dot').forEach((dot) => dot.classList.toggle('offline', !state.api.ready));
 }
 // One row: a bot, however many gateways it is on. Its preview is its latest activity on any of them, and
 // an unread dot becomes the logos of the gateways that have unread.
@@ -191,16 +189,25 @@ function setChatMenu(open, focus = 'checked') {
   // Like the tab list, the menu hangs over the native chat view: it obscures the slot so it paints and is picked reliably.
   if (open !== was) scheduleLayout();
 }
+// A tab's icon is the site's own favicon (main fetches it and hands over a data: URL, never a page-supplied address), the
+// bundled Alan's Way silhouette when it has none yet or it fails to decode, or a spinner while the first load is running.
+const DEFAULT_FAVICON = '../assets/favicon.svg';
 function tabIcon(tab) {
   const icon = element('span', 'tab-icon');
-  if (tab.favicon) { const img = element('img', 'tab-favicon'); img.src = tab.favicon; img.alt = ''; img.onerror = () => { img.replaceWith(tab.symbol || '◈'); }; icon.append(img); }
+  if (tab.loading && !tab.favicon) { icon.classList.add('loading'); icon.append(element('span', 'tab-spinner')); }
+  else {
+    const img = element('img', 'tab-favicon'); img.alt = ''; img.draggable = false;
+    const fallback = () => { img.onerror = null; img.src = DEFAULT_FAVICON; img.classList.add('default'); };
+    img.onerror = fallback;
+    if (/^data:image\//i.test(tab.favicon || '')) img.src = tab.favicon; else fallback();
+    icon.append(img);
+  }
   if (tab.controller === 'agent') {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 19 25');
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', 'M1 1v19l5-5 4 9 4-2-4-8h7Z'); svg.append(path);
     const cursor = element('span', 'tab-agent-cursor'); cursor.style.setProperty('--h', String(tab.agentHue ?? 168));
-    cursor.append(svg); icon.append(cursor); return icon;
+    cursor.append(svg); icon.append(cursor);
   }
-  if (!tab.favicon) icon.textContent = tab.symbol;
   return icon;
 }
 function tabStripEntries() { return state.tabs.filter(tab => tab.host !== 'vps' || tab.handback?.state === 'awaiting_human'); }
@@ -209,9 +216,9 @@ function renderTabs() {
   const focusedId = focused?.dataset.tabId, focusedHost = focused?.dataset.host, focusedClose = document.activeElement.classList.contains('tab-close');
   const focusedIndex = focused ? [...container.children].indexOf(focused) : -1;
   container.replaceChildren();
-  const entries = tabStripEntries().map((tab) => ({ ...tab, symbol: tab.loading ? '◌' : '◈' }));
+  const entries = tabStripEntries();
   entries.forEach((tab, index) => {
-    const selected = state.browserTabId === tab.id && state.browserTabHost === tab.host;
+    const selected = state.canvasTab === 'browser' && state.browserTabId === tab.id && state.browserTabHost === tab.host;
     const node = element('div', `tab${selected ? ' active' : ''}`); node.setAttribute('role', 'presentation'); node.dataset.tabId = tab.id; node.dataset.host = tab.host;
     const select = element('button', 'tab-select'); select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(selected));
     select.setAttribute('aria-setsize', String(entries.length)); select.setAttribute('aria-posinset', String(index + 1));
@@ -220,20 +227,27 @@ function renderTabs() {
     if (tab.controller === 'agent') { node.classList.add('agent'); node.append(element('span', 'agent-dot')); }
     if (tab.agentBusy) node.classList.add('busy');
     if (tab.handback?.state === 'awaiting_human') { const badge = element('span', 'needs-you-badge'); badge.style.setProperty('--h', String(tab.agentHue ?? 168)); badge.title = `${state.bots.find(bot=>bot.id===tab.botId)?.name || 'Agent'} needs you`; node.append(badge); }
-    if(tab.host)node.title=`${hostName(tab.host)} · ${state.bots.find(bot=>bot.id===tab.botId)?.name || tab.botId}${tab.controller === 'agent' ? ' · agent-controlled' : ''}`;
+    node.title = `${tab.title || 'New tab'}${tab.host ? ` · ${hostName(tab.host)} · ${state.bots.find(bot=>bot.id===tab.botId)?.name || tab.botId}${tab.controller === 'agent' ? ' · agent-controlled' : ''}` : ''}`;
     node.onclick = () => command('activate', { id: tab.id, host: tab.host });
     select.onkeydown = (event) => {
       if (event.key === 'Delete') { event.preventDefault(); if (tab.host !== 'vps') command('close-tab', { id: tab.id, host: tab.host }); return; }
-      const target = moveNavigationFocus(event, [...container.querySelectorAll('.tab:not(.tab-off) [role=tab]')], 'horizontal');
+      const target = moveNavigationFocus(event, [...container.querySelectorAll('.tab [role=tab]')], 'horizontal');
       if (target) command('activate', { id: target.closest('.tab').dataset.tabId, host: target.closest('.tab').dataset.host });
     };
     if (tab.host !== 'vps') {
       const close = element('button', 'tab-close', '×'); close.title = `Close ${tab.title || 'tab'}`; close.setAttribute('aria-label', close.title);
       close.tabIndex = selected ? 0 : -1;
       close.onclick = (event) => { event.stopPropagation(); command('close-tab', { id: tab.id, host: tab.host }); }; node.append(close);
+      node.onauxclick = (event) => { if (event.button === 1) { event.preventDefault(); command('close-tab', { id: tab.id, host: tab.host }); } };
     }
     container.append(node);
   });
+  // With no page open the canvas shows the new-tab page; the strip says so with a tab of its own, like any browser.
+  if (state.canvasTab === 'browser' && !entries.some(tab => state.browserTabId === tab.id && state.browserTabHost === tab.host)) {
+    const node = element('div', 'tab active placeholder'); node.setAttribute('role', 'presentation'); node.title = 'New tab';
+    const select = element('button', 'tab-select'); select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', 'true'); select.setAttribute('aria-label', 'New tab'); select.tabIndex = 0;
+    select.append(tabIcon({}), element('span', 'tab-title', 'New tab')); node.append(select); container.append(node);
+  }
   fitTabs();
   if (focusedId) {
     const target = [...container.children].find(node => node.dataset.tabId === focusedId && node.dataset.host === focusedHost) || container.children[Math.min(focusedIndex, container.children.length - 1)];
@@ -241,31 +255,17 @@ function renderTabs() {
     (canFocus(fallback) ? fallback : canFocus($('tabs-menu')) ? $('tabs-menu') : $('new-tab')).focus({ preventScroll: true });
   }
 }
-// The strip never clips a tab mid-element: tabs that cannot fit hide into the
-// all-tabs menu (leftmost first, the active tab always stays). Every tab stays
-// selectable and closable through the panel when the strip is full.
+// Tabs shrink to a minimum width, then the strip scrolls (the wheel scrolls it sideways). The all-tabs menu appears only
+// once the strip scrolls, so every tab stays reachable and closable from it.
 function fitTabs() {
-  const container = $('tabs'), menu = $('tabs-menu'), nodes = [...container.children];
-  for (const node of nodes) node.classList.remove('tab-off');
-  menu.classList.add('hidden');
-  let hiddenCount = 0;
-  if (container.scrollWidth > container.clientWidth + 1) {
-    menu.classList.remove('hidden');
-    while (container.scrollWidth > container.clientWidth + 1) {
-      const candidate = nodes.find(node => !node.classList.contains('tab-off') && (node.dataset.tabId !== state?.browserTabId || node.dataset.host !== state?.browserTabHost));
-      if (!candidate) break;
-      candidate.classList.add('tab-off'); hiddenCount++;
-    }
+  const container = $('tabs'), menu = $('tabs-menu');
+  const scrolls = container.scrollWidth > container.clientWidth + 1;
+  menu.classList.toggle('hidden', !scrolls);
+  if (!container.querySelector('.tab [role=tab][tabindex="0"]')) {
+    const first = container.querySelector('.tab [role=tab]'); if (first) first.tabIndex = 0;
   }
-  // Keep one tabbable stop inside the visible strip: when the selected tab is
-  // absent (VPS view) and the first tab hid, the next visible tab takes the stop.
-  if (!container.querySelector('.tab:not(.tab-off) [role=tab][tabindex="0"]')) {
-    const first = container.querySelector('.tab:not(.tab-off) [role=tab]'); if (first) first.tabIndex = 0;
-  }
-  $('tabs-menu-count').textContent = hiddenCount ? `+${hiddenCount}` : '';
-  const label = hiddenCount ? `Show all tabs, ${hiddenCount} more not currently visible` : 'Show all tabs';
-  menu.title = label; menu.setAttribute('aria-label', label);
-  if (menu.classList.contains('hidden')) setTabsPanel(false);
+  container.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  if (!scrolls) setTabsPanel(false);
   else if (!$('tabs-panel').classList.contains('hidden')) renderTabsPanel();
 }
 function setTabsPanel(open) {
@@ -300,27 +300,6 @@ function renderTabsPanel() {
     panel.append(row);
   }
   if (focusedTab) panel.querySelector(`.tabs-panel-row[data-tab-id="${CSS.escape(focusedTab)}"][data-host="${CSS.escape(focusedHost)}"] .tabs-panel-select`)?.focus({ preventScroll: true });
-}
-// The compact status affordance and its panel report both exact footer texts
-// whenever the narrow footer suppresses a status span (and on demand at any
-// width). It obscures native views while open, like the tab panel and dialogs.
-function setStatusPanel(open) {
-  const panel = $('status-panel'), wasOpen = !panel.classList.contains('hidden');
-  panel.classList.toggle('hidden', !open);
-  $('status-more').setAttribute('aria-expanded', String(open));
-  if (!open && wasOpen && document.activeElement && panel.contains(document.activeElement)) (canFocus($('status-more')) ? $('status-more') : $('workspace-status')).focus({ preventScroll: true });
-  if (open) renderStatusPanel();
-  if (open !== wasOpen) scheduleLayout();
-}
-function renderStatusPanel() {
-  const panel = $('status-panel'), focused = document.activeElement?.closest('.status-panel-row')?.dataset.status;
-  panel.replaceChildren();
-  for (const [key, label, text] of [['workspace', 'Workspace', $('workspace-status').textContent], ['connector', 'Connector', $('connection-status').textContent]]) {
-    const row = element('div', 'status-panel-row'); row.dataset.status = key; row.tabIndex = 0; row.setAttribute('role', 'status');
-    row.append(element('span', 'status-panel-label', label), document.createTextNode(text || '-'));
-    panel.append(row);
-  }
-  if (focused) panel.querySelector(`.status-panel-row[data-status="${focused}"]`)?.focus({ preventScroll: true });
 }
 function moveNavigationFocus(event, items, orientation) {
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -523,15 +502,12 @@ function render(next) {
   renderBots(); renderTabs(); renderSettingsBots(); renderRecordings(); renderSitePermissions(); renderExtensions(); renderDownloads(); refreshSettingsSections();
   const tab = state.tabs.find((item) => item.id === state.activeTabId && item.host === state.hostLabel);
   const remote = state.canvasTab === 'screen';
-  $('vm-toggle').title = remote ? 'Return to browser' : 'Expand virtual desktop';
-  $('vm-toggle').setAttribute('aria-label', $('vm-toggle').title);
-  $('vm-toggle').setAttribute('aria-pressed', String(remote));
   const page = !['browser', 'screen'].includes(state.canvasTab);
-  for (const button of $('canvas-tabs').children) {
-    const on = button.dataset.canvas === state.canvasTab;
-    button.setAttribute('aria-selected', String(on)); button.tabIndex = on ? 0 : -1;
-    button.hidden = !state.canvasStrip.includes(button.dataset.canvas);
-  }
+  // The pinned tabs are the canvas views other than the browser; on the browser none is selected, so the first keeps the Tab stop.
+  const pinned = [...$('canvas-tabs').children];
+  for (const button of pinned) { button.setAttribute('aria-selected', String(button.dataset.canvas === state.canvasTab)); button.hidden = !state.canvasStrip.includes(button.dataset.canvas); }
+  const stop = pinned.find(button => !button.hidden && button.dataset.canvas === state.canvasTab) || pinned.find(button => !button.hidden);
+  for (const button of pinned) button.tabIndex = button === stop ? 0 : -1;
   showSelectedCanvasTab(); renderTerminal();
   $('shell').classList.toggle('browser-hidden', state.showBrowser === false);
   $('browser-collapse').title = state.showBrowser === false ? 'Show browser pane' : 'Hide browser pane';
@@ -542,7 +518,7 @@ function render(next) {
   $('browser-toolbar').classList.toggle('hidden', remote || page);
   document.body.classList.toggle('win32', state.platform === 'win32');
   document.body.classList.toggle('darwin', state.platform === 'darwin');
-  $('new-tab').title = state.platform === 'darwin' ? 'New local browser tab (⌘T)' : 'New local browser tab (Ctrl+T)';
+  $('new-tab').title = state.platform === 'darwin' ? 'New tab (⌘T)' : 'New tab (Ctrl+T)';
   const sharedTab = tab?.botId === 'shared';
   const ownerName = tab && !sharedTab ? state.bots.find((item) => item.id === tab.botId)?.name || tab.botId : '';
   const controlButton = $('control-button');
@@ -550,7 +526,7 @@ function render(next) {
   controlButton.textContent = control.text;
   controlButton.classList.toggle('agent', tab?.controller === 'agent');
   controlButton.disabled = control.disabled;
-  const askBot = $('ask-bot'); askBot.disabled = !tab || !/^https?:\/\//.test(tab?.url || ''); askBot.title = tab ? `Share ${tab.title || 'this page'} with ${bot?.name || 'the selected bot'}` : 'Discuss this page with your agent';
+  const askBot = $('ask-bot'); askBot.disabled = !tab || !/^https?:\/\//.test(tab?.url || ''); askBot.title = tab ? `Share ${tab.title || 'this page'} with ${bot?.name || 'the selected bot'}` : 'Discuss this page with your agent'; askBot.textContent = bot ? `Discuss this page with ${bot.name}` : 'Discuss this page with your agent';
   $('browser-slot').classList.toggle('agent-live', !!tab && tab.controller === 'agent');
   const controlOffer = /^(Give|Take)/.test(controlButton.textContent) ? ` · ${controlButton.textContent}` : '';
   controlButton.title = tab ? `Browser runs on ${tab.host==='vps'||tab.host==='remote'?'the '+remoteName():'your '+thisComputer()} · ${tab.controller === 'agent' ? (sharedTab ? 'Agents share control' : `${ownerName || 'Agent'} controls it`) : `You control it${sharedTab && !state.selectedBotId ? ' · an agent can claim it' : ''}`}${controlOffer}` : 'Open a browser tab first';
@@ -600,36 +576,61 @@ function render(next) {
   const recording = state.recording;
   $('record-button').disabled = !recording && (!tab || tab.controller !== 'human' || tab.extensionPage);
   $('record-button').classList.toggle('recording', !!recording);
-  $('record-button').setAttribute('aria-pressed', String(!!recording));
+  $('record-button').setAttribute('aria-checked', String(!!recording));
+  $('record-button').textContent = recording ? 'Stop recording' : 'Record a task';
   $('record-button').title = recording ? 'Stop recording and save' : tab?.controller === 'agent' ? 'Take over this tab to record a task' : 'Record a task to teach your agent';
   $('recording-banner').classList.toggle('hidden', !recording);
   if (recording) $('recording-text').textContent = `Recording${recording.tabId === tab?.id ? '' : ' another tab'} · ${recording.steps} ${recording.steps === 1 ? 'step' : 'steps'}. Do the task once. Passwords, card numbers and codes are never saved.`;
   if (lastRecording && !recording && lastRecording.startedAt !== stoppedRecordingAt) toast('Recording stopped. Anything it caught is in Settings → Recordings.');
   lastRecording = recording;
-  $('workspace-status').textContent = tab?.error ? `Page: ${tab.error}` : tab?.loading ? 'Loading…' : tab ? `${tab.controller === 'agent' ? `${agentName}${tab.agentBusy ? ' is working' : ' is browsing'}` : 'You'} in control${tab.controller === 'agent' ? ' · Take over anytime' : ''} · ${hostName(tab.host)}${tab.handoff?.phase==='handed_off'?` · Handed off to the ${hostName(tab.handoff.destinationHost)} (agents continue there)`:tab.handoff&&tab.handoff.phase!=='reviewed'?' · Handoff: review page before continuing':''}` : state.activeTabId === 'vps' ? `${remoteName()} · ${state.remoteStatus}` : 'Ready';
-  $('workspace-status').title = $('workspace-status').textContent;
-  $('workspace-status').setAttribute('aria-label', $('workspace-status').textContent);
   renderUpdate();
-  $('connection-status').textContent = state.api.ready ? 'Browser connector ready' : state.api.error ? 'Browser connector unavailable' : 'Browser connector starting…';
-  $('connection-status').title = $('connection-status').textContent;
-  $('connection-status').setAttribute('aria-label', $('connection-status').textContent);
-  $('status-more').title = `${$('workspace-status').textContent} · ${$('connection-status').textContent}`;
-  if (!$('status-panel').classList.contains('hidden')) renderStatusPanel();
+  renderHandoffNote(tab);
+  renderToolbarAttention();
+  renderAttention();
   const notes = { login: 'Sign in with your Telegram account. Your bots appear on the left.', connected: 'Your Telegram account · bot chats only', locked: 'Unlock Telegram to load your bot chats.', offline: 'Telegram is offline. Retrying automatically; or sync in Settings.', loading: 'Connecting to Telegram…', 'layout-changed': 'Telegram layout changed. Bot chats may not load until Alan’s Workspace is updated.' };
   $('telegram-note').textContent = notes[state.telegramStatus] || notes.loading;
   $('telegram-note').classList.toggle('warn', state.telegramStatus === 'layout-changed');
   if (!$('shortcut-dialog').classList.contains('hidden')) refreshShortcutAvailability();
   scheduleLayout();
 }
+// What the main screen says about itself: nothing while all is well. A real connector problem gets a banner and a danger dot
+// on the gear; an available update a quiet dot and the Update pill. Versions, channel and connector detail live in Settings → About.
+let connectorSince = 0, connectorTimer = 0;
+function connectorProblem() {
+  if (state.api.ready) { connectorSince = 0; return ''; }
+  if (state.api.error) return 'The browser connector is unavailable';
+  connectorSince ||= Date.now();
+  const wait = 5000 - (Date.now() - connectorSince);
+  if (wait > 0) { clearTimeout(connectorTimer); connectorTimer = setTimeout(() => state && renderAttention(), wait + 50); return ''; }
+  return 'The browser connector is not ready';
+}
+function renderAttention() {
+  const problem = connectorProblem(), u = state.update || {}, update = !!(u.available || u.ready || u.error || state.versions?.hasUpdate);
+  $('connector-banner').classList.toggle('hidden', !problem);
+  $('connector-banner-text').textContent = problem ? `${problem}. Agents cannot use this browser until it is back.` : '';
+  const tone = problem ? 'danger' : update ? 'accent' : '', note = problem || (update ? 'update available' : '');
+  document.querySelectorAll('.bridge-dot').forEach((dot) => { dot.classList.toggle('hidden', !tone); dot.dataset.tone = tone; });
+  for (const id of ['settings-button', 'settings-fallback']) { const label = `Workspace settings${note ? ` · ${note}` : ''}`; $(id).title = label; $(id).setAttribute('aria-label', label); }
+}
+function renderHandoffNote(tab) {
+  const handoff = tab?.handoff, off = handoff?.phase === 'handed_off', review = !!handoff && !off && handoff.phase !== 'reviewed';
+  $('handoff-banner').classList.toggle('hidden', !off && !review);
+  $('handoff-text').textContent = off ? `Handed off to the ${hostName(handoff.destinationHost)}. Agents continue there.` : review ? 'Handoff: review this page before an agent continues.' : '';
+}
+// The "…" menu hides Record and Downloads, so it wears a dot while either is running.
+function renderToolbarAttention() {
+  const recording = !!state.recording, downloading = (state.downloads || []).some(item => item.state === 'progressing');
+  const more = $('toolbar-more'); more.dataset.tone = recording ? 'danger' : downloading ? 'accent' : '';
+  more.title = recording ? 'More · recording' : downloading ? 'More · downloading' : 'More';
+}
 let updatePopupPinned = false;
 function renderUpdate() {
-  const version = $('version-label'); version.textContent = `v${state.version}`; version.title = `Release notes for v${state.version}`; version.onclick = () => command('open-release-notes');
-  const badge = $('build-badge'), b = state.buildBadge;
-  badge.classList.toggle('hidden', !b); if (b) { badge.textContent = b.text; badge.title = b.title; badge.className = `build-badge ${b.tone}`; }
+  // Updates are the one thing the main screen still announces: a slim pill by the gear, only while there is something to do.
   const note = $('update-note'), u = state.update || {};
-  const label = u.busy ? 'Updating…' : u.error ? 'Update failed · Open download page' : u.ready ? `Restart to update to v${u.available}` : u.available ? `Update to v${u.available}` : '';
-  note.classList.toggle('hidden', !label); note.textContent = label; note.disabled = !!u.busy;
-  note.onclick = () => { if (u.error) command('open-download-page'); else { updatePopupPinned = true; renderUpdatePopup(); } };
+  const label = u.busy || state.updateAll?.busy ? 'Updating…' : u.error ? 'Update failed' : u.ready ? 'Restart to update' : u.available || state.versions?.hasUpdate ? 'Update' : '';
+  note.classList.toggle('hidden', !label); note.textContent = label; note.disabled = !!(u.busy || state.updateAll?.busy);
+  note.title = u.busy ? 'Updating…' : u.error ? 'Update failed. Open the download page.' : u.ready ? `Restart to finish updating to v${u.available}` : u.available ? `Update to v${u.available}` : 'Updates are available. Review them before anything runs.';
+  note.onclick = () => { if (u.error) command('open-download-page'); else if (u.available || u.ready) { updatePopupPinned = true; renderUpdatePopup(); } else openUpdateAll(); };
   renderUpdatePopup();
   renderVersions();
   renderVmBanner();
@@ -678,14 +679,6 @@ function renderUpdatePopup() {
 let updateAllOpen = false, updateAllView = 'plan', updateAllError = '';
 const STEP_MARK = { pending: '·', running: '…', done: '✓', warn: '⚠', failed: '✗', skipped: '–' };
 function renderVersions() {
-  const v = state.versions || {}, run = state.updateAll || {};
-  const label = $('version-label');
-  label.textContent = v.text || `v${state.version}`;
-  label.title = `${v.tooltip ? `${v.tooltip}\n` : ''}Click for the v${state.version} release notes`;
-  const button = $('update-all');
-  button.textContent = run.busy ? 'Updating…' : v.hasUpdate ? '↑ Update' : 'Update';
-  button.classList.toggle('has-update', !!v.hasUpdate);
-  button.title = v.hasUpdate ? 'Updates are available. Review them before anything runs.' : 'Check what can be updated';
   renderUpdateAll();
 }
 function renderUpdateAll() {
@@ -1028,7 +1021,7 @@ function rect(id) {
 }
 function scheduleLayout() {
   cancelAnimationFrame(resizeFrame);
-  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), webapp: focusMode ? null : rect('webapp-slot'), browser: rect('browser-slot'), obscured: dialogStack.length > 0 || !$('chat-menu').classList.contains('hidden') || !$('tabs-panel').classList.contains('hidden') || !$('status-panel').classList.contains('hidden') }));
+  resizeFrame = requestAnimationFrame(() => api.layout({ telegram: focusMode ? null : rect('telegram-slot'), webapp: focusMode ? null : rect('webapp-slot'), browser: rect('browser-slot'), obscured: dialogStack.length > 0 || ['chat-menu', 'tabs-panel', 'toolbar-menu', 'downloads-menu'].some(id => !$(id).classList.contains('hidden')) }));
 }
 // Registered once with a mutable target: re-rendering the migrate card must
 // not stack listeners or every log chunk would append once per past render.
@@ -1377,7 +1370,7 @@ let settingsSession = null;
 const SETTINGS_CATEGORIES = [
   ['general', 'General'], ['bots', 'Bots & appearance'], ['browser', 'Browser'],
   ['recordings', 'Recordings'], ['computer', 'Computer access'],
-  ['connections', 'Connections'], ['support', 'Updates & help'],
+  ['connections', 'Connections'], ['support', 'Updates & help'], ['about', 'About'],
 ];
 const SETTINGS_SECTIONS = [
   { id: 'keyboard', category: 'general', title: 'Keyboard shortcuts', description: 'Find the keys for moving between agents, browser tabs and dialogs.', words: 'keyboard navigation keys guide shortcuts search', mount(body) { const button = element('button', 'secondary-button', 'Keyboard shortcuts'); button.id = 'settings-shortcuts'; button.onclick = showShortcuts; body.append(button); } },
@@ -1396,6 +1389,7 @@ const SETTINGS_SECTIONS = [
   { id: 'agent-setup', category: 'connections', title: 'Agent machine', description: 'Your existing Hermes machine.', words: 'agent setup remote connection cloud setup server hermes ssh address gateway tailscale wizard connect migrate manual command update prompt copy save addresses run bot', mount: mountAgentSetup },
   { id: 'remote-desktop', category: 'connections', title: 'Remote desktop · Optional', description: 'Viewer only, separate from agent setup.', words: 'remote connection desktop vps vm novnc vnc tailscale watch macos linux viewer address save computer runs platform', mount: mountRemoteConnection },
   { id: 'updates', category: 'support', title: 'Updates', description: 'Choose Stable or Nightly and review version and update status for this app, Hermes and the agent plugin.', words: 'update status versions check refresh restart available errors hermes plugin release channel stable nightly', mount: mountSettingsUpdates },
+  { id: 'about', category: 'about', title: 'Alan’s Workspace', description: 'Versions, release channel and the browser connector.', words: 'about version versions release notes build production dev channel hermes plugin connector status ready update shortcuts', mount: mountAbout },
   { id: 'diagnostics', category: 'support', title: 'Diagnostics and help', description: 'Check this computer, your connection and the server. Copy a report or get help from the team.', words: 'diagnostics support help setup check troubleshoot error report discord', mount: mountSettingsDiagnostics },
 ];
 function settingsSearchText(value) { return value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim(); }
@@ -1985,7 +1979,7 @@ function mountSettingsUpdates(body) {
   const summary = element('p', 'settings-update-summary'), versions = element('p', 'settings-note settings-version-detail'), error = element('p', 'settings-note');
   summary.id = 'settings-update-summary'; summary.setAttribute('role', 'status'); body.append(summary, versions, error);
   settingsAction(body, 'Check for updates', 'versions-refresh', {}, { busy: 'Requesting update status…', success: 'Update check requested. New version information appears here when it is available.' });
-  const review = element('button', 'secondary-button', 'Review updates'); review.id = 'settings-review-updates'; review.onclick = () => $('update-all').click(); body.append(review);
+  const review = element('button', 'secondary-button', 'Review updates'); review.id = 'settings-review-updates'; review.onclick = openUpdateAll; body.append(review);
   const hermes = element('button', 'secondary-button', 'Update Hermes'); body.append(hermes); const status = settingsStatus(body);
   hermes.onclick = async () => { const reply = await runSettingsAction(hermes, status, () => api.command('hermes-update'), 'Updating Hermes on the agent machine. This can take a few minutes.'); if (reply.ok) { status.textContent = reply.result?.detail || 'The update returned no result.'; status.classList.toggle('error', !reply.result?.ok); } };
   return () => {
@@ -1995,6 +1989,28 @@ function mountSettingsUpdates(body) {
     summary.textContent = run.busy || u.busy ? 'Updating…' : u.ready ? 'Restart is ready to finish the app update.' : v.hasUpdate || u.available ? 'Updates are available.' : v.tooltip ? 'No available updates reported.' : 'Version status has not been checked yet.';
     versions.textContent = v.tooltip || v.text || `Alan’s Workspace ${state.version || ''}`;
     error.textContent = u.error || run.summary || ''; error.classList.toggle('error', !!u.error);
+  };
+}
+// Everything the footer used to carry. Nothing here is needed in the moment, so it lives behind Settings.
+function mountAbout(body) {
+  const list = element('dl', 'about-list'); list.id = 'settings-about'; body.append(list);
+  const actions = element('div', 'about-actions');
+  const buttons = [['Release notes', () => command('open-release-notes')], ['Review updates', openUpdateAll], ['Keyboard shortcuts', showShortcuts]];
+  for (const [label, run] of buttons) { const button = element('button', 'secondary-button', label); button.onclick = run; actions.append(button); }
+  body.append(actions);
+  return () => {
+    const components = state.versions?.components || [], app = components.find(row => row.id === 'app');
+    const rows = [['Alan’s Workspace', [`v${state.version}`, app?.status].filter(Boolean).join(' · ')]];
+    const b = state.buildBadge; if (b) rows.push(['Release channel', b.text, b.tone, b.title]);
+    for (const row of components) if (row.id !== 'app' && (row.id !== 'host' || row.version)) rows.push([row.name, [row.version, row.status].filter(Boolean).join(' · ') || row.status]);
+    const connector = state.api.ready ? 'Ready' : state.api.error ? 'Unavailable' : 'Starting…';
+    rows.push(['Browser connector', connector, state.api.ready ? 'ok' : state.api.error ? 'danger' : '']);
+    list.replaceChildren();
+    for (const [name, value, tone, title] of rows) {
+      const row = element('div', 'about-row'), term = element('dt', '', name), detail = element('dd', tone ? `about-${tone}` : '', value);
+      if (title) detail.title = title;
+      row.append(term, detail); list.append(row);
+    }
   };
 }
 function mountSettingsDiagnostics(body) {
@@ -2049,52 +2065,64 @@ $('bot-search').oninput = renderBots;
 $('add-bot').onclick = showAddBot;
 $('settings-button').onclick = showSettings;
 $('settings-fallback').onclick = showSettings;
-$('shortcuts-button').onclick = showShortcuts;
 $('shortcut-close').onclick = closeShortcuts;
 $('shortcut-search').oninput = renderShortcuts;
 $('shortcut-clear').onclick = () => { $('shortcut-search').value = ''; renderShortcuts(); $('shortcut-search').focus(); };
 $('shortcut-dialog').onclick = event => { if (event.target === $('shortcut-dialog')) closeShortcuts(); };
 $('browser-collapse').onclick = () => { if (focusMode) { focusMode = false; $('shell').classList.remove('focus-workspace'); } command('settings', { showBrowser: state?.showBrowser === false }); };
 $('bots-toggle').onclick = $('bots-show').onclick = () => command('settings', { showBots: state.showBots === false });
-$('sort-bots').onclick = (event) => {
-  event.stopPropagation();
-  const menu = $('sort-menu'), open = menu.classList.contains('hidden');
-  menu.classList.toggle('hidden', !open);
-  $('sort-bots').setAttribute('aria-expanded', String(open));
+// One keyboard contract for the popup menus: arrows, Home and End move, Escape closes and returns to the trigger, Tab leaves.
+function menuKeys(menu, close, trigger) {
+  menu.addEventListener('keydown', (event) => {
+    const items = [...menu.querySelectorAll('[role^=menuitem]')], at = items.indexOf(document.activeElement);
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); trigger.focus({ preventScroll: true }); return; }
+    if (event.key === 'Tab') { close(); return; }
+    const target = { ArrowDown: items[(at + 1) % items.length], ArrowUp: items[(at - 1 + items.length) % items.length], Home: items[0], End: items.at(-1) }[event.key];
+    if (target) { event.preventDefault(); target.focus({ preventScroll: true }); }
+  });
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault(); event.stopPropagation(); trigger.click();
+    const items = [...menu.querySelectorAll('[role^=menuitem]')];
+    (event.key === 'ArrowDown' ? items.find(item => item.getAttribute('aria-checked') === 'true') || items[0] : items.at(-1))?.focus({ preventScroll: true });
+  });
+}
+function setSortMenu(open) {
+  const menu = $('sort-menu');
+  menu.classList.toggle('hidden', !open); $('sort-bots').setAttribute('aria-expanded', String(open));
   if (open) menu.querySelectorAll('button').forEach((button) => {
     const active = button.dataset.sort === (state.botSort || 'manual');
     button.classList.toggle('selected', active);
     button.setAttribute('aria-checked', String(active));
     if (!button.querySelector('.sort-check')) button.prepend(element('span', 'sort-check', '✓'));
   });
-};
+}
+$('sort-bots').onclick = (event) => { event.stopPropagation(); setSortMenu($('sort-menu').classList.contains('hidden')); };
 $('sort-menu').onclick = (event) => {
   const button = event.target.closest('button[data-sort]');
   if (button) command('bot-sort', { mode: button.dataset.sort });
-  $('sort-menu').classList.add('hidden'); $('sort-bots').setAttribute('aria-expanded', 'false');
+  setSortMenu(false); $('sort-bots').focus({ preventScroll: true });
 };
+menuKeys($('sort-menu'), () => setSortMenu(false), $('sort-bots'));
+function setToolbarMenu(open) {
+  const menu = $('toolbar-menu'), was = !menu.classList.contains('hidden');
+  menu.classList.toggle('hidden', !open); $('toolbar-more').setAttribute('aria-expanded', String(open));
+  if (open) closeDownloads();
+  if (open !== was) scheduleLayout();
+}
+$('toolbar-more').onclick = (event) => { event.stopPropagation(); setToolbarMenu($('toolbar-menu').classList.contains('hidden')); };
+$('toolbar-menu').onclick = () => { setToolbarMenu(false); $('toolbar-more').focus({ preventScroll: true }); };
+menuKeys($('toolbar-menu'), () => setToolbarMenu(false), $('toolbar-more'));
 document.addEventListener('click', (event) => {
-  if (!event.target.closest('#sort-menu') && !event.target.closest('#sort-bots')) { $('sort-menu').classList.add('hidden'); $('sort-bots').setAttribute('aria-expanded', 'false'); }
+  if (!event.target.closest('#sort-menu') && !event.target.closest('#sort-bots')) setSortMenu(false);
   if (!event.target.closest('#downloads-menu') && !event.target.closest('#downloads-button')) closeDownloads();
   if (!event.target.closest('#tabs-panel') && !event.target.closest('#tabs-menu')) setTabsPanel(false);
   if (!event.target.closest('#chat-menu') && !event.target.closest('#chat-name')) setChatMenu(false);
-  if (!event.target.closest('#status-panel') && !event.target.closest('#status-more')) setStatusPanel(false);
+  if (!event.target.closest('#toolbar-menu') && !event.target.closest('#toolbar-more')) setToolbarMenu(false);
 });
-const openStatusPanel = () => { setStatusPanel(true); $('status-panel').querySelector('.status-panel-row')?.focus({ preventScroll: true }); };
-$('status-more').onclick = (event) => { event.stopPropagation(); if ($('status-panel').classList.contains('hidden')) openStatusPanel(); else setStatusPanel(false); };
-for (const id of ['workspace-status', 'connection-status']) {
-  const el = $(id);
-  el.onclick = (event) => { event.stopPropagation(); openStatusPanel(); };
-  el.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); el.click(); } };
-}
-$('status-panel').onkeydown = (event) => {
-  if (event.key === 'Escape') { event.preventDefault(); setStatusPanel(false); (canFocus($('status-more')) ? $('status-more') : $('workspace-status')).focus({ preventScroll: true }); return; }
-  moveNavigationFocus(event, [...$('status-panel').querySelectorAll('.status-panel-row')], 'vertical');
-};
 $('presence-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onclick = () => showAvatarEditor();
 $('chat-avatar').onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showAvatarEditor(); } };
-$('vm-toggle').onclick = () => { if (state?.showBrowser === false) command('settings', { showBrowser: true }); command('toggle-vps-view'); };
 $('chat-name').onclick = () => setChatMenu($('chat-menu').classList.contains('hidden'));
 $('chat-name').onkeydown = (event) => {
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
@@ -2121,13 +2149,17 @@ $('canvas-tabs').onkeydown = (event) => {
   if (!next) return;
   event.preventDefault(); next.focus(); command('canvas-tab', { tab: next.dataset.canvas });
 };
+$('tabs').addEventListener('wheel', (event) => { if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) { $('tabs').scrollLeft += event.deltaY; event.preventDefault(); } }, { passive: false });
+$('connector-banner-details').onclick = () => showSettings({ section: 'about' });
 $('extensions-button').onclick = showExtensions;
 $('downloads-button').onclick = (event) => {
   event.stopPropagation();
   const menu = $('downloads-menu'), open = menu.classList.contains('hidden');
+  setToolbarMenu(false);
   menu.classList.toggle('hidden', !open);
   $('downloads-button').setAttribute('aria-expanded', String(open));
   if (open) { delete menu.dataset.signature; renderDownloads(); }
+  scheduleLayout();
 };
 $('tabs-menu').onclick = (event) => {
   event.stopPropagation();
@@ -2204,7 +2236,7 @@ $('update-later').onclick = () => { updatePopupPinned = false; command('update-l
 $('vm-banner-retry').onclick = () => command('vm-update-retry');
 // Opening re-checks the machine, so the plan does not lean on a cache that can
 // be half an hour old; it re-renders when the answer lands.
-$('update-all').onclick = () => { updateAllOpen = true; updateAllView = state?.updateAll?.busy ? 'run' : 'plan'; renderUpdateAll(); if (updateAllView === 'plan') command('versions-refresh'); };
+function openUpdateAll() { updateAllOpen = true; updateAllView = state?.updateAll?.busy ? 'run' : 'plan'; renderUpdateAll(); if (updateAllView === 'plan') command('versions-refresh'); }
 $('update-all-cancel').onclick = closeUpdateAll;
 $('update-all-check').onclick = () => command('versions-refresh');
 $('update-all-go').onclick = () => {
@@ -2225,7 +2257,7 @@ $('update-all-go').onclick = () => {
 };
 $('update-all-popup').onclick = (event) => { if (event.target === $('update-all-popup')) closeUpdateAll(); };
 $('update-popup').onclick = (event) => { if (event.target === $('update-popup') && !state?.update?.busy) $('update-later').click(); };
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { if (modalOpen) closeModal(); else if (!$('chat-menu').classList.contains('hidden')) { setChatMenu(false); $('chat-name').focus({ preventScroll: true }); } else if (!$('tabs-panel').classList.contains('hidden')) { setTabsPanel(false); $('tabs-menu').focus({ preventScroll: true }); } else if (!$('status-panel').classList.contains('hidden')) { setStatusPanel(false); (canFocus($('status-more')) ? $('status-more') : $('workspace-status')).focus({ preventScroll: true }); } else closeDownloads(); } });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { if (modalOpen) closeModal(); else if (!$('chat-menu').classList.contains('hidden')) { setChatMenu(false); $('chat-name').focus({ preventScroll: true }); } else if (!$('tabs-panel').classList.contains('hidden')) { setTabsPanel(false); $('tabs-menu').focus({ preventScroll: true }); } else if (!$('toolbar-menu').classList.contains('hidden')) { setToolbarMenu(false); $('toolbar-more').focus({ preventScroll: true }); } else if (!$('downloads-menu').classList.contains('hidden')) { closeDownloads(); $('toolbar-more').focus({ preventScroll: true }); } else if (!$('sort-menu').classList.contains('hidden')) { setSortMenu(false); $('sort-bots').focus({ preventScroll: true }); } } });
 $('splitter').onpointerdown = (event) => {
   const startX = event.clientX, startWidth = document.querySelector('.chat-pane').getBoundingClientRect().width; $('splitter').setPointerCapture(event.pointerId); $('splitter').classList.add('active');
   const sidebar = document.querySelector('.sidebar');

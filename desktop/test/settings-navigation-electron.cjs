@@ -92,7 +92,7 @@ app.whenReady().then(async () => {
     assert.equal(await js('document.getElementById("settings-search").value'), '');
     await category('general'); await key('ArrowDown'); assert.equal(await active(), 'settings-category-bots');
     assert.equal(await js('document.querySelector(".settings-category[aria-selected=true]").textContent'), 'Bots & appearance');
-    await key('End'); assert.equal(await active(), 'settings-category-support');
+    await key('End'); assert.equal(await active(), 'settings-category-about');
     await key('Home'); assert.equal(await active(), 'settings-category-general');
     await search('remote connection'); await key('Escape'); await key('Escape'); assert.equal(await active(), 'settings-button');
     await open(); assert.equal(await active(), 'settings-search'); assert.equal(await js('document.getElementById("settings-search").value'), '');
