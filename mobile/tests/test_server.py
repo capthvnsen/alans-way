@@ -106,6 +106,35 @@ class VoiceHttpProtocolTests(unittest.IsolatedAsyncioTestCase):
             })
             self.assertEqual(stale.status, 401)
 
+    async def test_unauthenticated_call_creation_refuses_oversized_and_malformed_bodies(self):
+        big = b'{"init_data":"' + b"a" * (200 * 1024) + b'"}'
+        refused = await self.client.post("/v1/calls", data=big, headers={"Content-Type": "application/json"})
+        self.assertEqual(refused.status, 413)
+
+        async def chunks():
+            for _ in range(64):
+                yield b"x" * 4096  # no Content-Length: the cap must still apply
+        streamed = await self.client.post("/v1/calls", data=chunks(), headers={"Content-Type": "application/json"})
+        self.assertEqual(streamed.status, 413)
+        for body in (b"not json", b"[]", b"\xff\xfe"):
+            with self.subTest(body=body):
+                bad = await self.client.post("/v1/calls", data=body, headers={"Content-Type": "application/json"})
+                self.assertEqual(bad.status, 400)
+        self.assertEqual((await self._create_call())["expires_in"], 3600)
+
+    async def test_concurrent_capability_probes_make_one_upstream_request(self):
+        calls = []
+
+        async def slow(self_):
+            calls.append(1)
+            await asyncio.sleep(0.05)
+            return {"ready": True, "stt": {}, "tts": {}}
+        audio = HermesAudio("http://127.0.0.1:9", "token")
+        with patch.object(HermesAudio, "_fetch_capabilities", slow):
+            results = await asyncio.gather(*(audio.capabilities() for _ in range(20)))
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(all(result["ready"] for result in results))
+
     async def test_authenticated_upload_injects_once_and_returns_correlated_reply_audio(self):
         call = await self._create_call()
         turn_id = str(uuid.uuid4())

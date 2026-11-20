@@ -28,6 +28,7 @@ MAX_AUDIO_BYTES = 10 * 1024 * 1024
 TURN_ID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 MAX_TEXT_FIELD_BYTES = 256
+MAX_JSON_BODY_BYTES = 64 * 1024
 MAX_MULTIPART_PARTS = 8
 CAPABILITIES_CACHE_SECONDS = 45
 LISTENER_START_SECONDS = 10
@@ -51,6 +52,7 @@ class HermesAudio:
             raise ValueError("dashboard_api_base must be https or a loopback http URL")
         self.base_url = base_url.rstrip("/")
         self._capabilities_cache: tuple[float, dict] | None = None
+        self._capabilities_lock = asyncio.Lock()
         self.session_token = session_token
         self.profile = profile
 
@@ -82,11 +84,14 @@ class HermesAudio:
     async def capabilities(self) -> dict:
         if not self.available:
             return {"ready": False, "reason": "Hermes audio API is not configured"}
-        if self._capabilities_cache and time.monotonic() - self._capabilities_cache[0] < CAPABILITIES_CACHE_SECONDS:
-            return self._capabilities_cache[1]
-        result = await self._fetch_capabilities()
-        self._capabilities_cache = (time.monotonic(), result)
-        return result
+        # One probe at a time: when the cache expires, callers wait for it
+        # instead of each sending their own request to the dashboard.
+        async with self._capabilities_lock:
+            if self._capabilities_cache and time.monotonic() - self._capabilities_cache[0] < CAPABILITIES_CACHE_SECONDS:
+                return self._capabilities_cache[1]
+            result = await self._fetch_capabilities()
+            self._capabilities_cache = (time.monotonic(), result)
+            return result
 
     async def _fetch_capabilities(self) -> dict:
         try:
@@ -213,9 +218,17 @@ class VoiceBroker:
                                  headers={"Cache-Control": "no-store"})
 
     async def create_call(self, request: web.Request) -> web.Response:
+        # Anyone who can reach the listener may call this; read only a launch-sized body.
+        if request.content_length is not None and request.content_length > MAX_JSON_BODY_BYTES:
+            raise web.HTTPRequestEntityTooLarge(max_size=MAX_JSON_BODY_BYTES, actual_size=request.content_length)
+        raw = b""
+        while chunk := await request.content.read(8192):
+            raw += chunk
+            if len(raw) > MAX_JSON_BODY_BYTES:
+                raise web.HTTPRequestEntityTooLarge(max_size=MAX_JSON_BODY_BYTES, actual_size=len(raw))
         try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
+            body = json.loads(raw)
+        except ValueError:
             raise web.HTTPBadRequest(text="Expected JSON")
         if not isinstance(body, dict):
             raise web.HTTPBadRequest(text="Expected JSON object")
